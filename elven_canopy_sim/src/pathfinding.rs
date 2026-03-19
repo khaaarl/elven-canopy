@@ -23,7 +23,7 @@
 // ID assignment.
 
 use crate::nav::{EdgeType, HEURISTIC_SCALE, NavGraph};
-use crate::types::{NavNodeId, VoxelCoord};
+use crate::types::{NavEdgeId, NavNodeId, VoxelCoord};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
@@ -32,8 +32,8 @@ use std::collections::BinaryHeap;
 pub struct PathResult {
     /// Sequence of node IDs from start to goal (inclusive).
     pub nodes: Vec<NavNodeId>,
-    /// Indices into `NavGraph.edges` for each step (len = nodes.len() - 1).
-    pub edge_indices: Vec<usize>,
+    /// Edge IDs for each step (len = nodes.len() - 1).
+    pub edge_indices: Vec<NavEdgeId>,
     /// Total traversal cost (distance_scaled × tpv, in DIST_SCALE units).
     pub total_cost: i64,
 }
@@ -106,7 +106,7 @@ pub fn astar(
     // g_score[node] = cost of cheapest known path from start to node.
     let mut g_score = vec![i64::MAX; n];
     // came_from[node] = (previous node, edge index used to get there).
-    let mut came_from: Vec<Option<(NavNodeId, usize)>> = vec![None; n];
+    let mut came_from: Vec<Option<(NavNodeId, NavEdgeId)>> = vec![None; n];
     let mut closed = vec![false; n];
 
     g_score[start.0 as usize] = 0;
@@ -140,7 +140,7 @@ pub fn astar(
             let neighbor = edge.to;
             let ni = neighbor.0 as usize;
 
-            if closed[ni] {
+            if closed[ni] || !graph.is_node_alive(neighbor) {
                 continue;
             }
 
@@ -205,7 +205,7 @@ pub fn astar_filtered(
     let walk_tpv_i = walk_tpv as i64;
 
     let mut g_score = vec![i64::MAX; n];
-    let mut came_from: Vec<Option<(NavNodeId, usize)>> = vec![None; n];
+    let mut came_from: Vec<Option<(NavNodeId, NavEdgeId)>> = vec![None; n];
     let mut closed = vec![false; n];
 
     g_score[start.0 as usize] = 0;
@@ -243,7 +243,7 @@ pub fn astar_filtered(
             let neighbor = edge.to;
             let ni = neighbor.0 as usize;
 
-            if closed[ni] {
+            if closed[ni] || !graph.is_node_alive(neighbor) {
                 continue;
             }
 
@@ -360,7 +360,7 @@ pub fn dijkstra_nearest(
             let neighbor = edge.to;
             let ni = neighbor.0 as usize;
 
-            if closed[ni] {
+            if closed[ni] || !graph.is_node_alive(neighbor) {
                 continue;
             }
 
@@ -406,7 +406,7 @@ fn heuristic(graph: &NavGraph, from: NavNodeId, to: NavNodeId, walk_tpv: i64) ->
 
 /// Reconstruct the path from came_from data.
 fn reconstruct_path(
-    came_from: &[Option<(NavNodeId, usize)>],
+    came_from: &[Option<(NavNodeId, NavEdgeId)>],
     start: NavNodeId,
     goal: NavNodeId,
     total_cost: i64,

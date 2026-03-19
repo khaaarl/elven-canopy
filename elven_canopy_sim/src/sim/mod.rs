@@ -1349,7 +1349,10 @@ impl SimState {
                                 task::SleepLocation::Dormitory(sid),
                             )
                         } else if let Some(creature) = self.db.creatures.get(&creature_id)
-                            && creature.current_node.is_some()
+                            && self
+                                .graph_for_species(creature.species)
+                                .node_at(creature.position)
+                                .is_some()
                         {
                             (
                                 None,

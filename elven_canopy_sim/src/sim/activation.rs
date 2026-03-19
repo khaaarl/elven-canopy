@@ -180,7 +180,10 @@ impl SimState {
                 Some(c) if c.vital_status == VitalStatus::Alive => c,
                 _ => return, // dead or missing — do not reschedule
             };
-            let node = match creature.current_node {
+            let node = match self
+                .graph_for_species(creature.species)
+                .node_at(creature.position)
+            {
                 Some(n) => n,
                 None => return,
             };
@@ -204,7 +207,6 @@ impl SimState {
             };
             let new_pos = graph.node(new_node).position;
             let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
-                c.current_node = Some(new_node);
                 c.position = new_pos;
                 c.path = None;
             });
@@ -240,7 +242,7 @@ impl SimState {
                 .db
                 .creatures
                 .get(&creature_id)
-                .and_then(|c| c.current_node)
+                .and_then(|c| self.graph_for_species(c.species).node_at(c.position))
             {
                 Some(n) => n,
                 None => return,
@@ -415,7 +417,7 @@ impl SimState {
     pub(crate) fn find_available_task(&self, creature_id: CreatureId) -> Option<TaskId> {
         let creature = self.db.creatures.get(&creature_id)?;
         let species = creature.species;
-        let current_node = creature.current_node?;
+        let current_node = self.graph_for_species(species).node_at(creature.position)?;
         let is_nonmagical = creature.mp_max == 0;
         // Minimum mana needed to attempt one mana-requiring work action.
         let min_mana_cost = self.mana_cost_per_action(None);
@@ -598,7 +600,6 @@ impl SimState {
                 if let Some(new_node) = graph.find_nearest_node(old_pos) {
                     let new_pos = graph.node(new_node).position;
                     let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
-                        c.current_node = Some(new_node);
                         c.position = new_pos;
                     });
                     self.update_creature_spatial_index(creature_id, species, old_pos, new_pos);
@@ -992,7 +993,7 @@ impl SimState {
         }
         let inv_id = creature.inventory_id;
         let current_task = creature.current_task;
-        let current_node = creature.current_node;
+        let creature_position = creature.position;
 
         // Get equipment wants from the creature's military group.
         let equipment_wants = creature
@@ -1076,10 +1077,7 @@ impl SimState {
         }
 
         // Find or create a ground pile at the creature's position.
-        let creature_pos = match current_node {
-            Some(node) if self.nav_graph.is_node_alive(node) => self.nav_graph.node(node).position,
-            _ => return,
-        };
+        let creature_pos = creature_position;
         let pile_id = self.ensure_ground_pile(creature_pos);
         let pile_inv = match self.db.ground_piles.get(&pile_id) {
             Some(p) => p.inventory_id,

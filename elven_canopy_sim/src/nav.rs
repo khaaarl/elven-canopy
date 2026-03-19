@@ -11,20 +11,27 @@
 // from `species.rs`). This means graph construction needs only the voxel
 // world — no speed config required.
 //
-// **Span-scan + BFS construction:** Instead of scanning every voxel in the
-// world, `build_nav_graph()` uses a unified BFS approach:
-// (1) Span-scan: for each (x, z) column, reads RLE spans and extracts seed
+// **Parallel span-scan + layered BFS construction:** Instead of scanning
+// every voxel in the world, `build_nav_graph()` uses rayon to parallelize
+// all expensive phases:
+// (1) Parallel span-scan: z-rows of (x, z) columns are processed in
+//     parallel via rayon. Each task reads RLE spans and extracts seed
 //     positions from span boundaries — where air starts after solid, and
 //     non-solid non-air spans (BuildingInterior, ladders) which emit every
-//     voxel as a seed. NO horizontal neighbor seeds are generated — the BFS
-//     discovers them. At NO POINT does it iterate through Y ranges of solid
-//     material (dirt, trunk, etc.).
-// (2) Seeds are filtered through `should_be_nav_node()` and inserted as
-//     nodes in the graph.
-// (3) BFS from seeds with 26-connectivity: discovers additional nav nodes
-//     AND creates edges in a single pass. For each node popped, all 26
-//     neighbors are checked. Existing graph nodes get edges; new valid
-//     positions are inserted and pushed onto the queue.
+//     voxel as a seed. Results are concatenated in z-order for determinism.
+// (2) Parallel seed validation: `should_be_nav_node()` and
+//     `derive_surface_type()` are evaluated in parallel for all seeds.
+// (3) Seeds are inserted as nodes in the graph (sequential, preserving
+//     original (z, x) column order).
+// (4) Parallel layered BFS (node discovery): the frontier is processed in
+//     parallel chunks via rayon. Each chunk reads the graph (immutable) and
+//     discovers new nav node positions. After each layer, new node coords
+//     are sorted by VoxelCoord and deduped for deterministic ID assignment,
+//     then inserted sequentially. New nodes become the next layer's frontier.
+// (5) Sequential edge creation: after all nodes are discovered, edges are
+//     created by scanning each node (in ID order) and checking 26 neighbors.
+//     Each edge is created from the lower-slot endpoint to avoid duplicates.
+//     This produces deterministic edge_indices ordering for each node.
 // This reduces node discovery from O(world_volume) to O(number_of_spans +
 // BFS_frontier). Every air voxel that is face-adjacent to at least one
 // solid voxel becomes a nav node. `BuildingInterior` voxels are always nav
@@ -42,11 +49,13 @@
 // **Stable node IDs and incremental updates.** Nodes are stored as
 // `Vec<Option<NavNode>>` — `Some` for live nodes, `None` for removed (dead)
 // slots. This allows `update_after_voxel_solidified()` to add/remove nodes
-// without shifting IDs, so creatures' `current_node` references remain valid
-// unless their specific node was removed. Dead slots are recycled via
-// `free_slots`. A persistent `spatial_index` (`LookupMap<VoxelCoord, u32>`)
-// enables O(1) coord→node lookup for both incremental updates and
-// `has_node_at()` queries.
+// without shifting IDs, so nav node lookups via `node_at(creature.position)`
+// remain valid unless the specific node was removed. Dead slots are recycled via
+// `free_slots`. A flat `column_index` (`Vec<SmallVec<[(u8, u32); 2]>>`)
+// provides O(1) coord→node lookup indexed by `x + z * size_x`, with each
+// column holding `(y, node_slot)` pairs sorted by ascending y. This replaces
+// the previous `LookupMap<VoxelCoord, u32>` for better cache locality and
+// lower per-lookup overhead.
 //
 // The full `build_nav_graph()` is used at startup and save/load. During
 // gameplay, `materialize_next_build_voxel()` in `sim/construction.rs` calls
@@ -64,30 +73,44 @@
 // via `graph_for_species()` based on the species' footprint.
 //
 // Nodes and edges use `Vec` indexed by `NavNodeId`/`NavEdgeId` for O(1) lookup
-// and deterministic iteration order. The spatial index uses `LookupMap` (a
-// non-iterable `HashMap` wrapper) for O(1) coord→node lookup without
-// allocating 4 bytes per voxel in the entire world volume.
+// and deterministic iteration order. Each node's `edge_indices` is a
+// `SmallVec<[NavEdgeId; 8]>` — inline for the common case of ≤8 neighbors
+// (typical for flat ground with 26-connectivity filtered to walkable surfaces),
+// spilling to heap only for unusually connected nodes.
+//
+// **Expanding-box `find_nearest_node`:** Instead of scanning all live nodes,
+// `find_nearest_node` and `find_nearest_ground_node` use the column index to
+// search outward from the query position in expanding Manhattan-radius rings.
+// This is O(radius^2) in the common case vs O(N) for the linear scan.
 //
 // See also: `world.rs` for the voxel grid, `tree_gen.rs` for tree geometry,
 // `pathfinding.rs` for A* search over this graph, `sim/mod.rs` which owns the
 // `NavGraph` as part of `SimState`, `species.rs` for the `footprint` field.
 //
-// **Critical constraint: determinism.** The graph is built deterministically:
-// seeds are produced in (z, x) column order, BFS uses a FIFO queue with a
-// fixed 26-direction array, so node IDs are assigned in deterministic BFS
-// discovery order. Incremental updates are also deterministic — they process
-// affected positions in a fixed order.
+// **Critical constraint: determinism.** The graph is built deterministically
+// despite rayon parallelism: parallel seed extraction uses indexed par_iter
+// so results are collected in z-row order; parallel seed validation uses
+// indexed parallel map preserving seed order; the parallel layered BFS
+// sorts new node coords by VoxelCoord ordering and deduplicates them
+// before sequential insertion, ensuring node IDs are assigned in the same
+// deterministic order regardless of rayon scheduling. Edge creation is
+// fully sequential (after all nodes exist), scanning nodes by ID order
+// with `ALL_26_NEIGHBORS` direction order, producing deterministic
+// edge_indices per node. Incremental updates are also deterministic —
+// they process affected positions in a fixed order.
 
 use crate::lookup_map::LookupMap;
 use crate::types::{
     FaceData, FaceDirection, FaceType, NavEdgeId, NavNodeId, VoxelCoord, VoxelType,
 };
 use crate::world::VoxelWorld;
-use serde::{Deserialize, Serialize};
+use rayon::prelude::*;
+use smallvec::SmallVec;
 use std::collections::BTreeMap;
 
 /// A node in the navigation graph — a position a creature can occupy.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Runtime-only type rebuilt from the voxel world — not serialized.
+#[derive(Clone, Debug)]
 pub struct NavNode {
     pub id: NavNodeId,
     pub position: VoxelCoord,
@@ -95,12 +118,16 @@ pub struct NavNode {
     /// kind of creature movement is valid here (e.g. `ForestFloor` for ground
     /// walking, `Trunk` for climbing).
     pub surface_type: VoxelType,
-    /// Indices into `NavGraph.edges` for edges that originate from this node.
-    pub edge_indices: Vec<usize>,
+    /// Edge IDs for edges that originate from this node. Uses
+    /// `SmallVec<[NavEdgeId; 8]>` to store inline for the common case of
+    /// ≤8 neighbors (typical for flat ground with 26-connectivity filtered
+    /// to walkable surfaces — 99.9% of nodes have exactly 8).
+    pub edge_indices: SmallVec<[NavEdgeId; 8]>,
 }
 
 /// The type of connection between two nav nodes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Serializable because it appears in species config (`allowed_edge_types`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum EdgeType {
     /// Walking on the forest floor around the trunk base.
     ForestFloor,
@@ -129,7 +156,8 @@ pub const DIST_SCALE: u32 = 1024;
 pub const HEURISTIC_SCALE: i64 = 591;
 
 /// A directed edge in the navigation graph.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Runtime-only type rebuilt from the voxel world — not serialized.
+#[derive(Clone, Debug)]
 pub struct NavEdge {
     pub id: NavEdgeId,
     pub from: NavNodeId,
@@ -155,18 +183,33 @@ pub fn scaled_distance(dx: i32, dy: i32, dz: i32) -> u32 {
 ///
 /// Nodes are stored as `Option<NavNode>` slots — `Some` for live nodes, `None`
 /// for removed nodes. This allows incremental updates (removing/adding nodes)
-/// without shifting IDs. The `spatial_index` maps `VoxelCoord → node slot`
-/// via `LookupMap` for O(1) coord→node lookup; `free_slots` tracks
-/// recyclable slots. Using `LookupMap` (non-iterable `HashMap` wrapper)
-/// instead of a flat `Vec<u32>` avoids allocating 4 bytes per voxel in the
-/// entire world volume — only actual nav nodes consume space.
-#[derive(Clone, Debug, Default)]
+/// without shifting IDs. The `column_index` is a flat 2D array indexed by
+/// `x + z * size_x`, where each entry holds `(y as u8, node_slot)` pairs
+/// sorted by ascending y. This provides O(1) coord→node lookup with better
+/// cache locality than a hash map. `free_slots` tracks recyclable node slots.
+#[derive(Clone, Debug)]
 pub struct NavGraph {
     nodes: Vec<Option<NavNode>>,
     pub edges: Vec<NavEdge>,
-    spatial_index: LookupMap<VoxelCoord, u32>,
+    /// Flat 2D column index: `column_index[x + z * size_x]` holds
+    /// `(y as u8, node_slot)` pairs sorted by ascending y.
+    column_index: Vec<SmallVec<[(u8, u32); 2]>>,
+    size_x: usize,
     free_slots: Vec<usize>,
     world_size: (usize, usize, usize),
+}
+
+impl Default for NavGraph {
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            column_index: Vec::new(),
+            size_x: 0,
+            free_slots: Vec::new(),
+            world_size: (0, 0, 0),
+        }
+    }
 }
 
 impl NavGraph {
@@ -174,15 +217,39 @@ impl NavGraph {
         Self::default()
     }
 
+    /// Create a `NavGraph` pre-allocated for a world of the given dimensions.
+    /// The column index is sized to `sx * sz` entries.
+    pub fn with_world_size(sx: usize, sy: usize, sz: usize) -> Self {
+        // Pre-allocate nodes and edges based on world area. A mostly-flat
+        // world has ~1 node per column and ~5 bidirectional edges per node
+        // (10 directed edges). The 1.25x and 10x multipliers provide
+        // headroom for hilly terrain and tree surfaces.
+        let area = sx * sz;
+        let estimated_nodes = area + area / 4; // ~1.25 * area
+        let estimated_edges = area * 10;
+        Self {
+            nodes: Vec::with_capacity(estimated_nodes),
+            edges: Vec::with_capacity(estimated_edges),
+            column_index: vec![SmallVec::new(); area],
+            size_x: sx,
+            free_slots: Vec::new(),
+            world_size: (sx, sy, sz),
+        }
+    }
+
     /// Add a node at the given position with the given surface type. Returns
     /// its ID.
     pub fn add_node(&mut self, position: VoxelCoord, surface_type: VoxelType) -> NavNodeId {
+        assert!(
+            self.nodes.len() < u32::MAX as usize,
+            "NavGraph node count overflow"
+        );
         let id = NavNodeId(self.nodes.len() as u32);
         self.nodes.push(Some(NavNode {
             id,
             position,
             surface_type,
-            edge_indices: Vec::new(),
+            edge_indices: SmallVec::new(),
         }));
         id
     }
@@ -196,10 +263,13 @@ impl NavGraph {
         edge_type: EdgeType,
         distance: u32,
     ) -> NavEdgeId {
+        assert!(
+            self.edges.len() + 1 < u32::MAX as usize,
+            "NavGraph edge count overflow"
+        );
         let forward_id = NavEdgeId(self.edges.len() as u32);
         let reverse_id = NavEdgeId(self.edges.len() as u32 + 1);
 
-        let forward_idx = self.edges.len();
         self.edges.push(NavEdge {
             id: forward_id,
             from,
@@ -208,7 +278,6 @@ impl NavGraph {
             distance,
         });
 
-        let reverse_idx = self.edges.len();
         self.edges.push(NavEdge {
             id: reverse_id,
             from: to,
@@ -221,18 +290,18 @@ impl NavGraph {
             .as_mut()
             .unwrap()
             .edge_indices
-            .push(forward_idx);
+            .push(forward_id);
         self.nodes[to.0 as usize]
             .as_mut()
             .unwrap()
             .edge_indices
-            .push(reverse_idx);
+            .push(reverse_id);
 
         forward_id
     }
 
     /// Get all edges originating from a node.
-    pub fn neighbors(&self, node: NavNodeId) -> &[usize] {
+    pub fn neighbors(&self, node: NavNodeId) -> &[NavEdgeId] {
         &self.nodes[node.0 as usize].as_ref().unwrap().edge_indices
     }
 
@@ -244,10 +313,15 @@ impl NavGraph {
 
     /// Kill a node slot (set it to `None`). Used in tests to simulate
     /// incremental updates that leave dead slots without recycling them.
+    /// Also removes from the column index so spatial lookups remain consistent.
     #[cfg(test)]
     pub fn kill_node(&mut self, id: NavNodeId) {
         let idx = id.0 as usize;
         if idx < self.nodes.len() {
+            if let Some(node) = &self.nodes[idx] {
+                let pos = node.position;
+                self.spatial_remove(pos);
+            }
             self.nodes[idx] = None;
         }
     }
@@ -257,9 +331,9 @@ impl NavGraph {
         self.nodes[id.0 as usize].as_ref().unwrap()
     }
 
-    /// Get an edge by index.
-    pub fn edge(&self, idx: usize) -> &NavEdge {
-        &self.edges[idx]
+    /// Get an edge by ID.
+    pub fn edge(&self, id: NavEdgeId) -> &NavEdge {
+        &self.edges[id.0 as usize]
     }
 
     /// Number of live nodes (excludes dead slots).
@@ -279,19 +353,117 @@ impl NavGraph {
 
     /// Find the nearest node to a given position (by Manhattan distance).
     /// Returns `None` if the graph is empty.
+    ///
+    /// Uses an expanding-box search on the column index when available,
+    /// falling back to linear scan for test graphs without a column index.
     pub fn find_nearest_node(&self, pos: VoxelCoord) -> Option<NavNodeId> {
-        self.live_nodes()
-            .min_by_key(|n| n.position.manhattan_distance(pos))
-            .map(|n| n.id)
+        self.expanding_box_search(pos, |_| true)
     }
 
     /// Find the nearest ground-level node (surface type `ForestFloor`) to the
     /// given position. Returns `None` if no ground nodes exist.
+    ///
+    /// Uses an expanding-box search on the column index when available.
     pub fn find_nearest_ground_node(&self, pos: VoxelCoord) -> Option<NavNodeId> {
-        self.live_nodes()
-            .filter(|n| n.surface_type == VoxelType::ForestFloor)
-            .min_by_key(|n| n.position.manhattan_distance(pos))
-            .map(|n| n.id)
+        self.expanding_box_search(pos, |n| n.surface_type == VoxelType::ForestFloor)
+    }
+
+    /// Common expanding-box search: starts at the query column, expands radius
+    /// outward checking the perimeter ring. Stops when `radius > best_distance`.
+    /// Falls back to linear scan when `column_index` is empty (test graphs).
+    fn expanding_box_search(
+        &self,
+        pos: VoxelCoord,
+        filter: impl Fn(&NavNode) -> bool,
+    ) -> Option<NavNodeId> {
+        if self.column_index.is_empty() {
+            // Fallback for test graphs without a column index.
+            return self
+                .live_nodes()
+                .filter(|n| filter(n))
+                .min_by_key(|n| n.position.manhattan_distance(pos))
+                .map(|n| n.id);
+        }
+
+        let (sx, _, sz) = self.world_size;
+        let mut best: Option<(u32, NavNodeId)> = None; // (distance, id)
+
+        let max_radius = (sx.max(sz)) as i32;
+
+        for radius in 0..=max_radius {
+            // Early termination: if we have a candidate and the minimum
+            // possible distance from this ring exceeds the best, stop.
+            if let Some((best_dist, _)) = best {
+                if radius as u32 > best_dist {
+                    break;
+                }
+            }
+
+            // Check all columns on the perimeter ring at this radius.
+            let x_min = (pos.x - radius).max(0);
+            let x_max = (pos.x + radius).min(sx as i32 - 1);
+            let z_min = (pos.z - radius).max(0);
+            let z_max = (pos.z + radius).min(sz as i32 - 1);
+
+            // Top and bottom rows of the ring.
+            for x in x_min..=x_max {
+                if pos.z - radius >= 0 {
+                    self.check_column_for_nearest(x, pos.z - radius, pos, &filter, &mut best);
+                }
+                if radius > 0 && pos.z + radius < sz as i32 {
+                    self.check_column_for_nearest(x, pos.z + radius, pos, &filter, &mut best);
+                }
+            }
+            // Left and right columns of the ring (excluding corners already
+            // covered by top/bottom rows). Use unclamped ring z-coords + 1/-1
+            // to avoid re-checking corners, not the clamped z_min/z_max.
+            if radius > 0 {
+                let side_z_lo = (pos.z - radius + 1).max(0);
+                let side_z_hi = (pos.z + radius - 1).min(sz as i32 - 1);
+                for z in side_z_lo..=side_z_hi {
+                    if pos.x - radius >= 0 {
+                        self.check_column_for_nearest(pos.x - radius, z, pos, &filter, &mut best);
+                    }
+                    if pos.x + radius < sx as i32 {
+                        self.check_column_for_nearest(pos.x + radius, z, pos, &filter, &mut best);
+                    }
+                }
+            }
+        }
+
+        best.map(|(_, id)| id)
+    }
+
+    /// Check all nodes in a column for the nearest match.
+    fn check_column_for_nearest(
+        &self,
+        x: i32,
+        z: i32,
+        pos: VoxelCoord,
+        filter: &impl Fn(&NavNode) -> bool,
+        best: &mut Option<(u32, NavNodeId)>,
+    ) {
+        let (sx, _, sz) = self.world_size;
+        if x < 0 || z < 0 || x >= sx as i32 || z >= sz as i32 {
+            return;
+        }
+        let col_idx = x as usize + z as usize * self.size_x;
+        if col_idx >= self.column_index.len() {
+            return;
+        }
+        for &(y, slot) in &self.column_index[col_idx] {
+            let coord = VoxelCoord::new(x, y as i32, z);
+            let dist = pos.manhattan_distance(coord);
+            let dominated = best.is_some_and(|(best_d, _)| dist >= best_d);
+            if dominated {
+                continue;
+            }
+            if let Some(node) = &self.nodes[slot as usize] {
+                if filter(node) {
+                    *best = Some((dist, node.id));
+                }
+            }
+        }
     }
 
     /// Return all ground-level node IDs (surface type `ForestFloor`).
@@ -327,7 +499,7 @@ impl NavGraph {
 
         while let Some(node_id) = queue.pop_front() {
             for &edge_idx in self.neighbors(node_id) {
-                let neighbor = self.edges[edge_idx].to;
+                let neighbor = self.edges[edge_idx.0 as usize].to;
                 let slot = neighbor.0 as usize;
                 if !visited[slot] && self.is_node_alive(neighbor) {
                     visited[slot] = true;
@@ -350,21 +522,21 @@ impl NavGraph {
 
     /// O(1) check whether a coordinate has a live nav node.
     pub fn has_node_at(&self, coord: VoxelCoord) -> bool {
-        self.spatial_index.contains_key(&coord)
+        self.spatial_contains(coord)
     }
 
     /// O(1) lookup: return the `NavNodeId` at a coordinate, or `None`.
     pub fn node_at(&self, coord: VoxelCoord) -> Option<NavNodeId> {
-        self.spatial_index.get(&coord).map(|&slot| NavNodeId(slot))
+        self.spatial_get(coord).map(NavNodeId)
     }
 
-    /// Find the edge index from `from` to `to` (linear scan of `from`'s
+    /// Find the edge from `from` to `to` (linear scan of `from`'s
     /// neighbor list). Returns `None` if no such edge exists.
-    pub fn find_edge_to(&self, from: NavNodeId, to: NavNodeId) -> Option<usize> {
+    pub fn find_edge_to(&self, from: NavNodeId, to: NavNodeId) -> Option<NavEdgeId> {
         self.neighbors(from)
             .iter()
             .copied()
-            .find(|&idx| self.edges[idx].to == to)
+            .find(|&idx| self.edges[idx.0 as usize].to == to)
     }
 
     /// Check whether a coordinate is within this graph's world bounds.
@@ -376,6 +548,57 @@ impl NavGraph {
             && (coord.x as usize) < sx
             && (coord.y as usize) < sy
             && (coord.z as usize) < sz
+    }
+
+    // ----- Spatial index helpers (column_index) -----
+
+    /// Look up the node slot at `coord` in the column index.
+    fn spatial_get(&self, coord: VoxelCoord) -> Option<u32> {
+        if self.column_index.is_empty() {
+            return None;
+        }
+        let (sx, _, sz) = self.world_size;
+        if coord.x < 0 || coord.z < 0 || coord.x >= sx as i32 || coord.z >= sz as i32 {
+            return None;
+        }
+        let col_idx = coord.x as usize + coord.z as usize * self.size_x;
+        let y = coord.y as u8;
+        self.column_index
+            .get(col_idx)?
+            .iter()
+            .find(|&&(cy, _)| cy == y)
+            .map(|&(_, slot)| slot)
+    }
+
+    /// Insert a node slot at `coord` in the column index (keeps sorted by y).
+    fn spatial_insert(&mut self, coord: VoxelCoord, slot: u32) {
+        if self.column_index.is_empty() {
+            return;
+        }
+        let col_idx = coord.x as usize + coord.z as usize * self.size_x;
+        let y = coord.y as u8;
+        let col = &mut self.column_index[col_idx];
+        // Insert maintaining sorted order by y.
+        let insert_pos = col.partition_point(|&(cy, _)| cy < y);
+        col.insert(insert_pos, (y, slot));
+    }
+
+    /// Remove the entry at `coord` from the column index.
+    fn spatial_remove(&mut self, coord: VoxelCoord) {
+        if self.column_index.is_empty() {
+            return;
+        }
+        let col_idx = coord.x as usize + coord.z as usize * self.size_x;
+        let y = coord.y as u8;
+        let col = &mut self.column_index[col_idx];
+        if let Some(pos) = col.iter().position(|&(cy, _)| cy == y) {
+            col.remove(pos);
+        }
+    }
+
+    /// Check whether `coord` has an entry in the column index.
+    fn spatial_contains(&self, coord: VoxelCoord) -> bool {
+        self.spatial_get(coord).is_some()
     }
 
     /// Incrementally update the nav graph after a single voxel changed from
@@ -417,7 +640,7 @@ impl NavGraph {
             if !self.in_bounds(pos) {
                 continue;
             }
-            let current_slot = self.spatial_index.get(&pos).copied();
+            let current_slot = self.spatial_get(pos);
             let is_node = current_slot.is_some();
 
             if should_be_node && !is_node {
@@ -429,7 +652,7 @@ impl NavGraph {
                         id,
                         position: pos,
                         surface_type: surface,
-                        edge_indices: Vec::new(),
+                        edge_indices: SmallVec::new(),
                     });
                     free
                 } else {
@@ -439,18 +662,18 @@ impl NavGraph {
                         id,
                         position: pos,
                         surface_type: surface,
-                        edge_indices: Vec::new(),
+                        edge_indices: SmallVec::new(),
                     }));
                     slot
                 };
-                self.spatial_index.insert(pos, slot as u32);
+                self.spatial_insert(pos, slot as u32);
             } else if !should_be_node && is_node {
                 // Remove node.
                 let slot_val = current_slot.unwrap();
                 let slot = slot_val as usize;
                 removed_ids.push(NavNodeId(slot_val));
                 self.nodes[slot] = None;
-                self.spatial_index.remove(&pos);
+                self.spatial_remove(pos);
                 self.free_slots.push(slot);
             } else if should_be_node && is_node {
                 // Update surface type (solid below may have changed).
@@ -468,7 +691,7 @@ impl NavGraph {
         let mut is_dirty = vec![false; self.nodes.len()];
         for &pos in &affected {
             // Add the node at this position (if live).
-            if let Some(&slot) = self.spatial_index.get(&pos) {
+            if let Some(slot) = self.spatial_get(pos) {
                 let s = slot as usize;
                 if !is_dirty[s] {
                     is_dirty[s] = true;
@@ -483,7 +706,7 @@ impl NavGraph {
                             continue;
                         }
                         let np = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
-                        if let Some(&nslot) = self.spatial_index.get(&np) {
+                        if let Some(nslot) = self.spatial_get(np) {
                             let ns = nslot as usize;
                             if ns < is_dirty.len() && !is_dirty[ns] {
                                 is_dirty[ns] = true;
@@ -498,15 +721,15 @@ impl NavGraph {
         // Step 4: Clear all edges touching dirty nodes.
         for &slot in &dirty_set {
             if let Some(node) = &self.nodes[slot] {
-                let edge_indices: Vec<usize> = node.edge_indices.clone();
+                let edge_indices = node.edge_indices.clone();
                 for &eidx in &edge_indices {
-                    let edge = &self.edges[eidx];
+                    let edge = &self.edges[eidx.0 as usize];
                     let other_slot = edge.to.0 as usize;
                     // Remove the reverse edge from the other endpoint.
                     if let Some(other_node) = self.nodes[other_slot].as_mut() {
-                        other_node
-                            .edge_indices
-                            .retain(|&rev_idx| self.edges[rev_idx].to != NavNodeId(slot as u32));
+                        other_node.edge_indices.retain(|rev_idx| {
+                            self.edges[rev_idx.0 as usize].to != NavNodeId(slot as u32)
+                        });
                     }
                 }
                 // Clear this node's edge list.
@@ -533,7 +756,7 @@ impl NavGraph {
                             continue;
                         }
                         let np = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
-                        let nslot = match self.spatial_index.get(&np).copied() {
+                        let nslot = match self.spatial_get(np) {
                             Some(s) => s,
                             None => continue,
                         };
@@ -601,7 +824,7 @@ impl NavGraph {
             if !self.in_bounds(pos) {
                 continue;
             }
-            let current_slot = self.spatial_index.get(&pos).copied();
+            let current_slot = self.spatial_get(pos);
             let is_node = current_slot.is_some();
 
             if should_exist && !is_node {
@@ -612,7 +835,7 @@ impl NavGraph {
                         id,
                         position: pos,
                         surface_type: surface,
-                        edge_indices: Vec::new(),
+                        edge_indices: SmallVec::new(),
                     });
                     free
                 } else {
@@ -622,17 +845,17 @@ impl NavGraph {
                         id,
                         position: pos,
                         surface_type: surface,
-                        edge_indices: Vec::new(),
+                        edge_indices: SmallVec::new(),
                     }));
                     slot
                 };
-                self.spatial_index.insert(pos, slot as u32);
+                self.spatial_insert(pos, slot as u32);
             } else if !should_exist && is_node {
                 let slot_val = current_slot.unwrap();
                 let slot = slot_val as usize;
                 removed_ids.push(NavNodeId(slot_val));
                 self.nodes[slot] = None;
-                self.spatial_index.remove(&pos);
+                self.spatial_remove(pos);
                 self.free_slots.push(slot);
             } else if should_exist && is_node {
                 let surface = derive_surface_type(world, face_data, pos);
@@ -648,7 +871,7 @@ impl NavGraph {
         let mut dirty_set: Vec<usize> = Vec::new();
         let mut is_dirty = vec![false; self.nodes.len()];
         for &pos in &affected {
-            if let Some(&slot) = self.spatial_index.get(&pos) {
+            if let Some(slot) = self.spatial_get(pos) {
                 let s = slot as usize;
                 if !is_dirty[s] {
                     is_dirty[s] = true;
@@ -662,7 +885,7 @@ impl NavGraph {
                             continue;
                         }
                         let np = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
-                        if let Some(&nslot) = self.spatial_index.get(&np) {
+                        if let Some(nslot) = self.spatial_get(np) {
                             let ns = nslot as usize;
                             if ns < is_dirty.len() && !is_dirty[ns] {
                                 is_dirty[ns] = true;
@@ -676,14 +899,14 @@ impl NavGraph {
 
         for &slot in &dirty_set {
             if let Some(node) = &self.nodes[slot] {
-                let edge_indices: Vec<usize> = node.edge_indices.clone();
+                let edge_indices = node.edge_indices.clone();
                 for &eidx in &edge_indices {
-                    let edge = &self.edges[eidx];
+                    let edge = &self.edges[eidx.0 as usize];
                     let other_slot = edge.to.0 as usize;
                     if let Some(other_node) = self.nodes[other_slot].as_mut() {
-                        other_node
-                            .edge_indices
-                            .retain(|&rev_idx| self.edges[rev_idx].to != NavNodeId(slot as u32));
+                        other_node.edge_indices.retain(|rev_idx| {
+                            self.edges[rev_idx.0 as usize].to != NavNodeId(slot as u32)
+                        });
                     }
                 }
                 if let Some(node) = self.nodes[slot].as_mut() {
@@ -705,7 +928,7 @@ impl NavGraph {
                             continue;
                         }
                         let np = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
-                        let nslot = match self.spatial_index.get(&np).copied() {
+                        let nslot = match self.spatial_get(np) {
                             Some(s) => s,
                             None => continue,
                         };
@@ -1011,6 +1234,10 @@ fn derive_edge_type(
 // Graph construction
 // ---------------------------------------------------------------------------
 
+/// Chunk size for parallel layered BFS processing. Each chunk of frontier
+/// nodes is processed by a rayon worker, producing new node coords and edges.
+const BFS_PARALLEL_CHUNK_SIZE: usize = 256;
+
 /// All 26 neighbor offsets in a fixed deterministic order.
 /// Used by the BFS in `build_nav_graph` and related functions.
 #[rustfmt::skip]
@@ -1031,142 +1258,251 @@ const ALL_26_NEIGHBORS: [(i32, i32, i32); 26] = [
 
 /// Build a navigation graph by scanning the voxel world.
 ///
-/// **Algorithm (span-scan + BFS):**
-/// 1. **Span-scan seed extraction:** For each (x, z) column, read RLE spans
-///    via `column_spans()`. Extract seed nav candidates from span boundaries:
-///    - Solid→Air transition: the first air Y (top_y + 1) is a standing
-///      candidate. No horizontal neighbor seeds — the BFS discovers them.
-///    - Non-solid non-air spans (BuildingInterior, ladders): every Y in the
-///      span is a candidate (these spans are typically 1-3 voxels tall).
+/// **Algorithm (parallel span-scan + parallel seed validation + parallel layered BFS):**
 ///
-/// 2. **Filter seeds:** Remove any seed that doesn't pass
-///    `should_be_nav_node()`.
+/// 1. **Parallel seed extraction:** Z-rows of (x, z) columns are processed in
+///    parallel via rayon. Each parallel task scans its columns' RLE spans to
+///    extract seed candidates from span boundaries (solid→air transitions and
+///    non-solid non-air spans). Per-z-row results are concatenated in z-order
+///    and deduplicated, matching the original sequential (z, x) scan order.
 ///
-/// 3. **Insert valid seeds as nodes** in the nav graph.
+/// 2. **Parallel seed validation:** The `should_be_nav_node()` and
+///    `derive_surface_type()` checks for all seed candidates are evaluated in
+///    parallel via indexed `par_iter`, preserving original seed ordering.
 ///
-/// 4. **BFS from seeds:** For each node popped from the queue, check all 26
-///    neighbors. If a neighbor is already in the graph, create an edge if
-///    one doesn't exist. If a neighbor passes `should_be_nav_node`, insert
-///    it as a new node, create an edge, and push it onto the queue.
-///    This discovers all reachable nav nodes and creates all edges in a
-///    single pass.
+/// 3. **Insert valid seeds as nodes** in the nav graph (sequential).
 ///
-/// Node IDs are assigned in BFS discovery order (deterministic from seed
-/// order + FIFO queue + fixed 26-direction order). No sorting step needed.
+/// 4. **Parallel layered BFS from seeds (node discovery only):** The frontier
+///    (initially the seed nodes) is processed in parallel chunks via rayon.
+///    Each chunk reads the graph (read-only) and discovers new nav node
+///    positions among the frontier's 26-neighbors. After each layer, new
+///    node coords are sorted by `VoxelCoord` ordering and deduped for
+///    deterministic ID assignment independent of rayon scheduling, then
+///    inserted sequentially. The new nodes become the next layer's frontier.
+///
+/// 5. **Sequential edge creation:** After all nodes are discovered, edges are
+///    created by scanning each node (in ID order) and checking its 26
+///    neighbors. Edges are created from the lower-slot node to avoid
+///    duplicates. This produces deterministic edge_indices ordering for each
+///    node, matching the behavior of a sequential BFS.
 ///
 /// This is O(number_of_spans + BFS_frontier) instead of O(world_volume).
 /// At no point does it iterate through Y ranges of solid material.
 pub fn build_nav_graph(world: &VoxelWorld, face_data: &BTreeMap<VoxelCoord, FaceData>) -> NavGraph {
-    let mut graph = NavGraph::new();
-
     let sx = world.size_x as usize;
     let sy = world.size_y as usize;
     let sz = world.size_z as usize;
 
     if sx == 0 || sy == 0 || sz == 0 {
-        return graph;
+        return NavGraph::new();
     }
 
-    graph.world_size = (sx, sy, sz);
+    let t_start = std::time::Instant::now();
 
-    // --- Step 1: Span-scan to extract seed candidates ---
-    // For each (x, z) column (in z, x order for determinism), examine span
-    // boundaries. Where an air span starts after a solid span, top_y + 1 is
-    // a seed. BuildingInterior and ladder spans emit every voxel.
-    // No horizontal neighbor seeds — the BFS discovers those.
-    let mut seed_set: LookupMap<VoxelCoord, ()> = LookupMap::new();
-    let mut seed_list: Vec<VoxelCoord> = Vec::new();
+    let mut graph = NavGraph::with_world_size(sx, sy, sz);
 
-    let add_seed = |coord: VoxelCoord,
-                    seed_set: &mut LookupMap<VoxelCoord, ()>,
-                    seed_list: &mut Vec<VoxelCoord>| {
-        if !seed_set.contains_key(&coord) {
-            seed_set.insert(coord, ());
-            seed_list.push(coord);
-        }
-    };
+    // --- Phase 1: Parallel seed scan ---
+    // Each z-row is processed independently. Results are collected per-z-row
+    // then concatenated in z-order, matching the original sequential scan.
+    // Dedup happens per-column (sort+dedup on the tiny per-column vec) since
+    // different columns never produce the same coordinate.
+    let per_z_seeds: Vec<Vec<VoxelCoord>> = (0..sz)
+        .into_par_iter()
+        .map(|z| {
+            let mut seeds = Vec::with_capacity(sx * 4);
+            let mut col_seeds: SmallVec<[VoxelCoord; 4]> = SmallVec::new();
+            for x in 0..sx {
+                let spans: Vec<(VoxelType, u8, u8)> =
+                    world.column_spans(x as u32, z as u32).collect();
 
-    for z in 0..sz {
-        for x in 0..sx {
-            let spans: Vec<(VoxelType, u8, u8)> = world.column_spans(x as u32, z as u32).collect();
-
-            for (span_idx, &(vt, y_start, y_end)) in spans.iter().enumerate() {
-                if vt.is_solid() {
-                    // The air voxel just above this solid span is a standing
-                    // candidate (in the same column).
-                    let above_y = y_end as i32 + 1;
-                    if above_y >= 1 && above_y < sy as i32 {
-                        add_seed(
-                            VoxelCoord::new(x as i32, above_y, z as i32),
-                            &mut seed_set,
-                            &mut seed_list,
-                        );
-                    }
-                    // The air voxel just below this solid span is face-adjacent
-                    // to solid above.
-                    if span_idx > 0 {
-                        let below_y = y_start as i32 - 1;
-                        if below_y >= 1 {
-                            add_seed(
-                                VoxelCoord::new(x as i32, below_y, z as i32),
-                                &mut seed_set,
-                                &mut seed_list,
-                            );
+                for (span_idx, &(vt, y_start, y_end)) in spans.iter().enumerate() {
+                    if vt.is_solid() {
+                        let above_y = y_end as i32 + 1;
+                        if above_y >= 1 && above_y < sy as i32 {
+                            col_seeds.push(VoxelCoord::new(x as i32, above_y, z as i32));
                         }
-                    }
-                } else if vt == VoxelType::BuildingInterior || vt.is_ladder() {
-                    // Non-solid non-air: every voxel in the span is a candidate.
-                    // These spans are typically 1-3 voxels tall.
-                    for y in y_start..=y_end {
-                        if y >= 1 {
-                            add_seed(
-                                VoxelCoord::new(x as i32, y as i32, z as i32),
-                                &mut seed_set,
-                                &mut seed_list,
-                            );
+                        if span_idx > 0 {
+                            let below_y = y_start as i32 - 1;
+                            if below_y >= 1 {
+                                col_seeds.push(VoxelCoord::new(x as i32, below_y, z as i32));
+                            }
+                        }
+                    } else if vt == VoxelType::BuildingInterior || vt.is_ladder() {
+                        for y in y_start..=y_end {
+                            if y >= 1 {
+                                col_seeds.push(VoxelCoord::new(x as i32, y as i32, z as i32));
+                            }
                         }
                     }
                 }
-                // Air spans: skip entirely (no seeds from pure air).
+                // Per-column sort+dedup: only y varies, typically 1-3 entries.
+                col_seeds.sort_unstable();
+                col_seeds.dedup();
+                seeds.extend_from_slice(&col_seeds);
+                col_seeds.clear();
             }
-        }
+            seeds
+        })
+        .collect();
+
+    let t_seed_scan = t_start.elapsed();
+    eprintln!("[nav] seed scan+dedup (par):    {:>8.2?}", t_seed_scan);
+
+    // Concatenate in z-order — no further dedup needed since columns are disjoint.
+    let mut seed_list: Vec<VoxelCoord> = Vec::new();
+    for z_seeds in per_z_seeds {
+        seed_list.extend(z_seeds);
     }
 
-    // --- Step 2: Filter seeds through should_be_nav_node ---
-    // --- Step 3: Insert valid seeds as nodes in the graph ---
-    let mut bfs_queue: std::collections::VecDeque<u32> = std::collections::VecDeque::new();
+    let t_seed_concat = t_start.elapsed();
+    eprintln!("[nav] seed concat:              {:>8.2?} ({} seeds)", t_seed_concat, seed_list.len());
 
-    for &coord in &seed_list {
-        if !should_be_nav_node(world, face_data, coord) {
+    // --- Phase 2: Parallel seed validation ---
+    // Evaluate should_be_nav_node and derive_surface_type in parallel.
+    // Indexed par_iter preserves original seed_list ordering.
+    let validated: Vec<Option<VoxelType>> = seed_list
+        .par_iter()
+        .map(|&coord| {
+            if should_be_nav_node(world, face_data, coord) {
+                Some(derive_surface_type(world, face_data, coord))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let t_seed_validate = t_start.elapsed();
+    eprintln!("[nav] seed validate (parallel): {:>8.2?}", t_seed_validate);
+
+    // --- Step 3: Insert valid seeds as nodes (sequential, original order) ---
+    let mut current_layer_coords: Vec<VoxelCoord> = Vec::new();
+
+    for (i, &coord) in seed_list.iter().enumerate() {
+        let surface = match validated[i] {
+            Some(s) => s,
+            None => continue,
+        };
+        if graph.spatial_contains(coord) {
             continue;
         }
-        // Already inserted by a previous seed (dedup).
-        if graph.spatial_index.contains_key(&coord) {
-            continue;
-        }
-        let surface = derive_surface_type(world, face_data, coord);
         let node_id = graph.add_node(coord, surface);
-        graph.spatial_index.insert(coord, node_id.0);
-        bfs_queue.push_back(node_id.0);
+        graph.spatial_insert(coord, node_id.0);
+        current_layer_coords.push(coord);
     }
 
-    // --- Step 4: BFS — discover neighbors, create nodes AND edges ---
-    // For each node popped, check all 26 neighbors:
-    // - If neighbor is already in the graph: create an edge if one doesn't
-    //   already exist between current and neighbor.
-    // - If neighbor is NOT in the graph: check should_be_nav_node. If valid,
-    //   insert as a new node, create an edge, push onto the BFS queue.
-    // - If neighbor fails should_be_nav_node: skip.
-    while let Some(slot) = bfs_queue.pop_front() {
-        let (pos, from_surface) = {
-            let node = graph.nodes[slot as usize].as_ref().unwrap();
-            (node.position, node.surface_type)
+    let t_seed_insert = t_start.elapsed();
+    eprintln!("[nav] seed insert:              {:>8.2?} ({} seed nodes)", t_seed_insert, current_layer_coords.len());
+
+    // --- Step 4: Parallel layered BFS (node discovery only) ---
+    // Each layer discovers new nav node positions in parallel. No edges are
+    // created during this phase — only new node coords are collected, sorted,
+    // deduped, and inserted. The new nodes become the next layer's frontier.
+    let mut bfs_layer = 0u32;
+    while !current_layer_coords.is_empty() {
+        let t_layer_start = std::time::Instant::now();
+        let chunk_results: Vec<Vec<VoxelCoord>> = current_layer_coords
+            .par_chunks(BFS_PARALLEL_CHUNK_SIZE)
+            .map(|chunk| {
+                let mut new_node_coords: Vec<VoxelCoord> = Vec::new();
+
+                for &coord in chunk {
+                    let slot = match graph.spatial_get(coord) {
+                        Some(s) => s,
+                        None => continue,
+                    };
+                    let pos = graph.nodes[slot as usize].as_ref().unwrap().position;
+
+                    for &(dx, dy, dz) in &ALL_26_NEIGHBORS {
+                        let np = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
+
+                        if np.x < 0
+                            || np.y < 1
+                            || np.z < 0
+                            || np.x >= sx as i32
+                            || np.y >= sy as i32
+                            || np.z >= sz as i32
+                        {
+                            continue;
+                        }
+
+                        if graph.spatial_contains(np) {
+                            continue;
+                        }
+
+                        if should_be_nav_node(world, face_data, np) {
+                            new_node_coords.push(np);
+                        }
+                    }
+                }
+
+                new_node_coords
+            })
+            .collect();
+
+        let t_par_done = std::time::Instant::now();
+
+        // Sequential: collect, sort, dedup, insert new nodes.
+        let mut all_new_coords: Vec<VoxelCoord> = Vec::new();
+        for coords in chunk_results {
+            all_new_coords.extend(coords);
+        }
+        let pre_dedup = all_new_coords.len();
+        let t_collect_done = std::time::Instant::now();
+
+        all_new_coords.sort_unstable();
+        all_new_coords.dedup();
+        let post_dedup = all_new_coords.len();
+        let t_sort_done = std::time::Instant::now();
+
+        let mut next_layer: Vec<VoxelCoord> = Vec::new();
+        for coord in all_new_coords {
+            if graph.spatial_contains(coord) {
+                continue;
+            }
+            let surface = derive_surface_type(world, face_data, coord);
+            let node_id = graph.add_node(coord, surface);
+            graph.spatial_insert(coord, node_id.0);
+            next_layer.push(coord);
+        }
+        let t_insert_done = std::time::Instant::now();
+
+        eprintln!(
+            "[nav]   BFS L{}: frontier={}, raw={}, deduped={}, inserted={} | par={:.2?} collect={:.2?} sort={:.2?} insert={:.2?}",
+            bfs_layer,
+            current_layer_coords.len(),
+            pre_dedup,
+            post_dedup,
+            next_layer.len(),
+            t_par_done - t_layer_start,
+            t_collect_done - t_par_done,
+            t_sort_done - t_collect_done,
+            t_insert_done - t_sort_done,
+        );
+        bfs_layer += 1;
+
+        current_layer_coords = next_layer;
+    }
+
+    let t_bfs_done = t_start.elapsed();
+    eprintln!("[nav] BFS total:                {:>8.2?} ({} total nodes, {} layers)", t_bfs_done, graph.nodes.len(), bfs_layer);
+
+    // --- Step 5: Edge creation ---
+    // After all nodes are discovered, create edges by scanning each node's
+    // 26 neighbors. Each node processes its neighbors in ALL_26_NEIGHBORS
+    // order, and edges are created from the lower-slot node to avoid
+    // duplicates. This produces deterministic edge_indices ordering for
+    // each node: forward edges appear in ALL_26_NEIGHBORS order from the
+    // lower-ID node's perspective.
+    let node_count = graph.nodes.len();
+    for slot in 0..node_count {
+        let (pos, from_surface) = match &graph.nodes[slot] {
+            Some(n) => (n.position, n.surface_type),
+            None => continue,
         };
 
         for &(dx, dy, dz) in &ALL_26_NEIGHBORS {
             let np = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
 
-            // Bounds check.
             if np.x < 0
                 || np.y < 1
                 || np.z < 0
@@ -1177,41 +1513,49 @@ pub fn build_nav_graph(world: &VoxelWorld, face_data: &BTreeMap<VoxelCoord, Face
                 continue;
             }
 
-            // Check if face data blocks this edge.
             if is_edge_blocked_by_faces(face_data, pos, np) {
                 continue;
             }
 
-            if let Some(&neighbor_slot) = graph.spatial_index.get(&np) {
-                // Neighbor already in graph — create edge if not already connected.
-                let already_connected = graph.nodes[slot as usize]
-                    .as_ref()
-                    .unwrap()
-                    .edge_indices
-                    .iter()
-                    .any(|&eidx| graph.edges[eidx].to == NavNodeId(neighbor_slot));
-                if !already_connected {
-                    let to_node = graph.nodes[neighbor_slot as usize].as_ref().unwrap();
-                    let edge_type = derive_edge_type(from_surface, to_node.surface_type, pos, np);
-                    let dist = scaled_distance(dx, dy, dz);
-                    graph.add_edge(NavNodeId(slot), NavNodeId(neighbor_slot), edge_type, dist);
-                }
-            } else {
-                // Neighbor not in graph — check if it should be a nav node.
-                if should_be_nav_node(world, face_data, np) {
-                    let surface = derive_surface_type(world, face_data, np);
-                    let new_id = graph.add_node(np, surface);
-                    graph.spatial_index.insert(np, new_id.0);
+            let neighbor_slot = match graph.spatial_get(np) {
+                Some(s) => s,
+                None => continue,
+            };
 
-                    let edge_type = derive_edge_type(from_surface, surface, pos, np);
-                    let dist = scaled_distance(dx, dy, dz);
-                    graph.add_edge(NavNodeId(slot), new_id, edge_type, dist);
-
-                    bfs_queue.push_back(new_id.0);
-                }
+            // Only create edge from smaller slot to avoid duplicates.
+            if (neighbor_slot as usize) < slot {
+                continue;
             }
+
+            let to_node = graph.nodes[neighbor_slot as usize].as_ref().unwrap();
+            let edge_type = derive_edge_type(from_surface, to_node.surface_type, pos, np);
+            let dist = scaled_distance(dx, dy, dz);
+            graph.add_edge(
+                NavNodeId(slot as u32),
+                NavNodeId(neighbor_slot),
+                edge_type,
+                dist,
+            );
         }
     }
+
+    let t_edges_done = t_start.elapsed();
+    eprintln!("[nav] edge creation:            {:>8.2?} ({} edges)", t_edges_done, graph.edges.len());
+
+    // Edge count distribution per node.
+    {
+        let mut counts: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+        for node in graph.nodes.iter().flatten() {
+            *counts.entry(node.edge_indices.len()).or_insert(0) += 1;
+        }
+        eprint!("[nav] edge_indices distribution:");
+        for (edges, nodes) in &counts {
+            eprint!("  {}:{}", edges, nodes);
+        }
+        eprintln!();
+    }
+
+    eprintln!("[nav] TOTAL build_nav_graph:    {:>8.2?}", t_edges_done);
 
     graph
 }
@@ -1377,37 +1721,45 @@ const LARGE_NAV_8_NEIGHBORS: [(i32, i32); 8] = [
 /// clearance above the highest ground point. The node y is `max_surface + 1`
 /// (the creature stands at its tallest point, straddling minor unevenness).
 ///
-/// **Algorithm (seed + BFS):**
-/// 1. Precompute per-column top-solid-Y from span data.
-/// 2. Scan all anchor positions to find valid seeds with proper surface
-///    heights and air clearance.
-/// 3. Insert valid seeds as nodes in the graph.
-/// 4. BFS from seeds: check 8 horizontal neighbors, insert new valid nodes,
-///    create edges. No separate edge pass needed.
+/// **Algorithm (parallel column precompute + parallel seed scan + parallel layered BFS):**
+/// 1. Parallel column height precomputation: each (x, z) column's top-solid-Y
+///    is computed in parallel via rayon.
+/// 2. Parallel seed scan: anchor validation across z-rows runs in parallel.
+///    Results are collected in z-order for deterministic node ID assignment.
+/// 3. Insert valid seeds as nodes in the graph (sequential).
+/// 4. Parallel layered BFS from seeds (node discovery only): frontier nodes
+///    are processed in parallel chunks. Each chunk discovers new valid anchor
+///    positions. New nodes are sorted/deduped by (x,z) anchor coord for
+///    deterministic ID assignment, then inserted sequentially.
+/// 5. Sequential edge creation: after all nodes are discovered, edges are
+///    created by scanning each node's 8 neighbors with smaller-slot-first
+///    dedup.
 ///
 /// All edges are `ForestFloor` type since large creatures are ground-only.
 /// The resulting graph uses the same `NavGraph` struct as the standard graph,
 /// so all existing pathfinding code works unchanged.
 pub fn build_large_nav_graph(world: &VoxelWorld) -> NavGraph {
-    let mut graph = NavGraph::new();
-
     let sx = world.size_x as usize;
     let sy = world.size_y as usize;
     let sz = world.size_z as usize;
 
     if sx < 2 || sz < 2 || sy < 3 {
-        return graph;
+        return NavGraph::new();
     }
 
-    graph.world_size = (sx, sy, sz);
+    let t_start = std::time::Instant::now();
 
-    // --- Precompute per-column top-solid-Y from RLE spans ---
-    let mut col_top_solid: Vec<Option<u8>> = vec![None; sx * sz];
-    for z in 0..sz {
-        for x in 0..sx {
-            col_top_solid[x + z * sx] = top_solid_y_from_spans(world, x as u32, z as u32);
-        }
-    }
+    let mut graph = NavGraph::with_world_size(sx, sy, sz);
+
+    // --- Step 1: Parallel per-column top-solid-Y precomputation ---
+    let col_top_solid: Vec<Option<u8>> = (0..sz)
+        .into_par_iter()
+        .flat_map(|z| {
+            (0..sx)
+                .map(|x| top_solid_y_from_spans(world, x as u32, z as u32))
+                .collect::<Vec<_>>()
+        })
+        .collect();
 
     // --- Helper: compute large_node_surface_y using precomputed heights ---
     let surface_y_from_precomputed =
@@ -1456,32 +1808,129 @@ pub fn build_large_nav_graph(world: &VoxelWorld) -> NavGraph {
         Some(air_y)
     };
 
-    // --- Step 1-3: Find valid seed anchors, insert as nodes ---
-    // Use a LookupMap keyed by (x, z) anchor to track which anchors are in
-    // the graph. We can't use spatial_index directly because the y varies.
+    let t_col_precompute = t_start.elapsed();
+    eprintln!("[large] col precompute (par):   {:>8.2?}", t_col_precompute);
+
+    // --- Step 2: Parallel seed scan ---
+    // Each z-row is processed independently. Collect per-z-row results
+    // preserving z-order (matching the original sequential scan).
+    let max_z = sz.saturating_sub(1);
+    let max_x = sx.saturating_sub(1);
+    let per_z_anchors: Vec<Vec<(i32, i32, i32)>> = (0..max_z)
+        .into_par_iter()
+        .map(|z| {
+            let mut seeds = Vec::new();
+            for x in 0..max_x {
+                if let Some(air_y) = is_anchor_valid(x, z, &col_top_solid) {
+                    seeds.push((x as i32, z as i32, air_y));
+                }
+            }
+            seeds
+        })
+        .collect();
+
+    let t_seed_scan = t_start.elapsed();
+    eprintln!("[large] seed scan (parallel):   {:>8.2?}", t_seed_scan);
+
+    // --- Step 3: Insert valid seeds as nodes (sequential, z-order) ---
+    // Track which (x, z) anchors are in the graph for the parallel BFS.
+    // Uses a LookupMap since y varies per anchor.
     let mut anchor_in_graph: LookupMap<(i32, i32), ()> = LookupMap::new();
-    let mut bfs_queue: std::collections::VecDeque<u32> = std::collections::VecDeque::new();
+    let mut current_layer_coords: Vec<VoxelCoord> = Vec::new();
 
-    for z in 0..sz.saturating_sub(1) {
-        for x in 0..sx.saturating_sub(1) {
-            let air_y = match is_anchor_valid(x, z, &col_top_solid) {
-                Some(y) => y,
-                None => continue,
-            };
-
-            let coord = VoxelCoord::new(x as i32, air_y, z as i32);
+    for z_anchors in per_z_anchors {
+        for (ax, az, air_y) in z_anchors {
+            let coord = VoxelCoord::new(ax, air_y, az);
             let node_id = graph.add_node(coord, VoxelType::ForestFloor);
-            graph.spatial_index.insert(coord, node_id.0);
-            anchor_in_graph.insert((x as i32, z as i32), ());
-            bfs_queue.push_back(node_id.0);
+            graph.spatial_insert(coord, node_id.0);
+            anchor_in_graph.insert((ax, az), ());
+            current_layer_coords.push(coord);
         }
     }
 
-    // --- Step 4: BFS — discover neighbors, create edges (and new nodes) ---
-    while let Some(slot) = bfs_queue.pop_front() {
-        let (ax, air_y, az) = {
-            let node = graph.nodes[slot as usize].as_ref().unwrap();
-            (node.position.x, node.position.y, node.position.z)
+    let t_seed_insert = t_start.elapsed();
+    eprintln!("[large] seed insert:            {:>8.2?} ({} seed nodes)", t_seed_insert, current_layer_coords.len());
+
+    // --- Step 4: Parallel layered BFS (node discovery only) ---
+    // Each layer discovers new valid anchor positions in parallel. No edges
+    // are created during this phase. New anchors are sorted/deduped and
+    // inserted sequentially.
+    let mut bfs_layer = 0u32;
+    while !current_layer_coords.is_empty() {
+        let chunk_results: Vec<Vec<(i32, i32, i32)>> = current_layer_coords
+            .par_chunks(BFS_PARALLEL_CHUNK_SIZE)
+            .map(|chunk| {
+                let mut new_anchors: Vec<(i32, i32, i32)> = Vec::new();
+
+                for &coord in chunk {
+                    let slot = match graph.spatial_get(coord) {
+                        Some(s) => s,
+                        None => continue,
+                    };
+                    let node = graph.nodes[slot as usize].as_ref().unwrap();
+                    let ax = node.position.x;
+                    let az = node.position.z;
+
+                    for &(dx, dz) in &LARGE_NAV_8_NEIGHBORS {
+                        let nx = ax + dx;
+                        let nz = az + dz;
+                        if nx < 0 || nz < 0 {
+                            continue;
+                        }
+                        let (nxu, nzu) = (nx as usize, nz as usize);
+                        if nxu + 1 >= sx || nzu + 1 >= sz {
+                            continue;
+                        }
+
+                        if anchor_in_graph.contains_key(&(nx, nz)) {
+                            continue;
+                        }
+
+                        if let Some(n_air_y) = is_anchor_valid(nxu, nzu, &col_top_solid) {
+                            new_anchors.push((nx, nz, n_air_y));
+                        }
+                    }
+                }
+
+                new_anchors
+            })
+            .collect();
+
+        // Sequential: collect, sort, dedup, insert new nodes.
+        let mut all_new_anchors: Vec<(i32, i32, i32)> = Vec::new();
+        for anchors in chunk_results {
+            all_new_anchors.extend(anchors);
+        }
+        all_new_anchors.sort_unstable();
+        all_new_anchors.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+
+        let mut next_layer: Vec<VoxelCoord> = Vec::new();
+        for (nx, nz, n_air_y) in all_new_anchors {
+            if anchor_in_graph.contains_key(&(nx, nz)) {
+                continue;
+            }
+            let coord = VoxelCoord::new(nx, n_air_y, nz);
+            let node_id = graph.add_node(coord, VoxelType::ForestFloor);
+            graph.spatial_insert(coord, node_id.0);
+            anchor_in_graph.insert((nx, nz), ());
+            next_layer.push(coord);
+        }
+
+        bfs_layer += 1;
+        current_layer_coords = next_layer;
+    }
+
+    let t_bfs_done = t_start.elapsed();
+    eprintln!("[large] BFS total:              {:>8.2?} ({} total nodes, {} layers)", t_bfs_done, graph.nodes.len(), bfs_layer);
+
+    // --- Step 5: Edge creation ---
+    // After all nodes are discovered, create edges by scanning each node's
+    // 8 horizontal neighbors. Using smaller-slot-first avoids duplicates.
+    let node_count = graph.nodes.len();
+    for slot in 0..node_count {
+        let (ax, az, air_y) = match &graph.nodes[slot] {
+            Some(n) => (n.position.x, n.position.z, n.position.y),
+            None => continue,
         };
 
         for &(dx, dz) in &LARGE_NAV_8_NEIGHBORS {
@@ -1495,66 +1944,52 @@ pub fn build_large_nav_graph(world: &VoxelWorld) -> NavGraph {
                 continue;
             }
 
-            // Check if neighbor anchor is already in the graph.
-            if anchor_in_graph.contains_key(&(nx, nz)) {
-                // Already in graph — find its node and create edge if needed.
-                let n_air_y = match large_node_surface_y(world, nx, nz) {
-                    Some(y) => y,
-                    None => continue,
-                };
-                let n_coord = VoxelCoord::new(nx, n_air_y, nz);
-                let neighbor_slot = match graph.spatial_index.get(&n_coord).copied() {
-                    Some(s) => s,
-                    None => continue,
-                };
+            let n_air_y = match large_node_surface_y(world, nx, nz) {
+                Some(y) => y,
+                None => continue,
+            };
+            let n_coord = VoxelCoord::new(nx, n_air_y, nz);
+            let neighbor_slot = match graph.spatial_get(n_coord) {
+                Some(s) => s,
+                None => continue,
+            };
 
-                // Check if already connected.
-                let already_connected = graph.nodes[slot as usize]
-                    .as_ref()
-                    .unwrap()
-                    .edge_indices
-                    .iter()
-                    .any(|&eidx| graph.edges[eidx].to == NavNodeId(neighbor_slot));
-                if already_connected {
-                    continue;
-                }
-
-                if !is_large_edge_valid(world, (ax, az), (nx, nz)) {
-                    continue;
-                }
-
-                let dy = n_air_y - air_y;
-                let dist = scaled_distance(dx, dy, dz);
-                graph.add_edge(
-                    NavNodeId(slot),
-                    NavNodeId(neighbor_slot),
-                    EdgeType::ForestFloor,
-                    dist,
-                );
-            } else {
-                // Not in graph — check if it's a valid anchor.
-                let n_air_y = match is_anchor_valid(nxu, nzu, &col_top_solid) {
-                    Some(y) => y,
-                    None => continue,
-                };
-
-                if !is_large_edge_valid(world, (ax, az), (nx, nz)) {
-                    continue;
-                }
-
-                let n_coord = VoxelCoord::new(nx, n_air_y, nz);
-                let new_id = graph.add_node(n_coord, VoxelType::ForestFloor);
-                graph.spatial_index.insert(n_coord, new_id.0);
-                anchor_in_graph.insert((nx, nz), ());
-
-                let dy = n_air_y - air_y;
-                let dist = scaled_distance(dx, dy, dz);
-                graph.add_edge(NavNodeId(slot), new_id, EdgeType::ForestFloor, dist);
-
-                bfs_queue.push_back(new_id.0);
+            // Only create edge from smaller slot to avoid duplicates.
+            if (neighbor_slot as usize) < slot {
+                continue;
             }
+
+            if !is_large_edge_valid(world, (ax, az), (nx, nz)) {
+                continue;
+            }
+
+            let dy = n_air_y - air_y;
+            let dist = scaled_distance(dx, dy, dz);
+            graph.add_edge(
+                NavNodeId(slot as u32),
+                NavNodeId(neighbor_slot),
+                EdgeType::ForestFloor,
+                dist,
+            );
         }
     }
+
+    let t_edges_done = t_start.elapsed();
+    eprintln!("[large] edge creation:          {:>8.2?} ({} edges)", t_edges_done, graph.edges.len());
+
+    {
+        let mut counts: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+        for node in graph.nodes.iter().flatten() {
+            *counts.entry(node.edge_indices.len()).or_insert(0) += 1;
+        }
+        eprint!("[large] edge_indices distribution:");
+        for (edges, nodes) in &counts {
+            eprint!("  {}:{}", edges, nodes);
+        }
+        eprintln!();
+    }
+
+    eprintln!("[large] TOTAL build_large:      {:>8.2?}", t_edges_done);
 
     graph
 }
@@ -1595,14 +2030,18 @@ pub fn update_large_after_voxel_solidified(
     // Helper: find the existing large node at anchor (ax, az) by scanning Y
     // values. Large nodes have a unique (x, z) anchor — only one Y is valid.
     let find_existing_node = |graph: &NavGraph, ax: i32, az: i32| -> Option<(VoxelCoord, u32)> {
-        let sy = graph.world_size.1;
-        for y in 0..sy {
-            let coord = VoxelCoord::new(ax, y as i32, az);
-            if let Some(&slot) = graph.spatial_index.get(&coord) {
-                return Some((coord, slot));
-            }
+        // Use column_index directly: look up the (x, z) column for any y.
+        let (sx, _, sz) = graph.world_size;
+        if ax < 0 || az < 0 || ax >= sx as i32 || az >= sz as i32 {
+            return None;
         }
-        None
+        let col_idx = ax as usize + az as usize * graph.size_x;
+        if col_idx >= graph.column_index.len() {
+            return None;
+        }
+        graph.column_index[col_idx]
+            .first()
+            .map(|&(y, slot)| (VoxelCoord::new(ax, y as i32, az), slot))
     };
 
     // Helper: allocate a node slot (reusing free slots or appending).
@@ -1613,7 +2052,7 @@ pub fn update_large_after_voxel_solidified(
                 id,
                 position: coord,
                 surface_type: VoxelType::ForestFloor,
-                edge_indices: Vec::new(),
+                edge_indices: SmallVec::new(),
             });
             free
         } else {
@@ -1623,11 +2062,11 @@ pub fn update_large_after_voxel_solidified(
                 id,
                 position: coord,
                 surface_type: VoxelType::ForestFloor,
-                edge_indices: Vec::new(),
+                edge_indices: SmallVec::new(),
             }));
             slot
         };
-        graph.spatial_index.insert(coord, slot as u32);
+        graph.spatial_insert(coord, slot as u32);
         slot as u32
     };
 
@@ -1641,7 +2080,7 @@ pub fn update_large_after_voxel_solidified(
             let (existing_coord, slot_val) = existing.unwrap();
             removed_ids.push(NavNodeId(slot_val));
             graph.nodes[slot_val as usize] = None;
-            graph.spatial_index.remove(&existing_coord);
+            graph.spatial_remove(existing_coord);
             graph.free_slots.push(slot_val as usize);
         } else if should_exist && is_node {
             // Node exists — check if it needs to move to a different y.
@@ -1651,7 +2090,7 @@ pub fn update_large_after_voxel_solidified(
                 // Remove old node at wrong y.
                 removed_ids.push(NavNodeId(slot_val));
                 graph.nodes[slot_val as usize] = None;
-                graph.spatial_index.remove(&existing_coord);
+                graph.spatial_remove(existing_coord);
                 graph.free_slots.push(slot_val as usize);
                 // Add new node at correct y.
                 let new_coord = VoxelCoord::new(ax, expected_air_y, az);
@@ -1691,14 +2130,14 @@ pub fn update_large_after_voxel_solidified(
     // Step 3: Clear edges touching dirty nodes.
     for &slot in &dirty_set {
         if let Some(node) = &graph.nodes[slot] {
-            let edge_indices: Vec<usize> = node.edge_indices.clone();
+            let edge_indices = node.edge_indices.clone();
             for &eidx in &edge_indices {
-                let edge = &graph.edges[eidx];
+                let edge = &graph.edges[eidx.0 as usize];
                 let other_slot = edge.to.0 as usize;
                 if let Some(other_node) = graph.nodes[other_slot].as_mut() {
-                    other_node
-                        .edge_indices
-                        .retain(|&rev_idx| graph.edges[rev_idx].to != NavNodeId(slot as u32));
+                    other_node.edge_indices.retain(|rev_idx| {
+                        graph.edges[rev_idx.0 as usize].to != NavNodeId(slot as u32)
+                    });
                 }
             }
             if let Some(node) = graph.nodes[slot].as_mut() {
@@ -1954,6 +2393,76 @@ mod tests {
         // Closest overall is the Trunk node, but ground search skips it.
         let nearest = graph.find_nearest_ground_node(VoxelCoord::new(1, 1, 0));
         assert_eq!(nearest, Some(NavNodeId(0)));
+    }
+
+    // --- Spatial index and expanding-box search tests ---
+
+    #[test]
+    fn spatial_roundtrip_insert_get_remove() {
+        let mut graph = NavGraph::with_world_size(16, 16, 16);
+        let c1 = VoxelCoord::new(3, 5, 7);
+        let c2 = VoxelCoord::new(3, 10, 7); // same column, different y
+
+        // Insert two nodes in the same column.
+        graph.spatial_insert(c1, 42);
+        graph.spatial_insert(c2, 99);
+
+        assert_eq!(graph.spatial_get(c1), Some(42));
+        assert_eq!(graph.spatial_get(c2), Some(99));
+        assert!(graph.spatial_contains(c1));
+        assert!(!graph.spatial_contains(VoxelCoord::new(3, 6, 7)));
+
+        // Remove first, second remains.
+        graph.spatial_remove(c1);
+        assert_eq!(graph.spatial_get(c1), None);
+        assert_eq!(graph.spatial_get(c2), Some(99));
+
+        // Remove nonexistent is a no-op.
+        graph.spatial_remove(VoxelCoord::new(0, 0, 0));
+    }
+
+    #[test]
+    fn expanding_box_empty_graph_with_column_index() {
+        let graph = NavGraph::with_world_size(64, 64, 64);
+        assert_eq!(graph.find_nearest_node(VoxelCoord::new(32, 1, 32)), None);
+        assert_eq!(graph.find_nearest_ground_node(VoxelCoord::new(0, 1, 0)), None);
+    }
+
+    #[test]
+    fn expanding_box_finds_node_at_world_boundary() {
+        // Node at the far corner; query at the near corner.
+        let mut graph = NavGraph::with_world_size(32, 32, 32);
+        let far = VoxelCoord::new(31, 1, 31);
+        let node_id = graph.add_node(far, VoxelType::ForestFloor);
+        graph.spatial_insert(far, node_id.0);
+
+        let result = graph.find_nearest_node(VoxelCoord::new(0, 1, 0));
+        assert_eq!(result, Some(node_id));
+    }
+
+    #[test]
+    fn expanding_box_finds_nearest_when_query_near_boundary() {
+        // Regression test for BUG-1: side columns of the perimeter ring
+        // must use unclamped ring z-coords, not clamped z_min/z_max.
+        let mut graph = NavGraph::with_world_size(16, 16, 16);
+
+        // Place a node at (0, 1, 0) — the corner of the world.
+        let corner = VoxelCoord::new(0, 1, 0);
+        let corner_id = graph.add_node(corner, VoxelType::ForestFloor);
+        graph.spatial_insert(corner, corner_id.0);
+
+        // Place a farther node.
+        let far = VoxelCoord::new(5, 1, 5);
+        let far_id = graph.add_node(far, VoxelType::ForestFloor);
+        graph.spatial_insert(far, far_id.0);
+
+        // Query at (1, 1, 0) — corner node is distance 1, far node is distance 9.
+        let result = graph.find_nearest_node(VoxelCoord::new(1, 1, 0));
+        assert_eq!(result, Some(corner_id));
+
+        // Query at (0, 1, 1) — corner node is distance 1.
+        let result = graph.find_nearest_node(VoxelCoord::new(0, 1, 1));
+        assert_eq!(result, Some(corner_id));
     }
 
     // --- Surface type derivation tests ---
@@ -3325,5 +3834,213 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Build a nav graph using purely sequential BFS (for comparison testing).
+    /// Same algorithm as the pre-parallel version: seed scan → insert → BFS.
+    fn build_nav_graph_sequential(
+        world: &VoxelWorld,
+        face_data: &BTreeMap<VoxelCoord, FaceData>,
+    ) -> NavGraph {
+        let sx = world.size_x as usize;
+        let sy = world.size_y as usize;
+        let sz = world.size_z as usize;
+
+        if sx == 0 || sy == 0 || sz == 0 {
+            return NavGraph::new();
+        }
+
+        let mut graph = NavGraph::with_world_size(sx, sy, sz);
+
+        // Seed scan (sequential)
+        let mut seed_set: LookupMap<VoxelCoord, ()> = LookupMap::new();
+        let mut seed_list: Vec<VoxelCoord> = Vec::new();
+
+        for z in 0..sz {
+            for x in 0..sx {
+                let spans: Vec<(VoxelType, u8, u8)> =
+                    world.column_spans(x as u32, z as u32).collect();
+                for (span_idx, &(vt, y_start, y_end)) in spans.iter().enumerate() {
+                    if vt.is_solid() {
+                        let above_y = y_end as i32 + 1;
+                        if above_y >= 1 && above_y < sy as i32 {
+                            let coord = VoxelCoord::new(x as i32, above_y, z as i32);
+                            if !seed_set.contains_key(&coord) {
+                                seed_set.insert(coord, ());
+                                seed_list.push(coord);
+                            }
+                        }
+                        if span_idx > 0 {
+                            let below_y = y_start as i32 - 1;
+                            if below_y >= 1 {
+                                let coord = VoxelCoord::new(x as i32, below_y, z as i32);
+                                if !seed_set.contains_key(&coord) {
+                                    seed_set.insert(coord, ());
+                                    seed_list.push(coord);
+                                }
+                            }
+                        }
+                    } else if vt == VoxelType::BuildingInterior || vt.is_ladder() {
+                        for y in y_start..=y_end {
+                            if y >= 1 {
+                                let coord = VoxelCoord::new(x as i32, y as i32, z as i32);
+                                if !seed_set.contains_key(&coord) {
+                                    seed_set.insert(coord, ());
+                                    seed_list.push(coord);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Insert seeds
+        let mut bfs_queue: std::collections::VecDeque<u32> =
+            std::collections::VecDeque::new();
+        for &coord in &seed_list {
+            if !should_be_nav_node(world, face_data, coord) {
+                continue;
+            }
+            if graph.spatial_contains(coord) {
+                continue;
+            }
+            let surface = derive_surface_type(world, face_data, coord);
+            let node_id = graph.add_node(coord, surface);
+            graph.spatial_insert(coord, node_id.0);
+            bfs_queue.push_back(node_id.0);
+        }
+
+        // Sequential BFS
+        while let Some(slot) = bfs_queue.pop_front() {
+            let (pos, from_surface) = {
+                let node = graph.nodes[slot as usize].as_ref().unwrap();
+                (node.position, node.surface_type)
+            };
+
+            for &(dx, dy, dz) in &ALL_26_NEIGHBORS {
+                let np = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
+                if np.x < 0
+                    || np.y < 1
+                    || np.z < 0
+                    || np.x >= sx as i32
+                    || np.y >= sy as i32
+                    || np.z >= sz as i32
+                {
+                    continue;
+                }
+                if is_edge_blocked_by_faces(face_data, pos, np) {
+                    continue;
+                }
+                if let Some(neighbor_slot) = graph.spatial_get(np) {
+                    let already_connected = graph.nodes[slot as usize]
+                        .as_ref()
+                        .unwrap()
+                        .edge_indices
+                        .iter()
+                        .any(|&eidx| {
+                            graph.edges[eidx.0 as usize].to == NavNodeId(neighbor_slot)
+                        });
+                    if !already_connected {
+                        let to_node =
+                            graph.nodes[neighbor_slot as usize].as_ref().unwrap();
+                        let edge_type =
+                            derive_edge_type(from_surface, to_node.surface_type, pos, np);
+                        let dist = scaled_distance(dx, dy, dz);
+                        graph.add_edge(
+                            NavNodeId(slot),
+                            NavNodeId(neighbor_slot),
+                            edge_type,
+                            dist,
+                        );
+                    }
+                } else if should_be_nav_node(world, face_data, np) {
+                    let surface = derive_surface_type(world, face_data, np);
+                    let new_id = graph.add_node(np, surface);
+                    graph.spatial_insert(np, new_id.0);
+                    let edge_type =
+                        derive_edge_type(from_surface, surface, pos, np);
+                    let dist = scaled_distance(dx, dy, dz);
+                    graph.add_edge(NavNodeId(slot), new_id, edge_type, dist);
+                    bfs_queue.push_back(new_id.0);
+                }
+            }
+        }
+
+        graph
+    }
+
+    #[test]
+    fn parallel_bfs_matches_sequential_edge_set() {
+        let world = test_world();
+        let par_graph = build_nav_graph(&world, &no_faces());
+        let seq_graph = build_nav_graph_sequential(&world, &no_faces());
+
+        assert_eq!(
+            par_graph.node_count(),
+            seq_graph.node_count(),
+            "Node count mismatch: par={}, seq={}",
+            par_graph.node_count(),
+            seq_graph.node_count(),
+        );
+        assert_eq!(
+            par_graph.edge_count(),
+            seq_graph.edge_count(),
+            "Edge count mismatch: par={}, seq={}",
+            par_graph.edge_count(),
+            seq_graph.edge_count(),
+        );
+
+        // Build the set of edges as (pos_a, pos_b) for both graphs
+        // (canonicalized: smaller coord first).
+        let mut par_edges: Vec<(VoxelCoord, VoxelCoord)> = Vec::new();
+        for edge in &par_graph.edges {
+            let from_pos = par_graph.node(edge.from).position;
+            let to_pos = par_graph.node(edge.to).position;
+            let pair = if from_pos < to_pos {
+                (from_pos, to_pos)
+            } else {
+                (to_pos, from_pos)
+            };
+            par_edges.push(pair);
+        }
+        par_edges.sort();
+        par_edges.dedup();
+
+        let mut seq_edges: Vec<(VoxelCoord, VoxelCoord)> = Vec::new();
+        for edge in &seq_graph.edges {
+            let from_pos = seq_graph.node(edge.from).position;
+            let to_pos = seq_graph.node(edge.to).position;
+            let pair = if from_pos < to_pos {
+                (from_pos, to_pos)
+            } else {
+                (to_pos, from_pos)
+            };
+            seq_edges.push(pair);
+        }
+        seq_edges.sort();
+        seq_edges.dedup();
+
+        assert_eq!(
+            par_edges.len(),
+            seq_edges.len(),
+            "Unique edge pair count mismatch: par={}, seq={}",
+            par_edges.len(),
+            seq_edges.len(),
+        );
+
+        // Find any edges in one but not the other.
+        let par_set: std::collections::BTreeSet<_> = par_edges.iter().collect();
+        let seq_set: std::collections::BTreeSet<_> = seq_edges.iter().collect();
+
+        let in_par_not_seq: Vec<_> = par_set.difference(&seq_set).take(5).collect();
+        let in_seq_not_par: Vec<_> = seq_set.difference(&par_set).take(5).collect();
+
+        assert!(
+            in_par_not_seq.is_empty() && in_seq_not_par.is_empty(),
+            "Edge set mismatch!\n  In parallel but not sequential (first 5): {:?}\n  In sequential but not parallel (first 5): {:?}",
+            in_par_not_seq,
+            in_seq_not_par,
+        );
     }
 }

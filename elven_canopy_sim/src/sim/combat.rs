@@ -21,6 +21,7 @@ use crate::pathfinding;
 use crate::preemption;
 use crate::projectile::SubVoxelVec;
 use crate::task;
+use crate::types::NavEdgeId;
 
 impl SimState {
     /// Process an `AttackCreature` command: create an AttackTarget task for
@@ -44,7 +45,10 @@ impl SimState {
             return;
         }
 
-        let target_node = match target.current_node {
+        let target_node = match self
+            .graph_for_species(target.species)
+            .find_nearest_node(target.position)
+        {
             Some(n) => n,
             None => return,
         };
@@ -340,7 +344,7 @@ impl SimState {
             .db
             .creatures
             .get(&creature_id)
-            .and_then(|c| c.current_node)
+            .and_then(|c| self.graph_for_species(c.species).node_at(c.position))
             .unwrap_or(current_node);
 
         if current == dest_nav_node {
@@ -393,14 +397,12 @@ impl SimState {
         let graph = self.graph_for_species(species);
 
         // Check for cached path.
+        let cn = graph.node_at(creature.position);
         let next_step = if let Some(ref path) = creature.path {
             if let Some(&next_pos) = path.remaining_positions.first() {
                 let dest_node = graph.node_at(next_pos);
-                let edge_idx = dest_node.and_then(|dn| {
-                    creature
-                        .current_node
-                        .and_then(|cn| graph.find_edge_to(cn, dn))
-                });
+                let edge_idx =
+                    dest_node.and_then(|dn| cn.and_then(|cn| graph.find_edge_to(cn, dn)));
                 match (edge_idx, dest_node) {
                     (Some(ei), Some(dn)) => Some((ei, dn)),
                     _ => None,
@@ -517,7 +519,6 @@ impl SimState {
             .creatures
             .modify_unchecked(&creature_id, |creature| {
                 creature.position = dest_pos;
-                creature.current_node = Some(dest_node);
                 creature.action_kind = ActionKind::Move;
                 creature.next_available_tick = Some(tick + delay);
                 if let Some(ref mut path) = creature.path
@@ -786,14 +787,12 @@ impl SimState {
         let graph = self.graph_for_species(species);
 
         // Check for cached path.
+        let cn = graph.node_at(creature.position);
         let next_step = if let Some(ref path) = creature.path {
             if let Some(&next_pos) = path.remaining_positions.first() {
                 let dest_node = graph.node_at(next_pos);
-                let edge_idx = dest_node.and_then(|dn| {
-                    creature
-                        .current_node
-                        .and_then(|cn| graph.find_edge_to(cn, dn))
-                });
+                let edge_idx =
+                    dest_node.and_then(|dn| cn.and_then(|cn| graph.find_edge_to(cn, dn)));
                 match (edge_idx, dest_node) {
                     (Some(ei), Some(dn)) => Some((ei, dn)),
                     _ => None,
@@ -937,7 +936,6 @@ impl SimState {
             .creatures
             .modify_unchecked(&creature_id, |creature| {
                 creature.position = dest_pos;
-                creature.current_node = Some(dest_node);
                 creature.action_kind = ActionKind::Move;
                 creature.next_available_tick = Some(tick + delay);
                 if let Some(ref mut path) = creature.path
@@ -2465,7 +2463,7 @@ impl SimState {
         }
 
         // Filter to eligible edges (respecting allowed_edge_types).
-        let eligible_edges: Vec<usize> = if let Some(ref allowed) = species_data.allowed_edge_types
+        let eligible_edges: Vec<NavEdgeId> = if let Some(ref allowed) = species_data.allowed_edge_types
         {
             edge_indices
                 .iter()
@@ -2489,7 +2487,7 @@ impl SimState {
         // blocked, fall back to the full set — a fleeing creature shouldn't
         // freeze in place when completely surrounded.
         let footprint = self.species_table[&species].footprint;
-        let unblocked_edges: Vec<usize> = eligible_edges
+        let unblocked_edges: Vec<NavEdgeId> = eligible_edges
             .iter()
             .copied()
             .filter(|&idx| {
@@ -2808,7 +2806,14 @@ impl SimState {
                 if creature.vital_status != VitalStatus::Alive {
                     continue;
                 }
-                let node = match creature.current_node {
+                // Resolve target's position to a nav node on the attacker's graph
+                // (targets may use a different graph, e.g. 1x1 vs 2x2 footprint).
+                // Use find_nearest_node because the creature's position may not be
+                // exactly on a nav node (e.g. displaced by construction).
+                let node = match self
+                    .graph_for_species(creature.species)
+                    .find_nearest_node(creature.position)
+                {
                     Some(n) => n,
                     None => continue,
                 };
@@ -3295,12 +3300,13 @@ impl SimState {
         &self,
         creature_id: CreatureId,
         target_id: CreatureId,
-    ) -> Option<usize> {
+    ) -> Option<NavEdgeId> {
         use crate::projectile::{SubVoxelCoord, compute_aim_velocity};
 
         let creature = self.db.creatures.get(&creature_id)?;
-        let current_node = creature.current_node?;
         let species = creature.species;
+        let graph = self.graph_for_species(species);
+        let current_node = graph.node_at(creature.position)?;
 
         let target = self.db.creatures.get(&target_id)?;
         if target.vital_status != VitalStatus::Alive {
@@ -3310,7 +3316,6 @@ impl SimState {
         let target_species = target.species;
         let target_footprint = self.species_table[&target_species].footprint;
 
-        let graph = self.graph_for_species(species);
         let node = graph.node(current_node);
         let speed = self.config.arrow_base_speed;
         let gravity = self.config.arrow_gravity;
@@ -3319,8 +3324,8 @@ impl SimState {
         // Higher is better for the first two, lower dist is better.
         // best_clear: best candidate with a clear shot.
         // best_fallback: best candidate without a clear shot but not blocking.
-        let mut best_clear: Option<(usize, bool, i64)> = None; // (edge, non_blocking, dist_sq)
-        let mut best_fallback: Option<(usize, i64)> = None; // (edge, dist_sq)
+        let mut best_clear: Option<(NavEdgeId, bool, i64)> = None; // (edge, non_blocking, dist_sq)
+        let mut best_fallback: Option<(NavEdgeId, i64)> = None; // (edge, dist_sq)
 
         for &edge_idx in &node.edge_indices {
             let edge = graph.edge(edge_idx);

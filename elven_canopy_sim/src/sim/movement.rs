@@ -12,6 +12,7 @@ use crate::event::{ScheduledEventKind, SimEvent};
 use crate::pathfinding;
 use crate::preemption;
 use crate::task;
+use crate::types::NavEdgeId;
 
 impl SimState {
     /// Process a `DirectedGoTo` command: create a GoTo task for a specific
@@ -135,7 +136,8 @@ impl SimState {
                 if c.vital_status != VitalStatus::Alive {
                     return None;
                 }
-                let pos = self.nav_graph.node(c.current_node?).position;
+                let node = self.nav_graph.find_nearest_node(c.position)?;
+                let pos = self.nav_graph.node(node).position;
                 Some((cid, pos))
             })
             .collect();
@@ -206,15 +208,13 @@ impl SimState {
 
         // Check if we already have a path. If so, resolve the next position
         // to a nav node + edge. If not (or path is exhausted), compute a new one.
+        let cn = graph.node_at(creature.position);
         let next_step = if let Some(ref path) = creature.path {
             if let Some(&next_pos) = path.remaining_positions.first() {
                 // Resolve the stored position to a nav node and find the edge.
                 let dest_node = graph.node_at(next_pos);
-                let edge_idx = dest_node.and_then(|dn| {
-                    creature
-                        .current_node
-                        .and_then(|cn| graph.find_edge_to(cn, dn))
-                });
+                let edge_idx =
+                    dest_node.and_then(|dn| cn.and_then(|cn| graph.find_edge_to(cn, dn)));
                 match (edge_idx, dest_node) {
                     (Some(ei), Some(dn)) => Some((ei, dn)),
                     _ => None, // graph changed; repath
@@ -325,7 +325,6 @@ impl SimState {
             .creatures
             .modify_unchecked(&creature_id, |creature| {
                 creature.position = dest_pos;
-                creature.current_node = Some(dest_node);
 
                 // Set action state.
                 creature.action_kind = ActionKind::Move;
@@ -408,7 +407,7 @@ impl SimState {
         &mut self,
         creature_id: CreatureId,
         species: Species,
-        edge_idx: usize,
+        edge_idx: NavEdgeId,
     ) -> bool {
         self.move_one_step_inner(creature_id, species, edge_idx, false)
     }
@@ -418,7 +417,7 @@ impl SimState {
         &mut self,
         creature_id: CreatureId,
         species: Species,
-        edge_idx: usize,
+        edge_idx: NavEdgeId,
         skip_exclusion: bool,
     ) -> bool {
         let species_data = &self.species_table[&species];
@@ -458,7 +457,6 @@ impl SimState {
             .creatures
             .modify_unchecked(&creature_id, |creature| {
                 creature.position = dest_pos;
-                creature.current_node = Some(dest_node);
 
                 // Set action state.
                 creature.action_kind = ActionKind::Move;
@@ -493,7 +491,7 @@ impl SimState {
         species: Species,
     ) {
         // Collect eligible edges before mutably borrowing self (for rng).
-        let eligible_edges: Vec<usize> = {
+        let eligible_edges: Vec<NavEdgeId> = {
             let species_data = &self.species_table[&species];
             let graph = self.graph_for_species(species);
             let edge_indices = graph.neighbors(current_node);
@@ -525,7 +523,7 @@ impl SimState {
 
         // Voxel exclusion: filter out edges leading to hostile-occupied voxels.
         let footprint = self.species_table[&species].footprint;
-        let unblocked_edges: Vec<usize> = {
+        let unblocked_edges: Vec<NavEdgeId> = {
             let graph = self.graph_for_species(species);
             eligible_edges
                 .iter()

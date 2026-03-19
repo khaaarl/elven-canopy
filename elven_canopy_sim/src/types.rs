@@ -553,11 +553,13 @@ impl fmt::Display for FruitSpeciesId {
 // ---------------------------------------------------------------------------
 
 /// Compact identifier for a navigation graph node.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+/// Not serializable — nav node IDs are ephemeral and change when the graph is rebuilt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NavNodeId(pub u32);
 
 /// Compact identifier for a navigation graph edge.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+/// Not serializable — nav edge IDs are ephemeral and change when the graph is rebuilt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NavEdgeId(pub u32);
 
 // ---------------------------------------------------------------------------

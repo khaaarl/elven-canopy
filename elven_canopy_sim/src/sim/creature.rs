@@ -95,7 +95,6 @@ impl SimState {
             position: node_pos,
             name,
             name_meaning,
-            current_node: Some(nearest_node),
             path: None,
             current_task: None,
             food: food_max,

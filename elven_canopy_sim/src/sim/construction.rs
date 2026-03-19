@@ -1535,9 +1535,9 @@ impl SimState {
         false
     }
 
-    /// After a nav graph rebuild, re-resolve every creature's `current_node`
-    /// by finding the nearest node to its position. Clears stored paths since
-    /// NavNodeIds change when the graph is rebuilt.
+    /// After a nav graph rebuild, re-resolve every creature's position
+    /// by finding the nearest node to its current position. Clears stored paths
+    /// since NavNodeIds change when the graph is rebuilt.
     pub(crate) fn resnap_creature_nodes(&mut self) {
         let creature_info: Vec<(CreatureId, Species, VoxelCoord)> = self
             .db
@@ -1551,7 +1551,6 @@ impl SimState {
             let new_node = graph.find_nearest_node(old_pos);
             let new_pos = new_node.map(|nid| graph.node(nid).position);
             let _ = self.db.creatures.modify_unchecked(&cid, |creature| {
-                creature.current_node = new_node;
                 creature.path = None;
                 if let Some(p) = new_pos {
                     creature.position = p;
@@ -1563,29 +1562,36 @@ impl SimState {
         }
     }
 
-    /// Resnap only creatures whose `current_node` was among the removed IDs.
+    /// Resnap only creatures whose position's nav node was among the removed IDs.
     /// Used after incremental nav graph updates where most creatures are
     /// unaffected — much cheaper than resnapping all creatures.
     pub(crate) fn resnap_removed_nodes(&mut self, removed: &[NavNodeId]) {
         if removed.is_empty() {
             return;
         }
-        let to_resnap: Vec<(CreatureId, Species, VoxelCoord)> = self
+        // Collect candidate creatures first, then filter by nav node membership.
+        // We can't call graph_for_species inside the iter_all closure because
+        // it borrows self, so we collect first and filter after.
+        let candidates: Vec<(CreatureId, Species, VoxelCoord)> = self
             .db
             .creatures
             .iter_all()
-            .filter(|c| {
-                c.vital_status == VitalStatus::Alive
-                    && matches!(c.current_node, Some(nid) if removed.contains(&nid))
-            })
+            .filter(|c| c.vital_status == VitalStatus::Alive)
             .map(|c| (c.id, c.species, c.position))
+            .collect();
+        let to_resnap: Vec<(CreatureId, Species, VoxelCoord)> = candidates
+            .into_iter()
+            .filter(|&(_, species, pos)| {
+                self.graph_for_species(species)
+                    .node_at(pos)
+                    .is_none_or(|nid| removed.contains(&nid))
+            })
             .collect();
         for (cid, species, old_pos) in to_resnap {
             let graph = self.graph_for_species(species);
             let new_node = graph.find_nearest_node(old_pos);
             let new_pos = new_node.map(|nid| graph.node(nid).position);
             let _ = self.db.creatures.modify_unchecked(&cid, |creature| {
-                creature.current_node = new_node;
                 creature.path = None;
                 if let Some(p) = new_pos {
                     creature.position = p;

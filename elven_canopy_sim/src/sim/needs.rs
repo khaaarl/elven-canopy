@@ -28,7 +28,9 @@ impl SimState {
         creature_id: CreatureId,
     ) -> Option<(VoxelCoord, NavNodeId)> {
         let creature = self.db.creatures.get(&creature_id)?;
-        let start_node = creature.current_node?;
+        let start_node = self
+            .graph_for_species(creature.species)
+            .node_at(creature.position)?;
         let species_data = &self.species_table[&creature.species];
         let graph = self.graph_for_species(creature.species);
 
@@ -478,7 +480,9 @@ impl SimState {
         creature_id: CreatureId,
     ) -> Option<(VoxelCoord, NavNodeId, StructureId)> {
         let creature = self.db.creatures.get(&creature_id)?;
-        let start_node = creature.current_node?;
+        let start_node = self
+            .graph_for_species(creature.species)
+            .node_at(creature.position)?;
         let species_data = &self.species_table[&creature.species];
         let graph = self.graph_for_species(creature.species);
 

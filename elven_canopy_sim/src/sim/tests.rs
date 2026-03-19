@@ -856,9 +856,10 @@ fn elf_wanders_after_spawn() {
         .iter_all()
         .find(|c| c.species == Species::Elf)
         .unwrap();
-    assert!(elf.current_node.is_some());
+    let elf_nav = sim.nav_graph.node_at(elf.position);
+    assert!(elf_nav.is_some());
     // Verify position matches current node.
-    let node_pos = sim.nav_graph.node(elf.current_node.unwrap()).position;
+    let node_pos = sim.nav_graph.node(elf_nav.unwrap()).position;
     assert_eq!(elf.position, node_pos);
 }
 
@@ -886,7 +887,6 @@ fn determinism_with_elf_after_1000_ticks() {
     for creature_a in sim_a.db.creatures.iter_all() {
         let creature_b = sim_b.db.creatures.get(&creature_a.id).unwrap();
         assert_eq!(creature_a.position, creature_b.position);
-        assert_eq!(creature_a.current_node, creature_b.current_node);
     }
     // PRNG state should be identical.
     assert_eq!(sim_a.rng.next_u64(), sim_b.rng.next_u64());
@@ -924,7 +924,7 @@ fn spawn_capybara_command() {
         .find(|c| c.species == Species::Capybara)
         .unwrap();
     assert_eq!(capybara.position.y, 1);
-    assert!(capybara.current_node.is_some());
+    assert!(sim.nav_graph.node_at(capybara.position).is_some());
 }
 
 #[test]
@@ -952,8 +952,9 @@ fn capybara_wanders_on_ground() {
         .iter_all()
         .find(|c| c.species == Species::Capybara)
         .unwrap();
-    assert!(capybara.current_node.is_some());
-    let node_pos = sim.nav_graph.node(capybara.current_node.unwrap()).position;
+    let capybara_nav = sim.nav_graph.node_at(capybara.position);
+    assert!(capybara_nav.is_some());
+    let node_pos = sim.nav_graph.node(capybara_nav.unwrap()).position;
     assert_eq!(capybara.position, node_pos);
 }
 
@@ -1012,7 +1013,6 @@ fn determinism_with_capybara() {
     for creature_a in sim_a.db.creatures.iter_all() {
         let creature_b = sim_b.db.creatures.get(&creature_a.id).unwrap();
         assert_eq!(creature_a.position, creature_b.position);
-        assert_eq!(creature_a.current_node, creature_b.current_node);
     }
     assert_eq!(sim_a.rng.next_u64(), sim_b.rng.next_u64());
 }
@@ -1038,7 +1038,7 @@ fn creature_wanders_via_activation_chain() {
         .iter_all()
         .find(|c| c.species == Species::Elf)
         .unwrap();
-    let initial_node = elf.current_node.unwrap();
+    let initial_node = sim.nav_graph.node_at(elf.position).unwrap();
     let initial_pos = elf.position;
 
     // Step enough for many activations (each moves 1 edge; ground edges
@@ -1051,7 +1051,7 @@ fn creature_wanders_via_activation_chain() {
         .iter_all()
         .find(|c| c.species == Species::Elf)
         .unwrap();
-    let final_node = elf.current_node.unwrap();
+    let final_node = sim.nav_graph.node_at(elf.position).unwrap();
 
     // After many activations, creature should have moved.
     assert_ne!(
@@ -1093,9 +1093,10 @@ fn wandering_creature_stays_on_nav_graph() {
             .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap();
-        let node = elf
-            .current_node
-            .expect("Elf should always have a current node");
+        let node = sim
+            .nav_graph
+            .node_at(elf.position)
+            .expect("Elf should always have a nav node at its position");
         assert!(
             (node.0 as usize) < sim.nav_graph.node_count(),
             "Node ID {} out of range at tick {}",
@@ -1229,7 +1230,7 @@ fn goto_task_completes_on_arrival() {
     let elf_id = spawn_elf(&mut sim);
 
     // Put the task at the elf's current location for instant completion.
-    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let elf_node = creature_node(&sim, elf_id);
     let task_id = insert_goto_task(&mut sim, elf_node);
 
     // One activation should be enough: elf claims task, is already there, completes.
@@ -1254,7 +1255,7 @@ fn completed_task_creature_resumes_wandering() {
     let elf_id = spawn_elf(&mut sim);
 
     // Put the task at the elf's current location for instant completion.
-    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let elf_node = creature_node(&sim, elf_id);
     let _task_id = insert_goto_task(&mut sim, elf_node);
 
     // Complete the task.
@@ -1987,11 +1988,12 @@ fn elephant_spawns_on_large_graph() {
         .collect();
     assert_eq!(elephants.len(), 1, "Should have spawned one elephant");
 
-    // Its current_node should be in the large nav graph.
+    // Its position should map to a node in the large nav graph.
     let elephant = elephants[0];
-    let node_id = elephant
-        .current_node
-        .expect("Elephant should have a current_node");
+    let node_id = sim
+        .large_nav_graph
+        .node_at(elephant.position)
+        .expect("Elephant should have a nav node in the large graph");
     let node = sim.large_nav_graph.node(node_id);
     assert_eq!(
         node.position, elephant.position,
@@ -2015,9 +2017,10 @@ fn troll_spawns_on_large_graph() {
     assert_eq!(trolls.len(), 1, "Should have spawned one troll");
 
     let troll = trolls[0];
-    let node_id = troll
-        .current_node
-        .expect("Troll should have a current_node");
+    let node_id = sim
+        .large_nav_graph
+        .node_at(troll.position)
+        .expect("Troll should have a nav node in the large graph");
     let node = sim.large_nav_graph.node(node_id);
     assert_eq!(
         node.position, troll.position,
@@ -2894,7 +2897,6 @@ fn make_interp_creature(
         position,
         name: String::new(),
         name_meaning: String::new(),
-        current_node: None,
         path: None,
         current_task: None,
         food: 1000,
@@ -3861,8 +3863,8 @@ fn monkey_can_climb() {
     // Monkey is not ground_only, so it should be able to reach y > 1
     // (trunk/branch surfaces). This verifies the species config allows
     // climbing edges. The monkey may still be at y=1 if the PRNG led it
-    // only to ground neighbors, so we just verify it has a valid node.
-    assert!(monkey.current_node.is_some());
+    // only to ground neighbors, so we just verify it has a valid nav node.
+    assert!(sim.nav_graph.node_at(monkey.position).is_some());
 }
 
 #[test]
@@ -3888,7 +3890,7 @@ fn squirrel_can_climb() {
         .iter_all()
         .find(|c| c.species == Species::Squirrel)
         .unwrap();
-    assert!(squirrel.current_node.is_some());
+    assert!(sim.nav_graph.node_at(squirrel.position).is_some());
 }
 
 #[test]
@@ -3931,8 +3933,10 @@ fn all_small_species_spawn_and_coexist() {
     assert_eq!(sim.db.creatures.len(), 6);
     for creature in sim.db.creatures.iter_all() {
         assert!(
-            creature.current_node.is_some(),
-            "{:?} has no current node",
+            sim.graph_for_species(creature.species)
+                .node_at(creature.position)
+                .is_some(),
+            "{:?} has no nav node at its position",
             creature.species
         );
     }
@@ -4150,7 +4154,6 @@ fn build_displaces_creature_on_occupied_voxel() {
             // Move the elf there.
             let _ = sim.db.creatures.modify_unchecked(&elf_id, |elf| {
                 elf.position = air_coord;
-                elf.current_node = Some(node_id);
             });
         }
     }
@@ -4194,7 +4197,7 @@ fn build_displaces_creature_on_occupied_voxel() {
         "Elf should have been displaced from the now-solid voxel"
     );
     // It should still have a valid nav node.
-    assert!(elf.current_node.is_some());
+    assert!(sim.nav_graph.node_at(elf.position).is_some());
 }
 
 #[test]
@@ -5275,7 +5278,7 @@ fn eat_fruit_task_restores_food_on_arrival() {
         .find(|c| c.species == Species::Elf)
         .unwrap()
         .id;
-    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let elf_node = creature_node(&sim, elf_id);
 
     // Set elf food low.
     let _ = sim
@@ -5634,7 +5637,7 @@ fn eat_bread_restores_food_and_removes_bread() {
         .find(|c| c.species == Species::Elf)
         .unwrap()
         .id;
-    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let elf_node = creature_node(&sim, elf_id);
 
     // Give the elf owned bread.
     sim.inv_add_simple_item(
@@ -5833,7 +5836,7 @@ fn eat_bread_generates_thought() {
         .find(|c| c.species == Species::Elf)
         .unwrap()
         .id;
-    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let elf_node = creature_node(&sim, elf_id);
 
     // Give bread and set food low.
     sim.inv_add_simple_item(
@@ -6229,7 +6232,7 @@ fn walk_toward_dead_task_node_does_not_panic() {
     let elf_id = *sim.db.creatures.iter_keys().next().unwrap();
 
     // Find a ground nav node different from the elf's to use as task target.
-    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let elf_node = creature_node(&sim, elf_id);
     let task_node = sim
         .nav_graph
         .ground_node_ids()
@@ -10584,7 +10587,6 @@ fn harvest_task_creates_ground_pile() {
     // Place the elf at the fruit nav node.
     let elf_pos = sim.nav_graph.node(fruit_nav).position;
     let _ = sim.db.creatures.modify_unchecked(&elf_id, |elf| {
-        elf.current_node = Some(fruit_nav);
         elf.position = elf_pos;
     });
 
@@ -10755,10 +10757,10 @@ fn haul_source_empty_cancels() {
         c.current_task = Some(task_id);
         let _ = sim.db.creatures.update_no_fk(c);
     }
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&elf_id, |c| c.current_node = Some(source_nav));
+    let source_pos = sim.nav_graph.node(source_nav).position;
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.position = source_pos;
+    });
     let _ = sim
         .db
         .tasks
@@ -11047,7 +11049,6 @@ fn acquire_item_picks_up_and_owns() {
     let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
     let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.current_node = Some(pile_nav);
         c.position = pile_nav_pos;
     });
 
@@ -11591,7 +11592,7 @@ fn mope_does_not_interrupt_autonomous_sleep() {
     }
 
     // Manually assign a Sleep task to the elf.
-    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let elf_node = creature_node(&sim, elf_id);
     let sleep_task_id = TaskId::new(&mut sim.rng);
     let sleep_task = Task {
         id: sleep_task_id,
@@ -11699,7 +11700,7 @@ fn mope_always_preempts_player_directed_build() {
     );
 
     // Assign a long-running Build task at the elf's current node.
-    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let elf_node = creature_node(&sim, elf_id);
     let task_id = TaskId::new(&mut sim.rng);
     let project_id = crate::types::ProjectId::new(&mut sim.rng);
     let build_task = Task {
@@ -14656,7 +14657,7 @@ fn sleep_adaptive_completion_rest_full_exits_early() {
     });
 
     // Create a ground sleep task at elf's location.
-    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let elf_node = creature_node(&sim, elf_id);
     let task_id = TaskId::new(&mut sim.rng);
     let sleep_task = task::Task {
         id: task_id,
@@ -14919,7 +14920,7 @@ fn eat_action_ticks_controls_timing() {
         .id;
 
     // Create an EatBread task at the elf's location.
-    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let elf_node = creature_node(&sim, elf_id);
     let task_id = TaskId::new(&mut sim.rng);
     let eat_task = task::Task {
         id: task_id,
@@ -15566,13 +15567,7 @@ fn pursuit_task_repaths_when_target_moves() {
     let target_id = spawn_second_elf(&mut sim);
 
     // Get target's initial node.
-    let target_node = sim
-        .db
-        .creatures
-        .get(&target_id)
-        .unwrap()
-        .current_node
-        .unwrap();
+    let target_node = creature_node(&sim, target_id);
 
     // Pick a different alive node to move the target to (use a neighbor).
     let new_target_node = {
@@ -15590,7 +15585,6 @@ fn pursuit_task_repaths_when_target_moves() {
     // Manually move the target to the new node (simulates target movement).
     let new_pos = sim.nav_graph.node(new_target_node).position;
     let _ = sim.db.creatures.modify_unchecked(&target_id, |c| {
-        c.current_node = Some(new_target_node);
         c.position = new_pos;
     });
 
@@ -15618,22 +15612,14 @@ fn pursuit_task_completes_when_adjacent() {
     let target_id = spawn_second_elf(&mut sim);
 
     // Read the pursuer's current node (may have wandered during spawns).
-    let pursuer_node = sim
-        .db
-        .creatures
-        .get(&pursuer_id)
-        .unwrap()
-        .current_node
-        .unwrap();
+    let pursuer_node = creature_node(&sim, pursuer_id);
 
     // Place both creatures at the same node and prevent them from wandering.
     let node_pos = sim.nav_graph.node(pursuer_node).position;
     let _ = sim.db.creatures.modify_unchecked(&target_id, |c| {
-        c.current_node = Some(pursuer_node);
         c.position = node_pos;
     });
     let _ = sim.db.creatures.modify_unchecked(&pursuer_id, |c| {
-        c.current_node = Some(pursuer_node);
         c.position = node_pos;
         c.path = None;
     });
@@ -15701,13 +15687,7 @@ fn pursuit_task_abandons_when_target_gone() {
     // Let both creatures settle (complete initial movement).
     sim.step(&[], sim.tick + 10000);
 
-    let target_node = sim
-        .db
-        .creatures
-        .get(&target_id)
-        .unwrap()
-        .current_node
-        .unwrap();
+    let target_node = creature_node(&sim, target_id);
 
     // Assign pursuit task — clear any existing task first.
     let mut pursuer = sim.db.creatures.get(&pursuer_id).unwrap();
@@ -15717,13 +15697,13 @@ fn pursuit_task_abandons_when_target_gone() {
 
     let task_id = insert_pursuit_task(&mut sim, target_node, target_id, pursuer_id);
 
-    // Simulate target becoming unreachable by clearing its current_node.
-    // This triggers the `target_node == None` branch in pursuit logic,
-    // causing the pursuer to abandon the task.
+    // Simulate target becoming unreachable by moving it to a position with
+    // no nav node. This triggers the `node_at(target.position) == None`
+    // branch in pursuit logic, causing the pursuer to abandon the task.
     let _ = sim
         .db
         .creatures
-        .modify_unchecked(&target_id, |c| c.current_node = None);
+        .modify_unchecked(&target_id, |c| c.position = VoxelCoord::new(0, 200, 0));
 
     // Step — pursuer should notice target has no nav node and unassign.
     sim.step(&[], sim.tick + 500000);
@@ -15754,9 +15734,9 @@ fn pursuit_task_abandons_when_target_unreachable() {
     // Place target at a non-existent nav node (simulates disconnected region).
     let bogus_node = NavNodeId(999999);
     let _task_id = insert_pursuit_task(&mut sim, bogus_node, target_id, pursuer_id);
-    // Also set target's current_node to the bogus node.
+    // Move the target to an unreachable position with no nav node.
     let _ = sim.db.creatures.modify_unchecked(&target_id, |c| {
-        c.current_node = Some(bogus_node);
+        c.position = VoxelCoord::new(0, 200, 0);
     });
 
     // Step enough ticks for pursuer's activation to fire and hit the
@@ -15779,7 +15759,7 @@ fn non_pursuit_tasks_unaffected() {
     // Verify existing GoTo tasks (without target_creature) still work.
     let mut sim = test_sim(42);
     let elf_id = spawn_elf(&mut sim);
-    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let elf_node = creature_node(&sim, elf_id);
 
     // Insert a regular GoTo task (no target_creature).
     let task_id = insert_goto_task(&mut sim, elf_node);
@@ -15804,13 +15784,7 @@ fn pursuit_task_serde_roundtrip() {
     let mut sim = test_sim(42);
     let pursuer_id = spawn_elf(&mut sim);
     let target_id = spawn_second_elf(&mut sim);
-    let target_node = sim
-        .db
-        .creatures
-        .get(&target_id)
-        .unwrap()
-        .current_node
-        .unwrap();
+    let target_node = creature_node(&sim, target_id);
 
     let task_id = insert_pursuit_task(&mut sim, target_node, target_id, pursuer_id);
 
@@ -16434,7 +16408,7 @@ fn interrupt_sleep_completes_task() {
     let mut sim = test_sim(42);
     let elf_id = spawn_elf(&mut sim);
 
-    let current_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let current_node = creature_node(&sim, elf_id);
     let task_id = TaskId::new(&mut sim.rng);
     let sleep_task = Task {
         id: task_id,
@@ -16488,7 +16462,7 @@ fn interrupt_clears_move_action() {
     let mut sim = test_sim(42);
     let elf_id = spawn_elf(&mut sim);
 
-    let current_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let current_node = creature_node(&sim, elf_id);
 
     // Put the elf in a Move action.
     let pos = sim.db.creatures.get(&elf_id).unwrap().position;
@@ -17521,6 +17495,14 @@ fn spawn_species(sim: &mut SimState, species: Species) -> CreatureId {
         .id
 }
 
+/// Look up a creature's current nav node from its position.
+fn creature_node(sim: &SimState, creature_id: CreatureId) -> NavNodeId {
+    let creature = sim.db.creatures.get(&creature_id).unwrap();
+    sim.graph_for_species(creature.species)
+        .node_at(creature.position)
+        .expect("creature should have a nav node at its position")
+}
+
 /// Force a creature to a specific position, updating the spatial index.
 fn force_position(sim: &mut SimState, creature_id: CreatureId, new_pos: VoxelCoord) {
     let creature = sim.db.creatures.get(&creature_id).unwrap();
@@ -17533,10 +17515,8 @@ fn force_position(sim: &mut SimState, creature_id: CreatureId, new_pos: VoxelCoo
         old_pos,
         footprint,
     );
-    let new_node = sim.nav_graph.find_nearest_node(new_pos);
     let _ = sim.db.creatures.modify_unchecked(&creature_id, |c| {
         c.position = new_pos;
-        c.current_node = new_node;
     });
     SimState::register_creature_in_index(&mut sim.spatial_index, creature_id, new_pos, footprint);
 }
@@ -22608,7 +22588,7 @@ fn flee_interrupts_current_task() {
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
 
     // Give the elf a GoTo task to somewhere.
-    let elf_node = sim.db.creatures.get(&elf).unwrap().current_node.unwrap();
+    let elf_node = creature_node(&sim, elf);
     let graph = sim.graph_for_species(Species::Elf);
     let neighbors = graph.neighbors(elf_node);
     assert!(!neighbors.is_empty(), "Need at least one neighbor node");
@@ -22659,7 +22639,7 @@ fn elf_resumes_normal_behavior_after_threat_leaves() {
     let mut sim = test_sim(42);
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
-    let elf_node = sim.db.creatures.get(&elf).unwrap().current_node.unwrap();
+    let elf_node = creature_node(&sim, elf);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
     // Place goblin adjacent to elf.
@@ -22693,7 +22673,7 @@ fn elf_resumes_normal_behavior_after_threat_leaves() {
     // flee_step should return false (no living threats detected).
     force_position(&mut sim, elf, elf_pos);
     force_idle(&mut sim, elf);
-    let elf_node = sim.db.creatures.get(&elf).unwrap().current_node.unwrap();
+    let elf_node = creature_node(&sim, elf);
     assert!(
         !sim.flee_step(elf, elf_node, Species::Elf),
         "Elf should not flee from a dead goblin"
@@ -22774,7 +22754,7 @@ fn flee_step_returns_true_when_threat_detected() {
     let mut sim = test_sim(42);
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
-    let elf_node = sim.db.creatures.get(&elf).unwrap().current_node.unwrap();
+    let elf_node = creature_node(&sim, elf);
 
     // Place goblin adjacent.
     let goblin = spawn_species(&mut sim, Species::Goblin);
@@ -23031,8 +23011,11 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
         .find(|c| c.species == Species::Elf)
         .expect("elf should exist");
     let elf_id = elf.id;
-    let elf_node = elf.current_node.expect("elf should have a nav node");
-    let elf_pos = sim.nav_graph.node(elf_node).position;
+    let elf_node = sim
+        .nav_graph
+        .node_at(elf.position)
+        .expect("elf should have a nav node");
+    let elf_pos = elf.position;
 
     // Find two nav nodes: one close to the elf, one farther away.
     // We pick nodes by searching the graph for nodes at increasing
@@ -24115,7 +24098,7 @@ fn defensive_creature_does_not_chase_far() {
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
-    let goblin_node = sim.db.creatures.get(&goblin).unwrap().current_node.unwrap();
+    let goblin_node = creature_node(&sim, goblin);
     force_idle(&mut sim, goblin);
 
     // Spawn elf far away (10 voxels = 100 sq distance, well beyond 9).
@@ -24202,7 +24185,7 @@ fn ammo_exhausted_flee_disengages() {
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
-    let goblin_node = sim.db.creatures.get(&goblin).unwrap().current_node.unwrap();
+    let goblin_node = creature_node(&sim, goblin);
 
     // Give goblin a bow but NO arrows.
     let inv_id = sim.db.creatures.get(&goblin).unwrap().inventory_id;
@@ -24244,7 +24227,7 @@ fn ammo_exhausted_switch_to_melee_pursues() {
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
-    let goblin_node = sim.db.creatures.get(&goblin).unwrap().current_node.unwrap();
+    let goblin_node = creature_node(&sim, goblin);
 
     // Give goblin a bow but NO arrows.
     let inv_id = sim.db.creatures.get(&goblin).unwrap().inventory_id;
@@ -24288,7 +24271,7 @@ fn prefer_melee_closes_distance_before_shooting() {
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
-    let goblin_node = sim.db.creatures.get(&goblin).unwrap().current_node.unwrap();
+    let goblin_node = creature_node(&sim, goblin);
 
     // Give goblin bow + arrows.
     arm_with_bow_and_arrows(&mut sim, goblin, 10);
@@ -24342,7 +24325,7 @@ fn prefer_ranged_shoots_before_closing() {
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
-    let goblin_node = sim.db.creatures.get(&goblin).unwrap().current_node.unwrap();
+    let goblin_node = creature_node(&sim, goblin);
 
     // Give goblin bow + arrows.
     arm_with_bow_and_arrows(&mut sim, goblin, 10);
@@ -24547,7 +24530,7 @@ fn defensive_creature_flees_far_threat_but_does_not_pursue() {
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
-    let goblin_node = sim.db.creatures.get(&goblin).unwrap().current_node.unwrap();
+    let goblin_node = creature_node(&sim, goblin);
     force_idle(&mut sim, goblin);
 
     // Spawn elf at 8 voxels (sq=64, within detection=225 but far beyond pursuit=9).
@@ -25144,7 +25127,7 @@ fn defensive_elf_with_flee_ammo_shoots_troll_at_10_voxels() {
     let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
 
     // Spawn troll ~10 voxels away using spawn_creature (not force_position)
-    // so it gets a valid current_node.
+    // so it gets a valid nav node at its position.
     let troll_spawn = VoxelCoord::new(elf_pos.x + 10, elf_pos.y, elf_pos.z);
     let troll_id = sim
         .spawn_creature(Species::Troll, troll_spawn, &mut events)
@@ -25601,7 +25584,7 @@ fn troll_pursues_elf_cross_graph_pathfinding() {
     let elf_id = sim
         .spawn_creature(Species::Elf, target_node.position, &mut events)
         .expect("spawn elf");
-    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let elf_node = creature_node(&sim, elf_id);
 
     // Confirm the elf's node ID doesn't exist on the large graph.
     assert!(
@@ -25614,13 +25597,7 @@ fn troll_pursues_elf_cross_graph_pathfinding() {
     force_idle_and_cancel_activations(&mut sim, troll_id);
     force_idle_and_cancel_activations(&mut sim, elf_id);
 
-    let troll_node = sim
-        .db
-        .creatures
-        .get(&troll_id)
-        .unwrap()
-        .current_node
-        .unwrap();
+    let troll_node = creature_node(&sim, troll_id);
     let pursued = sim.hostile_pursue(troll_id, troll_node, Species::Troll, &mut events);
 
     assert!(
@@ -27465,7 +27442,6 @@ fn acquire_item_auto_equips_one_from_multi_qty() {
     let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
     let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.current_node = Some(pile_nav);
         c.position = pile_nav_pos;
     });
 
@@ -27649,7 +27625,6 @@ fn acquire_item_preserves_material() {
     let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
     let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.current_node = Some(pile_nav);
         c.position = pile_nav_pos;
     });
 
@@ -27728,7 +27703,6 @@ fn acquire_item_auto_equips_clothing() {
     let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
     let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.current_node = Some(pile_nav);
         c.position = pile_nav_pos;
     });
 
@@ -27814,7 +27788,6 @@ fn acquire_item_does_not_equip_if_slot_occupied() {
     let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
     let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.current_node = Some(pile_nav);
         c.position = pile_nav_pos;
     });
 
@@ -28970,7 +28943,7 @@ fn directed_goto_on_wandering_creature_does_not_schedule_extra_activation() {
     force_idle_and_cancel_activations(&mut sim, elf);
 
     // Put the elf into a wander state: no task, mid-Move.
-    let elf_node = sim.db.creatures.get(&elf).unwrap().current_node.unwrap();
+    let elf_node = creature_node(&sim, elf);
     let mut events = Vec::new();
     sim.wander(elf, elf_node, &mut events);
 
@@ -29021,7 +28994,7 @@ fn directed_goto_on_wandering_creature_preserves_move_action() {
     force_idle_and_cancel_activations(&mut sim, elf);
 
     // Put the elf into a wander state.
-    let elf_node = sim.db.creatures.get(&elf).unwrap().current_node.unwrap();
+    let elf_node = creature_node(&sim, elf);
     let mut events = Vec::new();
     sim.wander(elf, elf_node, &mut events);
 
@@ -29176,7 +29149,7 @@ fn attack_move_on_wandering_creature_does_not_schedule_extra_activation() {
     let elf = spawn_elf(&mut sim);
     force_idle_and_cancel_activations(&mut sim, elf);
 
-    let elf_node = sim.db.creatures.get(&elf).unwrap().current_node.unwrap();
+    let elf_node = creature_node(&sim, elf);
     let mut events = Vec::new();
     sim.wander(elf, elf_node, &mut events);
 
@@ -29396,15 +29369,11 @@ fn attack_target_creature_wanders_after_target_dies() {
 // occupied by hostile creatures.
 // -----------------------------------------------------------------------
 
-/// Helper: place a creature at a specific nav node, updating position,
-/// current_node, and spatial index.
+/// Helper: place a creature at a specific nav node, updating position
+/// and spatial index.
 fn force_to_node(sim: &mut SimState, creature_id: CreatureId, node_id: NavNodeId) {
     let node_pos = sim.nav_graph.node(node_id).position;
     force_position(sim, creature_id, node_pos);
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&creature_id, |c| c.current_node = Some(node_id));
 }
 
 /// Find two connected nav nodes (A has an edge to B). Returns (node_a, node_b).
@@ -31618,7 +31587,6 @@ fn soldier_acquires_military_equipment_no_ownership_change() {
     let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
     let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.current_node = Some(pile_nav);
         c.position = pile_nav_pos;
     });
 
@@ -33457,7 +33425,6 @@ fn military_equipment_auto_equips_wearable_on_pickup() {
     let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
     let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.current_node = Some(pile_nav);
         c.position = pile_nav_pos;
     });
 
@@ -33569,7 +33536,6 @@ fn military_equipment_auto_equip_displaces_existing_clothing() {
     let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
     let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.current_node = Some(pile_nav);
         c.position = pile_nav_pos;
     });
 
@@ -33664,7 +33630,6 @@ fn military_equipment_non_wearable_not_equipped() {
     let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
     let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.current_node = Some(pile_nav);
         c.position = pile_nav_pos;
     });
 
@@ -34762,7 +34727,7 @@ fn nonmagical_creature_cannot_claim_build_task() {
     // We need a valid ProjectId — create a fake one.
     let project_id = ProjectId::new(&mut sim.rng);
     let task_id = TaskId::new(&mut sim.rng);
-    let gob_node = sim.db.creatures.get(&gob_id).unwrap().current_node.unwrap();
+    let gob_node = creature_node(&sim, gob_id);
     let task = Task {
         id: task_id,
         kind: TaskKind::Build { project_id },
@@ -34801,7 +34766,7 @@ fn elf_with_no_mana_skips_build_task() {
     // Insert a Build task at the elf's location.
     let project_id = ProjectId::new(&mut sim.rng);
     let task_id = TaskId::new(&mut sim.rng);
-    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let elf_node = creature_node(&sim, elf_id);
     let task = Task {
         id: task_id,
         kind: TaskKind::Build { project_id },
@@ -34923,7 +34888,7 @@ fn try_drain_mana_exact_boundary() {
 
     // Give the elf a task so abandon logic has something to work with.
     let task_id = TaskId::new(&mut sim.rng);
-    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let elf_node = creature_node(&sim, elf_id);
     let task = Task {
         id: task_id,
         kind: TaskKind::GoTo,
@@ -34954,7 +34919,7 @@ fn nonmagical_creature_cannot_claim_furnish_task() {
     assert_eq!(sim.db.creatures.get(&gob_id).unwrap().mp_max, 0);
 
     let task_id = TaskId::new(&mut sim.rng);
-    let gob_node = sim.db.creatures.get(&gob_id).unwrap().current_node.unwrap();
+    let gob_node = creature_node(&sim, gob_id);
     let task = Task {
         id: task_id,
         kind: TaskKind::Furnish {
@@ -35052,7 +35017,7 @@ fn cleanup_early_exit_resets_wasted_action_count() {
 
     // Create a task, assign elf, set nonzero wasted count.
     let task_id = TaskId::new(&mut sim.rng);
-    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let elf_node = creature_node(&sim, elf_id);
     let task = Task {
         id: task_id,
         kind: TaskKind::GoTo,
@@ -35116,7 +35081,7 @@ fn drained_elf_can_still_claim_non_mana_tasks() {
     });
 
     // Insert a GoTo task (non-mana) at the elf's location.
-    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let elf_node = creature_node(&sim, elf_id);
     let task_id = insert_goto_task(&mut sim, elf_node);
 
     // Elf with 0 mana should still find the GoTo task.
@@ -35140,7 +35105,7 @@ fn mana_wasted_position_recorded_on_failed_drain() {
 
     // Give the elf a task so try_drain_mana has something to work with.
     let task_id = TaskId::new(&mut sim.rng);
-    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let elf_node = creature_node(&sim, elf_id);
     let task = Task {
         id: task_id,
         kind: TaskKind::GoTo,
@@ -35189,7 +35154,7 @@ fn successful_drain_does_not_record_position() {
 
     // Give the elf a task.
     let task_id = TaskId::new(&mut sim.rng);
-    let elf_node = sim.db.creatures.get(&elf_id).unwrap().current_node.unwrap();
+    let elf_node = creature_node(&sim, elf_id);
     let task = Task {
         id: task_id,
         kind: TaskKind::GoTo,

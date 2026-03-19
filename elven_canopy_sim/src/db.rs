@@ -64,11 +64,11 @@ use crate::types::{
     ActiveRecipeId, ActiveRecipeTargetId, BuildType, CivId, CivOpinion, CivRelationshipId,
     CivSpecies, CompositionId, CreatureId, CreatureTraitId, CultureTag, EnchantmentEffectId,
     EnchantmentId, FurnishingType, FurnitureId, GroundPileId, InventoryId, ItemStackId,
-    ItemSubcomponentId, LogisticsWantId, MilitaryGroupId, NavNodeId, NotificationId, ProjectId,
-    ProjectileId, SelectionGroupId, Species, StructureId, StrutId, TaskAcquireDataId,
-    TaskAttackMoveDataId, TaskAttackTargetDataId, TaskBlueprintRefId, TaskCraftDataId,
-    TaskHaulDataId, TaskId, TaskSleepDataId, TaskStructureRefId, TaskVoxelRefId, ThoughtId,
-    ThoughtKind, TraitKind, TraitValue, VitalStatus, VoxelCoord,
+    ItemSubcomponentId, LogisticsWantId, MilitaryGroupId, NotificationId, ProjectId, ProjectileId,
+    SelectionGroupId, Species, StructureId, StrutId, TaskAcquireDataId, TaskAttackMoveDataId,
+    TaskAttackTargetDataId, TaskBlueprintRefId, TaskCraftDataId, TaskHaulDataId, TaskId,
+    TaskSleepDataId, TaskStructureRefId, TaskVoxelRefId, ThoughtId, ThoughtKind, TraitKind,
+    TraitValue, VitalStatus, VoxelCoord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -263,7 +263,6 @@ pub struct Creature {
     pub position: VoxelCoord,
     pub name: String,
     pub name_meaning: String,
-    pub current_node: Option<NavNodeId>,
     #[indexed]
     pub current_task: Option<TaskId>,
     pub food: i64,
