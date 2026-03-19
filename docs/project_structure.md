@@ -60,9 +60,14 @@ elven-canopy/
 │   │   ├── auto_increment.rs   # Auto-increment PK generation and serde roundtrip
 │   │   ├── basic_table.rs      # CRUD operations on derived tables
 │   │   ├── bounded.rs          # derive(Bounded) on newtypes
+│   │   ├── compound_pk.rs      # Compound (multi-column) primary keys — CRUD, indexes, modify
+│   │   ├── compound_pk_database.rs  # Compound PK with FK validation, cascade, nullify
+│   │   ├── compound_pk_serde.rs     # Compound PK serde roundtrip (feature-gated)
 │   │   ├── database.rs         # FK validation, restrict/cascade/nullify on-delete
 │   │   ├── indexed_table.rs    # Secondary indexes, range queries
 │   │   ├── modify_unchecked.rs # Closure-based mutation (single/range/all) + debug assertions
+│   │   ├── parent_pk.rs        # Parent-PK-as-child-PK (1:1 relations) via `pk` keyword
+│   │   ├── parent_pk_serde.rs  # Parent-PK serde roundtrip (feature-gated)
 │   │   ├── query_opts.rs       # QueryOpts ordering/offset + modify_each_by_*
 │   │   ├── serde.rs            # Serde roundtrip (feature-gated)
 │   │   └── unique_index.rs     # Unique index enforcement on insert/update

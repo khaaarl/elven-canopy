@@ -8,7 +8,8 @@
 //! - Filtered indexes via optional `filter` on `#[index(...)]`
 //! - Tracked bounds per unique type across all indexes: `_bounds_{type}`
 //! - Public read methods (get, get_ref, contains, len, is_empty, keys, etc.)
-//! - `pk_ref()` on the row type (used by `Database` cascade codegen)
+//! - `pk_val()` on the row type (returns owned key; used by `Database` cascade
+//!   codegen). Single-column PKs also get `pk_ref()` for backward compat.
 //! - `#[doc(hidden)] pub` mutation methods (_no_fk suffix)
 //! - `modify_unchecked` — closure-based in-place mutation bypassing indexes,
 //!   with debug-build assertions that PK and indexed fields are unchanged
@@ -33,6 +34,154 @@ use quote::{format_ident, quote};
 use syn::{Data, DeriveInput, Fields, Ident, Type};
 
 use crate::parse::{self, IndexDecl, ParsedField};
+
+/// Abstraction over single-column and compound primary keys.
+///
+/// Single PK: `fields` has exactly 1 element, `is_auto_increment` may be true.
+/// Compound PK: `fields` has 2+ elements, `is_auto_increment` is always false.
+struct PkInfo {
+    /// (field_ident, field_type) for each PK column, in declaration order.
+    fields: Vec<(Ident, Type)>,
+    is_auto_increment: bool,
+}
+
+impl PkInfo {
+    fn is_compound(&self) -> bool {
+        self.fields.len() > 1
+    }
+
+    /// The key type used in BTreeMap and method signatures.
+    /// Single: `SomeType`. Compound: `(Type1, Type2)`.
+    fn key_type(&self) -> TokenStream {
+        if self.is_compound() {
+            let tys: Vec<&Type> = self.fields.iter().map(|(_, ty)| ty).collect();
+            quote! { (#(#tys),*) }
+        } else {
+            let ty = &self.fields[0].1;
+            quote! { #ty }
+        }
+    }
+
+    /// Expression to extract the key from a `row` variable.
+    /// Single: `row.id.clone()`. Compound: `(row.a.clone(), row.b.clone())`.
+    fn extract_key_from_row(&self) -> TokenStream {
+        if self.is_compound() {
+            let clones: Vec<TokenStream> = self
+                .fields
+                .iter()
+                .map(|(id, _)| quote! { row.#id.clone() })
+                .collect();
+            quote! { (#(#clones),*) }
+        } else {
+            let id = &self.fields[0].0;
+            quote! { row.#id.clone() }
+        }
+    }
+
+    /// The flattened PK field types for appending to index tuples.
+    fn index_pk_types(&self) -> Vec<&Type> {
+        self.fields.iter().map(|(_, ty)| ty).collect()
+    }
+
+    /// Expressions to append PK fields from `row` into an index tuple.
+    fn index_pk_clones_from_row(&self) -> Vec<TokenStream> {
+        self.fields
+            .iter()
+            .map(|(id, _)| quote! { row.#id.clone() })
+            .collect()
+    }
+
+    /// Expressions to append PK fields from a `pk` variable into an index tuple
+    /// (used in update/remove where pk is already extracted).
+    fn index_pk_clones_from_var(&self) -> Vec<TokenStream> {
+        if self.is_compound() {
+            (0..self.fields.len())
+                .map(|i| {
+                    let idx = syn::Index::from(i);
+                    quote! { pk.#idx.clone() }
+                })
+                .collect()
+        } else {
+            vec![quote! { pk.clone() }]
+        }
+    }
+
+    /// Expression to look up a row in `self.rows` from an index entry tuple,
+    /// where PK fields start at position `start_idx`.
+    fn row_lookup_from_entry(&self, start_idx: usize) -> TokenStream {
+        if self.is_compound() {
+            let indices: Vec<syn::Index> = (0..self.fields.len())
+                .map(|i| syn::Index::from(start_idx + i))
+                .collect();
+            quote! { &self.rows[&(#(__entry.#indices),*)] }
+        } else {
+            let idx = syn::Index::from(start_idx);
+            quote! { &self.rows[&__entry.#idx] }
+        }
+    }
+
+    /// Generate `pk_val()` method on the row struct.
+    /// Single: `self.field.clone()`. Compound: `(self.a.clone(), self.b.clone())`.
+    fn gen_pk_val_method(&self) -> TokenStream {
+        let key_ty = self.key_type();
+        if self.is_compound() {
+            let clones: Vec<TokenStream> = self
+                .fields
+                .iter()
+                .map(|(id, _)| quote! { self.#id.clone() })
+                .collect();
+            quote! {
+                /// Returns the compound primary key as an owned tuple.
+                #[doc(hidden)]
+                pub fn pk_val(&self) -> #key_ty {
+                    (#(#clones),*)
+                }
+            }
+        } else {
+            let id = &self.fields[0].0;
+            quote! {
+                /// Returns the primary key value (cloned).
+                #[doc(hidden)]
+                pub fn pk_val(&self) -> #key_ty {
+                    self.#id.clone()
+                }
+            }
+        }
+    }
+
+    /// Generate debug snapshot statements for modify_unchecked variants.
+    /// Snapshots all PK fields and returns (snap_stmts, assert_stmts).
+    /// `method_name` appears in the panic message (e.g., "modify_unchecked",
+    /// "modify_unchecked_range", or the `modify_each_by_*` method name).
+    fn gen_modify_unchecked_pk_checks(
+        &self,
+        row_var: &Ident,
+        method_name: &str,
+    ) -> (Vec<TokenStream>, Vec<TokenStream>) {
+        let mut snap_stmts = Vec::new();
+        let mut assert_stmts = Vec::new();
+        for (fi, _) in &self.fields {
+            let snap_name = format_ident!("__snap_{}", fi);
+            snap_stmts.push(quote! {
+                #[cfg(debug_assertions)]
+                let #snap_name = #row_var.#fi.clone();
+            });
+            let field_str = fi.to_string();
+            let msg = format!(
+                "{method_name}: primary key field `{field_str}` was changed (from {{:?}} to {{:?}}); use update() instead"
+            );
+            assert_stmts.push(quote! {
+                assert!(
+                    #row_var.#fi == #snap_name,
+                    #msg,
+                    #snap_name,
+                    #row_var.#fi,
+                );
+            });
+        }
+        (snap_stmts, assert_stmts)
+    }
+}
 
 /// A resolved index — either from `#[indexed]` sugar or `#[index(...)]`.
 struct ResolvedIndex {
@@ -69,19 +218,73 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
         }
     };
 
-    // Find primary key field.
-    let pk_fields: Vec<&ParsedField> = fields.iter().filter(|f| f.is_primary_key).collect();
-    if pk_fields.len() != 1 {
-        return syn::Error::new_spanned(
-            row_name,
-            "Table requires exactly one field with #[primary_key]",
-        )
-        .to_compile_error();
-    }
-    let pk_field = pk_fields[0];
-    let pk_ident = &pk_field.ident;
-    let pk_ty = &pk_field.ty;
-    let is_auto_increment = pk_field.is_auto_increment;
+    // Parse compound PK attribute (struct-level).
+    let compound_pk_fields = match parse::parse_compound_pk_attr(input) {
+        Ok(f) => f,
+        Err(e) => return e.to_compile_error(),
+    };
+
+    // Find field-level primary key(s).
+    let field_level_pks: Vec<&ParsedField> = fields.iter().filter(|f| f.is_primary_key).collect();
+
+    // Build PkInfo — either from struct-level compound PK or field-level single PK.
+    let pk_info = if let Some(ref compound_names) = compound_pk_fields {
+        // Struct-level compound PK.
+        if !field_level_pks.is_empty() {
+            return syn::Error::new_spanned(
+                row_name,
+                "cannot combine struct-level #[primary_key(...)] with field-level #[primary_key]; use one or the other",
+            )
+            .to_compile_error();
+        }
+        let mut pk_fields_resolved = Vec::new();
+        for name in compound_names {
+            match fields.iter().find(|f| f.ident == name.as_str()) {
+                Some(f) => {
+                    if f.is_auto_increment {
+                        return syn::Error::new_spanned(
+                            row_name,
+                            "compound primary keys cannot use auto_increment",
+                        )
+                        .to_compile_error();
+                    }
+                    pk_fields_resolved.push((f.ident.clone(), f.ty.clone()));
+                }
+                None => {
+                    return syn::Error::new_spanned(
+                        row_name,
+                        format!(
+                            "compound primary key field `{}` does not exist on the struct",
+                            name
+                        ),
+                    )
+                    .to_compile_error();
+                }
+            }
+        }
+        PkInfo {
+            fields: pk_fields_resolved,
+            is_auto_increment: false,
+        }
+    } else {
+        // Field-level single PK.
+        if field_level_pks.len() != 1 {
+            return syn::Error::new_spanned(
+                row_name,
+                "Table requires exactly one field with #[primary_key] or a struct-level #[primary_key(\"field1\", \"field2\")]",
+            )
+            .to_compile_error();
+        }
+        let pk_field = field_level_pks[0];
+        PkInfo {
+            fields: vec![(pk_field.ident.clone(), pk_field.ty.clone())],
+            is_auto_increment: pk_field.is_auto_increment,
+        }
+    };
+
+    let key_ty = pk_info.key_type();
+    let extract_key = pk_info.extract_key_from_row();
+    let is_auto_increment = pk_info.is_auto_increment;
 
     // Parse struct-level #[index(...)] attributes.
     let index_decls = match parse::parse_index_attrs(input) {
@@ -90,76 +293,71 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
     };
 
     // Resolve all indexes.
-    let resolved_indexes = match resolve_indexes(&fields, pk_field, &index_decls, input) {
+    let resolved_indexes = match resolve_indexes(&fields, &pk_info, &index_decls, input) {
         Ok(r) => r,
         Err(e) => return e.to_compile_error(),
     };
 
     // Collect unique tracked types (deduped by suffix).
-    let unique_tracked = collect_unique_tracked_types(&resolved_indexes, pk_ty);
+    let unique_tracked = collect_unique_tracked_types(&resolved_indexes, &pk_info);
 
     // --- Companion struct fields ---
-    let idx_field_decls = gen_idx_field_decls(&resolved_indexes, pk_ty);
+    let idx_field_decls = gen_idx_field_decls(&resolved_indexes, &pk_info);
     let bounds_field_decls = gen_bounds_field_decls(&unique_tracked);
     let idx_field_inits = gen_idx_field_inits(&resolved_indexes);
     let bounds_field_inits = gen_bounds_field_inits(&unique_tracked);
 
     // --- Bounds widening (insert/upsert-insert) ---
-    let bounds_widen_row = gen_bounds_widen(&resolved_indexes, pk_ty, pk_ident, &fields);
+    let bounds_widen_row = gen_bounds_widen(&resolved_indexes, &pk_info, &fields);
 
     // --- Index maintenance ---
-    let idx_insert = gen_all_idx_insert(&resolved_indexes, pk_ident);
-    let idx_update = gen_all_idx_update(&resolved_indexes, pk_ident);
-    let idx_upsert_update = gen_all_idx_update(&resolved_indexes, pk_ident);
-    let idx_upsert_insert = gen_all_idx_insert(&resolved_indexes, pk_ident);
-    let idx_remove = gen_all_idx_remove(&resolved_indexes, pk_ident);
+    let idx_insert = gen_all_idx_insert(&resolved_indexes, &pk_info);
+    let idx_update = gen_all_idx_update(&resolved_indexes, &pk_info);
+    let idx_upsert_update = gen_all_idx_update(&resolved_indexes, &pk_info);
+    let idx_upsert_insert = gen_all_idx_insert(&resolved_indexes, &pk_info);
+    let idx_remove = gen_all_idx_remove(&resolved_indexes, &pk_info);
 
     // --- Rebuild indexes ---
     let bounds_reset = gen_bounds_reset(&unique_tracked);
-    let rebuild_body = gen_rebuild_body(&resolved_indexes, pk_ident);
-    let rebuild_bounds_widen = gen_bounds_widen(&resolved_indexes, pk_ty, pk_ident, &fields);
+    let rebuild_body = gen_rebuild_body(&resolved_indexes, &pk_info);
+    let rebuild_bounds_widen = gen_bounds_widen(&resolved_indexes, &pk_info, &fields);
 
     // --- Query methods ---
-    let query_methods = gen_all_query_methods(&resolved_indexes, pk_ty, row_name, &fields);
+    let query_methods = gen_all_query_methods(&resolved_indexes, &pk_info, row_name, &fields);
 
     let table_name_str_ref = &table_name_str;
 
     // --- modify_each_by_* methods ---
-    let modify_each_methods =
-        gen_all_modify_each_methods(&resolved_indexes, pk_ident, pk_ty, row_name);
+    let modify_each_methods = gen_all_modify_each_methods(&resolved_indexes, &pk_info, row_name);
 
     // --- modify_unchecked (single + range + all) ---
-    let modify_unchecked_method = gen_modify_unchecked(
-        pk_ident,
-        pk_ty,
-        row_name,
-        table_name_str_ref,
-        &resolved_indexes,
-    );
+    let modify_unchecked_method =
+        gen_modify_unchecked(&pk_info, row_name, table_name_str_ref, &resolved_indexes);
     let modify_unchecked_range_methods =
-        gen_modify_unchecked_range(pk_ident, pk_ty, row_name, &resolved_indexes);
+        gen_modify_unchecked_range(&pk_info, row_name, &resolved_indexes);
 
     // --- Unique index checks ---
     let unique_check_insert =
-        gen_unique_checks_insert(&resolved_indexes, pk_ty, table_name_str_ref);
+        gen_unique_checks_insert(&resolved_indexes, &pk_info, table_name_str_ref);
     let unique_check_update =
-        gen_unique_checks_update(&resolved_indexes, pk_ty, table_name_str_ref);
+        gen_unique_checks_update(&resolved_indexes, &pk_info, table_name_str_ref);
 
     // Auto-increment: optional next_id field, init, bump logic, and methods.
+    // Only available for single-column PKs.
     let next_id_field_decl = if is_auto_increment {
-        quote! { next_id: #pk_ty, }
+        quote! { next_id: #key_ty, }
     } else {
         quote! {}
     };
     let next_id_field_init = if is_auto_increment {
-        quote! { next_id: <#pk_ty as ::tabulosity::AutoIncrementable>::first(), }
+        quote! { next_id: <#key_ty as ::tabulosity::AutoIncrementable>::first(), }
     } else {
         quote! {}
     };
     let next_id_bump_on_insert = if is_auto_increment {
         quote! {
             if pk >= self.next_id {
-                self.next_id = <#pk_ty as ::tabulosity::AutoIncrementable>::successor(&pk);
+                self.next_id = <#key_ty as ::tabulosity::AutoIncrementable>::successor(&pk);
             }
         }
     } else {
@@ -168,16 +366,22 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
     let next_id_bump_on_upsert = if is_auto_increment {
         quote! {
             if pk >= self.next_id {
-                self.next_id = <#pk_ty as ::tabulosity::AutoIncrementable>::successor(&pk);
+                self.next_id = <#key_ty as ::tabulosity::AutoIncrementable>::successor(&pk);
             }
         }
     } else {
         quote! {}
     };
+    let pk_ident_single = if !pk_info.is_compound() {
+        Some(&pk_info.fields[0].0)
+    } else {
+        None
+    };
     let auto_increment_methods = if is_auto_increment {
+        let pk_ident = pk_ident_single.unwrap();
         quote! {
             /// Returns the next auto-increment ID that will be assigned.
-            pub fn next_id(&self) -> #pk_ty {
+            pub fn next_id(&self) -> #key_ty {
                 self.next_id.clone()
             }
 
@@ -186,8 +390,8 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
             #[doc(hidden)]
             pub fn insert_auto_no_fk(
                 &mut self,
-                f: impl ::std::ops::FnOnce(#pk_ty) -> #row_name,
-            ) -> ::std::result::Result<#pk_ty, ::tabulosity::Error> {
+                f: impl ::std::ops::FnOnce(#key_ty) -> #row_name,
+            ) -> ::std::result::Result<#key_ty, ::tabulosity::Error> {
                 let pk = self.next_id.clone();
                 let row = f(pk.clone());
                 debug_assert_eq!(row.#pk_ident, pk);
@@ -202,16 +406,46 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
     let serde_impls = gen_serde_impls(
         &table_name,
         row_name,
-        pk_ty,
-        pk_ident,
+        &pk_info,
         table_name_str_ref,
         is_auto_increment,
     );
 
+    // pk_ref method (single PK only, for backward compat).
+    let pk_ref_method = if !pk_info.is_compound() {
+        let pk_ident = &pk_info.fields[0].0;
+        quote! {
+            /// Returns a reference to the primary key field.
+            #[doc(hidden)]
+            pub fn pk_ref(&self) -> &#key_ty {
+                &self.#pk_ident
+            }
+        }
+    } else {
+        quote! {}
+    };
+    let pk_val_method = pk_info.gen_pk_val_method();
+
+    // Remove re-extraction: for remove_no_fk, we need to re-extract the key
+    // from the row for index removal.
+    let re_extract_key_for_remove = {
+        if pk_info.is_compound() {
+            let clones: Vec<TokenStream> = pk_info
+                .fields
+                .iter()
+                .map(|(id, _)| quote! { row.#id.clone() })
+                .collect();
+            quote! { let pk = (#(#clones),*); }
+        } else {
+            let id = &pk_info.fields[0].0;
+            quote! { let pk = row.#id.clone(); }
+        }
+    };
+
     quote! {
         /// Companion table struct generated by `#[derive(Table)]`.
         #vis struct #table_name {
-            rows: ::std::collections::BTreeMap<#pk_ty, #row_name>,
+            rows: ::std::collections::BTreeMap<#key_ty, #row_name>,
             #(#idx_field_decls,)*
             #(#bounds_field_decls,)*
             #next_id_field_decl
@@ -231,17 +465,17 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
             // --- Read methods ---
 
             /// Returns a clone of the row with the given primary key, or `None`.
-            pub fn get(&self, pk: &#pk_ty) -> ::std::option::Option<#row_name> {
+            pub fn get(&self, pk: &#key_ty) -> ::std::option::Option<#row_name> {
                 self.rows.get(pk).cloned()
             }
 
             /// Returns a reference to the row with the given primary key, or `None`.
-            pub fn get_ref(&self, pk: &#pk_ty) -> ::std::option::Option<&#row_name> {
+            pub fn get_ref(&self, pk: &#key_ty) -> ::std::option::Option<&#row_name> {
                 self.rows.get(pk)
             }
 
             /// Returns `true` if the table contains a row with the given primary key.
-            pub fn contains(&self, pk: &#pk_ty) -> bool {
+            pub fn contains(&self, pk: &#key_ty) -> bool {
                 self.rows.contains_key(pk)
             }
 
@@ -256,12 +490,12 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
             }
 
             /// Returns all primary keys in order (cloned).
-            pub fn keys(&self) -> ::std::vec::Vec<#pk_ty> {
+            pub fn keys(&self) -> ::std::vec::Vec<#key_ty> {
                 self.rows.keys().cloned().collect()
             }
 
             /// Iterates over all primary keys in order.
-            pub fn iter_keys(&self) -> impl ::std::iter::Iterator<Item = &#pk_ty> {
+            pub fn iter_keys(&self) -> impl ::std::iter::Iterator<Item = &#key_ty> {
                 self.rows.keys()
             }
 
@@ -287,7 +521,7 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
             /// or `Err(DuplicateIndex)` if a unique index constraint is violated.
             #[doc(hidden)]
             pub fn insert_no_fk(&mut self, row: #row_name) -> ::std::result::Result<(), ::tabulosity::Error> {
-                let pk = row.#pk_ident.clone();
+                let pk = #extract_key;
                 if self.rows.contains_key(&pk) {
                     return ::std::result::Result::Err(::tabulosity::Error::DuplicateKey {
                         table: #table_name_str_ref,
@@ -308,7 +542,7 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
             /// or `Err(DuplicateIndex)` if a unique index constraint is violated.
             #[doc(hidden)]
             pub fn update_no_fk(&mut self, row: #row_name) -> ::std::result::Result<(), ::tabulosity::Error> {
-                let pk = row.#pk_ident.clone();
+                let pk = #extract_key;
                 let old_row = match self.rows.get(&pk) {
                     Some(r) => r.clone(),
                     None => {
@@ -330,7 +564,7 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
             /// is violated.
             #[doc(hidden)]
             pub fn upsert_no_fk(&mut self, row: #row_name) -> ::std::result::Result<(), ::tabulosity::Error> {
-                let pk = row.#pk_ident.clone();
+                let pk = #extract_key;
                 if let Some(old_row) = self.rows.get(&pk).cloned() {
                     #(#unique_check_update)*
                     #next_id_bump_on_upsert
@@ -349,7 +583,7 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
 
             /// Removes a row. Returns the removed row or `Err(NotFound)`.
             #[doc(hidden)]
-            pub fn remove_no_fk(&mut self, pk: &#pk_ty) -> ::std::result::Result<#row_name, ::tabulosity::Error> {
+            pub fn remove_no_fk(&mut self, pk: &#key_ty) -> ::std::result::Result<#row_name, ::tabulosity::Error> {
                 let row = match self.rows.remove(pk) {
                     Some(r) => r,
                     None => {
@@ -359,7 +593,7 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
                         });
                     }
                 };
-                let pk = row.#pk_ident.clone();
+                #re_extract_key_for_remove
                 #(#idx_remove)*
                 ::std::result::Result::Ok(row)
             }
@@ -381,15 +615,12 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
 
 
         impl #row_name {
-            /// Returns a reference to the primary key field.
-            #[doc(hidden)]
-            pub fn pk_ref(&self) -> &#pk_ty {
-                &self.#pk_ident
-            }
+            #pk_ref_method
+            #pk_val_method
         }
 
         impl ::tabulosity::TableMeta for #table_name {
-            type Key = #pk_ty;
+            type Key = #key_ty;
             type Row = #row_name;
         }
 
@@ -409,7 +640,7 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
 
 fn resolve_indexes(
     fields: &[ParsedField],
-    pk_field: &ParsedField,
+    pk_info: &PkInfo,
     index_decls: &[IndexDecl],
     input: &DeriveInput,
 ) -> syn::Result<Vec<ResolvedIndex>> {
@@ -437,7 +668,7 @@ fn resolve_indexes(
 
     // Compound/filtered indexes from #[index(...)].
     for decl in index_decls {
-        validate_index_decl(input, decl, fields, pk_field, &used_names)?;
+        validate_index_decl(input, decl, fields, pk_info, &used_names)?;
         used_names.insert(decl.name.clone());
 
         let idx_fields: Vec<(Ident, Type)> = decl
@@ -464,7 +695,7 @@ fn validate_index_decl(
     input: &DeriveInput,
     decl: &IndexDecl,
     fields: &[ParsedField],
-    pk_field: &ParsedField,
+    pk_info: &PkInfo,
     used_names: &std::collections::BTreeSet<String>,
 ) -> syn::Result<()> {
     if used_names.contains(&decl.name) {
@@ -476,6 +707,11 @@ fn validate_index_decl(
             ),
         ));
     }
+    let pk_field_names: std::collections::BTreeSet<String> = pk_info
+        .fields
+        .iter()
+        .map(|(id, _)| id.to_string())
+        .collect();
     for fname in &decl.fields {
         let field = fields.iter().find(|f| f.ident == fname.as_str());
         match field {
@@ -488,11 +724,11 @@ fn validate_index_decl(
                     ),
                 ));
             }
-            Some(f) if f.ident == pk_field.ident => {
+            Some(f) if pk_field_names.contains(&f.ident.to_string()) => {
                 return Err(syn::Error::new_spanned(
                     input,
                     format!(
-                        "index `{}`: field '{}' is the primary key and is automatically included in every index; remove it from fields(...)",
+                        "index `{}`: field '{}' is part of the primary key and is automatically included in every index; remove it from fields(...)",
                         decl.name, fname
                     ),
                 ));
@@ -534,7 +770,7 @@ fn type_suffix(ty: &Type) -> String {
     }
 }
 
-fn collect_unique_tracked_types(indexes: &[ResolvedIndex], pk_ty: &Type) -> Vec<TrackedType> {
+fn collect_unique_tracked_types(indexes: &[ResolvedIndex], pk_info: &PkInfo) -> Vec<TrackedType> {
     let mut result = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
 
@@ -550,12 +786,15 @@ fn collect_unique_tracked_types(indexes: &[ResolvedIndex], pk_ty: &Type) -> Vec<
         }
     }
 
-    let pk_suffix = type_suffix(pk_ty);
-    if seen.insert(pk_suffix.clone()) {
-        result.push(TrackedType {
-            bounds_suffix: pk_suffix,
-            ty: pk_ty.clone(),
-        });
+    // Track bounds for each PK field type (compound PKs have multiple).
+    for (_, pk_ty) in &pk_info.fields {
+        let pk_suffix = type_suffix(pk_ty);
+        if seen.insert(pk_suffix.clone()) {
+            result.push(TrackedType {
+                bounds_suffix: pk_suffix,
+                ty: pk_ty.clone(),
+            });
+        }
     }
 
     result
@@ -565,14 +804,15 @@ fn collect_unique_tracked_types(indexes: &[ResolvedIndex], pk_ty: &Type) -> Vec<
 // Struct field codegen
 // =============================================================================
 
-fn gen_idx_field_decls(indexes: &[ResolvedIndex], pk_ty: &Type) -> Vec<TokenStream> {
+fn gen_idx_field_decls(indexes: &[ResolvedIndex], pk_info: &PkInfo) -> Vec<TokenStream> {
+    let pk_tys = pk_info.index_pk_types();
     indexes
         .iter()
         .map(|idx| {
             let idx_name = format_ident!("idx_{}", idx.name);
             let field_tys: Vec<&Type> = idx.fields.iter().map(|(_, ty)| ty).collect();
             quote! {
-                #idx_name: ::std::collections::BTreeSet<(#(#field_tys,)* #pk_ty)>
+                #idx_name: ::std::collections::BTreeSet<(#(#field_tys,)* #(#pk_tys),*)>
             }
         })
         .collect()
@@ -615,13 +855,13 @@ fn gen_bounds_field_inits(tracked: &[TrackedType]) -> Vec<TokenStream> {
 
 fn gen_bounds_widen(
     indexes: &[ResolvedIndex],
-    pk_ty: &Type,
-    pk_ident: &Ident,
+    pk_info: &PkInfo,
     all_fields: &[ParsedField],
 ) -> Vec<TokenStream> {
     let mut wideners = Vec::new();
-    // Deduplicate by (field_name, type_suffix) so that every field contributing
-    // to tracked bounds is widened, even when multiple fields share a type.
+    // Deduplicate by field name so that each field contributing to tracked
+    // bounds is widened exactly once. Multiple fields sharing a type suffix
+    // widen the same `_bounds_*` tracker, which is correct (conservative).
     let mut seen_fields = std::collections::BTreeSet::new();
 
     for idx in indexes {
@@ -649,24 +889,27 @@ fn gen_bounds_widen(
         }
     }
 
-    let pk_suffix = type_suffix(pk_ty);
-    let pk_key = pk_ident.to_string();
-    if seen_fields.insert(pk_key) {
-        let bounds_name = format_ident!("_bounds_{}", pk_suffix);
-        wideners.push(quote! {
-            match &mut self.#bounds_name {
-                ::std::option::Option::Some((lo, hi)) => {
-                    if row.#pk_ident < *lo { *lo = row.#pk_ident.clone(); }
-                    if row.#pk_ident > *hi { *hi = row.#pk_ident.clone(); }
+    // Widen bounds for each PK field.
+    for (pk_ident, pk_ty) in &pk_info.fields {
+        let pk_suffix = type_suffix(pk_ty);
+        let pk_key = pk_ident.to_string();
+        if seen_fields.insert(pk_key) {
+            let bounds_name = format_ident!("_bounds_{}", pk_suffix);
+            wideners.push(quote! {
+                match &mut self.#bounds_name {
+                    ::std::option::Option::Some((lo, hi)) => {
+                        if row.#pk_ident < *lo { *lo = row.#pk_ident.clone(); }
+                        if row.#pk_ident > *hi { *hi = row.#pk_ident.clone(); }
+                    }
+                    ::std::option::Option::None => {
+                        self.#bounds_name = ::std::option::Option::Some((
+                            row.#pk_ident.clone(),
+                            row.#pk_ident.clone(),
+                        ));
+                    }
                 }
-                ::std::option::Option::None => {
-                    self.#bounds_name = ::std::option::Option::Some((
-                        row.#pk_ident.clone(),
-                        row.#pk_ident.clone(),
-                    ));
-                }
-            }
-        });
+            });
+        }
     }
 
     wideners
@@ -691,21 +934,23 @@ fn gen_bounds_reset(tracked: &[TrackedType]) -> Vec<TokenStream> {
 /// contains an entry with the same field values.
 fn gen_unique_checks_insert(
     indexes: &[ResolvedIndex],
-    pk_ty: &Type,
+    pk_info: &PkInfo,
     table_name_str: &str,
 ) -> Vec<TokenStream> {
     indexes
         .iter()
         .filter(|idx| idx.is_unique)
-        .map(|idx| gen_unique_check_insert(idx, pk_ty, table_name_str))
+        .map(|idx| gen_unique_check_insert(idx, pk_info, table_name_str))
         .collect()
 }
 
-fn gen_unique_check_insert(idx: &ResolvedIndex, pk_ty: &Type, table_name_str: &str) -> TokenStream {
+fn gen_unique_check_insert(
+    idx: &ResolvedIndex,
+    pk_info: &PkInfo,
+    table_name_str: &str,
+) -> TokenStream {
     let idx_name = format_ident!("idx_{}", idx.name);
     let idx_name_str = &idx.name;
-    let pk_suffix = type_suffix(pk_ty);
-    let pk_bounds_name = format_ident!("_bounds_{}", pk_suffix);
 
     let field_clones: Vec<TokenStream> = idx
         .fields
@@ -719,10 +964,14 @@ fn gen_unique_check_insert(idx: &ResolvedIndex, pk_ty: &Type, table_name_str: &s
         .map(|(fi, _)| quote! { row.#fi })
         .collect();
 
+    // Generate bounds checks and min/max vars for each PK field.
+    let (pk_bounds_checks, pk_min_clones, pk_max_clones) = gen_pk_bounds_for_unique(pk_info);
+
     let range_check = quote! {
-        if let ::std::option::Option::Some((__pk_min, __pk_max)) = &self.#pk_bounds_name {
-            let __start = (#(#field_clones,)* __pk_min.clone());
-            let __end = (#(#field_clones,)* __pk_max.clone());
+        #(#pk_bounds_checks)*
+        {
+            let __start = (#(#field_clones,)* #(#pk_min_clones),*);
+            let __end = (#(#field_clones,)* #(#pk_max_clones),*);
             if self.#idx_name.range(__start..=__end).next().is_some() {
                 return ::std::result::Result::Err(::tabulosity::Error::DuplicateIndex {
                     table: #table_name_str,
@@ -746,25 +995,75 @@ fn gen_unique_check_insert(idx: &ResolvedIndex, pk_ty: &Type, table_name_str: &s
     }
 }
 
+/// Generate the PK bounds variable declarations, start clones, and end clones
+/// for unique index range checks. Returns (bounds_checks, min_clones, max_clones).
+fn gen_pk_bounds_for_unique(
+    pk_info: &PkInfo,
+) -> (Vec<TokenStream>, Vec<TokenStream>, Vec<TokenStream>) {
+    let mut bounds_checks = Vec::new();
+    let mut min_clones = Vec::new();
+    let mut max_clones = Vec::new();
+    let mut seen_suffixes = std::collections::BTreeSet::new();
+
+    for (i, (_, pk_ty)) in pk_info.fields.iter().enumerate() {
+        let suffix = type_suffix(pk_ty);
+        let bounds_name = format_ident!("_bounds_{}", suffix);
+        let min_var = format_ident!("__pk_min_{}", i);
+        let max_var = format_ident!("__pk_max_{}", i);
+
+        if seen_suffixes.insert(suffix) {
+            // First time seeing this type — emit the bounds check.
+            // If bounds are None (table empty), we can skip the unique check
+            // because there can't be any conflicts.
+            bounds_checks.push(quote! {
+                let (#min_var, #max_var) = match &self.#bounds_name {
+                    ::std::option::Option::Some((lo, hi)) => (lo.clone(), hi.clone()),
+                    ::std::option::Option::None => { return ::std::result::Result::Ok(()); }
+                };
+            });
+        } else {
+            // Same type as a previous PK field — reuse its bounds.
+            let first_idx = pk_info
+                .fields
+                .iter()
+                .position(|(_, ty)| type_suffix(ty) == type_suffix(pk_ty))
+                .unwrap();
+            let first_min = format_ident!("__pk_min_{}", first_idx);
+            let first_max = format_ident!("__pk_max_{}", first_idx);
+            bounds_checks.push(quote! {
+                let #min_var = #first_min.clone();
+                let #max_var = #first_max.clone();
+            });
+        }
+
+        min_clones.push(quote! { #min_var.clone() });
+        max_clones.push(quote! { #max_var.clone() });
+    }
+
+    (bounds_checks, min_clones, max_clones)
+}
+
 /// Generate uniqueness checks for update. Runs before any mutation.
 /// Only checks when field values actually changed.
 fn gen_unique_checks_update(
     indexes: &[ResolvedIndex],
-    pk_ty: &Type,
+    pk_info: &PkInfo,
     table_name_str: &str,
 ) -> Vec<TokenStream> {
     indexes
         .iter()
         .filter(|idx| idx.is_unique)
-        .map(|idx| gen_unique_check_update(idx, pk_ty, table_name_str))
+        .map(|idx| gen_unique_check_update(idx, pk_info, table_name_str))
         .collect()
 }
 
-fn gen_unique_check_update(idx: &ResolvedIndex, pk_ty: &Type, table_name_str: &str) -> TokenStream {
+fn gen_unique_check_update(
+    idx: &ResolvedIndex,
+    pk_info: &PkInfo,
+    table_name_str: &str,
+) -> TokenStream {
     let idx_name = format_ident!("idx_{}", idx.name);
     let idx_name_str = &idx.name;
-    let pk_suffix = type_suffix(pk_ty);
-    let pk_bounds_name = format_ident!("_bounds_{}", pk_suffix);
 
     let field_clones: Vec<TokenStream> = idx
         .fields
@@ -784,14 +1083,17 @@ fn gen_unique_check_update(idx: &ResolvedIndex, pk_ty: &Type, table_name_str: &s
         .map(|(fi, _)| quote! { row.#fi })
         .collect();
 
+    let (pk_bounds_checks, pk_min_clones, pk_max_clones) = gen_pk_bounds_for_unique(pk_info);
+
     // For update: old entry with (old_field_val, pk) is still in the set.
     // If field value changed, the old entry won't match the new value search.
     // So any match found is a genuine conflict.
     let range_check = quote! {
         if #(#field_changed_check)||* {
-            if let ::std::option::Option::Some((__pk_min, __pk_max)) = &self.#pk_bounds_name {
-                let __start = (#(#field_clones,)* __pk_min.clone());
-                let __end = (#(#field_clones,)* __pk_max.clone());
+            #(#pk_bounds_checks)*
+            {
+                let __start = (#(#field_clones,)* #(#pk_min_clones),*);
+                let __end = (#(#field_clones,)* #(#pk_max_clones),*);
                 if self.#idx_name.range(__start..=__end).next().is_some() {
                     return ::std::result::Result::Err(::tabulosity::Error::DuplicateIndex {
                         table: #table_name_str,
@@ -814,9 +1116,10 @@ fn gen_unique_check_update(idx: &ResolvedIndex, pk_ty: &Type, table_name_str: &s
                 if #filter_fn(&row) {
                     let __needs_check = !#filter_fn(&old_row) || (#(#field_changed_check)||*);
                     if __needs_check {
-                        if let ::std::option::Option::Some((__pk_min, __pk_max)) = &self.#pk_bounds_name {
-                            let __start = (#(#field_clones,)* __pk_min.clone());
-                            let __end = (#(#field_clones,)* __pk_max.clone());
+                        #(#pk_bounds_checks)*
+                        {
+                            let __start = (#(#field_clones,)* #(#pk_min_clones),*);
+                            let __end = (#(#field_clones,)* #(#pk_max_clones),*);
                             if self.#idx_name.range(__start..=__end).next().is_some() {
                                 return ::std::result::Result::Err(::tabulosity::Error::DuplicateIndex {
                                     table: #table_name_str,
@@ -837,37 +1140,38 @@ fn gen_unique_check_update(idx: &ResolvedIndex, pk_ty: &Type, table_name_str: &s
 // Index maintenance codegen
 // =============================================================================
 
-fn gen_all_idx_insert(indexes: &[ResolvedIndex], pk_ident: &Ident) -> Vec<TokenStream> {
+fn gen_all_idx_insert(indexes: &[ResolvedIndex], pk_info: &PkInfo) -> Vec<TokenStream> {
     indexes
         .iter()
-        .map(|idx| gen_idx_insert(idx, pk_ident))
+        .map(|idx| gen_idx_insert(idx, pk_info))
         .collect()
 }
 
-fn gen_all_idx_update(indexes: &[ResolvedIndex], pk_ident: &Ident) -> Vec<TokenStream> {
+fn gen_all_idx_update(indexes: &[ResolvedIndex], pk_info: &PkInfo) -> Vec<TokenStream> {
     indexes
         .iter()
-        .map(|idx| gen_idx_update(idx, pk_ident))
+        .map(|idx| gen_idx_update(idx, pk_info))
         .collect()
 }
 
-fn gen_all_idx_remove(indexes: &[ResolvedIndex], pk_ident: &Ident) -> Vec<TokenStream> {
+fn gen_all_idx_remove(indexes: &[ResolvedIndex], pk_info: &PkInfo) -> Vec<TokenStream> {
     indexes
         .iter()
-        .map(|idx| gen_idx_remove(idx, pk_ident))
+        .map(|idx| gen_idx_remove(idx, pk_info))
         .collect()
 }
 
-fn gen_idx_insert(idx: &ResolvedIndex, pk_ident: &Ident) -> TokenStream {
+fn gen_idx_insert(idx: &ResolvedIndex, pk_info: &PkInfo) -> TokenStream {
     let idx_name = format_ident!("idx_{}", idx.name);
     let field_clones: Vec<TokenStream> = idx
         .fields
         .iter()
         .map(|(fi, _)| quote! { row.#fi.clone() })
         .collect();
+    let pk_clones = pk_info.index_pk_clones_from_row();
 
     let insert_stmt = quote! {
-        self.#idx_name.insert((#(#field_clones,)* row.#pk_ident.clone()));
+        self.#idx_name.insert((#(#field_clones,)* #(#pk_clones),*));
     };
 
     match &idx.filter {
@@ -883,7 +1187,7 @@ fn gen_idx_insert(idx: &ResolvedIndex, pk_ident: &Ident) -> TokenStream {
     }
 }
 
-fn gen_idx_update(idx: &ResolvedIndex, _pk_ident: &Ident) -> TokenStream {
+fn gen_idx_update(idx: &ResolvedIndex, pk_info: &PkInfo) -> TokenStream {
     let idx_name = format_ident!("idx_{}", idx.name);
     let old_field_clones: Vec<TokenStream> = idx
         .fields
@@ -900,6 +1204,7 @@ fn gen_idx_update(idx: &ResolvedIndex, _pk_ident: &Ident) -> TokenStream {
         .iter()
         .map(|(fi, _)| quote! { old_row.#fi != row.#fi })
         .collect();
+    let pk_var_clones = pk_info.index_pk_clones_from_var();
 
     match &idx.filter {
         Some(filter_path) => {
@@ -911,15 +1216,15 @@ fn gen_idx_update(idx: &ResolvedIndex, _pk_ident: &Ident) -> TokenStream {
                     match (old_passes, new_passes) {
                         (true, true) => {
                             if #(#field_changed_check)||* {
-                                self.#idx_name.remove(&(#(#old_field_clones,)* pk.clone()));
-                                self.#idx_name.insert((#(#new_field_clones,)* pk.clone()));
+                                self.#idx_name.remove(&(#(#old_field_clones,)* #(#pk_var_clones),*));
+                                self.#idx_name.insert((#(#new_field_clones,)* #(#pk_var_clones),*));
                             }
                         }
                         (true, false) => {
-                            self.#idx_name.remove(&(#(#old_field_clones,)* pk.clone()));
+                            self.#idx_name.remove(&(#(#old_field_clones,)* #(#pk_var_clones),*));
                         }
                         (false, true) => {
-                            self.#idx_name.insert((#(#new_field_clones,)* pk.clone()));
+                            self.#idx_name.insert((#(#new_field_clones,)* #(#pk_var_clones),*));
                         }
                         (false, false) => {}
                     }
@@ -929,24 +1234,25 @@ fn gen_idx_update(idx: &ResolvedIndex, _pk_ident: &Ident) -> TokenStream {
         None => {
             quote! {
                 if #(#field_changed_check)||* {
-                    self.#idx_name.remove(&(#(#old_field_clones,)* pk.clone()));
-                    self.#idx_name.insert((#(#new_field_clones,)* pk.clone()));
+                    self.#idx_name.remove(&(#(#old_field_clones,)* #(#pk_var_clones),*));
+                    self.#idx_name.insert((#(#new_field_clones,)* #(#pk_var_clones),*));
                 }
             }
         }
     }
 }
 
-fn gen_idx_remove(idx: &ResolvedIndex, _pk_ident: &Ident) -> TokenStream {
+fn gen_idx_remove(idx: &ResolvedIndex, pk_info: &PkInfo) -> TokenStream {
     let idx_name = format_ident!("idx_{}", idx.name);
     let field_clones: Vec<TokenStream> = idx
         .fields
         .iter()
         .map(|(fi, _)| quote! { row.#fi.clone() })
         .collect();
+    let pk_var_clones = pk_info.index_pk_clones_from_var();
 
     quote! {
-        self.#idx_name.remove(&(#(#field_clones,)* pk.clone()));
+        self.#idx_name.remove(&(#(#field_clones,)* #(#pk_var_clones),*));
     }
 }
 
@@ -956,12 +1262,13 @@ fn gen_idx_remove(idx: &ResolvedIndex, _pk_ident: &Ident) -> TokenStream {
 /// and asserts they are unchanged after. In release builds, the method is just
 /// `BTreeMap::get_mut` + closure.
 fn gen_modify_unchecked(
-    pk_ident: &Ident,
-    pk_ty: &Type,
+    pk_info: &PkInfo,
     row_name: &Ident,
     table_name_str: &str,
     indexes: &[ResolvedIndex],
 ) -> TokenStream {
+    let key_ty = pk_info.key_type();
+
     // Collect all indexed field idents (deduplicated by name).
     let mut seen = std::collections::BTreeSet::new();
     let mut indexed_fields: Vec<&Ident> = Vec::new();
@@ -973,46 +1280,39 @@ fn gen_modify_unchecked(
         }
     }
 
-    // Debug-build snapshot: clone PK + each indexed field.
-    let snap_pk = format_ident!("__snap_{}", pk_ident);
-    let snap_stmts: Vec<TokenStream> = std::iter::once(quote! {
-        #[cfg(debug_assertions)]
-        let #snap_pk = row.#pk_ident.clone();
-    })
-    .chain(indexed_fields.iter().map(|fi| {
-        let snap_name = format_ident!("__snap_{}", fi);
-        quote! {
-            #[cfg(debug_assertions)]
-            let #snap_name = row.#fi.clone();
-        }
-    }))
-    .collect();
+    let row_ident = format_ident!("row");
+    let (pk_snap_stmts, pk_assert_stmts) =
+        pk_info.gen_modify_unchecked_pk_checks(&row_ident, "modify_unchecked");
 
-    // Debug-build assertions: verify PK + each indexed field unchanged.
-    let pk_str = pk_ident.to_string();
-    let assert_stmts: Vec<TokenStream> = std::iter::once(quote! {
-        assert!(
-            row.#pk_ident == #snap_pk,
-            "modify_unchecked: primary key field `{}` was changed (from {:?} to {:?}); use update() instead",
-            #pk_str,
-            #snap_pk,
-            row.#pk_ident,
-        );
-    })
-    .chain(indexed_fields.iter().map(|fi| {
-        let snap_name = format_ident!("__snap_{}", fi);
-        let field_str = fi.to_string();
-        quote! {
-            assert!(
-                row.#fi == #snap_name,
-                "modify_unchecked: indexed field `{}` was changed (from {:?} to {:?}); use update() instead",
-                #field_str,
-                #snap_name,
-                row.#fi,
-            );
-        }
-    }))
-    .collect();
+    // Debug-build snapshot: clone PK fields + each indexed field.
+    let snap_stmts: Vec<TokenStream> = pk_snap_stmts
+        .into_iter()
+        .chain(indexed_fields.iter().map(|fi| {
+            let snap_name = format_ident!("__snap_{}", fi);
+            quote! {
+                #[cfg(debug_assertions)]
+                let #snap_name = row.#fi.clone();
+            }
+        }))
+        .collect();
+
+    // Debug-build assertions: verify PK fields + each indexed field unchanged.
+    let assert_stmts: Vec<TokenStream> = pk_assert_stmts
+        .into_iter()
+        .chain(indexed_fields.iter().map(|fi| {
+            let snap_name = format_ident!("__snap_{}", fi);
+            let field_str = fi.to_string();
+            quote! {
+                assert!(
+                    row.#fi == #snap_name,
+                    "modify_unchecked: indexed field `{}` was changed (from {:?} to {:?}); use update() instead",
+                    #field_str,
+                    #snap_name,
+                    row.#fi,
+                );
+            }
+        }))
+        .collect();
 
     quote! {
         /// Mutates a row in place via closure, bypassing index maintenance
@@ -1025,7 +1325,7 @@ fn gen_modify_unchecked(
         #[doc(hidden)]
         pub fn modify_unchecked(
             &mut self,
-            pk: &#pk_ty,
+            pk: &#key_ty,
             f: impl ::std::ops::FnOnce(&mut #row_name),
         ) -> ::std::result::Result<(), ::tabulosity::Error> {
             let row = match self.rows.get_mut(pk) {
@@ -1053,19 +1353,13 @@ fn gen_modify_unchecked(
 }
 
 /// Generates `modify_unchecked_range` and `modify_unchecked_all` methods.
-///
-/// `modify_unchecked_range` uses `BTreeMap::range_mut` to iterate a PK range,
-/// applying an `FnMut` closure to each row. `modify_unchecked_all` is sugar
-/// for the full range (`..`). Both return the count of rows modified.
-///
-/// Debug assertions are identical to `modify_unchecked`: per-row snapshots of
-/// PK + indexed fields, with post-closure assertions that they are unchanged.
 fn gen_modify_unchecked_range(
-    pk_ident: &Ident,
-    pk_ty: &Type,
+    pk_info: &PkInfo,
     row_name: &Ident,
     indexes: &[ResolvedIndex],
 ) -> TokenStream {
+    let key_ty = pk_info.key_type();
+
     // Collect all indexed field idents (deduplicated by name).
     let mut seen = std::collections::BTreeSet::new();
     let mut indexed_fields: Vec<&Ident> = Vec::new();
@@ -1077,8 +1371,12 @@ fn gen_modify_unchecked_range(
         }
     }
 
+    let row_ident = format_ident!("row");
+    let (pk_snap_stmts, pk_assert_stmts) =
+        pk_info.gen_modify_unchecked_pk_checks(&row_ident, "modify_unchecked_range");
+
     // Debug-build per-row snapshot + assertion stmts (inside the loop body).
-    let snap_stmts: Vec<TokenStream> = indexed_fields
+    let idx_snap_stmts: Vec<TokenStream> = indexed_fields
         .iter()
         .map(|fi| {
             let snap_name = format_ident!("__snap_{}", fi);
@@ -1088,8 +1386,7 @@ fn gen_modify_unchecked_range(
         })
         .collect();
 
-    let pk_str = pk_ident.to_string();
-    let assert_stmts: Vec<TokenStream> = indexed_fields
+    let idx_assert_stmts: Vec<TokenStream> = indexed_fields
         .iter()
         .map(|fi| {
             let snap_name = format_ident!("__snap_{}", fi);
@@ -1109,39 +1406,29 @@ fn gen_modify_unchecked_range(
     quote! {
         /// Mutates all rows in a PK range via closure, bypassing index
         /// maintenance and FK validation. Returns the number of rows modified.
-        ///
-        /// The closure is `FnMut(&PK, &mut Row)`, called once per row in PK
-        /// order. An empty range returns 0.
-        ///
-        /// In debug builds, asserts per-row that PK and indexed fields are
-        /// unchanged after each closure invocation.
         #[doc(hidden)]
-        pub fn modify_unchecked_range<__R: ::std::ops::RangeBounds<#pk_ty>>(
+        pub fn modify_unchecked_range<__R: ::std::ops::RangeBounds<#key_ty>>(
             &mut self,
             range: __R,
-            mut f: impl ::std::ops::FnMut(&#pk_ty, &mut #row_name),
+            mut f: impl ::std::ops::FnMut(&#key_ty, &mut #row_name),
         ) -> usize {
             let mut __count = 0usize;
             for (__pk, row) in self.rows.range_mut(range) {
-                #[cfg(debug_assertions)]
-                let __snap_pk = row.#pk_ident.clone();
                 #(
                     #[cfg(debug_assertions)]
-                    #snap_stmts
+                    #pk_snap_stmts
+                )*
+                #(
+                    #[cfg(debug_assertions)]
+                    #idx_snap_stmts
                 )*
 
                 f(__pk, row);
 
                 #[cfg(debug_assertions)]
                 {
-                    assert!(
-                        row.#pk_ident == __snap_pk,
-                        "modify_unchecked_range: primary key field `{}` was changed (from {:?} to {:?}); use update() instead",
-                        #pk_str,
-                        __snap_pk,
-                        row.#pk_ident,
-                    );
-                    #(#assert_stmts)*
+                    #(#pk_assert_stmts)*
+                    #(#idx_assert_stmts)*
                 }
 
                 __count += 1;
@@ -1156,14 +1443,28 @@ fn gen_modify_unchecked_range(
         #[doc(hidden)]
         pub fn modify_unchecked_all(
             &mut self,
-            mut f: impl ::std::ops::FnMut(&#pk_ty, &mut #row_name),
+            mut f: impl ::std::ops::FnMut(&#key_ty, &mut #row_name),
         ) -> usize {
             self.modify_unchecked_range(.., f)
         }
     }
 }
 
-fn gen_rebuild_body(indexes: &[ResolvedIndex], _pk_ident: &Ident) -> Vec<TokenStream> {
+fn gen_rebuild_body(indexes: &[ResolvedIndex], pk_info: &PkInfo) -> Vec<TokenStream> {
+    // In rebuild, `pk` is the BTreeMap key (already the correct key type).
+    // For compound PKs, we need to destructure it into individual field values
+    // for the index tuple.
+    let pk_clone_exprs: Vec<TokenStream> = if pk_info.is_compound() {
+        (0..pk_info.fields.len())
+            .map(|i| {
+                let idx = syn::Index::from(i);
+                quote! { pk.#idx.clone() }
+            })
+            .collect()
+    } else {
+        vec![quote! { pk.clone() }]
+    };
+
     indexes
         .iter()
         .map(|idx| {
@@ -1175,7 +1476,7 @@ fn gen_rebuild_body(indexes: &[ResolvedIndex], _pk_ident: &Ident) -> Vec<TokenSt
                 .collect();
 
             let insert_stmt = quote! {
-                self.#idx_name.insert((#(#field_clones,)* pk.clone()));
+                self.#idx_name.insert((#(#field_clones,)* #(#pk_clone_exprs),*));
             };
 
             let body = match &idx.filter {
@@ -1212,19 +1513,19 @@ fn gen_rebuild_body(indexes: &[ResolvedIndex], _pk_ident: &Ident) -> Vec<TokenSt
 
 fn gen_all_query_methods(
     indexes: &[ResolvedIndex],
-    pk_ty: &Type,
+    pk_info: &PkInfo,
     row_name: &Ident,
     all_fields: &[ParsedField],
 ) -> Vec<TokenStream> {
     indexes
         .iter()
-        .map(|idx| gen_query_methods(idx, pk_ty, row_name, all_fields))
+        .map(|idx| gen_query_methods(idx, pk_info, row_name, all_fields))
         .collect()
 }
 
 fn gen_query_methods(
     idx: &ResolvedIndex,
-    pk_ty: &Type,
+    pk_info: &PkInfo,
     row_name: &Ident,
     all_fields: &[ParsedField],
 ) -> TokenStream {
@@ -1234,9 +1535,6 @@ fn gen_query_methods(
     let count_by_fn = format_ident!("count_by_{}", idx.name);
     let helper_fn = format_ident!("_query_{}", idx.name);
     let idx_name = format_ident!("idx_{}", idx.name);
-
-    let pk_suffix = type_suffix(pk_ty);
-    let pk_bounds_name = format_ident!("_bounds_{}", pk_suffix);
 
     // Parameter declarations.
     let param_names: Vec<Ident> = (0..n).map(|i| format_ident!("__q{}", i)).collect();
@@ -1280,8 +1578,7 @@ fn gen_query_methods(
         &qb_names,
         &field_tys,
         &field_bounds_names,
-        &pk_bounds_name,
-        pk_ty,
+        pk_info,
         &idx_name,
         row_name,
     );
@@ -1329,12 +1626,11 @@ fn gen_match_cascade(
     qb_names: &[Ident],
     field_tys: &[&Type],
     field_bounds_names: &[Ident],
-    pk_bounds_name: &Ident,
-    pk_ty: &Type,
+    pk_info: &PkInfo,
     idx_name: &Ident,
     row_name: &Ident,
 ) -> TokenStream {
-    let pk_idx = syn::Index::from(n);
+    let row_lookup = pk_info.row_lookup_from_entry(n);
 
     // Generate match arms from most specific to least specific.
     let mut arms = Vec::new();
@@ -1347,11 +1643,10 @@ fn gen_match_cascade(
             qb_names,
             field_tys,
             field_bounds_names,
-            pk_bounds_name,
-            pk_ty,
+            pk_info,
             idx_name,
             row_name,
-            &pk_idx,
+            &row_lookup,
         );
         arms.push(quote! { #pattern => { #body } });
     }
@@ -1395,22 +1690,50 @@ fn gen_arm_body(
     qb_names: &[Ident],
     _field_tys: &[&Type],
     field_bounds_names: &[Ident],
-    pk_bounds_name: &Ident,
-    _pk_ty: &Type,
+    pk_info: &PkInfo,
     idx_name: &Ident,
     _row_name: &Ident,
-    pk_idx: &syn::Index,
+    row_lookup: &TokenStream,
 ) -> TokenStream {
     let empty_ret = quote! {
         return ::std::boxed::Box::new(::std::iter::empty());
     };
 
-    // We always need PK bounds.
-    let pk_bounds_check = quote! {
-        let ::std::option::Option::Some((__pk_min, __pk_max)) = &self.#pk_bounds_name else {
-            #empty_ret
-        };
-    };
+    // We need PK bounds for each PK field.
+    let mut pk_bounds_checks = Vec::new();
+    let mut pk_start_elems = Vec::new();
+    let mut pk_end_elems = Vec::new();
+    let mut pk_seen_suffixes = std::collections::BTreeSet::new();
+
+    for (i, (_, pk_ty)) in pk_info.fields.iter().enumerate() {
+        let suffix = type_suffix(pk_ty);
+        let bounds_name = format_ident!("_bounds_{}", suffix);
+        let min_var = format_ident!("__pk_min_{}", i);
+        let max_var = format_ident!("__pk_max_{}", i);
+
+        if pk_seen_suffixes.insert(suffix) {
+            pk_bounds_checks.push(quote! {
+                let ::std::option::Option::Some((#min_var, #max_var)) = &self.#bounds_name else {
+                    #empty_ret
+                };
+            });
+        } else {
+            let first_idx = pk_info
+                .fields
+                .iter()
+                .position(|(_, ty)| type_suffix(ty) == type_suffix(pk_ty))
+                .unwrap();
+            let first_min = format_ident!("__pk_min_{}", first_idx);
+            let first_max = format_ident!("__pk_max_{}", first_idx);
+            pk_bounds_checks.push(quote! {
+                let #min_var = #first_min;
+                let #max_var = #first_max;
+            });
+        }
+
+        pk_start_elems.push(quote! { #min_var.clone() });
+        pk_end_elems.push(quote! { #max_var.clone() });
+    }
 
     // For fields num_exact..n, we need their tracked bounds.
     let mut bounds_checks = Vec::new();
@@ -1439,7 +1762,7 @@ fn gen_arm_body(
                 quote! { #min_var.clone() }
             }
         })
-        .chain(std::iter::once(quote! { __pk_min.clone() }))
+        .chain(pk_start_elems.iter().cloned())
         .collect();
 
     // Construct end tuple elements.
@@ -1453,15 +1776,13 @@ fn gen_arm_body(
                 quote! { #max_var.clone() }
             }
         })
-        .chain(std::iter::once(quote! { __pk_max.clone() }))
+        .chain(pk_end_elems.iter().cloned())
         .collect();
 
     // Generate post-filter for fields num_exact..n.
     let needs_post_filter = num_exact < n;
 
     if needs_post_filter {
-        // Clone the QueryBound values for fields that need post-filtering into
-        // local variables so they can be moved into the filter closure.
         let qb_clones: Vec<TokenStream> = (num_exact..n)
             .map(|i| {
                 let clone_var = format_ident!("__qbc{}", i);
@@ -1470,7 +1791,6 @@ fn gen_arm_body(
             })
             .collect();
 
-        // Build filter expression.
         let filter_checks: Vec<TokenStream> = (num_exact..n)
             .map(|i| {
                 let clone_var = format_ident!("__qbc{}", i);
@@ -1493,8 +1813,6 @@ fn gen_arm_body(
             quote! { #(#filter_checks)&&* }
         };
 
-        // Generate a second set of clone variables for the Desc arm, since
-        // the `move` closures consume them.
         let qb_clones_desc: Vec<TokenStream> = (num_exact..n)
             .map(|i| {
                 let clone_var = format_ident!("__qbc{}", i);
@@ -1504,7 +1822,7 @@ fn gen_arm_body(
             .collect();
 
         quote! {
-            #pk_bounds_check
+            #(#pk_bounds_checks)*
             #(#bounds_checks)*
             let __start = (#(#start_elems),*);
             let __end = (#(#end_elems),*);
@@ -1516,7 +1834,7 @@ fn gen_arm_body(
                             .filter(move |__entry| {
                                 #combined_filter
                             })
-                            .map(|__entry| &self.rows[&__entry.#pk_idx])
+                            .map(|__entry| #row_lookup)
                             .skip(__opts.offset)
                     )
                 }
@@ -1528,28 +1846,27 @@ fn gen_arm_body(
                             .filter(move |__entry| {
                                 #combined_filter
                             })
-                            .map(|__entry| &self.rows[&__entry.#pk_idx])
+                            .map(|__entry| #row_lookup)
                             .skip(__opts.offset)
                     )
                 }
             }
         }
     } else {
-        // All exact — no post-filter needed.
         quote! {
-            #pk_bounds_check
+            #(#pk_bounds_checks)*
             let __start = (#(#start_elems),*);
             let __end = (#(#end_elems),*);
             match __opts.order {
                 ::tabulosity::QueryOrder::Asc => ::std::boxed::Box::new(
                     self.#idx_name.range(__start..=__end)
-                        .map(|__entry| &self.rows[&__entry.#pk_idx])
+                        .map(|__entry| #row_lookup)
                         .skip(__opts.offset)
                 ),
                 ::tabulosity::QueryOrder::Desc => ::std::boxed::Box::new(
                     self.#idx_name.range(__start..=__end)
                         .rev()
-                        .map(|__entry| &self.rows[&__entry.#pk_idx])
+                        .map(|__entry| #row_lookup)
                         .skip(__opts.offset)
                 ),
             }
@@ -1569,8 +1886,7 @@ fn gen_arm_body(
 /// closure and asserted unchanged after.
 fn gen_all_modify_each_methods(
     indexes: &[ResolvedIndex],
-    pk_ident: &Ident,
-    pk_ty: &Type,
+    pk_info: &PkInfo,
     row_name: &Ident,
 ) -> Vec<TokenStream> {
     // Collect all indexed field idents (deduplicated) across ALL indexes.
@@ -1586,17 +1902,17 @@ fn gen_all_modify_each_methods(
 
     indexes
         .iter()
-        .map(|idx| gen_modify_each_method(idx, pk_ident, pk_ty, row_name, &indexed_fields))
+        .map(|idx| gen_modify_each_method(idx, pk_info, row_name, &indexed_fields))
         .collect()
 }
 
 fn gen_modify_each_method(
     idx: &ResolvedIndex,
-    pk_ident: &Ident,
-    pk_ty: &Type,
+    pk_info: &PkInfo,
     row_name: &Ident,
     indexed_fields: &[&Ident],
 ) -> TokenStream {
+    let key_ty = pk_info.key_type();
     let n = idx.fields.len();
     let modify_each_fn = format_ident!("modify_each_by_{}", idx.name);
     let helper_fn = format_ident!("_query_{}", idx.name);
@@ -1622,42 +1938,35 @@ fn gen_modify_each_method(
 
     // Debug-build snapshot + assertion statements.
     let method_name_str = modify_each_fn.to_string();
-    let snap_pk = format_ident!("__snap_{}", pk_ident);
-    let snap_stmts: Vec<TokenStream> = std::iter::once(quote! {
-        #[cfg(debug_assertions)]
-        let #snap_pk = __row.#pk_ident.clone();
-    })
-    .chain(indexed_fields.iter().map(|fi| {
-        let snap_name = format_ident!("__snap_{}", fi);
-        quote! {
-            #[cfg(debug_assertions)]
-            let #snap_name = __row.#fi.clone();
-        }
-    }))
-    .collect();
+    let row_ident = format_ident!("__row");
 
-    let pk_str = pk_ident.to_string();
-    let assert_stmts: Vec<TokenStream> = std::iter::once({
-        let msg = format!("{method_name_str}: primary key field `{pk_str}` was changed");
-        quote! {
-            assert!(
-                __row.#pk_ident == #snap_pk,
-                #msg,
-            );
-        }
-    })
-    .chain(indexed_fields.iter().map(|fi| {
-        let snap_name = format_ident!("__snap_{}", fi);
-        let field_str = fi.to_string();
-        let msg = format!("{method_name_str}: indexed field `{field_str}` was changed");
-        quote! {
-            assert!(
-                __row.#fi == #snap_name,
-                #msg,
-            );
-        }
-    }))
-    .collect();
+    let (pk_snap_stmts, pk_assert_stmts) =
+        pk_info.gen_modify_unchecked_pk_checks(&row_ident, &method_name_str);
+    let snap_stmts: Vec<TokenStream> = pk_snap_stmts
+        .into_iter()
+        .chain(indexed_fields.iter().map(|fi| {
+            let snap_name = format_ident!("__snap_{}", fi);
+            quote! {
+                #[cfg(debug_assertions)]
+                let #snap_name = __row.#fi.clone();
+            }
+        }))
+        .collect();
+
+    let assert_stmts: Vec<TokenStream> = pk_assert_stmts
+        .into_iter()
+        .chain(indexed_fields.iter().map(|fi| {
+            let snap_name = format_ident!("__snap_{}", fi);
+            let field_str = fi.to_string();
+            let msg = format!("{method_name_str}: indexed field `{field_str}` was changed");
+            quote! {
+                assert!(
+                    __row.#fi == #snap_name,
+                    #msg,
+                );
+            }
+        }))
+        .collect();
 
     quote! {
         /// Mutates all matching rows in place via closure, bypassing index
@@ -1668,11 +1977,11 @@ fn gen_modify_each_method(
             &mut self,
             #(#params_into_query,)*
             opts: ::tabulosity::QueryOpts,
-            mut f: impl ::std::ops::FnMut(&#pk_ty, &mut #row_name),
+            mut f: impl ::std::ops::FnMut(&#key_ty, &mut #row_name),
         ) -> usize {
             #(#into_query_calls)*
-            let __pks: ::std::vec::Vec<#pk_ty> = self.#helper_fn(#(#qb_forwards,)* opts)
-                .map(|__r| __r.#pk_ident.clone())
+            let __pks: ::std::vec::Vec<#key_ty> = self.#helper_fn(#(#qb_forwards,)* opts)
+                .map(|__r| __r.pk_val())
                 .collect();
             let mut __count = 0usize;
             for __pk in __pks {
@@ -1697,15 +2006,17 @@ fn gen_modify_each_method(
 fn gen_serde_impls(
     table_name: &Ident,
     row_name: &Ident,
-    pk_ty: &Type,
-    pk_ident: &Ident,
+    pk_info: &PkInfo,
     table_name_str: &str,
     is_auto_increment: bool,
 ) -> TokenStream {
     if is_auto_increment {
+        // Auto-increment is only valid for single-column PKs.
+        let pk_ty = &pk_info.fields[0].1;
+        let pk_ident = &pk_info.fields[0].0;
         gen_serde_impls_auto(table_name, row_name, pk_ty, pk_ident, table_name_str)
     } else {
-        gen_serde_impls_plain(table_name, row_name, pk_ty, pk_ident, table_name_str)
+        gen_serde_impls_plain(table_name, row_name, pk_info, table_name_str)
     }
 }
 
@@ -1713,10 +2024,10 @@ fn gen_serde_impls(
 fn gen_serde_impls_plain(
     table_name: &Ident,
     row_name: &Ident,
-    _pk_ty: &Type,
-    pk_ident: &Ident,
+    pk_info: &PkInfo,
     table_name_str: &str,
 ) -> TokenStream {
+    let extract_key = pk_info.extract_key_from_row();
     quote! {
         #[cfg(feature = "serde")]
         impl ::serde::Serialize for #table_name
@@ -1742,7 +2053,7 @@ fn gen_serde_impls_plain(
                 let rows: ::std::vec::Vec<#row_name> = ::serde::Deserialize::deserialize(deserializer)?;
                 let mut table = Self::new();
                 for row in rows {
-                    let pk = row.#pk_ident.clone();
+                    let pk = #extract_key;
                     if table.rows.contains_key(&pk) {
                         return ::std::result::Result::Err(::serde::de::Error::custom(
                             ::std::format!("duplicate key in {}: {:?}", #table_name_str, pk),

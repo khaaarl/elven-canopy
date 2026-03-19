@@ -91,7 +91,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-combat               Combat and invader threat system
 [ ] F-combat-singing       Combat singing buffs and musical instrument bands
 [ ] F-command-queue        Shift+right-click to queue commands
-[ ] F-compound-pk          Compound (multi-column) primary keys
 [ ] F-config-file          Game config file (user://config.json)
 [ ] F-config-ui            Settings UI panel (main menu + pause menu)
 [ ] F-conjured-creatures   Temporary creature spawning with lifetime and auto-despawn
@@ -265,6 +264,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-civilizations        Procedural civilization generation and diplomacy
 [x] F-clothing             Wearable clothing system
 [x] F-component-recipes    Component-based crafting recipes (bread, thread, bowstring)
+[x] F-compound-pk          Compound (multi-column) primary keys
 [x] F-construction         Platform construction (designate/build/cancel)
 [x] F-core-types           VoxelCoord, IDs, SimCommand, GameConfig
 [x] F-crafting             Non-construction jobs and crafting
@@ -4770,7 +4770,7 @@ type priority prevents overwrites.
 **Status:** Done
 
 #### F-compound-pk — Compound (multi-column) primary keys
-**Status:** Todo
+**Status:** Done
 
 Support compound (multi-column) primary keys in Tabulosity tables, analogous to existing compound secondary indexes. Currently all tables require a single-field `#[primary_key]`. Compound PKs would allow tables like `creature_traits(creature_id, trait_kind) → value` to use the natural key as the PK without a synthetic auto-increment ID.
 

@@ -503,7 +503,7 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
                                     {
                                         let __cascade_pks: ::std::vec::Vec<<#src_table_ty as ::tabulosity::TableMeta>::Key> =
                                             self.#src_table_ident.#iter_fn(#query_val, ::tabulosity::QueryOpts::ASC)
-                                                .map(|__r| __r.pk_ref().clone())
+                                                .map(|__r| __r.pk_val())
                                                 .collect();
                                         for __cpk in __cascade_pks {
                                             self.#src_remove_fn(&__cpk)?;
@@ -535,7 +535,7 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
                                 {
                                     let __nullify_pks: ::std::vec::Vec<<#src_table_ty as ::tabulosity::TableMeta>::Key> =
                                         self.#src_table_ident.#iter_fn(&::std::option::Option::Some(id.clone()), ::tabulosity::QueryOpts::ASC)
-                                            .map(|__r| __r.pk_ref().clone())
+                                            .map(|__r| __r.pk_val())
                                             .collect();
                                     for __npk in __nullify_pks {
                                         let mut __row = self.#src_table_ident.get(&__npk).unwrap();

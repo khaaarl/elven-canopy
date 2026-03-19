@@ -1,8 +1,10 @@
 //! Shared attribute parsing utilities for tabulosity derive macros.
 //!
 //! Extracts `#[primary_key]`, `#[indexed]`, and `#[indexed(unique)]` annotations
-//! from struct fields, and `#[index(name = "...", fields(...), filter = "...", unique)]`
-//! from struct-level attributes. Used by `table.rs` during `#[derive(Table)]` expansion.
+//! from struct fields, `#[primary_key("field1", "field2")]` from struct-level
+//! attributes (compound PKs), and `#[index(name = "...", fields(...), filter = "...",
+//! unique)]` from struct-level attributes. Used by `table.rs` during `#[derive(Table)]`
+//! expansion.
 
 use syn::parse::{Parse, ParseStream};
 use syn::{DeriveInput, Field, Ident, LitStr, Token, Type};
@@ -99,6 +101,56 @@ fn parse_field(field: &Field) -> syn::Result<ParsedField> {
         is_indexed,
         is_unique,
     })
+}
+
+/// Parse an optional struct-level `#[primary_key("field1", "field2")]` attribute
+/// for compound primary keys. Returns `None` if no such attribute exists.
+pub fn parse_compound_pk_attr(input: &DeriveInput) -> syn::Result<Option<Vec<String>>> {
+    for attr in &input.attrs {
+        if attr.path().is_ident("primary_key") {
+            let field_names: CompoundPkParsed = attr.parse_args()?;
+            if field_names.fields.len() < 2 {
+                return Err(syn::Error::new_spanned(
+                    attr,
+                    "struct-level #[primary_key(...)] requires at least 2 field names; use field-level #[primary_key] for single-column PKs",
+                ));
+            }
+            // Check for duplicate field names.
+            let mut seen = std::collections::BTreeSet::new();
+            for name in &field_names.fields {
+                if !seen.insert(name.as_str()) {
+                    return Err(syn::Error::new_spanned(
+                        attr,
+                        format!(
+                            "duplicate field `{}` in #[primary_key(...)]; each field can appear at most once",
+                            name
+                        ),
+                    ));
+                }
+            }
+            return Ok(Some(field_names.fields));
+        }
+    }
+    Ok(None)
+}
+
+/// Internal parsed form for `#[primary_key("field1", "field2")]`.
+struct CompoundPkParsed {
+    fields: Vec<String>,
+}
+
+impl Parse for CompoundPkParsed {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let mut fields = Vec::new();
+        while !input.is_empty() {
+            let lit: LitStr = input.parse()?;
+            fields.push(lit.value());
+            if input.peek(Token![,]) {
+                let _: Token![,] = input.parse()?;
+            }
+        }
+        Ok(CompoundPkParsed { fields })
+    }
 }
 
 /// Parse all `#[index(...)]` attributes from the struct-level attributes.

@@ -207,7 +207,7 @@ Generates a companion `{Name}Table` struct. Given a `Creature` struct, you get
 `Default` impl.
 
 **Field attributes:**
-- `#[primary_key]` -- exactly one required. Optionally
+- `#[primary_key]` -- exactly one required for single-column PKs. Optionally
   `#[primary_key(auto_increment)]` for auto-generated keys (see
   [Auto-Increment Primary Keys](#auto-increment-primary-keys)).
 - `#[indexed]` -- zero or more, creates a simple single-field index
@@ -215,6 +215,10 @@ Generates a companion `{Name}Table` struct. Given a `Creature` struct, you get
   insert/update (see [Unique Indexes](#unique-indexes))
 
 **Struct attributes:**
+- `#[primary_key("field1", "field2")]` -- compound (multi-column) primary key.
+  The key type becomes a tuple (e.g., `(CreatureId, TraitKind)`). Requires at
+  least 2 fields. Incompatible with `auto_increment`. See
+  [Compound Primary Keys](#compound-primary-keys).
 - `#[index(name = "...", fields("a", "b"), filter = "...")]` -- compound and/or
   filtered indexes (see below)
 
@@ -642,6 +646,57 @@ counter was stale.
 **Required trait:** The PK type must implement `AutoIncrementable`. Blanket
 impls exist for all integer types. Custom newtypes need a manual impl or a
 newtype over an integer with delegation.
+
+## Compound Primary Keys
+
+Tables can use a struct-level `#[primary_key("field1", "field2")]` attribute to
+declare a compound (multi-column) primary key:
+
+```rust
+#[derive(Table, Clone, Debug)]
+#[primary_key("creature_id", "trait_kind")]
+struct CreatureTrait {
+    #[indexed]  // needed for FK cascade lookups
+    pub creature_id: CreatureId,
+    pub trait_kind: TraitKind,
+    pub value: i32,
+}
+```
+
+The key type becomes a tuple -- in this case `(CreatureId, TraitKind)`. All
+table methods (`get`, `contains`, `remove`, `modify_unchecked`, etc.) accept
+the tuple key:
+
+```rust
+table.get(&(CreatureId(1), TraitKind(10)));
+table.modify_unchecked(&(CreatureId(1), TraitKind(10)), |row| row.value += 1);
+```
+
+**Key behaviors:**
+- `TableMeta::Key` is the tuple type (e.g., `(CreatureId, TraitKind)`)
+- `pk_val()` is generated on the row struct (returns owned tuple).
+  Single-column PKs also get `pk_ref()` for backward compatibility, but
+  compound PKs do not (there is no single field to reference).
+- Secondary indexes flatten the compound PK into their BTreeSet tuples:
+  e.g., `#[indexed] value` on the above table produces
+  `BTreeSet<(i32, CreatureId, TraitKind)>`.
+- Rows are ordered lexicographically by the tuple key.
+
+**FK columns in compound PKs:** Zero, one, or multiple columns of a compound
+PK can be foreign keys. Use `#[indexed]` on FK columns to enable
+cascade/restrict queries, just as with single-column PKs:
+
+```rust
+#[table(singular = "creature_trait", fks(creature_id = "creatures" on_delete cascade))]
+pub creature_traits: CreatureTraitTable,
+```
+
+**Constraints:**
+- Requires at least 2 fields.
+- Incompatible with `auto_increment`.
+- Field names in the attribute must not be duplicated.
+- Compound PK fields cannot appear in struct-level `#[index(fields(...))]`
+  (they are automatically appended to every index tuple).
 
 ## Tracked Bounds
 
