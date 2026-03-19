@@ -34,11 +34,12 @@ pub fn derive_bounded(input: TokenStream) -> TokenStream {
 /// optional secondary indexes.
 ///
 /// Recognizes field attributes: `#[primary_key]` or `#[primary_key(auto_increment)]`
-/// (exactly one for single-column PKs), `#[indexed]` or `#[indexed(unique)]` (zero or
-/// more). Struct-level `#[primary_key("field1", "field2")]` declares a compound
-/// (multi-column) primary key with a tuple key type. Struct-level `#[index(...)]`
-/// supports `unique` keyword for compound unique indexes.
-#[proc_macro_derive(Table, attributes(primary_key, indexed, index))]
+/// (exactly one for single-column PKs), `#[auto_increment]` (at most one non-PK field),
+/// `#[indexed]` or `#[indexed(unique)]` (zero or more). Struct-level
+/// `#[primary_key("field1", "field2")]` declares a compound (multi-column) primary key
+/// with a tuple key type. Struct-level `#[index(...)]` supports `unique` keyword for
+/// compound unique indexes.
+#[proc_macro_derive(Table, attributes(primary_key, auto_increment, indexed, index))]
 pub fn derive_table(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as DeriveInput);
     table::derive(&input).into()
@@ -47,8 +48,10 @@ pub fn derive_table(input: TokenStream) -> TokenStream {
 /// Derives safe write methods with foreign key validation on a database
 /// schema struct.
 ///
-/// Every field must have a `#[table(singular = "...", fks(...), auto)]`
-/// attribute. The `auto` flag generates an `insert_{singular}_auto` method.
+/// Every field must have a `#[table(singular = "...", fks(...), auto, nonpk_auto)]`
+/// attribute. The `auto` flag generates an `insert_{singular}_auto` method for
+/// PK auto-increment tables. The `nonpk_auto` flag marks tables with a non-PK
+/// `#[auto_increment]` field, enabling correct serde deserialization format.
 /// Within `fks(...)`, the `pk` keyword marks an FK field as also being the
 /// child table's primary key, enabling 1:1 parent-child relationships.
 /// An optional struct-level `#[schema_version(N)]` attribute enables schema

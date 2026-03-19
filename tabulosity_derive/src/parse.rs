@@ -1,10 +1,10 @@
 //! Shared attribute parsing utilities for tabulosity derive macros.
 //!
-//! Extracts `#[primary_key]`, `#[indexed]`, and `#[indexed(unique)]` annotations
-//! from struct fields, `#[primary_key("field1", "field2")]` from struct-level
-//! attributes (compound PKs), and `#[index(name = "...", fields(...), filter = "...",
-//! unique)]` from struct-level attributes. Used by `table.rs` during `#[derive(Table)]`
-//! expansion.
+//! Extracts `#[primary_key]`, `#[primary_key(auto_increment)]`, `#[auto_increment]`,
+//! `#[indexed]`, and `#[indexed(unique)]` annotations from struct fields,
+//! `#[primary_key("field1", "field2")]` from struct-level attributes (compound PKs),
+//! and `#[index(name = "...", fields(...), filter = "...", unique)]` from struct-level
+//! attributes. Used by `table.rs` during `#[derive(Table)]` expansion.
 
 use syn::parse::{Parse, ParseStream};
 use syn::{DeriveInput, Field, Ident, LitStr, Token, Type};
@@ -63,6 +63,31 @@ fn parse_field(field: &Field) -> syn::Result<ParsedField> {
                     }
                 }
             }
+        }
+    }
+    // Check for standalone `#[auto_increment]` (non-PK auto-increment).
+    for attr in &field.attrs {
+        if attr.path().is_ident("auto_increment") {
+            if is_auto_increment {
+                return Err(syn::Error::new_spanned(
+                    attr,
+                    "field already has auto_increment via #[primary_key(auto_increment)]; remove the redundant #[auto_increment]",
+                ));
+            }
+            if is_primary_key {
+                return Err(syn::Error::new_spanned(
+                    attr,
+                    "#[auto_increment] cannot be used on a #[primary_key] field; use #[primary_key(auto_increment)] instead",
+                ));
+            }
+            // Reject arguments: `#[auto_increment]` takes no args.
+            if let syn::Meta::List(meta_list) = &attr.meta {
+                return Err(syn::Error::new_spanned(
+                    meta_list,
+                    "#[auto_increment] does not accept arguments",
+                ));
+            }
+            is_auto_increment = true;
         }
     }
     let mut is_indexed = false;

@@ -66,18 +66,21 @@ elven-canopy/
 │   │   ├── database.rs         # FK validation, restrict/cascade/nullify on-delete
 │   │   ├── indexed_table.rs    # Secondary indexes, range queries
 │   │   ├── modify_unchecked.rs # Closure-based mutation (single/range/all) + debug assertions
+│   │   ├── nonpk_auto_database.rs     # Non-PK auto-increment: DB-level FKs, cascades, serde
+│   │   ├── nonpk_auto_increment.rs    # Non-PK #[auto_increment] with compound PKs, indexes
+│   │   ├── nonpk_auto_increment_serde.rs  # Non-PK auto-increment serde, missing-counter fallback
 │   │   ├── parent_pk.rs        # Parent-PK-as-child-PK (1:1 relations) via `pk` keyword
 │   │   ├── parent_pk_serde.rs  # Parent-PK serde roundtrip (feature-gated)
 │   │   ├── query_opts.rs       # QueryOpts ordering/offset + modify_each_by_*
 │   │   ├── serde.rs            # Serde roundtrip (feature-gated)
-│   │   └── unique_index.rs     # Unique index enforcement on insert/update
+│   │   └── unique_index.rs     # Unique index enforcement on insert/update/upsert
 │   └── Cargo.toml
 ├── tabulosity_derive/          # Proc macros: derive(Bounded), derive(Table), derive(Database)
 │   └── src/
 │       ├── lib.rs              # Proc macro entry points
 │       ├── bounded.rs          # derive(Bounded) for newtypes
 │       ├── database.rs         # derive(Database) — FK validation, cascade/nullify, modify_unchecked delegation
-│       ├── parse.rs            # Shared attribute parsing (#[primary_key], #[indexed])
+│       ├── parse.rs            # Shared attribute parsing (#[primary_key], #[auto_increment], #[indexed])
 │       └── table.rs            # derive(Table) — companion struct, indexes, serde, modify_unchecked, modify_each_by_*
 ├── elven_canopy_gdext/         # GDExtension bridge (depends on sim + godot crate)
 │   └── src/

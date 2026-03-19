@@ -20,6 +20,9 @@
 //! - `modify_each_by_*` — query-driven batch mutation with debug-build safety
 //! - `rebuild_indexes()` for deserialization
 //! - `Serialize` / `Deserialize` impls (behind `#[cfg(feature = "serde")]`)
+//! - Non-PK auto-increment via `#[auto_increment]` on a non-primary-key field:
+//!   generates a `next_<field>` counter, `insert_auto_no_fk` method, and serde
+//!   support with fallback counter initialization from `max(field) + 1`.
 //!
 //! Uses `parse.rs` for attribute extraction. All generated code uses fully
 //! qualified paths to avoid name conflicts in user code.
@@ -227,6 +230,19 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
     // Find field-level primary key(s).
     let field_level_pks: Vec<&ParsedField> = fields.iter().filter(|f| f.is_primary_key).collect();
 
+    // Find non-PK auto-increment fields.
+    let nonpk_auto_fields: Vec<&ParsedField> = fields
+        .iter()
+        .filter(|f| f.is_auto_increment && !f.is_primary_key)
+        .collect();
+    if nonpk_auto_fields.len() > 1 {
+        return syn::Error::new_spanned(row_name, "at most one #[auto_increment] field per table")
+            .to_compile_error();
+    }
+    let nonpk_auto_field: Option<(Ident, Type)> = nonpk_auto_fields
+        .first()
+        .map(|f| (f.ident.clone(), f.ty.clone()));
+
     // Build PkInfo — either from struct-level compound PK or field-level single PK.
     let pk_info = if let Some(ref compound_names) = compound_pk_fields {
         // Struct-level compound PK.
@@ -241,10 +257,13 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
         for name in compound_names {
             match fields.iter().find(|f| f.ident == name.as_str()) {
                 Some(f) => {
-                    if f.is_auto_increment {
+                    // `#[primary_key(auto_increment)]` on a compound PK field is still
+                    // forbidden — but a standalone `#[auto_increment]` (non-PK) is fine
+                    // and was already parsed separately above.
+                    if f.is_primary_key && f.is_auto_increment {
                         return syn::Error::new_spanned(
                             row_name,
-                            "compound primary keys cannot use auto_increment",
+                            "compound primary keys cannot use #[primary_key(auto_increment)]",
                         )
                         .to_compile_error();
                     }
@@ -281,6 +300,15 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
             is_auto_increment: pk_field.is_auto_increment,
         }
     };
+
+    // Validate: cannot have both PK auto-increment and non-PK auto-increment.
+    if pk_info.is_auto_increment && nonpk_auto_field.is_some() {
+        return syn::Error::new_spanned(
+            row_name,
+            "cannot have both #[primary_key(auto_increment)] and a separate #[auto_increment] field on the same table",
+        )
+        .to_compile_error();
+    }
 
     let key_ty = pk_info.key_type();
     let extract_key = pk_info.extract_key_from_row();
@@ -403,12 +431,66 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
         quote! {}
     };
 
+    // --- Non-PK auto-increment: counter field, init, bump logic, and methods ---
+    let nonpk_auto_field_decl = if let Some((ref fi, ref ty)) = nonpk_auto_field {
+        let counter_name = format_ident!("next_{}", fi);
+        quote! { #counter_name: #ty, }
+    } else {
+        quote! {}
+    };
+    let nonpk_auto_field_init = if let Some((ref fi, ref ty)) = nonpk_auto_field {
+        let counter_name = format_ident!("next_{}", fi);
+        quote! { #counter_name: <#ty as ::tabulosity::AutoIncrementable>::first(), }
+    } else {
+        quote! {}
+    };
+    let nonpk_auto_bump_on_insert = if let Some((ref fi, ref ty)) = nonpk_auto_field {
+        let counter_name = format_ident!("next_{}", fi);
+        quote! {
+            if row.#fi >= self.#counter_name {
+                self.#counter_name = <#ty as ::tabulosity::AutoIncrementable>::successor(&row.#fi);
+            }
+        }
+    } else {
+        quote! {}
+    };
+    let nonpk_auto_bump_on_upsert = nonpk_auto_bump_on_insert.clone();
+    let nonpk_auto_methods = if let Some((ref fi, ref ty)) = nonpk_auto_field {
+        let counter_name = format_ident!("next_{}", fi);
+        let next_fn = format_ident!("next_{}", fi);
+        quote! {
+            /// Returns the next auto-increment value that will be assigned
+            /// to the `#fi` field.
+            pub fn #next_fn(&self) -> #ty {
+                self.#counter_name.clone()
+            }
+
+            /// Inserts a row with an auto-assigned value for the auto-increment field.
+            /// The closure receives the assigned value and must return a row with that value.
+            #[doc(hidden)]
+            pub fn insert_auto_no_fk(
+                &mut self,
+                f: impl ::std::ops::FnOnce(#ty) -> #row_name,
+            ) -> ::std::result::Result<#key_ty, ::tabulosity::Error> {
+                let __auto_val = self.#counter_name.clone();
+                let row = f(__auto_val.clone());
+                debug_assert_eq!(row.#fi, __auto_val);
+                let pk = #extract_key;
+                self.insert_no_fk(row)?;
+                ::std::result::Result::Ok(pk)
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     let serde_impls = gen_serde_impls(
         &table_name,
         row_name,
         &pk_info,
         table_name_str_ref,
         is_auto_increment,
+        &nonpk_auto_field,
     );
 
     // pk_ref method (single PK only, for backward compat).
@@ -449,6 +531,7 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
             #(#idx_field_decls,)*
             #(#bounds_field_decls,)*
             #next_id_field_decl
+            #nonpk_auto_field_decl
         }
 
         impl #table_name {
@@ -459,6 +542,7 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
                     #(#idx_field_inits,)*
                     #(#bounds_field_inits,)*
                     #next_id_field_init
+                    #nonpk_auto_field_init
                 }
             }
 
@@ -531,12 +615,15 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
                 #(#bounds_widen_row)*
                 #(#unique_check_insert)*
                 #next_id_bump_on_insert
+                #nonpk_auto_bump_on_insert
                 #(#idx_insert)*
                 self.rows.insert(pk, row);
                 ::std::result::Result::Ok(())
             }
 
             #auto_increment_methods
+
+            #nonpk_auto_methods
 
             /// Updates a row. Returns `Err(NotFound)` if the PK is missing,
             /// or `Err(DuplicateIndex)` if a unique index constraint is violated.
@@ -568,6 +655,7 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
                 if let Some(old_row) = self.rows.get(&pk).cloned() {
                     #(#unique_check_update)*
                     #next_id_bump_on_upsert
+                    #nonpk_auto_bump_on_upsert
                     #(#bounds_widen_row)*
                     #(#idx_upsert_update)*
                     self.rows.insert(pk, row);
@@ -575,6 +663,7 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
                     #(#bounds_widen_row)*
                     #(#unique_check_insert)*
                     #next_id_bump_on_upsert
+                    #nonpk_auto_bump_on_upsert
                     #(#idx_upsert_insert)*
                     self.rows.insert(pk, row);
                 }
@@ -2009,12 +2098,23 @@ fn gen_serde_impls(
     pk_info: &PkInfo,
     table_name_str: &str,
     is_auto_increment: bool,
+    nonpk_auto_field: &Option<(Ident, Type)>,
 ) -> TokenStream {
     if is_auto_increment {
-        // Auto-increment is only valid for single-column PKs.
+        // Auto-increment PK is only valid for single-column PKs.
+        // (Cannot coexist with nonpk_auto_field — validated earlier.)
         let pk_ty = &pk_info.fields[0].1;
         let pk_ident = &pk_info.fields[0].0;
         gen_serde_impls_auto(table_name, row_name, pk_ty, pk_ident, table_name_str)
+    } else if let Some((auto_ident, auto_ty)) = nonpk_auto_field {
+        gen_serde_impls_nonpk_auto(
+            table_name,
+            row_name,
+            pk_info,
+            auto_ident,
+            auto_ty,
+            table_name_str,
+        )
     } else {
         gen_serde_impls_plain(table_name, row_name, pk_info, table_name_str)
     }
@@ -2172,6 +2272,134 @@ fn gen_serde_impls_auto(
                 }
 
                 const FIELDS: &[&str] = &["next_id", "rows"];
+                deserializer.deserialize_struct(#table_name_str_owned, FIELDS, #visitor_name)
+            }
+        }
+    }
+}
+
+/// Non-PK auto-increment tables serialize as `{"next_<field>": N, "rows": [...]}`.
+///
+/// On deserialization, if `next_<field>` is missing (e.g., loading an old save where
+/// the field used to be the auto-PK), the table computes `max(field) + 1` across all
+/// loaded rows. The counter is then defensively set to `max(deserialized, computed)`.
+fn gen_serde_impls_nonpk_auto(
+    table_name: &Ident,
+    row_name: &Ident,
+    pk_info: &PkInfo,
+    auto_ident: &Ident,
+    auto_ty: &Type,
+    table_name_str: &str,
+) -> TokenStream {
+    let table_name_str_owned = table_name_str.to_string();
+    let counter_name = format_ident!("next_{}", auto_ident);
+    let counter_name_str = format!("next_{}", auto_ident);
+    let visitor_name = format_ident!("__{}SerdeVisitor", table_name);
+
+    let extract_key = pk_info.extract_key_from_row();
+
+    quote! {
+        #[cfg(feature = "serde")]
+        impl ::serde::Serialize for #table_name
+        where
+            #row_name: ::serde::Serialize,
+            #auto_ty: ::serde::Serialize,
+        {
+            fn serialize<S: ::serde::Serializer>(&self, serializer: S) -> ::std::result::Result<S::Ok, S::Error> {
+                use ::serde::ser::SerializeStruct;
+                let mut state = serializer.serialize_struct(#table_name_str, 2)?;
+                state.serialize_field(#counter_name_str, &self.#counter_name)?;
+                let rows_vec: ::std::vec::Vec<&#row_name> = self.rows.values().collect();
+                state.serialize_field("rows", &rows_vec)?;
+                state.end()
+            }
+        }
+
+        #[cfg(feature = "serde")]
+        impl<'de> ::serde::Deserialize<'de> for #table_name
+        where
+            #row_name: ::serde::Deserialize<'de>,
+            #auto_ty: ::serde::Deserialize<'de> + ::tabulosity::AutoIncrementable,
+        {
+            fn deserialize<D: ::serde::Deserializer<'de>>(deserializer: D) -> ::std::result::Result<Self, D::Error> {
+                struct #visitor_name;
+
+                impl<'de> ::serde::de::Visitor<'de> for #visitor_name
+                where
+                    #row_name: ::serde::Deserialize<'de>,
+                    #auto_ty: ::serde::Deserialize<'de> + ::tabulosity::AutoIncrementable,
+                {
+                    type Value = #table_name;
+
+                    fn expecting(&self, formatter: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                        formatter.write_str(#table_name_str_owned)
+                    }
+
+                    fn visit_map<A: ::serde::de::MapAccess<'de>>(
+                        self,
+                        mut map: A,
+                    ) -> ::std::result::Result<Self::Value, A::Error> {
+                        let mut counter: ::std::option::Option<#auto_ty> = ::std::option::Option::None;
+                        let mut rows_vec: ::std::option::Option<::std::vec::Vec<#row_name>> = ::std::option::Option::None;
+
+                        while let ::std::option::Option::Some(key) = map.next_key::<::std::string::String>()? {
+                            match key.as_str() {
+                                #counter_name_str => {
+                                    if counter.is_some() {
+                                        return ::std::result::Result::Err(::serde::de::Error::duplicate_field(#counter_name_str));
+                                    }
+                                    counter = ::std::option::Option::Some(map.next_value()?);
+                                }
+                                "rows" => {
+                                    if rows_vec.is_some() {
+                                        return ::std::result::Result::Err(::serde::de::Error::duplicate_field("rows"));
+                                    }
+                                    rows_vec = ::std::option::Option::Some(map.next_value()?);
+                                }
+                                _ => {
+                                    let _ = map.next_value::<::serde::de::IgnoredAny>()?;
+                                }
+                            }
+                        }
+
+                        let rows = rows_vec.ok_or_else(|| ::serde::de::Error::missing_field("rows"))?;
+
+                        let mut table = #table_name::new();
+                        for row in rows {
+                            let pk = #extract_key;
+                            if table.rows.contains_key(&pk) {
+                                return ::std::result::Result::Err(::serde::de::Error::custom(
+                                    ::std::format!("duplicate key in {}: {:?}", #table_name_str_owned, pk),
+                                ));
+                            }
+                            table.rows.insert(pk, row);
+                        }
+                        table.rebuild_indexes();
+
+                        // Compute max(field) + 1 from loaded rows.
+                        let mut computed_next = <#auto_ty as ::tabulosity::AutoIncrementable>::first();
+                        for row in table.rows.values() {
+                            let successor = <#auto_ty as ::tabulosity::AutoIncrementable>::successor(&row.#auto_ident);
+                            if successor > computed_next {
+                                computed_next = successor;
+                            }
+                        }
+
+                        // Use deserialized counter if present, else computed.
+                        // Defensively take max of both.
+                        let effective = match counter {
+                            ::std::option::Option::Some(c) => {
+                                if computed_next > c { computed_next } else { c }
+                            }
+                            ::std::option::Option::None => computed_next,
+                        };
+                        table.#counter_name = effective;
+
+                        ::std::result::Result::Ok(table)
+                    }
+                }
+
+                const FIELDS: &[&str] = &[#counter_name_str, "rows"];
                 deserializer.deserialize_struct(#table_name_str_owned, FIELDS, #visitor_name)
             }
         }

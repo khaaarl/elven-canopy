@@ -209,7 +209,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tab-cycle            Tab to cycle focus through units in selection
 [ ] F-tab-indexmap-fork    Forked IndexMap with tombstone compaction (alternative to F-tab-ordered-idx)
 [ ] F-tab-joins            Join iterators across tables
-[ ] F-tab-nonpk-autoinc    Non-PK auto-increment fields in tabulosity
 [ ] F-tab-ordered-idx      Deterministic-iteration hash index with tombstone skip
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
 [ ] F-task-assign-opt      Event-driven bidirectional task assignment
@@ -396,6 +395,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-tab-compound-idx     Compound indexes with prefix queries
 [x] F-tab-filter-idx       Filtered/partial indexes
 [x] F-tab-modify-unchk     Closure-based row mutation (modify_unchecked)
+[x] F-tab-nonpk-autoinc    Non-PK auto-increment fields in tabulosity
 [x] F-tab-parent-pk        Tabulosity: allow parent PK as child table PK for 1:1 relations
 [x] F-tab-query-opts       Query options struct for index queries
 [x] F-tab-schema-ver       Schema versioning fundamentals
@@ -4826,7 +4826,7 @@ Convert child tables in SimDb from synthetic auto-increment primary keys to natu
 
 - **Inventory** — Same as ItemStack; heavily referenced, not a child table.
 
-**Blocked by:** F-tab-nonpk-autoinc
+**Unblocked by:** F-tab-nonpk-autoinc
 **Related:** F-compound-pk, F-tab-nonpk-autoinc, F-tab-parent-pk
 
 #### F-compound-pk — Compound (multi-column) primary keys
@@ -4926,7 +4926,7 @@ closure call. Database-level wrappers delegate to the table methods.
 **Related:** F-sim-db-impl, F-tab-query-opts
 
 #### F-tab-nonpk-autoinc — Non-PK auto-increment fields in tabulosity
-**Status:** Todo
+**Status:** Done
 
 Add support for a single `#[auto_increment]` field per table that is NOT the primary key. Currently, auto-incrementing is only available on single-column primary keys (`#[primary_key(auto_increment)]`). This feature decouples auto-incrementing from primary-key status, allowing a table to have a compound PK while still getting an automatically assigned unique value for one of its fields.
 
@@ -4941,7 +4941,7 @@ Add support for a single `#[auto_increment]` field per table that is NOT the pri
 
 **Scope:** Tabulosity crate only (`tabulosity` + `tabulosity_derive`). No sim changes.
 
-**Blocks:** F-child-table-pks
+**Unblocked:** F-child-table-pks
 **Related:** F-child-table-pks, F-compound-pk, F-tab-parent-pk
 
 #### F-tab-ordered-idx — Deterministic-iteration hash index with tombstone skip
@@ -4958,9 +4958,9 @@ policy changes.
 
 **Entry representation:**
 ```
-enum Entry<K, V> {
     Live(K, V),
     Tombstone { span_start: usize, after_span: usize },
+enum Entry<K, V> {
 }
 ```
 Relies on `(K, V)` being at least as large as two usizes in practice (true for

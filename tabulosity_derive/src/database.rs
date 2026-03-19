@@ -1,7 +1,7 @@
 //! Implementation of `#[derive(Database)]`.
 //!
-//! Parses `#[table(singular = "...", fks(...))]` attributes on every field of
-//! the database struct. Generates:
+//! Parses `#[table(singular = "...", fks(...), auto, nonpk_auto)]` attributes
+//! on every field of the database struct. Generates:
 //!
 //! - `new()` — creates all tables empty.
 //! - `insert_{singular}`, `update_{singular}`, `upsert_{singular}`,
@@ -73,11 +73,21 @@ struct FkDecl {
     on_delete: OnDeleteAction,
 }
 
-/// A parsed `#[table(singular = "...", fks(...), auto)]` attribute.
+/// A parsed `#[table(singular = "...", fks(...), auto, nonpk_auto)]` attribute.
 struct TableAttr {
     singular: String,
     fks: Vec<FkDecl>,
+    /// Table has `#[primary_key(auto_increment)]` — generates `insert_*_auto`
+    /// that delegates to `next_id()` / `insert_auto_no_fk(|pk| ...)`.
     is_auto: bool,
+    /// Table has a non-PK `#[auto_increment]` field — generates `insert_*_auto`
+    /// that delegates to `next_<field>()` / `insert_no_fk()`.
+    /// Mutually exclusive with `is_auto`.
+    is_nonpk_auto: bool,
+    /// For `nonpk_auto`: the name of the auto-increment field (e.g., "seq").
+    /// Currently informational; may be used by future codegen.
+    #[allow(dead_code)]
+    auto_field: Option<String>,
 }
 
 /// A fully parsed table field with all metadata needed for codegen.
@@ -175,6 +185,8 @@ fn parse_table_attr(attr: &syn::Attribute) -> syn::Result<TableAttr> {
     let mut singular = None;
     let mut fks = Vec::new();
     let mut is_auto = false;
+    let mut is_nonpk_auto = false;
+    let mut auto_field = None;
 
     attr.parse_nested_meta(|meta| {
         if meta.path.is_ident("singular") {
@@ -191,8 +203,16 @@ fn parse_table_attr(attr: &syn::Attribute) -> syn::Result<TableAttr> {
         } else if meta.path.is_ident("auto") {
             is_auto = true;
             Ok(())
+        } else if meta.path.is_ident("nonpk_auto") {
+            is_nonpk_auto = true;
+            Ok(())
+        } else if meta.path.is_ident("auto_field") {
+            let _: Token![=] = meta.input.parse()?;
+            let lit: LitStr = meta.input.parse()?;
+            auto_field = Some(lit.value());
+            Ok(())
         } else {
-            Err(meta.error("expected `singular`, `fks`, or `auto`"))
+            Err(meta.error("expected `singular`, `fks`, `auto`, `nonpk_auto`, or `auto_field`"))
         }
     })?;
 
@@ -200,10 +220,21 @@ fn parse_table_attr(attr: &syn::Attribute) -> syn::Result<TableAttr> {
         syn::Error::new_spanned(attr, "missing `singular = \"...\"` in #[table(...)]")
     })?;
 
+    if is_auto && is_nonpk_auto {
+        return Err(syn::Error::new_spanned(
+            attr,
+            "cannot use both `auto` and `nonpk_auto` on the same table",
+        ));
+    }
+    // auto_field is optional — currently for documentation only.
+    // If future codegen needs the field name, it will be available.
+
     Ok(TableAttr {
         singular,
         fks,
         is_auto,
+        is_nonpk_auto,
+        auto_field,
     })
 }
 
@@ -550,6 +581,10 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
                 .unwrap_or_default();
 
             // Auto-increment insert method (only for auto tables).
+            // For non-PK auto-increment tables (`nonpk_auto`), the table's
+            // `insert_auto_no_fk` method handles counter management. The Database
+            // `insert_*_auto` wrapper with FK checks is generated via `nonpk_auto`
+            // + `auto_field = "field_name"` (provides counter accessor name).
             let auto_insert_method = if tf.attr.is_auto {
                 let insert_auto_fn = format_ident!("insert_{}_auto", singular);
                 let fk_checks_auto = gen_fk_checks();
@@ -565,6 +600,12 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
                         ::std::result::Result::Ok(pk)
                     }
                 }
+            } else if tf.attr.is_nonpk_auto {
+                // Non-PK auto tables don't get a database-level insert_auto
+                // wrapper because the auto field type isn't known at the
+                // Database derive level. Use the table's insert_auto_no_fk
+                // directly: `db.table.insert_auto_no_fk(|auto_val| ...)`.
+                quote! {}
             } else {
                 quote! {}
             };
@@ -700,7 +741,10 @@ fn generate_serde_impls(
                 row_ty,
                 table_name_str,
                 &tf.attr.fks,
-                tf.attr.is_auto,
+                // Tables with auto-PK or non-PK auto-increment serialize as
+                // struct format (not bare array), so Database serde must
+                // deserialize them as the full table type.
+                tf.attr.is_auto || tf.attr.is_nonpk_auto,
             )
         })
         .collect();

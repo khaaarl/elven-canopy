@@ -60,6 +60,8 @@ Rust. It provides:
   on insert and update
 - **Auto-increment primary keys** -- `#[primary_key(auto_increment)]` with
   monotonic counters that survive serde roundtrips
+- **Non-PK auto-increment** -- `#[auto_increment]` on non-PK fields for
+  globally unique tiebreaker columns in compound-PK child tables
 - **Cross-table foreign key integrity** -- restrict, cascade, and nullify
   on-delete semantics with cycle detection
 - **Query options** -- ascending/descending ordering and offset (skip N) on all
@@ -127,22 +129,30 @@ tabulosity_derive/
                        modify_unchecked, modify_each_by_*
     database.rs     -- derive(Database) -- FK validation, write methods, serde,
                        modify_unchecked delegation
-    parse.rs        -- shared attribute parsing (#[primary_key], #[indexed], #[index])
+    parse.rs        -- shared attribute parsing (#[primary_key], #[auto_increment], #[indexed], #[index])
 ```
 
 **Test files:**
 
 ```
 tabulosity/tests/
-    auto_increment.rs   -- auto-increment PK generation and serde roundtrip
-    basic_table.rs      -- CRUD on tables without indexes
-    bounded.rs          -- derive(Bounded) on newtypes
-    database.rs         -- FK validation, restrict/cascade/nullify on-delete
-    indexed_table.rs    -- simple, compound, filtered indexes; IntoQuery API
-    modify_unchecked.rs -- single/range/all modify_unchecked variants + debug assertions
-    query_opts.rs       -- QueryOpts ordering/offset + modify_each_by_*
-    serde.rs            -- serde roundtrip (feature-gated)
-    unique_index.rs     -- unique index enforcement on insert/update
+    auto_increment.rs              -- auto-increment PK generation and serde roundtrip
+    basic_table.rs                 -- CRUD on tables without indexes
+    bounded.rs                     -- derive(Bounded) on newtypes
+    compound_pk.rs                 -- compound (multi-column) PK CRUD and indexes
+    compound_pk_database.rs        -- compound PK with Database derive, FKs, cascades
+    compound_pk_serde.rs           -- compound PK serde roundtrip
+    database.rs                    -- FK validation, restrict/cascade/nullify on-delete
+    indexed_table.rs               -- simple, compound, filtered indexes; IntoQuery API
+    modify_unchecked.rs            -- single/range/all modify_unchecked variants + debug assertions
+    nonpk_auto_increment.rs        -- non-PK #[auto_increment] with compound PKs, indexes
+    nonpk_auto_increment_serde.rs  -- non-PK auto-increment serde, missing-counter fallback
+    nonpk_auto_database.rs         -- non-PK auto-increment Database-level FKs, cascades, serde
+    parent_pk.rs                   -- parent PK as child FK for 1:1 relations
+    parent_pk_serde.rs             -- parent PK serde roundtrip
+    query_opts.rs                  -- QueryOpts ordering/offset + modify_each_by_*
+    serde.rs                       -- serde roundtrip (feature-gated)
+    unique_index.rs                -- unique index enforcement on insert/update/upsert
 ```
 
 ## Current API
@@ -210,6 +220,8 @@ Generates a companion `{Name}Table` struct. Given a `Creature` struct, you get
 - `#[primary_key]` -- exactly one required for single-column PKs. Optionally
   `#[primary_key(auto_increment)]` for auto-generated keys (see
   [Auto-Increment Primary Keys](#auto-increment-primary-keys)).
+- `#[auto_increment]` -- at most one non-PK field. Auto-assigns sequential
+  values via a per-table counter. See [Non-PK Auto-Increment Fields](#non-pk-auto-increment-fields).
 - `#[indexed]` -- zero or more, creates a simple single-field index
 - `#[indexed(unique)]` -- unique index that rejects duplicate values on
   insert/update (see [Unique Indexes](#unique-indexes))
@@ -693,10 +705,64 @@ pub creature_traits: CreatureTraitTable,
 
 **Constraints:**
 - Requires at least 2 fields.
-- Incompatible with `auto_increment`.
+- Incompatible with `#[primary_key(auto_increment)]` on PK fields (use
+  `#[auto_increment]` on a non-PK field instead — see below).
 - Field names in the attribute must not be duplicated.
 - Compound PK fields cannot appear in struct-level `#[index(fields(...))]`
   (they are automatically appended to every index tuple).
+
+## Non-PK Auto-Increment Fields
+
+A field-level `#[auto_increment]` attribute can be placed on any non-primary-key
+field to get auto-assigned sequential values. This is useful for child tables
+with compound PKs that need a globally unique tiebreaker:
+
+```rust
+#[derive(Table, Clone, Debug)]
+#[primary_key("creature_id", "seq")]
+struct Thought {
+    pub creature_id: CreatureId,
+    #[auto_increment]
+    pub seq: u64,
+    pub kind: String,
+    pub tick: u64,
+}
+```
+
+The table gets an `insert_auto_no_fk` method that takes a closure receiving the
+auto-assigned value:
+
+```rust
+let pk = table.insert_auto_no_fk(|seq| Thought {
+    creature_id: CreatureId(1),
+    seq,
+    kind: "happy".into(),
+    tick: 100,
+})?;
+// pk == (CreatureId(1), 0)
+```
+
+**Counter behavior:** Same as auto-increment PKs — starts at 0, monotonically
+increases, never reuses values, bumped by both manual and auto inserts.
+
+**Serde:** Serialized as `{"next_<field>": N, "rows": [...]}`. On deserialize,
+if the counter is missing (e.g., old save where the field was previously an
+auto-PK), it is computed as `max(field) + 1` across loaded rows. The counter
+is defensively set to `max(deserialized, computed)`.
+
+**Constraints:**
+- At most one `#[auto_increment]` field per table.
+- Cannot be on a `#[primary_key]` field (use `#[primary_key(auto_increment)]`).
+- Cannot coexist with `#[primary_key(auto_increment)]` on the same table.
+- The field type must implement `AutoIncrementable`.
+
+**Database derive:** Tables with non-PK auto-increment use `nonpk_auto` in the
+`#[table(...)]` attribute to enable correct serde format at the database level:
+
+```rust
+#[table(singular = "thought", nonpk_auto, fks(creature_id = "creatures" on_delete cascade))]
+pub thoughts: ThoughtTable,
+```
 
 ## Tracked Bounds
 
