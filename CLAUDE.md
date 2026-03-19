@@ -144,6 +144,10 @@ When the user asks to merge a feature branch to main, use the `/merge-to-main` s
 
 **When to act:** Only start editing files or running commands when the user gives a clear, unambiguous instruction to do so — e.g., "implement this", "write that test", "update the tracker", "make a branch and do X". If you're not sure whether the user wants you to act or keep discussing, ask.
 
+## Planning
+
+**Never use EnterPlanMode/ExitPlanMode unless explicitly requested.** When a task is large enough to warrant significant planning, write the plan to `.tmp/plan-<name>.md` so it survives context compaction and restarts, summarize it in conversation, and wait for approval before implementing.
+
 ## Key Constraints
 
 - **Determinism (sim crate)**: `elven_canopy_sim` must produce identical results given the same seed. No hash-order dependence, no set iteration, no stdlib PRNG. All crates share a hand-rolled xoshiro256++ PRNG from `elven_canopy_prng` (with SplitMix64 seeding) — no external PRNG crate dependencies. This enables consistency in multiplayer and verification of optimizations. **Scope:** The strict determinism constraint (identical results across platforms/compilers) applies to `elven_canopy_sim`. The music crate uses the same PRNG for seed-based reproducibility but doesn't participate in lockstep multiplayer or replay verification.
