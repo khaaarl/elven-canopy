@@ -1784,6 +1784,7 @@ mod tests {
 
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
+        tree_gen::generate_terrain(&mut world, &config, &mut rng);
         tree_gen::generate_tree(&mut world, &config, &mut rng, &|_| {});
 
         world
@@ -2221,6 +2222,7 @@ mod tests {
 
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
+        tree_gen::generate_terrain(&mut world, &config, &mut rng);
         tree_gen::generate_tree(&mut world, &config, &mut rng, &|_| {});
 
         let graph = build_nav_graph(&world, &no_faces());
@@ -2273,11 +2275,13 @@ mod tests {
         // Build two graphs from the same seed.
         let mut world_a = VoxelWorld::new(64, 64, 64);
         let mut rng_a = GameRng::new(42);
+        tree_gen::generate_terrain(&mut world_a, &config, &mut rng_a);
         tree_gen::generate_tree(&mut world_a, &config, &mut rng_a, &|_| {});
         let graph_a = build_nav_graph(&world_a, &no_faces());
 
         let mut world_b = VoxelWorld::new(64, 64, 64);
         let mut rng_b = GameRng::new(42);
+        tree_gen::generate_terrain(&mut world_b, &config, &mut rng_b);
         tree_gen::generate_tree(&mut world_b, &config, &mut rng_b, &|_| {});
         let graph_b = build_nav_graph(&world_b, &no_faces());
 
@@ -2306,6 +2310,7 @@ mod tests {
 
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
+        tree_gen::generate_terrain(&mut world, &config, &mut rng);
         tree_gen::generate_tree(&mut world, &config, &mut rng, &|_| {});
 
         let graph = build_nav_graph(&world, &no_faces());
@@ -2352,6 +2357,7 @@ mod tests {
 
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
+        tree_gen::generate_terrain(&mut world, &config, &mut rng);
         tree_gen::generate_tree(&mut world, &config, &mut rng, &|_| {});
 
         let graph = build_nav_graph(&world, &no_faces());

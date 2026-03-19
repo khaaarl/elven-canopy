@@ -1,8 +1,9 @@
 // Energy-based recursive tree generation and terrain.
 //
 // Generates organic tree geometry — trunk, branches, roots, and leaf canopy —
-// using a unified energy-based segment growth model, plus hilly dirt terrain
-// via value noise with bilinear interpolation. The core insight for trees:
+// using a unified energy-based segment growth model. Terrain (hilly dirt via
+// value noise with bilinear interpolation) is generated separately by
+// `generate_terrain()`. The core insight for trees:
 // **the trunk is just the first branch**. All segments (trunk, branches,
 // sub-branches, roots) are grown by the same algorithm, differing only in
 // their initial energy, direction, and gravitropism.
@@ -47,7 +48,8 @@
 //
 // See also: `world.rs` for the voxel grid being populated, `nav.rs` for the
 // navigation graph built on top of the generated geometry, `config.rs` for
-// `TreeProfile` and its sub-structs, `worldgen.rs` which calls `generate_tree()`.
+// `TreeProfile` and its sub-structs, `worldgen.rs` which calls
+// `generate_terrain()` then `generate_tree()`.
 //
 // **Critical constraint: determinism.** All randomness comes from the `GameRng`
 // passed by the caller. The FIFO work queue ensures breadth-first processing
@@ -391,8 +393,10 @@ fn compute_terrain_heights(
             let x = (i % size_x as usize) as i64;
             let z = (i / size_x as usize) as i64;
             // Map (x, z) to noise grid coordinates in FP.
-            let fx = x * FP_ONE / noise_scale_fp;
-            let fz = z * FP_ONE / noise_scale_fp;
+            // Multiply by FP_ONE twice: once to put x into FP, once to keep
+            // the result in FP after dividing by noise_scale_fp (also FP).
+            let fx = x * FP_ONE * FP_ONE / noise_scale_fp;
+            let fz = z * FP_ONE * FP_ONE / noise_scale_fp;
             let gx = (fx >> FP_SHIFT) as usize;
             let gz = (fz >> FP_SHIFT) as usize;
             let tx = fx & (FP_ONE - 1); // fractional part
@@ -427,7 +431,10 @@ fn compute_terrain_heights(
 /// Generate terrain: lay a base ground plane of Dirt from y=0 to `floor_y`,
 /// then optionally extend columns upward with noise-based hills. Uses rayon
 /// to initialize column groups in parallel.
-fn generate_terrain(world: &mut VoxelWorld, config: &GameConfig, rng: &mut GameRng) {
+///
+/// Must be called on a fresh `VoxelWorld` before `generate_tree`. Consumes
+/// PRNG draws for the noise grid, so call order matters for determinism.
+pub fn generate_terrain(world: &mut VoxelWorld, config: &GameConfig, rng: &mut GameRng) {
     let size_x = world.size_x;
     let size_z = world.size_z;
     let floor_y = config.floor_y;
@@ -452,8 +459,9 @@ fn generate_terrain(world: &mut VoxelWorld, config: &GameConfig, rng: &mut GameR
 /// Generate a tree at the world center, populating the voxel world and
 /// returning the voxel lists for the Tree entity.
 ///
-/// Also generates terrain: every column gets a single Dirt span from y=0 up to
-/// `floor_y + noise_height`, creating rolling hills across the entire map.
+/// The world must already have terrain applied via [`generate_terrain`] before
+/// calling this function. The PRNG must be in the state left by
+/// `generate_terrain` for deterministic results.
 pub fn generate_tree(
     world: &mut VoxelWorld,
     config: &GameConfig,
@@ -470,14 +478,7 @@ pub fn generate_tree(
     let center_x_fp = (world.size_x as i64 / 2) * FP_ONE;
     let center_z_fp = (world.size_z as i64 / 2) * FP_ONE;
 
-    // --- Terrain: every column is a single Dirt span from y=0 to floor_y + noise_height ---
     let floor_y = config.floor_y;
-    let t0 = std::time::Instant::now();
-    generate_terrain(world, config, rng);
-    log(&format!(
-        "[worldgen]   terrain generation took {:.1?}",
-        t0.elapsed()
-    ));
 
     // --- Convert config params to fixed-point ---
     let initial_energy_fp = f32_to_fp(profile.growth.initial_energy);
@@ -943,6 +944,17 @@ mod tests {
         config
     }
 
+    /// Generate terrain + tree together — convenience wrapper for tests that
+    /// need both (mirrors the old `generate_tree` which included terrain).
+    fn generate_terrain_and_tree(
+        world: &mut VoxelWorld,
+        config: &GameConfig,
+        rng: &mut GameRng,
+    ) -> TreeGenResult {
+        generate_terrain(world, config, rng);
+        generate_tree(world, config, rng, &|_| {})
+    }
+
     /// Config with roots disabled for simpler tests.
     fn test_config_no_roots() -> GameConfig {
         let mut config = test_config();
@@ -956,7 +968,7 @@ mod tests {
         let config = test_config_no_roots();
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        let result = generate_tree(&mut world, &config, &mut rng, &|_| {});
+        let result = generate_terrain_and_tree(&mut world, &config, &mut rng);
 
         assert!(!result.trunk_voxels.is_empty());
         for coord in &result.trunk_voxels {
@@ -970,11 +982,11 @@ mod tests {
 
         let mut world_a = VoxelWorld::new(64, 64, 64);
         let mut rng_a = GameRng::new(42);
-        let result_a = generate_tree(&mut world_a, &config, &mut rng_a, &|_| {});
+        let result_a = generate_terrain_and_tree(&mut world_a, &config, &mut rng_a);
 
         let mut world_b = VoxelWorld::new(64, 64, 64);
         let mut rng_b = GameRng::new(42);
-        let result_b = generate_tree(&mut world_b, &config, &mut rng_b, &|_| {});
+        let result_b = generate_terrain_and_tree(&mut world_b, &config, &mut rng_b);
 
         assert_eq!(result_a.trunk_voxels, result_b.trunk_voxels);
         assert_eq!(result_a.branch_voxels, result_b.branch_voxels);
@@ -988,11 +1000,11 @@ mod tests {
 
         let mut world_a = VoxelWorld::new(64, 64, 64);
         let mut rng_a = GameRng::new(42);
-        let result_a = generate_tree(&mut world_a, &config, &mut rng_a, &|_| {});
+        let result_a = generate_terrain_and_tree(&mut world_a, &config, &mut rng_a);
 
         let mut world_b = VoxelWorld::new(64, 64, 64);
         let mut rng_b = GameRng::new(999);
-        let result_b = generate_tree(&mut world_b, &config, &mut rng_b, &|_| {});
+        let result_b = generate_terrain_and_tree(&mut world_b, &config, &mut rng_b);
 
         // Branch geometry uses RNG for angles, growth, forking — must differ.
         assert_ne!(
@@ -1006,7 +1018,7 @@ mod tests {
         let config = test_config_no_roots();
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        let result = generate_tree(&mut world, &config, &mut rng, &|_| {});
+        let result = generate_terrain_and_tree(&mut world, &config, &mut rng);
 
         // Count trunk voxels near the base (y <= 3) vs near the top.
         let max_y = result.trunk_voxels.iter().map(|v| v.y).max().unwrap_or(0);
@@ -1031,7 +1043,7 @@ mod tests {
         let config = test_config();
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        generate_tree(&mut world, &config, &mut rng, &|_| {});
+        generate_terrain_and_tree(&mut world, &config, &mut rng);
 
         // Ground plane at floor_y should be Dirt (check away from trunk where roots won't overwrite).
         let edge = VoxelCoord::new(5, 0, 5);
@@ -1047,7 +1059,7 @@ mod tests {
 
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        let result = generate_tree(&mut world, &config, &mut rng, &|_| {});
+        let result = generate_terrain_and_tree(&mut world, &config, &mut rng);
 
         assert!(!result.trunk_voxels.is_empty(), "Should have trunk voxels");
         assert!(
@@ -1066,7 +1078,7 @@ mod tests {
 
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        let result = generate_tree(&mut world, &config, &mut rng, &|_| {});
+        let result = generate_terrain_and_tree(&mut world, &config, &mut rng);
 
         assert!(
             !result.root_voxels.is_empty(),
@@ -1089,7 +1101,7 @@ mod tests {
 
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        let result = generate_tree(&mut world, &config, &mut rng, &|_| {});
+        let result = generate_terrain_and_tree(&mut world, &config, &mut rng);
 
         let center_x = 32;
         let center_z = 32;
@@ -1124,7 +1136,7 @@ mod tests {
 
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        let result = generate_tree(&mut world, &config, &mut rng, &|_| {});
+        let result = generate_terrain_and_tree(&mut world, &config, &mut rng);
 
         assert!(
             !result.leaf_voxels.is_empty(),
@@ -1140,7 +1152,7 @@ mod tests {
         let config = test_config();
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        let result = generate_tree(&mut world, &config, &mut rng, &|_| {});
+        let result = generate_terrain_and_tree(&mut world, &config, &mut rng);
 
         for coord in &result.trunk_voxels {
             assert_eq!(
@@ -1172,7 +1184,7 @@ mod tests {
 
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        let result = generate_tree(&mut world, &config, &mut rng, &|_| {});
+        let result = generate_terrain_and_tree(&mut world, &config, &mut rng);
 
         assert!(
             result.leaf_voxels.is_empty(),
@@ -1191,11 +1203,11 @@ mod tests {
 
         let mut world_nf = VoxelWorld::new(64, 64, 64);
         let mut rng_nf = GameRng::new(42);
-        let result_nf = generate_tree(&mut world_nf, &config_no_flare, &mut rng_nf, &|_| {});
+        let result_nf = generate_terrain_and_tree(&mut world_nf, &config_no_flare, &mut rng_nf);
 
         let mut world_f = VoxelWorld::new(64, 64, 64);
         let mut rng_f = GameRng::new(42);
-        let result_f = generate_tree(&mut world_f, &config_flare, &mut rng_f, &|_| {});
+        let result_f = generate_terrain_and_tree(&mut world_f, &config_flare, &mut rng_f);
 
         let base_count_no_flare = result_nf.trunk_voxels.iter().filter(|v| v.y == 1).count();
         let base_count_flare = result_f.trunk_voxels.iter().filter(|v| v.y == 1).count();
@@ -1216,11 +1228,11 @@ mod tests {
 
         let mut world_a = VoxelWorld::new(64, 64, 64);
         let mut rng_a = GameRng::new(99);
-        let result_a = generate_tree(&mut world_a, &config, &mut rng_a, &|_| {});
+        let result_a = generate_terrain_and_tree(&mut world_a, &config, &mut rng_a);
 
         let mut world_b = VoxelWorld::new(64, 64, 64);
         let mut rng_b = GameRng::new(99);
-        let result_b = generate_tree(&mut world_b, &config, &mut rng_b, &|_| {});
+        let result_b = generate_terrain_and_tree(&mut world_b, &config, &mut rng_b);
 
         assert_eq!(result_a.trunk_voxels, result_b.trunk_voxels);
         assert_eq!(result_a.branch_voxels, result_b.branch_voxels);
@@ -1244,7 +1256,7 @@ mod tests {
 
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        let result = generate_tree(&mut world, &config, &mut rng, &|_| {});
+        let result = generate_terrain_and_tree(&mut world, &config, &mut rng);
 
         let all_wood: Vec<VoxelCoord> = result
             .trunk_voxels
@@ -1288,7 +1300,7 @@ mod tests {
         let config = test_config();
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        let result = generate_tree(&mut world, &config, &mut rng, &|_| {});
+        let result = generate_terrain_and_tree(&mut world, &config, &mut rng);
 
         let all_wood: Vec<VoxelCoord> = result
             .trunk_voxels
@@ -1327,7 +1339,7 @@ mod tests {
         let config = test_config();
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        let result = generate_tree(&mut world, &config, &mut rng, &|_| {});
+        let result = generate_terrain_and_tree(&mut world, &config, &mut rng);
 
         assert!(!result.trunk_voxels.is_empty(), "Should have trunk voxels");
         assert!(
@@ -1352,7 +1364,6 @@ mod tests {
             floor_y: 0,
             ..GameConfig::default()
         };
-        config.tree_profile.growth.initial_energy = 50.0;
         config.terrain_max_height = 4;
         config.terrain_noise_scale = 8.0;
         config
@@ -1364,11 +1375,11 @@ mod tests {
 
         let mut world_a = VoxelWorld::new(64, 64, 64);
         let mut rng_a = GameRng::new(42);
-        generate_tree(&mut world_a, &config, &mut rng_a, &|_| {});
+        generate_terrain(&mut world_a, &config, &mut rng_a);
 
         let mut world_b = VoxelWorld::new(64, 64, 64);
         let mut rng_b = GameRng::new(42);
-        generate_tree(&mut world_b, &config, &mut rng_b, &|_| {});
+        generate_terrain(&mut world_b, &config, &mut rng_b);
 
         // Compare heightmaps to verify terrain determinism.
         assert_eq!(world_a.heightmap(), world_b.heightmap());
@@ -1379,7 +1390,7 @@ mod tests {
         let config = terrain_config();
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        generate_tree(&mut world, &config, &mut rng, &|_| {});
+        generate_terrain(&mut world, &config, &mut rng);
 
         // Check that terrain heights vary across the world.
         let hm = world.heightmap();
@@ -1396,9 +1407,8 @@ mod tests {
         let config = terrain_config();
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        generate_tree(&mut world, &config, &mut rng, &|_| {});
+        generate_terrain(&mut world, &config, &mut rng);
 
-        // Check terrain height at corners (far from center tree).
         let max_terrain = config.terrain_max_height;
         for &(x, z) in &[(0, 0), (0, 63), (63, 0), (63, 63)] {
             for y in (max_terrain + 1)..64 {
@@ -1419,7 +1429,7 @@ mod tests {
         let config = terrain_config();
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        generate_tree(&mut world, &config, &mut rng, &|_| {});
+        generate_terrain(&mut world, &config, &mut rng);
 
         // Every column should have solid ground at y=0.
         for z in 0..64_i32 {
@@ -1441,15 +1451,39 @@ mod tests {
         config.terrain_max_height = 0;
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        generate_tree(&mut world, &config, &mut rng, &|_| {});
+        generate_terrain(&mut world, &config, &mut rng);
 
-        // With terrain_max_height=0, ground plane should still exist at floor_y
-        // (check away from trunk center where roots won't overwrite).
         let coord = VoxelCoord::new(5, 0, 5);
         assert_eq!(world.get(coord), VoxelType::Dirt);
         // No hills above floor_y: off-center y=1 should be air.
         let offcenter = VoxelCoord::new(5, 1, 5);
         assert_eq!(world.get(offcenter), VoxelType::Air);
+    }
+
+    #[test]
+    fn terrain_corners_have_height_variation() {
+        // Verify terrain has real hills — no tree needed, just terrain.
+        let config = terrain_config();
+        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut rng = GameRng::new(42);
+        generate_terrain(&mut world, &config, &mut rng);
+
+        // Sample terrain heights at the four corners.
+        let mut corner_heights = std::collections::BTreeSet::new();
+        for &(x, z) in &[(0, 0), (0, 63), (63, 0), (63, 63)] {
+            let mut top = 0;
+            for y in 0..64_i32 {
+                if world.get(VoxelCoord::new(x, y, z)).is_solid() {
+                    top = y;
+                }
+            }
+            corner_heights.insert(top);
+        }
+        assert!(
+            corner_heights.len() > 1,
+            "Terrain corners should have different heights (got {:?})",
+            corner_heights
+        );
     }
 
     #[test]
@@ -1532,7 +1566,7 @@ mod tests {
         config.floor_y = 10;
         let mut world = VoxelWorld::new(64, 64, 64);
         let mut rng = GameRng::new(42);
-        let result = generate_tree(&mut world, &config, &mut rng, &|_| {});
+        let result = generate_terrain_and_tree(&mut world, &config, &mut rng);
 
         // All trunk voxels must be above the floor (trunk starts at floor_y + 1).
         for coord in &result.trunk_voxels {
