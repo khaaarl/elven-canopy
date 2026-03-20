@@ -218,6 +218,7 @@ fn parse_species(name: &str) -> Option<Species> {
         "Orc" => Some(Species::Orc),
         "Squirrel" => Some(Species::Squirrel),
         "Troll" => Some(Species::Troll),
+        "Hornet" => Some(Species::Hornet),
         _ => None,
     }
 }
@@ -240,6 +241,7 @@ fn species_name(species: Species) -> &'static str {
         Species::Orc => "Orc",
         Species::Squirrel => "Squirrel",
         Species::Troll => "Troll",
+        Species::Hornet => "Hornet",
     }
 }
 

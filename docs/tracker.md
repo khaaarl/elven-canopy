@@ -122,7 +122,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fire-basic           Fire spread and voxel destruction
 [ ] F-fire-ecology         Fire as ecological force, firefighting
 [ ] F-fire-structure       Fire x structural integrity cascades
-[ ] F-flying-nav           3D flight nav for 1×1 flying creatures (vanilla A*)
 [ ] F-flying-nav-big       3D flight nav for 2×2×2 flying creatures
 [ ] F-fog-of-war           Visibility via tree and root network
 [ ] F-follow-multi         Camera zoom-to and follow for multi-selections
@@ -134,7 +133,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-sprite-ui      Fruit sprites in inventory/logistics/selection UI
 [ ] F-funeral-rites        Funeral rites and mourning
-[ ] F-giant-hornet         Giant hornet hostile flying creature
 [ ] F-greenhouse-revamp    Greenhouse planter growth cycle and pluck tasks
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-herbalism            Herbalism and alchemy
@@ -231,6 +229,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-visual-smooth        Smooth voxel surface rendering
 [ ] F-war-magic            War magic (combat spells)
 [ ] F-weather              Weather within seasons
+[ ] F-winged-elf           Winged elf species variant with flight-only movement
 [ ] F-wireframe-ghost      Wireframe ghost for overlap preview
 [ ] F-wood-stats           Wood-type material variation for crafted items
 [ ] F-world-boundary       World boundary visualization
@@ -297,6 +296,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-equipment-sprites    Dynamic sprite customization for equipment
 [x] F-event-loop           Event-driven tick loop (priority queue)
 [x] F-flee                 Flee behavior for civilians
+[x] F-flying-nav           3D flight nav for 1×1 flying creatures (vanilla A*)
 [x] F-food-gauge           Creature food gauge with decay
 [x] F-friendly-fire        Friendly-fire avoidance for ranged attacks
 [x] F-fruit-extraction     Fruit extraction (hulling/separation into components)
@@ -309,6 +309,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-gdext-bridge         gdext compilation and Rust bridge
 [x] F-gdscript-tests       GDScript unit tests (GUT or built-in)
 [x] F-ghost-above          Hide voxels above camera focus height
+[x] F-giant-hornet         Giant hornet hostile flying creature
 [x] F-godot-setup          Godot 4 project setup
 [x] F-hauling              Item hauling task type
 [x] F-hilly-terrain        Hilly forest floor with dirt voxels
@@ -1090,13 +1091,13 @@ change that benefits from independent implementation and testing.
 **Related:** F-creature-actions, F-task-interruption
 
 #### F-flying-nav — 3D flight nav for 1×1 flying creatures (vanilla A*)
-**Status:** Todo · **Phase:** 8+ · **Refs:** §10
+**Status:** Done · **Phase:** 8+ · **Refs:** §10
 
 3D flight pathfinding for one-voxel-sized flying creatures.
 Vanilla A* in 3D space — the sky is mostly open so no nav graph
 is needed.
 
-**Blocks:** F-flying-nav-big, F-giant-hornet
+**Unblocked:** F-flying-nav-big, F-giant-hornet, F-winged-elf
 
 #### F-flying-nav-big — 3D flight nav for 2×2×2 flying creatures
 **Status:** Todo
@@ -1104,8 +1105,8 @@ is needed.
 3D flight pathfinding for 2×2×2 flying creatures. Extends
 F-flying-nav with multi-voxel clearance checks.
 
-**Blocked by:** F-flying-nav
 **Blocks:** F-wyvern
+**Unblocked by:** F-flying-nav
 
 #### F-large-nav-tolerance — 1-voxel height tolerance for large nav
 **Status:** Done · **Phase:** 8+
@@ -1339,13 +1340,13 @@ panel and as overhead bar.
 **Related:** F-bread, F-creature-death, F-elf-needs, F-fruit-prod
 
 #### F-giant-hornet — Giant hornet hostile flying creature
-**Status:** Todo
+**Status:** Done
 
 Giant hornet hostile flying creature (1×1×1). Aggressive AI
 targeting elves. Debug button to spawn one, angry at elves.
 Requires F-flying-nav.
 
-**Blocked by:** F-flying-nav
+**Unblocked by:** F-flying-nav
 **Related:** F-wyvern
 
 #### F-hostile-species — Goblin, Orc, and Troll species
@@ -1506,6 +1507,15 @@ fire-based strategies (if F-fire-basic is implemented). Species-level
 config for regen rate.
 
 **Related:** F-hostile-species
+
+#### F-winged-elf — Winged elf species variant with flight-only movement
+**Status:** Todo
+
+A kind of elf that can join the player's civilization with wings.
+Has a winged sprite variant and only flight speed (no walking or
+climbing speed). Requires F-flying-nav.
+
+**Unblocked by:** F-flying-nav
 
 #### F-wyvern — Wyvern hostile flying creature (2×2×2)
 **Status:** Todo

@@ -473,6 +473,8 @@ fn compound_unique_prevents_duplicate_traits() {
 
 #[test]
 fn all_species_get_bio_seed_on_spawn() {
+    // Ground species only — Hornet (flying) can't spawn at tree_pos (Trunk).
+    // Hornet BioSeed is verified by `hornet_spawn_has_traits`.
     let all_species = [
         Species::Elf,
         Species::Capybara,
@@ -631,6 +633,8 @@ fn stat_zero_preserves_baseline() {
 
 #[test]
 fn all_species_get_stats_on_spawn() {
+    // Ground species only — Hornet (flying) can't spawn at tree_pos (Trunk).
+    // Hornet stats are verified by hornet_spawn_has_traits + hornet_species_in_config.
     let all_species = [
         Species::Elf,
         Species::Capybara,
@@ -1911,12 +1915,13 @@ fn from_json_rejects_wrong_schema() {
 #[test]
 fn species_data_loaded_from_config() {
     let sim = test_sim(42);
-    assert_eq!(sim.species_table.len(), 10);
+    assert_eq!(sim.species_table.len(), 11);
     assert!(sim.species_table.contains_key(&Species::Elf));
     assert!(sim.species_table.contains_key(&Species::Capybara));
     assert!(sim.species_table.contains_key(&Species::Boar));
     assert!(sim.species_table.contains_key(&Species::Deer));
     assert!(sim.species_table.contains_key(&Species::Elephant));
+    assert!(sim.species_table.contains_key(&Species::Hornet));
     assert!(sim.species_table.contains_key(&Species::Goblin));
     assert!(sim.species_table.contains_key(&Species::Monkey));
     assert!(sim.species_table.contains_key(&Species::Orc));
@@ -37540,4 +37545,290 @@ fn cached_path_reroutes_when_nav_node_destroyed() {
             );
         }
     }
+}
+
+// -----------------------------------------------------------------------
+// F-flying-nav + F-giant-hornet tests
+// -----------------------------------------------------------------------
+
+/// Spawn a hornet at a specific air position (not snapped to nav node).
+fn spawn_hornet_at(sim: &mut SimState, pos: VoxelCoord) -> CreatureId {
+    let existing: std::collections::BTreeSet<CreatureId> = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.species == Species::Hornet)
+        .map(|c| c.id)
+        .collect();
+    let tick = sim.tick + 1;
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick,
+        action: SimAction::SpawnCreature {
+            species: Species::Hornet,
+            position: pos,
+        },
+    };
+    sim.step(&[cmd], tick + 1);
+    sim.db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Hornet && !existing.contains(&c.id))
+        .expect("hornet should have spawned")
+        .id
+}
+
+#[test]
+fn hornet_species_in_config() {
+    let config = GameConfig::default();
+    assert!(config.species.contains_key(&Species::Hornet));
+    let data = &config.species[&Species::Hornet];
+    assert_eq!(data.flight_ticks_per_voxel, Some(250));
+    assert_eq!(data.footprint, [1, 1, 1]);
+    assert!(data.melee_damage > 0);
+}
+
+#[test]
+fn hornet_spawn_has_traits() {
+    let mut sim = test_sim(42);
+    // Spawn hornet in the air above the tree.
+    let pos = VoxelCoord::new(32, 40, 32);
+    let id = spawn_hornet_at(&mut sim, pos);
+
+    // Hornet should have BodyColor, StripePattern, WingStyle traits.
+    let body_color = sim.trait_int(id, TraitKind::BodyColor, -1);
+    assert!(
+        (0..4).contains(&body_color),
+        "body_color {body_color} out of range"
+    );
+    let stripe = sim.trait_int(id, TraitKind::StripePattern, -1);
+    assert!(
+        (0..3).contains(&stripe),
+        "stripe_pattern {stripe} out of range"
+    );
+    let wing = sim.trait_int(id, TraitKind::WingStyle, -1);
+    assert!((0..3).contains(&wing), "wing_style {wing} out of range");
+}
+
+#[test]
+fn hornet_spawns_at_air_position_not_nav_node() {
+    let mut sim = test_sim(42);
+    // Air position with no nav node nearby.
+    let air_pos = VoxelCoord::new(32, 45, 32);
+    assert!(sim.world.get(air_pos).is_flyable());
+
+    // Spawn directly (not through step()) to avoid immediate activation/wander.
+    let mut events = Vec::new();
+    let id = sim
+        .spawn_creature(Species::Hornet, air_pos, &mut events)
+        .expect("hornet should spawn in air");
+
+    let creature = sim.db.creatures.get(&id).unwrap();
+    // Hornet should be at the exact air position, not snapped to a nav node.
+    assert_eq!(creature.position, air_pos);
+    // Should be in the air — verify there's no nav node here.
+    assert!(sim.nav_graph.node_at(air_pos).is_none());
+}
+
+#[test]
+fn hornet_is_hostile_to_elves() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+
+    // Spawn the hornet close to the elf (within detection range of 14 voxels).
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let hornet_pos = VoxelCoord::new(elf_pos.x, elf_pos.y + 3, elf_pos.z);
+    let mut events = Vec::new();
+    let hornet_id = sim
+        .spawn_creature(Species::Hornet, hornet_pos, &mut events)
+        .expect("hornet should spawn near elf");
+
+    // Hornet is aggressive and has no civ.
+    let hornet = sim.db.creatures.get(&hornet_id).unwrap();
+    assert!(hornet.civ_id.is_none());
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(elf.civ_id.is_some());
+
+    // Verify the hornet detects the elf as hostile.
+    let hornet_data = &sim.species_table[&Species::Hornet];
+    let targets = sim.detect_hostile_targets(
+        hornet_id,
+        Species::Hornet,
+        hornet.position,
+        hornet.civ_id,
+        hornet_data.hostile_detection_range_sq,
+    );
+    assert!(
+        !targets.is_empty(),
+        "hornet should detect the elf as hostile"
+    );
+    // The detected target should be the elf.
+    assert_eq!(targets[0].0, elf_id);
+}
+
+#[test]
+fn hornet_is_flyer() {
+    let config = GameConfig::default();
+    let data = &config.species[&Species::Hornet];
+    assert!(data.flight_ticks_per_voxel.is_some());
+    // Non-flyers should have None.
+    assert!(
+        config.species[&Species::Elf]
+            .flight_ticks_per_voxel
+            .is_none()
+    );
+    assert!(
+        config.species[&Species::Goblin]
+            .flight_ticks_per_voxel
+            .is_none()
+    );
+}
+
+#[test]
+fn spawn_hornet_via_spawn_creature_command() {
+    let mut sim = test_sim(42);
+    let hornet_count_before = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.species == Species::Hornet)
+        .count();
+
+    // Spawn hornet in the air via the standard SpawnCreature command.
+    let air_pos = VoxelCoord::new(32, 40, 32);
+    let tick = sim.tick + 1;
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick,
+        action: SimAction::SpawnCreature {
+            species: Species::Hornet,
+            position: air_pos,
+        },
+    };
+    sim.step(&[cmd], tick + 1);
+
+    let hornet_count_after = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.species == Species::Hornet)
+        .count();
+    assert_eq!(hornet_count_after, hornet_count_before + 1);
+}
+
+#[test]
+fn hornet_serde_roundtrip() {
+    // Species::Hornet should serialize/deserialize correctly.
+    let species = Species::Hornet;
+    let json = serde_json::to_string(&species).unwrap();
+    let restored: Species = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored, species);
+}
+
+#[test]
+fn voxel_type_is_flyable() {
+    use crate::types::VoxelType;
+    // Air is flyable.
+    assert!(VoxelType::Air.is_flyable());
+    // Leaf and Fruit are solid but flyable (sparse canopy doesn't block flight).
+    assert!(VoxelType::Leaf.is_flyable());
+    assert!(VoxelType::Fruit.is_flyable());
+    // BuildingInterior is flyable.
+    assert!(VoxelType::BuildingInterior.is_flyable());
+    // Ladders are flyable.
+    assert!(VoxelType::WoodLadder.is_flyable());
+    assert!(VoxelType::RopeLadder.is_flyable());
+    // Solid types are not flyable.
+    assert!(!VoxelType::Trunk.is_flyable());
+    assert!(!VoxelType::Branch.is_flyable());
+    assert!(!VoxelType::GrownWall.is_flyable());
+    assert!(!VoxelType::ForestFloor.is_flyable());
+    assert!(!VoxelType::Dirt.is_flyable());
+}
+
+#[test]
+fn hornet_spawn_in_solid_returns_none() {
+    let mut sim = test_sim(42);
+    // Find a trunk voxel (guaranteed to exist — the tree is there).
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    assert!(!sim.world.get(tree_pos).is_flyable());
+    let mut events = Vec::new();
+    assert!(
+        sim.spawn_creature(Species::Hornet, tree_pos, &mut events)
+            .is_none()
+    );
+}
+
+#[test]
+fn hornet_spawn_in_leaf_succeeds() {
+    let mut sim = test_sim(42);
+    let leaf_pos = VoxelCoord::new(32, 45, 32);
+    sim.world.set(leaf_pos, crate::types::VoxelType::Leaf);
+    let mut events = Vec::new();
+    let id = sim
+        .spawn_creature(Species::Hornet, leaf_pos, &mut events)
+        .expect("hornet should spawn in leaf voxel");
+    assert_eq!(sim.db.creatures.get(&id).unwrap().position, leaf_pos);
+}
+
+#[test]
+fn hornet_pursues_and_damages_elf() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let elf_hp_before = sim.db.creatures.get(&elf_id).unwrap().hp;
+
+    // Spawn hornet 3 voxels above the elf (within detection range, likely
+    // out of melee range). Let the sim run — the hornet should fly down,
+    // get adjacent, and melee the elf.
+    let hornet_pos = VoxelCoord::new(elf_pos.x, elf_pos.y + 3, elf_pos.z);
+    let hornet_id = spawn_hornet_at(&mut sim, hornet_pos);
+
+    // Run the sim for a generous number of ticks to allow pursuit + melee.
+    let target_tick = sim.tick + 5000;
+    sim.step(&[], target_tick);
+
+    // The elf should have taken damage (hornet melee_damage = 20).
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        elf.hp < elf_hp_before,
+        "elf should have taken damage from hornet: hp {} vs before {}",
+        elf.hp,
+        elf_hp_before
+    );
+
+    // The hornet should still be alive (elf might fight back, but with
+    // 60 HP and passive default engagement the elf likely didn't kill it).
+    let hornet = sim.db.creatures.get(&hornet_id).unwrap();
+    // Just verify it participated (was alive at some point and moved).
+    assert_ne!(hornet.position, hornet_pos, "hornet should have moved");
+}
+
+#[test]
+fn hornet_wanders_when_alone() {
+    let mut sim = test_sim(42);
+    // Spawn hornet far from any creatures.
+    let pos = VoxelCoord::new(5, 50, 5);
+    let hornet_id = spawn_hornet_at(&mut sim, pos);
+
+    // Run a few ticks — hornet should wander (position should change).
+    let target_tick = sim.tick + 3000;
+    sim.step(&[], target_tick);
+
+    let hornet = sim.db.creatures.get(&hornet_id).unwrap();
+    assert_ne!(hornet.position, pos, "hornet should have wandered");
+}
+
+#[test]
+fn flight_pathfinding_corner_cost_matches_scaled_distance() {
+    use crate::nav::scaled_distance;
+    // Corner diagonal: (1,1,1) should match NEIGHBOR_OFFSETS.
+    let corner_cost = scaled_distance(1, 1, 1);
+    assert_eq!(corner_cost, 1773);
+    // Edge diagonal: (1,1,0) should match.
+    let edge_cost = scaled_distance(1, 1, 0);
+    assert_eq!(edge_cost, 1448);
+    // Face-adjacent: (1,0,0) should match.
+    let face_cost = scaled_distance(1, 0, 0);
+    assert_eq!(face_cost, 1024);
 }

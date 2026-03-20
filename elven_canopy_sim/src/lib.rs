@@ -14,6 +14,7 @@
 // - `mesh_gen.rs`:    Chunk-based voxel mesh generation with per-face culling.
 // - `texture_gen.rs`: Procedural face texture generation (3D Perlin noise atlases).
 // - `nav.rs`:         Navigation graph structures + construction from tree geometry.
+// - `flight_pathfinding.rs`: Vanilla A* on voxel grid for flying creatures (26-connected).
 // - `pathfinding.rs`: A* pathfinding over the nav graph.
 // - `preemption.rs`:  Task priority levels and preemption rules (Mood vs Survival, PlayerDirected override, etc.).
 // - `projectile.rs`:  Integer-only ballistic trajectory math (sub-voxel coords, aim solver).
@@ -53,6 +54,7 @@ pub mod command;
 pub mod config;
 pub mod db;
 pub mod event;
+pub mod flight_pathfinding;
 pub mod fruit;
 pub mod inventory;
 pub mod local_relay;

@@ -13,6 +13,9 @@
 // - `climb_ticks_per_voxel` — ticks per 1.0 units on TrunkClimb/GroundToTrunk
 //   edges. `None` means the species cannot climb (e.g. capybara). At 1000
 //   ticks/sec, a value of 1250 means 0.8 voxels per second climbing.
+// - `flight_ticks_per_voxel` — ticks per 1.0 units of 3D flight. `None`
+//   means the species cannot fly. Flying creatures use vanilla A* on the
+//   voxel grid (`flight_pathfinding.rs`) instead of the nav graph.
 // - `heartbeat_interval_ticks` — interval for `CreatureHeartbeat` events.
 //   Note: heartbeats do NOT drive movement (that's the activation chain in
 //   `sim/activation.rs`); they handle periodic non-movement checks like mood and mana.
@@ -149,6 +152,12 @@ pub struct SpeciesData {
     /// the species cannot climb (e.g. capybara). At 1000 ticks/sec, 1250 =
     /// 0.8 voxels/sec climbing.
     pub climb_ticks_per_voxel: Option<u64>,
+
+    /// Ticks per 1.0 units of 3D flight movement. `None` means the species
+    /// cannot fly. Flying creatures use vanilla A* on the voxel grid instead
+    /// of the nav graph. At 1000 ticks/sec, 250 = 4 voxels/sec flying.
+    #[serde(default)]
+    pub flight_ticks_per_voxel: Option<u64>,
 
     /// Ticks between heartbeat events (mood, mana, need updates — NOT movement).
     pub heartbeat_interval_ticks: u64,

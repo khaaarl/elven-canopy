@@ -37,6 +37,7 @@ elven-canopy/
 │       ├── texture_gen.rs      # Prime-period tiling textures (tileable Perlin noise, bark + ground)
 │       ├── nav.rs              # NavGraph, NavNode, NavEdge, graph construction
 │       ├── pathfinding.rs      # A* search over NavGraph
+│       ├── flight_pathfinding.rs # Vanilla A* on voxel grid for flying creatures
 │       ├── projectile.rs       # Integer-only ballistic trajectories, aim solver
 │       ├── tree_gen.rs         # Procedural tree generation (trunk + branches)
 │       ├── world.rs            # RLE column-based voxel grid
@@ -97,7 +98,7 @@ elven-canopy/
 │       ├── color.rs            # RGBA color type with darken/lighten helpers
 │       ├── drawing.rs          # PixelBuffer with drawing primitives (circle, ellipse, rect, line)
 │       ├── fruit.rs            # 16x16 fruit sprites (6 shapes + glow effect)
-│       └── species/            # Dispatcher + per-species modules (10 species, 32x32 to 96x80)
+│       └── species/            # Dispatcher + per-species modules (11 species, 32x32 to 96x80)
 │           ├── elf.rs          # Elf base sprite + CreatureDrawInfo compositing
 │           └── elf_equipment.rs # Equipment overlay drawing (9 equippable item kinds)
 ├── elven_canopy_music/         # Palestrina-style polyphonic music generator

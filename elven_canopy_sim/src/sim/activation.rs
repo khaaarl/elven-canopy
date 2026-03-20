@@ -175,6 +175,22 @@ impl SimState {
         creature_id: CreatureId,
         events: &mut Vec<SimEvent>,
     ) {
+        // Flying creatures use a separate, simpler activation path that
+        // doesn't depend on the nav graph.
+        {
+            let creature = match self.db.creatures.get(&creature_id) {
+                Some(c) if c.vital_status == VitalStatus::Alive => c,
+                _ => return,
+            };
+            if self.species_table[&creature.species]
+                .flight_ticks_per_voxel
+                .is_some()
+            {
+                self.process_flying_creature_activation(creature_id, events);
+                return;
+            }
+        }
+
         let (mut current_node, species, action_kind) = {
             let creature = match self.db.creatures.get(&creature_id) {
                 Some(c) if c.vital_status == VitalStatus::Alive => c,
@@ -1199,5 +1215,134 @@ impl SimState {
             }
             return; // One task per heartbeat.
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Flying creature activation (separate from nav-graph-based ground AI)
+    // -----------------------------------------------------------------------
+
+    /// Simplified activation for flying creatures (those with `flight_ticks_per_voxel`).
+    ///
+    /// Flying creatures use vanilla A* on the voxel grid instead of the nav graph.
+    /// Their AI loop:
+    /// 1. Resolve completed action (Move, MeleeStrike).
+    /// 2. Flee if HP is below disengage threshold.
+    /// 3. Detect hostile targets and pursue/melee.
+    /// 4. Random fly-wander if idle.
+    fn process_flying_creature_activation(
+        &mut self,
+        creature_id: CreatureId,
+        events: &mut Vec<SimEvent>,
+    ) {
+        let (species, action_kind) = {
+            let creature = match self.db.creatures.get(&creature_id) {
+                Some(c) if c.vital_status == VitalStatus::Alive => c,
+                _ => return,
+            };
+            (creature.species, creature.action_kind)
+        };
+
+        // --- Step 1: Resolve completed action ---
+        if action_kind == ActionKind::Move {
+            let _ = self.db.move_actions.remove_no_fk(&creature_id);
+            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+                c.action_kind = ActionKind::NoAction;
+                c.next_available_tick = None;
+            });
+        }
+        if action_kind == ActionKind::MeleeStrike {
+            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+                c.action_kind = ActionKind::NoAction;
+                c.next_available_tick = None;
+            });
+        }
+
+        // --- Step 2: Flee check ---
+        // If HP is below disengage threshold, fly away from nearest hostile.
+        let style = self.resolve_engagement_style(creature_id);
+        if style.disengage_threshold_pct > 0 {
+            let creature = self.db.creatures.get(&creature_id).unwrap();
+            let hp_pct = if creature.hp_max > 0 {
+                (creature.hp * 100 / creature.hp_max) as u8
+            } else {
+                100
+            };
+            if hp_pct <= style.disengage_threshold_pct {
+                // Fly in a random direction away from threats.
+                self.fly_wander(creature_id, events);
+                return;
+            }
+        }
+
+        // --- Step 3: Hostile detection + pursuit ---
+        let detection_range_sq = self.species_table[&species].hostile_detection_range_sq;
+        if detection_range_sq > 0 {
+            let creature = self.db.creatures.get(&creature_id).unwrap();
+            let attacker_pos = creature.position;
+            let attacker_civ = creature.civ_id;
+            let attacker_footprint = self.species_table[&species].footprint;
+            let melee_range_sq = self.max_melee_range_sq(creature_id);
+
+            let targets = self.detect_hostile_targets(
+                creature_id,
+                species,
+                attacker_pos,
+                attacker_civ,
+                detection_range_sq,
+            );
+
+            if !targets.is_empty() {
+                // Try melee if any target is in range.
+                let melee_target = targets.iter().find(|&&(target_id, _)| {
+                    let target = match self.db.creatures.get(&target_id) {
+                        Some(c) => c,
+                        None => return false,
+                    };
+                    let target_footprint = self.species_table[&target.species].footprint;
+                    in_melee_range(
+                        attacker_pos,
+                        attacker_footprint,
+                        target.position,
+                        target_footprint,
+                        melee_range_sq,
+                    )
+                });
+
+                if let Some(&(target_id, _)) = melee_target {
+                    if self.try_melee_strike(creature_id, target_id, events) {
+                        return;
+                    }
+                    // Strike on cooldown — wait.
+                    if let Some(next_tick) = self
+                        .db
+                        .creatures
+                        .get(&creature_id)
+                        .and_then(|c| c.next_available_tick)
+                    {
+                        self.event_queue.schedule(
+                            next_tick,
+                            ScheduledEventKind::CreatureActivation { creature_id },
+                        );
+                    } else {
+                        self.event_queue.schedule(
+                            self.tick + 100,
+                            ScheduledEventKind::CreatureActivation { creature_id },
+                        );
+                    }
+                    return;
+                }
+
+                // Fly toward nearest target.
+                let nearest_target_pos = self.db.creatures.get(&targets[0].0).map(|c| c.position);
+                if let Some(target_pos) = nearest_target_pos
+                    && self.fly_toward_target(creature_id, target_pos, events)
+                {
+                    return;
+                }
+            }
+        }
+
+        // --- Step 4: No targets — wander ---
+        self.fly_wander(creature_id, events);
     }
 }

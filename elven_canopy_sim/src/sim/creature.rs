@@ -52,17 +52,25 @@ impl SimState {
         let mp_max = species_data.mp_max;
         let heartbeat_interval = species_data.heartbeat_interval_ticks;
         let ground_only = species_data.ground_only;
-        let graph = self.graph_for_species(species);
+        let is_flyer = species_data.flight_ticks_per_voxel.is_some();
 
-        let nearest_node = if ground_only {
-            graph.find_nearest_ground_node(position)
+        // Flying creatures spawn at the raw position (must be flyable);
+        // ground creatures snap to the nearest nav node.
+        let node_pos = if is_flyer {
+            if !self.world.in_bounds(position) || !self.world.get(position).is_flyable() {
+                return None;
+            }
+            position
         } else {
-            graph.find_nearest_node(position)
+            let graph = self.graph_for_species(species);
+            let nearest_node = if ground_only {
+                graph.find_nearest_ground_node(position)
+            } else {
+                graph.find_nearest_node(position)
+            };
+            let nearest_node = nearest_node?;
+            graph.node(nearest_node).position
         };
-
-        let nearest_node = nearest_node?;
-
-        let node_pos = graph.node(nearest_node).position;
         let creature_id = CreatureId::new(&mut self.rng);
 
         // Generate a Vaelith name for elves; other species are unnamed.
@@ -343,6 +351,23 @@ impl SimState {
                     creature_id,
                     TraitKind::HornStyle,
                     TraitValue::Int(((h / 11) % 3) as i64),
+                );
+            }
+            Species::Hornet => {
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::BodyColor,
+                    TraitValue::Int((h % 4) as i64),
+                );
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::StripePattern,
+                    TraitValue::Int(((h / 11) % 3) as i64),
+                );
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::WingStyle,
+                    TraitValue::Int(((h / 41) % 3) as i64),
                 );
             }
         }

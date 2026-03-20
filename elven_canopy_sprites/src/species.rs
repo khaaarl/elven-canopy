@@ -20,6 +20,7 @@ mod elephant;
 pub mod elf;
 mod elf_equipment;
 mod goblin;
+mod hornet;
 mod monkey;
 mod orc;
 mod squirrel;
@@ -66,6 +67,7 @@ pub enum SpriteParams {
     Goblin(goblin::GoblinParams),
     Orc(orc::OrcParams),
     Troll(troll::TrollParams),
+    Hornet(hornet::HornetParams),
 }
 
 /// Build a deterministic params from a species and integer seed.
@@ -81,6 +83,7 @@ pub fn species_params_from_seed(species: Species, seed: i64) -> SpriteParams {
         Species::Goblin => SpriteParams::Goblin(goblin::params_from_seed(seed)),
         Species::Orc => SpriteParams::Orc(orc::params_from_seed(seed)),
         Species::Troll => SpriteParams::Troll(troll::params_from_seed(seed)),
+        Species::Hornet => SpriteParams::Hornet(hornet::params_from_seed(seed)),
     }
 }
 
@@ -98,6 +101,7 @@ pub fn create_species_sprite(params: &SpriteParams) -> PixelBuffer {
         SpriteParams::Goblin(p) => goblin::create_sprite(p),
         SpriteParams::Orc(p) => orc::create_sprite(p),
         SpriteParams::Troll(p) => troll::create_sprite(p),
+        SpriteParams::Hornet(p) => hornet::create_sprite(p),
     }
 }
 
@@ -115,6 +119,7 @@ pub fn species_params_from_traits(species: Species, traits: &TraitMap) -> Sprite
         Species::Goblin => SpriteParams::Goblin(goblin::params_from_traits(traits)),
         Species::Orc => SpriteParams::Orc(orc::params_from_traits(traits)),
         Species::Troll => SpriteParams::Troll(troll::params_from_traits(traits)),
+        Species::Hornet => SpriteParams::Hornet(hornet::params_from_traits(traits)),
     }
 }
 
@@ -134,7 +139,7 @@ mod tests {
         assert_ne!(knuth_hash(1), knuth_hash(2));
     }
 
-    const ALL_SPECIES: [Species; 10] = [
+    const ALL_SPECIES: [Species; 11] = [
         Species::Elf,
         Species::Capybara,
         Species::Boar,
@@ -144,6 +149,7 @@ mod tests {
         Species::Elephant,
         Species::Goblin,
         Species::Orc,
+        Species::Hornet,
         Species::Troll,
     ];
 
@@ -253,6 +259,7 @@ mod tests {
             (Species::Goblin, 36, 40),
             (Species::Orc, 48, 48),
             (Species::Troll, 96, 80),
+            (Species::Hornet, 36, 32),
         ];
         for (species, w, h) in cases {
             let buf = create_species_sprite(&species_params_from_seed(species, 1));

@@ -5,7 +5,8 @@
 // movement execution with voxel exclusion, and idle wandering.
 //
 // See also: `pathfinding.rs` (A* implementation), `nav.rs` (graph structure),
-// `combat.rs` (attack-move walking, flee steps).
+// `combat.rs` (attack-move walking, flee steps),
+// `flight_pathfinding.rs` (vanilla A* on voxel grid for flying creatures).
 use super::*;
 use crate::db::{ActionKind, MoveAction};
 use crate::event::{ScheduledEventKind, SimEvent};
@@ -555,5 +556,199 @@ impl SimState {
         let edge_idx = edges_to_pick[chosen_idx];
 
         self.move_one_step(creature_id, species, edge_idx);
+    }
+
+    // -----------------------------------------------------------------------
+    // Flying creature movement (flight_pathfinding.rs — vanilla A* on voxel grid)
+    // -----------------------------------------------------------------------
+
+    /// Move a flying creature one step along its flight path toward `target_pos`.
+    /// Computes a flight path via A* if none is cached, then steps one voxel.
+    /// Returns `true` if a step was taken.
+    pub(crate) fn fly_toward_target(
+        &mut self,
+        creature_id: CreatureId,
+        target_pos: VoxelCoord,
+        events: &mut Vec<SimEvent>,
+    ) -> bool {
+        let creature = match self.db.creatures.get(&creature_id) {
+            Some(c) => c,
+            None => return false,
+        };
+        let species = creature.species;
+        let flight_tpv = match self.species_table[&species].flight_ticks_per_voxel {
+            Some(tpv) => tpv,
+            None => return false,
+        };
+        let current_pos = creature.position;
+
+        // Check if we have a cached flight path with remaining steps.
+        let next_pos = if let Some(ref path) = creature.path {
+            if let Some(&next) = path.remaining_positions.first() {
+                // Validate that the next position is still flyable.
+                if !self.world.get(next).is_flyable() {
+                    None // obstacle appeared; repath
+                } else {
+                    Some(next)
+                }
+            } else {
+                None // path exhausted; repath
+            }
+        } else {
+            None
+        };
+
+        let next_pos = if let Some(p) = next_pos {
+            p
+        } else {
+            // Compute a new flight path.
+            let max_nodes = 10_000;
+            let path_result = crate::flight_pathfinding::astar_fly(
+                &self.world,
+                current_pos,
+                target_pos,
+                flight_tpv,
+                max_nodes,
+            );
+            let path_result = match path_result {
+                Some(r) if r.waypoints.len() >= 2 => r,
+                _ => return false, // no path
+            };
+
+            let next = path_result.waypoints[1];
+
+            // Store remaining path (skip start, which is current position).
+            let remaining_positions: Vec<VoxelCoord> = path_result.waypoints[1..].to_vec();
+            let _ = self
+                .db
+                .creatures
+                .modify_unchecked(&creature_id, |creature| {
+                    creature.path = Some(CreaturePath {
+                        remaining_positions,
+                    });
+                });
+
+            next
+        };
+
+        self.fly_one_step(creature_id, species, next_pos, flight_tpv, events)
+    }
+
+    /// Execute a single flight step: move the creature to `dest_pos`, update
+    /// spatial index, record MoveAction for render interpolation, and schedule
+    /// next activation.
+    ///
+    /// Returns `true` if the move succeeded.
+    pub(crate) fn fly_one_step(
+        &mut self,
+        creature_id: CreatureId,
+        species: Species,
+        dest_pos: VoxelCoord,
+        flight_tpv: u64,
+        _events: &mut Vec<SimEvent>,
+    ) -> bool {
+        let old_pos = match self.db.creatures.get(&creature_id) {
+            Some(c) => c.position,
+            None => return false,
+        };
+
+        // Voxel exclusion: reject move if destination is hostile-occupied.
+        let footprint = self.species_table[&species].footprint;
+        if self.destination_blocked_by_hostile(creature_id, dest_pos, footprint) {
+            self.event_queue.schedule(
+                self.tick + self.config.voxel_exclusion_retry_ticks,
+                ScheduledEventKind::CreatureActivation { creature_id },
+            );
+            return false;
+        }
+
+        // Compute delay from scaled distance.
+        let dx = dest_pos.x - old_pos.x;
+        let dy = dest_pos.y - old_pos.y;
+        let dz = dest_pos.z - old_pos.z;
+        let dist_scaled = crate::nav::scaled_distance(dx, dy, dz);
+        let delay = (dist_scaled as u64 * flight_tpv)
+            .div_ceil(crate::nav::DIST_SCALE as u64)
+            .max(1);
+
+        let tick = self.tick;
+        let _ = self
+            .db
+            .creatures
+            .modify_unchecked(&creature_id, |creature| {
+                creature.position = dest_pos;
+                creature.action_kind = ActionKind::Move;
+                creature.next_available_tick = Some(tick + delay);
+
+                // Advance stored path.
+                if let Some(ref mut path) = creature.path
+                    && !path.remaining_positions.is_empty()
+                {
+                    path.remaining_positions.remove(0);
+                }
+            });
+
+        self.update_creature_spatial_index(creature_id, species, old_pos, dest_pos);
+
+        // Insert MoveAction for render interpolation.
+        let move_action = MoveAction {
+            creature_id,
+            move_from: old_pos,
+            move_to: dest_pos,
+            move_start_tick: tick,
+        };
+        let _ = self.db.move_actions.remove_no_fk(&creature_id);
+        self.db.move_actions.insert_no_fk(move_action).unwrap();
+
+        // Schedule next activation.
+        self.event_queue.schedule(
+            self.tick + delay,
+            ScheduledEventKind::CreatureActivation { creature_id },
+        );
+        true
+    }
+
+    /// Random flying wander: pick a random flyable neighbor voxel and move there.
+    pub(crate) fn fly_wander(&mut self, creature_id: CreatureId, events: &mut Vec<SimEvent>) {
+        let creature = match self.db.creatures.get(&creature_id) {
+            Some(c) => c,
+            None => return,
+        };
+        let species = creature.species;
+        let flight_tpv = match self.species_table[&species].flight_ticks_per_voxel {
+            Some(tpv) => tpv,
+            None => return,
+        };
+        let pos = creature.position;
+
+        // Collect flyable neighbor voxels.
+        let offsets: [(i32, i32, i32); 6] = [
+            (-1, 0, 0),
+            (1, 0, 0),
+            (0, -1, 0),
+            (0, 1, 0),
+            (0, 0, -1),
+            (0, 0, 1),
+        ];
+        let mut candidates: Vec<VoxelCoord> = Vec::new();
+        for &(dx, dy, dz) in &offsets {
+            let neighbor = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
+            if self.world.in_bounds(neighbor) && self.world.get(neighbor).is_flyable() {
+                candidates.push(neighbor);
+            }
+        }
+
+        if candidates.is_empty() {
+            // Stuck — schedule retry.
+            self.event_queue.schedule(
+                self.tick + 1000,
+                ScheduledEventKind::CreatureActivation { creature_id },
+            );
+            return;
+        }
+
+        let chosen_idx = self.rng.range_u64(0, candidates.len() as u64) as usize;
+        let dest = candidates[chosen_idx];
+        self.fly_one_step(creature_id, species, dest, flight_tpv, events);
     }
 }

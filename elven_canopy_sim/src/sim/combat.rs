@@ -2808,14 +2808,21 @@ impl SimState {
                 }
                 // Resolve target's position to a nav node on the attacker's graph
                 // (targets may use a different graph, e.g. 1x1 vs 2x2 footprint).
-                // Use find_nearest_node because the creature's position may not be
-                // exactly on a nav node (e.g. displaced by construction).
-                let node = match self
-                    .graph_for_species(creature.species)
-                    .find_nearest_node(creature.position)
-                {
-                    Some(n) => n,
-                    None => continue,
+                // Flying creatures may be in open sky with no nearby nav node, so
+                // use a placeholder — the NavNodeId is unused by flying callers.
+                let is_flyer = self.species_table[&creature.species]
+                    .flight_ticks_per_voxel
+                    .is_some();
+                let node = if is_flyer {
+                    NavNodeId(u32::MAX) // placeholder; flying code uses position, not node
+                } else {
+                    match self
+                        .graph_for_species(creature.species)
+                        .find_nearest_node(creature.position)
+                    {
+                        Some(n) => n,
+                        None => continue,
+                    }
                 };
 
                 // Squared 3D euclidean distance (i64 to prevent overflow).

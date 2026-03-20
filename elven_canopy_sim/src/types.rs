@@ -466,6 +466,11 @@ pub enum TraitKind {
     // -- Capybara traits --
     /// Index into `ACCESSORIES` array (0–3).
     Accessory,
+    // -- Hornet traits --
+    /// Index into `STRIPE_PATTERNS` array (0–2).
+    StripePattern,
+    /// Index into `WING_STYLES` array (0–2).
+    WingStyle,
     // -- Creature stats (F-creature-stats) --
     // Integer scale centered on 0 (human baseline). Every +10 doubles
     // mechanical intensity via the exponential stat multiplier table.
@@ -580,6 +585,7 @@ pub enum Species {
     Orc,
     Squirrel,
     Troll,
+    Hornet,
 }
 
 /// Species that can form civilizations. Separate from the sim-active `Species`
@@ -1204,6 +1210,15 @@ impl VoxelType {
                 | VoxelType::WoodLadder
                 | VoxelType::RopeLadder
         )
+    }
+
+    /// Returns `true` for voxel types a flying creature can occupy. Includes
+    /// all non-solid types plus Leaf and Fruit (sparse canopy doesn't block
+    /// flight, same as it doesn't block line-of-sight). Flying creatures can
+    /// pass through air, building interiors, ladders, leaves, and fruit but
+    /// not through trunk, branch, walls, floors, etc.
+    pub fn is_flyable(self) -> bool {
+        !self.is_solid() || matches!(self, VoxelType::Leaf | VoxelType::Fruit)
     }
 
     /// Returns `true` for voxel types that block line-of-sight for ranged

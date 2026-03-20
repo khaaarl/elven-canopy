@@ -2136,6 +2136,7 @@ impl Default for GameConfig {
             SpeciesData {
                 walk_ticks_per_voxel: 500,
                 climb_ticks_per_voxel: Some(1250),
+                flight_ticks_per_voxel: None,
                 heartbeat_interval_ticks: 3000,
                 allowed_edge_types: None, // elves can traverse all edges
                 ground_only: false,
@@ -2182,6 +2183,7 @@ impl Default for GameConfig {
             SpeciesData {
                 walk_ticks_per_voxel: 800,
                 climb_ticks_per_voxel: None,
+                flight_ticks_per_voxel: None,
                 heartbeat_interval_ticks: 4000,
                 allowed_edge_types: Some(vec![EdgeType::ForestFloor]),
                 ground_only: true,
@@ -2223,6 +2225,7 @@ impl Default for GameConfig {
             SpeciesData {
                 walk_ticks_per_voxel: 600,
                 climb_ticks_per_voxel: None,
+                flight_ticks_per_voxel: None,
                 heartbeat_interval_ticks: 4000,
                 allowed_edge_types: Some(vec![EdgeType::ForestFloor]),
                 ground_only: true,
@@ -2264,6 +2267,7 @@ impl Default for GameConfig {
             SpeciesData {
                 walk_ticks_per_voxel: 400,
                 climb_ticks_per_voxel: None,
+                flight_ticks_per_voxel: None,
                 heartbeat_interval_ticks: 3500,
                 allowed_edge_types: Some(vec![EdgeType::ForestFloor]),
                 ground_only: true,
@@ -2305,6 +2309,7 @@ impl Default for GameConfig {
             SpeciesData {
                 walk_ticks_per_voxel: 700,
                 climb_ticks_per_voxel: None,
+                flight_ticks_per_voxel: None,
                 heartbeat_interval_ticks: 5000,
                 allowed_edge_types: Some(vec![EdgeType::ForestFloor]),
                 ground_only: true,
@@ -2346,6 +2351,7 @@ impl Default for GameConfig {
             SpeciesData {
                 walk_ticks_per_voxel: 450,
                 climb_ticks_per_voxel: Some(2500), // 2x slower than elf
+                flight_ticks_per_voxel: None,
                 heartbeat_interval_ticks: 3000,
                 allowed_edge_types: None,
                 ground_only: false,
@@ -2392,6 +2398,7 @@ impl Default for GameConfig {
             SpeciesData {
                 walk_ticks_per_voxel: 550,
                 climb_ticks_per_voxel: Some(800),
+                flight_ticks_per_voxel: None,
                 heartbeat_interval_ticks: 3000,
                 allowed_edge_types: None,
                 ground_only: false,
@@ -2433,6 +2440,7 @@ impl Default for GameConfig {
             SpeciesData {
                 walk_ticks_per_voxel: 600,
                 climb_ticks_per_voxel: Some(5000), // 2x slower than goblin
+                flight_ticks_per_voxel: None,
                 heartbeat_interval_ticks: 3000,
                 allowed_edge_types: None,
                 ground_only: false,
@@ -2479,6 +2487,7 @@ impl Default for GameConfig {
             SpeciesData {
                 walk_ticks_per_voxel: 700,
                 climb_ticks_per_voxel: Some(600),
+                flight_ticks_per_voxel: None,
                 heartbeat_interval_ticks: 2500,
                 allowed_edge_types: None,
                 ground_only: false,
@@ -2520,6 +2529,7 @@ impl Default for GameConfig {
             SpeciesData {
                 walk_ticks_per_voxel: 600,         // same as orc
                 climb_ticks_per_voxel: Some(5000), // same as orc
+                flight_ticks_per_voxel: None,
                 heartbeat_interval_ticks: 5000,
                 allowed_edge_types: None,
                 ground_only: false,
@@ -2559,6 +2569,53 @@ impl Default for GameConfig {
                     (TraitKind::Charisma, -10, 5),
                 ]),
                 raid_size: 2,
+            },
+        );
+        species.insert(
+            Species::Hornet,
+            SpeciesData {
+                walk_ticks_per_voxel: 600, // slow if ever on ground (shouldn't happen)
+                climb_ticks_per_voxel: None,
+                flight_ticks_per_voxel: Some(250), // fast flyer: 4 voxels/sec
+                heartbeat_interval_ticks: 2000,
+                allowed_edge_types: None,
+                ground_only: false,
+                hp_max: 60,
+                food_max: 1_000_000_000_000_000,
+                food_decay_per_tick: 0,
+                food_hunger_threshold_pct: 50,
+                food_restore_pct: 0,
+                bread_restore_pct: 0,
+                footprint: [1, 1, 1],
+                wood_ladder_tpv: None,
+                rope_ladder_tpv: None,
+                rest_max: 1_000_000_000_000_000,
+                rest_decay_per_tick: 0,
+                rest_tired_threshold_pct: 50,
+                rest_per_sleep_tick: 60_000_000_000,
+                melee_damage: 20,
+                melee_interval_ticks: 800, // fast stinger
+                melee_range_sq: 3,
+                engagement_style: EngagementStyle {
+                    weapon_preference: WeaponPreference::PreferMelee,
+                    ammo_exhausted: AmmoExhaustedBehavior::SwitchToMelee,
+                    initiative: EngagementInitiative::Aggressive,
+                    disengage_threshold_pct: 30, // flees when hurt
+                },
+                hostile_detection_range_sq: 196, // 14-voxel detection radius
+                mp_max: 0,
+                mana_per_tick: 0,
+                stat_distributions: stat_dists(&[
+                    (TraitKind::Strength, -5, 3),
+                    (TraitKind::Agility, 15, 4),
+                    (TraitKind::Dexterity, 5, 3),
+                    (TraitKind::Constitution, -5, 3),
+                    (TraitKind::Willpower, 0, 3),
+                    (TraitKind::Intelligence, -10, 3),
+                    (TraitKind::Perception, 10, 4),
+                    (TraitKind::Charisma, -15, 3),
+                ]),
+                raid_size: 1,
             },
         );
 
@@ -2874,8 +2931,8 @@ mod tests {
             config.tree_profile.growth.initial_energy,
             restored.tree_profile.growth.initial_energy
         );
-        // Verify species data survived (10 species).
-        assert_eq!(config.species.len(), 10);
+        // Verify species data survived (11 species).
+        assert_eq!(config.species.len(), 11);
         assert_eq!(config.species.len(), restored.species.len());
         let elf_data = &restored.species[&Species::Elf];
         assert_eq!(elf_data.heartbeat_interval_ticks, 3000);

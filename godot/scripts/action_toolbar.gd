@@ -220,6 +220,11 @@ func _ready() -> void:
 	raid_button.pressed.connect(func(): action_requested.emit("TriggerRaid"))
 	_debug_row.add_child(raid_button)
 
+	var hornet_button := Button.new()
+	hornet_button.text = "Hornet"
+	hornet_button.pressed.connect(_on_spawn.bind("Hornet"))
+	_debug_row.add_child(hornet_button)
+
 	_update_speed_highlight()
 
 
