@@ -57,6 +57,7 @@ func _process(_delta: float) -> void:
 
 	var positions := _bridge.get_creature_positions(_species_name, _render_tick)
 	var hp_ratios := _bridge.get_creature_hp_ratios(_species_name)
+	var incap_flags := _bridge.get_creature_incapacitated(_species_name)
 	var count := positions.size()
 
 	# Add sprites if we have more creatures than sprites.
@@ -80,12 +81,22 @@ func _process(_delta: float) -> void:
 		if i < count:
 			_sprites[i].visible = true
 			var pos := positions[i]
+			var is_incap := i < incap_flags.size() and incap_flags[i] != 0
 			_sprites[i].global_position = Vector3(pos.x + 0.5, pos.y + _y_offset, pos.z + 0.5)
-			var ratio: float = hp_ratios[i] if i < hp_ratios.size() else 1.0
-			HpBar.update_bar(_hp_bars[i], ratio)
+			# Rotate sprite 90 degrees around Z axis when incapacitated (falls sideways).
+			if is_incap:
+				_sprites[i].rotation_degrees = Vector3(0.0, 0.0, 90.0)
+			else:
+				_sprites[i].rotation_degrees = Vector3.ZERO
+			if is_incap:
+				HpBar.update_bar_incapacitated(_hp_bars[i])
+			else:
+				var ratio: float = hp_ratios[i] if i < hp_ratios.size() else 1.0
+				HpBar.update_bar(_hp_bars[i], ratio)
 			_hp_bars[i].global_position = Vector3(
 				pos.x + 0.5, pos.y + _y_offset * 2.0 + HP_BAR_GAP, pos.z + 0.5
 			)
 		else:
 			_sprites[i].visible = false
+			_sprites[i].rotation_degrees = Vector3.ZERO
 			_hp_bars[i].visible = false

@@ -262,7 +262,7 @@ fn build_creature_info_dict(
         .db
         .creatures
         .iter_all()
-        .filter(|cr| cr.species == species && cr.vital_status == VitalStatus::Alive)
+        .filter(|cr| cr.species == species && cr.vital_status != VitalStatus::Dead)
         .position(|cr| cr.id == c.id)
         .unwrap_or(0);
     let ma = sim.db.move_actions.get(&c.id);
@@ -338,6 +338,10 @@ fn build_creature_info_dict(
         inv_arr.push(&item_dict.to_variant());
     }
     dict.set("inventory", inv_arr);
+    dict.set(
+        "incapacitated",
+        c.vital_status == VitalStatus::Incapacitated,
+    );
     // Military group info (civ creatures only).
     if let Some(civ_id) = c.civ_id {
         let (group_id, group_name) = if let Some(gid) = c.military_group {
@@ -1251,7 +1255,7 @@ impl SimBridge {
             .db
             .creatures
             .iter_all()
-            .filter(|c| c.species == species && c.vital_status == VitalStatus::Alive)
+            .filter(|c| c.species == species && c.vital_status != VitalStatus::Dead)
             .nth(index as usize);
         match creature {
             Some(c) => GString::from(c.id.0.to_string().as_str()),
@@ -1308,7 +1312,7 @@ impl SimBridge {
             .db
             .creatures
             .iter_all()
-            .filter(|c| c.species == species && c.vital_status == VitalStatus::Alive)
+            .filter(|c| c.species == species && c.vital_status != VitalStatus::Dead)
             .nth(index as usize);
         match creature {
             Some(c) => build_creature_info_dict(sim, c, render_tick),
@@ -2608,7 +2612,7 @@ impl SimBridge {
             .db
             .creatures
             .iter_all()
-            .filter(|c| c.species == species && c.vital_status == VitalStatus::Alive)
+            .filter(|c| c.species == species && c.vital_status != VitalStatus::Dead)
         {
             let ma = sim.db.move_actions.get(&creature.id);
             let (x, y, z) = creature.interpolated_position(render_tick, ma.as_ref());
@@ -2617,7 +2621,7 @@ impl SimBridge {
         arr
     }
 
-    /// Return HP ratios (hp / hp_max, clamped 0.0–1.0) for all alive creatures
+    /// Return HP ratios (hp / hp_max, clamped 0.0–1.0) for all non-dead creatures
     /// of the named species, in the same order as `get_creature_positions()`.
     /// Used by GDScript renderers to display overhead HP bars.
     #[func]
@@ -2633,7 +2637,7 @@ impl SimBridge {
             .db
             .creatures
             .iter_all()
-            .filter(|c| c.species == species && c.vital_status == VitalStatus::Alive)
+            .filter(|c| c.species == species && c.vital_status != VitalStatus::Dead)
         {
             let ratio = if creature.hp_max > 0 {
                 creature.hp as f32 / creature.hp_max as f32
@@ -2645,7 +2649,7 @@ impl SimBridge {
         arr
     }
 
-    /// Return an array of mana ratios (0.0–1.0) for all alive creatures
+    /// Return an array of mana ratios (0.0–1.0) for all non-dead creatures
     /// of the named species. Parallel to `get_creature_positions()`.
     /// Creatures with mp_max = 0 return 1.0 (no mana bar shown).
     #[func]
@@ -2661,7 +2665,7 @@ impl SimBridge {
             .db
             .creatures
             .iter_all()
-            .filter(|c| c.species == species && c.vital_status == VitalStatus::Alive)
+            .filter(|c| c.species == species && c.vital_status != VitalStatus::Dead)
         {
             let ratio = if creature.mp_max > 0 {
                 creature.mp as f32 / creature.mp_max as f32
@@ -2671,6 +2675,27 @@ impl SimBridge {
             arr.push(ratio.clamp(0.0, 1.0));
         }
         arr
+    }
+
+    /// Return a `PackedByteArray` of 0/1 flags indicating which creatures of
+    /// the named species are incapacitated. Parallel to `get_creature_positions()`.
+    /// Used by GDScript renderers to rotate sprites and change HP bar style.
+    #[func]
+    fn get_creature_incapacitated(&self, species_name: GString) -> PackedByteArray {
+        let Some(species) = parse_species(&species_name.to_string()) else {
+            return PackedByteArray::new();
+        };
+        let Some(sim) = &self.session.sim else {
+            return PackedByteArray::new();
+        };
+        let flags: Vec<u8> = sim
+            .db
+            .creatures
+            .iter_all()
+            .filter(|c| c.species == species && c.vital_status != VitalStatus::Dead)
+            .map(|c| u8::from(c.vital_status == VitalStatus::Incapacitated))
+            .collect();
+        PackedByteArray::from(flags.as_slice())
     }
 
     /// Return positions where mana-wasted work actions occurred this step.
@@ -2726,7 +2751,7 @@ impl SimBridge {
             .db
             .creatures
             .iter_all()
-            .filter(|c| c.species == Species::Elf && c.vital_status == VitalStatus::Alive)
+            .filter(|c| c.species == Species::Elf && c.vital_status != VitalStatus::Dead)
             .collect();
 
         // Resize cache if elf count changed.
@@ -2879,7 +2904,7 @@ impl SimBridge {
             .db
             .creatures
             .iter_all()
-            .filter(|c| c.species == species && c.vital_status == VitalStatus::Alive)
+            .filter(|c| c.species == species && c.vital_status != VitalStatus::Dead)
         {
             let ma = sim.db.move_actions.get(&creature.id);
             let (x, y, z) = creature.interpolated_position(render_tick, ma.as_ref());
@@ -2913,7 +2938,7 @@ impl SimBridge {
         let Some(c) = sim.db.creatures.get(&cid) else {
             return VarDictionary::new();
         };
-        if c.vital_status != VitalStatus::Alive {
+        if c.vital_status == VitalStatus::Dead {
             return VarDictionary::new();
         }
         build_creature_info_dict(sim, &c, render_tick)
@@ -2974,7 +2999,7 @@ impl SimBridge {
             .db
             .creatures
             .iter_all()
-            .filter(|c| c.vital_status == VitalStatus::Alive)
+            .filter(|c| c.vital_status != VitalStatus::Dead)
         {
             let ma = sim.db.move_actions.get(&creature.id);
             let (x, y, z) = creature.interpolated_position(render_tick, ma.as_ref());

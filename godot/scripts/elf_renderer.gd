@@ -54,6 +54,7 @@ func _process(_delta: float) -> void:
 	var positions := _bridge.get_elf_positions(_render_tick)
 	var hp_ratios := _bridge.get_creature_hp_ratios("Elf")
 	var mp_ratios := _bridge.get_creature_mp_ratios("Elf")
+	var incap_flags := _bridge.get_creature_incapacitated("Elf")
 	var sprite_data: Dictionary = _bridge.get_elf_sprites()
 	var sprite_textures: Array = sprite_data.get("textures", [])
 	var sprite_changed: PackedByteArray = sprite_data.get("changed", PackedByteArray())
@@ -85,10 +86,19 @@ func _process(_delta: float) -> void:
 		if i < elf_count:
 			_elf_sprites[i].visible = true
 			var pos := positions[i]
+			var is_incap := i < incap_flags.size() and incap_flags[i] != 0
 			# Nav node pos is the air voxel; feet at pos.y, center at +half sprite height.
 			_elf_sprites[i].global_position = Vector3(pos.x + 0.5, pos.y + Y_OFFSET, pos.z + 0.5)
-			var ratio: float = hp_ratios[i] if i < hp_ratios.size() else 1.0
-			HpBar.update_bar(_hp_bars[i], ratio)
+			# Rotate sprite 90 degrees around Z axis when incapacitated (falls sideways).
+			if is_incap:
+				_elf_sprites[i].rotation_degrees = Vector3(0.0, 0.0, 90.0)
+			else:
+				_elf_sprites[i].rotation_degrees = Vector3.ZERO
+			if is_incap:
+				HpBar.update_bar_incapacitated(_hp_bars[i])
+			else:
+				var ratio: float = hp_ratios[i] if i < hp_ratios.size() else 1.0
+				HpBar.update_bar(_hp_bars[i], ratio)
 			_hp_bars[i].global_position = Vector3(
 				pos.x + 0.5, pos.y + Y_OFFSET * 2.0 + HP_BAR_GAP, pos.z + 0.5
 			)
@@ -103,5 +113,6 @@ func _process(_delta: float) -> void:
 					_elf_sprites[i].texture = sprite_textures[i]
 		else:
 			_elf_sprites[i].visible = false
+			_elf_sprites[i].rotation_degrees = Vector3.ZERO
 			_hp_bars[i].visible = false
 			_mp_bars[i].visible = false

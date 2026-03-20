@@ -6,6 +6,7 @@
 ## (elves are the only magical species currently).
 ##
 ## HP bars show green/yellow/red fill proportional to current HP.
+## Incapacitated creatures get a dark gray on black bar (always visible).
 ## MP (mana) bars show blue fill proportional to current mana.
 ## Both are small billboard Sprite3D nodes (20x3 px at 0.02 pixel_size =
 ## 0.40 x 0.06 world units) positioned above the creature sprite. Bars are
@@ -29,6 +30,8 @@ const STEPS := 20
 static var _cache: Array[ImageTexture] = []
 ## Cached MP (mana) textures — blue fill instead of green/yellow/red.
 static var _mp_cache: Array[ImageTexture] = []
+## Single cached texture for incapacitated creatures — dark gray on black.
+static var _incap_texture: ImageTexture = null
 
 
 ## Ensure the texture cache is populated. Call once from each renderer's
@@ -42,6 +45,7 @@ static func ensure_cache() -> void:
 		var ratio := float(step) / float(STEPS)
 		_cache[step] = _generate_bar_texture(ratio)
 		_mp_cache[step] = _generate_mp_bar_texture(ratio)
+	_incap_texture = _generate_incap_bar_texture()
 
 
 ## Create an HP bar Sprite3D suitable for adding as a child of the creature
@@ -70,6 +74,27 @@ static func update_bar(bar: Sprite3D, ratio: float) -> void:
 	bar.visible = true
 	var step := clampi(int(ratio * STEPS), 0, STEPS)
 	bar.texture = _cache[step]
+
+
+## Show the HP bar in incapacitated style — dark gray fill on black background.
+## Always visible (never auto-hidden).
+static func update_bar_incapacitated(bar: Sprite3D) -> void:
+	bar.visible = true
+	bar.texture = _incap_texture
+
+
+static func _generate_incap_bar_texture() -> ImageTexture:
+	var img := Image.create(BAR_W, BAR_H, false, Image.FORMAT_RGBA8)
+	var fill_color := Color(0.35, 0.35, 0.35, 0.9)  # dark gray
+	var bg_color := Color(0.05, 0.05, 0.05, 0.9)  # near-black
+	# Full-width gray fill to indicate incapacitated (no HP proportion).
+	for y in BAR_H:
+		for x in BAR_W:
+			if x < BAR_W / 2:
+				img.set_pixel(x, y, fill_color)
+			else:
+				img.set_pixel(x, y, bg_color)
+	return ImageTexture.create_from_image(img)
 
 
 static func _generate_bar_texture(ratio: float) -> ImageTexture:
