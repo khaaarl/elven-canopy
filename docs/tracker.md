@@ -57,7 +57,6 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
-[ ] B-hostile-detect-nav   detect_hostile_targets panics on flying targets (NavNodeId u32::MAX hack)
 [ ] B-raid-spawn           Raiders sometimes spawn inside map instead of at perimeter
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
@@ -244,6 +243,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-dead-node-panic      Panic on dead nav node in pathfinding
 [x] B-dirt-not-pinned      Dirt unpinned in fast structural validator
 [x] B-erratic-movement     Erratic/too-fast creature movement after move commands
+[x] B-hostile-detect-nav   detect_hostile_targets panics on flying targets (NavNodeId u32::MAX hack)
 [x] B-preview-blueprints   Preview treats blueprints as complete
 [x] B-sim-floats           Remaining f32/f64 in sim logic threaten determinism
 [x] B-tab-serde-tests      Fix tabulosity test compilation under feature unification
@@ -2525,7 +2525,7 @@ infrastructure.
 ### Combat & Defense
 
 #### B-hostile-detect-nav — detect_hostile_targets panics on flying targets (NavNodeId u32::MAX hack)
-**Status:** Todo
+**Status:** Done
 
 detect_hostile_targets returns (CreatureId, NavNodeId) but flying
 creatures may have no nav node. Currently hacked with NavNodeId(u32::MAX)

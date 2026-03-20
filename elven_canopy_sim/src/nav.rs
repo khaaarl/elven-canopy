@@ -541,6 +541,26 @@ impl NavGraph {
             && (coord.z as usize) < sz
     }
 
+    /// Return all live nodes in the column at `(x, z)`. Used by combat code
+    /// to find nav nodes beneath/around a flying creature for melee reachability.
+    pub fn nodes_in_column(&self, x: i32, z: i32) -> Vec<&NavNode> {
+        if self.column_index.is_empty() || x < 0 || z < 0 {
+            return Vec::new();
+        }
+        let (sx, _, sz) = self.world_size;
+        if x >= sx as i32 || z >= sz as i32 {
+            return Vec::new();
+        }
+        let col_idx = x as usize + z as usize * self.size_x;
+        match self.column_index.get(col_idx) {
+            Some(col) => col
+                .iter()
+                .filter_map(|&(_, slot)| self.nodes[slot as usize].as_ref())
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
     // ----- Spatial index helpers (column_index) -----
 
     /// Look up the node slot at `coord` in the column index.

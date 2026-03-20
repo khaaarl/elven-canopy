@@ -37832,3 +37832,275 @@ fn flight_pathfinding_corner_cost_matches_scaled_distance() {
     let face_cost = scaled_distance(1, 0, 0);
     assert_eq!(face_cost, 1024);
 }
+
+// -----------------------------------------------------------------------
+// B-hostile-detect-nav: elf vs flying hornet at various heights
+// -----------------------------------------------------------------------
+
+/// Helper: spawn elf, make it aggressive (military group), zero stats (predictable damage),
+/// and return (elf_id, elf_position).
+fn setup_aggressive_elf(sim: &mut SimState) -> (CreatureId, VoxelCoord) {
+    let elf_id = spawn_elf(sim);
+    zero_creature_stats(sim, elf_id);
+    let soldiers = soldiers_group(sim);
+    set_military_group(sim, elf_id, Some(soldiers.id));
+    // force_idle but keep activations — the elf needs to act autonomously.
+    force_idle(sim, elf_id);
+    let pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    (elf_id, pos)
+}
+
+/// Helper: spawn a hornet at a specific position and freeze it (force idle, cancel
+/// activations) so it stays put and we can test elf behavior in isolation.
+fn setup_frozen_hornet(sim: &mut SimState, pos: VoxelCoord) -> CreatureId {
+    let mut events = Vec::new();
+    let hornet_id = sim
+        .spawn_creature(Species::Hornet, pos, &mut events)
+        .expect("hornet should spawn");
+    zero_creature_stats(sim, hornet_id);
+    force_idle_and_cancel_activations(sim, hornet_id);
+    hornet_id
+}
+
+/// Helper: give a creature a spear (Oak, quality 0).
+fn give_spear(sim: &mut SimState, creature_id: CreatureId) {
+    let inv_id = sim.db.creatures.get(&creature_id).unwrap().inventory_id;
+    sim.inv_add_item(
+        inv_id,
+        ItemKind::Spear,
+        1,
+        None,
+        None,
+        Some(Material::Oak),
+        0,
+        None,
+        None,
+    );
+}
+
+/// Test matrix: aggressive elf (autonomous pursuit) vs hornet at various heights.
+///
+/// Heights are measured as voxel delta from the elf's walking level. With 1x1x1
+/// footprints, the AABB gap in Y is `dy - 1` (elf occupies [y, y+1), hornet
+/// occupies [y+dy, y+dy+1)). Melee range is squared gap distance:
+/// - dy=0: gap=0, dist_sq=0 (same level, definitely in range)
+/// - dy=1: gap=0, dist_sq=0 (adjacent, no gap — elf top meets hornet bottom)
+/// - dy=2: gap=1, dist_sq=1 ≤ 3 (bare hands reach)
+/// - dy=3: gap=2, dist_sq=4 > 3 (bare hands can't, spear_range_sq=8 can)
+/// - dy=10: gap=9, dist_sq=81 (way above, nobody can reach)
+///
+/// For each height, we test bare-handed and spear-armed elves.
+#[test]
+fn aggressive_elf_vs_hornet_at_heights() {
+    struct Case {
+        dy: i32,
+        has_spear: bool,
+        expect_damage: bool,
+        label: &'static str,
+    }
+
+    let cases = [
+        Case {
+            dy: 0,
+            has_spear: false,
+            expect_damage: true,
+            label: "dy=0, bare hands",
+        },
+        Case {
+            dy: 0,
+            has_spear: true,
+            expect_damage: true,
+            label: "dy=0, spear",
+        },
+        Case {
+            dy: 1,
+            has_spear: false,
+            expect_damage: true,
+            label: "dy=1, bare hands",
+        },
+        Case {
+            dy: 1,
+            has_spear: true,
+            expect_damage: true,
+            label: "dy=1, spear",
+        },
+        Case {
+            dy: 2,
+            has_spear: false,
+            expect_damage: true,
+            label: "dy=2, bare hands (gap=1, in range)",
+        },
+        Case {
+            dy: 2,
+            has_spear: true,
+            expect_damage: true,
+            label: "dy=2, spear",
+        },
+        // dy=10+: hornet is way above the tree canopy. Even climbing, the elf
+        // can't get within melee range. The elf should give up.
+        Case {
+            dy: 20,
+            has_spear: false,
+            expect_damage: false,
+            label: "dy=20, bare hands (way above)",
+        },
+        Case {
+            dy: 20,
+            has_spear: true,
+            expect_damage: false,
+            label: "dy=20, spear (way above)",
+        },
+    ];
+
+    for case in &cases {
+        let mut sim = test_sim(42);
+        let (elf_id, elf_pos) = setup_aggressive_elf(&mut sim);
+
+        if case.has_spear {
+            give_spear(&mut sim, elf_id);
+        }
+
+        let hornet_pos = VoxelCoord::new(elf_pos.x, elf_pos.y + case.dy, elf_pos.z);
+        let hornet_id = setup_frozen_hornet(&mut sim, hornet_pos);
+        let hornet_hp_before = sim.db.creatures.get(&hornet_id).unwrap().hp;
+
+        // Let the elf act for enough ticks to walk + strike.
+        let target_tick = sim.tick + 8000;
+        sim.step(&[], target_tick);
+
+        let hornet = sim.db.creatures.get(&hornet_id).unwrap();
+        if case.expect_damage {
+            assert!(
+                hornet.hp < hornet_hp_before,
+                "[{}] hornet should have taken damage (hp {} vs before {})",
+                case.label,
+                hornet.hp,
+                hornet_hp_before
+            );
+        } else {
+            assert_eq!(
+                hornet.hp, hornet_hp_before,
+                "[{}] hornet should NOT have taken damage",
+                case.label
+            );
+        }
+    }
+}
+
+/// Test matrix: passive elf ordered to attack hornet at various heights.
+///
+/// Same height cases as above, but the elf is a civilian (passive initiative)
+/// given a player-directed AttackCreature command. The elf should pursue the
+/// target if a nav-graph path gets it within melee range. If not reachable,
+/// the attack task should eventually cancel (path_failures >= retry limit).
+#[test]
+fn ordered_elf_vs_hornet_at_heights() {
+    struct Case {
+        dy: i32,
+        has_spear: bool,
+        expect_damage: bool,
+        label: &'static str,
+    }
+
+    let cases = [
+        Case {
+            dy: 0,
+            has_spear: false,
+            expect_damage: true,
+            label: "dy=0, bare hands",
+        },
+        Case {
+            dy: 0,
+            has_spear: true,
+            expect_damage: true,
+            label: "dy=0, spear",
+        },
+        Case {
+            dy: 1,
+            has_spear: false,
+            expect_damage: true,
+            label: "dy=1, bare hands",
+        },
+        Case {
+            dy: 1,
+            has_spear: true,
+            expect_damage: true,
+            label: "dy=1, spear",
+        },
+        Case {
+            dy: 2,
+            has_spear: false,
+            expect_damage: true,
+            label: "dy=2, bare hands (gap=1)",
+        },
+        Case {
+            dy: 2,
+            has_spear: true,
+            expect_damage: true,
+            label: "dy=2, spear",
+        },
+        Case {
+            dy: 20,
+            has_spear: false,
+            expect_damage: false,
+            label: "dy=20, bare hands (way above)",
+        },
+        Case {
+            dy: 20,
+            has_spear: true,
+            expect_damage: false,
+            label: "dy=20, spear (way above)",
+        },
+    ];
+
+    for case in &cases {
+        let mut sim = test_sim(42);
+        let elf_id = spawn_elf(&mut sim);
+        zero_creature_stats(&mut sim, elf_id);
+        // Elf stays civilian (passive) — won't pursue autonomously.
+        force_idle_and_cancel_activations(&mut sim, elf_id);
+
+        if case.has_spear {
+            give_spear(&mut sim, elf_id);
+        }
+
+        let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+        let hornet_pos = VoxelCoord::new(elf_pos.x, elf_pos.y + case.dy, elf_pos.z);
+        let hornet_id = setup_frozen_hornet(&mut sim, hornet_pos);
+        let hornet_hp_before = sim.db.creatures.get(&hornet_id).unwrap().hp;
+
+        // Issue player-directed attack command.
+        let tick = sim.tick + 1;
+        let cmd = SimCommand {
+            player_name: String::new(),
+            tick,
+            action: SimAction::AttackCreature {
+                attacker_id: elf_id,
+                target_id: hornet_id,
+            },
+        };
+        sim.step(&[cmd], tick + 8000);
+
+        let hornet = sim.db.creatures.get(&hornet_id).unwrap();
+        if case.expect_damage {
+            assert!(
+                hornet.hp < hornet_hp_before,
+                "[ordered, {}] hornet should have taken damage (hp {} vs before {})",
+                case.label,
+                hornet.hp,
+                hornet_hp_before
+            );
+        } else {
+            assert_eq!(
+                hornet.hp, hornet_hp_before,
+                "[ordered, {}] hornet should NOT have taken damage",
+                case.label
+            );
+
+            // NOTE: ideally the elf should give up the attack task when the
+            // target is unreachable, but the current path_failures mechanism
+            // only triggers on pathfinding failure, not "arrived but can't
+            // melee." This is a known limitation tracked separately.
+        }
+    }
+}

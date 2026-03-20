@@ -318,8 +318,15 @@ impl SimState {
                 );
 
                 if let Some(&(nearest_id, nearest_node)) = targets.first() {
-                    // Engage nearest hostile.
-                    let nearest_pos = self.nav_graph.node(nearest_node).position;
+                    // Engage nearest hostile. Use the target creature's actual
+                    // position — the NavNodeId may be a placeholder (u32::MAX)
+                    // for flying creatures with no nearby nav node.
+                    let nearest_pos = self
+                        .db
+                        .creatures
+                        .get(&nearest_id)
+                        .map(|c| c.position)
+                        .unwrap_or_else(|| self.nav_graph.node(nearest_node).position);
                     if let Some(mut t) = self.db.tasks.get(&task_id) {
                         t.target_creature = Some(nearest_id);
                         t.location = nearest_pos;
@@ -2719,13 +2726,43 @@ impl SimState {
 
         // Resolve target positions on the attacker's nav graph. Targets may
         // be on a different graph (e.g., 1x1 elf on standard graph vs 2x2
-        // troll on large graph). We look up the nearest node on the
-        // attacker's graph for each target's world position.
+        // troll on large graph), or in the air (flying creatures). We first
+        // try find_nearest_node at the target's position; if that fails
+        // (e.g., target is a hornet flying above ground), we look for a
+        // nav node beneath the target that would put the attacker within
+        // melee range.
+        let melee_range = self.max_melee_range_sq(creature_id);
+        let attacker_footprint = species_data.footprint;
         let target_nodes: Vec<NavNodeId> = targets
             .iter()
             .filter_map(|&(tid, _)| {
-                let pos = self.db.creatures.get(&tid)?.position;
-                graph.find_nearest_node(pos)
+                let target = self.db.creatures.get(&tid)?;
+                let pos = target.position;
+                let target_fp = self.species_table[&target.species].footprint;
+
+                let is_flyer = self.species_table[&target.species]
+                    .flight_ticks_per_voxel
+                    .is_some();
+
+                // Ground targets: snap to nearest nav node (fast).
+                // Flying targets: skip find_nearest_node (O(y²) for high-
+                // altitude creatures) and go straight to the bounded
+                // melee-reachable search.
+                if !is_flyer && let Some(node) = graph.find_nearest_node(pos) {
+                    return Some(node);
+                }
+
+                // Target has no nearby nav node (flying creature in the
+                // air, or ground creature displaced by construction).
+                // Search for a nav node where the attacker could stand
+                // and be within melee range of the target.
+                self.find_melee_reachable_node(
+                    graph,
+                    pos,
+                    target_fp,
+                    attacker_footprint,
+                    melee_range,
+                )
             })
             .collect();
         if target_nodes.is_empty() {
@@ -2771,9 +2808,58 @@ impl SimState {
         true
     }
 
+    /// Find a nav node on `graph` where an attacker standing there would be
+    /// within `melee_range_sq` of a target at `target_pos` with `target_fp`
+    /// footprint. Used when the target is a flying creature in the air with
+    /// no nearby nav node — we search for ground positions beneath/around
+    /// the target that let a ground creature reach up and melee.
+    ///
+    /// Returns `None` if no such node exists (target is too high for any
+    /// reachable position to be in melee range).
+    fn find_melee_reachable_node(
+        &self,
+        graph: &crate::nav::NavGraph,
+        target_pos: VoxelCoord,
+        target_fp: [u8; 3],
+        attacker_fp: [u8; 3],
+        melee_range_sq: i64,
+    ) -> Option<NavNodeId> {
+        // Search an expanding box around the target's x,z position.
+        // The melee range limits how far horizontally/vertically we need to
+        // search: max axis gap ≤ isqrt(melee_range_sq).
+        let max_gap = (melee_range_sq as u64).isqrt() as i32 + 1;
+        let mut best: Option<(i64, NavNodeId)> = None; // (manhattan_to_target, node_id)
+
+        for dx in -max_gap..=max_gap {
+            for dz in -max_gap..=max_gap {
+                let col_x = target_pos.x + dx;
+                let col_z = target_pos.z + dz;
+                // Check all nav nodes in this column.
+                for node in graph.nodes_in_column(col_x, col_z) {
+                    let node_pos = node.position;
+                    let dist = melee_distance_sq(node_pos, attacker_fp, target_pos, target_fp);
+                    if dist <= melee_range_sq {
+                        // Pick the closest to the target (Manhattan) for
+                        // optimal pathfinding.
+                        let manhattan = (node_pos.x - target_pos.x).unsigned_abs() as i64
+                            + (node_pos.y - target_pos.y).unsigned_abs() as i64
+                            + (node_pos.z - target_pos.z).unsigned_abs() as i64;
+                        if best.is_none() || manhattan < best.unwrap().0 {
+                            best = Some((manhattan, node.id));
+                        }
+                    }
+                }
+            }
+        }
+
+        best.map(|(_, id)| id)
+    }
+
     /// Detect hostile targets within detection range. Returns a list of
     /// `(CreatureId, NavNodeId)` pairs sorted by squared euclidean distance
-    /// (nearest first).
+    /// (nearest first). **Note:** for flying creatures the `NavNodeId` is a
+    /// placeholder (`u32::MAX`) — callers must not dereference it. Use the
+    /// creature's position from the DB instead.
     ///
     /// Hostility rules for the initial pass:
     /// - Non-civ aggressive creature (no `civ_id`): targets all living civ
