@@ -199,6 +199,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-spell-system         Core spell casting infrastructure (SpellId, commands, mana costs)
 [ ] F-spell-thornbriar     Thornbriar zone spell (slow + damage area)
 [ ] F-stairs               Stairs and ramps for vertical movement
+[ ] F-starvation-rework    Starvation rework: incapacitation interaction and bleed-out
 [ ] F-status-effects       Generic creature status effect system
 [ ] F-stealth              Camouflage and stealth mechanics
 [ ] F-stress-heatmap       Stress visualization in blueprint mode
@@ -1427,6 +1428,11 @@ Ranged attack as a creature ACTION. Uses the standard ActionKind / next_availabl
 **Draft:** docs/drafts/combat_military.md (§5)
 
 **Related:** F-friendly-fire, F-phased-archery, F-skirmish, F-spell-ench-arrow
+
+#### F-starvation-rework — Starvation rework: incapacitation interaction and bleed-out
+**Status:** Todo
+
+**Related:** F-incapacitation
 
 #### F-task-interruption — Unified task interruption and cleanup
 **Status:** Done
@@ -2823,7 +2829,7 @@ skull icon during incapacitation. This creates a rescue window (see
 F-rescue) and makes combat feel less binary.
 
 **Blocks:** F-rescue
-**Related:** F-anatomy, F-funeral-rites, F-hp-death, F-hp-ui, F-rescue, F-soul-mech
+**Related:** F-anatomy, F-funeral-rites, F-hp-death, F-hp-ui, F-rescue, F-soul-mech, F-starvation-rework
 
 #### F-instinctual-flee — Instinctual flee thresholds (species-level fear overrides)
 **Status:** Todo

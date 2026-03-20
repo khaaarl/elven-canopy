@@ -325,7 +325,7 @@ fn default_food_max() -> i64 {
 }
 
 fn default_food_decay_per_tick() -> i64 {
-    3_333_333_333
+    333_333_333
 }
 
 fn default_hp_max() -> i64 {
@@ -345,7 +345,7 @@ fn default_rest_max() -> i64 {
 }
 
 fn default_rest_decay_per_tick() -> i64 {
-    3_333_333_333
+    333_333_333
 }
 
 fn default_rest_tired_threshold_pct() -> i64 {
