@@ -752,7 +752,7 @@ fn auto_insert_filtered_index_update_changes_membership() {
 }
 
 // =============================================================================
-// Auto-increment + rebuild_indexes
+// Auto-increment + manual_rebuild_all_indexes
 // =============================================================================
 
 #[test]
@@ -780,9 +780,9 @@ fn rebuild_indexes_on_auto_table() {
         })
         .unwrap();
 
-    // rebuild_indexes should not affect next_id or data, just indexes.
+    // manual_rebuild_all_indexes should not affect next_id or data, just indexes.
     let next_before = table.next_id();
-    table.rebuild_indexes();
+    table.manual_rebuild_all_indexes();
     assert_eq!(table.next_id(), next_before);
     assert_eq!(table.len(), 3);
     assert_eq!(table.count_by_color(&Color::Red, QueryOpts::ASC), 2);

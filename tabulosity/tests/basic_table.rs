@@ -275,7 +275,7 @@ fn table_default_is_empty() {
     assert_eq!(table.len(), 0);
 }
 
-// --- rebuild_indexes on table with no indexed fields ---
+// --- manual_rebuild_all_indexes on table with no indexed fields ---
 
 #[test]
 fn rebuild_indexes_no_indexed_fields() {
@@ -295,8 +295,8 @@ fn rebuild_indexes_no_indexed_fields() {
         })
         .unwrap();
 
-    // rebuild_indexes on a table with no #[indexed] fields is a no-op.
-    table.rebuild_indexes();
+    // manual_rebuild_all_indexes on a table with no #[indexed] fields is a no-op.
+    table.manual_rebuild_all_indexes();
 
     assert_eq!(table.len(), 2);
     assert_eq!(table.get(&ItemId(1)).unwrap().name, "Sword");

@@ -57,6 +57,7 @@ elven-canopy/
 │   │   ├── lib.rs              # Re-exports, module declarations
 │   │   ├── error.rs            # Error enum (5 variants), DeserializeError
 │   │   ├── ins_ord_hash_map.rs # InsOrdHashMap: insertion-ordered hash map with tombstone-skip iteration
+│   │   ├── one_or_many.rs      # OneOrMany<V,Many>: single-entry optimization for non-unique hash index groups
 │   │   └── table.rs            # Bounded, FkCheck, TableMeta, AutoIncrementable, IntoQuery, QueryOpts
 │   ├── tests/
 │   │   ├── auto_increment.rs   # Auto-increment PK generation and serde roundtrip
@@ -66,6 +67,7 @@ elven-canopy/
 │   │   ├── compound_pk_database.rs  # Compound PK with FK validation, cascade, nullify
 │   │   ├── compound_pk_serde.rs     # Compound PK serde roundtrip (feature-gated)
 │   │   ├── database.rs         # FK validation, restrict/cascade/nullify on-delete
+│   │   ├── hash_index.rs       # Hash-based indexes (#[indexed(hash)]), compound hash, unique hash
 │   │   ├── indexed_table.rs    # Secondary indexes, range queries
 │   │   ├── ins_ord_hash_map.rs # InsOrdHashMap integration tests + serde roundtrips
 │   │   ├── modify_unchecked.rs # Closure-based mutation (single/range/all) + debug assertions
@@ -83,7 +85,7 @@ elven-canopy/
 │       ├── lib.rs              # Proc macro entry points
 │       ├── bounded.rs          # derive(Bounded) for newtypes
 │       ├── database.rs         # derive(Database) — FK validation, cascade/nullify, modify_unchecked delegation
-│       ├── parse.rs            # Shared attribute parsing (#[primary_key], #[auto_increment], #[indexed])
+│       ├── parse.rs            # Shared attribute parsing (#[primary_key], #[auto_increment], #[indexed], #[indexed(hash)], #[table(...)])
 │       └── table.rs            # derive(Table) — companion struct, indexes, serde, modify_unchecked, modify_each_by_*
 ├── elven_canopy_gdext/         # GDExtension bridge (depends on sim + godot crate)
 │   └── src/

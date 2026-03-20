@@ -39,7 +39,7 @@ pub fn derive_bounded(input: TokenStream) -> TokenStream {
 /// `#[primary_key("field1", "field2")]` declares a compound (multi-column) primary key
 /// with a tuple key type. Struct-level `#[index(...)]` supports `unique` keyword for
 /// compound unique indexes.
-#[proc_macro_derive(Table, attributes(primary_key, auto_increment, indexed, index))]
+#[proc_macro_derive(Table, attributes(primary_key, auto_increment, indexed, index, table))]
 pub fn derive_table(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as DeriveInput);
     table::derive(&input).into()

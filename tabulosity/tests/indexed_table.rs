@@ -341,7 +341,7 @@ fn index_maintained_on_remove() {
 }
 
 #[test]
-fn rebuild_indexes() {
+fn manual_rebuild_all_indexes() {
     let mut table = CreatureTable::new();
     table
         .insert_no_fk(Creature {
@@ -360,7 +360,7 @@ fn rebuild_indexes() {
         })
         .unwrap();
 
-    table.rebuild_indexes();
+    table.manual_rebuild_all_indexes();
 
     assert_eq!(table.count_by_species(&Species::Elf, QueryOpts::ASC), 1);
     assert_eq!(
@@ -605,8 +605,8 @@ fn rebuild_indexes_idempotent() {
         })
         .unwrap();
 
-    table.rebuild_indexes();
-    table.rebuild_indexes();
+    table.manual_rebuild_all_indexes();
+    table.manual_rebuild_all_indexes();
 
     assert_eq!(table.count_by_species(&Species::Elf, QueryOpts::ASC), 1);
     assert_eq!(
@@ -968,7 +968,7 @@ fn compound_index_rebuild() {
         })
         .unwrap();
 
-    table.rebuild_indexes();
+    table.manual_rebuild_all_indexes();
 
     assert_eq!(
         table.count_by_assignee_priority(&Some(CreatureId(1)), MatchAll, QueryOpts::ASC),
@@ -1239,7 +1239,7 @@ fn filtered_index_rebuild() {
         })
         .unwrap();
 
-    table.rebuild_indexes();
+    table.manual_rebuild_all_indexes();
 
     // Only the Pending task should be in the filtered index.
     assert_eq!(
@@ -2356,7 +2356,7 @@ fn rebuild_preserves_compound_and_simple_indexes() {
             .unwrap();
     }
 
-    table.rebuild_indexes();
+    table.manual_rebuild_all_indexes();
 
     // Compound index works.
     assert_eq!(
@@ -3041,7 +3041,7 @@ fn bounds_insert_delete_insert_cycle() {
 }
 
 // ============================================================================
-// Tracked bounds: rebuild_indexes recomputes bounds
+// Tracked bounds: manual_rebuild_all_indexes recomputes bounds
 // ============================================================================
 
 #[test]
@@ -3071,7 +3071,7 @@ fn bounds_recomputed_on_rebuild() {
 
     // Before rebuild: bounds are stale (include CreatureId(100), priority 255).
     // After rebuild: bounds should tighten to current data only.
-    table.rebuild_indexes();
+    table.manual_rebuild_all_indexes();
 
     // Insert a row after rebuild with moderate values.
     table

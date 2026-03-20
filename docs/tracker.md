@@ -51,7 +51,6 @@ This reduces merge conflicts when parallel work streams add items.
 [~] F-fruit-variety        Procedural fruit variety and processing
 [~] F-multiplayer          Relay-coordinator multiplayer networking
 [~] F-notifications        Player-visible event notifications
-[~] F-tab-hash-idx         Hash-based indexes in Tabulosity derive macro
 ```
 
 ### Todo
@@ -399,6 +398,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-tab-cascade-del      Cascade/nullify on delete
 [x] F-tab-compound-idx     Compound indexes with prefix queries
 [x] F-tab-filter-idx       Filtered/partial indexes
+[x] F-tab-hash-idx         Hash-based indexes in Tabulosity derive macro
 [x] F-tab-modify-unchk     Closure-based row mutation (modify_unchecked)
 [x] F-tab-nonpk-autoinc    Non-PK auto-increment fields in tabulosity
 [x] F-tab-ordered-idx      Deterministic-iteration hash index with tombstone skip
@@ -4968,7 +4968,7 @@ High complexity.
 **Related:** F-sim-db-impl, F-tab-compound-idx
 
 #### F-tab-hash-idx — Hash-based indexes in Tabulosity derive macro
-**Status:** In Progress
+**Status:** Done
 
 Integrate `InsOrdHashMap` into Tabulosity's derive macro so users can
 declare hash-based indexes on table fields and opt into hash-based primary

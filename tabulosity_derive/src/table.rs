@@ -1,10 +1,12 @@
 //! Implementation of `#[derive(Table)]`.
 //!
 //! Generates a companion `{Name}Table` struct with:
-//! - `rows: BTreeMap<PK, Row>` primary storage
-//! - Simple indexes from `#[indexed]` fields: `BTreeSet<(FieldType, PK)>`
-//! - Unique indexes from `#[indexed(unique)]` or `#[index(..., unique)]`
-//! - Compound indexes from `#[index(...)]`: `BTreeSet<(F1, F2, ..., PK)>`
+//! - `rows: BTreeMap<PK, Row>` primary storage (or `InsOrdHashMap<PK, Row>`
+//!   with `#[table(primary_storage = "hash")]`)
+//! - BTree indexes from `#[indexed]`: `BTreeSet<(FieldType, PK)>`
+//! - Hash indexes from `#[indexed(hash)]`: `InsOrdHashMap<FieldType, OneOrMany<PK, Inner>>`
+//! - Unique indexes from `#[indexed(unique)]` or `#[indexed(hash, unique)]`
+//! - Compound indexes from `#[index(...)]` with optional `kind = "hash"`
 //! - Filtered indexes via optional `filter` on `#[index(...)]`
 //! - Tracked bounds per unique type across all indexes: `_bounds_{type}`
 //! - Public read methods (get, get_ref, contains, len, is_empty, keys, etc.)
@@ -18,7 +20,8 @@
 //! - Per-index query methods using `IntoQuery` (by_*, iter_by_*, count_by_*)
 //!   with `QueryOpts` for ordering (asc/desc) and offset (skip N)
 //! - `modify_each_by_*` — query-driven batch mutation with debug-build safety
-//! - `rebuild_indexes()` for deserialization
+//! - `post_deser_rebuild_indexes()` for deserialization (BTree only)
+//! - `manual_rebuild_all_indexes()` for full rebuild (BTree + hash)
 //! - `Serialize` / `Deserialize` impls (behind `#[cfg(feature = "serde")]`)
 //! - Non-PK auto-increment via `#[auto_increment]` on a non-primary-key field:
 //!   generates a `next_<field>` counter, `insert_auto_no_fk` method, and serde
@@ -36,7 +39,7 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{Data, DeriveInput, Fields, Ident, Type};
 
-use crate::parse::{self, IndexDecl, ParsedField};
+use crate::parse::{self, IndexDecl, IndexKind, ParsedField, PrimaryStorageKind};
 
 /// Abstraction over single-column and compound primary keys.
 ///
@@ -79,6 +82,12 @@ impl PkInfo {
             let id = &self.fields[0].0;
             quote! { row.#id.clone() }
         }
+    }
+
+    /// Expression to extract the key from a `pk` variable.
+    /// Single: `pk.clone()`. Compound: `pk.clone()` (already a tuple).
+    fn extract_key_from_var(&self) -> TokenStream {
+        quote! { pk.clone() }
     }
 
     /// The flattened PK field types for appending to index tuples.
@@ -193,6 +202,42 @@ struct ResolvedIndex {
     fields: Vec<(Ident, Type)>,
     filter: Option<String>,
     is_unique: bool,
+    /// The index backing storage kind: BTree or Hash.
+    kind: IndexKind,
+}
+
+/// Generate a hash key expression from field clones.
+/// Single field: `row.field.clone()` directly. Multiple: `(row.a.clone(), row.b.clone())`.
+fn gen_hash_key_expr(field_clones: &[TokenStream]) -> TokenStream {
+    if field_clones.len() == 1 {
+        field_clones[0].clone()
+    } else {
+        quote! { (#(#field_clones),*) }
+    }
+}
+
+/// Generate the OneOrMany insert method name based on primary storage.
+fn gen_one_or_many_insert(primary_storage: PrimaryStorageKind) -> Ident {
+    match primary_storage {
+        PrimaryStorageKind::BTree => format_ident!("insert_btree"),
+        PrimaryStorageKind::Hash => format_ident!("insert_hash"),
+    }
+}
+
+/// Generate the OneOrMany remove method name based on primary storage.
+fn gen_one_or_many_remove(primary_storage: PrimaryStorageKind) -> Ident {
+    match primary_storage {
+        PrimaryStorageKind::BTree => format_ident!("remove_btree"),
+        PrimaryStorageKind::Hash => format_ident!("remove_hash"),
+    }
+}
+
+/// Generate the OneOrMany iter method name based on primary storage.
+fn gen_one_or_many_iter(primary_storage: PrimaryStorageKind) -> Ident {
+    match primary_storage {
+        PrimaryStorageKind::BTree => format_ident!("iter_btree"),
+        PrimaryStorageKind::Hash => format_ident!("iter_hash"),
+    }
 }
 
 pub fn derive(input: &DeriveInput) -> TokenStream {
@@ -314,6 +359,12 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
     let extract_key = pk_info.extract_key_from_row();
     let is_auto_increment = pk_info.is_auto_increment;
 
+    // Parse struct-level #[table(...)] attribute for primary storage kind.
+    let primary_storage = match parse::parse_table_attr(input) {
+        Ok(ps) => ps,
+        Err(e) => return e.to_compile_error(),
+    };
+
     // Parse struct-level #[index(...)] attributes.
     let index_decls = match parse::parse_index_attrs(input) {
         Ok(d) => d,
@@ -330,7 +381,7 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
     let unique_tracked = collect_unique_tracked_types(&resolved_indexes, &pk_info);
 
     // --- Companion struct fields ---
-    let idx_field_decls = gen_idx_field_decls(&resolved_indexes, &pk_info);
+    let idx_field_decls = gen_idx_field_decls(&resolved_indexes, &pk_info, primary_storage);
     let bounds_field_decls = gen_bounds_field_decls(&unique_tracked);
     let idx_field_inits = gen_idx_field_inits(&resolved_indexes);
     let bounds_field_inits = gen_bounds_field_inits(&unique_tracked);
@@ -339,19 +390,26 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
     let bounds_widen_row = gen_bounds_widen(&resolved_indexes, &pk_info, &fields);
 
     // --- Index maintenance ---
-    let idx_insert = gen_all_idx_insert(&resolved_indexes, &pk_info);
-    let idx_update = gen_all_idx_update(&resolved_indexes, &pk_info);
-    let idx_upsert_update = gen_all_idx_update(&resolved_indexes, &pk_info);
-    let idx_upsert_insert = gen_all_idx_insert(&resolved_indexes, &pk_info);
-    let idx_remove = gen_all_idx_remove(&resolved_indexes, &pk_info);
+    let idx_insert = gen_all_idx_insert(&resolved_indexes, &pk_info, primary_storage);
+    let idx_update = gen_all_idx_update(&resolved_indexes, &pk_info, primary_storage);
+    let idx_upsert_update = gen_all_idx_update(&resolved_indexes, &pk_info, primary_storage);
+    let idx_upsert_insert = gen_all_idx_insert(&resolved_indexes, &pk_info, primary_storage);
+    let idx_remove = gen_all_idx_remove(&resolved_indexes, &pk_info, primary_storage);
 
     // --- Rebuild indexes ---
     let bounds_reset = gen_bounds_reset(&unique_tracked);
-    let rebuild_body = gen_rebuild_body(&resolved_indexes, &pk_info);
+    let rebuild_body = gen_rebuild_body(&resolved_indexes, &pk_info, primary_storage, false);
+    let rebuild_all_body = gen_rebuild_body(&resolved_indexes, &pk_info, primary_storage, true);
     let rebuild_bounds_widen = gen_bounds_widen(&resolved_indexes, &pk_info, &fields);
 
     // --- Query methods ---
-    let query_methods = gen_all_query_methods(&resolved_indexes, &pk_info, row_name, &fields);
+    let query_methods = gen_all_query_methods(
+        &resolved_indexes,
+        &pk_info,
+        row_name,
+        &fields,
+        primary_storage,
+    );
 
     let table_name_str_ref = &table_name_str;
 
@@ -362,7 +420,7 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
     let modify_unchecked_method =
         gen_modify_unchecked(&pk_info, row_name, table_name_str_ref, &resolved_indexes);
     let modify_unchecked_range_methods =
-        gen_modify_unchecked_range(&pk_info, row_name, &resolved_indexes);
+        gen_modify_unchecked_range(&pk_info, row_name, &resolved_indexes, primary_storage);
 
     // --- Unique index checks ---
     let unique_check_insert =
@@ -484,6 +542,10 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
         quote! {}
     };
 
+    let hash_indexes: Vec<&ResolvedIndex> = resolved_indexes
+        .iter()
+        .filter(|idx| idx.kind == IndexKind::Hash)
+        .collect();
     let serde_impls = gen_serde_impls(
         &table_name,
         row_name,
@@ -491,6 +553,8 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
         table_name_str_ref,
         is_auto_increment,
         &nonpk_auto_field,
+        &hash_indexes,
+        primary_storage,
     );
 
     // pk_ref method (single PK only, for backward compat).
@@ -524,10 +588,19 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
         }
     };
 
+    let rows_field_ty = match primary_storage {
+        PrimaryStorageKind::BTree => quote! { ::std::collections::BTreeMap<#key_ty, #row_name> },
+        PrimaryStorageKind::Hash => quote! { ::tabulosity::InsOrdHashMap<#key_ty, #row_name> },
+    };
+    let rows_field_init = match primary_storage {
+        PrimaryStorageKind::BTree => quote! { ::std::collections::BTreeMap::new() },
+        PrimaryStorageKind::Hash => quote! { ::tabulosity::InsOrdHashMap::new() },
+    };
+
     quote! {
         /// Companion table struct generated by `#[derive(Table)]`.
         #vis struct #table_name {
-            rows: ::std::collections::BTreeMap<#key_ty, #row_name>,
+            rows: #rows_field_ty,
             #(#idx_field_decls,)*
             #(#bounds_field_decls,)*
             #next_id_field_decl
@@ -538,7 +611,7 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
             /// Creates a new empty table.
             pub fn new() -> Self {
                 Self {
-                    rows: ::std::collections::BTreeMap::new(),
+                    rows: #rows_field_init,
                     #(#idx_field_inits,)*
                     #(#bounds_field_inits,)*
                     #next_id_field_init
@@ -691,11 +764,24 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
 
             #modify_unchecked_range_methods
 
-            /// Rebuilds all secondary indexes and tracked bounds from row data.
+            /// Rebuilds BTree secondary indexes and tracked bounds from row data.
+            /// Hash indexes are NOT rebuilt — they are deserialized directly
+            /// to preserve insertion order.
             #[doc(hidden)]
-            pub fn rebuild_indexes(&mut self) {
+            pub fn post_deser_rebuild_indexes(&mut self) {
                 #(#bounds_reset)*
                 #(#rebuild_body)*
+                for (_pk, row) in &self.rows {
+                    #(#rebuild_bounds_widen)*
+                }
+            }
+
+            /// Rebuilds ALL secondary indexes (BTree and hash) and tracked
+            /// bounds from row data. Hash index insertion order after this
+            /// call reflects `rows` iteration order.
+            pub fn manual_rebuild_all_indexes(&mut self) {
+                #(#bounds_reset)*
+                #(#rebuild_all_body)*
                 for (_pk, row) in &self.rows {
                     #(#rebuild_bounds_widen)*
                 }
@@ -751,6 +837,7 @@ fn resolve_indexes(
                 fields: vec![(f.ident.clone(), f.ty.clone())],
                 filter: None,
                 is_unique: f.is_unique,
+                kind: f.index_kind,
             });
         }
     }
@@ -774,6 +861,7 @@ fn resolve_indexes(
             fields: idx_fields,
             filter: decl.filter.clone(),
             is_unique: decl.unique,
+            kind: decl.kind,
         });
     }
 
@@ -864,6 +952,10 @@ fn collect_unique_tracked_types(indexes: &[ResolvedIndex], pk_info: &PkInfo) -> 
     let mut seen = std::collections::BTreeSet::new();
 
     for idx in indexes {
+        // Hash indexes don't need bounds tracking (no range queries).
+        if idx.kind == IndexKind::Hash {
+            continue;
+        }
         for (_, ty) in &idx.fields {
             let suffix = type_suffix(ty);
             if seen.insert(suffix.clone()) {
@@ -893,15 +985,51 @@ fn collect_unique_tracked_types(indexes: &[ResolvedIndex], pk_info: &PkInfo) -> 
 // Struct field codegen
 // =============================================================================
 
-fn gen_idx_field_decls(indexes: &[ResolvedIndex], pk_info: &PkInfo) -> Vec<TokenStream> {
+fn gen_idx_field_decls(
+    indexes: &[ResolvedIndex],
+    pk_info: &PkInfo,
+    primary_storage: PrimaryStorageKind,
+) -> Vec<TokenStream> {
     let pk_tys = pk_info.index_pk_types();
+    let key_ty = pk_info.key_type();
     indexes
         .iter()
         .map(|idx| {
             let idx_name = format_ident!("idx_{}", idx.name);
             let field_tys: Vec<&Type> = idx.fields.iter().map(|(_, ty)| ty).collect();
-            quote! {
-                #idx_name: ::std::collections::BTreeSet<(#(#field_tys,)* #(#pk_tys),*)>
+            match idx.kind {
+                IndexKind::BTree => {
+                    quote! {
+                        #idx_name: ::std::collections::BTreeSet<(#(#field_tys,)* #(#pk_tys),*)>
+                    }
+                }
+                IndexKind::Hash => {
+                    // Hash key type: single field → field type, compound → tuple.
+                    let hash_key_ty = if field_tys.len() == 1 {
+                        let ty = field_tys[0];
+                        quote! { #ty }
+                    } else {
+                        quote! { (#(#field_tys),*) }
+                    };
+                    if idx.is_unique {
+                        quote! {
+                            #idx_name: ::tabulosity::InsOrdHashMap<#hash_key_ty, #key_ty>
+                        }
+                    } else {
+                        // Non-unique: inner collection depends on primary storage.
+                        let inner_ty = match primary_storage {
+                            PrimaryStorageKind::BTree => {
+                                quote! { ::std::collections::BTreeSet<#key_ty> }
+                            }
+                            PrimaryStorageKind::Hash => {
+                                quote! { ::tabulosity::InsOrdHashMap<#key_ty, ()> }
+                            }
+                        };
+                        quote! {
+                            #idx_name: ::tabulosity::InsOrdHashMap<#hash_key_ty, ::tabulosity::OneOrMany<#key_ty, #inner_ty>>
+                        }
+                    }
+                }
             }
         })
         .collect()
@@ -923,7 +1051,14 @@ fn gen_idx_field_inits(indexes: &[ResolvedIndex]) -> Vec<TokenStream> {
         .iter()
         .map(|idx| {
             let idx_name = format_ident!("idx_{}", idx.name);
-            quote! { #idx_name: ::std::collections::BTreeSet::new() }
+            match idx.kind {
+                IndexKind::BTree => {
+                    quote! { #idx_name: ::std::collections::BTreeSet::new() }
+                }
+                IndexKind::Hash => {
+                    quote! { #idx_name: ::tabulosity::InsOrdHashMap::new() }
+                }
+            }
         })
         .collect()
 }
@@ -954,6 +1089,10 @@ fn gen_bounds_widen(
     let mut seen_fields = std::collections::BTreeSet::new();
 
     for idx in indexes {
+        // Hash indexes don't need bounds tracking.
+        if idx.kind == IndexKind::Hash {
+            continue;
+        }
         for (field_ident, _) in &idx.fields {
             let f = all_fields.iter().find(|f| &f.ident == field_ident).unwrap();
             let suffix = type_suffix(&f.ty);
@@ -1053,20 +1192,37 @@ fn gen_unique_check_insert(
         .map(|(fi, _)| quote! { row.#fi })
         .collect();
 
-    // Generate bounds checks and min/max vars for each PK field.
-    let (pk_bounds_checks, pk_min_clones, pk_max_clones) = gen_pk_bounds_for_unique(pk_info);
+    let uniqueness_check = match idx.kind {
+        IndexKind::BTree => {
+            // Generate bounds checks and min/max vars for each PK field.
+            let (pk_bounds_checks, pk_min_clones, pk_max_clones) =
+                gen_pk_bounds_for_unique(pk_info);
 
-    let range_check = quote! {
-        #(#pk_bounds_checks)*
-        {
-            let __start = (#(#field_clones,)* #(#pk_min_clones),*);
-            let __end = (#(#field_clones,)* #(#pk_max_clones),*);
-            if self.#idx_name.range(__start..=__end).next().is_some() {
-                return ::std::result::Result::Err(::tabulosity::Error::DuplicateIndex {
-                    table: #table_name_str,
-                    index: #idx_name_str,
-                    key: ::std::format!("{:?}", (#(&#key_fmt),*)),
-                });
+            quote! {
+                #(#pk_bounds_checks)*
+                {
+                    let __start = (#(#field_clones,)* #(#pk_min_clones),*);
+                    let __end = (#(#field_clones,)* #(#pk_max_clones),*);
+                    if self.#idx_name.range(__start..=__end).next().is_some() {
+                        return ::std::result::Result::Err(::tabulosity::Error::DuplicateIndex {
+                            table: #table_name_str,
+                            index: #idx_name_str,
+                            key: ::std::format!("{:?}", (#(&#key_fmt),*)),
+                        });
+                    }
+                }
+            }
+        }
+        IndexKind::Hash => {
+            let hash_key = gen_hash_key_expr(&field_clones);
+            quote! {
+                if self.#idx_name.contains_key(&#hash_key) {
+                    return ::std::result::Result::Err(::tabulosity::Error::DuplicateIndex {
+                        table: #table_name_str,
+                        index: #idx_name_str,
+                        key: ::std::format!("{:?}", (#(&#key_fmt),*)),
+                    });
+                }
             }
         }
     };
@@ -1076,11 +1232,11 @@ fn gen_unique_check_insert(
             let filter_fn: syn::ExprPath = syn::parse_str(filter_path).unwrap();
             quote! {
                 if #filter_fn(&row) {
-                    #range_check
+                    #uniqueness_check
                 }
             }
         }
-        None => range_check,
+        None => uniqueness_check,
     }
 }
 
@@ -1172,56 +1328,82 @@ fn gen_unique_check_update(
         .map(|(fi, _)| quote! { row.#fi })
         .collect();
 
-    let (pk_bounds_checks, pk_min_clones, pk_max_clones) = gen_pk_bounds_for_unique(pk_info);
-
-    // For update: old entry with (old_field_val, pk) is still in the set.
-    // If field value changed, the old entry won't match the new value search.
-    // So any match found is a genuine conflict.
-    let range_check = quote! {
-        if #(#field_changed_check)||* {
-            #(#pk_bounds_checks)*
-            {
-                let __start = (#(#field_clones,)* #(#pk_min_clones),*);
-                let __end = (#(#field_clones,)* #(#pk_max_clones),*);
-                if self.#idx_name.range(__start..=__end).next().is_some() {
-                    return ::std::result::Result::Err(::tabulosity::Error::DuplicateIndex {
-                        table: #table_name_str,
-                        index: #idx_name_str,
-                        key: ::std::format!("{:?}", (#(&#key_fmt),*)),
-                    });
-                }
-            }
-        }
+    let dup_error = quote! {
+        return ::std::result::Result::Err(::tabulosity::Error::DuplicateIndex {
+            table: #table_name_str,
+            index: #idx_name_str,
+            key: ::std::format!("{:?}", (#(&#key_fmt),*)),
+        });
     };
 
-    match &idx.filter {
-        Some(filter_path) => {
-            let filter_fn: syn::ExprPath = syn::parse_str(filter_path).unwrap();
-            // Only check if the new row passes the filter.
-            // If it doesn't pass, the row won't be in the index, so no conflict.
-            // Must also check when transitioning from filtered-out to filtered-in,
-            // even if the indexed field values didn't change.
-            quote! {
-                if #filter_fn(&row) {
-                    let __needs_check = !#filter_fn(&old_row) || (#(#field_changed_check)||*);
-                    if __needs_check {
-                        #(#pk_bounds_checks)*
-                        {
-                            let __start = (#(#field_clones,)* #(#pk_min_clones),*);
-                            let __end = (#(#field_clones,)* #(#pk_max_clones),*);
-                            if self.#idx_name.range(__start..=__end).next().is_some() {
-                                return ::std::result::Result::Err(::tabulosity::Error::DuplicateIndex {
-                                    table: #table_name_str,
-                                    index: #idx_name_str,
-                                    key: ::std::format!("{:?}", (#(&#key_fmt),*)),
-                                });
+    match idx.kind {
+        IndexKind::BTree => {
+            let (pk_bounds_checks, pk_min_clones, pk_max_clones) =
+                gen_pk_bounds_for_unique(pk_info);
+
+            let range_check = quote! {
+                if #(#field_changed_check)||* {
+                    #(#pk_bounds_checks)*
+                    {
+                        let __start = (#(#field_clones,)* #(#pk_min_clones),*);
+                        let __end = (#(#field_clones,)* #(#pk_max_clones),*);
+                        if self.#idx_name.range(__start..=__end).next().is_some() {
+                            #dup_error
+                        }
+                    }
+                }
+            };
+
+            match &idx.filter {
+                Some(filter_path) => {
+                    let filter_fn: syn::ExprPath = syn::parse_str(filter_path).unwrap();
+                    quote! {
+                        if #filter_fn(&row) {
+                            let __needs_check = !#filter_fn(&old_row) || (#(#field_changed_check)||*);
+                            if __needs_check {
+                                #(#pk_bounds_checks)*
+                                {
+                                    let __start = (#(#field_clones,)* #(#pk_min_clones),*);
+                                    let __end = (#(#field_clones,)* #(#pk_max_clones),*);
+                                    if self.#idx_name.range(__start..=__end).next().is_some() {
+                                        #dup_error
+                                    }
+                                }
                             }
                         }
                     }
                 }
+                None => range_check,
             }
         }
-        None => range_check,
+        IndexKind::Hash => {
+            let hash_key = gen_hash_key_expr(&field_clones);
+
+            let hash_check = quote! {
+                if #(#field_changed_check)||* {
+                    if self.#idx_name.contains_key(&#hash_key) {
+                        #dup_error
+                    }
+                }
+            };
+
+            match &idx.filter {
+                Some(filter_path) => {
+                    let filter_fn: syn::ExprPath = syn::parse_str(filter_path).unwrap();
+                    quote! {
+                        if #filter_fn(&row) {
+                            let __needs_check = !#filter_fn(&old_row) || (#(#field_changed_check)||*);
+                            if __needs_check {
+                                if self.#idx_name.contains_key(&#hash_key) {
+                                    #dup_error
+                                }
+                            }
+                        }
+                    }
+                }
+                None => hash_check,
+            }
+        }
     }
 }
 
@@ -1229,38 +1411,79 @@ fn gen_unique_check_update(
 // Index maintenance codegen
 // =============================================================================
 
-fn gen_all_idx_insert(indexes: &[ResolvedIndex], pk_info: &PkInfo) -> Vec<TokenStream> {
+fn gen_all_idx_insert(
+    indexes: &[ResolvedIndex],
+    pk_info: &PkInfo,
+    primary_storage: PrimaryStorageKind,
+) -> Vec<TokenStream> {
     indexes
         .iter()
-        .map(|idx| gen_idx_insert(idx, pk_info))
+        .map(|idx| gen_idx_insert(idx, pk_info, primary_storage))
         .collect()
 }
 
-fn gen_all_idx_update(indexes: &[ResolvedIndex], pk_info: &PkInfo) -> Vec<TokenStream> {
+fn gen_all_idx_update(
+    indexes: &[ResolvedIndex],
+    pk_info: &PkInfo,
+    primary_storage: PrimaryStorageKind,
+) -> Vec<TokenStream> {
     indexes
         .iter()
-        .map(|idx| gen_idx_update(idx, pk_info))
+        .map(|idx| gen_idx_update(idx, pk_info, primary_storage))
         .collect()
 }
 
-fn gen_all_idx_remove(indexes: &[ResolvedIndex], pk_info: &PkInfo) -> Vec<TokenStream> {
+fn gen_all_idx_remove(
+    indexes: &[ResolvedIndex],
+    pk_info: &PkInfo,
+    primary_storage: PrimaryStorageKind,
+) -> Vec<TokenStream> {
     indexes
         .iter()
-        .map(|idx| gen_idx_remove(idx, pk_info))
+        .map(|idx| gen_idx_remove(idx, pk_info, primary_storage))
         .collect()
 }
 
-fn gen_idx_insert(idx: &ResolvedIndex, pk_info: &PkInfo) -> TokenStream {
+fn gen_idx_insert(
+    idx: &ResolvedIndex,
+    pk_info: &PkInfo,
+    primary_storage: PrimaryStorageKind,
+) -> TokenStream {
     let idx_name = format_ident!("idx_{}", idx.name);
     let field_clones: Vec<TokenStream> = idx
         .fields
         .iter()
         .map(|(fi, _)| quote! { row.#fi.clone() })
         .collect();
-    let pk_clones = pk_info.index_pk_clones_from_row();
 
-    let insert_stmt = quote! {
-        self.#idx_name.insert((#(#field_clones,)* #(#pk_clones),*));
+    let insert_stmt = match idx.kind {
+        IndexKind::BTree => {
+            let pk_clones = pk_info.index_pk_clones_from_row();
+            quote! {
+                self.#idx_name.insert((#(#field_clones,)* #(#pk_clones),*));
+            }
+        }
+        IndexKind::Hash => {
+            let hash_key = gen_hash_key_expr(&field_clones);
+            let pk_expr = pk_info.extract_key_from_row();
+            if idx.is_unique {
+                quote! {
+                    self.#idx_name.insert(#hash_key, #pk_expr);
+                }
+            } else {
+                let om_insert = gen_one_or_many_insert(primary_storage);
+                quote! {
+                    match self.#idx_name.get_mut(&#hash_key) {
+                        ::std::option::Option::Some(__om) => {
+                            __om.#om_insert(#pk_expr);
+                        }
+                        ::std::option::Option::None => {
+                            self.#idx_name.insert(#hash_key, ::tabulosity::OneOrMany::One(#pk_expr));
+                        }
+                    }
+                }
+            }
+        }
     };
 
     match &idx.filter {
@@ -1276,7 +1499,11 @@ fn gen_idx_insert(idx: &ResolvedIndex, pk_info: &PkInfo) -> TokenStream {
     }
 }
 
-fn gen_idx_update(idx: &ResolvedIndex, pk_info: &PkInfo) -> TokenStream {
+fn gen_idx_update(
+    idx: &ResolvedIndex,
+    pk_info: &PkInfo,
+    primary_storage: PrimaryStorageKind,
+) -> TokenStream {
     let idx_name = format_ident!("idx_{}", idx.name);
     let old_field_clones: Vec<TokenStream> = idx
         .fields
@@ -1293,8 +1520,67 @@ fn gen_idx_update(idx: &ResolvedIndex, pk_info: &PkInfo) -> TokenStream {
         .iter()
         .map(|(fi, _)| quote! { old_row.#fi != row.#fi })
         .collect();
-    let pk_var_clones = pk_info.index_pk_clones_from_var();
 
+    match idx.kind {
+        IndexKind::BTree => {
+            let pk_var_clones = pk_info.index_pk_clones_from_var();
+
+            let remove_stmt = quote! {
+                self.#idx_name.remove(&(#(#old_field_clones,)* #(#pk_var_clones),*));
+            };
+            let insert_stmt = quote! {
+                self.#idx_name.insert((#(#new_field_clones,)* #(#pk_var_clones),*));
+            };
+
+            gen_idx_update_with_stmts(idx, &field_changed_check, &remove_stmt, &insert_stmt)
+        }
+        IndexKind::Hash => {
+            let old_hash_key = gen_hash_key_expr(&old_field_clones);
+            let new_hash_key = gen_hash_key_expr(&new_field_clones);
+            let pk_expr = pk_info.extract_key_from_var();
+
+            if idx.is_unique {
+                let remove_stmt = quote! {
+                    self.#idx_name.remove(&#old_hash_key);
+                };
+                let insert_stmt = quote! {
+                    self.#idx_name.insert(#new_hash_key, #pk_expr);
+                };
+                gen_idx_update_with_stmts(idx, &field_changed_check, &remove_stmt, &insert_stmt)
+            } else {
+                let om_insert = gen_one_or_many_insert(primary_storage);
+                let om_remove = gen_one_or_many_remove(primary_storage);
+                let remove_stmt = quote! {
+                    if let ::std::option::Option::Some(__om) = self.#idx_name.get_mut(&#old_hash_key) {
+                        let __result = __om.#om_remove(&#pk_expr);
+                        if __result == ::tabulosity::RemoveResult::Empty {
+                            self.#idx_name.remove(&#old_hash_key);
+                        }
+                    }
+                };
+                let insert_stmt = quote! {
+                    match self.#idx_name.get_mut(&#new_hash_key) {
+                        ::std::option::Option::Some(__om) => {
+                            __om.#om_insert(#pk_expr);
+                        }
+                        ::std::option::Option::None => {
+                            self.#idx_name.insert(#new_hash_key, ::tabulosity::OneOrMany::One(#pk_expr));
+                        }
+                    }
+                };
+                gen_idx_update_with_stmts(idx, &field_changed_check, &remove_stmt, &insert_stmt)
+            }
+        }
+    }
+}
+
+/// Helper: wrap remove+insert stmts with filter/changed logic for updates.
+fn gen_idx_update_with_stmts(
+    idx: &ResolvedIndex,
+    field_changed_check: &[TokenStream],
+    remove_stmt: &TokenStream,
+    insert_stmt: &TokenStream,
+) -> TokenStream {
     match &idx.filter {
         Some(filter_path) => {
             let filter_fn: syn::ExprPath = syn::parse_str(filter_path).unwrap();
@@ -1305,15 +1591,15 @@ fn gen_idx_update(idx: &ResolvedIndex, pk_info: &PkInfo) -> TokenStream {
                     match (old_passes, new_passes) {
                         (true, true) => {
                             if #(#field_changed_check)||* {
-                                self.#idx_name.remove(&(#(#old_field_clones,)* #(#pk_var_clones),*));
-                                self.#idx_name.insert((#(#new_field_clones,)* #(#pk_var_clones),*));
+                                #remove_stmt
+                                #insert_stmt
                             }
                         }
                         (true, false) => {
-                            self.#idx_name.remove(&(#(#old_field_clones,)* #(#pk_var_clones),*));
+                            #remove_stmt
                         }
                         (false, true) => {
-                            self.#idx_name.insert((#(#new_field_clones,)* #(#pk_var_clones),*));
+                            #insert_stmt
                         }
                         (false, false) => {}
                     }
@@ -1323,25 +1609,52 @@ fn gen_idx_update(idx: &ResolvedIndex, pk_info: &PkInfo) -> TokenStream {
         None => {
             quote! {
                 if #(#field_changed_check)||* {
-                    self.#idx_name.remove(&(#(#old_field_clones,)* #(#pk_var_clones),*));
-                    self.#idx_name.insert((#(#new_field_clones,)* #(#pk_var_clones),*));
+                    #remove_stmt
+                    #insert_stmt
                 }
             }
         }
     }
 }
 
-fn gen_idx_remove(idx: &ResolvedIndex, pk_info: &PkInfo) -> TokenStream {
+fn gen_idx_remove(
+    idx: &ResolvedIndex,
+    pk_info: &PkInfo,
+    primary_storage: PrimaryStorageKind,
+) -> TokenStream {
     let idx_name = format_ident!("idx_{}", idx.name);
     let field_clones: Vec<TokenStream> = idx
         .fields
         .iter()
         .map(|(fi, _)| quote! { row.#fi.clone() })
         .collect();
-    let pk_var_clones = pk_info.index_pk_clones_from_var();
 
-    quote! {
-        self.#idx_name.remove(&(#(#field_clones,)* #(#pk_var_clones),*));
+    match idx.kind {
+        IndexKind::BTree => {
+            let pk_var_clones = pk_info.index_pk_clones_from_var();
+            quote! {
+                self.#idx_name.remove(&(#(#field_clones,)* #(#pk_var_clones),*));
+            }
+        }
+        IndexKind::Hash => {
+            let hash_key = gen_hash_key_expr(&field_clones);
+            if idx.is_unique {
+                quote! {
+                    self.#idx_name.remove(&#hash_key);
+                }
+            } else {
+                let pk_expr = pk_info.extract_key_from_var();
+                let om_remove = gen_one_or_many_remove(primary_storage);
+                quote! {
+                    if let ::std::option::Option::Some(__om) = self.#idx_name.get_mut(&#hash_key) {
+                        let __result = __om.#om_remove(&#pk_expr);
+                        if __result == ::tabulosity::RemoveResult::Empty {
+                            self.#idx_name.remove(&#hash_key);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1446,6 +1759,7 @@ fn gen_modify_unchecked_range(
     pk_info: &PkInfo,
     row_name: &Ident,
     indexes: &[ResolvedIndex],
+    primary_storage: PrimaryStorageKind,
 ) -> TokenStream {
     let key_ty = pk_info.key_type();
 
@@ -1461,8 +1775,13 @@ fn gen_modify_unchecked_range(
     }
 
     let row_ident = format_ident!("row");
+    let method_label = if primary_storage == PrimaryStorageKind::Hash {
+        "modify_unchecked_all"
+    } else {
+        "modify_unchecked_range"
+    };
     let (pk_snap_stmts, pk_assert_stmts) =
-        pk_info.gen_modify_unchecked_pk_checks(&row_ident, "modify_unchecked_range");
+        pk_info.gen_modify_unchecked_pk_checks(&row_ident, method_label);
 
     // Debug-build per-row snapshot + assertion stmts (inside the loop body).
     let idx_snap_stmts: Vec<TokenStream> = indexed_fields
@@ -1480,11 +1799,14 @@ fn gen_modify_unchecked_range(
         .map(|fi| {
             let snap_name = format_ident!("__snap_{}", fi);
             let field_str = fi.to_string();
+            let msg = format!(
+                "{}: indexed field `{}` was changed (from {{:?}} to {{:?}}); use update() instead",
+                method_label, field_str
+            );
             quote! {
                 assert!(
                     row.#fi == #snap_name,
-                    "modify_unchecked_range: indexed field `{}` was changed (from {:?} to {:?}); use update() instead",
-                    #field_str,
+                    #msg,
                     #snap_name,
                     row.#fi,
                 );
@@ -1492,54 +1814,99 @@ fn gen_modify_unchecked_range(
         })
         .collect();
 
-    quote! {
-        /// Mutates all rows in a PK range via closure, bypassing index
-        /// maintenance and FK validation. Returns the number of rows modified.
-        #[doc(hidden)]
-        pub fn modify_unchecked_range<__R: ::std::ops::RangeBounds<#key_ty>>(
-            &mut self,
-            range: __R,
-            mut f: impl ::std::ops::FnMut(&#key_ty, &mut #row_name),
-        ) -> usize {
-            let mut __count = 0usize;
-            for (__pk, row) in self.rows.range_mut(range) {
-                #(
-                    #[cfg(debug_assertions)]
-                    #pk_snap_stmts
-                )*
-                #(
-                    #[cfg(debug_assertions)]
-                    #idx_snap_stmts
-                )*
+    let debug_loop_body = quote! {
+        #(
+            #[cfg(debug_assertions)]
+            #pk_snap_stmts
+        )*
+        #(
+            #[cfg(debug_assertions)]
+            #idx_snap_stmts
+        )*
 
-                f(__pk, row);
+        f(__pk, row);
 
-                #[cfg(debug_assertions)]
-                {
-                    #(#pk_assert_stmts)*
-                    #(#idx_assert_stmts)*
-                }
-
-                __count += 1;
-            }
-            __count
+        #[cfg(debug_assertions)]
+        {
+            #(#pk_assert_stmts)*
+            #(#idx_assert_stmts)*
         }
 
-        /// Mutates all rows in the table via closure, bypassing index
-        /// maintenance and FK validation. Returns the number of rows modified.
-        ///
-        /// Equivalent to `modify_unchecked_range(.., f)`.
-        #[doc(hidden)]
-        pub fn modify_unchecked_all(
-            &mut self,
-            mut f: impl ::std::ops::FnMut(&#key_ty, &mut #row_name),
-        ) -> usize {
-            self.modify_unchecked_range(.., f)
+        __count += 1;
+    };
+
+    match primary_storage {
+        PrimaryStorageKind::BTree => {
+            quote! {
+                /// Mutates all rows in a PK range via closure, bypassing index
+                /// maintenance and FK validation. Returns the number of rows modified.
+                #[doc(hidden)]
+                pub fn modify_unchecked_range<__R: ::std::ops::RangeBounds<#key_ty>>(
+                    &mut self,
+                    range: __R,
+                    mut f: impl ::std::ops::FnMut(&#key_ty, &mut #row_name),
+                ) -> usize {
+                    let mut __count = 0usize;
+                    for (__pk, row) in self.rows.range_mut(range) {
+                        #debug_loop_body
+                    }
+                    __count
+                }
+
+                /// Mutates all rows in the table via closure, bypassing index
+                /// maintenance and FK validation. Returns the number of rows modified.
+                ///
+                /// Equivalent to `modify_unchecked_range(.., f)`.
+                #[doc(hidden)]
+                pub fn modify_unchecked_all(
+                    &mut self,
+                    mut f: impl ::std::ops::FnMut(&#key_ty, &mut #row_name),
+                ) -> usize {
+                    self.modify_unchecked_range(.., f)
+                }
+            }
+        }
+        PrimaryStorageKind::Hash => {
+            // Hash primary: modify_unchecked_range panics (InsOrdHashMap doesn't support range).
+            // modify_unchecked_all iterates directly via iter_mut().
+            quote! {
+                /// **Not supported for hash primary storage.** Always panics.
+                /// Use `modify_unchecked_all` instead.
+                #[doc(hidden)]
+                pub fn modify_unchecked_range<__R: ::std::ops::RangeBounds<#key_ty>>(
+                    &mut self,
+                    _range: __R,
+                    _f: impl ::std::ops::FnMut(&#key_ty, &mut #row_name),
+                ) -> usize {
+                    panic!("modify_unchecked_range is not supported on tables with hash primary storage; use modify_unchecked_all instead")
+                }
+
+                /// Mutates all rows in the table via closure, bypassing index
+                /// maintenance and FK validation. Returns the number of rows modified.
+                #[doc(hidden)]
+                pub fn modify_unchecked_all(
+                    &mut self,
+                    mut f: impl ::std::ops::FnMut(&#key_ty, &mut #row_name),
+                ) -> usize {
+                    let mut __count = 0usize;
+                    for (__pk, row) in self.rows.iter_mut() {
+                        #debug_loop_body
+                    }
+                    __count
+                }
+            }
         }
     }
 }
 
-fn gen_rebuild_body(indexes: &[ResolvedIndex], pk_info: &PkInfo) -> Vec<TokenStream> {
+/// Generate the rebuild body for `post_deser_rebuild_indexes` (BTree only)
+/// and `manual_rebuild_all_indexes` (all indexes).
+fn gen_rebuild_body(
+    indexes: &[ResolvedIndex],
+    pk_info: &PkInfo,
+    primary_storage: PrimaryStorageKind,
+    include_hash: bool,
+) -> Vec<TokenStream> {
     // In rebuild, `pk` is the BTreeMap key (already the correct key type).
     // For compound PKs, we need to destructure it into individual field values
     // for the index tuple.
@@ -1556,6 +1923,7 @@ fn gen_rebuild_body(indexes: &[ResolvedIndex], pk_info: &PkInfo) -> Vec<TokenStr
 
     indexes
         .iter()
+        .filter(|idx| include_hash || idx.kind == IndexKind::BTree)
         .map(|idx| {
             let idx_name = format_ident!("idx_{}", idx.name);
             let field_clones: Vec<TokenStream> = idx
@@ -1564,8 +1932,33 @@ fn gen_rebuild_body(indexes: &[ResolvedIndex], pk_info: &PkInfo) -> Vec<TokenStr
                 .map(|(fi, _)| quote! { row.#fi.clone() })
                 .collect();
 
-            let insert_stmt = quote! {
-                self.#idx_name.insert((#(#field_clones,)* #(#pk_clone_exprs),*));
+            let insert_stmt = match idx.kind {
+                IndexKind::BTree => {
+                    quote! {
+                        self.#idx_name.insert((#(#field_clones,)* #(#pk_clone_exprs),*));
+                    }
+                }
+                IndexKind::Hash => {
+                    let hash_key = gen_hash_key_expr(&field_clones);
+                    let pk_expr = quote! { pk.clone() };
+                    if idx.is_unique {
+                        quote! {
+                            self.#idx_name.insert(#hash_key, #pk_expr);
+                        }
+                    } else {
+                        let om_insert = gen_one_or_many_insert(primary_storage);
+                        quote! {
+                            match self.#idx_name.get_mut(&#hash_key) {
+                                ::std::option::Option::Some(__om) => {
+                                    __om.#om_insert(#pk_expr);
+                                }
+                                ::std::option::Option::None => {
+                                    self.#idx_name.insert(#hash_key, ::tabulosity::OneOrMany::One(#pk_expr));
+                                }
+                            }
+                        }
+                    }
+                }
             };
 
             let body = match &idx.filter {
@@ -1588,8 +1981,17 @@ fn gen_rebuild_body(indexes: &[ResolvedIndex], pk_info: &PkInfo) -> Vec<TokenStr
                 }
             };
 
+            let clear_stmt = match idx.kind {
+                IndexKind::BTree => quote! { self.#idx_name.clear(); },
+                IndexKind::Hash => {
+                    quote! {
+                        self.#idx_name = ::tabulosity::InsOrdHashMap::with_capacity(self.rows.len());
+                    }
+                }
+            };
+
             quote! {
-                self.#idx_name.clear();
+                #clear_stmt
                 #body
             }
         })
@@ -1605,10 +2007,11 @@ fn gen_all_query_methods(
     pk_info: &PkInfo,
     row_name: &Ident,
     all_fields: &[ParsedField],
+    primary_storage: PrimaryStorageKind,
 ) -> Vec<TokenStream> {
     indexes
         .iter()
-        .map(|idx| gen_query_methods(idx, pk_info, row_name, all_fields))
+        .map(|idx| gen_query_methods(idx, pk_info, row_name, all_fields, primary_storage))
         .collect()
 }
 
@@ -1617,6 +2020,7 @@ fn gen_query_methods(
     pk_info: &PkInfo,
     row_name: &Ident,
     all_fields: &[ParsedField],
+    primary_storage: PrimaryStorageKind,
 ) -> TokenStream {
     let n = idx.fields.len();
     let by_fn = format_ident!("by_{}", idx.name);
@@ -1651,26 +2055,40 @@ fn gen_query_methods(
         .map(|(pn, qbn)| quote! { let #qbn = ::tabulosity::IntoQuery::into_query(#pn); })
         .collect();
 
-    // Field bounds names.
-    let field_bounds_names: Vec<Ident> = idx
-        .fields
-        .iter()
-        .map(|(fi, _)| {
-            let f = all_fields.iter().find(|f| &f.ident == fi).unwrap();
-            format_ident!("_bounds_{}", type_suffix(&f.ty))
-        })
-        .collect();
+    let helper_body = match idx.kind {
+        IndexKind::BTree => {
+            // Field bounds names.
+            let field_bounds_names: Vec<Ident> = idx
+                .fields
+                .iter()
+                .map(|(fi, _)| {
+                    let f = all_fields.iter().find(|f| &f.ident == fi).unwrap();
+                    format_ident!("_bounds_{}", type_suffix(&f.ty))
+                })
+                .collect();
 
-    // Generate the match cascade for the helper method.
-    let match_cascade = gen_match_cascade(
-        n,
-        &qb_names,
-        &field_tys,
-        &field_bounds_names,
-        pk_info,
-        &idx_name,
-        row_name,
-    );
+            gen_match_cascade(
+                n,
+                &qb_names,
+                &field_tys,
+                &field_bounds_names,
+                pk_info,
+                &idx_name,
+                row_name,
+            )
+        }
+        IndexKind::Hash => gen_hash_query_dispatch(
+            n,
+            &qb_names,
+            &field_tys,
+            pk_info,
+            &idx_name,
+            row_name,
+            idx.is_unique,
+            primary_storage,
+            &idx.name,
+        ),
+    };
 
     // Forward calls from public methods to helper.
     let qb_forwards: Vec<TokenStream> = qb_names.iter().map(|qbn| quote! { #qbn }).collect();
@@ -1678,7 +2096,7 @@ fn gen_query_methods(
     quote! {
         #[doc(hidden)]
         fn #helper_fn(&self, #(#params_querybound,)* __opts: ::tabulosity::QueryOpts) -> ::std::boxed::Box<dyn ::std::iter::Iterator<Item = &#row_name> + '_> {
-            #match_cascade
+            #helper_body
         }
 
         /// Returns cloned rows matching the query.
@@ -1964,6 +2382,215 @@ fn gen_arm_body(
 }
 
 // =============================================================================
+// Hash index query codegen
+// =============================================================================
+
+/// Generate query dispatch for hash indexes.
+///
+/// Hash indexes support:
+/// - All fields Exact → O(1) hash lookup
+/// - All fields MatchAll → iterate all entries
+/// - Any field Range → runtime panic
+/// - Mixed Exact/MatchAll → iterate + filter
+#[allow(clippy::too_many_arguments)]
+fn gen_hash_query_dispatch(
+    n: usize,
+    qb_names: &[Ident],
+    _field_tys: &[&Type],
+    _pk_info: &PkInfo,
+    idx_name: &Ident,
+    _row_name: &Ident,
+    is_unique: bool,
+    primary_storage: PrimaryStorageKind,
+    index_name: &str,
+) -> TokenStream {
+    // Check for any Range query bounds → panic.
+    let range_checks: Vec<TokenStream> = (0..n)
+        .map(|i| {
+            let qbn = &qb_names[i];
+            let idx_name_str = index_name;
+            quote! {
+                if matches!(#qbn, ::tabulosity::QueryBound::Range { .. }) {
+                    panic!("range queries are not supported on hash index `{}`; use Exact or MatchAll", #idx_name_str);
+                }
+            }
+        })
+        .collect();
+
+    // Build the all-exact check.
+    let exact_vars: Vec<Ident> = (0..n).map(|i| format_ident!("__v{}", i)).collect();
+    let exact_pattern: Vec<TokenStream> = exact_vars
+        .iter()
+        .map(|v| quote! { ::tabulosity::QueryBound::Exact(#v) })
+        .collect();
+
+    let hash_key_from_exact = if n == 1 {
+        let v = &exact_vars[0];
+        quote! { #v }
+    } else {
+        let refs: Vec<TokenStream> = exact_vars.iter().map(|v| quote! { #v.clone() }).collect();
+        quote! { (#(#refs),*) }
+    };
+
+    let exact_body = if is_unique {
+        // Unique: get PK from index, look up row.
+        quote! {
+            match self.#idx_name.get(&#hash_key_from_exact) {
+                ::std::option::Option::Some(__pk) => {
+                    match self.rows.get(__pk) {
+                        ::std::option::Option::Some(__row) => {
+                            ::std::boxed::Box::new(::std::iter::once(__row).skip(__opts.offset))
+                        }
+                        ::std::option::Option::None => {
+                            ::std::boxed::Box::new(::std::iter::empty())
+                        }
+                    }
+                }
+                ::std::option::Option::None => {
+                    ::std::boxed::Box::new(::std::iter::empty())
+                }
+            }
+        }
+    } else {
+        // Non-unique: get OneOrMany, iterate PKs, look up rows.
+        let om_iter = gen_one_or_many_iter(primary_storage);
+        quote! {
+            match self.#idx_name.get(&#hash_key_from_exact) {
+                ::std::option::Option::Some(__om) => {
+                    ::std::boxed::Box::new(
+                        __om.#om_iter()
+                            .filter_map(|__pk| self.rows.get(__pk))
+                            .skip(__opts.offset)
+                    )
+                }
+                ::std::option::Option::None => {
+                    ::std::boxed::Box::new(::std::iter::empty())
+                }
+            }
+        }
+    };
+
+    // MatchAll body: iterate all index entries.
+    let match_all_body = if is_unique {
+        quote! {
+            ::std::boxed::Box::new(
+                self.#idx_name.values()
+                    .filter_map(|__pk| self.rows.get(__pk))
+                    .skip(__opts.offset)
+            )
+        }
+    } else {
+        let om_iter = gen_one_or_many_iter(primary_storage);
+        quote! {
+            ::std::boxed::Box::new(
+                self.#idx_name.values()
+                    .flat_map(|__om| __om.#om_iter())
+                    .filter_map(|__pk| self.rows.get(__pk))
+                    .skip(__opts.offset)
+            )
+        }
+    };
+
+    // Partial match body (for compound indexes): iterate + filter.
+    // Only needed when n > 1 (compound), otherwise exact/matchall covers all.
+    let partial_body = if n > 1 {
+        // Iterate all entries, filter by exact fields.
+        let filter_checks: Vec<TokenStream> = (0..n)
+            .map(|i| {
+                let qbn = &qb_names[i];
+                let tuple_idx = syn::Index::from(i);
+                quote! {
+                    (match &#qbn {
+                        ::tabulosity::QueryBound::Exact(__fv) => __k.#tuple_idx == *__fv,
+                        ::tabulosity::QueryBound::MatchAll => true,
+                        ::tabulosity::QueryBound::Range { .. } => unreachable!(),
+                    })
+                }
+            })
+            .collect();
+        let combined_filter = quote! { #(#filter_checks)&&* };
+
+        if is_unique {
+            quote! {
+                ::std::boxed::Box::new(
+                    self.#idx_name.iter()
+                        .filter(move |(__k, _)| #combined_filter)
+                        .filter_map(|(_, __pk)| self.rows.get(__pk))
+                        .skip(__opts.offset)
+                )
+            }
+        } else {
+            let om_iter = gen_one_or_many_iter(primary_storage);
+            quote! {
+                ::std::boxed::Box::new(
+                    self.#idx_name.iter()
+                        .filter(move |(__k, _)| #combined_filter)
+                        .flat_map(|(_, __om)| __om.#om_iter())
+                        .filter_map(|__pk| self.rows.get(__pk))
+                        .skip(__opts.offset)
+                )
+            }
+        }
+    } else {
+        // Single-field: no partial matches possible.
+        quote! { unreachable!() }
+    };
+
+    // Build the match expression.
+    if n == 1 {
+        let qbn = &qb_names[0];
+        quote! {
+            #(#range_checks)*
+            match &#qbn {
+                #(#exact_pattern)|* => {
+                    #exact_body
+                }
+                ::tabulosity::QueryBound::MatchAll => {
+                    #match_all_body
+                }
+                _ => unreachable!(),
+            }
+        }
+    } else {
+        // For compound: check if all are exact, all are matchall, or mixed.
+        let all_exact_checks: Vec<TokenStream> = qb_names
+            .iter()
+            .map(|qbn| quote! { matches!(#qbn, ::tabulosity::QueryBound::Exact(_)) })
+            .collect();
+        let all_matchall_checks: Vec<TokenStream> = qb_names
+            .iter()
+            .map(|qbn| quote! { matches!(#qbn, ::tabulosity::QueryBound::MatchAll) })
+            .collect();
+
+        // Extract exact values for the all-exact branch.
+        let exact_extractions: Vec<TokenStream> = (0..n)
+            .map(|i| {
+                let qbn = &qb_names[i];
+                let v = &exact_vars[i];
+                quote! {
+                    let #v = match &#qbn {
+                        ::tabulosity::QueryBound::Exact(__v) => __v,
+                        _ => unreachable!(),
+                    };
+                }
+            })
+            .collect();
+
+        quote! {
+            #(#range_checks)*
+            if #(#all_exact_checks)&&* {
+                #(#exact_extractions)*
+                #exact_body
+            } else if #(#all_matchall_checks)&&* {
+                #match_all_body
+            } else {
+                #partial_body
+            }
+        }
+    }
+}
+
+// =============================================================================
 // modify_each_by_* codegen
 // =============================================================================
 
@@ -2092,6 +2719,111 @@ fn gen_modify_each_method(
 // Serde codegen
 // =============================================================================
 
+/// Generate serialize_field calls for each hash index.
+fn gen_hash_idx_serialize(hash_indexes: &[&ResolvedIndex]) -> Vec<TokenStream> {
+    hash_indexes
+        .iter()
+        .map(|idx| {
+            let idx_name = format_ident!("idx_{}", idx.name);
+            let idx_name_str = format!("idx_{}", idx.name);
+            quote! {
+                state.serialize_field(#idx_name_str, &self.#idx_name)?;
+            }
+        })
+        .collect()
+}
+
+/// Generate Option variable declarations for each hash index in the visitor.
+fn gen_hash_idx_var_decls(hash_indexes: &[&ResolvedIndex]) -> Vec<TokenStream> {
+    hash_indexes
+        .iter()
+        .map(|idx| {
+            let var_name = format_ident!("__idx_{}", idx.name);
+            // The type is inferred from the assignment in visit_map.
+            // We use Option<_> so the type can be inferred from next_value().
+            quote! {
+                let mut #var_name: ::std::option::Option<_> = ::std::option::Option::None;
+            }
+        })
+        .collect()
+}
+
+/// Generate the post-row-load block: assigns hash indexes from deserialized
+/// data and calls the appropriate rebuild method. Returns a single TokenStream.
+///
+/// When there are no hash indexes, just calls `post_deser_rebuild_indexes()`.
+/// When there are hash indexes and all were present in the serialized data,
+/// assigns them directly and calls `post_deser_rebuild_indexes()` (BTree only).
+/// When some hash index fields are missing (backward compat with old saves),
+/// calls `manual_rebuild_all_indexes()` to rebuild everything from rows.
+fn gen_hash_idx_assign_and_rebuild(hash_indexes: &[&ResolvedIndex]) -> TokenStream {
+    if hash_indexes.is_empty() {
+        return quote! { table.post_deser_rebuild_indexes(); };
+    }
+
+    let var_names: Vec<Ident> = hash_indexes
+        .iter()
+        .map(|idx| format_ident!("__idx_{}", idx.name))
+        .collect();
+    let idx_fields: Vec<Ident> = hash_indexes
+        .iter()
+        .map(|idx| format_ident!("idx_{}", idx.name))
+        .collect();
+
+    let all_present_checks: Vec<TokenStream> =
+        var_names.iter().map(|v| quote! { #v.is_some() }).collect();
+    let assign_stmts: Vec<TokenStream> = var_names
+        .iter()
+        .zip(idx_fields.iter())
+        .map(|(var, field)| {
+            quote! { table.#field = #var.unwrap(); }
+        })
+        .collect();
+
+    quote! {
+        if #(#all_present_checks)&&* {
+            // All hash index fields present — assign directly.
+            #(#assign_stmts)*
+            // Rebuild BTree indexes only (hash indexes already assigned).
+            table.post_deser_rebuild_indexes();
+        } else {
+            // Some hash index fields missing (backward compat with old saves).
+            // Rebuild ALL indexes including hash from rows.
+            table.manual_rebuild_all_indexes();
+        }
+    }
+}
+
+/// Generate field name string literals for the FIELDS const array.
+fn gen_hash_idx_field_names_const(hash_indexes: &[&ResolvedIndex]) -> Vec<String> {
+    hash_indexes
+        .iter()
+        .map(|idx| format!("idx_{}", idx.name))
+        .collect()
+}
+
+/// Generate deserialize match arms and field assignment for hash indexes.
+fn gen_hash_idx_deserialize(hash_indexes: &[&ResolvedIndex]) -> Vec<TokenStream> {
+    hash_indexes
+        .iter()
+        .map(|idx| {
+            let idx_name_str = format!("idx_{}", idx.name);
+            let var_name = format_ident!("__idx_{}", idx.name);
+            quote! {
+                #idx_name_str => {
+                    if #var_name.is_some() {
+                        return ::std::result::Result::Err(
+                            ::serde::de::Error::duplicate_field(#idx_name_str)
+                        );
+                    }
+                    #var_name = ::std::option::Option::Some(map.next_value()?);
+                }
+            }
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
 fn gen_serde_impls(
     table_name: &Ident,
     row_name: &Ident,
@@ -2099,13 +2831,33 @@ fn gen_serde_impls(
     table_name_str: &str,
     is_auto_increment: bool,
     nonpk_auto_field: &Option<(Ident, Type)>,
+    hash_indexes: &[&ResolvedIndex],
+    primary_storage: PrimaryStorageKind,
 ) -> TokenStream {
+    // When hash indexes exist and are serialized directly,
+    // post_deser_rebuild_indexes() handles only BTree indexes (correct).
+    // When no hash indexes, same method covers everything.
+    let rebuild_call = quote! { table.post_deser_rebuild_indexes(); };
+
+    // Generate serialize/deserialize statements for hash index fields.
+    let hash_idx_ser = gen_hash_idx_serialize(hash_indexes);
+    let hash_idx_deser = gen_hash_idx_deserialize(hash_indexes);
+
     if is_auto_increment {
-        // Auto-increment PK is only valid for single-column PKs.
-        // (Cannot coexist with nonpk_auto_field — validated earlier.)
         let pk_ty = &pk_info.fields[0].1;
         let pk_ident = &pk_info.fields[0].0;
-        gen_serde_impls_auto(table_name, row_name, pk_ty, pk_ident, table_name_str)
+        gen_serde_impls_auto(
+            table_name,
+            row_name,
+            pk_ty,
+            pk_ident,
+            table_name_str,
+            &rebuild_call,
+            primary_storage,
+            &hash_idx_ser,
+            &hash_idx_deser,
+            hash_indexes,
+        )
     } else if let Some((auto_ident, auto_ty)) = nonpk_auto_field {
         gen_serde_impls_nonpk_auto(
             table_name,
@@ -2114,70 +2866,216 @@ fn gen_serde_impls(
             auto_ident,
             auto_ty,
             table_name_str,
+            &rebuild_call,
+            &hash_idx_ser,
+            &hash_idx_deser,
+            hash_indexes,
         )
     } else {
-        gen_serde_impls_plain(table_name, row_name, pk_info, table_name_str)
+        gen_serde_impls_plain(
+            table_name,
+            row_name,
+            pk_info,
+            table_name_str,
+            &rebuild_call,
+            &hash_idx_ser,
+            &hash_idx_deser,
+            hash_indexes,
+        )
     }
 }
 
-/// Non-auto tables serialize as a bare JSON array of rows.
+/// Non-auto tables: serialize as bare JSON array (no hash indexes) or
+/// struct with `rows` + `idx_*` fields (with hash indexes).
+#[allow(clippy::too_many_arguments)]
 fn gen_serde_impls_plain(
     table_name: &Ident,
     row_name: &Ident,
     pk_info: &PkInfo,
     table_name_str: &str,
+    rebuild_call: &TokenStream,
+    hash_idx_ser: &[TokenStream],
+    hash_idx_deser: &[TokenStream],
+    hash_indexes: &[&ResolvedIndex],
 ) -> TokenStream {
     let extract_key = pk_info.extract_key_from_row();
-    quote! {
-        #[cfg(feature = "serde")]
-        impl ::serde::Serialize for #table_name
-        where
-            #row_name: ::serde::Serialize,
-        {
-            fn serialize<S: ::serde::Serializer>(&self, serializer: S) -> ::std::result::Result<S::Ok, S::Error> {
-                use ::serde::ser::SerializeSeq;
-                let mut seq = serializer.serialize_seq(::std::option::Option::Some(self.rows.len()))?;
-                for row in self.rows.values() {
-                    seq.serialize_element(row)?;
+
+    if hash_indexes.is_empty() {
+        // No hash indexes — use original flat array format.
+        quote! {
+            #[cfg(feature = "serde")]
+            impl ::serde::Serialize for #table_name
+            where
+                #row_name: ::serde::Serialize,
+            {
+                fn serialize<S: ::serde::Serializer>(&self, serializer: S) -> ::std::result::Result<S::Ok, S::Error> {
+                    use ::serde::ser::SerializeSeq;
+                    let mut seq = serializer.serialize_seq(::std::option::Option::Some(self.rows.len()))?;
+                    for row in self.rows.values() {
+                        seq.serialize_element(row)?;
+                    }
+                    seq.end()
                 }
-                seq.end()
+            }
+
+            #[cfg(feature = "serde")]
+            impl<'de> ::serde::Deserialize<'de> for #table_name
+            where
+                #row_name: ::serde::Deserialize<'de>,
+            {
+                fn deserialize<D: ::serde::Deserializer<'de>>(deserializer: D) -> ::std::result::Result<Self, D::Error> {
+                    let rows: ::std::vec::Vec<#row_name> = ::serde::Deserialize::deserialize(deserializer)?;
+                    let mut table = Self::new();
+                    for row in rows {
+                        let pk = #extract_key;
+                        if table.rows.contains_key(&pk) {
+                            return ::std::result::Result::Err(::serde::de::Error::custom(
+                                ::std::format!("duplicate key in {}: {:?}", #table_name_str, pk),
+                            ));
+                        }
+                        table.rows.insert(pk, row);
+                    }
+                    #rebuild_call
+                    ::std::result::Result::Ok(table)
+                }
             }
         }
+    } else {
+        // Has hash indexes — struct format with rows + idx_* fields.
+        let n_fields = 1 + hash_indexes.len(); // rows + idx_*
+        let visitor_name = format_ident!("__{}SerdeVisitor", table_name);
+        let table_name_str_owned = table_name_str.to_string();
 
-        #[cfg(feature = "serde")]
-        impl<'de> ::serde::Deserialize<'de> for #table_name
-        where
-            #row_name: ::serde::Deserialize<'de>,
-        {
-            fn deserialize<D: ::serde::Deserializer<'de>>(deserializer: D) -> ::std::result::Result<Self, D::Error> {
-                let rows: ::std::vec::Vec<#row_name> = ::serde::Deserialize::deserialize(deserializer)?;
-                let mut table = Self::new();
-                for row in rows {
-                    let pk = #extract_key;
-                    if table.rows.contains_key(&pk) {
-                        return ::std::result::Result::Err(::serde::de::Error::custom(
-                            ::std::format!("duplicate key in {}: {:?}", #table_name_str, pk),
-                        ));
-                    }
-                    table.rows.insert(pk, row);
+        let idx_var_decls = gen_hash_idx_var_decls(hash_indexes);
+        let assign_and_rebuild = gen_hash_idx_assign_and_rebuild(hash_indexes);
+
+        quote! {
+            #[cfg(feature = "serde")]
+            impl ::serde::Serialize for #table_name
+            where
+                #row_name: ::serde::Serialize,
+            {
+                fn serialize<S: ::serde::Serializer>(&self, serializer: S) -> ::std::result::Result<S::Ok, S::Error> {
+                    use ::serde::ser::SerializeStruct;
+                    let mut state = serializer.serialize_struct(#table_name_str, #n_fields)?;
+                    let rows_vec: ::std::vec::Vec<&#row_name> = self.rows.values().collect();
+                    state.serialize_field("rows", &rows_vec)?;
+                    #(#hash_idx_ser)*
+                    state.end()
                 }
-                table.rebuild_indexes();
-                ::std::result::Result::Ok(table)
+            }
+
+            #[cfg(feature = "serde")]
+            impl<'de> ::serde::Deserialize<'de> for #table_name
+            where
+                #row_name: ::serde::Deserialize<'de>,
+            {
+                fn deserialize<D: ::serde::Deserializer<'de>>(deserializer: D) -> ::std::result::Result<Self, D::Error> {
+                    struct #visitor_name;
+
+                    impl<'de> ::serde::de::Visitor<'de> for #visitor_name
+                    where
+                        #row_name: ::serde::Deserialize<'de>,
+                    {
+                        type Value = #table_name;
+
+                        fn expecting(&self, formatter: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                            formatter.write_str(#table_name_str_owned)
+                        }
+
+                        // New format: struct with "rows" + "idx_*" fields.
+                        fn visit_map<A: ::serde::de::MapAccess<'de>>(
+                            self,
+                            mut map: A,
+                        ) -> ::std::result::Result<Self::Value, A::Error> {
+                            let mut rows_vec: ::std::option::Option<::std::vec::Vec<#row_name>> = ::std::option::Option::None;
+                            #(#idx_var_decls)*
+
+                            while let ::std::option::Option::Some(key) = map.next_key::<::std::string::String>()? {
+                                match key.as_str() {
+                                    "rows" => {
+                                        if rows_vec.is_some() {
+                                            return ::std::result::Result::Err(::serde::de::Error::duplicate_field("rows"));
+                                        }
+                                        rows_vec = ::std::option::Option::Some(map.next_value()?);
+                                    }
+                                    #(#hash_idx_deser)*
+                                    _ => {
+                                        let _ = map.next_value::<::serde::de::IgnoredAny>()?;
+                                    }
+                                }
+                            }
+
+                            let rows = rows_vec.ok_or_else(|| ::serde::de::Error::missing_field("rows"))?;
+
+                            let mut table = #table_name::new();
+                            for row in rows {
+                                let pk = #extract_key;
+                                if table.rows.contains_key(&pk) {
+                                    return ::std::result::Result::Err(::serde::de::Error::custom(
+                                        ::std::format!("duplicate key in {}: {:?}", #table_name_str_owned, pk),
+                                    ));
+                                }
+                                table.rows.insert(pk, row);
+                            }
+                            // Assign deserialized hash indexes and rebuild as needed.
+                            #assign_and_rebuild
+
+                            ::std::result::Result::Ok(table)
+                        }
+
+                        // Backward compat: old format was a flat array of rows.
+                        fn visit_seq<A: ::serde::de::SeqAccess<'de>>(
+                            self,
+                            mut seq: A,
+                        ) -> ::std::result::Result<Self::Value, A::Error> {
+                            let mut table = #table_name::new();
+                            while let ::std::option::Option::Some(row) = seq.next_element::<#row_name>()? {
+                                let pk = #extract_key;
+                                if table.rows.contains_key(&pk) {
+                                    return ::std::result::Result::Err(::serde::de::Error::custom(
+                                        ::std::format!("duplicate key in {}: {:?}", #table_name_str_owned, pk),
+                                    ));
+                                }
+                                table.rows.insert(pk, row);
+                            }
+                            // No hash index data — rebuild everything from rows.
+                            table.manual_rebuild_all_indexes();
+                            ::std::result::Result::Ok(table)
+                        }
+                    }
+
+                    // Use deserialize_any so serde can dispatch to visit_seq (old format)
+                    // or visit_map (new format) based on the data.
+                    deserializer.deserialize_any(#visitor_name)
+                }
             }
         }
     }
 }
 
 /// Auto-increment tables serialize as `{"next_id": N, "rows": [...]}`.
+#[allow(clippy::too_many_arguments)]
 fn gen_serde_impls_auto(
     table_name: &Ident,
     row_name: &Ident,
     pk_ty: &Type,
     pk_ident: &Ident,
     table_name_str: &str,
+    _rebuild_call: &TokenStream,
+    _primary_storage: PrimaryStorageKind,
+    hash_idx_ser: &[TokenStream],
+    hash_idx_deser: &[TokenStream],
+    hash_indexes: &[&ResolvedIndex],
 ) -> TokenStream {
     let table_name_str_owned = table_name_str.to_string();
     let visitor_name = format_ident!("__{}SerdeVisitor", table_name);
+    let n_fields = 2 + hash_indexes.len(); // next_id + rows + idx_*
+
+    let idx_var_decls = gen_hash_idx_var_decls(hash_indexes);
+    let assign_and_rebuild = gen_hash_idx_assign_and_rebuild(hash_indexes);
+    let idx_field_names_const = gen_hash_idx_field_names_const(hash_indexes);
+
     quote! {
         #[cfg(feature = "serde")]
         impl ::serde::Serialize for #table_name
@@ -2187,10 +3085,11 @@ fn gen_serde_impls_auto(
         {
             fn serialize<S: ::serde::Serializer>(&self, serializer: S) -> ::std::result::Result<S::Ok, S::Error> {
                 use ::serde::ser::SerializeStruct;
-                let mut state = serializer.serialize_struct(#table_name_str, 2)?;
+                let mut state = serializer.serialize_struct(#table_name_str, #n_fields)?;
                 state.serialize_field("next_id", &self.next_id)?;
                 let rows_vec: ::std::vec::Vec<&#row_name> = self.rows.values().collect();
                 state.serialize_field("rows", &rows_vec)?;
+                #(#hash_idx_ser)*
                 state.end()
             }
         }
@@ -2221,6 +3120,7 @@ fn gen_serde_impls_auto(
                     ) -> ::std::result::Result<Self::Value, A::Error> {
                         let mut next_id: ::std::option::Option<#pk_ty> = ::std::option::Option::None;
                         let mut rows_vec: ::std::option::Option<::std::vec::Vec<#row_name>> = ::std::option::Option::None;
+                        #(#idx_var_decls)*
 
                         while let ::std::option::Option::Some(key) = map.next_key::<::std::string::String>()? {
                             match key.as_str() {
@@ -2236,6 +3136,7 @@ fn gen_serde_impls_auto(
                                     }
                                     rows_vec = ::std::option::Option::Some(map.next_value()?);
                                 }
+                                #(#hash_idx_deser)*
                                 _ => {
                                     let _ = map.next_value::<::serde::de::IgnoredAny>()?;
                                 }
@@ -2255,12 +3156,13 @@ fn gen_serde_impls_auto(
                             }
                             table.rows.insert(pk, row);
                         }
-                        table.rebuild_indexes();
+                        // Assign deserialized hash indexes and rebuild as needed.
+                        #assign_and_rebuild
 
                         // Defensively set next_id to max(deserialized, max_pk_successor).
                         let mut effective_next_id = deserialized_next_id;
-                        if let ::std::option::Option::Some((&ref max_pk, _)) = table.rows.last_key_value() {
-                            let max_successor = <#pk_ty as ::tabulosity::AutoIncrementable>::successor(max_pk);
+                        for row in table.rows.values() {
+                            let max_successor = <#pk_ty as ::tabulosity::AutoIncrementable>::successor(&row.#pk_ident);
                             if max_successor > effective_next_id {
                                 effective_next_id = max_successor;
                             }
@@ -2271,7 +3173,7 @@ fn gen_serde_impls_auto(
                     }
                 }
 
-                const FIELDS: &[&str] = &["next_id", "rows"];
+                const FIELDS: &[&str] = &["next_id", "rows", #(#idx_field_names_const),*];
                 deserializer.deserialize_struct(#table_name_str_owned, FIELDS, #visitor_name)
             }
         }
@@ -2283,6 +3185,7 @@ fn gen_serde_impls_auto(
 /// On deserialization, if `next_<field>` is missing (e.g., loading an old save where
 /// the field used to be the auto-PK), the table computes `max(field) + 1` across all
 /// loaded rows. The counter is then defensively set to `max(deserialized, computed)`.
+#[allow(clippy::too_many_arguments)]
 fn gen_serde_impls_nonpk_auto(
     table_name: &Ident,
     row_name: &Ident,
@@ -2290,13 +3193,22 @@ fn gen_serde_impls_nonpk_auto(
     auto_ident: &Ident,
     auto_ty: &Type,
     table_name_str: &str,
+    _rebuild_call: &TokenStream,
+    hash_idx_ser: &[TokenStream],
+    hash_idx_deser: &[TokenStream],
+    hash_indexes: &[&ResolvedIndex],
 ) -> TokenStream {
     let table_name_str_owned = table_name_str.to_string();
     let counter_name = format_ident!("next_{}", auto_ident);
     let counter_name_str = format!("next_{}", auto_ident);
     let visitor_name = format_ident!("__{}SerdeVisitor", table_name);
+    let n_fields = 2 + hash_indexes.len();
 
     let extract_key = pk_info.extract_key_from_row();
+
+    let idx_var_decls = gen_hash_idx_var_decls(hash_indexes);
+    let assign_and_rebuild = gen_hash_idx_assign_and_rebuild(hash_indexes);
+    let idx_field_names_const = gen_hash_idx_field_names_const(hash_indexes);
 
     quote! {
         #[cfg(feature = "serde")]
@@ -2307,10 +3219,11 @@ fn gen_serde_impls_nonpk_auto(
         {
             fn serialize<S: ::serde::Serializer>(&self, serializer: S) -> ::std::result::Result<S::Ok, S::Error> {
                 use ::serde::ser::SerializeStruct;
-                let mut state = serializer.serialize_struct(#table_name_str, 2)?;
+                let mut state = serializer.serialize_struct(#table_name_str, #n_fields)?;
                 state.serialize_field(#counter_name_str, &self.#counter_name)?;
                 let rows_vec: ::std::vec::Vec<&#row_name> = self.rows.values().collect();
                 state.serialize_field("rows", &rows_vec)?;
+                #(#hash_idx_ser)*
                 state.end()
             }
         }
@@ -2341,6 +3254,7 @@ fn gen_serde_impls_nonpk_auto(
                     ) -> ::std::result::Result<Self::Value, A::Error> {
                         let mut counter: ::std::option::Option<#auto_ty> = ::std::option::Option::None;
                         let mut rows_vec: ::std::option::Option<::std::vec::Vec<#row_name>> = ::std::option::Option::None;
+                        #(#idx_var_decls)*
 
                         while let ::std::option::Option::Some(key) = map.next_key::<::std::string::String>()? {
                             match key.as_str() {
@@ -2356,6 +3270,7 @@ fn gen_serde_impls_nonpk_auto(
                                     }
                                     rows_vec = ::std::option::Option::Some(map.next_value()?);
                                 }
+                                #(#hash_idx_deser)*
                                 _ => {
                                     let _ = map.next_value::<::serde::de::IgnoredAny>()?;
                                 }
@@ -2374,7 +3289,8 @@ fn gen_serde_impls_nonpk_auto(
                             }
                             table.rows.insert(pk, row);
                         }
-                        table.rebuild_indexes();
+                        // Assign deserialized hash indexes and rebuild as needed.
+                        #assign_and_rebuild
 
                         // Compute max(field) + 1 from loaded rows.
                         let mut computed_next = <#auto_ty as ::tabulosity::AutoIncrementable>::first();
@@ -2399,7 +3315,7 @@ fn gen_serde_impls_nonpk_auto(
                     }
                 }
 
-                const FIELDS: &[&str] = &[#counter_name_str, "rows"];
+                const FIELDS: &[&str] = &[#counter_name_str, "rows", #(#idx_field_names_const),*];
                 deserializer.deserialize_struct(#table_name_str_owned, FIELDS, #visitor_name)
             }
         }

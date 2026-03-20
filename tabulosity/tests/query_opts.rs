@@ -978,7 +978,7 @@ mod gap_coverage {
         // modify_each_by_* bypasses index maintenance, so changing the filter
         // condition field does NOT remove the row from the filtered index.
         // This is by design -- like modify_unchecked, the caller is responsible
-        // for calling rebuild_indexes() if they change filter-relevant fields.
+        // for calling manual_rebuild_all_indexes() if they change filter-relevant fields.
         let mut table = FiltRowTable::new();
         for i in 1..=3 {
             table
@@ -1004,8 +1004,8 @@ mod gap_coverage {
         // the filter condition.
         assert_eq!(table.count_by_active_score(MatchAll, QueryOpts::ASC), 3);
 
-        // After rebuild_indexes, the filtered index is corrected.
-        table.rebuild_indexes();
+        // After manual_rebuild_all_indexes, the filtered index is corrected.
+        table.manual_rebuild_all_indexes();
         assert_eq!(table.count_by_active_score(MatchAll, QueryOpts::ASC), 0);
     }
 

@@ -7,8 +7,8 @@
 //! `QueryOpts` for ordering (asc/desc) and offset (skip N) on all query
 //! methods, and `modify_each_by_*` query-driven batch mutation with the same
 //! debug-build safety checks.
-//! All internal data structures use `BTreeMap`/`BTreeSet` for deterministic
-//! iteration order.
+//! All internal data structures use ordered collections (`BTreeMap`/`BTreeSet`
+//! or `InsOrdHashMap`) for deterministic iteration order.
 //!
 //! # Determinism constraint
 //!
@@ -28,6 +28,9 @@
 //! - `ins_ord_hash_map.rs` — `InsOrdHashMap<K, V>`, an insertion-ordered hash
 //!   map with deterministic iteration via tombstone-skip vec. O(1) lookup and
 //!   removal with automatic compaction.
+//! - `one_or_many.rs` — `OneOrMany<V, Many>` enum for non-unique hash index
+//!   groups, optimizing the common single-entry case. `RemoveResult` for
+//!   signaling empty/removed/not-found.
 //! - `table.rs` — `Bounded` trait, `FkCheck` trait, `IntoQuery`/`QueryBound`/
 //!   `MatchAll` query types, `QueryOrder`/`QueryOpts` for ordering and offset,
 //!   `in_bounds` helper, and range bound helpers used by generated code.
@@ -38,10 +41,12 @@
 
 mod error;
 mod ins_ord_hash_map;
+mod one_or_many;
 mod table;
 
 pub use error::{DeserializeError, Error};
 pub use ins_ord_hash_map::InsOrdHashMap;
+pub use one_or_many::{HasLen, OneOrMany, RemoveResult};
 pub use table::{
     AutoIncrementable, Bounded, FkCheck, IntoQuery, MatchAll, QueryBound, QueryOpts, QueryOrder,
     TableMeta, in_bounds,

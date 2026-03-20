@@ -1928,7 +1928,7 @@ fn deserialize_table_with_duplicate_unique_values() {
     ]"#;
 
     // Deserialization currently bypasses unique checks (inserts directly into
-    // BTreeMap then calls rebuild_indexes). The rebuild reconstructs the index
+    // BTreeMap then calls manual_rebuild_all_indexes). The rebuild reconstructs the index
     // from data, so both entries will be in the index. But subsequent inserts
     // with the same value should still be rejected because the index has entries.
     // This is not ideal — ideally deserialization would reject duplicates — but
@@ -1936,7 +1936,7 @@ fn deserialize_table_with_duplicate_unique_values() {
     let table: UserTable = serde_json::from_str(json).unwrap();
     assert_eq!(table.len(), 2);
 
-    // The index has both entries (since rebuild_indexes just inserts all).
+    // The index has both entries (since manual_rebuild_all_indexes just inserts all).
     // A query for that email should return 2 (the index is not truly "unique"
     // at this point since we bypassed the check).
     assert_eq!(
@@ -2241,7 +2241,7 @@ fn multiple_serde_roundtrip_cycles() {
 fn deserialize_duplicate_unique_silently_accepted() {
     // Currently, tabulosity deserialization does NOT validate unique constraints.
     // Duplicate unique values in serialized data are silently accepted because
-    // rebuild_indexes just inserts all entries. This test documents the behavior.
+    // manual_rebuild_all_indexes just inserts all entries. This test documents the behavior.
     let json = r#"[
         {"id": 1, "email": "dup@test.com", "name": "Alice"},
         {"id": 2, "email": "dup@test.com", "name": "Bob"},
@@ -2387,4 +2387,540 @@ fn serde_default_field_on_old_data() {
     assert_eq!(db.creatures.len(), 1);
     let creature = db.creatures.get(&CreatureId(1)).unwrap();
     assert_eq!(creature.mood_score, 0); // i32::default()
+}
+
+// =============================================================================
+// Hash index serde roundtrip
+// =============================================================================
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct HashCreature {
+    #[primary_key(auto_increment)]
+    id: u32,
+    #[indexed(hash)]
+    species: String,
+    name: String,
+}
+
+#[test]
+fn hash_index_serde_roundtrip() {
+    let mut table = HashCreatureTable::new();
+    table
+        .insert_auto_no_fk(|id| HashCreature {
+            id,
+            species: "elf".into(),
+            name: "Aelara".into(),
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|id| HashCreature {
+            id,
+            species: "dwarf".into(),
+            name: "Thorin".into(),
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|id| HashCreature {
+            id,
+            species: "elf".into(),
+            name: "Legolas".into(),
+        })
+        .unwrap();
+
+    let json = serde_json::to_string(&table).unwrap();
+    let restored: HashCreatureTable = serde_json::from_str(&json).unwrap();
+
+    // Verify all data survived.
+    assert_eq!(restored.len(), 3);
+    assert_eq!(restored.get(&0).unwrap().name, "Aelara");
+
+    // Verify hash index was rebuilt correctly.
+    let elves = restored.by_species(&"elf".to_string(), QueryOpts::ASC);
+    assert_eq!(elves.len(), 2);
+
+    let dwarves = restored.by_species(&"dwarf".to_string(), QueryOpts::ASC);
+    assert_eq!(dwarves.len(), 1);
+    assert_eq!(dwarves[0].name, "Thorin");
+}
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct HashUser {
+    #[primary_key(auto_increment)]
+    id: u32,
+    #[indexed(hash, unique)]
+    email: String,
+    name: String,
+}
+
+#[test]
+fn unique_hash_index_serde_roundtrip() {
+    let mut table = HashUserTable::new();
+    table
+        .insert_auto_no_fk(|id| HashUser {
+            id,
+            email: "alice@example.com".into(),
+            name: "Alice".into(),
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|id| HashUser {
+            id,
+            email: "bob@example.com".into(),
+            name: "Bob".into(),
+        })
+        .unwrap();
+
+    let json = serde_json::to_string(&table).unwrap();
+    let restored: HashUserTable = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(restored.len(), 2);
+
+    // Unique hash index works after restore.
+    let alice = restored.by_email(&"alice@example.com".to_string(), QueryOpts::ASC);
+    assert_eq!(alice.len(), 1);
+    assert_eq!(alice[0].name, "Alice");
+
+    // Unique constraint still enforced after restore.
+    let mut restored = restored;
+    let result = restored.insert_auto_no_fk(|id| HashUser {
+        id,
+        email: "alice@example.com".into(),
+        name: "Eve".into(),
+    });
+    assert!(matches!(result, Err(Error::DuplicateIndex { .. })));
+}
+
+// =============================================================================
+// Hash primary storage serde roundtrip
+// =============================================================================
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[table(primary_storage = "hash")]
+struct HashPrimaryCreature {
+    #[primary_key(auto_increment)]
+    id: u32,
+    #[indexed(hash)]
+    species: String,
+    name: String,
+}
+
+#[test]
+fn hash_primary_serde_roundtrip() {
+    let mut table = HashPrimaryCreatureTable::new();
+    table
+        .insert_auto_no_fk(|id| HashPrimaryCreature {
+            id,
+            species: "elf".into(),
+            name: "Aelara".into(),
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|id| HashPrimaryCreature {
+            id,
+            species: "dwarf".into(),
+            name: "Thorin".into(),
+        })
+        .unwrap();
+
+    let json = serde_json::to_string(&table).unwrap();
+    let restored: HashPrimaryCreatureTable = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(restored.len(), 2);
+    assert_eq!(restored.get(&0).unwrap().name, "Aelara");
+    assert_eq!(restored.get(&1).unwrap().name, "Thorin");
+
+    // Hash index rebuilt correctly.
+    let elves = restored.by_species(&"elf".to_string(), QueryOpts::ASC);
+    assert_eq!(elves.len(), 1);
+
+    // Auto-increment counter preserved — next insert gets id=2.
+    let mut restored = restored;
+    let id = restored
+        .insert_auto_no_fk(|id| HashPrimaryCreature {
+            id,
+            species: "human".into(),
+            name: "New".into(),
+        })
+        .unwrap();
+    assert_eq!(id, 2);
+}
+
+// =============================================================================
+// Hash index insertion order preservation across serde roundtrip
+// =============================================================================
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct OrderTest {
+    #[primary_key]
+    id: u32,
+    #[indexed(hash)]
+    category: String,
+    name: String,
+}
+
+#[test]
+fn hash_index_insertion_order_preserved_across_serde() {
+    let mut table = OrderTestTable::new();
+
+    // Insert rows in a specific non-alphabetical order for the "tool" category.
+    table
+        .insert_no_fk(OrderTest {
+            id: 10,
+            category: "tool".into(),
+            name: "Hammer".into(),
+        })
+        .unwrap();
+    table
+        .insert_no_fk(OrderTest {
+            id: 20,
+            category: "weapon".into(),
+            name: "Sword".into(),
+        })
+        .unwrap();
+    table
+        .insert_no_fk(OrderTest {
+            id: 30,
+            category: "tool".into(),
+            name: "Saw".into(),
+        })
+        .unwrap();
+    table
+        .insert_no_fk(OrderTest {
+            id: 40,
+            category: "tool".into(),
+            name: "Wrench".into(),
+        })
+        .unwrap();
+    table
+        .insert_no_fk(OrderTest {
+            id: 50,
+            category: "weapon".into(),
+            name: "Bow".into(),
+        })
+        .unwrap();
+
+    // Verify pre-roundtrip iteration order: MatchAll iterates hash index
+    // entries in insertion order of field values, then within each group
+    // by PK order (BTree primary).
+    let all_before: Vec<String> = table
+        .iter_by_category(MatchAll, QueryOpts::ASC)
+        .map(|r| r.name.clone())
+        .collect();
+
+    // Serialize and deserialize.
+    let json = serde_json::to_string(&table).unwrap();
+    let restored: OrderTestTable = serde_json::from_str(&json).unwrap();
+
+    // The critical assertion: iteration order through the hash index
+    // must be identical after roundtrip.
+    let all_after: Vec<String> = restored
+        .iter_by_category(MatchAll, QueryOpts::ASC)
+        .map(|r| r.name.clone())
+        .collect();
+    assert_eq!(all_before, all_after);
+
+    // Also verify exact-match queries still work.
+    let tools = restored.by_category(&"tool".to_string(), QueryOpts::ASC);
+    assert_eq!(tools.len(), 3);
+    let weapons = restored.by_category(&"weapon".to_string(), QueryOpts::ASC);
+    assert_eq!(weapons.len(), 2);
+}
+
+#[test]
+fn hash_index_order_differs_from_row_order_after_roundtrip() {
+    // This test verifies that hash index insertion order is preserved
+    // independently of row storage order. We insert rows such that the
+    // hash index's category insertion order (tool, weapon, armor) differs
+    // from PK order (which is the rows iteration order for BTree primary).
+    let mut table = OrderTestTable::new();
+
+    // Category "weapon" is inserted first (PK 1).
+    table
+        .insert_no_fk(OrderTest {
+            id: 1,
+            category: "weapon".into(),
+            name: "Sword".into(),
+        })
+        .unwrap();
+    // Category "armor" second (PK 2).
+    table
+        .insert_no_fk(OrderTest {
+            id: 2,
+            category: "armor".into(),
+            name: "Shield".into(),
+        })
+        .unwrap();
+    // Category "tool" third (PK 3).
+    table
+        .insert_no_fk(OrderTest {
+            id: 3,
+            category: "tool".into(),
+            name: "Hammer".into(),
+        })
+        .unwrap();
+
+    // Hash index iteration order for MatchAll should be: weapon, armor, tool
+    // (insertion order of distinct category values).
+    let categories_before: Vec<String> = table
+        .iter_by_category(MatchAll, QueryOpts::ASC)
+        .map(|r| r.category.clone())
+        .collect();
+    assert_eq!(categories_before, vec!["weapon", "armor", "tool"]);
+
+    // If we rebuilt from rows (PK order), the hash index would iterate
+    // in PK order: weapon(1), armor(2), tool(3) — same in this case.
+    // But let's add a second weapon with higher PK to make the point clearer.
+    table
+        .insert_no_fk(OrderTest {
+            id: 0,
+            category: "weapon".into(),
+            name: "Bow".into(),
+        })
+        .unwrap();
+
+    // Now rows in PK order: 0(weapon), 1(weapon), 2(armor), 3(tool)
+    // Hash index insertion order: weapon(first seen at id=1), armor, tool
+    // Within weapon group (BTree primary inner): PKs 0, 1
+
+    let json = serde_json::to_string(&table).unwrap();
+    let restored: OrderTestTable = serde_json::from_str(&json).unwrap();
+
+    let categories_after: Vec<String> = restored
+        .iter_by_category(MatchAll, QueryOpts::ASC)
+        .map(|r| r.category.clone())
+        .collect();
+
+    // The key assertion: category iteration order is weapon, armor, tool
+    // (hash index insertion order), NOT the rows' PK order.
+    // After roundtrip, the hash index was deserialized directly, preserving
+    // this insertion order.
+    let expected_order: Vec<String> = table
+        .iter_by_category(MatchAll, QueryOpts::ASC)
+        .map(|r| r.category.clone())
+        .collect();
+    assert_eq!(categories_after, expected_order);
+}
+
+#[test]
+fn hash_index_backward_compat_missing_idx_field() {
+    // Simulate loading old-format data (no hash index fields) into a table
+    // that now has hash indexes. The table should rebuild indexes from rows.
+    let json = r#"[
+        {"id": 1, "category": "weapon", "name": "Sword"},
+        {"id": 2, "category": "armor", "name": "Shield"},
+        {"id": 3, "category": "weapon", "name": "Bow"}
+    ]"#;
+
+    let table: OrderTestTable = serde_json::from_str(json).unwrap();
+
+    // Hash index should have been rebuilt from rows (backward compat path).
+    assert_eq!(table.len(), 3);
+    let weapons = table.by_category(&"weapon".to_string(), QueryOpts::ASC);
+    assert_eq!(weapons.len(), 2);
+    let armor = table.by_category(&"armor".to_string(), QueryOpts::ASC);
+    assert_eq!(armor.len(), 1);
+    assert_eq!(armor[0].name, "Shield");
+}
+
+#[test]
+fn hash_index_backward_compat_mutation_after_rebuild() {
+    // After loading old-format data and rebuilding, mutations should
+    // correctly maintain the hash index.
+    let json = r#"[
+        {"id": 1, "category": "weapon", "name": "Sword"}
+    ]"#;
+
+    let mut table: OrderTestTable = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        table
+            .by_category(&"weapon".to_string(), QueryOpts::ASC)
+            .len(),
+        1
+    );
+
+    // Insert a new row — hash index should be maintained.
+    table
+        .insert_no_fk(OrderTest {
+            id: 2,
+            category: "weapon".into(),
+            name: "Bow".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        table
+            .by_category(&"weapon".to_string(), QueryOpts::ASC)
+            .len(),
+        2
+    );
+
+    // Update — should update hash index.
+    table
+        .update_no_fk(OrderTest {
+            id: 1,
+            category: "armor".into(),
+            name: "Sword".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        table
+            .by_category(&"weapon".to_string(), QueryOpts::ASC)
+            .len(),
+        1
+    );
+    assert_eq!(
+        table
+            .by_category(&"armor".to_string(), QueryOpts::ASC)
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn hash_index_serde_format_is_struct_not_array() {
+    // Verify the raw JSON shape for tables with hash indexes.
+    let mut table = OrderTestTable::new();
+    table
+        .insert_no_fk(OrderTest {
+            id: 1,
+            category: "weapon".into(),
+            name: "Sword".into(),
+        })
+        .unwrap();
+
+    let json = serde_json::to_string(&table).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+    // Should be a struct with "rows" and "idx_category" fields.
+    assert!(parsed.is_object(), "should be a JSON object, got: {}", json);
+    assert!(parsed.get("rows").is_some(), "missing 'rows' field");
+    assert!(
+        parsed.get("idx_category").is_some(),
+        "missing 'idx_category' field"
+    );
+}
+
+// =============================================================================
+// Filtered hash index serde roundtrip
+// =============================================================================
+
+fn is_adult_serde(c: &FilteredSerdeCreature) -> bool {
+    c.age >= 18
+}
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[index(
+    name = "adult_species",
+    fields("species"),
+    kind = "hash",
+    filter = "is_adult_serde"
+)]
+struct FilteredSerdeCreature {
+    #[primary_key(auto_increment)]
+    id: u32,
+    species: String,
+    name: String,
+    age: u32,
+}
+
+#[test]
+fn filtered_hash_index_serde_roundtrip() {
+    let mut table = FilteredSerdeCreatureTable::new();
+    table
+        .insert_auto_no_fk(|id| FilteredSerdeCreature {
+            id,
+            species: "elf".into(),
+            name: "Child".into(),
+            age: 10,
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|id| FilteredSerdeCreature {
+            id,
+            species: "elf".into(),
+            name: "Elder".into(),
+            age: 200,
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|id| FilteredSerdeCreature {
+            id,
+            species: "dwarf".into(),
+            name: "Adult Dwarf".into(),
+            age: 50,
+        })
+        .unwrap();
+
+    // Verify pre-roundtrip: only adults in filtered index.
+    let adults_before = table.by_adult_species(&"elf".to_string(), QueryOpts::ASC);
+    assert_eq!(adults_before.len(), 1);
+    assert_eq!(adults_before[0].name, "Elder");
+
+    let json = serde_json::to_string(&table).unwrap();
+    let restored: FilteredSerdeCreatureTable = serde_json::from_str(&json).unwrap();
+
+    // Filtered index preserved.
+    let adults_after = restored.by_adult_species(&"elf".to_string(), QueryOpts::ASC);
+    assert_eq!(adults_after.len(), 1);
+    assert_eq!(adults_after[0].name, "Elder");
+
+    let dwarf_adults = restored.by_adult_species(&"dwarf".to_string(), QueryOpts::ASC);
+    assert_eq!(dwarf_adults.len(), 1);
+
+    // Total rows preserved.
+    assert_eq!(restored.len(), 3);
+}
+
+// =============================================================================
+// Compound hash index serde roundtrip
+// =============================================================================
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[index(name = "by_species_age", fields("species", "age"), kind = "hash")]
+struct CompoundHashAnimal {
+    #[primary_key(auto_increment)]
+    id: u32,
+    species: String,
+    age: u32,
+    name: String,
+}
+
+#[test]
+fn compound_hash_index_serde_roundtrip() {
+    let mut table = CompoundHashAnimalTable::new();
+    table
+        .insert_auto_no_fk(|id| CompoundHashAnimal {
+            id,
+            species: "cat".into(),
+            age: 3,
+            name: "Whiskers".into(),
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|id| CompoundHashAnimal {
+            id,
+            species: "cat".into(),
+            age: 5,
+            name: "Mittens".into(),
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|id| CompoundHashAnimal {
+            id,
+            species: "dog".into(),
+            age: 3,
+            name: "Rex".into(),
+        })
+        .unwrap();
+
+    let json = serde_json::to_string(&table).unwrap();
+    let restored: CompoundHashAnimalTable = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(restored.len(), 3);
+
+    let cats_3 = restored.by_by_species_age(&"cat".to_string(), &3u32, QueryOpts::ASC);
+    assert_eq!(cats_3.len(), 1);
+    assert_eq!(cats_3[0].name, "Whiskers");
+
+    let all = restored.by_by_species_age(MatchAll, MatchAll, QueryOpts::ASC);
+    assert_eq!(all.len(), 3);
 }

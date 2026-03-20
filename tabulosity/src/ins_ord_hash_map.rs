@@ -384,6 +384,28 @@ impl<'a, K, V> Iterator for IterMut<'a, K, V> {
     }
 }
 
+// --- FromIterator ---
+
+impl<K, V> FromIterator<(K, V)> for InsOrdHashMap<K, V>
+where
+    K: Eq + std::hash::Hash + Clone,
+{
+    /// Builds an `InsOrdHashMap` from an iterator of `(K, V)` pairs.
+    ///
+    /// Insertion order matches the iterator's yield order. Duplicate keys
+    /// behave like repeated `insert()`: the later value wins, but the
+    /// position of the first insertion is preserved.
+    fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
+        let iter = iter.into_iter();
+        let (lo, _) = iter.size_hint();
+        let mut map = Self::with_capacity(lo);
+        for (k, v) in iter {
+            map.insert(k, v);
+        }
+        map
+    }
+}
+
 // --- IntoIterator ---
 
 /// Owning iterator over `(K, V)` pairs in insertion order.
@@ -2219,6 +2241,37 @@ mod tests {
         // Compaction remapped indices. Verify get_mut still works.
         *map.get_mut(&7).unwrap() = 999;
         assert_eq!(map.get(&7), Some(&999));
+    }
+
+    // -----------------------------------------------------------------------
+    // FromIterator
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn from_iter_preserves_order() {
+        let pairs = vec![(3, "c"), (1, "a"), (2, "b")];
+        let map: InsOrdHashMap<i32, &str> = pairs.into_iter().collect();
+        let keys: Vec<_> = map.keys().copied().collect();
+        assert_eq!(keys, vec![3, 1, 2]);
+        assert_eq!(map.get(&1), Some(&"a"));
+        assert_eq!(map.len(), 3);
+    }
+
+    #[test]
+    fn from_iter_empty() {
+        let map: InsOrdHashMap<i32, i32> = std::iter::empty().collect();
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn from_iter_duplicate_keys_last_wins() {
+        let pairs = vec![(1, "first"), (2, "two"), (1, "second")];
+        let map: InsOrdHashMap<i32, &str> = pairs.into_iter().collect();
+        assert_eq!(map.len(), 2);
+        // Key 1 keeps its original position but has updated value.
+        assert_eq!(map.get(&1), Some(&"second"));
+        let keys: Vec<_> = map.keys().copied().collect();
+        assert_eq!(keys, vec![1, 2]);
     }
 
     #[test]

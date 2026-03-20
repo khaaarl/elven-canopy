@@ -7,7 +7,7 @@
 //!
 //! Covers: sequential assignment, counter bump on manual/upsert inserts, counter
 //! stability on delete/failed insert, interaction with compound PKs, secondary
-//! indexes, unique indexes, modify_unchecked, and rebuild_indexes.
+//! indexes, unique indexes, modify_unchecked, and manual_rebuild_all_indexes.
 
 use tabulosity::{Bounded, Error, MatchAll, QueryOpts, Table};
 
@@ -363,7 +363,7 @@ fn unique_index_violation_does_not_advance_counter() {
 }
 
 // =============================================================================
-// modify_unchecked and rebuild_indexes
+// modify_unchecked and manual_rebuild_all_indexes
 // =============================================================================
 
 #[test]
@@ -408,7 +408,7 @@ fn rebuild_indexes_does_not_affect_counter() {
         })
         .unwrap();
     assert_eq!(table.next_seq(), 2);
-    table.rebuild_indexes();
+    table.manual_rebuild_all_indexes();
     assert_eq!(table.next_seq(), 2);
     assert_eq!(table.len(), 2);
 }

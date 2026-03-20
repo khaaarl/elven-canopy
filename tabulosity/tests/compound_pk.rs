@@ -776,7 +776,7 @@ fn filtered_index_maintained_through_update() {
     assert_eq!(table.count_by_positive_value(&99, QueryOpts::ASC), 1);
 }
 
-// --- Explicit rebuild_indexes on compound PK table ---
+// --- Explicit manual_rebuild_all_indexes on compound PK table ---
 
 #[test]
 fn rebuild_indexes_compound_pk() {
@@ -800,7 +800,7 @@ fn rebuild_indexes_compound_pk() {
     assert_eq!(table.count_by_value(&42, QueryOpts::ASC), 2);
 
     // Force rebuild and verify indexes still correct.
-    table.rebuild_indexes();
+    table.manual_rebuild_all_indexes();
     assert_eq!(table.count_by_value(&42, QueryOpts::ASC), 2);
     assert_eq!(table.count_by_value(&99, QueryOpts::ASC), 0);
 }

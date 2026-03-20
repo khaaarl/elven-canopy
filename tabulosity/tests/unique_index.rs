@@ -785,7 +785,7 @@ fn rebuild_indexes_unique_still_enforced() {
         })
         .unwrap();
 
-    table.rebuild_indexes();
+    table.manual_rebuild_all_indexes();
 
     // Unique constraint still enforced after rebuild.
     let err = table

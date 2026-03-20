@@ -1,13 +1,34 @@
 //! Shared attribute parsing utilities for tabulosity derive macros.
 //!
 //! Extracts `#[primary_key]`, `#[primary_key(auto_increment)]`, `#[auto_increment]`,
-//! `#[indexed]`, and `#[indexed(unique)]` annotations from struct fields,
+//! `#[indexed]` / `#[indexed(hash)]` / `#[indexed(unique)]` / `#[indexed(hash, unique)]`
+//! annotations from struct fields,
 //! `#[primary_key("field1", "field2")]` from struct-level attributes (compound PKs),
-//! and `#[index(name = "...", fields(...), filter = "...", unique)]` from struct-level
-//! attributes. Used by `table.rs` during `#[derive(Table)]` expansion.
+//! `#[index(name = "...", fields(...), kind = "hash", filter = "...", unique)]` from
+//! struct-level attributes, and `#[table(primary_storage = "hash")]` from the struct
+//! being derived. Used by `table.rs` during `#[derive(Table)]` expansion.
 
 use syn::parse::{Parse, ParseStream};
 use syn::{DeriveInput, Field, Ident, LitStr, Token, Type};
+
+/// The backing storage kind for an index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexKind {
+    /// BTreeSet-backed index (default). O(log n) lookup, supports range queries.
+    BTree,
+    /// InsOrdHashMap-backed index. O(1) lookup, deterministic insertion-order
+    /// iteration. Does not support range queries.
+    Hash,
+}
+
+/// The backing storage kind for a table's primary key storage (`rows` field).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrimaryStorageKind {
+    /// `BTreeMap<PK, Row>` — sorted by PK (default).
+    BTree,
+    /// `InsOrdHashMap<PK, Row>` — O(1) lookup, insertion-order iteration.
+    Hash,
+}
 
 /// A parsed struct field with its tabulosity annotations.
 pub struct ParsedField {
@@ -17,6 +38,9 @@ pub struct ParsedField {
     pub is_auto_increment: bool,
     pub is_indexed: bool,
     pub is_unique: bool,
+    /// The index kind for field-level `#[indexed]` / `#[indexed(hash)]`.
+    /// Only meaningful when `is_indexed` is true.
+    pub index_kind: IndexKind,
 }
 
 /// A parsed `#[index(...)]` struct-level attribute.
@@ -25,6 +49,8 @@ pub struct IndexDecl {
     pub fields: Vec<String>,
     pub filter: Option<String>,
     pub unique: bool,
+    /// The index kind. Defaults to `BTree` if `kind` is omitted.
+    pub kind: IndexKind,
 }
 
 /// Parse all fields from a named struct, extracting tabulosity attributes.
@@ -92,29 +118,15 @@ fn parse_field(field: &Field) -> syn::Result<ParsedField> {
     }
     let mut is_indexed = false;
     let mut is_unique = false;
+    let mut index_kind = IndexKind::BTree;
     for attr in &field.attrs {
         if attr.path().is_ident("indexed") {
             is_indexed = true;
-            // Check for `#[indexed(unique)]`.
+            // Parse comma-separated identifiers: hash, unique, btree.
             if let syn::Meta::List(meta_list) = &attr.meta {
-                let parsed: syn::Result<Ident> = syn::parse2(meta_list.tokens.clone());
-                match parsed {
-                    Ok(id) if id == "unique" => {
-                        is_unique = true;
-                    }
-                    Ok(id) => {
-                        return Err(syn::Error::new(
-                            id.span(),
-                            format!("unknown #[indexed(...)] argument: `{id}`; expected `unique`"),
-                        ));
-                    }
-                    Err(e) => {
-                        return Err(syn::Error::new(
-                            e.span(),
-                            "invalid #[indexed(...)] syntax; expected `unique`",
-                        ));
-                    }
-                }
+                let parsed: IndexedArgs = syn::parse2(meta_list.tokens.clone())?;
+                is_unique = parsed.unique;
+                index_kind = parsed.kind;
             }
         }
     }
@@ -125,7 +137,80 @@ fn parse_field(field: &Field) -> syn::Result<ParsedField> {
         is_auto_increment,
         is_indexed,
         is_unique,
+        index_kind,
     })
+}
+
+/// Parsed arguments from `#[indexed(hash, unique)]`.
+struct IndexedArgs {
+    unique: bool,
+    kind: IndexKind,
+}
+
+impl Parse for IndexedArgs {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let mut unique = false;
+        let mut has_hash = false;
+        let mut has_btree = false;
+
+        while !input.is_empty() {
+            let ident: Ident = input.parse()?;
+            match ident.to_string().as_str() {
+                "unique" => {
+                    if unique {
+                        return Err(syn::Error::new(
+                            ident.span(),
+                            "duplicate `unique` in #[indexed(...)]",
+                        ));
+                    }
+                    unique = true;
+                }
+                "hash" => {
+                    if has_hash {
+                        return Err(syn::Error::new(
+                            ident.span(),
+                            "duplicate `hash` in #[indexed(...)]",
+                        ));
+                    }
+                    has_hash = true;
+                }
+                "btree" => {
+                    if has_btree {
+                        return Err(syn::Error::new(
+                            ident.span(),
+                            "duplicate `btree` in #[indexed(...)]",
+                        ));
+                    }
+                    has_btree = true;
+                }
+                other => {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        format!(
+                            "unknown #[indexed(...)] argument: `{other}`; expected `hash`, `btree`, or `unique`"
+                        ),
+                    ));
+                }
+            }
+            if input.peek(Token![,]) {
+                let _: Token![,] = input.parse()?;
+            }
+        }
+
+        if has_hash && has_btree {
+            return Err(
+                input.error("cannot combine `hash` and `btree` in #[indexed(...)]; pick one kind")
+            );
+        }
+
+        let kind = if has_hash {
+            IndexKind::Hash
+        } else {
+            IndexKind::BTree
+        };
+
+        Ok(IndexedArgs { unique, kind })
+    }
 }
 
 /// Parse an optional struct-level `#[primary_key("field1", "field2")]` attribute
@@ -189,18 +274,20 @@ pub fn parse_index_attrs(input: &DeriveInput) -> syn::Result<Vec<IndexDecl>> {
                 fields: decl.fields,
                 filter: decl.filter,
                 unique: decl.unique,
+                kind: decl.kind,
             });
         }
     }
     Ok(decls)
 }
 
-/// Internal parsed form for `#[index(name = "...", fields("a", "b"), filter = "...", unique)]`.
+/// Internal parsed form for `#[index(name = "...", fields("a", "b"), kind = "hash", filter = "...", unique)]`.
 struct IndexDeclParsed {
     name: String,
     fields: Vec<String>,
     filter: Option<String>,
     unique: bool,
+    kind: IndexKind,
 }
 
 impl Parse for IndexDeclParsed {
@@ -209,6 +296,7 @@ impl Parse for IndexDeclParsed {
         let mut fields = None;
         let mut filter = None;
         let mut unique = false;
+        let mut kind = IndexKind::BTree;
 
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
@@ -236,6 +324,22 @@ impl Parse for IndexDeclParsed {
                     let lit: LitStr = input.parse()?;
                     filter = Some(lit.value());
                 }
+                "kind" => {
+                    let _: Token![=] = input.parse()?;
+                    let lit: LitStr = input.parse()?;
+                    match lit.value().as_str() {
+                        "hash" => kind = IndexKind::Hash,
+                        "btree" => kind = IndexKind::BTree,
+                        other => {
+                            return Err(syn::Error::new_spanned(
+                                &lit,
+                                format!(
+                                    "unknown index kind: `{other}`; expected `\"hash\"` or `\"btree\"`"
+                                ),
+                            ));
+                        }
+                    }
+                }
                 "unique" => {
                     unique = true;
                 }
@@ -243,7 +347,7 @@ impl Parse for IndexDeclParsed {
                     return Err(syn::Error::new(
                         ident.span(),
                         format!(
-                            "unknown index attribute key: `{other}`; expected `name`, `fields`, `filter`, or `unique`"
+                            "unknown index attribute key: `{other}`; expected `name`, `fields`, `kind`, `filter`, or `unique`"
                         ),
                     ));
                 }
@@ -265,6 +369,74 @@ impl Parse for IndexDeclParsed {
             fields,
             filter,
             unique,
+            kind,
         })
+    }
+}
+
+/// Parse an optional struct-level `#[table(primary_storage = "hash")]` attribute.
+/// Returns `BTree` (the default) if no such attribute exists.
+pub fn parse_table_attr(input: &DeriveInput) -> syn::Result<PrimaryStorageKind> {
+    let mut result = PrimaryStorageKind::BTree;
+    let mut found = false;
+
+    for attr in &input.attrs {
+        if attr.path().is_ident("table") {
+            if found {
+                return Err(syn::Error::new_spanned(
+                    attr,
+                    "duplicate #[table(...)] attribute; only one is allowed",
+                ));
+            }
+            found = true;
+            let parsed: TableAttrParsed = attr.parse_args()?;
+            result = parsed.primary_storage;
+        }
+    }
+
+    Ok(result)
+}
+
+/// Internal parsed form for `#[table(primary_storage = "hash")]`.
+struct TableAttrParsed {
+    primary_storage: PrimaryStorageKind,
+}
+
+impl Parse for TableAttrParsed {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let mut primary_storage = PrimaryStorageKind::BTree;
+
+        while !input.is_empty() {
+            let ident: Ident = input.parse()?;
+            match ident.to_string().as_str() {
+                "primary_storage" => {
+                    let _: Token![=] = input.parse()?;
+                    let lit: LitStr = input.parse()?;
+                    match lit.value().as_str() {
+                        "hash" => primary_storage = PrimaryStorageKind::Hash,
+                        "btree" => primary_storage = PrimaryStorageKind::BTree,
+                        other => {
+                            return Err(syn::Error::new_spanned(
+                                &lit,
+                                format!(
+                                    "unknown primary_storage value: `{other}`; expected `\"hash\"` or `\"btree\"`"
+                                ),
+                            ));
+                        }
+                    }
+                }
+                other => {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        format!("unknown #[table(...)] key: `{other}`; expected `primary_storage`"),
+                    ));
+                }
+            }
+            if input.peek(Token![,]) {
+                let _: Token![,] = input.parse()?;
+            }
+        }
+
+        Ok(TableAttrParsed { primary_storage })
     }
 }
