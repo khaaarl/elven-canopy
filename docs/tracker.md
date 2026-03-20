@@ -52,6 +52,7 @@ This reduces merge conflicts when parallel work streams add items.
 [~] F-multiplayer          Relay-coordinator multiplayer networking
 [~] F-nav-perf             Optimize nav graph generation performance
 [~] F-notifications        Player-visible event notifications
+[~] F-tab-hash-idx         Hash-based indexes in Tabulosity derive macro
 ```
 
 ### Todo
@@ -209,7 +210,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-sung-furniture       Sung furniture grown from living wood
 [ ] F-tab-change-track     Change tracking (insert/update/delete diffs)
 [ ] F-tab-cycle            Tab to cycle focus through units in selection
-[ ] F-tab-hash-idx         Hash-based indexes in Tabulosity derive macro
 [ ] F-tab-indexmap-fork    Forked IndexMap with tombstone compaction (alternative to F-tab-ordered-idx)
 [ ] F-tab-joins            Join iterators across tables
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
@@ -4943,34 +4943,29 @@ High complexity.
 **Related:** F-sim-db-impl, F-tab-compound-idx
 
 #### F-tab-hash-idx — Hash-based indexes in Tabulosity derive macro
-**Status:** Todo
+**Status:** In Progress
 
 Integrate `InsOrdHashMap` into Tabulosity's derive macro so users can
-declare hash-based indexes on table fields. Currently all indexes are
-`BTreeSet`-backed with O(log n) lookup; hash indexes give O(1) exact
-lookup with deterministic insertion-order iteration.
+declare hash-based indexes on table fields and opt into hash-based primary
+key storage. Currently all indexes are `BTreeSet`-backed with O(log n)
+lookup; hash indexes give O(1) exact lookup with deterministic
+insertion-order iteration.
 
-**Attribute syntax (tentative):**
-- `#[indexed(hash)]` — simple hash index on a single field
-- `#[indexed(hash, unique)]` — unique hash index
-- `#[index(name = "...", fields("a", "b"), kind = "hash")]` — compound hash index
+**Draft:** `docs/design/F-tab-hash-idx.md`
 
-**Derive macro changes (`tabulosity_derive/src/table.rs`):**
-- Index storage: emit `InsOrdHashMap<FieldType, SmallVec<[PK; N]>>` for
-  non-unique indexes, `InsOrdHashMap<FieldType, PK>` for unique indexes,
-  instead of `BTreeSet<(fields..., pk...)>`.
-- Query methods: `by_*` / `iter_by_*` / `count_by_*` dispatch via `get`
-  for exact matches. Range queries not supported on hash indexes — only
-  `QueryBound::Exact` and `QueryBound::MatchAll`.
-- Index maintenance: insert/update/remove codegen maintains `InsOrdHashMap`.
-- Bounds tracking: not needed for hash indexes (no range scans).
-
-**Primary storage option (separate or here):**
-Optionally allow `InsOrdHashMap<PK, Row>` instead of `BTreeMap<PK, Row>` for
-the main `rows` field, giving O(1) primary key lookup. This changes iteration
-order of `iter_all` / `keys` from PK-sorted to insertion-ordered.
-
-**Depends on:** F-tab-ordered-idx (the `InsOrdHashMap` data structure)
+**Key design decisions:**
+- `#[indexed(hash)]` / `#[index(..., kind = "hash")]` for hash secondary indexes
+- `#[table(primary_storage = "hash")]` for `InsOrdHashMap<PK, Row>` primary storage
+- `OneOrMany<PK, Inner>` enum for non-unique hash indexes — inline PK for
+  single-entry groups (common case), BTreeSet or InsOrdHashMap for multi-entry
+- Compound hash indexes supported; partial matches degrade to O(n) scan
+- Mixed BTree+hash indexes on same field supported (must have different names)
+- Hash indexes serialized directly (not skip+rebuild) to preserve insertion order
+- Existing `rebuild_indexes()` renamed to `post_deser_rebuild_indexes()` (skips
+  hash indexes); new `manual_rebuild_all_indexes()` rebuilds everything
+- QueryOpts ordering ignored for hash indexes (matches real DB behavior)
+- Range queries on hash indexes panic at runtime with clear message
+- `modify_unchecked_range` not generated for hash primary (compile error)
 
 **Unblocked by:** F-tab-ordered-idx
 **Related:** F-tab-indexmap-fork, F-tab-ordered-idx
