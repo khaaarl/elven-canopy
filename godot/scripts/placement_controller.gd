@@ -174,7 +174,7 @@ func _process(_delta: float) -> void:
 
 	# Single Rust call: raycast to find the solid surface under the cursor,
 	# then snap to the nearest nav node from the adjacent air voxel.
-	var result := _bridge.snap_placement_to_ray(ray_origin, ray_dir, ground_only, large)
+	var result: Dictionary = _bridge.snap_placement_to_ray(ray_origin, ray_dir, ground_only, large)
 
 	if result.get("hit", false):
 		_snapped_position = result["position"]

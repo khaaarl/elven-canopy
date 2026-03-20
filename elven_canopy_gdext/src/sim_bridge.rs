@@ -531,6 +531,13 @@ impl SimBridge {
         };
         config.tree_profile.growth.initial_energy = 50.0;
         config.terrain_max_height = 0;
+        // Adjust spawn positions for the small test world (center=32, floor_y=0).
+        for spec in &mut config.initial_creatures {
+            spec.spawn_position = VoxelCoord::new(32, 1, 32);
+        }
+        for pile in &mut config.initial_ground_piles {
+            pile.position = VoxelCoord::new(32, 1, 42);
+        }
         let seconds_per_tick = config.tick_duration_ms as f64 / 1000.0;
         self.session.process(SessionMessage::StartGame {
             seed: seed as u64,

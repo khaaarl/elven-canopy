@@ -654,7 +654,7 @@ func _try_right_click_command(mouse_pos: Vector2) -> void:
 		return
 
 	# No creature clicked — snap to nearest nav node and issue directed goto.
-	var result := _bridge.snap_placement_to_ray(ray_origin, ray_dir, false, false)
+	var result: Dictionary = _bridge.snap_placement_to_ray(ray_origin, ray_dir, false, false)
 	if result.get("hit", false):
 		var nav_pos: Vector3 = result["position"]
 		_bridge.group_directed_goto(
@@ -697,7 +697,7 @@ func _execute_attack_move(mouse_pos: Vector2) -> void:
 		return
 
 	# No creature clicked — snap to nearest nav node.
-	var result := _bridge.snap_placement_to_ray(ray_origin, ray_dir, false, false)
+	var result: Dictionary = _bridge.snap_placement_to_ray(ray_origin, ray_dir, false, false)
 	if result.get("hit", false):
 		var nav_pos: Vector3 = result["position"]
 		_bridge.group_attack_move(
