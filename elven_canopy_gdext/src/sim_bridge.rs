@@ -447,6 +447,11 @@ impl SimBridge {
         drop(self.relay_handle.take());
         drop(self.net_client.take());
 
+        // Print accumulated perf stats before tearing down.
+        if let Some(cache) = &self.mesh_cache {
+            cache.perf.print_summary();
+        }
+
         // Clear sim state.
         let mut session = GameSession::new_singleplayer();
         session.set_wg_log(Box::new(|msg| godot_print!("{msg}")));
@@ -4662,8 +4667,16 @@ impl SimBridge {
     /// so the surface index is always stable (bark=0, ground=1, leaf=2).
     /// Returns a default empty ArrayMesh if the chunk is not in the cache.
     #[func]
-    fn build_chunk_array_mesh(&self, cx: i32, cy: i32, cz: i32) -> Gd<godot::classes::ArrayMesh> {
+    fn build_chunk_array_mesh(
+        &mut self,
+        cx: i32,
+        cy: i32,
+        cz: i32,
+    ) -> Gd<godot::classes::ArrayMesh> {
         use elven_canopy_sim::mesh_gen::ChunkCoord;
+        use std::time::Instant;
+
+        let t = Instant::now();
 
         let mut array_mesh = godot::classes::ArrayMesh::new_gd();
 
@@ -4680,6 +4693,11 @@ impl SimBridge {
         Self::add_surface_or_placeholder(&mut array_mesh, &chunk_mesh.bark);
         Self::add_surface_or_placeholder(&mut array_mesh, &chunk_mesh.ground);
         Self::add_surface_or_placeholder(&mut array_mesh, &chunk_mesh.leaf);
+
+        let us = t.elapsed().as_micros() as u32;
+        if let Some(cache) = &mut self.mesh_cache {
+            cache.perf.array_mesh_build_us.push(us);
+        }
 
         array_mesh
     }

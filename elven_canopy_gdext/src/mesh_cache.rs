@@ -41,6 +41,7 @@
 // GDScript rendering side.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Instant;
 
 use elven_canopy_sim::mesh_gen::{
     CHUNK_SIZE, ChunkCoord, ChunkMesh, generate_chunk_mesh, produces_geometry, voxel_to_chunk,
@@ -216,6 +217,106 @@ impl MegaChunk {
 }
 
 // ---------------------------------------------------------------------------
+// Performance timing
+// ---------------------------------------------------------------------------
+
+/// Collects per-frame and per-operation timing samples for profiling.
+/// Stores durations in microseconds. Call `print_summary()` on shutdown to
+/// dump percentile tables to stdout.
+pub struct PerfStats {
+    /// Per-frame: total `update_visibility()` wall time.
+    pub visibility_total_us: Vec<u32>,
+    /// Per-frame: coarse + fine culling pass within `update_visibility()`.
+    pub culling_us: Vec<u32>,
+    /// Per-frame: Rayon mesh generation within `update_visibility()`.
+    /// Only recorded when at least one chunk is generated.
+    pub gen_batch_us: Vec<u32>,
+    /// Per-chunk: single chunk mesh generation (inside Rayon workers).
+    pub gen_single_chunk_us: Vec<u32>,
+    /// Per-frame: total `update_dirty()` wall time.
+    /// Only recorded when at least one dirty chunk is processed.
+    pub dirty_update_us: Vec<u32>,
+    /// Per-chunk: `build_chunk_array_mesh` (Rust→Godot array conversion).
+    pub array_mesh_build_us: Vec<u32>,
+    /// Per-frame: LRU eviction pass within `update_visibility()`.
+    /// Only recorded when eviction actually runs.
+    pub eviction_us: Vec<u32>,
+    /// Per-frame: number of chunks that passed frustum culling.
+    pub visible_chunk_counts: Vec<u32>,
+    /// Per-frame: number of chunks generated.
+    pub gen_chunk_counts: Vec<u32>,
+}
+
+impl PerfStats {
+    pub fn new() -> Self {
+        Self {
+            visibility_total_us: Vec::new(),
+            culling_us: Vec::new(),
+            gen_batch_us: Vec::new(),
+            gen_single_chunk_us: Vec::new(),
+            dirty_update_us: Vec::new(),
+            array_mesh_build_us: Vec::new(),
+            eviction_us: Vec::new(),
+            visible_chunk_counts: Vec::new(),
+            gen_chunk_counts: Vec::new(),
+        }
+    }
+
+    /// Append a microsecond sample to a metric's sample list.
+    fn record_us(samples: &mut Vec<u32>, us: u32) {
+        samples.push(us);
+    }
+
+    /// Print a summary table with p50/p90/p99/max percentiles for each metric.
+    pub fn print_summary(&self) {
+        eprintln!("=== Mesh Perf Stats ===");
+        Self::print_metric("visibility_total", &self.visibility_total_us);
+        Self::print_metric("  culling", &self.culling_us);
+        Self::print_metric("  gen_batch", &self.gen_batch_us);
+        Self::print_metric("  eviction", &self.eviction_us);
+        Self::print_metric("gen_single_chunk", &self.gen_single_chunk_us);
+        Self::print_metric("dirty_update", &self.dirty_update_us);
+        Self::print_metric("array_mesh_build", &self.array_mesh_build_us);
+        Self::print_count_metric("visible_chunks", &self.visible_chunk_counts);
+        Self::print_count_metric("gen_chunks/frame", &self.gen_chunk_counts);
+    }
+
+    fn print_metric(name: &str, samples: &[u32]) {
+        if samples.is_empty() {
+            eprintln!("  {name}: (no samples)");
+            return;
+        }
+        let mut sorted: Vec<u32> = samples.to_vec();
+        sorted.sort_unstable();
+        let n = sorted.len();
+        let p50 = sorted[n / 2];
+        let p90 = sorted[n * 90 / 100];
+        let p99 = sorted[n * 99 / 100];
+        let max = sorted[n - 1];
+        let mean = sorted.iter().map(|&x| x as u64).sum::<u64>() / n as u64;
+        eprintln!(
+            "  {name}: n={n}  mean={mean}us  p50={p50}us  p90={p90}us  p99={p99}us  max={max}us"
+        );
+    }
+
+    fn print_count_metric(name: &str, samples: &[u32]) {
+        if samples.is_empty() {
+            eprintln!("  {name}: (no samples)");
+            return;
+        }
+        let mut sorted: Vec<u32> = samples.to_vec();
+        sorted.sort_unstable();
+        let n = sorted.len();
+        let p50 = sorted[n / 2];
+        let p90 = sorted[n * 90 / 100];
+        let p99 = sorted[n * 99 / 100];
+        let max = sorted[n - 1];
+        let mean = sorted.iter().map(|&x| x as u64).sum::<u64>() / n as u64;
+        eprintln!("  {name}: n={n}  mean={mean}  p50={p50}  p90={p90}  p99={p99}  max={max}");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // MeshCache
 // ---------------------------------------------------------------------------
 
@@ -258,6 +359,10 @@ pub struct MeshCache {
     /// Chunks that passed visibility but couldn't be generated this frame
     /// (max_gen_per_frame exceeded). Will be retried next frame.
     pending_gen: BTreeSet<ChunkCoord>,
+    /// Chunks known to produce empty meshes (interior volumes where all faces
+    /// are culled). Skipped during visibility to avoid regenerating every frame.
+    /// Cleared for a chunk when it's marked dirty (voxel edit may expose faces).
+    empty_chunks: BTreeSet<ChunkCoord>,
 
     // -- LRU tracking --
     /// Last-accessed frame stamp per cached chunk.
@@ -277,6 +382,9 @@ pub struct MeshCache {
     memory_budget: usize,
     /// Maximum number of chunk meshes to generate per `update_visibility()` call.
     max_gen_per_frame: usize,
+
+    /// Accumulated performance timing samples.
+    pub perf: PerfStats,
 }
 
 impl MeshCache {
@@ -297,6 +405,7 @@ impl MeshCache {
             chunks_generated: Vec::new(),
             chunks_evicted: Vec::new(),
             pending_gen: BTreeSet::new(),
+            empty_chunks: BTreeSet::new(),
             lru_stamps: BTreeMap::new(),
             chunk_bytes: BTreeMap::new(),
             total_cached_bytes: 0,
@@ -304,6 +413,7 @@ impl MeshCache {
             draw_distance_voxels: 100.0,
             memory_budget: 0,
             max_gen_per_frame: 64,
+            perf: PerfStats::new(),
         }
     }
 
@@ -343,6 +453,7 @@ impl MeshCache {
         self.megachunks.clear();
         self.visible_set.clear();
         self.pending_gen.clear();
+        self.empty_chunks.clear();
         self.lru_stamps.clear();
         self.chunk_bytes.clear();
         self.total_cached_bytes = 0;
@@ -444,6 +555,8 @@ impl MeshCache {
         cam_pos: [f32; 3],
         frustum_planes: &[[f32; 4]],
     ) -> usize {
+        let t_total = Instant::now();
+
         self.frame_counter += 1;
         self.chunks_to_show.clear();
         self.chunks_to_hide.clear();
@@ -461,6 +574,9 @@ impl MeshCache {
 
         // Include any chunks still pending from last frame.
         let mut pending_this_frame: BTreeSet<ChunkCoord> = std::mem::take(&mut self.pending_gen);
+
+        // -- Culling pass (timed) --
+        let t_cull = Instant::now();
 
         // Coarse pass: MegaChunk draw-distance + frustum.
         for mega in self.megachunks.values() {
@@ -481,6 +597,11 @@ impl MeshCache {
 
             // Fine pass: per-chunk draw-distance + frustum test.
             for &chunk_coord in &mega.chunks {
+                // Skip chunks known to produce empty meshes (interior volumes).
+                if self.empty_chunks.contains(&chunk_coord) {
+                    continue;
+                }
+
                 let chunk_aabb = Aabb3::from_chunk(chunk_coord);
 
                 // Per-chunk draw distance (the coarse megachunk test may pass
@@ -506,6 +627,13 @@ impl MeshCache {
             }
         }
 
+        let cull_us = t_cull.elapsed().as_micros() as u32;
+        PerfStats::record_us(&mut self.perf.culling_us, cull_us);
+        PerfStats::record_us(
+            &mut self.perf.visible_chunk_counts,
+            new_visible.len() as u32,
+        );
+
         // Generate pending meshes up to the per-frame cap.
         // Prioritise chunks that are closest to the camera (sort by distance).
         let mut pending_sorted: Vec<ChunkCoord> = pending_this_frame.iter().copied().collect();
@@ -529,21 +657,34 @@ impl MeshCache {
             batch.push(coord);
         }
 
+        // -- Mesh generation pass (timed) --
+        let batch_len = batch.len();
+        let t_gen = Instant::now();
+
         // Generate meshes in parallel with rayon.
         let y_cutoff = self.y_cutoff;
-        let results: Vec<(ChunkCoord, ChunkMesh)> = {
+        let results: Vec<(ChunkCoord, ChunkMesh, u32)> = {
             use rayon::prelude::*;
             batch
                 .par_iter()
                 .map(|&coord| {
+                    let t = Instant::now();
                     let mesh = generate_chunk_mesh(world, coord, y_cutoff);
-                    (coord, mesh)
+                    let us = t.elapsed().as_micros() as u32;
+                    (coord, mesh, us)
                 })
                 .collect()
         };
 
+        if batch_len > 0 {
+            let gen_us = t_gen.elapsed().as_micros() as u32;
+            PerfStats::record_us(&mut self.perf.gen_batch_us, gen_us);
+        }
+        PerfStats::record_us(&mut self.perf.gen_chunk_counts, batch_len as u32);
+
         // Insert results back into the cache (single-threaded).
-        for (coord, mesh) in results {
+        for (coord, mesh, chunk_us) in results {
+            self.perf.gen_single_chunk_us.push(chunk_us);
             self.dirty.remove(&coord);
             if !mesh.is_empty() {
                 let bytes = mesh.estimate_byte_size();
@@ -554,6 +695,9 @@ impl MeshCache {
                 self.chunks_generated.push(coord);
                 gen_count += 1;
             } else {
+                // Remember that this chunk produces no geometry so we don't
+                // regenerate it every frame.
+                self.empty_chunks.insert(coord);
                 new_visible.remove(&coord);
             }
         }
@@ -581,7 +725,12 @@ impl MeshCache {
 
         // LRU eviction. Chunks that just left visibility may be evicted.
         if self.memory_budget > 0 {
+            let t_evict = Instant::now();
             self.evict_lru();
+            let evict_us = t_evict.elapsed().as_micros() as u32;
+            if evict_us > 0 || !self.chunks_evicted.is_empty() {
+                PerfStats::record_us(&mut self.perf.eviction_us, evict_us);
+            }
             // Evicted chunks don't need a hide toggle — they're being freed.
             // Remove them from chunks_to_hide to avoid double-processing.
             if !self.chunks_evicted.is_empty() {
@@ -590,6 +739,9 @@ impl MeshCache {
                 self.chunks_to_hide.retain(|c| !evicted_set.contains(c));
             }
         }
+
+        let total_us = t_total.elapsed().as_micros() as u32;
+        PerfStats::record_us(&mut self.perf.visibility_total_us, total_us);
 
         gen_count
     }
@@ -653,34 +805,41 @@ impl MeshCache {
         for &coord in coords {
             let chunk = voxel_to_chunk(coord);
             self.dirty.insert(chunk);
+            self.empty_chunks.remove(&chunk);
 
             let local_x = coord.x.rem_euclid(CHUNK_SIZE);
             let local_y = coord.y.rem_euclid(CHUNK_SIZE);
             let local_z = coord.z.rem_euclid(CHUNK_SIZE);
 
             if local_x == 0 {
-                self.dirty
-                    .insert(ChunkCoord::new(chunk.cx - 1, chunk.cy, chunk.cz));
+                let neighbor = ChunkCoord::new(chunk.cx - 1, chunk.cy, chunk.cz);
+                self.dirty.insert(neighbor);
+                self.empty_chunks.remove(&neighbor);
             }
             if local_x == CHUNK_SIZE - 1 {
-                self.dirty
-                    .insert(ChunkCoord::new(chunk.cx + 1, chunk.cy, chunk.cz));
+                let neighbor = ChunkCoord::new(chunk.cx + 1, chunk.cy, chunk.cz);
+                self.dirty.insert(neighbor);
+                self.empty_chunks.remove(&neighbor);
             }
             if local_y == 0 {
-                self.dirty
-                    .insert(ChunkCoord::new(chunk.cx, chunk.cy - 1, chunk.cz));
+                let neighbor = ChunkCoord::new(chunk.cx, chunk.cy - 1, chunk.cz);
+                self.dirty.insert(neighbor);
+                self.empty_chunks.remove(&neighbor);
             }
             if local_y == CHUNK_SIZE - 1 {
-                self.dirty
-                    .insert(ChunkCoord::new(chunk.cx, chunk.cy + 1, chunk.cz));
+                let neighbor = ChunkCoord::new(chunk.cx, chunk.cy + 1, chunk.cz);
+                self.dirty.insert(neighbor);
+                self.empty_chunks.remove(&neighbor);
             }
             if local_z == 0 {
-                self.dirty
-                    .insert(ChunkCoord::new(chunk.cx, chunk.cy, chunk.cz - 1));
+                let neighbor = ChunkCoord::new(chunk.cx, chunk.cy, chunk.cz - 1);
+                self.dirty.insert(neighbor);
+                self.empty_chunks.remove(&neighbor);
             }
             if local_z == CHUNK_SIZE - 1 {
-                self.dirty
-                    .insert(ChunkCoord::new(chunk.cx, chunk.cy, chunk.cz + 1));
+                let neighbor = ChunkCoord::new(chunk.cx, chunk.cy, chunk.cz + 1);
+                self.dirty.insert(neighbor);
+                self.empty_chunks.remove(&neighbor);
             }
         }
 
@@ -709,6 +868,13 @@ impl MeshCache {
             .copied()
             .filter(|c| self.visible_set.contains(c))
             .collect();
+        if visible_dirty.is_empty() {
+            self.last_updated.clear();
+            return 0;
+        }
+
+        let t_dirty = Instant::now();
+
         for &coord in &visible_dirty {
             self.dirty.remove(&coord);
         }
@@ -740,6 +906,7 @@ impl MeshCache {
                 self.chunks.remove(&coord);
                 self.lru_stamps.remove(&coord);
                 self.visible_set.remove(&coord);
+                self.empty_chunks.insert(coord);
                 let mega_coord = chunk_to_mega(coord);
                 if let Some(mc) = self.megachunks.get_mut(&mega_coord) {
                     mc.remove_chunk(&coord);
@@ -753,6 +920,9 @@ impl MeshCache {
             }
             self.last_updated.push(coord);
         }
+
+        let dirty_us = t_dirty.elapsed().as_micros() as u32;
+        PerfStats::record_us(&mut self.perf.dirty_update_us, dirty_us);
 
         self.last_updated.len()
     }
@@ -820,6 +990,7 @@ impl MeshCache {
                 for cx in 0..self.cx_max {
                     let chunk = ChunkCoord::new(cx, cy, cz);
                     self.dirty.insert(chunk);
+                    self.empty_chunks.remove(&chunk);
                     let mega_coord = chunk_to_mega(chunk);
                     self.megachunks
                         .entry(mega_coord)
@@ -1721,5 +1892,177 @@ mod tests {
                 c
             );
         }
+    }
+
+    // -- empty_chunks caching --
+
+    #[test]
+    fn empty_chunk_not_regenerated_every_frame() {
+        // A chunk with geometry-producing voxels that are fully interior
+        // (all faces culled) generates an empty mesh. It should be cached
+        // in empty_chunks and not re-generated on subsequent frames.
+        let mut world = VoxelWorld::new(48, 48, 48);
+        // Fill a 16³ interior so chunk (1,1,1) is fully surrounded.
+        for x in 0..48 {
+            for y in 0..48 {
+                for z in 0..48 {
+                    world.set(VoxelCoord::new(x, y, z), VoxelType::Trunk);
+                }
+            }
+        }
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+        cache.set_draw_distance(0.0);
+        cache.set_max_gen_per_frame(1000);
+
+        // Frame 1: generates all chunks, interior ones produce empty meshes.
+        let gen1 = cache.update_visibility(&world, [24.0, 24.0, 24.0], &open_frustum());
+        assert!(gen1 > 0);
+        assert!(
+            !cache.empty_chunks.is_empty(),
+            "Interior chunks should be in empty_chunks"
+        );
+        assert!(
+            cache.empty_chunks.contains(&ChunkCoord::new(1, 1, 1)),
+            "Fully interior chunk (1,1,1) should be in empty_chunks"
+        );
+
+        // Frame 2: no new chunks should be generated (all cached or empty).
+        let gen2 = cache.update_visibility(&world, [24.0, 24.0, 24.0], &open_frustum());
+        assert_eq!(gen2, 0, "No chunks should be generated on second frame");
+    }
+
+    #[test]
+    fn empty_chunk_cleared_on_mark_dirty() {
+        let mut world = VoxelWorld::new(48, 48, 48);
+        for x in 0..48 {
+            for y in 0..48 {
+                for z in 0..48 {
+                    world.set(VoxelCoord::new(x, y, z), VoxelType::Trunk);
+                }
+            }
+        }
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+        cache.set_draw_distance(0.0);
+        cache.set_max_gen_per_frame(1000);
+
+        cache.update_visibility(&world, [24.0, 24.0, 24.0], &open_frustum());
+        assert!(cache.empty_chunks.contains(&ChunkCoord::new(1, 1, 1)));
+
+        // Clear a voxel inside the interior chunk — should remove from empty_chunks.
+        cache.mark_dirty_voxels(&[VoxelCoord::new(20, 20, 20)]);
+        assert!(
+            !cache.empty_chunks.contains(&ChunkCoord::new(1, 1, 1)),
+            "Dirty chunk should be removed from empty_chunks"
+        );
+    }
+
+    #[test]
+    fn empty_chunk_boundary_neighbor_cleared_on_dirty() {
+        let mut world = VoxelWorld::new(48, 48, 48);
+        for x in 0..48 {
+            for y in 0..48 {
+                for z in 0..48 {
+                    world.set(VoxelCoord::new(x, y, z), VoxelType::Trunk);
+                }
+            }
+        }
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+        cache.set_draw_distance(0.0);
+        cache.set_max_gen_per_frame(1000);
+
+        cache.update_visibility(&world, [24.0, 24.0, 24.0], &open_frustum());
+        assert!(cache.empty_chunks.contains(&ChunkCoord::new(1, 1, 1)));
+
+        // Edit a voxel at the boundary of chunk (0,1,1) at local_x=15.
+        // Neighbor chunk (1,1,1) should be cleared from empty_chunks.
+        cache.mark_dirty_voxels(&[VoxelCoord::new(15, 20, 20)]);
+        assert!(
+            !cache.empty_chunks.contains(&ChunkCoord::new(1, 1, 1)),
+            "Boundary neighbor should be cleared from empty_chunks"
+        );
+    }
+
+    #[test]
+    fn empty_chunk_cleared_on_y_cutoff_change() {
+        let mut world = VoxelWorld::new(16, 48, 16);
+        // Single voxel in chunk (0,0,0).
+        world.set(VoxelCoord::new(8, 4, 8), VoxelType::Trunk);
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+        cache.set_draw_distance(0.0);
+        cache.set_max_gen_per_frame(100);
+
+        // Set cutoff below the voxel — chunk generates empty mesh.
+        cache.set_y_cutoff(Some(2));
+        cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum());
+        assert!(
+            cache.empty_chunks.contains(&ChunkCoord::new(0, 0, 0)),
+            "Chunk below cutoff should be in empty_chunks"
+        );
+
+        // Remove cutoff — should clear empty_chunks for affected range.
+        cache.set_y_cutoff(None);
+        assert!(
+            !cache.empty_chunks.contains(&ChunkCoord::new(0, 0, 0)),
+            "Chunk should be cleared from empty_chunks after cutoff removed"
+        );
+    }
+
+    #[test]
+    fn scan_nonempty_chunks_clears_empty_chunks() {
+        let mut world = VoxelWorld::new(48, 48, 48);
+        for x in 0..48 {
+            for y in 0..48 {
+                for z in 0..48 {
+                    world.set(VoxelCoord::new(x, y, z), VoxelType::Trunk);
+                }
+            }
+        }
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+        cache.set_draw_distance(0.0);
+        cache.set_max_gen_per_frame(1000);
+
+        cache.update_visibility(&world, [24.0, 24.0, 24.0], &open_frustum());
+        assert!(!cache.empty_chunks.is_empty());
+
+        // Re-scanning should clear the empty_chunks set.
+        cache.scan_nonempty_chunks(&world);
+        assert!(
+            cache.empty_chunks.is_empty(),
+            "scan_nonempty_chunks should clear empty_chunks"
+        );
+    }
+
+    #[test]
+    fn update_dirty_emptied_chunk_added_to_empty_chunks() {
+        let mut world = VoxelWorld::new(16, 16, 16);
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+        cache.set_max_gen_per_frame(100);
+        cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum());
+
+        assert!(cache.chunks.contains_key(&ChunkCoord::new(0, 0, 0)));
+
+        // Remove the voxel and mark dirty.
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Air);
+        cache.mark_dirty_voxels(&[VoxelCoord::new(8, 8, 8)]);
+        cache.update_dirty(&world);
+
+        // The chunk should now be in empty_chunks.
+        assert!(
+            cache.empty_chunks.contains(&ChunkCoord::new(0, 0, 0)),
+            "update_dirty should add emptied chunk to empty_chunks"
+        );
     }
 }
