@@ -396,7 +396,6 @@ impl NavGraph {
             let x_min = (pos.x - radius).max(0);
             let x_max = (pos.x + radius).min(sx as i32 - 1);
 
-
             // Top and bottom rows of the ring.
             for x in x_min..=x_max {
                 if pos.z - radius >= 0 {
