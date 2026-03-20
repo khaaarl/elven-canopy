@@ -58,6 +58,7 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
+[ ] B-hostile-detect-nav   detect_hostile_targets panics on flying targets (NavNodeId u32::MAX hack)
 [ ] B-raid-spawn           Raiders sometimes spawn inside map instead of at perimeter
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
@@ -2522,6 +2523,19 @@ infrastructure.
 **Related:** F-elf-names, F-poetry-reading
 
 ### Combat & Defense
+
+#### B-hostile-detect-nav — detect_hostile_targets panics on flying targets (NavNodeId u32::MAX hack)
+**Status:** Todo
+
+detect_hostile_targets returns (CreatureId, NavNodeId) but flying
+creatures may have no nav node. Currently hacked with NavNodeId(u32::MAX)
+placeholder which will likely cause a vec lookup panic if ground
+combat code ever receives it.
+
+Revamp to work on coordinate logic instead of requiring a nav node
+for every target. If a target isn't on your nav grid, find a place
+on your grid that is in melee range of the target's position; if
+none exists, don't try to path to it. Remove the u32::MAX hack.
 
 #### B-raid-spawn — Raiders sometimes spawn inside map instead of at perimeter
 **Status:** Todo
