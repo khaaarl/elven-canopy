@@ -30,6 +30,7 @@ var _bridge: SimBridge
 var _capybara_sprites: Array[Sprite3D] = []
 var _hp_bars: Array[Sprite3D] = []
 var _render_tick: float = 0.0
+var _perf: RefCounted
 
 
 ## Call after SimBridge is initialized.
@@ -44,10 +45,16 @@ func set_render_tick(tick: float) -> void:
 	_render_tick = tick
 
 
+## Set the perf accumulator for timing this renderer's _process().
+func set_perf(perf: RefCounted) -> void:
+	_perf = perf
+
+
 func _process(_delta: float) -> void:
 	if _bridge == null or not _bridge.is_initialized():
 		return
 
+	var t: int = _perf.start() if _perf else 0
 	var positions := _bridge.get_capybara_positions(_render_tick)
 	var hp_ratios := _bridge.get_creature_hp_ratios("Capybara")
 	var count := positions.size()
@@ -85,3 +92,5 @@ func _process(_delta: float) -> void:
 		else:
 			_capybara_sprites[i].visible = false
 			_hp_bars[i].visible = false
+	if _perf:
+		_perf.record("5_capybara_render", t)

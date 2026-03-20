@@ -66,6 +66,8 @@ extends Node3D
 ## until all renderers, controllers, and panels exist.
 signal setup_complete
 
+const PerfAccumulatorScript = preload("res://scripts/perf_accumulator.gd")
+
 ## Y offsets per species for world-space sprite positions. Must match the
 ## values used by elf_renderer.gd, capybara_renderer.gd, and creature_renderer.gd.
 const SPECIES_Y_OFFSETS = {
@@ -130,9 +132,13 @@ var _last_notification_id: int = 0
 var _pause_menu: ColorRect
 var _lobby_overlay: ColorRect
 var _elfcyclopedia_url_label: RichTextLabel
+## Timing accumulator for GDScript per-frame profiling. Created in _ready(),
+## printed on shutdown. Passed to renderers that measure their own _process().
+var _perf: RefCounted
 
 
 func _ready() -> void:
+	_perf = PerfAccumulatorScript.new()
 	var bridge: SimBridge = $SimBridge
 	var is_loaded_game := false
 
@@ -241,10 +247,12 @@ func _setup_common(bridge: SimBridge) -> void:
 	# Set up elf renderer.
 	var elf_renderer = $ElfRenderer
 	elf_renderer.setup(bridge)
+	elf_renderer.set_perf(_perf)
 
 	# Set up capybara renderer (sim-driven).
 	var capybara_renderer = $CapybaraRenderer
 	capybara_renderer.setup(bridge)
+	capybara_renderer.set_perf(_perf)
 
 	# Set up generic renderers for new species.
 	var renderer_script = load("res://scripts/creature_renderer.gd")
@@ -263,6 +271,7 @@ func _setup_common(bridge: SimBridge) -> void:
 		r.set_script(renderer_script)
 		add_child(r)
 		r.setup(bridge, entry[0], entry[1])
+		r.set_perf(_perf)
 		_extra_renderers.append(r)
 
 	# Set up selection highlight renderer (rings at selected creatures' feet).
@@ -917,6 +926,8 @@ func _try_load_save(bridge: SimBridge, save_path: String) -> bool:
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		if _perf:
+			_perf.print_summary()
 		$SimBridge.shutdown()
 
 
@@ -925,7 +936,11 @@ func _process(delta: float) -> void:
 	if not bridge.is_initialized():
 		return
 
+	var t_total: int = _perf.start()
+
+	var t: int = _perf.start()
 	var render_tick := bridge.frame_update(delta)
+	_perf.record("1_sim_step", t)
 
 	if bridge.is_multiplayer():
 		var events := bridge.poll_mp_events()
@@ -956,11 +971,14 @@ func _process(delta: float) -> void:
 		_tooltip_controller.set_suppressed(any_overlay)
 
 	# Refresh tree renderer so carved voxels disappear and new fruit appears.
+	t = _perf.start()
 	if _tree_renderer:
 		_tree_renderer.refresh()
+	_perf.record("2_tree_render", t)
 
 	# Refresh blueprint/construction renderer so materialized voxels appear
 	# as solid wood and ghost cubes disappear as voxels are placed.
+	t = _perf.start()
 	if _bp_renderer:
 		_bp_renderer.refresh()
 	if _bldg_renderer:
@@ -971,6 +989,7 @@ func _process(delta: float) -> void:
 		_furniture_renderer.refresh()
 	if _pile_renderer:
 		_pile_renderer.refresh()
+	_perf.record("3_construction_render", t)
 
 	# Update follow target each frame so the camera tracks creature movement.
 	if _camera_pivot and _camera_pivot.is_following():
@@ -989,6 +1008,9 @@ func _process(delta: float) -> void:
 	# Detect if camera broke follow via movement keys.
 	if _panel and _panel.visible and not _camera_pivot.is_following():
 		_panel.set_follow_state(false)
+
+	# Refresh UI panels while visible.
+	t = _perf.start()
 
 	# Refresh task panel while visible.
 	if _task_panel and _task_panel.visible:
@@ -1068,6 +1090,8 @@ func _process(delta: float) -> void:
 			# Pile was removed — deselect and hide panel.
 			_selector.deselect()
 
+	_perf.record("4_ui_panels", t)
+
 	# Update height cutoff when camera focus Y changes.
 	if _height_cutoff_active:
 		var new_y: int = _camera_pivot.get_focus_voxel().y + 1
@@ -1089,6 +1113,8 @@ func _process(delta: float) -> void:
 	# Poll for construction music composition completions.
 	if _construction_music:
 		_construction_music.poll_compositions()
+
+	_perf.record("0_total_process", t_total)
 
 
 func _on_roof_toggle(is_active: bool) -> void:
