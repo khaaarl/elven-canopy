@@ -2,8 +2,9 @@
 ##
 ## State machine (IDLE / PLACING) that handles the placement flow:
 ## 1. Toolbar emits spawn_requested or action_requested → enter PLACING mode
-## 2. Each frame: find the nav node closest to the mouse ray in 3D, show
-##    wireframe highlight cube at that position
+## 2. Each frame: cast a ray from the camera through the mouse cursor, hit
+##    solid geometry (Rust raycast_solid), then snap to the nearest nav node
+##    (Rust find_nearest_node). Show wireframe highlight cube at that position.
 ## 3. Left-click: confirm action via SimBridge, stay in placement mode
 ## 4. Right-click or Escape: cancel, exit placement mode
 ##
@@ -22,8 +23,7 @@
 ## See also: action_toolbar.gd which triggers placement mode, main.gd which
 ## wires the two together, selection_controller.gd which checks is_placing(),
 ## construction_controller.gd which calls cancel_placement(),
-## sim_bridge.rs for get_visible_nav_nodes/get_visible_ground_nav_nodes
-## (voxel-based occlusion filtering).
+## sim_bridge.rs for snap_placement_to_ray (raycast + nearest-node snap).
 
 extends Node3D
 
@@ -31,12 +31,9 @@ enum State { IDLE, PLACING }
 
 ## Maximum perpendicular distance (in world units) from the mouse ray to a nav
 ## node for it to be considered a snap candidate.
-const SNAP_THRESHOLD := 5.0
-
 var _state: State = State.IDLE
 var _species_name: String = ""
 var _action_name: String = ""
-var _valid_positions: PackedVector3Array
 var _snapped_position: Vector3
 var _has_snap: bool = false
 
@@ -166,47 +163,23 @@ func _process(_delta: float) -> void:
 	var mouse_pos := get_viewport().get_mouse_position()
 	var ray_origin := _camera.project_ray_origin(mouse_pos)
 	var ray_dir := _camera.project_ray_normal(mouse_pos)
-	var cam_pos := _camera.global_position
 
-	# Fetch nav nodes visible from the current camera position (Rust-side
-	# voxel raycast filters out nodes occluded by solid geometry).
-	# Large creatures (footprint > 1) use the large nav graph.
-	# Ground-only species can only target ground nodes.
-	var footprint := (
-		_bridge.get_species_footprint(_species_name) if _species_name != "" else Vector3i(1, 1, 1)
-	)
-	if footprint.x > 1 or footprint.z > 1:
-		_valid_positions = _bridge.get_large_ground_nav_nodes()
-	elif _species_name != "" and _bridge.is_species_ground_only(_species_name):
-		_valid_positions = _bridge.get_visible_ground_nav_nodes(cam_pos)
-	else:
-		# Climbing species and task actions can target any nav node.
-		_valid_positions = _bridge.get_visible_nav_nodes(cam_pos)
+	# Determine placement constraints from the species.
+	var ground_only := false
+	var large := false
+	if _species_name != "":
+		var footprint := _bridge.get_species_footprint(_species_name)
+		large = footprint.x > 1 or footprint.z > 1
+		ground_only = large or _bridge.is_species_ground_only(_species_name)
 
-	# Find the nav node whose perpendicular distance to the mouse ray is
-	# smallest. For each point P, the closest point on the ray is:
-	#   Q = origin + max(0, dot(P - origin, dir)) * dir
-	# and the snap distance is |P - Q|.
-	var best_dist_sq := SNAP_THRESHOLD * SNAP_THRESHOLD
-	var best_pos := Vector3.ZERO
-	var found := false
+	# Single Rust call: raycast to find the solid surface under the cursor,
+	# then snap to the nearest nav node from the adjacent air voxel.
+	var result := _bridge.snap_placement_to_ray(ray_origin, ray_dir, ground_only, large)
 
-	for i in _valid_positions.size():
-		var pos := _valid_positions[i]
-		var to_pos := pos - ray_origin
-		var t := maxf(0.0, to_pos.dot(ray_dir))
-		var closest_on_ray := ray_origin + ray_dir * t
-		var diff := pos - closest_on_ray
-		var dist_sq := diff.length_squared()
-		if dist_sq < best_dist_sq:
-			best_dist_sq = dist_sq
-			best_pos = pos
-			found = true
-
-	if found:
-		_snapped_position = best_pos
+	if result.get("hit", false):
+		_snapped_position = result["position"]
 		_has_snap = true
-		_highlight.global_position = best_pos
+		_highlight.global_position = _snapped_position
 		_highlight.visible = true
 	else:
 		_highlight.visible = false

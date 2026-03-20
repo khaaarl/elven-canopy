@@ -2463,16 +2463,16 @@ impl SimState {
         }
 
         // Filter to eligible edges (respecting allowed_edge_types).
-        let eligible_edges: Vec<NavEdgeId> = if let Some(ref allowed) = species_data.allowed_edge_types
-        {
-            edge_indices
-                .iter()
-                .copied()
-                .filter(|&idx| allowed.contains(&graph.edge(idx).edge_type))
-                .collect()
-        } else {
-            edge_indices.to_vec()
-        };
+        let eligible_edges: Vec<NavEdgeId> =
+            if let Some(ref allowed) = species_data.allowed_edge_types {
+                edge_indices
+                    .iter()
+                    .copied()
+                    .filter(|&idx| allowed.contains(&graph.edge(idx).edge_type))
+                    .collect()
+            } else {
+                edge_indices.to_vec()
+            };
 
         if eligible_edges.is_empty() {
             // Cornered — no eligible edges. Wait and retry.

@@ -654,27 +654,11 @@ func _try_right_click_command(mouse_pos: Vector2) -> void:
 		return
 
 	# No creature clicked — snap to nearest nav node and issue directed goto.
-	var cam_pos := _camera.global_position
-	var nav_nodes := _bridge.get_visible_nav_nodes(cam_pos)
-	var nav_best_dist_sq := 25.0  # 5.0 squared — generous threshold for ground clicks
-	var nav_best_pos := Vector3.ZERO
-	var nav_found := false
-
-	for i in nav_nodes.size():
-		var pos := nav_nodes[i]
-		var to_pos := pos - ray_origin
-		var t := maxf(0.0, to_pos.dot(ray_dir))
-		var closest_on_ray := ray_origin + ray_dir * t
-		var diff := pos - closest_on_ray
-		var dist_sq := diff.length_squared()
-		if dist_sq < nav_best_dist_sq:
-			nav_best_dist_sq = dist_sq
-			nav_best_pos = pos
-			nav_found = true
-
-	if nav_found:
+	var result := _bridge.snap_placement_to_ray(ray_origin, ray_dir, false, false)
+	if result.get("hit", false):
+		var nav_pos: Vector3 = result["position"]
 		_bridge.group_directed_goto(
-			_selected_creature_ids, int(nav_best_pos.x), int(nav_best_pos.y), int(nav_best_pos.z)
+			_selected_creature_ids, int(nav_pos.x), int(nav_pos.y), int(nav_pos.z)
 		)
 		get_viewport().set_input_as_handled()
 
@@ -713,27 +697,11 @@ func _execute_attack_move(mouse_pos: Vector2) -> void:
 		return
 
 	# No creature clicked — snap to nearest nav node.
-	var cam_pos := _camera.global_position
-	var nav_nodes := _bridge.get_visible_nav_nodes(cam_pos)
-	var nav_best_dist_sq := 25.0
-	var nav_best_pos := Vector3.ZERO
-	var nav_found := false
-
-	for i in nav_nodes.size():
-		var pos := nav_nodes[i]
-		var to_pos := pos - ray_origin
-		var t := maxf(0.0, to_pos.dot(ray_dir))
-		var closest_on_ray := ray_origin + ray_dir * t
-		var diff := pos - closest_on_ray
-		var dist_sq := diff.length_squared()
-		if dist_sq < nav_best_dist_sq:
-			nav_best_dist_sq = dist_sq
-			nav_best_pos = pos
-			nav_found = true
-
-	if nav_found:
+	var result := _bridge.snap_placement_to_ray(ray_origin, ray_dir, false, false)
+	if result.get("hit", false):
+		var nav_pos: Vector3 = result["position"]
 		_bridge.group_attack_move(
-			_selected_creature_ids, int(nav_best_pos.x), int(nav_best_pos.y), int(nav_best_pos.z)
+			_selected_creature_ids, int(nav_pos.x), int(nav_pos.y), int(nav_pos.z)
 		)
 
 

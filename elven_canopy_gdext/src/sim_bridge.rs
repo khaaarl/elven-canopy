@@ -68,10 +68,9 @@
 //   progress/total_cost, location coordinates, and an assignees array with
 //   creature_id, species, and name. Used by `task_panel.gd`.
 // - **Nav nodes:** `get_all_nav_nodes()`, `get_ground_nav_nodes()` — for
-//   debug visualization. `get_visible_nav_nodes(cam_pos)`,
-//   `get_visible_ground_nav_nodes(cam_pos)` — filtered by voxel-based
-//   occlusion (3D DDA raycast in `world.rs`) so the placement UI only snaps
-//   to nodes the camera can actually see.
+//   debug visualization. `snap_placement_to_ray(origin, dir, ground_only,
+//   large)` — casts `raycast_solid` along the mouse ray to find solid
+//   geometry, then snaps to the nearest nav node via `find_nearest_node`.
 // - **Commands:** `spawn_creature(species_name, x,y,z)` — generic creature
 //   spawner replacing `spawn_elf()` / `spawn_capybara()` (which remain as
 //   thin wrappers). Also `create_goto_task(x,y,z)`, `designate_build(x,y,z)`,
@@ -1058,43 +1057,79 @@ impl SimBridge {
         arr
     }
 
-    /// Return all nav node positions visible from the given camera position
-    /// (not occluded by solid voxels). Used for elf placement.
+    /// Snap the mouse ray to the nearest nav node for placement.
+    ///
+    /// Casts `raycast_solid` along the ray to find where it hits geometry,
+    /// computes the air voxel on the entry face, then uses the nav graph's
+    /// `find_nearest_node` (or `find_nearest_ground_node`) to snap to the
+    /// closest walkable position. Returns `{hit: true, position: Vector3}`
+    /// or `{hit: false}`.
+    ///
+    /// `ground_only`: restrict to ForestFloor nodes (for ground-only species).
+    /// `large`: use the large (2x2x2) nav graph instead of the standard one.
     #[func]
-    fn get_visible_nav_nodes(&self, camera_pos: Vector3) -> PackedVector3Array {
+    fn snap_placement_to_ray(
+        &self,
+        origin: Vector3,
+        dir: Vector3,
+        ground_only: bool,
+        large: bool,
+    ) -> VarDictionary {
+        let mut dict = VarDictionary::new();
         let Some(sim) = &self.session.sim else {
-            return PackedVector3Array::new();
+            dict.set("hit", false);
+            return dict;
         };
-        let cam = [camera_pos.x, camera_pos.y, camera_pos.z];
-        let mut arr = PackedVector3Array::new();
-        for node in sim.nav_graph.live_nodes() {
-            let p = node.position;
-            let target = [p.x as f32 + 0.5, p.y as f32 + 0.5, p.z as f32 + 0.5];
-            if !sim.world.raycast_hits_solid(cam, target) {
-                arr.push(Vector3::new(p.x as f32, p.y as f32, p.z as f32));
-            }
-        }
-        arr
-    }
+        let from = [origin.x, origin.y, origin.z];
+        let d = [dir.x, dir.y, dir.z];
+        let y_cutoff = self.mesh_cache.as_ref().and_then(|c| c.y_cutoff());
 
-    /// Return ground-level (ForestFloor surface type) nav node positions
-    /// visible from the given camera position (not occluded by solid voxels).
-    /// Used for capybara placement.
-    #[func]
-    fn get_visible_ground_nav_nodes(&self, camera_pos: Vector3) -> PackedVector3Array {
-        let Some(sim) = &self.session.sim else {
-            return PackedVector3Array::new();
+        // Cast ray to find the first solid voxel hit.
+        let Some((solid_coord, face)) = sim.raycast_solid(from, d, 500, None, y_cutoff) else {
+            dict.set("hit", false);
+            return dict;
         };
-        let cam = [camera_pos.x, camera_pos.y, camera_pos.z];
-        let mut arr = PackedVector3Array::new();
-        for id in sim.nav_graph.ground_node_ids() {
-            let p = sim.nav_graph.node(id).position;
-            let target = [p.x as f32 + 0.5, p.y as f32 + 0.5, p.z as f32 + 0.5];
-            if !sim.world.raycast_hits_solid(cam, target) {
-                arr.push(Vector3::new(p.x as f32, p.y as f32, p.z as f32));
+
+        // The air voxel the ray was in before hitting solid — offset by
+        // the entry face direction.
+        let offset = match face {
+            0 => (1, 0, 0),  // PosX face
+            1 => (-1, 0, 0), // NegX face
+            2 => (0, 1, 0),  // PosY face
+            3 => (0, -1, 0), // NegY face
+            4 => (0, 0, 1),  // PosZ face
+            5 => (0, 0, -1), // NegZ face
+            _ => (0, 0, 0),
+        };
+        let air_pos = VoxelCoord::new(
+            solid_coord.x + offset.0,
+            solid_coord.y + offset.1,
+            solid_coord.z + offset.2,
+        );
+
+        let graph = if large {
+            &sim.large_nav_graph
+        } else {
+            &sim.nav_graph
+        };
+
+        let nearest = if ground_only {
+            graph.find_nearest_ground_node(air_pos)
+        } else {
+            graph.find_nearest_node(air_pos)
+        };
+
+        match nearest {
+            Some(id) => {
+                let p = graph.node(id).position;
+                dict.set("hit", true);
+                dict.set("position", Vector3::new(p.x as f32, p.y as f32, p.z as f32));
+            }
+            None => {
+                dict.set("hit", false);
             }
         }
-        arr
+        dict
     }
 
     /// Create a GoTo task at the given voxel position (snapped to nearest nav node).
@@ -2984,21 +3019,6 @@ impl SimBridge {
             ),
             None => Vector3i::new(1, 1, 1),
         }
-    }
-
-    /// Return all ground nav nodes from the large (2x2x2) nav graph.
-    /// Used by the placement controller for large creature spawn snapping.
-    #[func]
-    fn get_large_ground_nav_nodes(&self) -> PackedVector3Array {
-        let mut arr = PackedVector3Array::new();
-        let Some(sim) = &self.session.sim else {
-            return arr;
-        };
-        for node in sim.large_nav_graph.live_nodes() {
-            let p = node.position;
-            arr.push(Vector3::new(p.x as f32, p.y as f32, p.z as f32));
-        }
-        arr
     }
 
     /// Serialize the current simulation state to a JSON string.

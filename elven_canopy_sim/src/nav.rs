@@ -187,7 +187,7 @@ pub fn scaled_distance(dx: i32, dy: i32, dz: i32) -> u32 {
 /// `x + z * size_x`, where each entry holds `(y as u8, node_slot)` pairs
 /// sorted by ascending y. This provides O(1) coord→node lookup with better
 /// cache locality than a hash map. `free_slots` tracks recyclable node slots.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct NavGraph {
     nodes: Vec<Option<NavNode>>,
     pub edges: Vec<NavEdge>,
@@ -197,19 +197,6 @@ pub struct NavGraph {
     size_x: usize,
     free_slots: Vec<usize>,
     world_size: (usize, usize, usize),
-}
-
-impl Default for NavGraph {
-    fn default() -> Self {
-        Self {
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            column_index: Vec::new(),
-            size_x: 0,
-            free_slots: Vec::new(),
-            world_size: (0, 0, 0),
-        }
-    }
 }
 
 impl NavGraph {
@@ -393,17 +380,15 @@ impl NavGraph {
         for radius in 0..=max_radius {
             // Early termination: if we have a candidate and the minimum
             // possible distance from this ring exceeds the best, stop.
-            if let Some((best_dist, _)) = best {
-                if radius as u32 > best_dist {
-                    break;
-                }
+            if let Some((best_dist, _)) = best
+                && radius as u32 > best_dist
+            {
+                break;
             }
 
             // Check all columns on the perimeter ring at this radius.
             let x_min = (pos.x - radius).max(0);
             let x_max = (pos.x + radius).min(sx as i32 - 1);
-            let z_min = (pos.z - radius).max(0);
-            let z_max = (pos.z + radius).min(sz as i32 - 1);
 
             // Top and bottom rows of the ring.
             for x in x_min..=x_max {
@@ -458,10 +443,10 @@ impl NavGraph {
             if dominated {
                 continue;
             }
-            if let Some(node) = &self.nodes[slot as usize] {
-                if filter(node) {
-                    *best = Some((dist, node.id));
-                }
+            if let Some(node) = &self.nodes[slot as usize]
+                && filter(node)
+            {
+                *best = Some((dist, node.id));
             }
         }
     }
@@ -1355,7 +1340,11 @@ pub fn build_nav_graph(world: &VoxelWorld, face_data: &BTreeMap<VoxelCoord, Face
     }
 
     let t_seed_concat = t_start.elapsed();
-    eprintln!("[nav] seed concat:              {:>8.2?} ({} seeds)", t_seed_concat, seed_list.len());
+    eprintln!(
+        "[nav] seed concat:              {:>8.2?} ({} seeds)",
+        t_seed_concat,
+        seed_list.len()
+    );
 
     // --- Phase 2: Parallel seed validation ---
     // Evaluate should_be_nav_node and derive_surface_type in parallel.
@@ -1391,7 +1380,11 @@ pub fn build_nav_graph(world: &VoxelWorld, face_data: &BTreeMap<VoxelCoord, Face
     }
 
     let t_seed_insert = t_start.elapsed();
-    eprintln!("[nav] seed insert:              {:>8.2?} ({} seed nodes)", t_seed_insert, current_layer_coords.len());
+    eprintln!(
+        "[nav] seed insert:              {:>8.2?} ({} seed nodes)",
+        t_seed_insert,
+        current_layer_coords.len()
+    );
 
     // --- Step 4: Parallel layered BFS (node discovery only) ---
     // Each layer discovers new nav node positions in parallel. No edges are
@@ -1484,7 +1477,12 @@ pub fn build_nav_graph(world: &VoxelWorld, face_data: &BTreeMap<VoxelCoord, Face
     }
 
     let t_bfs_done = t_start.elapsed();
-    eprintln!("[nav] BFS total:                {:>8.2?} ({} total nodes, {} layers)", t_bfs_done, graph.nodes.len(), bfs_layer);
+    eprintln!(
+        "[nav] BFS total:                {:>8.2?} ({} total nodes, {} layers)",
+        t_bfs_done,
+        graph.nodes.len(),
+        bfs_layer
+    );
 
     // --- Step 5: Edge creation ---
     // After all nodes are discovered, create edges by scanning each node's
@@ -1540,11 +1538,16 @@ pub fn build_nav_graph(world: &VoxelWorld, face_data: &BTreeMap<VoxelCoord, Face
     }
 
     let t_edges_done = t_start.elapsed();
-    eprintln!("[nav] edge creation:            {:>8.2?} ({} edges)", t_edges_done, graph.edges.len());
+    eprintln!(
+        "[nav] edge creation:            {:>8.2?} ({} edges)",
+        t_edges_done,
+        graph.edges.len()
+    );
 
     // Edge count distribution per node.
     {
-        let mut counts: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+        let mut counts: std::collections::BTreeMap<usize, usize> =
+            std::collections::BTreeMap::new();
         for node in graph.nodes.iter().flatten() {
             *counts.entry(node.edge_indices.len()).or_insert(0) += 1;
         }
@@ -1849,7 +1852,11 @@ pub fn build_large_nav_graph(world: &VoxelWorld) -> NavGraph {
     }
 
     let t_seed_insert = t_start.elapsed();
-    eprintln!("[large] seed insert:            {:>8.2?} ({} seed nodes)", t_seed_insert, current_layer_coords.len());
+    eprintln!(
+        "[large] seed insert:            {:>8.2?} ({} seed nodes)",
+        t_seed_insert,
+        current_layer_coords.len()
+    );
 
     // --- Step 4: Parallel layered BFS (node discovery only) ---
     // Each layer discovers new valid anchor positions in parallel. No edges
@@ -1921,7 +1928,12 @@ pub fn build_large_nav_graph(world: &VoxelWorld) -> NavGraph {
     }
 
     let t_bfs_done = t_start.elapsed();
-    eprintln!("[large] BFS total:              {:>8.2?} ({} total nodes, {} layers)", t_bfs_done, graph.nodes.len(), bfs_layer);
+    eprintln!(
+        "[large] BFS total:              {:>8.2?} ({} total nodes, {} layers)",
+        t_bfs_done,
+        graph.nodes.len(),
+        bfs_layer
+    );
 
     // --- Step 5: Edge creation ---
     // After all nodes are discovered, create edges by scanning each node's
@@ -1975,10 +1987,15 @@ pub fn build_large_nav_graph(world: &VoxelWorld) -> NavGraph {
     }
 
     let t_edges_done = t_start.elapsed();
-    eprintln!("[large] edge creation:          {:>8.2?} ({} edges)", t_edges_done, graph.edges.len());
+    eprintln!(
+        "[large] edge creation:          {:>8.2?} ({} edges)",
+        t_edges_done,
+        graph.edges.len()
+    );
 
     {
-        let mut counts: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+        let mut counts: std::collections::BTreeMap<usize, usize> =
+            std::collections::BTreeMap::new();
         for node in graph.nodes.iter().flatten() {
             *counts.entry(node.edge_indices.len()).or_insert(0) += 1;
         }
@@ -2425,7 +2442,10 @@ mod tests {
     fn expanding_box_empty_graph_with_column_index() {
         let graph = NavGraph::with_world_size(64, 64, 64);
         assert_eq!(graph.find_nearest_node(VoxelCoord::new(32, 1, 32)), None);
-        assert_eq!(graph.find_nearest_ground_node(VoxelCoord::new(0, 1, 0)), None);
+        assert_eq!(
+            graph.find_nearest_ground_node(VoxelCoord::new(0, 1, 0)),
+            None
+        );
     }
 
     #[test]
@@ -3896,8 +3916,7 @@ mod tests {
         }
 
         // Insert seeds
-        let mut bfs_queue: std::collections::VecDeque<u32> =
-            std::collections::VecDeque::new();
+        let mut bfs_queue: std::collections::VecDeque<u32> = std::collections::VecDeque::new();
         for &coord in &seed_list {
             if !should_be_nav_node(world, face_data, coord) {
                 continue;
@@ -3938,28 +3957,19 @@ mod tests {
                         .unwrap()
                         .edge_indices
                         .iter()
-                        .any(|&eidx| {
-                            graph.edges[eidx.0 as usize].to == NavNodeId(neighbor_slot)
-                        });
+                        .any(|&eidx| graph.edges[eidx.0 as usize].to == NavNodeId(neighbor_slot));
                     if !already_connected {
-                        let to_node =
-                            graph.nodes[neighbor_slot as usize].as_ref().unwrap();
+                        let to_node = graph.nodes[neighbor_slot as usize].as_ref().unwrap();
                         let edge_type =
                             derive_edge_type(from_surface, to_node.surface_type, pos, np);
                         let dist = scaled_distance(dx, dy, dz);
-                        graph.add_edge(
-                            NavNodeId(slot),
-                            NavNodeId(neighbor_slot),
-                            edge_type,
-                            dist,
-                        );
+                        graph.add_edge(NavNodeId(slot), NavNodeId(neighbor_slot), edge_type, dist);
                     }
                 } else if should_be_nav_node(world, face_data, np) {
                     let surface = derive_surface_type(world, face_data, np);
                     let new_id = graph.add_node(np, surface);
                     graph.spatial_insert(np, new_id.0);
-                    let edge_type =
-                        derive_edge_type(from_surface, surface, pos, np);
+                    let edge_type = derive_edge_type(from_surface, surface, pos, np);
                     let dist = scaled_distance(dx, dy, dz);
                     graph.add_edge(NavNodeId(slot), new_id, edge_type, dist);
                     bfs_queue.push_back(new_id.0);
