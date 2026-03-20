@@ -23,15 +23,17 @@
 //     `derive_surface_type()` are evaluated in parallel for all seeds.
 // (3) Seeds are inserted as nodes in the graph (sequential, preserving
 //     original (z, x) column order).
-// (4) Parallel layered BFS (node discovery): the frontier is processed in
-//     parallel chunks via rayon. Each chunk reads the graph (immutable) and
-//     discovers new nav node positions. After each layer, new node coords
-//     are sorted by VoxelCoord and deduped for deterministic ID assignment,
-//     then inserted sequentially. New nodes become the next layer's frontier.
-// (5) Sequential edge creation: after all nodes are discovered, edges are
-//     created by scanning each node (in ID order) and checking 26 neighbors.
-//     Each edge is created from the lower-slot endpoint to avoid duplicates.
-//     This produces deterministic edge_indices ordering for each node.
+// (4) Parallel layered BFS (node discovery + edge pair collection): the
+//     frontier is processed in parallel chunks via rayon. Each chunk reads
+//     the graph (immutable), discovers new nav node positions, AND emits
+//     canonicalized edge pairs for existing neighbors. After each layer,
+//     new node coords are sorted by VoxelCoord and deduped for deterministic
+//     ID assignment, then inserted sequentially. New nodes become the next
+//     layer's frontier. Edge pairs are accumulated across all layers.
+// (5) Dedup edge pairs (par_sort_unstable + dedup), then parallel validation
+//     (is_edge_blocked_by_faces, derive_edge_type, scaled_distance).
+// (6) Sequential edge insertion sorted by (from_slot, direction_index) to
+//     reproduce the same edge_indices ordering as the old sequential pass.
 // This reduces node discovery from O(world_volume) to O(number_of_spans +
 // BFS_frontier). Every air voxel that is face-adjacent to at least one
 // solid voxel becomes a nav node. `BuildingInterior` voxels are always nav
@@ -93,11 +95,15 @@
 // indexed parallel map preserving seed order; the parallel layered BFS
 // sorts new node coords by VoxelCoord ordering and deduplicates them
 // before sequential insertion, ensuring node IDs are assigned in the same
-// deterministic order regardless of rayon scheduling. Edge creation is
-// fully sequential (after all nodes exist), scanning nodes by ID order
-// with `ALL_26_NEIGHBORS` direction order, producing deterministic
-// edge_indices per node. Incremental updates are also deterministic —
-// they process affected positions in a fixed order.
+// deterministic order regardless of rayon scheduling. Edge discovery is
+// integrated into the parallel BFS — each frontier node emits canonicalized
+// (coord_a, coord_b) edge pairs for existing neighbors. After BFS
+// completes, pairs are deduped, validated in parallel (face-blocking,
+// edge type, distance), sorted by (from_slot, direction_index), and
+// inserted sequentially. This produces deterministic edge_indices per
+// node matching the original sequential pass's ordering.
+// Incremental updates are also deterministic — they process affected
+// positions in a fixed order.
 
 use crate::lookup_map::LookupMap;
 use crate::types::{
@@ -389,6 +395,7 @@ impl NavGraph {
             // Check all columns on the perimeter ring at this radius.
             let x_min = (pos.x - radius).max(0);
             let x_max = (pos.x + radius).min(sx as i32 - 1);
+
 
             // Top and bottom rows of the ring.
             for x in x_min..=x_max {
@@ -1257,19 +1264,24 @@ const ALL_26_NEIGHBORS: [(i32, i32, i32); 26] = [
 ///
 /// 3. **Insert valid seeds as nodes** in the nav graph (sequential).
 ///
-/// 4. **Parallel layered BFS from seeds (node discovery only):** The frontier
-///    (initially the seed nodes) is processed in parallel chunks via rayon.
-///    Each chunk reads the graph (read-only) and discovers new nav node
-///    positions among the frontier's 26-neighbors. After each layer, new
-///    node coords are sorted by `VoxelCoord` ordering and deduped for
-///    deterministic ID assignment independent of rayon scheduling, then
-///    inserted sequentially. The new nodes become the next layer's frontier.
+/// 4. **Parallel layered BFS (node discovery + edge pair collection):** The
+///    frontier (initially the seed nodes) is processed in parallel chunks
+///    via rayon. Each chunk reads the graph (read-only) and discovers new
+///    nav node positions among the frontier's 26-neighbors. For existing
+///    neighbors, canonicalized edge pairs are emitted for later validation.
+///    After each layer, new node coords are sorted by `VoxelCoord` ordering
+///    and deduped for deterministic ID assignment, then inserted
+///    sequentially. The new nodes become the next layer's frontier.
 ///
-/// 5. **Sequential edge creation:** After all nodes are discovered, edges are
-///    created by scanning each node (in ID order) and checking its 26
-///    neighbors. Edges are created from the lower-slot node to avoid
-///    duplicates. This produces deterministic edge_indices ordering for each
-///    node, matching the behavior of a sequential BFS.
+/// 5. **Dedup + parallel validation:** Edge pairs are deduped via
+///    `par_sort_unstable` + `dedup`, then validated in parallel
+///    (`is_edge_blocked_by_faces`, `derive_edge_type`, `scaled_distance`).
+///
+/// 6. **Sequential edge insertion:** Validated edges are sorted by
+///    `(from_slot, direction_index)` and inserted sequentially. The
+///    direction index matches the position in `ALL_26_NEIGHBORS`, so the
+///    resulting `edge_indices` ordering per node is identical to a
+///    sequential scan.
 ///
 /// This is O(number_of_spans + BFS_frontier) instead of O(world_volume).
 /// At no point does it iterate through Y ranges of solid material.
@@ -1386,58 +1398,72 @@ pub fn build_nav_graph(world: &VoxelWorld, face_data: &BTreeMap<VoxelCoord, Face
         current_layer_coords.len()
     );
 
-    // --- Step 4: Parallel layered BFS (node discovery only) ---
-    // Each layer discovers new nav node positions in parallel. No edges are
-    // created during this phase — only new node coords are collected, sorted,
-    // deduped, and inserted. The new nodes become the next layer's frontier.
+    // --- Step 4: Parallel layered BFS (node discovery + edge pair collection) ---
+    // Each layer discovers new nav node positions AND collects candidate edge
+    // pairs in parallel. For each frontier node's 26 neighbors:
+    //   - If the neighbor IS already in the graph → emit a canonicalized edge
+    //     pair (smaller coord first) for later validation.
+    //   - If the neighbor is NOT in the graph but should_be_nav_node → emit as
+    //     a new node coord for BFS expansion.
+    // Edge pairs are accumulated across all layers, then validated and inserted
+    // in bulk (Steps 5–6). This moves the expensive neighbor-scanning and
+    // world-lookup work into the already-parallel BFS, eliminating the
+    // redundant sequential edge pass.
+    let mut all_edge_pairs: Vec<(VoxelCoord, VoxelCoord)> = Vec::new();
     let mut bfs_layer = 0u32;
     while !current_layer_coords.is_empty() {
         let t_layer_start = std::time::Instant::now();
-        let chunk_results: Vec<Vec<VoxelCoord>> = current_layer_coords
-            .par_chunks(BFS_PARALLEL_CHUNK_SIZE)
-            .map(|chunk| {
-                let mut new_node_coords: Vec<VoxelCoord> = Vec::new();
 
-                for &coord in chunk {
-                    let slot = match graph.spatial_get(coord) {
-                        Some(s) => s,
-                        None => continue,
-                    };
-                    let pos = graph.nodes[slot as usize].as_ref().unwrap().position;
+        // Each chunk returns (new_node_coords, candidate_edge_pairs).
+        #[allow(clippy::type_complexity)]
+        let chunk_results: Vec<(Vec<VoxelCoord>, Vec<(VoxelCoord, VoxelCoord)>)> =
+            current_layer_coords
+                .par_chunks(BFS_PARALLEL_CHUNK_SIZE)
+                .map(|chunk| {
+                    let mut new_node_coords: Vec<VoxelCoord> = Vec::new();
+                    let mut edge_pairs: Vec<(VoxelCoord, VoxelCoord)> = Vec::new();
 
-                    for &(dx, dy, dz) in &ALL_26_NEIGHBORS {
-                        let np = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
+                    for &coord in chunk {
+                        let slot = match graph.spatial_get(coord) {
+                            Some(s) => s,
+                            None => continue,
+                        };
+                        let pos = graph.nodes[slot as usize].as_ref().unwrap().position;
 
-                        if np.x < 0
-                            || np.y < 1
-                            || np.z < 0
-                            || np.x >= sx as i32
-                            || np.y >= sy as i32
-                            || np.z >= sz as i32
-                        {
-                            continue;
-                        }
+                        for &(dx, dy, dz) in &ALL_26_NEIGHBORS {
+                            let np = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
 
-                        if graph.spatial_contains(np) {
-                            continue;
-                        }
+                            if np.x < 0
+                                || np.y < 1
+                                || np.z < 0
+                                || np.x >= sx as i32
+                                || np.y >= sy as i32
+                                || np.z >= sz as i32
+                            {
+                                continue;
+                            }
 
-                        if should_be_nav_node(world, face_data, np) {
-                            new_node_coords.push(np);
+                            if graph.spatial_contains(np) {
+                                // Neighbor exists — emit canonicalized edge pair.
+                                let pair = if pos < np { (pos, np) } else { (np, pos) };
+                                edge_pairs.push(pair);
+                            } else if should_be_nav_node(world, face_data, np) {
+                                new_node_coords.push(np);
+                            }
                         }
                     }
-                }
 
-                new_node_coords
-            })
-            .collect();
+                    (new_node_coords, edge_pairs)
+                })
+                .collect();
 
         let t_par_done = std::time::Instant::now();
 
-        // Sequential: collect, sort, dedup, insert new nodes.
+        // Sequential: collect new node coords and edge pairs from all chunks.
         let mut all_new_coords: Vec<VoxelCoord> = Vec::new();
-        for coords in chunk_results {
+        for (coords, pairs) in chunk_results {
             all_new_coords.extend(coords);
+            all_edge_pairs.extend(pairs);
         }
         let pre_dedup = all_new_coords.len();
         let t_collect_done = std::time::Instant::now();
@@ -1460,12 +1486,13 @@ pub fn build_nav_graph(world: &VoxelWorld, face_data: &BTreeMap<VoxelCoord, Face
         let t_insert_done = std::time::Instant::now();
 
         eprintln!(
-            "[nav]   BFS L{}: frontier={}, raw={}, deduped={}, inserted={} | par={:.2?} collect={:.2?} sort={:.2?} insert={:.2?}",
+            "[nav]   BFS L{}: frontier={}, raw={}, deduped={}, inserted={}, edge_pairs={} | par={:.2?} collect={:.2?} sort={:.2?} insert={:.2?}",
             bfs_layer,
             current_layer_coords.len(),
             pre_dedup,
             post_dedup,
             next_layer.len(),
+            all_edge_pairs.len(),
             t_par_done - t_layer_start,
             t_collect_done - t_par_done,
             t_sort_done - t_collect_done,
@@ -1478,70 +1505,96 @@ pub fn build_nav_graph(world: &VoxelWorld, face_data: &BTreeMap<VoxelCoord, Face
 
     let t_bfs_done = t_start.elapsed();
     eprintln!(
-        "[nav] BFS total:                {:>8.2?} ({} total nodes, {} layers)",
+        "[nav] BFS total:                {:>8.2?} ({} total nodes, {} layers, {} raw edge pairs)",
         t_bfs_done,
         graph.nodes.len(),
-        bfs_layer
+        bfs_layer,
+        all_edge_pairs.len(),
     );
 
-    // --- Step 5: Edge creation ---
-    // After all nodes are discovered, create edges by scanning each node's
-    // 26 neighbors. Each node processes its neighbors in ALL_26_NEIGHBORS
-    // order, and edges are created from the lower-slot node to avoid
-    // duplicates. This produces deterministic edge_indices ordering for
-    // each node: forward edges appear in ALL_26_NEIGHBORS order from the
-    // lower-ID node's perspective.
-    let node_count = graph.nodes.len();
-    for slot in 0..node_count {
-        let (pos, from_surface) = match &graph.nodes[slot] {
-            Some(n) => (n.position, n.surface_type),
-            None => continue,
-        };
+    // --- Step 5: Dedup edge pairs, parallel validation + metadata ---
+    // Edge pairs are canonicalized (smaller coord first) so sort+dedup
+    // removes duplicates (each undirected edge is emitted by both endpoints).
+    // Then a parallel pass filters blocked edges and computes edge metadata.
+    all_edge_pairs.par_sort_unstable();
+    all_edge_pairs.dedup();
+    let unique_pairs = all_edge_pairs.len();
 
-        for &(dx, dy, dz) in &ALL_26_NEIGHBORS {
-            let np = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
+    let t_edge_dedup = t_start.elapsed();
+    eprintln!(
+        "[nav] edge pair dedup:          {:>8.2?} ({} unique pairs)",
+        t_edge_dedup, unique_pairs
+    );
 
-            if np.x < 0
-                || np.y < 1
-                || np.z < 0
-                || np.x >= sx as i32
-                || np.y >= sy as i32
-                || np.z >= sz as i32
-            {
-                continue;
+    // Parallel validation: check face-blocking, resolve slots, compute
+    // edge type and distance. Each result is Option<(from_slot, to_slot,
+    // EdgeType, distance, dir_index)> — None means the edge is blocked.
+    // dir_index is the position of the (dx,dy,dz) offset (from the lower-
+    // slot node's perspective) in ALL_26_NEIGHBORS, used to sort edges into
+    // the same insertion order as the original sequential pass.
+    #[allow(clippy::type_complexity)]
+    let validated_edges: Vec<Option<(u32, u32, EdgeType, u32, u8)>> = all_edge_pairs
+        .par_iter()
+        .map(|&(coord_a, coord_b)| {
+            if is_edge_blocked_by_faces(face_data, coord_a, coord_b) {
+                return None;
             }
 
-            if is_edge_blocked_by_faces(face_data, pos, np) {
-                continue;
-            }
+            let slot_a = graph.spatial_get(coord_a)?;
+            let slot_b = graph.spatial_get(coord_b)?;
 
-            let neighbor_slot = match graph.spatial_get(np) {
-                Some(s) => s,
-                None => continue,
+            let node_a = graph.nodes[slot_a as usize].as_ref().unwrap();
+            let node_b = graph.nodes[slot_b as usize].as_ref().unwrap();
+
+            // Canonicalize by slot: from_slot < to_slot. Compute direction
+            // from the lower-slot node's perspective so the sort key matches
+            // the original sequential pass's ALL_26_NEIGHBORS iteration.
+            let (from_slot, to_slot, from_pos, to_pos) = if slot_a <= slot_b {
+                (slot_a, slot_b, coord_a, coord_b)
+            } else {
+                (slot_b, slot_a, coord_b, coord_a)
             };
 
-            // Only create edge from smaller slot to avoid duplicates.
-            if (neighbor_slot as usize) < slot {
-                continue;
-            }
+            let dx = to_pos.x - from_pos.x;
+            let dy = to_pos.y - from_pos.y;
+            let dz = to_pos.z - from_pos.z;
 
-            let to_node = graph.nodes[neighbor_slot as usize].as_ref().unwrap();
-            let edge_type = derive_edge_type(from_surface, to_node.surface_type, pos, np);
+            let edge_type =
+                derive_edge_type(node_a.surface_type, node_b.surface_type, coord_a, coord_b);
             let dist = scaled_distance(dx, dy, dz);
-            graph.add_edge(
-                NavNodeId(slot as u32),
-                NavNodeId(neighbor_slot),
-                edge_type,
-                dist,
-            );
-        }
+
+            // Compute ALL_26_NEIGHBORS index from (dx, dy, dz).
+            // Layout: 3x3x3 grid minus center. flat = (dy+1)*9 + (dz+1)*3 + (dx+1).
+            // The center (0,0,0) at flat=13 is absent, so indices after it shift down by 1.
+            let flat = ((dy + 1) * 9 + (dz + 1) * 3 + (dx + 1)) as u8;
+            let dir_index = if flat > 13 { flat - 1 } else { flat };
+
+            Some((from_slot, to_slot, edge_type, dist, dir_index))
+        })
+        .collect();
+
+    let t_edge_validate = t_start.elapsed();
+    eprintln!("[nav] edge validate (parallel): {:>8.2?}", t_edge_validate);
+
+    // --- Step 6: Sequential edge insertion ---
+    // Sort by (from_slot, dir_index) to replicate the original sequential
+    // pass's insertion order: iterate slots in ascending order, and for each
+    // slot iterate ALL_26_NEIGHBORS in order. This ensures each node's
+    // edge_indices ordering is identical to the sequential implementation.
+    let mut edges_to_insert: Vec<(u32, u32, EdgeType, u32, u8)> =
+        validated_edges.into_iter().flatten().collect();
+    edges_to_insert.sort_unstable_by_key(|&(from, _, _, _, dir)| (from, dir));
+
+    for &(from_slot, to_slot, edge_type, dist, _) in &edges_to_insert {
+        graph.add_edge(NavNodeId(from_slot), NavNodeId(to_slot), edge_type, dist);
     }
 
     let t_edges_done = t_start.elapsed();
     eprintln!(
-        "[nav] edge creation:            {:>8.2?} ({} edges)",
+        "[nav] edge insertion:           {:>8.2?} ({} edges from {} validated pairs)",
         t_edges_done,
-        graph.edges.len()
+        graph.edges.len(),
+        edges_to_insert.len(),
     );
 
     // Edge count distribution per node.
@@ -1730,13 +1783,15 @@ const LARGE_NAV_8_NEIGHBORS: [(i32, i32); 8] = [
 /// 2. Parallel seed scan: anchor validation across z-rows runs in parallel.
 ///    Results are collected in z-order for deterministic node ID assignment.
 /// 3. Insert valid seeds as nodes in the graph (sequential).
-/// 4. Parallel layered BFS from seeds (node discovery only): frontier nodes
-///    are processed in parallel chunks. Each chunk discovers new valid anchor
-///    positions. New nodes are sorted/deduped by (x,z) anchor coord for
+/// 4. Parallel layered BFS (node discovery + edge pair collection): frontier
+///    nodes are processed in parallel chunks. Each chunk discovers new valid
+///    anchor positions AND emits canonicalized edge pairs for existing
+///    neighbors. New nodes are sorted/deduped by (x,z) anchor coord for
 ///    deterministic ID assignment, then inserted sequentially.
-/// 5. Sequential edge creation: after all nodes are discovered, edges are
-///    created by scanning each node's 8 neighbors with smaller-slot-first
-///    dedup.
+/// 5. Dedup edge pairs (par_sort_unstable + dedup), then parallel validation
+///    (is_large_edge_valid, distance computation).
+/// 6. Sequential edge insertion sorted by (from_slot, direction_index) to
+///    preserve deterministic edge_indices ordering.
 ///
 /// All edges are `ForestFloor` type since large creatures are ground-only.
 /// The resulting graph uses the same `NavGraph` struct as the standard graph,
@@ -1858,55 +1913,77 @@ pub fn build_large_nav_graph(world: &VoxelWorld) -> NavGraph {
         current_layer_coords.len()
     );
 
-    // --- Step 4: Parallel layered BFS (node discovery only) ---
-    // Each layer discovers new valid anchor positions in parallel. No edges
-    // are created during this phase. New anchors are sorted/deduped and
-    // inserted sequentially.
+    // --- Step 4: Parallel layered BFS (node discovery + edge pair collection) ---
+    // Each layer discovers new valid anchor positions AND collects candidate
+    // edge pairs in parallel. For each frontier node's 8 neighbors:
+    //   - If the neighbor IS already in the graph → emit a canonicalized edge
+    //     pair (smaller coord first) for later validation.
+    //   - If the neighbor is NOT in the graph but is_anchor_valid → emit as a
+    //     new anchor for BFS expansion.
+    // Edge pairs are accumulated across all layers, then validated and inserted
+    // in bulk (Steps 5–6).
+    let mut all_edge_pairs: Vec<(VoxelCoord, VoxelCoord)> = Vec::new();
     let mut bfs_layer = 0u32;
     while !current_layer_coords.is_empty() {
-        let chunk_results: Vec<Vec<(i32, i32, i32)>> = current_layer_coords
-            .par_chunks(BFS_PARALLEL_CHUNK_SIZE)
-            .map(|chunk| {
-                let mut new_anchors: Vec<(i32, i32, i32)> = Vec::new();
+        // Each chunk returns (new_anchors, candidate_edge_pairs).
+        #[allow(clippy::type_complexity)]
+        let chunk_results: Vec<(Vec<(i32, i32, i32)>, Vec<(VoxelCoord, VoxelCoord)>)> =
+            current_layer_coords
+                .par_chunks(BFS_PARALLEL_CHUNK_SIZE)
+                .map(|chunk| {
+                    let mut new_anchors: Vec<(i32, i32, i32)> = Vec::new();
+                    let mut edge_pairs: Vec<(VoxelCoord, VoxelCoord)> = Vec::new();
 
-                for &coord in chunk {
-                    let slot = match graph.spatial_get(coord) {
-                        Some(s) => s,
-                        None => continue,
-                    };
-                    let node = graph.nodes[slot as usize].as_ref().unwrap();
-                    let ax = node.position.x;
-                    let az = node.position.z;
+                    for &coord in chunk {
+                        let slot = match graph.spatial_get(coord) {
+                            Some(s) => s,
+                            None => continue,
+                        };
+                        let node = graph.nodes[slot as usize].as_ref().unwrap();
+                        let ax = node.position.x;
+                        let az = node.position.z;
 
-                    for &(dx, dz) in &LARGE_NAV_8_NEIGHBORS {
-                        let nx = ax + dx;
-                        let nz = az + dz;
-                        if nx < 0 || nz < 0 {
-                            continue;
-                        }
-                        let (nxu, nzu) = (nx as usize, nz as usize);
-                        if nxu + 1 >= sx || nzu + 1 >= sz {
-                            continue;
-                        }
+                        for &(dx, dz) in &LARGE_NAV_8_NEIGHBORS {
+                            let nx = ax + dx;
+                            let nz = az + dz;
+                            if nx < 0 || nz < 0 {
+                                continue;
+                            }
+                            let (nxu, nzu) = (nx as usize, nz as usize);
+                            if nxu + 1 >= sx || nzu + 1 >= sz {
+                                continue;
+                            }
 
-                        if anchor_in_graph.contains_key(&(nx, nz)) {
-                            continue;
-                        }
-
-                        if let Some(n_air_y) = is_anchor_valid(nxu, nzu, &col_top_solid) {
-                            new_anchors.push((nx, nz, n_air_y));
+                            if anchor_in_graph.contains_key(&(nx, nz)) {
+                                // Neighbor exists — emit canonicalized edge pair.
+                                // Need the neighbor's air_y to form its VoxelCoord.
+                                if let Some(n_air_y) =
+                                    surface_y_from_precomputed(nxu, nzu, &col_top_solid)
+                                {
+                                    let n_coord = VoxelCoord::new(nx, n_air_y, nz);
+                                    let pair = if coord < n_coord {
+                                        (coord, n_coord)
+                                    } else {
+                                        (n_coord, coord)
+                                    };
+                                    edge_pairs.push(pair);
+                                }
+                            } else if let Some(n_air_y) = is_anchor_valid(nxu, nzu, &col_top_solid)
+                            {
+                                new_anchors.push((nx, nz, n_air_y));
+                            }
                         }
                     }
-                }
 
-                new_anchors
-            })
-            .collect();
+                    (new_anchors, edge_pairs)
+                })
+                .collect();
 
-        // Sequential: collect, sort, dedup, insert new nodes.
+        // Sequential: collect new anchors and edge pairs from all chunks.
         let mut all_new_anchors: Vec<(i32, i32, i32)> = Vec::new();
-        for anchors in chunk_results {
+        for (anchors, pairs) in chunk_results {
             all_new_anchors.extend(anchors);
+            all_edge_pairs.extend(pairs);
         }
         all_new_anchors.sort_unstable();
         all_new_anchors.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
@@ -1929,68 +2006,90 @@ pub fn build_large_nav_graph(world: &VoxelWorld) -> NavGraph {
 
     let t_bfs_done = t_start.elapsed();
     eprintln!(
-        "[large] BFS total:              {:>8.2?} ({} total nodes, {} layers)",
+        "[large] BFS total:              {:>8.2?} ({} total nodes, {} layers, {} raw edge pairs)",
         t_bfs_done,
         graph.nodes.len(),
-        bfs_layer
+        bfs_layer,
+        all_edge_pairs.len(),
     );
 
-    // --- Step 5: Edge creation ---
-    // After all nodes are discovered, create edges by scanning each node's
-    // 8 horizontal neighbors. Using smaller-slot-first avoids duplicates.
-    let node_count = graph.nodes.len();
-    for slot in 0..node_count {
-        let (ax, az, air_y) = match &graph.nodes[slot] {
-            Some(n) => (n.position.x, n.position.z, n.position.y),
-            None => continue,
-        };
+    // --- Step 5: Dedup edge pairs, parallel validation + metadata ---
+    // Edge pairs are canonicalized (smaller coord first) so sort+dedup
+    // removes duplicates (each undirected edge is emitted by both endpoints).
+    // Then a parallel pass validates edges and computes metadata.
+    all_edge_pairs.par_sort_unstable();
+    all_edge_pairs.dedup();
+    let unique_pairs = all_edge_pairs.len();
 
-        for &(dx, dz) in &LARGE_NAV_8_NEIGHBORS {
-            let nx = ax + dx;
-            let nz = az + dz;
-            if nx < 0 || nz < 0 {
-                continue;
-            }
-            let (nxu, nzu) = (nx as usize, nz as usize);
-            if nxu + 1 >= sx || nzu + 1 >= sz {
-                continue;
-            }
+    let t_edge_dedup = t_start.elapsed();
+    eprintln!(
+        "[large] edge pair dedup:        {:>8.2?} ({} unique pairs)",
+        t_edge_dedup, unique_pairs
+    );
 
-            let n_air_y = match large_node_surface_y(world, nx, nz) {
-                Some(y) => y,
-                None => continue,
+    // Parallel validation: check is_large_edge_valid, resolve slots, compute
+    // distance. All large edges are ForestFloor type. Each result is
+    // Option<(from_slot, to_slot, distance, dir_index)>.
+    let validated_edges: Vec<Option<(u32, u32, u32, u8)>> = all_edge_pairs
+        .par_iter()
+        .map(|&(coord_a, coord_b)| {
+            let slot_a = graph.spatial_get(coord_a)?;
+            let slot_b = graph.spatial_get(coord_b)?;
+
+            // Canonicalize by slot: from_slot < to_slot. Compute direction
+            // from the lower-slot node's perspective so the sort key matches
+            // the original sequential pass's LARGE_NAV_8_NEIGHBORS iteration.
+            let (from_slot, to_slot, from_pos, to_pos) = if slot_a <= slot_b {
+                (slot_a, slot_b, coord_a, coord_b)
+            } else {
+                (slot_b, slot_a, coord_b, coord_a)
             };
-            let n_coord = VoxelCoord::new(nx, n_air_y, nz);
-            let neighbor_slot = match graph.spatial_get(n_coord) {
-                Some(s) => s,
-                None => continue,
-            };
 
-            // Only create edge from smaller slot to avoid duplicates.
-            if (neighbor_slot as usize) < slot {
-                continue;
+            // Large edge validity check uses anchor (x, z) coords.
+            if !is_large_edge_valid(world, (from_pos.x, from_pos.z), (to_pos.x, to_pos.z)) {
+                return None;
             }
 
-            if !is_large_edge_valid(world, (ax, az), (nx, nz)) {
-                continue;
-            }
-
-            let dy = n_air_y - air_y;
+            let dx = to_pos.x - from_pos.x;
+            let dy = to_pos.y - from_pos.y;
+            let dz = to_pos.z - from_pos.z;
             let dist = scaled_distance(dx, dy, dz);
-            graph.add_edge(
-                NavNodeId(slot as u32),
-                NavNodeId(neighbor_slot),
-                EdgeType::ForestFloor,
-                dist,
-            );
-        }
+
+            // Compute LARGE_NAV_8_NEIGHBORS index from (dx, dz).
+            // Layout: 3×3 grid minus center. flat = (dz+1)*3 + (dx+1).
+            // Center (0,0) at flat=4 is absent, so indices after it shift down.
+            let flat = ((dz + 1) * 3 + (dx + 1)) as u8;
+            let dir_index = if flat > 4 { flat - 1 } else { flat };
+
+            Some((from_slot, to_slot, dist, dir_index))
+        })
+        .collect();
+
+    let t_edge_validate = t_start.elapsed();
+    eprintln!("[large] edge validate (par):    {:>8.2?}", t_edge_validate);
+
+    // --- Step 6: Sequential edge insertion ---
+    // Sort by (from_slot, dir_index) to replicate the original sequential
+    // pass's insertion order.
+    let mut edges_to_insert: Vec<(u32, u32, u32, u8)> =
+        validated_edges.into_iter().flatten().collect();
+    edges_to_insert.sort_unstable_by_key(|&(from, _, _, dir)| (from, dir));
+
+    for &(from_slot, to_slot, dist, _) in &edges_to_insert {
+        graph.add_edge(
+            NavNodeId(from_slot),
+            NavNodeId(to_slot),
+            EdgeType::ForestFloor,
+            dist,
+        );
     }
 
     let t_edges_done = t_start.elapsed();
     eprintln!(
-        "[large] edge creation:          {:>8.2?} ({} edges)",
+        "[large] edge insertion:         {:>8.2?} ({} edges from {} validated pairs)",
         t_edges_done,
-        graph.edges.len()
+        graph.edges.len(),
+        edges_to_insert.len(),
     );
 
     {
@@ -4052,5 +4151,87 @@ mod tests {
             in_par_not_seq,
             in_seq_not_par,
         );
+    }
+
+    #[test]
+    fn dir_index_26_all_neighbors_roundtrip() {
+        // Verify that the direction index formula used in the parallel edge
+        // validation (flat = (dy+1)*9 + (dz+1)*3 + (dx+1), skip center)
+        // correctly maps each ALL_26_NEIGHBORS entry to its array index.
+        for (expected_idx, &(dx, dy, dz)) in ALL_26_NEIGHBORS.iter().enumerate() {
+            let flat = ((dy + 1) * 9 + (dz + 1) * 3 + (dx + 1)) as u8;
+            let dir_index = if flat > 13 { flat - 1 } else { flat };
+            assert_eq!(
+                dir_index as usize, expected_idx,
+                "Direction index mismatch for ({dx}, {dy}, {dz}): \
+                 flat={flat}, computed dir_index={dir_index}, expected={expected_idx}"
+            );
+        }
+    }
+
+    #[test]
+    fn dir_index_8_large_neighbors_roundtrip() {
+        // Verify that the direction index formula used in the large nav graph
+        // parallel edge validation (flat = (dz+1)*3 + (dx+1), skip center)
+        // correctly maps each LARGE_NAV_8_NEIGHBORS entry to its array index.
+        for (expected_idx, &(dx, dz)) in LARGE_NAV_8_NEIGHBORS.iter().enumerate() {
+            let flat = ((dz + 1) * 3 + (dx + 1)) as u8;
+            let dir_index = if flat > 4 { flat - 1 } else { flat };
+            assert_eq!(
+                dir_index as usize, expected_idx,
+                "Direction index mismatch for ({dx}, {dz}): \
+                 flat={flat}, computed dir_index={dir_index}, expected={expected_idx}"
+            );
+        }
+    }
+
+    #[test]
+    fn parallel_build_deterministic_edge_indices_ordering() {
+        // The parallel build sorts edges by (from_slot, dir_index) to produce
+        // deterministic per-node edge_indices ordering. Verify by building the
+        // graph twice and checking that every node's edge_indices sequence is
+        // identical. (We can't compare against the sequential build because
+        // node IDs are assigned in different orders.)
+        let world = test_world();
+        let graph_a = build_nav_graph(&world, &no_faces());
+        let graph_b = build_nav_graph(&world, &no_faces());
+
+        assert_eq!(graph_a.node_count(), graph_b.node_count());
+        assert_eq!(graph_a.edge_count(), graph_b.edge_count());
+
+        for slot in 0..graph_a.nodes.len() {
+            let node_a = match &graph_a.nodes[slot] {
+                Some(n) => n,
+                None => {
+                    assert!(graph_b.nodes[slot].is_none());
+                    continue;
+                }
+            };
+            let node_b = graph_b.nodes[slot].as_ref().unwrap();
+            assert_eq!(node_a.position, node_b.position);
+
+            let edges_a: Vec<_> = node_a
+                .edge_indices
+                .iter()
+                .map(|&eid| {
+                    let e = &graph_a.edges[eid.0 as usize];
+                    (graph_a.node(e.to).position, e.edge_type, e.distance)
+                })
+                .collect();
+            let edges_b: Vec<_> = node_b
+                .edge_indices
+                .iter()
+                .map(|&eid| {
+                    let e = &graph_b.edges[eid.0 as usize];
+                    (graph_b.node(e.to).position, e.edge_type, e.distance)
+                })
+                .collect();
+
+            assert_eq!(
+                edges_a, edges_b,
+                "edge_indices ordering mismatch at slot {slot} (pos {:?}):\n  a: {edges_a:?}\n  b: {edges_b:?}",
+                node_a.position,
+            );
+        }
     }
 }

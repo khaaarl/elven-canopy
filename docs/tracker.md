@@ -50,7 +50,6 @@ This reduces merge conflicts when parallel work streams add items.
 [~] F-enemy-ai             Hostile creature AI (goblin/orc/troll behavior)
 [~] F-fruit-variety        Procedural fruit variety and processing
 [~] F-multiplayer          Relay-coordinator multiplayer networking
-[~] F-nav-perf             Optimize nav graph generation performance
 [~] F-notifications        Player-visible event notifications
 [~] F-tab-hash-idx         Hash-based indexes in Tabulosity derive macro
 ```
@@ -352,6 +351,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-nav-gen-opt          RLE-aware nav graph generation
 [x] F-nav-graph            Navigation graph construction
 [x] F-nav-incremental      Incremental nav graph updates
+[x] F-nav-perf             Optimize nav graph generation performance
 [x] F-new-game-ui          New game screen with tree presets
 [x] F-no-bp-overlap        Reject overlapping blueprint designations
 [x] F-orbital-cam          Orbital camera controller
@@ -4678,7 +4678,7 @@ Plugin/scripting system for custom structures, elf behaviors, invader
 types. Open design question (§27).
 
 #### F-nav-perf — Optimize nav graph generation performance
-**Status:** In Progress
+**Status:** Done
 
 Optimize nav graph generation performance on 1024x255x1024 worlds.
 
@@ -4693,23 +4693,24 @@ Optimize nav graph generation performance on 1024x255x1024 worlds.
 - Parallel layered BFS for node discovery (sort+dedup between layers for determinism)
 - Per-column seed dedup via SmallVec (eliminated 200ms LookupMap dedup)
 - Pre-allocated nodes/edges vecs in with_world_size()
+- Edge discovery moved into parallel BFS (both regular and large nav graphs): BFS chunks emit canonicalized edge pairs for existing neighbors, par_sort_unstable+dedup, parallel validation (face-blocking/edge type/distance), sequential insertion sorted by (from_slot, direction_index) to preserve deterministic edge_indices ordering
 
 **Profiling results (1024x255x1024, ~1M nodes, ~8M edges):**
-- Seed scan+dedup+validate+insert: ~160ms (parallelized, fast)
-- BFS node discovery: ~200ms (parallelized, fast — 99.9% of nodes are seeds)
-- Edge creation: ~1.2s regular, ~1.8s large (sequential, the remaining bottleneck)
-- Total: ~1.2s regular + ~1.8s large = ~3s (down from ~6s)
+- Seed scan+dedup+validate+insert: ~130ms (parallelized, fast)
+- BFS node discovery + edge pair collection: ~500ms (parallelized)
+- Edge pair dedup (par_sort_unstable): ~800ms
+- Edge validation (parallel): ~70ms
+- Edge insertion (sequential): ~400ms
+- Total regular: ~1.25s (down from ~1.9s before edge-in-BFS, ~6s original)
+- Large nav graph: similar improvement pattern
 
 **What didn't help:**
 - SmallVec 16 (profiling showed 99.9% of nodes have exactly 8 edges)
 - Accumulating edges during BFS layers then bulk-inserting (same speed, broke edge_indices ordering which caused 9 test failures in combat/archery)
+- HashSet for edge pair dedup (2.4s vs 0.8s for par_sort_unstable — hashing overhead exceeds sort)
 
-**Remaining bottleneck — edge creation (~1.2s + ~1.8s):**
-The sequential edge pass iterates all ~1M nodes, checks 26 (or 8) neighbors each, does spatial lookups + face-block checks + derive_edge_type + add_edge. Two avenues for improvement:
-
-1. **Move edge discovery into the parallel BFS.** During each BFS layer, parallel chunks already check 26 neighbors for node discovery — they could also emit candidate edge pairs (canonicalized coord pairs for dedup). After dedup, edge validation (is_edge_blocked_by_faces, is_large_edge_valid) and metadata computation (derive_edge_type, scaled_distance) can run in a parallel pass over the deduped pairs. This moves the expensive neighbor-scanning and world-lookup work out of the sequential phase. Only the final add_edge mutations remain sequential.
-
-2. **Parallel partitioned edge insertion (potentially unsafe).** Pre-compute all edges as (from_slot, to_slot, EdgeType, distance) tuples. Pre-size the edges vec and write edge data into disjoint slices (one per rayon chunk). For updating NavNode.edge_indices, sort computed edges by from_slot, partition into contiguous ranges, and have each thread update a disjoint set of NavNodes. This avoids data races but requires careful use of split_at_mut or unsafe indexing. False sharing at chunk boundaries is negligible with large chunks. This is complex and needs careful correctness validation — the edge_indices ordering affects PRNG-dependent sim behavior (wander direction, flee direction, archer positioning).
+**Remaining potential optimization:**
+- **Parallel partitioned edge insertion (potentially unsafe).** Pre-compute all edges as (from_slot, to_slot, EdgeType, distance) tuples. Pre-size the edges vec and write edge data into disjoint slices (one per rayon chunk). For updating NavNode.edge_indices, sort computed edges by from_slot, partition into contiguous ranges, and have each thread update a disjoint set of NavNodes. This avoids data races but requires careful use of split_at_mut or unsafe indexing. False sharing at chunk boundaries is negligible with large chunks. This is complex and needs careful correctness validation — the edge_indices ordering affects PRNG-dependent sim behavior (wander direction, flee direction, archer positioning).
 
 #### F-rle-voxels — RLE column-based voxel storage
 **Status:** Done
