@@ -1160,14 +1160,19 @@ impl SimState {
     fn process_event(&mut self, kind: ScheduledEventKind, events: &mut Vec<SimEvent>) {
         match kind {
             ScheduledEventKind::CreatureHeartbeat { creature_id } => {
-                // Dead creatures: do not process heartbeat or reschedule.
-                if self
-                    .db
-                    .creatures
-                    .get(&creature_id)
-                    .is_none_or(|c| c.vital_status != VitalStatus::Alive)
-                {
-                    return;
+                // Check vital status: dead → no-op, incapacitated → bleed tick,
+                // alive → normal heartbeat.
+                let vital_status = match self.db.creatures.get(&creature_id) {
+                    Some(c) => c.vital_status,
+                    None => return,
+                };
+                match vital_status {
+                    VitalStatus::Dead => return,
+                    VitalStatus::Incapacitated => {
+                        self.process_incapacitated_heartbeat(creature_id, events);
+                        return;
+                    }
+                    VitalStatus::Alive => {} // continue with normal heartbeat
                 }
 
                 // Heartbeat is for periodic non-movement checks (mood, mana, etc.).
@@ -1442,6 +1447,38 @@ impl SimState {
             ScheduledEventKind::ProjectileTick => {
                 self.process_projectile_tick(events);
             }
+        }
+    }
+
+    /// Process an incapacitated creature's heartbeat: bleed 1 HP per tick,
+    /// check for death (HP <= -hp_max), and reschedule heartbeat if still alive.
+    fn process_incapacitated_heartbeat(
+        &mut self,
+        creature_id: CreatureId,
+        events: &mut Vec<SimEvent>,
+    ) {
+        let should_die = if let Some(mut c) = self.db.creatures.get(&creature_id) {
+            c.hp -= 1;
+            let die = c.hp <= -c.hp_max;
+            let _ = self.db.creatures.update_no_fk(c);
+            die
+        } else {
+            return;
+        };
+
+        if should_die {
+            self.handle_creature_death(creature_id, DeathCause::Damage, events);
+        } else {
+            // Reschedule heartbeat for continued bleeding.
+            let creature = match self.db.creatures.get(&creature_id) {
+                Some(c) => c,
+                None => return,
+            };
+            let interval = self.species_table[&creature.species].heartbeat_interval_ticks;
+            self.event_queue.schedule(
+                self.tick + interval,
+                ScheduledEventKind::CreatureHeartbeat { creature_id },
+            );
         }
     }
 

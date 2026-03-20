@@ -42,7 +42,7 @@
 //
 // Emitted by the sim as output for the UI event log. Not queued — produced
 // synchronously during event processing and collected by the caller.
-// Includes `CreatureDied` (with cause: Debug or Damage),
+// Includes `CreatureIncapacitated`, `CreatureDied` (with cause: Debug or Damage),
 // `CreatureDamaged` (melee strike hit), `ProjectileHitCreature`,
 // `ProjectileHitSurface`, and `ItemBroken` (durability reached zero).
 //
@@ -230,6 +230,13 @@ pub enum SimEventKind {
     BuildCompleted { project_id: ProjectId },
     /// A build project has been cancelled.
     BuildCancelled { project_id: ProjectId },
+    /// A creature has been incapacitated (HP reached 0). It is bleeding out
+    /// and will die unless healed.
+    CreatureIncapacitated {
+        creature_id: CreatureId,
+        species: Species,
+        position: VoxelCoord,
+    },
     /// A creature has died.
     CreatureDied {
         creature_id: CreatureId,
