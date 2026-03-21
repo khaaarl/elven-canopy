@@ -1,10 +1,15 @@
-// Creature lifecycle — spawning, surface placement, pile management, and task cleanup.
+// Creature lifecycle — spawning, surface placement, pile management, gravity, and task cleanup.
 //
 // Handles creature spawning (with species-specific nav graph snapping),
 // biological trait rolling (hair/eye/skin/body colors etc. stored in the
 // `creature_traits` table), surface position finding, ground pile creation
-// and gravity, and the task interruption/preemption/cleanup pipeline used
-// when creatures die, flee, or receive new player commands.
+// and gravity (both pile and creature), and the task interruption/preemption/
+// cleanup pipeline used when creatures die, flee, or receive new player
+// commands.
+//
+// Creature gravity (F-creature-gravity): creatures on unsupported voxels fall
+// to the nearest valid position below, taking damage proportional to distance.
+// Support rules vary by creature type — see `creature_is_supported()`.
 //
 // See also: `activation.rs` (creature decision loop), `combat.rs` (death
 // handling), `movement.rs` (movement execution), `types.rs` for `TraitKind`
@@ -580,6 +585,225 @@ impl SimState {
                     });
             }
             fell_count += 1;
+        }
+        fell_count
+    }
+
+    /// Check whether a creature is supported at its current position.
+    /// Support rules:
+    /// - Flying: always supported (exempt from gravity).
+    /// - 1x1 climber (`ground_only` = false): supported if a valid nav node
+    ///   exists at the creature's position.
+    /// - 1x1 ground-only (`ground_only` = true): supported if a valid nav node
+    ///   exists AND the voxel below is solid.
+    /// - 2x2x2: supported if a valid nav node exists in the large nav graph.
+    pub(crate) fn creature_is_supported(&self, creature_id: CreatureId) -> bool {
+        let creature = match self.db.creatures.get(&creature_id) {
+            Some(c) if c.vital_status == VitalStatus::Alive => c,
+            _ => return true, // dead or missing — not our problem
+        };
+        let species_data = &self.species_table[&creature.species];
+        if species_data.flight_ticks_per_voxel.is_some() {
+            return true; // flying creatures are always supported
+        }
+        let graph = self.graph_for_species(creature.species);
+        let has_node = graph.node_at(creature.position).is_some();
+        if !has_node {
+            return false;
+        }
+        if species_data.ground_only {
+            // Ground-only creatures also need solid below.
+            let below = VoxelCoord::new(
+                creature.position.x,
+                creature.position.y - 1,
+                creature.position.z,
+            );
+            self.world.get(below).is_solid()
+        } else {
+            // Climber with a valid nav node — supported.
+            true
+        }
+    }
+
+    /// Scan downward from a creature's current position to find a valid
+    /// landing position. Returns `None` if no valid position exists above
+    /// Y=0 (degenerate case — caller should teleport to nearest nav node).
+    pub(crate) fn find_creature_landing(
+        &self,
+        species: Species,
+        pos: VoxelCoord,
+    ) -> Option<VoxelCoord> {
+        let species_data = &self.species_table[&species];
+        let is_large = species_data.footprint[0] > 1 || species_data.footprint[2] > 1;
+
+        if is_large {
+            // 2x2x2: large_node_surface_y computes the single valid surface Y
+            // for the 2x2 footprint at this anchor column. If it exists and is
+            // below the creature, that's the landing. No iteration needed.
+            let ax = pos.x;
+            let az = pos.z;
+            if let Some(surface_y) = crate::nav::large_node_surface_y(&self.world, ax, az)
+                && surface_y < pos.y
+            {
+                let landing = VoxelCoord::new(ax, surface_y, az);
+                if self.large_nav_graph.node_at(landing).is_some() {
+                    return Some(landing);
+                }
+            }
+            // No valid large node below — degenerate.
+            None
+        } else {
+            // 1x1: scan downward for a Y that meets support criteria.
+            let graph = self.graph_for_species(species);
+            for y in (1..pos.y).rev() {
+                let candidate = VoxelCoord::new(pos.x, y, pos.z);
+                let has_node = graph.node_at(candidate).is_some();
+                if !has_node {
+                    continue;
+                }
+                if species_data.ground_only {
+                    // Need solid below.
+                    let below = VoxelCoord::new(pos.x, y - 1, pos.z);
+                    if self.world.get(below).is_solid() {
+                        return Some(candidate);
+                    }
+                } else {
+                    // Climber — nav node is enough.
+                    return Some(candidate);
+                }
+            }
+            None
+        }
+    }
+
+    /// Apply gravity to a single creature: move it to the landing position,
+    /// apply fall damage, emit events, and schedule a new activation.
+    /// Returns `true` if the creature fell.
+    pub(crate) fn apply_single_creature_gravity(
+        &mut self,
+        creature_id: CreatureId,
+        events: &mut Vec<SimEvent>,
+    ) -> bool {
+        let creature = match self.db.creatures.get(&creature_id) {
+            Some(c) if c.vital_status == VitalStatus::Alive => c,
+            _ => return false,
+        };
+        let species = creature.species;
+        let old_pos = creature.position;
+
+        // Flying creatures are exempt.
+        if self.species_table[&species]
+            .flight_ticks_per_voxel
+            .is_some()
+        {
+            return false;
+        }
+
+        if self.creature_is_supported(creature_id) {
+            return false;
+        }
+
+        // Find a landing position.
+        let landing = match self.find_creature_landing(species, old_pos) {
+            Some(pos) => pos,
+            None => {
+                // Degenerate: no valid landing column. Teleport to nearest
+                // nav node.
+                let graph = self.graph_for_species(species);
+                match graph.find_nearest_node(old_pos) {
+                    Some(n) => graph.node(n).position,
+                    None => return false, // no nav nodes at all — nothing to do
+                }
+            }
+        };
+
+        if landing == old_pos {
+            return false;
+        }
+
+        let fall_distance = (old_pos.y - landing.y).max(0) as i64;
+
+        // Abort current action and task.
+        self.abort_current_action(creature_id);
+        if let Some(task_id) = self
+            .db
+            .creatures
+            .get(&creature_id)
+            .and_then(|c| c.current_task)
+        {
+            self.interrupt_task(creature_id, task_id);
+        }
+
+        // Move creature to landing position.
+        let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+            c.position = landing;
+            c.path = None;
+        });
+        self.update_creature_spatial_index(creature_id, species, old_pos, landing);
+
+        // Apply fall damage.
+        let damage = fall_distance * self.config.fall_damage_per_voxel;
+        let remaining_hp = self
+            .db
+            .creatures
+            .get(&creature_id)
+            .map(|c| (c.hp - damage).max(0))
+            .unwrap_or(0);
+
+        events.push(SimEvent {
+            tick: self.tick,
+            kind: SimEventKind::CreatureFell {
+                creature_id,
+                from: old_pos,
+                to: landing,
+                damage,
+                remaining_hp,
+            },
+        });
+
+        if damage > 0 {
+            self.apply_damage_with_cause(creature_id, damage, DeathCause::Falling, events);
+        }
+
+        // Schedule a new activation so the creature resumes behavior (if alive).
+        if self
+            .db
+            .creatures
+            .get(&creature_id)
+            .is_some_and(|c| c.vital_status == VitalStatus::Alive)
+        {
+            self.event_queue.schedule(
+                self.tick + 1,
+                ScheduledEventKind::CreatureActivation { creature_id },
+            );
+        }
+
+        true
+    }
+
+    /// Sweep all alive, non-flying creatures for gravity: if any are
+    /// unsupported, make them fall. Called from `LogisticsHeartbeat`.
+    /// Returns the number of creatures that fell.
+    pub(crate) fn apply_creature_gravity(&mut self, events: &mut Vec<SimEvent>) -> usize {
+        // Snapshot creature IDs to avoid modifying tables during iteration.
+        let candidates: Vec<CreatureId> = self
+            .db
+            .creatures
+            .iter_all()
+            .filter(|c| {
+                c.vital_status == VitalStatus::Alive
+                    && self.species_table[&c.species]
+                        .flight_ticks_per_voxel
+                        .is_none()
+            })
+            .map(|c| c.id)
+            .collect();
+
+        let mut fell_count = 0;
+        for creature_id in candidates {
+            if self.apply_single_creature_gravity(creature_id, events) {
+                fell_count += 1;
+            }
         }
         fell_count
     }

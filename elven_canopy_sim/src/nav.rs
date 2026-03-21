@@ -1647,7 +1647,7 @@ pub fn build_nav_graph(world: &VoxelWorld, face_data: &BTreeMap<VoxelCoord, Face
 /// exceeds 1 voxel. Otherwise returns `max_surface + 1` (the air layer
 /// above the highest ground point — the creature stands at its tallest
 /// point, straddling any minor unevenness).
-fn large_node_surface_y(world: &VoxelWorld, ax: i32, az: i32) -> Option<i32> {
+pub(crate) fn large_node_surface_y(world: &VoxelWorld, ax: i32, az: i32) -> Option<i32> {
     let mut min_surface = i32::MAX;
     let mut max_surface = i32::MIN;
     for dz in 0..2 {

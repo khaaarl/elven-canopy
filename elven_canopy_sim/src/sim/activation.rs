@@ -191,18 +191,22 @@ impl SimState {
             }
         }
 
+        // Gravity check: if the creature is unsupported (no nav node, or
+        // ground-only without solid below), apply gravity and bail.
+        if !self.creature_is_supported(creature_id) {
+            self.apply_single_creature_gravity(creature_id, events);
+            return;
+        }
+
         let (mut current_node, species, action_kind) = {
             let creature = match self.db.creatures.get(&creature_id) {
                 Some(c) if c.vital_status == VitalStatus::Alive => c,
-                _ => return, // dead or missing — do not reschedule
+                _ => return,
             };
-            let node = match self
+            let node = self
                 .graph_for_species(creature.species)
                 .node_at(creature.position)
-            {
-                Some(n) => n,
-                None => return,
-            };
+                .unwrap(); // safe: checked above
             (node, creature.species, creature.action_kind)
         };
 

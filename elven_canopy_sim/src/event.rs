@@ -272,6 +272,14 @@ pub enum SimEventKind {
         material: Option<crate::inventory::Material>,
         owner: Option<CreatureId>,
     },
+    /// A creature fell due to gravity (unsupported position).
+    CreatureFell {
+        creature_id: CreatureId,
+        from: VoxelCoord,
+        to: VoxelCoord,
+        damage: i64,
+        remaining_hp: i64,
+    },
 }
 
 #[cfg(test)]

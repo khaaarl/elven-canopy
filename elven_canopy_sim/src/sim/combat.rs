@@ -1075,6 +1075,7 @@ impl SimState {
         let species_str = format!("{:?}", species);
         let cause_suffix = match cause {
             DeathCause::Starvation => " of starvation",
+            DeathCause::Falling => " from a fall",
             _ => "",
         };
         let msg = if creature_name.is_empty() {
@@ -1096,11 +1097,13 @@ impl SimState {
     }
 
     /// Apply damage to a creature. Positive `amount` reduces HP. If HP
-    /// reaches 0 the creature dies via `handle_creature_death`.
-    pub(crate) fn apply_damage(
+    /// reaches 0 the creature dies via `handle_creature_death` with the
+    /// given cause.
+    pub(crate) fn apply_damage_with_cause(
         &mut self,
         creature_id: CreatureId,
         amount: i64,
+        cause: DeathCause,
         events: &mut Vec<SimEvent>,
     ) {
         if amount <= 0 {
@@ -1118,8 +1121,19 @@ impl SimState {
             return;
         };
         if should_die {
-            self.handle_creature_death(creature_id, DeathCause::Damage, events);
+            self.handle_creature_death(creature_id, cause, events);
         }
+    }
+
+    /// Apply damage to a creature with `DeathCause::Damage`. Convenience
+    /// wrapper around `apply_damage_with_cause`.
+    pub(crate) fn apply_damage(
+        &mut self,
+        creature_id: CreatureId,
+        amount: i64,
+        events: &mut Vec<SimEvent>,
+    ) {
+        self.apply_damage_with_cause(creature_id, amount, DeathCause::Damage, events);
     }
 
     /// Heal a creature. Positive `amount` restores HP up to `hp_max`.

@@ -1441,9 +1441,10 @@ impl SimState {
                 }
             }
             ScheduledEventKind::LogisticsHeartbeat => {
-                // Periodic gravity sweep: drop any floating piles before
-                // logistics processing sees them.
+                // Periodic gravity sweep: drop any floating piles and
+                // unsupported creatures before logistics processing.
                 self.apply_pile_gravity();
+                self.apply_creature_gravity(events);
                 self.process_logistics_heartbeat();
                 let next_tick = self.tick + self.config.logistics_heartbeat_interval_ticks;
                 self.event_queue

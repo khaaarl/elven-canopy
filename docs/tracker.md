@@ -101,7 +101,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-controls-config-B    Controls persistence and sensitivity settings
 [ ] F-controls-config-C    Controls settings screen with rebinding UI
 [ ] F-creature-control     Temporary allegiance change and AI override
-[ ] F-creature-gravity     Creatures fall when on unsupported voxels
 [ ] F-cultural-drift       Inter-tree cultural divergence
 [ ] F-dappled-light        Dappled light effect via scrolling noise on ground shader
 [ ] F-day-night            Day/night cycle and pacing
@@ -285,6 +284,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-creature-actions     Creature action system: typed duration-bearing actions
 [x] F-creature-biology     Biological traits for deterministic creature appearance
 [x] F-creature-death       Basic creature death (starvation)
+[x] F-creature-gravity     Creatures fall when on unsupported voxels
 [x] F-creature-info        Creature info panel with follow button
 [x] F-creature-stats       Creature stats (str/agi/dex/con/wil/int/per/cha)
 [x] F-creature-tooltip     Hover tooltips for world objects
@@ -1257,7 +1257,7 @@ combat death. F-creature-death covers the starvation trigger specifically.
 **Related:** F-elf-needs, F-food-gauge, F-hp-death, F-soul-mech
 
 #### F-creature-gravity — Creatures fall when on unsupported voxels
-**Status:** Todo
+**Status:** Done
 
 Creatures standing on unsupported voxels (e.g., a deconstructed platform)
 fall until they reach a solid surface. Falling causes damage proportional
@@ -1265,7 +1265,7 @@ to distance fallen. Extends F-pile-gravity (which handles items) to
 living creatures. Enables Gust spell knockback off platforms as a
 meaningful tactical tool. Also improves general simulation fidelity.
 
-**Blocks:** F-spell-gust
+**Unblocked:** F-spell-gust
 **Related:** F-pile-gravity
 
 #### F-creature-stats — Creature stats (str/agi/dex/con/wil/int/per/cha)
@@ -3137,7 +3137,8 @@ cooldown. Manual cast only — directional spells don't autocast well.
 
 **Draft:** docs/drafts/war_magic.md
 
-**Blocked by:** F-creature-gravity, F-spell-system
+**Blocked by:** F-spell-system
+**Unblocked by:** F-creature-gravity
 **Related:** F-war-magic
 
 #### F-spell-ice-shard — Ice Shard ranged magic projectile with autocast

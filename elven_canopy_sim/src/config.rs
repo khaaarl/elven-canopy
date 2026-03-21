@@ -1422,6 +1422,10 @@ fn default_melee_weapon_impact_damage_max() -> i32 {
     2
 }
 
+fn default_fall_damage_per_voxel() -> i64 {
+    10
+}
+
 // ---------------------------------------------------------------------------
 // Civilization config
 // ---------------------------------------------------------------------------
@@ -1961,6 +1965,12 @@ pub struct GameConfig {
     /// Maximum durability damage a melee weapon takes per strike. Default 2.
     #[serde(default = "default_melee_weapon_impact_damage_max")]
     pub melee_weapon_impact_damage_max: i32,
+
+    // -- Creature gravity (F-creature-gravity) --
+    /// HP damage per voxel fallen when a creature falls due to gravity.
+    /// Set to 0 to disable fall damage. Default 10.
+    #[serde(default = "default_fall_damage_per_voxel")]
+    pub fall_damage_per_voxel: i64,
 }
 
 fn default_platform_mana_cost_per_mille() -> u32 {
@@ -2965,6 +2975,7 @@ impl Default for GameConfig {
             club_melee_range_sq: default_club_melee_range_sq(),
             melee_weapon_impact_damage_min: default_melee_weapon_impact_damage_min(),
             melee_weapon_impact_damage_max: default_melee_weapon_impact_damage_max(),
+            fall_damage_per_voxel: default_fall_damage_per_voxel(),
         }
     }
 }

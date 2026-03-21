@@ -20780,9 +20780,12 @@ fn hostile_ignores_elf_outside_detection_range() {
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
 
-    // Place elf far from goblin — 50 voxels away on X axis (50² = 2500 >> 225).
+    // Place elf far from goblin — 20 voxels away on X axis (20² = 400 >> 225).
+    // Stay within the 64x64 world at ground level (y=1, solid terrain at y=0)
+    // so the elf has a valid nav node and won't fall due to creature gravity.
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
-    let far_pos = VoxelCoord::new(goblin_pos.x + 50, goblin_pos.y, goblin_pos.z);
+    let far_x = (goblin_pos.x + 20).min(62);
+    let far_pos = VoxelCoord::new(far_x, 1, goblin_pos.z);
     force_position(&mut sim, elf, far_pos);
 
     // Schedule activation.
@@ -20798,7 +20801,7 @@ fn hostile_ignores_elf_outside_detection_range() {
     let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
 
     // Run a short period — goblin should wander randomly, not pursue.
-    // Keep ticks low so random wander can't close the 50-voxel gap.
+    // Keep ticks low so random wander can't close the 20-voxel gap.
     sim.step(&[], tick + 1000);
 
     let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
@@ -38549,4 +38552,532 @@ fn wyvern_pursues_and_damages_elf() {
 
     let wyvern = sim.db.creatures.get(&wyvern_id).unwrap();
     assert_ne!(wyvern.position, wyvern_pos, "wyvern should have moved");
+}
+
+// =========================================================================
+// Creature gravity (F-creature-gravity)
+// =========================================================================
+
+#[test]
+fn creature_on_solid_ground_does_not_fall() {
+    let mut sim = test_sim(42);
+    // Spawn an elf away from the tree at a known ground position.
+    let mut events = Vec::new();
+    let elf_id = sim
+        .spawn_creature(Species::Elf, VoxelCoord::new(10, 1, 10), &mut events)
+        .expect("should spawn elf");
+
+    // Elf should be on solid ground (terrain at y=0 is solid, elf at y=1).
+    let pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    assert_eq!(pos.y, 1);
+    assert!(sim.creature_is_supported(elf_id));
+
+    events.clear();
+    let fell = sim.apply_creature_gravity(&mut events);
+    assert_eq!(fell, 0);
+}
+
+#[test]
+fn creature_falls_when_platform_removed() {
+    let mut sim = test_sim(42);
+    // Use a low platform so the fall is survivable (2 voxels = 20 damage).
+    let platform_pos = VoxelCoord::new(10, 2, 10);
+    sim.world.set(platform_pos, VoxelType::GrownPlatform);
+    sim.rebuild_transient_state();
+
+    let mut events = Vec::new();
+    let elf_id = sim
+        .spawn_creature(Species::Elf, VoxelCoord::new(10, 3, 10), &mut events)
+        .expect("should spawn elf");
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(elf.position.y, 3);
+    let hp_before = elf.hp;
+
+    // Remove the platform — elf is now unsupported.
+    sim.world.set(platform_pos, VoxelType::Air);
+    sim.rebuild_transient_state();
+
+    events.clear();
+    let fell = sim.apply_creature_gravity(&mut events);
+    assert_eq!(fell, 1);
+
+    // Elf should have landed at y=1 (above terrain at y=0).
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(elf.position.y, 1);
+
+    // Elf should have taken fall damage: 2 voxels * fall_damage_per_voxel.
+    let expected_damage = 2 * sim.config.fall_damage_per_voxel;
+    assert!(
+        hp_before > expected_damage,
+        "test setup: fall should be survivable"
+    );
+    assert_eq!(elf.hp, hp_before - expected_damage);
+
+    // Should have emitted a CreatureFell event.
+    let fell_event = events
+        .iter()
+        .find(|e| matches!(e.kind, SimEventKind::CreatureFell { .. }));
+    assert!(fell_event.is_some());
+    if let SimEventKind::CreatureFell {
+        creature_id,
+        from,
+        to,
+        damage,
+        ..
+    } = &fell_event.unwrap().kind
+    {
+        assert_eq!(*creature_id, elf_id);
+        assert_eq!(from.y, 3);
+        assert_eq!(to.y, 1);
+        assert_eq!(*damage, expected_damage);
+    }
+}
+
+#[test]
+fn fatal_fall_kills_creature() {
+    let mut sim = test_sim(42);
+    // Place a very high platform so the fall is lethal.
+    let platform_y = 40;
+    let platform_pos = VoxelCoord::new(10, platform_y, 10);
+    sim.world.set(platform_pos, VoxelType::GrownPlatform);
+    sim.rebuild_transient_state();
+
+    let mut events = Vec::new();
+    let elf_id = sim
+        .spawn_creature(
+            Species::Elf,
+            VoxelCoord::new(10, platform_y + 1, 10),
+            &mut events,
+        )
+        .expect("should spawn elf");
+
+    // Ensure the fall will be lethal.
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    let fall_distance = platform_y; // from y=41 to y=1
+    let expected_damage = fall_distance as i64 * sim.config.fall_damage_per_voxel;
+    assert!(
+        expected_damage >= elf.hp,
+        "fall should be lethal: damage={expected_damage}, hp={}",
+        elf.hp
+    );
+
+    // Remove platform.
+    sim.world.set(platform_pos, VoxelType::Air);
+    sim.rebuild_transient_state();
+
+    events.clear();
+    sim.apply_creature_gravity(&mut events);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(elf.vital_status, VitalStatus::Dead);
+
+    // Should have a CreatureDied event with Falling cause.
+    let died_event = events.iter().find(|e| {
+        matches!(
+            e.kind,
+            SimEventKind::CreatureDied {
+                cause: DeathCause::Falling,
+                ..
+            }
+        )
+    });
+    assert!(
+        died_event.is_some(),
+        "expected CreatureDied with Falling cause"
+    );
+}
+
+#[test]
+fn zero_fall_damage_config_means_no_damage() {
+    let mut sim = test_sim(42);
+    sim.config.fall_damage_per_voxel = 0;
+
+    let platform_pos = VoxelCoord::new(10, 10, 10);
+    sim.world.set(platform_pos, VoxelType::GrownPlatform);
+    sim.rebuild_transient_state();
+
+    let mut events = Vec::new();
+    let elf_id = sim
+        .spawn_creature(Species::Elf, VoxelCoord::new(10, 11, 10), &mut events)
+        .expect("should spawn elf");
+    let hp_before = sim.db.creatures.get(&elf_id).unwrap().hp;
+
+    sim.world.set(platform_pos, VoxelType::Air);
+    sim.rebuild_transient_state();
+
+    events.clear();
+    sim.apply_creature_gravity(&mut events);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(elf.position.y, 1);
+    assert_eq!(elf.hp, hp_before, "no damage when fall_damage_per_voxel=0");
+}
+
+#[test]
+fn climber_on_trunk_does_not_fall() {
+    let mut sim = test_sim(42);
+    // Place trunk voxels to create a trunk surface nav node.
+    // The test world has floor_y=0, so trunk at y=1..5.
+    for y in 1..6 {
+        sim.world.set(VoxelCoord::new(15, y, 15), VoxelType::Trunk);
+    }
+    sim.rebuild_transient_state();
+
+    // Find a nav node adjacent to the trunk (on the trunk surface).
+    // Trunk climb nodes are at positions adjacent to solid trunk voxels.
+    let graph = &sim.nav_graph;
+    let trunk_adj = VoxelCoord::new(16, 3, 15); // east of trunk
+    if graph.node_at(trunk_adj).is_none() {
+        // No trunk climb node here — skip test (topology dependent).
+        return;
+    }
+
+    // Spawn an elf (climber, ground_only=false) and move it to the trunk node.
+    let mut events = Vec::new();
+    let elf_id = sim
+        .spawn_creature(Species::Elf, trunk_adj, &mut events)
+        .expect("should spawn elf");
+
+    // Move elf to trunk position (may already be there if spawn snapped).
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.position = trunk_adj;
+    });
+
+    // Elf should be supported (has nav node, is a climber).
+    assert!(sim.creature_is_supported(elf_id));
+
+    events.clear();
+    let fell = sim.apply_creature_gravity(&mut events);
+    assert_eq!(fell, 0);
+}
+
+#[test]
+fn ground_only_creature_without_solid_below_falls() {
+    let mut sim = test_sim(42);
+    // Spawn a capybara (ground_only=true) at ground level.
+    let capy_id = spawn_creature(&mut sim, Species::Capybara);
+    let pos = sim.db.creatures.get(&capy_id).unwrap().position;
+    assert_eq!(pos.y, 1, "capybara should be on ground");
+
+    // Teleport the capybara to a position without solid below — e.g., y=5
+    // with no platform. The nav graph likely has no node here either.
+    let floating_pos = VoxelCoord::new(pos.x, 5, pos.z);
+    let _ = sim.db.creatures.modify_unchecked(&capy_id, |c| {
+        c.position = floating_pos;
+    });
+
+    assert!(!sim.creature_is_supported(capy_id));
+
+    let mut events = Vec::new();
+    let fell = sim.apply_creature_gravity(&mut events);
+    assert_eq!(fell, 1);
+
+    let capy = sim.db.creatures.get(&capy_id).unwrap();
+    assert_eq!(capy.position.y, 1, "capybara should land at ground level");
+}
+
+#[test]
+fn flying_creature_does_not_fall() {
+    let mut sim = test_sim(42);
+    // Spawn a hornet (flying creature) and move it mid-air.
+    let mut events = Vec::new();
+    let hornet_id = sim
+        .spawn_creature(Species::Hornet, VoxelCoord::new(20, 20, 20), &mut events)
+        .expect("should spawn hornet");
+
+    // Hornet has flight_ticks_per_voxel, so it's flying.
+    let species_data = &sim.species_table[&Species::Hornet];
+    assert!(species_data.flight_ticks_per_voxel.is_some());
+
+    // Should be supported (flying creatures are always exempt).
+    assert!(sim.creature_is_supported(hornet_id));
+
+    events.clear();
+    let fell = sim.apply_creature_gravity(&mut events);
+    // Hornet should not have fallen.
+    let fell_hornets = events.iter().any(|e| {
+        matches!(
+            e.kind,
+            SimEventKind::CreatureFell { creature_id, .. } if creature_id == hornet_id
+        )
+    });
+    assert!(!fell_hornets);
+}
+
+#[test]
+fn creature_gravity_at_activation_time() {
+    let mut sim = test_sim(42);
+    // Place a platform and spawn an elf on it.
+    let platform_pos = VoxelCoord::new(10, 5, 10);
+    sim.world.set(platform_pos, VoxelType::GrownPlatform);
+    sim.rebuild_transient_state();
+
+    let mut events = Vec::new();
+    let elf_id = sim
+        .spawn_creature(Species::Elf, VoxelCoord::new(10, 6, 10), &mut events)
+        .expect("should spawn elf");
+    assert_eq!(sim.db.creatures.get(&elf_id).unwrap().position.y, 6);
+
+    // Remove the platform and rebuild nav.
+    sim.world.set(platform_pos, VoxelType::Air);
+    sim.rebuild_transient_state();
+
+    // Trigger creature activation — should detect unsupported and apply gravity.
+    events.clear();
+    sim.process_creature_activation(elf_id, &mut events);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(
+        elf.position.y, 1,
+        "elf should fall to ground via activation"
+    );
+
+    // Should have emitted a CreatureFell event.
+    let fell_event = events
+        .iter()
+        .any(|e| matches!(e.kind, SimEventKind::CreatureFell { .. }));
+    assert!(fell_event, "expected CreatureFell event from activation");
+}
+
+#[test]
+fn creature_gravity_clears_task_and_path() {
+    let mut sim = test_sim(42);
+    let platform_pos = VoxelCoord::new(10, 5, 10);
+    sim.world.set(platform_pos, VoxelType::GrownPlatform);
+    sim.rebuild_transient_state();
+
+    let mut events = Vec::new();
+    let elf_id = sim
+        .spawn_creature(Species::Elf, VoxelCoord::new(10, 6, 10), &mut events)
+        .expect("should spawn elf");
+
+    // Give the elf a fake path and task.
+    let task_id = TaskId::new(&mut sim.rng);
+    let fake_task = Task {
+        id: task_id,
+        kind: TaskKind::GoTo,
+        state: TaskState::InProgress,
+        location: VoxelCoord::new(20, 1, 20),
+        progress: 0,
+        total_cost: 0,
+        required_species: None,
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+    };
+    sim.insert_task(fake_task);
+    if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+        c.current_task = Some(task_id);
+        c.path = Some(CreaturePath {
+            remaining_positions: vec![VoxelCoord::new(15, 1, 15)],
+        });
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Remove platform and apply gravity.
+    sim.world.set(platform_pos, VoxelType::Air);
+    sim.rebuild_transient_state();
+
+    events.clear();
+    sim.apply_creature_gravity(&mut events);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(elf.position.y, 1);
+    assert!(elf.path.is_none(), "path should be cleared after fall");
+    assert!(
+        elf.current_task.is_none(),
+        "task should be cleared after fall"
+    );
+}
+
+#[test]
+fn logistics_heartbeat_triggers_creature_gravity() {
+    let mut sim = test_sim(42);
+    let platform_pos = VoxelCoord::new(10, 5, 10);
+    sim.world.set(platform_pos, VoxelType::GrownPlatform);
+    sim.rebuild_transient_state();
+
+    let mut events = Vec::new();
+    let elf_id = sim
+        .spawn_creature(Species::Elf, VoxelCoord::new(10, 6, 10), &mut events)
+        .expect("should spawn elf");
+    assert_eq!(sim.db.creatures.get(&elf_id).unwrap().position.y, 6);
+
+    // Remove the platform and rebuild nav.
+    sim.world.set(platform_pos, VoxelType::Air);
+    sim.rebuild_transient_state();
+
+    // Advance to a LogisticsHeartbeat tick — step forward enough ticks.
+    let interval = sim.config.logistics_heartbeat_interval_ticks;
+    let target = sim.tick + interval + 1;
+    let result = sim.step(&[], target);
+
+    // Elf should have fallen to ground.
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(elf.position.y, 1, "elf should fall via logistics heartbeat");
+
+    // Should have a CreatureFell event in the step output.
+    let fell_event = result
+        .events
+        .iter()
+        .any(|e| matches!(e.kind, SimEventKind::CreatureFell { .. }));
+    assert!(fell_event, "expected CreatureFell event from heartbeat");
+}
+
+#[test]
+fn large_creature_falls_when_ground_removed() {
+    let mut sim = test_sim(42);
+    // Elephants use the 2x2x2 nav graph. Place a 2x2 platform at y=5
+    // and spawn an elephant on it.
+    for dx in 0..2 {
+        for dz in 0..2 {
+            sim.world.set(
+                VoxelCoord::new(10 + dx, 5, 10 + dz),
+                VoxelType::GrownPlatform,
+            );
+        }
+    }
+    sim.rebuild_transient_state();
+
+    let mut events = Vec::new();
+    let elephant_id = sim
+        .spawn_creature(Species::Elephant, VoxelCoord::new(10, 6, 10), &mut events)
+        .expect("should spawn elephant");
+
+    let pos = sim.db.creatures.get(&elephant_id).unwrap().position;
+    // Elephant should be on the platform (y=6, standing on platform at y=5).
+    assert_eq!(pos.y, 6, "elephant should be on platform");
+
+    // Remove the platform.
+    for dx in 0..2 {
+        for dz in 0..2 {
+            sim.world
+                .set(VoxelCoord::new(10 + dx, 5, 10 + dz), VoxelType::Air);
+        }
+    }
+    sim.rebuild_transient_state();
+
+    events.clear();
+    let fell = sim.apply_creature_gravity(&mut events);
+    assert_eq!(fell, 1, "elephant should fall");
+
+    let elephant = sim.db.creatures.get(&elephant_id).unwrap();
+    assert!(
+        elephant.position.y < 6,
+        "elephant should have fallen from y=6, now at y={}",
+        elephant.position.y
+    );
+
+    let fell_event = events
+        .iter()
+        .any(|e| matches!(e.kind, SimEventKind::CreatureFell { .. }));
+    assert!(fell_event, "expected CreatureFell event for elephant");
+}
+
+#[test]
+fn degenerate_landing_teleports_to_nearest_node() {
+    let mut sim = test_sim(42);
+    // Place a creature at a position with no solid surface below in its
+    // column — deep in the air with no ground. The column at x=10, z=10
+    // has terrain at y=0, so normally find_surface_below would find it.
+    // Instead, test the degenerate path by putting the creature at a position
+    // where the entire column below has no nav node AND is ground_only.
+    // For a ground_only creature, find_creature_landing needs a nav node
+    // with solid below. Place creature at y=5 in a column where y=1 has
+    // no nav node (it might naturally not have one far from the tree).
+    let mut events = Vec::new();
+
+    // Spawn capybara (ground_only) at ground level, then teleport mid-air.
+    let capy_id = sim
+        .spawn_creature(Species::Capybara, VoxelCoord::new(5, 1, 5), &mut events)
+        .expect("should spawn capybara");
+    let original_pos = sim.db.creatures.get(&capy_id).unwrap().position;
+
+    // Teleport to a column that's entirely air (outside where nav nodes are
+    // generated). Use a corner of the world where there's terrain but
+    // possibly no nav node.
+    let floating_pos = VoxelCoord::new(1, 10, 1);
+    let _ = sim.db.creatures.modify_unchecked(&capy_id, |c| {
+        c.position = floating_pos;
+    });
+
+    events.clear();
+    let fell = sim.apply_single_creature_gravity(capy_id, &mut events);
+    assert!(fell, "capybara should fall from unsupported position");
+
+    let capy = sim.db.creatures.get(&capy_id).unwrap();
+    // The creature should have landed somewhere valid — either at ground
+    // level in the same column or teleported to the nearest nav node.
+    let graph = sim.graph_for_species(Species::Capybara);
+    let has_node = graph.node_at(capy.position).is_some();
+    let has_solid_below = sim
+        .world
+        .get(VoxelCoord::new(
+            capy.position.x,
+            capy.position.y - 1,
+            capy.position.z,
+        ))
+        .is_solid();
+    assert!(
+        has_node && has_solid_below,
+        "capybara should be at a valid supported position after degenerate fall \
+         (pos={:?}, has_node={has_node}, solid_below={has_solid_below})",
+        capy.position
+    );
+}
+
+#[test]
+fn ground_only_with_nav_node_but_no_solid_below_falls() {
+    let mut sim = test_sim(42);
+    // Test creature_is_supported: a ground_only creature at a nav node
+    // position without solid below should be unsupported.
+    // Build a platform, rebuild nav so there's a node, then force the
+    // creature to that position and remove the platform WITHOUT rebuilding
+    // nav, so the nav node persists but the voxel below is gone.
+    let platform_pos = VoxelCoord::new(10, 3, 10);
+    sim.world.set(platform_pos, VoxelType::GrownPlatform);
+    sim.rebuild_transient_state();
+
+    let standing_pos = VoxelCoord::new(10, 4, 10);
+    // Verify nav node exists at standing position.
+    let graph = sim.graph_for_species(Species::Capybara);
+    assert!(
+        graph.node_at(standing_pos).is_some(),
+        "nav node should exist above platform"
+    );
+
+    // Spawn capybara at ground level, then teleport to the platform pos.
+    let mut events = Vec::new();
+    let capy_id = sim
+        .spawn_creature(Species::Capybara, VoxelCoord::new(10, 1, 10), &mut events)
+        .expect("should spawn capybara");
+    let _ = sim.db.creatures.modify_unchecked(&capy_id, |c| {
+        c.position = standing_pos;
+    });
+    assert!(
+        sim.creature_is_supported(capy_id),
+        "should be supported on platform"
+    );
+
+    // Remove the platform but do NOT rebuild nav — node still exists.
+    sim.world.set(platform_pos, VoxelType::Air);
+    let graph = sim.graph_for_species(Species::Capybara);
+    assert!(
+        graph.node_at(standing_pos).is_some(),
+        "nav node should still exist (no rebuild)"
+    );
+
+    // Creature should be unsupported: ground_only needs solid below.
+    assert!(
+        !sim.creature_is_supported(capy_id),
+        "ground_only creature without solid below should be unsupported even with nav node"
+    );
+
+    // Apply gravity — should fall. Rebuild nav first so landing positions
+    // are valid.
+    sim.rebuild_transient_state();
+    events.clear();
+    let fell = sim.apply_creature_gravity(&mut events);
+    assert_eq!(fell, 1, "capybara should fall");
+    let capy = sim.db.creatures.get(&capy_id).unwrap();
+    assert_eq!(capy.position.y, 1, "should land at ground level");
 }

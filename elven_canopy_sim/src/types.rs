@@ -870,7 +870,8 @@ pub enum DeathCause {
     Damage,
     /// Food gauge reached zero.
     Starvation,
-    // Future: Fire, Falling, etc.
+    /// Fell from a height (creature gravity).
+    Falling,
 }
 
 // ---------------------------------------------------------------------------
