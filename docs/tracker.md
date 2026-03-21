@@ -127,7 +127,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fire-basic           Fire spread and voxel destruction
 [ ] F-fire-ecology         Fire as ecological force, firefighting
 [ ] F-fire-structure       Fire x structural integrity cascades
-[ ] F-flying-nav-big       3D flight nav for 2×2×2 flying creatures
 [ ] F-fog-of-war           Visibility via tree and root network
 [ ] F-follow-multi         Camera zoom-to and follow for multi-selections
 [ ] F-food-chain           Food production/distribution pipeline
@@ -244,7 +243,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-wood-stats           Wood-type material variation for crafted items
 [ ] F-world-boundary       World boundary visualization
 [ ] F-world-map            World map view
-[ ] F-wyvern               Wyvern hostile flying creature (2×2×2)
 [ ] F-zone-world           Zone-based world with fidelity partitioning
 ```
 
@@ -308,6 +306,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-event-loop           Event-driven tick loop (priority queue)
 [x] F-flee                 Flee behavior for civilians
 [x] F-flying-nav           3D flight nav for 1×1 flying creatures (vanilla A*)
+[x] F-flying-nav-big       3D flight nav for 2×2×2 flying creatures
 [x] F-food-gauge           Creature food gauge with decay
 [x] F-friendly-fire        Friendly-fire avoidance for ranged attacks
 [x] F-fruit-extraction     Fruit extraction (hulling/separation into components)
@@ -432,6 +431,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-voxel-fem            Voxel FEM structural analysis
 [x] F-voxel-textures       Per-face Perlin noise voxel textures
 [x] F-worldgen-framework   Worldgen generator framework
+[x] F-wyvern               Wyvern hostile flying creature (2×2×2)
 [x] F-zlevel-vis           Z-level visibility (cutaway/toggle)
 ```
 
@@ -1114,13 +1114,13 @@ is needed.
 **Unblocked:** F-flying-nav-big, F-giant-hornet, F-winged-elf
 
 #### F-flying-nav-big — 3D flight nav for 2×2×2 flying creatures
-**Status:** Todo
+**Status:** Done
 
 3D flight pathfinding for 2×2×2 flying creatures. Extends
 F-flying-nav with multi-voxel clearance checks.
 
-**Blocks:** F-wyvern
 **Unblocked by:** F-flying-nav
+**Unblocked:** F-wyvern
 
 #### F-large-nav-tolerance — 1-voxel height tolerance for large nav
 **Status:** Done · **Phase:** 8+
@@ -1537,13 +1537,13 @@ climbing speed). Requires F-flying-nav.
 **Unblocked by:** F-flying-nav
 
 #### F-wyvern — Wyvern hostile flying creature (2×2×2)
-**Status:** Todo
+**Status:** Done
 
 Wyvern hostile flying creature (2×2×2). Different sprite from the
 giant hornet but similar aggressive AI, bigger and more dangerous.
 Requires F-flying-nav-big.
 
-**Blocked by:** F-flying-nav-big
+**Unblocked by:** F-flying-nav-big
 **Related:** F-giant-hornet
 
 ### Economy & Logistics

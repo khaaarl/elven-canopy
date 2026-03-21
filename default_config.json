@@ -395,6 +395,34 @@
         "disengage_threshold_pct": 30
       },
       "hostile_detection_range_sq": 196
+    },
+    "Wyvern": {
+      "walk_ticks_per_voxel": 800,
+      "flight_ticks_per_voxel": 200,
+      "heartbeat_interval_ticks": 4000,
+      "allowed_edge_types": null,
+      "ground_only": false,
+      "hp_max": 300,
+      "melee_damage": 40,
+      "melee_interval_ticks": 1200,
+      "melee_range_sq": 5,
+      "food_max": 1000000000000000,
+      "food_decay_per_tick": 0,
+      "food_hunger_threshold_pct": 50,
+      "food_restore_pct": 0,
+      "bread_restore_pct": 0,
+      "footprint": [2, 2, 2],
+      "rest_max": 1000000000000000,
+      "rest_decay_per_tick": 0,
+      "rest_tired_threshold_pct": 50,
+      "rest_per_sleep_tick": 60000000000,
+      "engagement_style": {
+        "weapon_preference": "PreferMelee",
+        "ammo_exhausted": "SwitchToMelee",
+        "initiative": "Aggressive",
+        "disengage_threshold_pct": 20
+      },
+      "hostile_detection_range_sq": 400
     }
   },
   "thoughts": {

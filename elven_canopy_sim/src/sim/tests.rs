@@ -1915,12 +1915,13 @@ fn from_json_rejects_wrong_schema() {
 #[test]
 fn species_data_loaded_from_config() {
     let sim = test_sim(42);
-    assert_eq!(sim.species_table.len(), 11);
+    assert_eq!(sim.species_table.len(), 12);
     assert!(sim.species_table.contains_key(&Species::Elf));
     assert!(sim.species_table.contains_key(&Species::Capybara));
     assert!(sim.species_table.contains_key(&Species::Boar));
     assert!(sim.species_table.contains_key(&Species::Deer));
     assert!(sim.species_table.contains_key(&Species::Elephant));
+    assert!(sim.species_table.contains_key(&Species::Wyvern));
     assert!(sim.species_table.contains_key(&Species::Hornet));
     assert!(sim.species_table.contains_key(&Species::Goblin));
     assert!(sim.species_table.contains_key(&Species::Monkey));
@@ -38437,4 +38438,115 @@ fn ordered_elf_vs_hornet_at_heights() {
             // melee." This is a known limitation tracked separately.
         }
     }
+}
+
+// -----------------------------------------------------------------------
+// F-flying-nav-big + F-wyvern tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn wyvern_species_in_config() {
+    let config = GameConfig::default();
+    assert!(config.species.contains_key(&Species::Wyvern));
+    let data = &config.species[&Species::Wyvern];
+    assert_eq!(data.flight_ticks_per_voxel, Some(200));
+    assert_eq!(data.footprint, [2, 2, 2]);
+    assert!(data.melee_damage > 0);
+    assert!(data.hp_max > 200); // tougher than hornet
+}
+
+#[test]
+fn wyvern_spawn_has_traits() {
+    let mut sim = test_sim(42);
+    let pos = VoxelCoord::new(20, 40, 20);
+    let mut events = Vec::new();
+    let id = sim
+        .spawn_creature(Species::Wyvern, pos, &mut events)
+        .expect("wyvern should spawn in open air");
+
+    let body_color = sim.trait_int(id, TraitKind::BodyColor, -1);
+    assert!((0..4).contains(&body_color));
+    let scale = sim.trait_int(id, TraitKind::ScalePattern, -1);
+    assert!((0..3).contains(&scale));
+    let horn = sim.trait_int(id, TraitKind::HornStyle, -1);
+    assert!((0..3).contains(&horn));
+}
+
+#[test]
+fn wyvern_spawn_checks_full_footprint() {
+    let mut sim = test_sim(42);
+    // Place a trunk voxel at one corner of where the 2x2x2 footprint would be.
+    let anchor = VoxelCoord::new(20, 40, 20);
+    sim.world
+        .set(VoxelCoord::new(21, 41, 21), crate::types::VoxelType::Trunk);
+    let mut events = Vec::new();
+    assert!(
+        sim.spawn_creature(Species::Wyvern, anchor, &mut events)
+            .is_none(),
+        "wyvern should not spawn when one footprint voxel is solid"
+    );
+}
+
+#[test]
+fn wyvern_serde_roundtrip() {
+    let species = Species::Wyvern;
+    let json = serde_json::to_string(&species).unwrap();
+    let restored: Species = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored, species);
+}
+
+#[test]
+fn wyvern_is_hostile_to_elves() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+
+    // Spawn wyvern above the elf (needs 2x2x2 clear space in the air).
+    let wyvern_pos = VoxelCoord::new(elf_pos.x - 1, elf_pos.y + 5, elf_pos.z - 1);
+    let mut events = Vec::new();
+    let wyvern_id = sim
+        .spawn_creature(Species::Wyvern, wyvern_pos, &mut events)
+        .expect("wyvern should spawn");
+
+    let wyvern = sim.db.creatures.get(&wyvern_id).unwrap();
+    assert!(wyvern.civ_id.is_none());
+
+    let wyvern_data = &sim.species_table[&Species::Wyvern];
+    let targets = sim.detect_hostile_targets(
+        wyvern_id,
+        Species::Wyvern,
+        wyvern.position,
+        wyvern.civ_id,
+        wyvern_data.hostile_detection_range_sq,
+    );
+    assert!(!targets.is_empty(), "wyvern should detect the elf");
+}
+
+#[test]
+fn wyvern_pursues_and_damages_elf() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let elf_hp_before = sim.db.creatures.get(&elf_id).unwrap().hp;
+
+    let wyvern_pos = VoxelCoord::new(elf_pos.x - 1, elf_pos.y + 4, elf_pos.z - 1);
+    let mut events = Vec::new();
+    let wyvern_id = sim
+        .spawn_creature(Species::Wyvern, wyvern_pos, &mut events)
+        .expect("wyvern should spawn");
+
+    // Wyvern is fast (flight_tpv=200) but needs time to detect, path, and strike.
+    let target_tick = sim.tick + 15000;
+    sim.step(&[], target_tick);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        elf.hp < elf_hp_before,
+        "elf should have taken damage from wyvern: hp {} vs before {}",
+        elf.hp,
+        elf_hp_before
+    );
+
+    let wyvern = sim.db.creatures.get(&wyvern_id).unwrap();
+    assert_ne!(wyvern.position, wyvern_pos, "wyvern should have moved");
 }

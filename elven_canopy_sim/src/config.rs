@@ -2629,6 +2629,53 @@ impl Default for GameConfig {
                 raid_size: 1,
             },
         );
+        species.insert(
+            Species::Wyvern,
+            SpeciesData {
+                walk_ticks_per_voxel: 800, // slow on ground (shouldn't happen)
+                climb_ticks_per_voxel: None,
+                flight_ticks_per_voxel: Some(200), // faster than hornet
+                heartbeat_interval_ticks: 4000,
+                allowed_edge_types: None,
+                ground_only: false,
+                hp_max: 300,
+                food_max: 1_000_000_000_000_000,
+                food_decay_per_tick: 0,
+                food_hunger_threshold_pct: 50,
+                food_restore_pct: 0,
+                bread_restore_pct: 0,
+                footprint: [2, 2, 2],
+                wood_ladder_tpv: None,
+                rope_ladder_tpv: None,
+                rest_max: 1_000_000_000_000_000,
+                rest_decay_per_tick: 0,
+                rest_tired_threshold_pct: 50,
+                rest_per_sleep_tick: 60_000_000_000,
+                melee_damage: 40,
+                melee_interval_ticks: 1200,
+                melee_range_sq: 5, // larger reach than 1x1 creatures
+                engagement_style: EngagementStyle {
+                    weapon_preference: WeaponPreference::PreferMelee,
+                    ammo_exhausted: AmmoExhaustedBehavior::SwitchToMelee,
+                    initiative: EngagementInitiative::Aggressive,
+                    disengage_threshold_pct: 20, // flees when badly hurt
+                },
+                hostile_detection_range_sq: 400, // 20-voxel detection radius
+                mp_max: 0,
+                mana_per_tick: 0,
+                stat_distributions: stat_dists(&[
+                    (TraitKind::Strength, 15, 5),
+                    (TraitKind::Agility, 5, 4),
+                    (TraitKind::Dexterity, -5, 4),
+                    (TraitKind::Constitution, 20, 5),
+                    (TraitKind::Willpower, 5, 4),
+                    (TraitKind::Intelligence, -10, 4),
+                    (TraitKind::Perception, 10, 4),
+                    (TraitKind::Charisma, -15, 4),
+                ]),
+                raid_size: 1,
+            },
+        );
 
         Self {
             tick_duration_ms: 1,
@@ -2942,8 +2989,8 @@ mod tests {
             config.tree_profile.growth.initial_energy,
             restored.tree_profile.growth.initial_energy
         );
-        // Verify species data survived (11 species).
-        assert_eq!(config.species.len(), 11);
+        // Verify species data survived (12 species).
+        assert_eq!(config.species.len(), 12);
         assert_eq!(config.species.len(), restored.species.len());
         let elf_data = &restored.species[&Species::Elf];
         assert_eq!(elf_data.heartbeat_interval_ticks, 3000);

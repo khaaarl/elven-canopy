@@ -54,10 +54,11 @@ impl SimState {
         let ground_only = species_data.ground_only;
         let is_flyer = species_data.flight_ticks_per_voxel.is_some();
 
-        // Flying creatures spawn at the raw position (must be flyable);
-        // ground creatures snap to the nearest nav node.
+        // Flying creatures spawn at the raw position (entire footprint must be
+        // flyable); ground creatures snap to the nearest nav node.
         let node_pos = if is_flyer {
-            if !self.world.in_bounds(position) || !self.world.get(position).is_flyable() {
+            let footprint = species_data.footprint;
+            if !crate::flight_pathfinding::footprint_flyable(&self.world, position, footprint) {
                 return None;
             }
             position
@@ -367,6 +368,23 @@ impl SimState {
                 self.insert_trait(
                     creature_id,
                     TraitKind::WingStyle,
+                    TraitValue::Int(((h / 41) % 3) as i64),
+                );
+            }
+            Species::Wyvern => {
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::BodyColor,
+                    TraitValue::Int((h % 4) as i64),
+                );
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::ScalePattern,
+                    TraitValue::Int(((h / 11) % 3) as i64),
+                );
+                self.insert_trait(
+                    creature_id,
+                    TraitKind::HornStyle,
                     TraitValue::Int(((h / 41) % 3) as i64),
                 );
             }

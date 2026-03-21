@@ -440,8 +440,8 @@ pub enum TraitKind {
     // -- Boar traits --
     /// Index into `TUSK_SIZES` array (0–2).
     TuskSize,
-    // -- Troll traits --
-    /// Index into `HORN_STYLES` array (0–2).
+    // -- Troll / Wyvern traits --
+    /// Index into species-specific `HORN_STYLES` array (0–2).
     HornStyle,
     // -- Squirrel / Monkey traits (shared name, different palettes) --
     /// Index into species-specific `FUR_COLORS` palette.
@@ -471,6 +471,9 @@ pub enum TraitKind {
     StripePattern,
     /// Index into `WING_STYLES` array (0–2).
     WingStyle,
+    // -- Wyvern traits --
+    /// Index into `SCALE_PATTERNS` array (0–2).
+    ScalePattern,
     // -- Creature stats (F-creature-stats) --
     // Integer scale centered on 0 (human baseline). Every +10 doubles
     // mechanical intensity via the exponential stat multiplier table.
@@ -586,6 +589,7 @@ pub enum Species {
     Squirrel,
     Troll,
     Hornet,
+    Wyvern,
 }
 
 /// Species that can form civilizations. Separate from the sim-active `Species`

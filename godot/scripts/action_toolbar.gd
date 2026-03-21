@@ -225,6 +225,11 @@ func _ready() -> void:
 	hornet_button.pressed.connect(_on_spawn.bind("Hornet"))
 	_debug_row.add_child(hornet_button)
 
+	var wyvern_button := Button.new()
+	wyvern_button.text = "Wyvern"
+	wyvern_button.pressed.connect(_on_spawn.bind("Wyvern"))
+	_debug_row.add_child(wyvern_button)
+
 	_update_speed_highlight()
 
 

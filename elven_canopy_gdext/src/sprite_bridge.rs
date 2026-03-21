@@ -61,6 +61,7 @@ impl SpriteGenerator {
             "Squirrel" => Species::Squirrel,
             "Troll" => Species::Troll,
             "Hornet" => Species::Hornet,
+            "Wyvern" => Species::Wyvern,
             _ => {
                 godot_warn!("SpriteGenerator: unknown species '{species_name}'");
                 return None;

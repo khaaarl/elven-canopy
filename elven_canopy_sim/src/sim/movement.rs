@@ -585,8 +585,9 @@ impl SimState {
         // Check if we have a cached flight path with remaining steps.
         let next_pos = if let Some(ref path) = creature.path {
             if let Some(&next) = path.remaining_positions.first() {
-                // Validate that the next position is still flyable.
-                if !self.world.get(next).is_flyable() {
+                // Validate that the next position is still flyable (full footprint).
+                let footprint = self.species_table[&species].footprint;
+                if !crate::flight_pathfinding::footprint_flyable(&self.world, next, footprint) {
                     None // obstacle appeared; repath
                 } else {
                     Some(next)
@@ -603,12 +604,14 @@ impl SimState {
         } else {
             // Compute a new flight path.
             let max_nodes = 10_000;
+            let footprint = self.species_table[&species].footprint;
             let path_result = crate::flight_pathfinding::astar_fly(
                 &self.world,
                 current_pos,
                 target_pos,
                 flight_tpv,
                 max_nodes,
+                footprint,
             );
             let path_result = match path_result {
                 Some(r) if r.waypoints.len() >= 2 => r,
@@ -721,7 +724,8 @@ impl SimState {
         };
         let pos = creature.position;
 
-        // Collect flyable neighbor voxels.
+        // Collect flyable neighbor positions (check full footprint clearance).
+        let footprint = self.species_table[&species].footprint;
         let offsets: [(i32, i32, i32); 6] = [
             (-1, 0, 0),
             (1, 0, 0),
@@ -733,7 +737,7 @@ impl SimState {
         let mut candidates: Vec<VoxelCoord> = Vec::new();
         for &(dx, dy, dz) in &offsets {
             let neighbor = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
-            if self.world.in_bounds(neighbor) && self.world.get(neighbor).is_flyable() {
+            if crate::flight_pathfinding::footprint_flyable(&self.world, neighbor, footprint) {
                 candidates.push(neighbor);
             }
         }

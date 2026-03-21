@@ -131,9 +131,29 @@ fn octile_heuristic_3d(a: VoxelCoord, b: VoxelCoord, flight_tpv: u64) -> i64 {
     (h * flight_tpv) as i64
 }
 
-/// Find the shortest flight path from `start` to `goal` through non-solid voxels.
+/// Check whether all voxels in a footprint anchored at `anchor` are flyable.
+/// The anchor is the min-corner (smallest x, y, z) of the bounding box.
+pub fn footprint_flyable(world: &VoxelWorld, anchor: VoxelCoord, footprint: [u8; 3]) -> bool {
+    for dx in 0..footprint[0] as i32 {
+        for dy in 0..footprint[1] as i32 {
+            for dz in 0..footprint[2] as i32 {
+                let v = VoxelCoord::new(anchor.x + dx, anchor.y + dy, anchor.z + dz);
+                if !world.in_bounds(v) || !world.get(v).is_flyable() {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// Find the shortest flight path from `start` to `goal` through flyable voxels.
 ///
-/// Returns `None` if no path exists (start/goal are solid, or walled off).
+/// The `footprint` `[width_x, height_y, depth_z]` specifies the creature's
+/// bounding box. For 1×1×1 creatures this is `[1,1,1]`; for 2×2×2 it's
+/// `[2,2,2]`. All voxels in the footprint must be flyable at every position.
+///
+/// Returns `None` if no path exists (start/goal blocked, or walled off).
 /// `flight_tpv` is the species' flight ticks-per-voxel from `SpeciesData`.
 ///
 /// The search limit `max_nodes` caps the number of nodes expanded to prevent
@@ -144,11 +164,9 @@ pub fn astar_fly(
     goal: VoxelCoord,
     flight_tpv: u64,
     max_nodes: u32,
+    footprint: [u8; 3],
 ) -> Option<FlightPathResult> {
-    if !world.in_bounds(start) || !world.in_bounds(goal) {
-        return None;
-    }
-    if !world.get(start).is_flyable() || !world.get(goal).is_flyable() {
+    if !footprint_flyable(world, start, footprint) || !footprint_flyable(world, goal, footprint) {
         return None;
     }
     if start == goal {
@@ -212,10 +230,7 @@ pub fn astar_fly(
             let nz = pos.z + dz;
             let neighbor = VoxelCoord::new(nx, ny, nz);
 
-            if !world.in_bounds(neighbor) {
-                continue;
-            }
-            if !world.get(neighbor).is_flyable() {
+            if !footprint_flyable(world, neighbor, footprint) {
                 continue;
             }
 
@@ -248,11 +263,14 @@ mod tests {
         VoxelWorld::new(sx, sy, sz)
     }
 
+    const FP1: [u8; 3] = [1, 1, 1];
+    const FP2: [u8; 3] = [2, 2, 2];
+
     #[test]
     fn same_start_and_goal() {
         let world = empty_world(16, 16, 16);
         let pos = VoxelCoord::new(5, 5, 5);
-        let result = astar_fly(&world, pos, pos, 250, 0).unwrap();
+        let result = astar_fly(&world, pos, pos, 250, 0, FP1).unwrap();
         assert_eq!(result.waypoints, vec![pos]);
         assert_eq!(result.total_cost, 0);
     }
@@ -262,7 +280,7 @@ mod tests {
         let world = empty_world(16, 16, 16);
         let start = VoxelCoord::new(2, 5, 5);
         let goal = VoxelCoord::new(7, 5, 5);
-        let result = astar_fly(&world, start, goal, 250, 0).unwrap();
+        let result = astar_fly(&world, start, goal, 250, 0, FP1).unwrap();
         // Straight line: 5 steps, each face-adjacent (1024 * 250 = 256000 cost per step).
         assert_eq!(result.waypoints.len(), 6); // 5 edges + start
         assert_eq!(result.waypoints[0], start);
@@ -275,7 +293,7 @@ mod tests {
         let world = empty_world(16, 16, 16);
         let start = VoxelCoord::new(2, 2, 2);
         let goal = VoxelCoord::new(5, 5, 5);
-        let result = astar_fly(&world, start, goal, 250, 0).unwrap();
+        let result = astar_fly(&world, start, goal, 250, 0, FP1).unwrap();
         // Pure 3D diagonal: 3 corner steps (distance 1773 each).
         assert_eq!(result.waypoints.len(), 4);
         assert_eq!(result.total_cost, 3 * 1773 * 250);
@@ -293,7 +311,7 @@ mod tests {
         let start = VoxelCoord::new(2, 4, 4);
         let goal = VoxelCoord::new(6, 4, 4);
         // Fully walled off — no path.
-        assert!(astar_fly(&world, start, goal, 250, 0).is_none());
+        assert!(astar_fly(&world, start, goal, 250, 0, FP1).is_none());
     }
 
     #[test]
@@ -307,7 +325,7 @@ mod tests {
         }
         let start = VoxelCoord::new(3, 5, 5);
         let goal = VoxelCoord::new(7, 5, 5);
-        let result = astar_fly(&world, start, goal, 250, 0).unwrap();
+        let result = astar_fly(&world, start, goal, 250, 0, FP1).unwrap();
         // Path exists (goes around the wall).
         assert_eq!(*result.waypoints.first().unwrap(), start);
         assert_eq!(*result.waypoints.last().unwrap(), goal);
@@ -320,7 +338,7 @@ mod tests {
         let start = VoxelCoord::new(3, 3, 3);
         world.set(start, crate::types::VoxelType::Trunk);
         let goal = VoxelCoord::new(5, 5, 5);
-        assert!(astar_fly(&world, start, goal, 250, 0).is_none());
+        assert!(astar_fly(&world, start, goal, 250, 0, FP1).is_none());
     }
 
     #[test]
@@ -329,7 +347,7 @@ mod tests {
         let goal = VoxelCoord::new(3, 3, 3);
         world.set(goal, crate::types::VoxelType::Trunk);
         let start = VoxelCoord::new(5, 5, 5);
-        assert!(astar_fly(&world, start, goal, 250, 0).is_none());
+        assert!(astar_fly(&world, start, goal, 250, 0, FP1).is_none());
     }
 
     #[test]
@@ -337,7 +355,7 @@ mod tests {
         let world = empty_world(8, 8, 8);
         let start = VoxelCoord::new(5, 5, 5);
         let goal = VoxelCoord::new(100, 5, 5); // out of bounds
-        assert!(astar_fly(&world, start, goal, 250, 0).is_none());
+        assert!(astar_fly(&world, start, goal, 250, 0, FP1).is_none());
     }
 
     #[test]
@@ -346,9 +364,9 @@ mod tests {
         let start = VoxelCoord::new(0, 32, 0);
         let goal = VoxelCoord::new(63, 32, 63);
         // Very tight budget — should fail.
-        assert!(astar_fly(&world, start, goal, 250, 5).is_none());
+        assert!(astar_fly(&world, start, goal, 250, 5, FP1).is_none());
         // Generous budget — should succeed.
-        let result = astar_fly(&world, start, goal, 250, 100_000);
+        let result = astar_fly(&world, start, goal, 250, 100_000, FP1);
         assert!(result.is_some());
     }
 
@@ -360,14 +378,14 @@ mod tests {
         world.set(VoxelCoord::new(4, 4, 4), crate::types::VoxelType::Leaf);
         let start = VoxelCoord::new(3, 4, 4);
         let goal = VoxelCoord::new(5, 4, 4);
-        let result = astar_fly(&world, start, goal, 250, 0).unwrap();
+        let result = astar_fly(&world, start, goal, 250, 0, FP1).unwrap();
         assert_eq!(result.waypoints.len(), 3);
         assert_eq!(result.waypoints[1], VoxelCoord::new(4, 4, 4));
         assert_eq!(result.total_cost, 2 * 1024 * 250);
 
         // Same for Fruit.
         world.set(VoxelCoord::new(4, 4, 4), crate::types::VoxelType::Fruit);
-        let result = astar_fly(&world, start, goal, 250, 0).unwrap();
+        let result = astar_fly(&world, start, goal, 250, 0, FP1).unwrap();
         assert_eq!(result.waypoints.len(), 3);
         assert_eq!(result.waypoints[1], VoxelCoord::new(4, 4, 4));
     }
@@ -382,7 +400,83 @@ mod tests {
         );
         let start = VoxelCoord::new(3, 4, 4);
         let goal = VoxelCoord::new(5, 4, 4);
-        let result = astar_fly(&world, start, goal, 250, 0).unwrap();
+        let result = astar_fly(&world, start, goal, 250, 0, FP1).unwrap();
         assert_eq!(result.waypoints.len(), 3);
+    }
+
+    #[test]
+    fn footprint_2x2x2_straight_line() {
+        let world = empty_world(16, 16, 16);
+        let start = VoxelCoord::new(2, 5, 5);
+        let goal = VoxelCoord::new(7, 5, 5);
+        let result = astar_fly(&world, start, goal, 250, 0, FP2).unwrap();
+        assert_eq!(result.waypoints.len(), 6);
+        assert_eq!(result.total_cost, 5 * 1024 * 250);
+    }
+
+    #[test]
+    fn footprint_2x2x2_blocked_by_partial_obstruction() {
+        let mut world = empty_world(16, 16, 16);
+        // Build a solid wall at x=5 across all y,z with a single 1-voxel
+        // gap at (5, 5, 5). A 1x1x1 creature can squeeze through the gap;
+        // a 2x2x2 creature cannot (the gap is only 1 voxel wide).
+        for y in 0..16 {
+            for z in 0..16 {
+                world.set(VoxelCoord::new(5, y, z), crate::types::VoxelType::Trunk);
+            }
+        }
+        // Open the gap.
+        world.set(VoxelCoord::new(5, 5, 5), crate::types::VoxelType::Air);
+        let start = VoxelCoord::new(2, 5, 5);
+        let goal = VoxelCoord::new(8, 5, 5);
+
+        // 1x1x1 can squeeze through the 1-voxel gap.
+        let result_1x1 = astar_fly(&world, start, goal, 250, 0, FP1);
+        assert!(result_1x1.is_some(), "1x1x1 should find path through gap");
+
+        // 2x2x2 cannot fit through the gap — no path.
+        assert!(
+            astar_fly(&world, start, goal, 250, 0, FP2).is_none(),
+            "2x2x2 should not fit through 1-voxel gap"
+        );
+    }
+
+    #[test]
+    fn footprint_2x2x2_blocked_at_start() {
+        let mut world = empty_world(8, 8, 8);
+        // Block one voxel of the 2x2x2 start footprint.
+        world.set(VoxelCoord::new(3, 4, 3), crate::types::VoxelType::Trunk);
+        let start = VoxelCoord::new(2, 3, 2); // footprint includes (3, 4, 3)
+        let goal = VoxelCoord::new(5, 3, 5);
+        assert!(astar_fly(&world, start, goal, 250, 0, FP2).is_none());
+    }
+
+    #[test]
+    fn footprint_2x2x2_at_world_boundary() {
+        let world = empty_world(8, 8, 8);
+        // Anchor at (7, 3, 3): footprint extends to (8, 4, 4) which is out of bounds.
+        let start = VoxelCoord::new(7, 3, 3);
+        let goal = VoxelCoord::new(5, 3, 3);
+        assert!(
+            astar_fly(&world, start, goal, 250, 0, FP2).is_none(),
+            "2x2x2 at world boundary should not start (footprint out of bounds)"
+        );
+        // Same for goal at boundary.
+        let start2 = VoxelCoord::new(3, 3, 3);
+        let goal2 = VoxelCoord::new(7, 3, 3);
+        assert!(
+            astar_fly(&world, start2, goal2, 250, 0, FP2).is_none(),
+            "2x2x2 at world boundary should not reach goal (footprint out of bounds)"
+        );
+        // But 1x1x1 at (7, 3, 3) is fine.
+        let result = astar_fly(
+            &world,
+            VoxelCoord::new(3, 3, 3),
+            VoxelCoord::new(7, 3, 3),
+            250,
+            0,
+            FP1,
+        );
+        assert!(result.is_some(), "1x1x1 should reach world boundary");
     }
 }
