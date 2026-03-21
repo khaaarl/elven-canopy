@@ -103,19 +103,24 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-creature-control     Temporary allegiance change and AI override
 [ ] F-creature-gravity     Creatures fall when on unsupported voxels
 [ ] F-cultural-drift       Inter-tree cultural divergence
+[ ] F-dappled-light        Dappled light effect via scrolling noise on ground shader
 [ ] F-day-night            Day/night cycle and pacing
+[ ] F-day-night-color      Color grading shift by time of day
 [ ] F-defense-struct       Defensive structures (ballista, wards)
 [ ] F-demolish             Structure demolition
+[ ] F-distance-fog         Depth-based atmospheric fog/haze
 [ ] F-dwarf-fort-gen       Underground dwarf fortress generation
 [ ] F-dye-application      Apply dye to equipment at workshop
 [ ] F-dye-mixing           Dye color mixing recipes
 [ ] F-dye-palette          Named color palette system for dyes
+[ ] F-edge-outline         Edge highlighting shader (depth/normal discontinuity)
 [ ] F-edge-scroll          Configurable edge scrolling (pan, rotate, or off)
 [ ] F-elf-assign           Elf-to-building assignment UI
 [ ] F-elf-leave            Devastated elves permanently leave
 [ ] F-elf-mana-pool        Per-elf mana pool wired to WIL/INT stats
 [ ] F-elfcyclopedia-know   Elfcyclopedia civ/fruit knowledge pages
 [ ] F-emotions             Multi-dimensional emotional state
+[ ] F-face-tint            Directional face tinting by normal (top warm, bottom cool)
 [ ] F-festivals            Festivals and community ceremonies
 [ ] F-ff-vertical-arc      Vertical arc awareness for friendly-fire checks
 [ ] F-fire-advanced        Heat accumulation and ignition thresholds
@@ -141,6 +146,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-insect-husbandry     Beekeeping and insect husbandry
 [ ] F-instinctual-flee     Instinctual flee thresholds (species-level fear overrides)
 [ ] F-jobs                 Elf job/role specialization
+[ ] F-leaf-sway            Foliage vertex sway shader (wind simulation)
 [ ] F-leaf-tex-rethink     Evaluate bringing leaves into tiling texture system
 [ ] F-lesser-trees         Lesser trees (non-sentient, resource/ecology)
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
@@ -3921,6 +3927,20 @@ Broadened from creature-only tooltip to cover all hoverable world objects.
 
 **Related:** F-creature-info, F-elf-names, F-selection, F-status-bar
 
+#### F-dappled-light — Dappled light effect via scrolling noise on ground shader
+**Status:** Todo
+
+Scrolling noise texture multiplied into the ground/bark shader brightness to simulate light filtering through the canopy. Sampled at world XZ coordinates with slow time-based offset. The bark/ground shaders already do world-space texture lookups, so adding a noise layer is minimal work. No CPU cost, no mesh changes — pure shader effect.
+
+**Related:** F-day-night-color
+
+#### F-day-night-color — Color grading shift by time of day
+**Status:** Todo
+
+Shift Environment tonemap / white balance / DirectionalLight3D color over a day-night cycle. Warm golden tones at dawn/dusk, cool blue at night, neutral midday. Zero rendering cost — just tweaking Environment resource properties over time. Requires a time-of-day system in the sim or at least in GDScript. Pairs well with F-dappled-light (noise intensity could vary by time) and F-distance-fog (fog color shifts with sky).
+
+**Related:** F-dappled-light, F-distance-fog
+
 #### F-dblclick-select — Double-click to select all of same military group
 **Status:** Done · **Phase:** 5
 
@@ -3951,6 +3971,18 @@ structure) to reflect that it's no longer spawn-centric.
 The debug menu should be easy to hide entirely for non-dev builds later.
 
 **Related:** F-spawn-toolbar
+
+#### F-distance-fog — Depth-based atmospheric fog/haze
+**Status:** Todo
+
+Depth-based fog that fades distant geometry toward a sky/haze color. Can use Godot's built-in Environment fog or a simple shader-based depth fade. Hides LOD transitions (relevant for F-megachunk draw distance), gives depth cues, makes the forest feel large. Essentially free — per-fragment lerp based on depth.
+
+**Related:** F-day-night-color, F-megachunk
+
+#### F-edge-outline — Edge highlighting shader (depth/normal discontinuity)
+**Status:** Todo
+
+Screen-space post-process or per-material shader that darkens edges at depth/normal discontinuities (Sobel filter on depth+normal buffer). Highlights silhouettes of branches, platforms, and structures against the sky. Makes the world readable at distance without extra geometry. One full-screen pass, minimal cost.
 
 #### F-edge-scroll — Configurable edge scrolling (pan, rotate, or off)
 **Status:** Todo · **Phase:** 5
@@ -4026,6 +4058,11 @@ Design decisions:
 
 **Unblocked by:** F-clothing, F-rust-sprites
 **Unblocked:** F-equipment-color
+
+#### F-face-tint — Directional face tinting by normal (top warm, bottom cool)
+**Status:** Todo
+
+Tint voxel faces based on normal direction: top faces slightly warmer (sky light), side faces neutral, bottom faces cooler/darker (indirect light). A single dot(normal, up) in the fragment shader, essentially free. Gives strong sense of natural directional lighting. Could also be baked into vertex colors at mesh gen time for zero shader cost.
 
 #### F-follow-multi — Camera zoom-to and follow for multi-selections
 **Status:** Todo · **Phase:** 5
@@ -4140,6 +4177,11 @@ shortcuts and mouse controls: camera orbit/zoom/pan, speed controls, ESC
 chain, construction mode keys, etc. Pure GDScript UI — no sim changes.
 
 **Related:** F-build-queue-ui, F-controls-config, F-controls-config-C
+
+#### F-leaf-sway — Foliage vertex sway shader (wind simulation)
+**Status:** Todo
+
+Vertex displacement in the leaf shader — offset leaf vertices by a sine wave keyed on world position and time. Zero CPU cost, no mesh regeneration. Amplitude modulated by height (higher = more sway) to simulate wind gradient. Makes the canopy feel alive.
 
 #### F-leaf-tex-rethink — Evaluate bringing leaves into tiling texture system
 **Status:** Todo
@@ -4719,7 +4761,7 @@ memory budget is exceeded. Both draw distance and memory budget are
 user-configurable settings.
 
 **Unblocked:** F-bigger-world
-**Related:** F-mesh-par, F-visual-smooth
+**Related:** F-distance-fog, F-mesh-par, F-visual-smooth
 
 #### F-mesh-cache-lru — LRU cache for chunk meshes at different Y cutoffs
 **Status:** Todo · **Phase:** 2
