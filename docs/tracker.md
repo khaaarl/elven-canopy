@@ -229,6 +229,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-vaelith-expand       Expand Vaelith language for runtime use
 [ ] F-vertical-garden      Vertical gardens on the tree
 [ ] F-visual-smooth        Smooth voxel surface rendering
+[ ] F-voxel-ao             Per-vertex ambient occlusion baked into chunk meshes
 [ ] F-war-magic            War magic (combat spells)
 [ ] F-weather              Weather within seasons
 [ ] F-winged-elf           Winged elf species variant with flight-only movement
@@ -4195,7 +4196,7 @@ F-rle-voxels.
 
 Move chunk mesh generation off the main thread onto the rayon worker pool. Currently mesh gen blocks the main thread; parallelizing it across rayon workers would reduce frame hitches when many chunks need rebuilding (e.g., after construction, tree growth, or camera movement). Chunks visible to the camera should be prioritized (submitted last to exploit rayon's LIFO work-stealing, or split into a high-priority batch that completes before speculative work begins). Ideally also speculatively generate meshes for chunks near the camera or within its frustum, since the camera could pan there at any moment. Relates to F-megachunk (spatial hierarchy) and F-mesh-cache-lru (caching).
 
-**Related:** F-megachunk, F-mesh-cache-lru
+**Related:** F-megachunk, F-mesh-cache-lru, F-voxel-ao
 
 #### F-minimap — Minimap with tree silhouette and creature positions
 **Status:** Done · **Phase:** 2
@@ -4540,6 +4541,13 @@ click again to set the end corner. More precise and less prone to
 accidental designations.
 
 **Related:** F-construction
+
+#### F-voxel-ao — Per-vertex ambient occlusion baked into chunk meshes
+**Status:** Todo
+
+Per-vertex ambient occlusion baked into chunk meshes at generation time. For each face vertex, sample the 3 corner-adjacent voxels (the classic 0-1-2-3 smooth voxel AO algorithm). Store AO factor per vertex — either in vertex color alpha or a dedicated attribute — and let the GPU interpolate smoothly across each face. Zero per-frame cost since AO is baked into the mesh and only recomputed when the chunk is dirtied. Cross-chunk border sampling uses the same neighbor-chunk reads already done for face culling. The shader multiplies AO into the final color to darken corners, crevices, undersides of branches, and interior spaces. High visual impact for minimal computational cost — transforms flat-shaded voxels into something with depth and presence.
+
+**Related:** F-mesh-par
 
 #### F-world-boundary — World boundary visualization
 **Status:** Todo · **Phase:** 2
