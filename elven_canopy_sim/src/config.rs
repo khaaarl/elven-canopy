@@ -2639,6 +2639,7 @@ impl Default for GameConfig {
                 allowed_edge_types: None,
                 ground_only: false,
                 hp_max: 300,
+                ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 0,
                 food_hunger_threshold_pct: 50,
