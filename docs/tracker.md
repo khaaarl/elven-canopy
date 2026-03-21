@@ -865,11 +865,11 @@ walks to the building and removes furniture incrementally.
 #### F-visual-smooth — Smooth voxel surface rendering
 **Status:** Todo · **Phase:** 2 · **Refs:** §8
 
-Platforms and construction should render with smoothed surfaces rather than
-raw cubes. Exact technique TBD (marching cubes variant, mesh smoothing, or
-shader-based rounding).
+Platforms and construction should render with smoothed surfaces rather than raw cubes. Exact technique TBD (marching cubes variant, dual contouring, surface nets, or shader-based rounding). Sim truth remains a discrete voxel grid — smoothing is purely a rendering concern.
 
-**Related:** F-megachunk
+**AO interaction:** Smooth rendering changes vertex positions from grid corners to interpolated edge/interior points. The per-vertex AO algorithm (F-voxel-ao) must adapt: instead of the binary 0-1-2-3 corner sampling used for cubic voxels, smooth meshes need a hybrid approach — sample the voxel density field in a small radius around each vertex, weighted by distance and oriented by the vertex normal. Since the sim truth is still a discrete grid, this samples the voxel grid (not the smooth surface), keeping it bounded and cacheable. Plan: implement cubic AO first (F-voxel-ao), then adapt when smooth rendering lands.
+
+**Related:** F-megachunk, F-voxel-ao
 
 #### F-wireframe-ghost — Wireframe ghost for overlap preview
 **Status:** Todo · **Phase:** 2
@@ -4589,7 +4589,11 @@ accidental designations.
 
 Per-vertex ambient occlusion baked into chunk meshes at generation time. For each face vertex, sample the 3 corner-adjacent voxels (the classic 0-1-2-3 smooth voxel AO algorithm). Store AO factor per vertex — either in vertex color alpha or a dedicated attribute — and let the GPU interpolate smoothly across each face. Zero per-frame cost since AO is baked into the mesh and only recomputed when the chunk is dirtied. Cross-chunk border sampling uses the same neighbor-chunk reads already done for face culling. The shader multiplies AO into the final color to darken corners, crevices, undersides of branches, and interior spaces. High visual impact for minimal computational cost — transforms flat-shaded voxels into something with depth and presence.
 
-**Related:** F-mesh-par
+**Interaction with F-visual-smooth:** The cubic 0-1-2-3 corner AO algorithm assumes axis-aligned geometry with vertices on grid corners. When smooth rendering lands, vertices sit at interpolated positions along voxel edges. The AO algorithm must adapt to a hybrid approach: for each smooth-mesh vertex, find the nearest voxel position(s), sample the 3×3×3 neighborhood in the voxel grid, and compute occlusion weighted by distance and the vertex normal (soft falloff instead of hard binary). This is still bounded and cacheable — same core idea, just with continuous rather than discrete sampling. Implement cubic AO first, then adapt when F-visual-smooth lands.
+
+**Supplementary SSAO:** Godot's built-in screen-space AO (`Environment.ssao_enabled`) can supplement baked AO for dynamic objects (elves, creatures) that don't have per-vertex AO. Works regardless of cubic vs smooth geometry.
+
+**Related:** F-mesh-par, F-visual-smooth
 
 #### F-world-boundary — World boundary visualization
 **Status:** Todo · **Phase:** 2
