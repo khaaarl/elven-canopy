@@ -151,6 +151,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mass-conserve        Wood mass tracking and conservation
 [ ] F-megachunk            MegaChunk spatial hierarchy with draw distance and frustum culling
 [ ] F-mesh-cache-lru       LRU cache for chunk meshes at different Y cutoffs
+[ ] F-mesh-par             Parallel off-main-thread chunk mesh generation with camera-priority
 [ ] F-military-campaign    Send elves on world expeditions
 [ ] F-military-org         Squad management and organization
 [ ] F-mmb-pan              Ctrl+MMB drag to pan camera horizontally
@@ -4188,6 +4189,13 @@ F-rle-voxels.
 
 **Unblocked by:** F-rle-voxels
 
+#### F-mesh-par — Parallel off-main-thread chunk mesh generation with camera-priority
+**Status:** Todo
+
+Move chunk mesh generation off the main thread onto the rayon worker pool. Currently mesh gen blocks the main thread; parallelizing it across rayon workers would reduce frame hitches when many chunks need rebuilding (e.g., after construction, tree growth, or camera movement). Chunks visible to the camera should be prioritized (submitted last to exploit rayon's LIFO work-stealing, or split into a high-priority batch that completes before speculative work begins). Ideally also speculatively generate meshes for chunks near the camera or within its frustum, since the camera could pan there at any moment. Relates to F-megachunk (spatial hierarchy) and F-mesh-cache-lru (caching).
+
+**Related:** F-megachunk, F-mesh-cache-lru
+
 #### F-minimap — Minimap with tree silhouette and creature positions
 **Status:** Done · **Phase:** 2
 
@@ -4697,10 +4705,12 @@ memory budget is exceeded. Both draw distance and memory budget are
 user-configurable settings.
 
 **Unblocked:** F-bigger-world
-**Related:** F-visual-smooth
+**Related:** F-mesh-par, F-visual-smooth
 
 #### F-mesh-cache-lru — LRU cache for chunk meshes at different Y cutoffs
 **Status:** Todo · **Phase:** 2
+
+**Related:** F-mesh-par
 
 #### F-modding — Scripting layer for modding support
 **Status:** Todo · **Refs:** §27
