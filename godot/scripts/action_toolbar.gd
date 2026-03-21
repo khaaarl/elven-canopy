@@ -5,7 +5,9 @@
 ## A "Debug" toggle button (or F12) reveals a second row with dev/test tools:
 ## creature spawn buttons, Summon Elf, Test Notif (sends a debug
 ## notification through the full sim command pipeline via SimBridge),
-## and Trigger Raid (spawns a hostile raiding party at the forest edge).
+## Trigger Raid (spawns a hostile raiding party at the forest edge),
+## and a 3D Scale toggle (switches between 1.0 and 0.25 render scale
+## for fill-rate vs polygon bottleneck diagnosis).
 ## Debug spawn buttons are click-only (no keyboard shortcuts).
 ##
 ## Keyboard shortcuts:
@@ -45,6 +47,8 @@ const SPEED_ORDER: Array = ["Normal", "Fast", "VeryFast"]
 var _debug_row: HBoxContainer
 var _debug_button: Button
 var _debug_visible: bool = false
+var _scale_button: Button
+var _low_res: bool = false
 
 ## Speed button references for highlighting the active speed.
 var _speed_buttons: Dictionary = {}
@@ -230,6 +234,15 @@ func _ready() -> void:
 	wyvern_button.pressed.connect(_on_spawn.bind("Wyvern"))
 	_debug_row.add_child(wyvern_button)
 
+	var debug_sep := VSeparator.new()
+	_debug_row.add_child(debug_sep)
+
+	_scale_button = Button.new()
+	_scale_button.text = "3D Scale: 1.0"
+	_scale_button.focus_mode = Control.FOCUS_NONE
+	_scale_button.pressed.connect(_toggle_3d_scale)
+	_debug_row.add_child(_scale_button)
+
 	_update_speed_highlight()
 
 
@@ -358,3 +371,13 @@ func _on_help_pressed() -> void:
 
 func _on_test_notif_pressed() -> void:
 	action_requested.emit("TestNotification")
+
+
+func _toggle_3d_scale() -> void:
+	_low_res = not _low_res
+	if _low_res:
+		get_viewport().scaling_3d_scale = 0.25
+		_scale_button.text = "3D Scale: 0.25"
+	else:
+		get_viewport().scaling_3d_scale = 1.0
+		_scale_button.text = "3D Scale: 1.0"

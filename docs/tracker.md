@@ -67,6 +67,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-anatomy              DF-style hit location anatomy system
 [ ] F-apprentice           Skill transfer via proximity
 [ ] F-arrow-chase          Enemies chase toward arrow source outside detection range
+[ ] F-async-sim            Async sim: decouple sim thread from render thread via delta channel
 [ ] F-audio-sampled        Sampled vocal syllables from conlang
 [ ] F-audio-vocal          Continuous vocal synthesis
 [ ] F-batch-blueprint      Batch blueprinting with dependency order
@@ -4671,6 +4672,27 @@ Revamp the creature activation/event system so that creatures do not need to man
 
 Control a single elf in first/third-person perspective within the
 same simulation. RPG-like exploration mode.
+
+#### F-async-sim — Async sim: decouple sim thread from render thread via delta channel
+**Status:** Todo
+
+Move sim stepping off the main thread to decouple sim tick time from frame budget. Currently the bridge steps the sim synchronously inside the Godot _process() callback — sim cost directly reduces FPS.
+
+**Approach:** Sim runs on its own thread (or rayon pool), producing lightweight render-relevant deltas each tick rather than full state duplication:
+- **Voxel diffs:** List of (coord, old_type, new_type). Usually empty; small on construction/growth; full snapshot only on game load. Replaces the current dirty-chunk query — the render side knows exactly which chunks to regenerate.
+- **Creature snapshots:** Position, action, HP, equipment per creature. Pre-built vec emitted by sim each tick, replacing on-demand bridge queries like get_all_creatures_summary().
+- **Events:** Notifications, projectile spawns, deaths — already event-driven via SimEvent.
+
+Sim posts deltas to a channel; render thread picks up the latest batch each frame. If sim is faster than rendering, intermediate states are skipped (fine — just want latest). If sim is slower, same state renders again (nothing visually changed).
+
+**Commands:** UI actions (build, move, attack) go from render thread to sim thread via a second channel. Small and infrequent.
+
+**Incremental migration path:**
+1. Add sim tick timing to the bridge/status bar to measure current cost (cheap diagnostic).
+2. Move sim step to a background thread, post creature snapshots, keep voxel reads synchronous behind a read lock (almost never contended since voxels rarely change).
+3. Migrate voxel diffs to the channel, eliminating the last synchronous sim queries.
+
+**Not urgent** — current sim is fast. This becomes important as creature count, pathfinding complexity, and task processing grow.
 
 #### F-core-types — VoxelCoord, IDs, SimCommand, GameConfig
 **Status:** Done · **Phase:** 0 · **Refs:** §5, §7

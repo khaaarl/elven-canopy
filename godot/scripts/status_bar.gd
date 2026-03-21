@@ -1,7 +1,7 @@
 ## Persistent status bar showing at-a-glance game statistics.
 ##
-## Displays population count, idle elf count, active task count, and current
-## sim speed in a semi-transparent bar at the bottom-left of the screen.
+## Displays population count, idle elf count, active task count, current
+## sim speed, and FPS in a semi-transparent bar at the bottom-left of the screen.
 ## Updates are throttled to every 0.25 seconds to avoid per-frame overhead
 ## from bridge queries.
 ##
@@ -23,6 +23,7 @@ var _pop_label: Label
 var _idle_label: Label
 var _tasks_label: Label
 var _speed_label: Label
+var _fps_label: Label
 var _update_timer: float = 0.0
 
 ## Cached speed name from toolbar signal (avoids extra bridge call).
@@ -80,16 +81,24 @@ func _ready() -> void:
 	_speed_label = _make_label()
 	hbox.add_child(_speed_label)
 
+	hbox.add_child(_make_separator())
+
+	_fps_label = _make_label()
+	hbox.add_child(_fps_label)
+
 	# Set initial text so bar is visible immediately.
 	_pop_label.text = "0 Elves"
 	_idle_label.text = "0 Idle"
 	_tasks_label.text = "0 Tasks"
 	_speed_label.text = "Speed: Normal"
+	_fps_label.text = "FPS: --"
 
 
 func _process(delta: float) -> void:
 	if not bridge:
 		return
+	# FPS updates every frame (cheap, no bridge call).
+	_fps_label.text = "FPS: " + str(Engine.get_frames_per_second())
 	_update_timer += delta
 	if _update_timer < UPDATE_INTERVAL:
 		return
