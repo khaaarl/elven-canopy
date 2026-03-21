@@ -157,6 +157,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mass-conserve        Wood mass tracking and conservation
 [ ] F-megachunk            MegaChunk spatial hierarchy with draw distance and frustum culling
 [ ] F-mesh-cache-lru       LRU cache for chunk meshes at different Y cutoffs
+[ ] F-mesh-lod             Mesh level-of-detail for distant chunks
 [ ] F-mesh-par             Parallel off-main-thread chunk mesh generation with camera-priority
 [ ] F-military-campaign    Send elves on world expeditions
 [ ] F-military-org         Squad management and organization
@@ -869,7 +870,8 @@ Platforms and construction should render with smoothed surfaces rather than raw 
 
 **AO interaction:** Smooth rendering changes vertex positions from grid corners to interpolated edge/interior points. The per-vertex AO algorithm (F-voxel-ao) must adapt: instead of the binary 0-1-2-3 corner sampling used for cubic voxels, smooth meshes need a hybrid approach — sample the voxel density field in a small radius around each vertex, weighted by distance and oriented by the vertex normal. Since the sim truth is still a discrete grid, this samples the voxel grid (not the smooth surface), keeping it bounded and cacheable. Plan: implement cubic AO first (F-voxel-ao), then adapt when smooth rendering lands.
 
-**Related:** F-megachunk, F-voxel-ao
+**Blocks:** F-mesh-lod
+**Related:** F-megachunk, F-mesh-lod, F-voxel-ao
 
 #### F-wireframe-ghost — Wireframe ghost for overlap preview
 **Status:** Todo · **Phase:** 2
@@ -3977,7 +3979,7 @@ The debug menu should be easy to hide entirely for non-dev builds later.
 
 Depth-based fog that fades distant geometry toward a sky/haze color. Can use Godot's built-in Environment fog or a simple shader-based depth fade. Hides LOD transitions (relevant for F-megachunk draw distance), gives depth cues, makes the forest feel large. Essentially free — per-fragment lerp based on depth.
 
-**Related:** F-day-night-color, F-megachunk
+**Related:** F-day-night-color, F-megachunk, F-mesh-lod
 
 #### F-edge-outline — Edge highlighting shader (depth/normal discontinuity)
 **Status:** Todo
@@ -4232,6 +4234,14 @@ Depends on the bulk iteration API (column_spans / chunk_columns) from
 F-rle-voxels.
 
 **Unblocked by:** F-rle-voxels
+
+#### F-mesh-lod — Mesh level-of-detail for distant chunks
+**Status:** Todo
+
+Mesh level-of-detail for distant chunks. Once F-visual-smooth lands (smooth terrain rendering), LOD becomes viable: reduce triangle count for chunks far from the camera by generating coarser meshes (fewer subdivisions, simplified geometry). Multiple LOD tiers — e.g., full detail near camera, half-res at mid distance, quarter-res or billboard at far distance. LOD meshes can be pre-generated and cached alongside the full-detail mesh in the mesh cache, swapped based on camera distance. Pairs with F-megachunk (spatial hierarchy determines which LOD tier to use) and F-distance-fog (fog hides LOD transitions). Cubic voxels don't benefit much from LOD since they're already minimal geometry per face, but smooth surfaces have variable triangle density that can be decimated at distance.
+
+**Blocked by:** F-visual-smooth
+**Related:** F-distance-fog, F-megachunk, F-mesh-cache-lru, F-visual-smooth
 
 #### F-mesh-par — Parallel off-main-thread chunk mesh generation with camera-priority
 **Status:** Todo
@@ -4765,12 +4775,12 @@ memory budget is exceeded. Both draw distance and memory budget are
 user-configurable settings.
 
 **Unblocked:** F-bigger-world
-**Related:** F-distance-fog, F-mesh-par, F-visual-smooth
+**Related:** F-distance-fog, F-mesh-lod, F-mesh-par, F-visual-smooth
 
 #### F-mesh-cache-lru — LRU cache for chunk meshes at different Y cutoffs
 **Status:** Todo · **Phase:** 2
 
-**Related:** F-mesh-par
+**Related:** F-mesh-lod, F-mesh-par
 
 #### F-modding — Scripting layer for modding support
 **Status:** Todo · **Refs:** §27
