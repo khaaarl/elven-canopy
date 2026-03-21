@@ -51,6 +51,7 @@ This reduces merge conflicts when parallel work streams add items.
 [~] F-fruit-variety        Procedural fruit variety and processing
 [~] F-multiplayer          Relay-coordinator multiplayer networking
 [~] F-notifications        Player-visible event notifications
+[~] F-parallel-dedup       Radix-partitioned parallel dedup (elven_canopy_utils)
 ```
 
 ### Todo
@@ -4741,6 +4742,11 @@ Optimize nav graph generation performance on 1024x255x1024 worlds.
 
 **Remaining potential optimization:**
 - **Parallel partitioned edge insertion (potentially unsafe).** Pre-compute all edges as (from_slot, to_slot, EdgeType, distance) tuples. Pre-size the edges vec and write edge data into disjoint slices (one per rayon chunk). For updating NavNode.edge_indices, sort computed edges by from_slot, partition into contiguous ranges, and have each thread update a disjoint set of NavNodes. This avoids data races but requires careful use of split_at_mut or unsafe indexing. False sharing at chunk boundaries is negligible with large chunks. This is complex and needs careful correctness validation — the edge_indices ordering affects PRNG-dependent sim behavior (wander direction, flee direction, archer positioning).
+
+#### F-parallel-dedup — Radix-partitioned parallel dedup (elven_canopy_utils)
+**Status:** In Progress
+
+New `elven_canopy_utils` crate with radix-partitioned parallel dedup algorithm. Scatters items by hash into power-of-2 buckets (bitmask assignment), deduplicates each bucket independently via hashbrown HashTable with precomputed hashes, collects results. Configurable bucket count and generic hasher (`parallel_dedup_with`). Sequential fallback below 10k items. Criterion benchmarks comparing bucket counts (32/64/128/256) × hashers (std/ahash/fxhash) × item types (u64/[u64;6]/String) × sizes (1k–10M). Currently slower than `par_sort_unstable + dedup` — needs tuning. **Draft:** `docs/drafts/parallel_dedup.md`
 
 #### F-rle-voxels — RLE column-based voxel storage
 **Status:** Done
