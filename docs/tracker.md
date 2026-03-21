@@ -220,7 +220,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tree-disease         Tree diseases and parasites
 [ ] F-tree-memory          Ancient tree knowledge/vision system
 [ ] F-tree-species         Multiple tree species with properties
-[ ] F-troll-regen          Troll health regeneration over time
 [ ] F-two-click-build      Two-click construction designation (click start, click end)
 [ ] F-undo-designate       Undo last construction designation
 [ ] F-unfurnish            Unfurnish/refurnish a building
@@ -417,6 +416,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-tree-gen             Procedural tree generation (trunk+branches)
 [x] F-tree-info            Tree stats/info panel
 [x] F-tree-overlap         Construction overlap with tree geometry
+[x] F-troll-regen          Troll health regeneration over time
 [x] F-unified-craft-ui     Unified data-driven building crafting UI
 [x] F-voxel-exclusion      Creatures cannot enter voxels occupied by hostile creatures
 [x] F-voxel-fem            Voxel FEM structural analysis
@@ -1507,7 +1507,7 @@ also needs this function as a prerequisite.
 **Related:** F-creature-actions, F-dynamic-pursuit
 
 #### F-troll-regen — Troll health regeneration over time
-**Status:** Todo
+**Status:** Done
 
 Trolls passively regenerate HP over time, making them harder to kill with
 sustained low-damage attacks. Encourages concentrated burst damage or

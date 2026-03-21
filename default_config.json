@@ -342,6 +342,7 @@
       "allowed_edge_types": null,
       "ground_only": false,
       "hp_max": 400,
+      "ticks_per_hp_regen": 500,
       "melee_damage": 50,
       "melee_interval_ticks": 1500,
       "melee_range_sq": 2,

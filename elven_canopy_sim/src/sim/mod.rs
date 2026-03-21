@@ -225,6 +225,8 @@
 // a `vital_status` field (Alive or Dead). `DamageCreature` reduces HP;
 // reaching 0 triggers `handle_creature_death`. `HealCreature` restores HP
 // (clamped to `hp_max`, no-op on dead). `DebugKillCreature` kills instantly.
+// Species with `ticks_per_hp_regen > 0` passively regenerate HP at heartbeat
+// (see `species.rs` for the field definition).
 //
 // Death does NOT delete the creature row. Instead, `vital_status` is set to
 // `Dead` and the creature remains in the DB (supporting future states like
@@ -1188,6 +1190,14 @@ impl SimState {
                     // Rest decay.
                     let rest_decay = species_data.rest_decay_per_tick * interval as i64;
                     creature.rest = (creature.rest - rest_decay).max(0);
+
+                    // HP regeneration: batch-apply over the heartbeat interval.
+                    // ticks_per_hp_regen=0 means no regen; otherwise regen
+                    // = interval / ticks_per_hp_regen HP (integer division).
+                    if species_data.ticks_per_hp_regen > 0 {
+                        let hp_regen = (interval / species_data.ticks_per_hp_regen) as i64;
+                        creature.hp = (creature.hp + hp_regen).min(creature.hp_max);
+                    }
 
                     // Mana generation: batch-apply mana_per_tick over the
                     // heartbeat interval. Excess beyond mp_max overflows

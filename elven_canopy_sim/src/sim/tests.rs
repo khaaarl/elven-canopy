@@ -1951,6 +1951,11 @@ fn species_data_loaded_from_config() {
     let squirrel_data = &sim.species_table[&Species::Squirrel];
     assert!(!squirrel_data.ground_only);
     assert_eq!(squirrel_data.climb_ticks_per_voxel, Some(600));
+
+    // Troll has HP regeneration; most species default to 0.
+    let troll_data = &sim.species_table[&Species::Troll];
+    assert_eq!(troll_data.ticks_per_hp_regen, 500);
+    assert_eq!(elf_data.ticks_per_hp_regen, 0);
 }
 
 #[test]
@@ -16883,6 +16888,317 @@ fn heal_does_not_revive_dead() {
     let creature = sim.db.creatures.get(&elf_id).unwrap();
     assert_eq!(creature.vital_status, VitalStatus::Dead);
     assert_eq!(creature.hp, 0);
+}
+
+// ---------------------------------------------------------------------------
+// HP regeneration
+// ---------------------------------------------------------------------------
+
+#[test]
+fn hp_regen_restores_hp_over_heartbeats() {
+    let mut sim = test_sim(42);
+    // ticks_per_hp_regen=100 means 1 HP per 100 ticks. With heartbeat=5000,
+    // each heartbeat regens 5000/100 = 50 HP. Two heartbeats = 100 HP.
+    let troll_data = sim.species_table.get_mut(&Species::Troll).unwrap();
+    troll_data.ticks_per_hp_regen = 100;
+    let ticks_per_regen = troll_data.ticks_per_hp_regen;
+    let heartbeat = troll_data.heartbeat_interval_ticks;
+
+    let troll_id = spawn_creature(&mut sim, Species::Troll);
+    let hp_max = sim.db.creatures.get(&troll_id).unwrap().hp_max;
+
+    // Damage more than 2 heartbeats can heal (100 HP).
+    let damage = 200;
+    let regen_per_heartbeat = heartbeat as i64 / ticks_per_regen as i64;
+    assert!(damage > regen_per_heartbeat * 2);
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DamageCreature {
+                creature_id: troll_id,
+                amount: damage,
+            },
+        }],
+        tick + 1,
+    );
+    assert_eq!(sim.db.creatures.get(&troll_id).unwrap().hp, hp_max - damage);
+
+    // Advance through 2 heartbeats — should partially regen.
+    let target_tick = sim.tick + heartbeat * 2 + 1;
+    sim.step(&[], target_tick);
+
+    let expected_regen = regen_per_heartbeat * 2;
+    let creature = sim.db.creatures.get(&troll_id).unwrap();
+    assert_eq!(creature.hp, hp_max - damage + expected_regen);
+    // Verify still below max (regen didn't overshoot).
+    assert!(creature.hp < hp_max);
+}
+
+#[test]
+fn hp_regen_clamps_to_max() {
+    let mut sim = test_sim(42);
+    // Very fast regen (1 HP per tick) so it overshoots easily.
+    sim.species_table
+        .get_mut(&Species::Troll)
+        .unwrap()
+        .ticks_per_hp_regen = 1;
+    let troll_id = spawn_creature(&mut sim, Species::Troll);
+    let hp_max = sim.db.creatures.get(&troll_id).unwrap().hp_max;
+    let heartbeat = sim.species_table[&Species::Troll].heartbeat_interval_ticks;
+
+    // Small damage.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DamageCreature {
+                creature_id: troll_id,
+                amount: 10,
+            },
+        }],
+        tick + 1,
+    );
+    assert_eq!(sim.db.creatures.get(&troll_id).unwrap().hp, hp_max - 10);
+
+    // Advance past a heartbeat — regen should clamp to hp_max.
+    sim.step(&[], sim.tick + heartbeat + 1);
+    assert_eq!(sim.db.creatures.get(&troll_id).unwrap().hp, hp_max);
+}
+
+#[test]
+fn hp_regen_does_not_revive_dead() {
+    let mut sim = test_sim(42);
+    sim.species_table
+        .get_mut(&Species::Troll)
+        .unwrap()
+        .ticks_per_hp_regen = 1;
+    let troll_id = spawn_creature(&mut sim, Species::Troll);
+    // Use creature's actual hp_max (may differ from species due to Constitution).
+    let actual_hp_max = sim.db.creatures.get(&troll_id).unwrap().hp_max;
+    let heartbeat = sim.species_table[&Species::Troll].heartbeat_interval_ticks;
+
+    // Kill the troll.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DamageCreature {
+                creature_id: troll_id,
+                amount: actual_hp_max,
+            },
+        }],
+        tick + 1,
+    );
+    assert_eq!(
+        sim.db.creatures.get(&troll_id).unwrap().vital_status,
+        VitalStatus::Dead
+    );
+
+    // Advance past heartbeats — should stay dead.
+    sim.step(&[], sim.tick + heartbeat * 3 + 1);
+    let creature = sim.db.creatures.get(&troll_id).unwrap();
+    assert_eq!(creature.vital_status, VitalStatus::Dead);
+    assert_eq!(creature.hp, 0);
+}
+
+#[test]
+fn zero_hp_regen_does_not_heal() {
+    let mut sim = test_sim(42);
+    // Default regen is 0 (disabled).
+    assert_eq!(sim.species_table[&Species::Elf].ticks_per_hp_regen, 0);
+    let elf_id = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, elf_id);
+    let hp_max = sim.species_table[&Species::Elf].hp_max;
+    let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    // Damage.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DamageCreature {
+                creature_id: elf_id,
+                amount: 50,
+            },
+        }],
+        tick + 1,
+    );
+
+    // Advance past heartbeats — HP should not change.
+    sim.step(&[], sim.tick + heartbeat * 2 + 1);
+    assert_eq!(sim.db.creatures.get(&elf_id).unwrap().hp, hp_max - 50);
+}
+
+#[test]
+fn hp_regen_at_full_hp_is_noop() {
+    let mut sim = test_sim(42);
+    sim.species_table
+        .get_mut(&Species::Troll)
+        .unwrap()
+        .ticks_per_hp_regen = 100;
+    let troll_id = spawn_creature(&mut sim, Species::Troll);
+    let hp_max = sim.db.creatures.get(&troll_id).unwrap().hp_max;
+    let heartbeat = sim.species_table[&Species::Troll].heartbeat_interval_ticks;
+
+    // No damage — already at full HP.
+    sim.step(&[], sim.tick + heartbeat + 1);
+    assert_eq!(sim.db.creatures.get(&troll_id).unwrap().hp, hp_max);
+}
+
+#[test]
+fn hp_regen_integer_division_truncates() {
+    let mut sim = test_sim(42);
+    // 5000 / 3000 = 1 (truncated, not rounded to 2).
+    let troll_data = sim.species_table.get_mut(&Species::Troll).unwrap();
+    troll_data.ticks_per_hp_regen = 3000;
+    let heartbeat = troll_data.heartbeat_interval_ticks;
+
+    let troll_id = spawn_creature(&mut sim, Species::Troll);
+    let hp_max = sim.db.creatures.get(&troll_id).unwrap().hp_max;
+
+    // Damage and advance 1 heartbeat.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DamageCreature {
+                creature_id: troll_id,
+                amount: 100,
+            },
+        }],
+        tick + 1,
+    );
+    sim.step(&[], sim.tick + heartbeat + 1);
+    assert_eq!(
+        sim.db.creatures.get(&troll_id).unwrap().hp,
+        hp_max - 100 + 1
+    );
+}
+
+#[test]
+fn hp_regen_slower_than_heartbeat_yields_zero() {
+    let mut sim = test_sim(42);
+    // ticks_per_hp_regen > heartbeat → 5000 / 10000 = 0.
+    let troll_data = sim.species_table.get_mut(&Species::Troll).unwrap();
+    troll_data.ticks_per_hp_regen = 10000;
+    let heartbeat = troll_data.heartbeat_interval_ticks;
+
+    let troll_id = spawn_creature(&mut sim, Species::Troll);
+    let hp_max = sim.db.creatures.get(&troll_id).unwrap().hp_max;
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DamageCreature {
+                creature_id: troll_id,
+                amount: 50,
+            },
+        }],
+        tick + 1,
+    );
+
+    // Multiple heartbeats — still no regen.
+    sim.step(&[], sim.tick + heartbeat * 3 + 1);
+    assert_eq!(sim.db.creatures.get(&troll_id).unwrap().hp, hp_max - 50);
+}
+
+#[test]
+fn hp_regen_concurrent_with_combat_damage() {
+    let mut sim = test_sim(42);
+    let troll_data = sim.species_table.get_mut(&Species::Troll).unwrap();
+    troll_data.ticks_per_hp_regen = 100;
+    let heartbeat = troll_data.heartbeat_interval_ticks;
+    let regen_per_heartbeat = heartbeat as i64 / 100;
+
+    let troll_id = spawn_creature(&mut sim, Species::Troll);
+    let hp_max = sim.db.creatures.get(&troll_id).unwrap().hp_max;
+
+    // Initial damage.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DamageCreature {
+                creature_id: troll_id,
+                amount: 200,
+            },
+        }],
+        tick + 1,
+    );
+    let hp_after_damage = hp_max - 200;
+
+    // Advance past 1 heartbeat — regens.
+    sim.step(&[], sim.tick + heartbeat + 1);
+    let hp_after_regen1 = hp_after_damage + regen_per_heartbeat;
+    assert_eq!(sim.db.creatures.get(&troll_id).unwrap().hp, hp_after_regen1);
+
+    // Deal more damage between heartbeats.
+    let tick2 = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick2 + 1,
+            action: SimAction::DamageCreature {
+                creature_id: troll_id,
+                amount: 30,
+            },
+        }],
+        tick2 + 1,
+    );
+    let hp_after_damage2 = hp_after_regen1 - 30;
+
+    // Advance past another heartbeat — regens again from new HP.
+    sim.step(&[], sim.tick + heartbeat + 1);
+    assert_eq!(
+        sim.db.creatures.get(&troll_id).unwrap().hp,
+        hp_after_damage2 + regen_per_heartbeat
+    );
+}
+
+#[test]
+fn hp_regen_huge_ticks_per_hp_regen_no_negative_heal() {
+    // Regression: u64 values > i64::MAX must not wrap to negative in the
+    // division, which would turn regen into damage.
+    let mut sim = test_sim(42);
+    sim.species_table
+        .get_mut(&Species::Troll)
+        .unwrap()
+        .ticks_per_hp_regen = u64::MAX;
+    let troll_id = spawn_creature(&mut sim, Species::Troll);
+    let hp_max = sim.db.creatures.get(&troll_id).unwrap().hp_max;
+    let heartbeat = sim.species_table[&Species::Troll].heartbeat_interval_ticks;
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DamageCreature {
+                creature_id: troll_id,
+                amount: 50,
+            },
+        }],
+        tick + 1,
+    );
+    let hp_before = sim.db.creatures.get(&troll_id).unwrap().hp;
+    assert_eq!(hp_before, hp_max - 50);
+
+    // Advance past heartbeats — HP must not decrease.
+    sim.step(&[], sim.tick + heartbeat * 2 + 1);
+    let hp_after = sim.db.creatures.get(&troll_id).unwrap().hp;
+    assert!(
+        hp_after >= hp_before,
+        "regen must never reduce HP: {hp_after} < {hp_before}"
+    );
 }
 
 #[test]
@@ -35581,6 +35897,24 @@ fn trigger_raid_notification_includes_species_and_direction() {
     assert!(
         msg.contains("raiders"),
         "notification should mention raider count: {msg}"
+    );
+}
+
+#[test]
+fn species_config_backward_compat_ticks_per_hp_regen() {
+    // Old save files won't have ticks_per_hp_regen. Verify it defaults to 0.
+    let config = GameConfig::default();
+    let troll_data = &config.species[&Species::Troll];
+    let json = serde_json::to_string(troll_data).unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let obj = value.as_object_mut().unwrap();
+    obj.remove("ticks_per_hp_regen");
+    let stripped = serde_json::to_string(&value).unwrap();
+
+    let restored: crate::species::SpeciesData = serde_json::from_str(&stripped).unwrap();
+    assert_eq!(
+        restored.ticks_per_hp_regen, 0,
+        "ticks_per_hp_regen should default to 0"
     );
 }
 

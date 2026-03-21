@@ -49,6 +49,10 @@
 //   at each sleep task activation.
 // - `mp_max` — maximum mana pool. 0 = nonmagical (cannot construct or perform
 //   mana-requiring tasks). Uses the same large-integer scale as `food_max`.
+// - `ticks_per_hp_regen` — ticks between regenerating 1 HP. Batch-applied at
+//   heartbeat as `heartbeat_interval_ticks / ticks_per_hp_regen` HP (integer
+//   division), clamped to `hp_max`. 0 = no passive regen (default). Trolls use
+//   this for their signature regeneration.
 // - `mana_per_tick` — mana generated per sim tick. Batch-applied at heartbeat.
 //   Excess overflows to the bonded tree.
 // - `engagement_style` — `EngagementStyle` struct controlling combat behavior:
@@ -217,6 +221,12 @@ pub struct SpeciesData {
     /// Maximum (and starting) hit points. Creature dies when HP reaches 0.
     #[serde(default = "default_hp_max")]
     pub hp_max: i64,
+
+    /// Ticks between regenerating 1 HP. Batch-applied at heartbeat as
+    /// `heartbeat_interval_ticks / ticks_per_hp_regen` (integer division),
+    /// clamped to `hp_max`. 0 = no passive regeneration (default).
+    #[serde(default)]
+    pub ticks_per_hp_regen: u64,
 
     /// Flat damage dealt per melee strike. 0 means the species cannot melee.
     #[serde(default)]
