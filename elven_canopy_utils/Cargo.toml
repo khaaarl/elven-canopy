@@ -1,0 +1,20 @@
+[package]
+name = "elven_canopy_utils"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hashbrown = "0.15"
+rayon = "1"
+
+[dev-dependencies]
+ahash = "0.8"
+criterion = { version = "0.5", features = ["html_reports"] }
+rustc-hash = "2"
+
+[[bench]]
+name = "dedup"
+harness = false
+
+[lints]
+workspace = true

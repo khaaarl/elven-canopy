@@ -11,6 +11,7 @@ members = [
     "elven_canopy_sprites",
     "tabulosity",
     "tabulosity_derive",
+    "elven_canopy_utils",
 ]
 resolver = "2"
 
