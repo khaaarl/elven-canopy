@@ -5,8 +5,9 @@
 // dedicated worldgen PRNG (seeded from the world seed), then runs generators
 // in a defined order:
 //
-//   1. **Tree generation** — produces the player's home tree geometry (existing
-//      logic extracted from the sim module).
+//   1. **Tree generation** — produces the player's home tree geometry, then
+//      scatters lesser (non-sentient) trees across the forest floor via
+//      rejection-sampled random placement (see `generate_lesser_trees()`).
 //   2. **Fruit generation** — creates 20-40+ unique fruit species with
 //      composable parts, properties, coverage constraints, and Vaelith names
 //      (see `fruit.rs`).
@@ -127,6 +128,9 @@ pub struct WorldgenResult {
     /// The player's home tree entity.
     pub home_tree: Tree,
 
+    /// Lesser (non-sentient) trees scattered across the forest floor.
+    pub lesser_trees: Vec<Tree>,
+
     /// Standard navigation graph (1x1x1 creatures).
     pub nav_graph: NavGraph,
 
@@ -161,10 +165,10 @@ pub fn run_worldgen(seed: u64, config: &GameConfig, log: &WgLog) -> WorldgenResu
     let _compat = wg_rng.next_128_bits();
     let player_tree_id = TreeId::new(&mut wg_rng);
 
-    // --- Generator 1: Terrain + Tree ---
-    let (world, home_tree) = {
+    // --- Generator 1: Terrain + Trees ---
+    let (world, home_tree, lesser_trees) = {
         wg_time!("terrain + tree generation", log.as_ref());
-        generate_tree(&mut wg_rng, config, player_tree_id, log)
+        generate_trees(&mut wg_rng, config, player_tree_id, log)
     };
 
     // Load lexicon once — used by fruit naming and civ naming.
@@ -248,6 +252,7 @@ pub fn run_worldgen(seed: u64, config: &GameConfig, log: &WgLog) -> WorldgenResu
         runtime_rng,
         world,
         home_tree,
+        lesser_trees,
         nav_graph,
         large_nav_graph,
         db,
@@ -255,16 +260,18 @@ pub fn run_worldgen(seed: u64, config: &GameConfig, log: &WgLog) -> WorldgenResu
     }
 }
 
-/// Tree generator: produces the player's home tree and populates the voxel world.
+/// Tree generator: produces the player's home tree, lesser trees, and
+/// populates the voxel world.
 ///
 /// Extracted from the former `SimState::with_config()` inline logic. Runs the
-/// energy-based recursive tree generation with structural validation retry loop.
-fn generate_tree(
+/// energy-based recursive tree generation with structural validation retry loop,
+/// then places lesser trees via rejection sampling.
+fn generate_trees(
     rng: &mut GameRng,
     config: &GameConfig,
     player_tree_id: TreeId,
     log: &WgLog,
-) -> (VoxelWorld, Tree) {
+) -> (VoxelWorld, Tree, Vec<Tree>) {
     let (ws_x, ws_y, ws_z) = config.world_size;
     let center_x = ws_x as i32 / 2;
     let center_z = ws_z as i32 / 2;
@@ -298,9 +305,20 @@ fn generate_tree(
          Tree profile parameters are incompatible with material properties.",
     );
 
+    // Record the base Y for the tree position field. Note: this runs after
+    // tree generation, so the center column contains Trunk voxels — the scan
+    // stops at the trunk and returns floor_y (matching the old behavior).
+    let main_surface_y = tree_gen::terrain_surface_y(
+        &world,
+        config.floor_y,
+        config.terrain_max_height,
+        center_x,
+        center_z,
+    );
+
     let home_tree = Tree {
         id: player_tree_id,
-        position: VoxelCoord::new(center_x, config.floor_y, center_z),
+        position: VoxelCoord::new(center_x, main_surface_y, center_z),
         health: 100,
         growth_level: 1,
         mana_stored: config.starting_mana_mm,
@@ -317,7 +335,135 @@ fn generate_tree(
         fruit_species_id: None,
     };
 
-    (world, home_tree)
+    // --- Lesser trees ---
+    let lesser_trees = {
+        wg_time!("lesser tree generation", log.as_ref());
+        generate_lesser_trees(rng, config, &mut world, center_x, center_z, log)
+    };
+
+    (world, home_tree, lesser_trees)
+}
+
+/// Place lesser trees on the forest floor via rejection sampling.
+///
+/// Draws random (x, z) positions within the forest floor extent and rejects
+/// candidates that are too close to the main tree center or to any
+/// already-placed lesser tree. Each accepted position gets a tree generated
+/// from a randomly selected profile.
+fn generate_lesser_trees(
+    rng: &mut GameRng,
+    config: &GameConfig,
+    world: &mut VoxelWorld,
+    main_center_x: i32,
+    main_center_z: i32,
+    log: &WgLog,
+) -> Vec<Tree> {
+    let lt_config = &config.lesser_trees;
+    if lt_config.count == 0 || lt_config.profiles.is_empty() {
+        return Vec::new();
+    }
+
+    // Place lesser trees across the entire world (clamped to 1 voxel inside
+    // world bounds to avoid edge issues).
+    let (ws_x, _, ws_z) = config.world_size;
+    let min_x = 1_i32;
+    let max_x = ws_x as i32 - 2;
+    let min_z = 1_i32;
+    let max_z = ws_z as i32 - 2;
+    if max_x <= min_x || max_z <= min_z {
+        return Vec::new();
+    }
+    let range_x = (max_x - min_x + 1) as u64;
+    let range_z = (max_z - min_z + 1) as u64;
+
+    let min_dist_main_sq =
+        lt_config.min_distance_from_main as i64 * lt_config.min_distance_from_main as i64;
+    let min_dist_between_sq =
+        lt_config.min_distance_between as i64 * lt_config.min_distance_between as i64;
+
+    let mut placed_positions: Vec<(i32, i32)> = Vec::new();
+    let mut lesser_trees: Vec<Tree> = Vec::new();
+    let mut attempts = 0u32;
+
+    while (lesser_trees.len() as u32) < lt_config.count
+        && attempts < lt_config.max_placement_attempts
+    {
+        attempts += 1;
+
+        // Draw random position within forest floor bounds.
+        let x = min_x + (rng.next_u64() % range_x) as i32;
+        let z = min_z + (rng.next_u64() % range_z) as i32;
+
+        // Reject if too close to main tree.
+        let dx_main = (x - main_center_x) as i64;
+        let dz_main = (z - main_center_z) as i64;
+        if dx_main * dx_main + dz_main * dz_main < min_dist_main_sq {
+            continue;
+        }
+
+        // Reject if too close to any already-placed lesser tree.
+        let too_close = placed_positions.iter().any(|&(px, pz)| {
+            let dx = (x - px) as i64;
+            let dz = (z - pz) as i64;
+            dx * dx + dz * dz < min_dist_between_sq
+        });
+        if too_close {
+            continue;
+        }
+
+        // Find the terrain surface and reject if it's occupied by tree material.
+        let surface_y =
+            tree_gen::terrain_surface_y(world, config.floor_y, config.terrain_max_height, x, z);
+
+        // Reject if the voxel above the surface is already occupied (main tree).
+        let above_surface = world.get(VoxelCoord::new(x, surface_y + 1, z));
+        if above_surface != crate::types::VoxelType::Air {
+            continue;
+        }
+
+        // Pick a random profile.
+        let profile_idx = rng.next_u64() as usize % lt_config.profiles.len();
+        let profile = &lt_config.profiles[profile_idx];
+
+        // Sink up to 2 voxels into the dirt so the trunk base looks planted
+        // regardless of local terrain variation. Clamp to floor_y.
+        let sink = 2.min(surface_y - config.floor_y);
+        let base_y = surface_y - sink;
+        let tree_id = TreeId::new(rng);
+        let noop_log: &dyn Fn(&str) = &|_| {};
+        let result = tree_gen::generate_tree_at(world, profile, base_y, x, z, rng, noop_log);
+
+        let tree = Tree {
+            id: tree_id,
+            position: VoxelCoord::new(x, surface_y, z),
+            health: 100,
+            growth_level: 1,
+            mana_stored: 0,
+            mana_capacity: 0,
+            fruit_production_rate_ppm: 0,
+            carrying_capacity: 0,
+            current_load: 0,
+            owner: None,
+            trunk_voxels: result.trunk_voxels,
+            branch_voxels: result.branch_voxels,
+            leaf_voxels: result.leaf_voxels,
+            root_voxels: result.root_voxels,
+            fruit_positions: Vec::new(),
+            fruit_species_id: None,
+        };
+
+        placed_positions.push((x, z));
+        lesser_trees.push(tree);
+    }
+
+    log(&format!(
+        "[worldgen]   placed {}/{} lesser trees ({} attempts)",
+        lesser_trees.len(),
+        lt_config.count,
+        attempts,
+    ));
+
+    lesser_trees
 }
 
 // ---------------------------------------------------------------------------
@@ -809,6 +955,9 @@ mod tests {
         };
         config.tree_profile.growth.initial_energy = 50.0;
         config.terrain_max_height = 0;
+        // Disable lesser trees to keep worldgen tests fast and avoid PRNG
+        // sequence shifts. Lesser-tree-specific tests enable them explicitly.
+        config.lesser_trees.count = 0;
         config
     }
 
@@ -965,14 +1114,16 @@ mod tests {
         config.worldgen.civs.player_starting_known_civs = 3;
         let result = run_worldgen(42, &config, &noop_log());
 
-        // Player civ should know at most 3 other civs.
+        // Player civ should know at most cap+1 other civs: the cap controls
+        // the main diplomacy loop, but the post-pass guarantees one hostile
+        // relationship (for raids) which may exceed the cap by 1.
         let player_rels = result
             .db
             .civ_relationships
             .by_from_civ(&CivId(0), tabulosity::QueryOpts::ASC);
         assert!(
-            player_rels.len() <= 3,
-            "Player should know at most 3 civs, got {}",
+            player_rels.len() <= 4,
+            "Player should know at most cap+1 civs (3 from cap + 1 guaranteed hostile), got {}",
             player_rels.len()
         );
     }
@@ -1092,5 +1243,246 @@ mod tests {
                 species
             );
         }
+    }
+
+    // --- Lesser tree tests ---
+
+    #[test]
+    fn lesser_trees_are_placed() {
+        let mut config = test_config();
+        config.lesser_trees.count = 5;
+        config.lesser_trees.min_distance_from_main = 5;
+        config.lesser_trees.min_distance_between = 3;
+        config.lesser_trees.max_placement_attempts = 200;
+
+        let result = run_worldgen(42, &config, &noop_log());
+        assert!(
+            !result.lesser_trees.is_empty(),
+            "Should place at least one lesser tree"
+        );
+        assert!(
+            result.lesser_trees.len() <= 5,
+            "Should not exceed requested count"
+        );
+    }
+
+    #[test]
+    fn lesser_trees_have_no_owner() {
+        let mut config = test_config();
+        config.lesser_trees.count = 3;
+        config.lesser_trees.min_distance_from_main = 5;
+        config.lesser_trees.min_distance_between = 3;
+
+        let result = run_worldgen(42, &config, &noop_log());
+        for tree in &result.lesser_trees {
+            assert_eq!(tree.owner, None, "Lesser trees should have no owner");
+            assert_eq!(tree.mana_stored, 0, "Lesser trees should have no mana");
+            assert_eq!(tree.mana_capacity, 0);
+        }
+    }
+
+    #[test]
+    fn lesser_trees_respect_distance_from_main() {
+        let mut config = test_config();
+        config.lesser_trees.count = 10;
+        config.lesser_trees.min_distance_from_main = 10;
+        config.lesser_trees.min_distance_between = 3;
+        config.lesser_trees.max_placement_attempts = 500;
+
+        let result = run_worldgen(42, &config, &noop_log());
+        let main_pos = result.home_tree.position;
+        let min_dist_sq = 10i64 * 10;
+
+        for tree in &result.lesser_trees {
+            let dx = (tree.position.x - main_pos.x) as i64;
+            let dz = (tree.position.z - main_pos.z) as i64;
+            let dist_sq = dx * dx + dz * dz;
+            assert!(
+                dist_sq >= min_dist_sq,
+                "Lesser tree at ({}, {}) is too close to main tree at ({}, {}): dist²={dist_sq} < {min_dist_sq}",
+                tree.position.x,
+                tree.position.z,
+                main_pos.x,
+                main_pos.z,
+            );
+        }
+    }
+
+    #[test]
+    fn lesser_trees_respect_distance_between() {
+        let mut config = test_config();
+        config.lesser_trees.count = 10;
+        config.lesser_trees.min_distance_from_main = 5;
+        config.lesser_trees.min_distance_between = 5;
+        config.lesser_trees.max_placement_attempts = 500;
+
+        let result = run_worldgen(42, &config, &noop_log());
+        let min_dist_sq = 5i64 * 5;
+
+        for (i, a) in result.lesser_trees.iter().enumerate() {
+            for b in result.lesser_trees.iter().skip(i + 1) {
+                let dx = (a.position.x - b.position.x) as i64;
+                let dz = (a.position.z - b.position.z) as i64;
+                let dist_sq = dx * dx + dz * dz;
+                assert!(
+                    dist_sq >= min_dist_sq,
+                    "Lesser trees at ({},{}) and ({},{}) too close: dist²={dist_sq} < {min_dist_sq}",
+                    a.position.x,
+                    a.position.z,
+                    b.position.x,
+                    b.position.z,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lesser_trees_have_trunk_voxels_in_world() {
+        let mut config = test_config();
+        config.lesser_trees.count = 3;
+        config.lesser_trees.min_distance_from_main = 5;
+        config.lesser_trees.min_distance_between = 3;
+
+        let result = run_worldgen(42, &config, &noop_log());
+        for tree in &result.lesser_trees {
+            assert!(
+                !tree.trunk_voxels.is_empty(),
+                "Each lesser tree should have trunk voxels"
+            );
+            // Verify voxels are actually in the world.
+            for &coord in &tree.trunk_voxels {
+                let vt = result.world.get(coord);
+                assert!(
+                    vt == crate::types::VoxelType::Trunk || vt == crate::types::VoxelType::Branch,
+                    "Trunk voxel at {coord} should be Trunk or Branch in world, got {vt:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lesser_trees_inserted_into_sim_trees_map() {
+        let mut config = test_config();
+        config.lesser_trees.count = 3;
+        config.lesser_trees.min_distance_from_main = 5;
+        config.lesser_trees.min_distance_between = 3;
+
+        let result = run_worldgen(42, &config, &noop_log());
+        let lesser_count = result.lesser_trees.len();
+
+        // Simulate what SimState::with_config does.
+        let mut trees = BTreeMap::new();
+        trees.insert(result.home_tree.id, result.home_tree);
+        for lesser in result.lesser_trees {
+            trees.insert(lesser.id, lesser);
+        }
+
+        // 1 home tree + N lesser trees.
+        assert_eq!(trees.len(), 1 + lesser_count);
+    }
+
+    #[test]
+    fn lesser_trees_deterministic() {
+        let mut config = test_config();
+        config.lesser_trees.count = 5;
+        config.lesser_trees.min_distance_from_main = 5;
+        config.lesser_trees.min_distance_between = 3;
+
+        let result1 = run_worldgen(42, &config, &noop_log());
+        let result2 = run_worldgen(42, &config, &noop_log());
+
+        assert_eq!(result1.lesser_trees.len(), result2.lesser_trees.len());
+        for (a, b) in result1.lesser_trees.iter().zip(result2.lesser_trees.iter()) {
+            assert_eq!(a.position, b.position);
+            assert_eq!(a.trunk_voxels, b.trunk_voxels);
+            assert_eq!(a.branch_voxels, b.branch_voxels);
+            assert_eq!(a.leaf_voxels, b.leaf_voxels);
+        }
+    }
+
+    #[test]
+    fn zero_lesser_tree_count_places_none() {
+        let mut config = test_config();
+        config.lesser_trees.count = 0;
+
+        let result = run_worldgen(42, &config, &noop_log());
+        assert!(result.lesser_trees.is_empty());
+    }
+
+    #[test]
+    fn empty_profiles_places_no_lesser_trees() {
+        let mut config = test_config();
+        config.lesser_trees.count = 10;
+        config.lesser_trees.profiles = Vec::new();
+
+        let result = run_worldgen(42, &config, &noop_log());
+        assert!(result.lesser_trees.is_empty());
+    }
+
+    #[test]
+    fn lesser_trees_max_attempts_caps_placement() {
+        let mut config = test_config();
+        config.lesser_trees.count = 100;
+        // Very few attempts — should place fewer than requested.
+        config.lesser_trees.max_placement_attempts = 5;
+        config.lesser_trees.min_distance_from_main = 5;
+        config.lesser_trees.min_distance_between = 3;
+
+        let result = run_worldgen(42, &config, &noop_log());
+        assert!(
+            result.lesser_trees.len() < 100,
+            "With only 5 attempts, should place fewer than 100 trees (got {})",
+            result.lesser_trees.len()
+        );
+    }
+
+    #[test]
+    fn lesser_trees_tiny_world_no_panic() {
+        let mut config = test_config();
+        config.world_size = (4, 32, 4);
+        config.tree_profile.growth.initial_energy = 5.0;
+        config.lesser_trees.count = 3;
+        config.lesser_trees.min_distance_from_main = 1;
+        config.lesser_trees.min_distance_between = 1;
+        config.lesser_trees.max_placement_attempts = 20;
+
+        // Should not panic even with a tiny world.
+        let _result = run_worldgen(42, &config, &noop_log());
+    }
+
+    #[test]
+    fn lesser_trees_unique_ids() {
+        let mut config = test_config();
+        config.lesser_trees.count = 5;
+        config.lesser_trees.min_distance_from_main = 5;
+        config.lesser_trees.min_distance_between = 3;
+
+        let result = run_worldgen(42, &config, &noop_log());
+        let mut ids: Vec<_> = result.lesser_trees.iter().map(|t| t.id).collect();
+        ids.push(result.home_tree.id);
+        let count = ids.len();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), count, "All tree IDs should be unique");
+    }
+
+    #[test]
+    fn lesser_tree_config_serde_roundtrip() {
+        let config = GameConfig::default();
+        let json = serde_json::to_string(&config).unwrap();
+        let restored: GameConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.lesser_trees.count, config.lesser_trees.count);
+        assert_eq!(
+            restored.lesser_trees.min_distance_from_main,
+            config.lesser_trees.min_distance_from_main,
+        );
+        assert_eq!(
+            restored.lesser_trees.min_distance_between,
+            config.lesser_trees.min_distance_between,
+        );
+        assert_eq!(
+            restored.lesser_trees.profiles.len(),
+            config.lesser_trees.profiles.len(),
+        );
     }
 }

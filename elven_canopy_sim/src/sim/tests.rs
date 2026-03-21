@@ -30,6 +30,10 @@ fn test_config() -> GameConfig {
     };
     config.tree_profile.growth.initial_energy = 50.0;
     config.terrain_max_height = 0;
+    // Disable lesser trees in tests to avoid PRNG sequence shifts when the
+    // default count changes. Tests that specifically exercise lesser trees
+    // enable them explicitly.
+    config.lesser_trees.count = 0;
     // Adjust spawn positions for the small test world (center=32, floor_y=0).
     for spec in &mut config.initial_creatures {
         spec.spawn_position = VoxelCoord::new(32, 1, 32);

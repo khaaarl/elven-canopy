@@ -623,6 +623,9 @@ impl SimState {
 
         let mut trees = BTreeMap::new();
         trees.insert(player_tree_id, wg.home_tree);
+        for lesser in wg.lesser_trees {
+            trees.insert(lesser.id, lesser);
+        }
 
         // Build species table from config.
         let species_table = config.species.clone();

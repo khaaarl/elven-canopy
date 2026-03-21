@@ -801,6 +801,332 @@ impl TreeProfile {
 }
 
 // ---------------------------------------------------------------------------
+// Lesser tree configuration
+// ---------------------------------------------------------------------------
+
+/// Configuration for lesser (non-sentient) tree placement during worldgen.
+///
+/// Lesser trees are normal-sized trees scattered across the forest floor,
+/// providing ecological variety. They use the same energy-based generation
+/// algorithm as the great tree but with much smaller profiles (real-life
+/// scale at 2m/voxel). Placement uses rejection sampling: random XZ
+/// positions are drawn within the forest floor bounds and rejected if too
+/// close to the main tree or to an already-placed lesser tree.
+///
+/// See `worldgen.rs` for the placement algorithm, `tree_gen.rs` for the
+/// generation algorithm.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LesserTreeConfig {
+    /// Target number of lesser trees to place. Actual count may be lower if
+    /// the placement area is too crowded to fit them all.
+    pub count: u32,
+
+    /// Minimum distance (in voxels) from the main tree center to any lesser
+    /// tree trunk. Prevents lesser trees from spawning inside or adjacent to
+    /// the great tree's root/trunk zone.
+    pub min_distance_from_main: i32,
+
+    /// Minimum distance (in voxels) between any two lesser tree trunks.
+    /// Prevents canopy overlap between lesser trees.
+    pub min_distance_between: i32,
+
+    /// Maximum number of random position draws before giving up. Prevents
+    /// infinite loops when the placement area is saturated.
+    pub max_placement_attempts: u32,
+
+    /// Tree profiles to randomly select from when generating each lesser
+    /// tree. If empty, lesser tree generation is skipped.
+    pub profiles: Vec<TreeProfile>,
+}
+
+impl Default for LesserTreeConfig {
+    fn default() -> Self {
+        Self {
+            count: 500,
+            min_distance_from_main: 25,
+            min_distance_between: 12,
+            max_placement_attempts: 7000,
+            profiles: vec![
+                TreeProfile::lesser_deciduous(),
+                TreeProfile::lesser_conifer(),
+                TreeProfile::lesser_tall_straight(),
+                TreeProfile::lesser_thick_oak(),
+                TreeProfile::lesser_bushy(),
+                TreeProfile::lesser_sapling(),
+            ],
+        }
+    }
+}
+
+impl TreeProfile {
+    /// Small deciduous tree — real-life scale (~8-12 voxels / 16-24m tall).
+    /// Broad crown with moderate branching. Suitable for lesser forest trees.
+    /// Single-voxel trunk (min_radius < 0.5 prevents plus-sign cross-sections).
+    pub fn lesser_deciduous() -> Self {
+        Self {
+            growth: GrowthParams {
+                initial_energy: 20.0,
+                energy_to_radius: 0.01,
+                min_radius: 0.3,
+                growth_step_length: 1.0,
+                energy_per_step: 1.0,
+            },
+            split: SplitParams {
+                split_chance_base: 0.20,
+                split_count: 1,
+                split_energy_ratio: 0.35,
+                split_angle: 0.8,
+                split_angle_variance: 0.4,
+                min_progress_for_split: 0.25,
+            },
+            curvature: CurvatureParams {
+                gravitropism: 0.06,
+                random_deflection: 0.15,
+                deflection_coherence: 0.6,
+            },
+            roots: RootParams {
+                root_energy_fraction: 0.0,
+                root_initial_count: 0,
+                root_gravitropism: 0.0,
+                root_initial_angle: 0.0,
+                root_surface_tendency: 0.0,
+            },
+            leaves: LeafParams {
+                leaf_shape: LeafShape::Cloud,
+                leaf_density: 0.8,
+                leaf_size: 3,
+                canopy_density: 1.0,
+            },
+            trunk: TrunkParams {
+                base_flare: 0.0,
+                initial_direction: [0.0, 1.0, 0.0],
+            },
+        }
+    }
+
+    /// Small conifer — real-life scale (~10-15 voxels / 20-30m tall).
+    /// Narrow profile with strong central leader and small leaf clusters.
+    /// Single-voxel trunk (min_radius < 0.5 prevents plus-sign cross-sections).
+    pub fn lesser_conifer() -> Self {
+        Self {
+            growth: GrowthParams {
+                initial_energy: 25.0,
+                energy_to_radius: 0.01,
+                min_radius: 0.3,
+                growth_step_length: 1.0,
+                energy_per_step: 1.0,
+            },
+            split: SplitParams {
+                split_chance_base: 0.10,
+                split_count: 2,
+                split_energy_ratio: 0.20,
+                split_angle: 0.6,
+                split_angle_variance: 0.2,
+                min_progress_for_split: 0.10,
+            },
+            curvature: CurvatureParams {
+                gravitropism: 0.12,
+                random_deflection: 0.05,
+                deflection_coherence: 0.8,
+            },
+            roots: RootParams {
+                root_energy_fraction: 0.0,
+                root_initial_count: 0,
+                root_gravitropism: 0.0,
+                root_initial_angle: 0.0,
+                root_surface_tendency: 0.0,
+            },
+            leaves: LeafParams {
+                leaf_shape: LeafShape::Sphere,
+                leaf_density: 0.7,
+                leaf_size: 3,
+                canopy_density: 1.0,
+            },
+            trunk: TrunkParams {
+                base_flare: 0.0,
+                initial_direction: [0.0, 1.0, 0.0],
+            },
+        }
+    }
+
+    /// Tall straight tree — minimal branching, strong vertical growth (~15-20
+    /// voxels tall). Like a young poplar or birch.
+    pub fn lesser_tall_straight() -> Self {
+        Self {
+            growth: GrowthParams {
+                initial_energy: 30.0,
+                energy_to_radius: 0.01,
+                min_radius: 0.3,
+                growth_step_length: 1.0,
+                energy_per_step: 1.0,
+            },
+            split: SplitParams {
+                split_chance_base: 0.06,
+                split_count: 1,
+                split_energy_ratio: 0.25,
+                split_angle: 0.5,
+                split_angle_variance: 0.2,
+                min_progress_for_split: 0.40,
+            },
+            curvature: CurvatureParams {
+                gravitropism: 0.15,
+                random_deflection: 0.03,
+                deflection_coherence: 0.9,
+            },
+            roots: RootParams {
+                root_energy_fraction: 0.0,
+                root_initial_count: 0,
+                root_gravitropism: 0.0,
+                root_initial_angle: 0.0,
+                root_surface_tendency: 0.0,
+            },
+            leaves: LeafParams {
+                leaf_shape: LeafShape::Cloud,
+                leaf_density: 0.7,
+                leaf_size: 2,
+                canopy_density: 1.0,
+            },
+            trunk: TrunkParams {
+                base_flare: 0.0,
+                initial_direction: [0.0, 1.0, 0.0],
+            },
+        }
+    }
+
+    /// Thick old oak — wider trunk (plus-sign is OK here since it's a thick
+    /// tree), heavy branching, large canopy. The biggest lesser tree variant.
+    pub fn lesser_thick_oak() -> Self {
+        Self {
+            growth: GrowthParams {
+                initial_energy: 40.0,
+                energy_to_radius: 0.05,
+                min_radius: 0.5,
+                growth_step_length: 1.0,
+                energy_per_step: 1.2,
+            },
+            split: SplitParams {
+                split_chance_base: 0.25,
+                split_count: 1,
+                split_energy_ratio: 0.40,
+                split_angle: 0.9,
+                split_angle_variance: 0.4,
+                min_progress_for_split: 0.15,
+            },
+            curvature: CurvatureParams {
+                gravitropism: 0.04,
+                random_deflection: 0.18,
+                deflection_coherence: 0.5,
+            },
+            roots: RootParams {
+                root_energy_fraction: 0.0,
+                root_initial_count: 0,
+                root_gravitropism: 0.0,
+                root_initial_angle: 0.0,
+                root_surface_tendency: 0.0,
+            },
+            leaves: LeafParams {
+                leaf_shape: LeafShape::Cloud,
+                leaf_density: 0.8,
+                leaf_size: 3,
+                canopy_density: 1.0,
+            },
+            trunk: TrunkParams {
+                base_flare: 0.15,
+                initial_direction: [0.0, 1.0, 0.0],
+            },
+        }
+    }
+
+    /// Bushy shrub-tree — short and wide with aggressive branching. More bush
+    /// than tree (~5-8 voxels tall), lots of leaves.
+    pub fn lesser_bushy() -> Self {
+        Self {
+            growth: GrowthParams {
+                initial_energy: 12.0,
+                energy_to_radius: 0.01,
+                min_radius: 0.3,
+                growth_step_length: 1.0,
+                energy_per_step: 1.0,
+            },
+            split: SplitParams {
+                split_chance_base: 0.35,
+                split_count: 2,
+                split_energy_ratio: 0.30,
+                split_angle: 1.0,
+                split_angle_variance: 0.5,
+                min_progress_for_split: 0.10,
+            },
+            curvature: CurvatureParams {
+                gravitropism: 0.02,
+                random_deflection: 0.20,
+                deflection_coherence: 0.4,
+            },
+            roots: RootParams {
+                root_energy_fraction: 0.0,
+                root_initial_count: 0,
+                root_gravitropism: 0.0,
+                root_initial_angle: 0.0,
+                root_surface_tendency: 0.0,
+            },
+            leaves: LeafParams {
+                leaf_shape: LeafShape::Sphere,
+                leaf_density: 0.9,
+                leaf_size: 3,
+                canopy_density: 1.2,
+            },
+            trunk: TrunkParams {
+                base_flare: 0.0,
+                initial_direction: [0.0, 1.0, 0.0],
+            },
+        }
+    }
+
+    /// Young sapling — very small and thin (~3-5 voxels tall), barely any
+    /// branching. A sparse understory filler.
+    pub fn lesser_sapling() -> Self {
+        Self {
+            growth: GrowthParams {
+                initial_energy: 7.0,
+                energy_to_radius: 0.01,
+                min_radius: 0.3,
+                growth_step_length: 1.0,
+                energy_per_step: 1.0,
+            },
+            split: SplitParams {
+                split_chance_base: 0.08,
+                split_count: 1,
+                split_energy_ratio: 0.30,
+                split_angle: 0.6,
+                split_angle_variance: 0.3,
+                min_progress_for_split: 0.30,
+            },
+            curvature: CurvatureParams {
+                gravitropism: 0.08,
+                random_deflection: 0.10,
+                deflection_coherence: 0.7,
+            },
+            roots: RootParams {
+                root_energy_fraction: 0.0,
+                root_initial_count: 0,
+                root_gravitropism: 0.0,
+                root_initial_angle: 0.0,
+                root_surface_tendency: 0.0,
+            },
+            leaves: LeafParams {
+                leaf_shape: LeafShape::Sphere,
+                leaf_density: 0.6,
+                leaf_size: 2,
+                canopy_density: 0.8,
+            },
+            trunk: TrunkParams {
+                base_flare: 0.0,
+                initial_direction: [0.0, 1.0, 0.0],
+            },
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Initial spawning specs
 // ---------------------------------------------------------------------------
 
@@ -1698,6 +2024,11 @@ pub struct GameConfig {
 
     /// Tree generation parameters — energy-based recursive growth profile.
     pub tree_profile: TreeProfile,
+
+    /// Lesser tree placement configuration. Controls how many non-sentient
+    /// trees are scattered across the forest floor during worldgen.
+    #[serde(default)]
+    pub lesser_trees: LesserTreeConfig,
 
     /// Per-species behavioral data (speed, heartbeat interval, edge
     /// restrictions, spawn rules). Keyed by `Species` enum.
@@ -2719,6 +3050,7 @@ impl Default for GameConfig {
             haul_dropoff_action_ticks: 1000,
             mope_action_ticks: 1000,
             tree_profile: TreeProfile::fantasy_mega(),
+            lesser_trees: LesserTreeConfig::default(),
             species,
             terrain_max_height: 4,
             terrain_noise_scale: 8.0,

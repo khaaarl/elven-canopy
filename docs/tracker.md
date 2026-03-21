@@ -147,7 +147,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-leaf-sway            Foliage vertex sway shader (wind simulation)
 [ ] F-leaf-tex-rethink     Evaluate bringing leaves into tiling texture system
-[ ] F-lesser-trees         Lesser trees (non-sentient, resource/ecology)
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-los-tuning           Line-of-sight tuning (terrain tolerance, tall creature bonus)
 [ ] F-magic-items          Magic item personalities and crafting
@@ -182,6 +181,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-raid-polish          Raid polish: military groups, provisions for long treks
 [ ] F-recipe-any-mat       Any-material recipe parameter support
 [ ] F-rescue               Rescue and stabilize incapacitated creatures
+[ ] F-rm-floor-extent      Remove floor_extent and ForestFloor layer
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
 [ ] F-round-building       Round/circular building construction
@@ -338,6 +338,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-lang-crate           Shared Vaelith language crate
 [x] F-large-nav-tolerance  1-voxel height tolerance for large nav
 [x] F-large-pathfind       2x2 footprint nav grid
+[x] F-lesser-trees         Lesser trees (non-sentient, resource/ecology)
 [x] F-logistics            Spatial resource flow (Kanban-style)
 [x] F-logistics-filter     Logistics material filter
 [x] F-main-menu            Main menu UI
@@ -3422,14 +3423,29 @@ pinned in the structural solver. Large nav graph updated to handle variable
 terrain height.
 
 #### F-lesser-trees — Lesser trees (non-sentient, resource/ecology)
-**Status:** Todo
+**Status:** Done
 
-Non-sentient trees that populate the world — smaller than great trees,
-providing wood, fruit, shade, and ecological variety. Not bonded to a spirit,
-cannot host elven construction. May be harvestable for resources. Interact
+Non-sentient trees that populate the forest floor — smaller than the great
+tree, providing ecological variety. Not bonded to a spirit, cannot host
+elven construction. May be harvestable for resources in future. Interact
 with F-uplift-tree (can be awakened into a great tree).
 
-**Blocks:** F-uplift-tree
+**Phase 1 (this PR):** Worldgen placement of ~500 lesser trees across
+the full world via rejection-sampled random positions. Config-driven via
+`LesserTreeConfig` (count, min distances, max placement attempts). Six
+tree profiles of varying size and shape: deciduous, conifer, tall
+straight, thick oak, bushy, and sapling. Trees use the same energy-based
+generation algorithm as the great tree but with much smaller profiles
+sized for real-life trees at 2m/voxel (~3-20 voxels tall). Both the main
+tree and lesser trees are sunk into the terrain surface so trunks emerge
+naturally from the ground. Stored in the existing `trees` BTreeMap with
+no owner, no mana, no fruit. No DB schema changes.
+
+**Future:** Poisson disk sampling for better spatial distribution,
+harvestable wood, fruit-bearing lesser trees, species variety, interaction
+with F-uplift-tree.
+
+**Unblocked:** F-uplift-tree
 **Related:** F-bigger-world, F-forest-ecology, F-uplift-tree, F-zone-world
 
 #### F-multi-tree — NPC trees with personalities
@@ -3446,6 +3462,19 @@ fog of war rendering.
 **Blocked by:** F-tree-db
 **Blocks:** F-cultural-drift, F-root-network
 **Related:** F-bigger-world, F-multiplayer, F-settlement-gen, F-tree-capacity, F-tree-db, F-tree-species, F-uplift-tree, F-zone-world
+
+#### F-rm-floor-extent — Remove floor_extent and ForestFloor layer
+**Status:** Todo
+
+Remove the vestigial `floor_extent` config field and the `ForestFloor`
+voxel type. The terrain system (hilly dirt via value noise) now covers
+the world without needing a separate green rectangle under the dirt.
+
+Touches: config.rs (remove field + default), tree_gen.rs (terrain
+generation bounds), world.rs (init_terrain_parallel), nav.rs
+(ForestFloor edge type references), mesh_gen.rs (ForestFloor geometry
+handling), species.rs (allowed_edge_types), raid.rs (perimeter band
+calculation), types.rs (VoxelType enum variant), sim tests.
 
 #### F-root-network — Root network expansion and diplomacy
 **Status:** Todo · **Phase:** 7 · **Refs:** §2
@@ -3647,7 +3676,7 @@ lesser tree into a new great tree capable of bonding elves and hosting
 construction. Enables expansion beyond a single tree. The uplifted tree
 becomes a new entity in F-tree-db and can participate in F-multi-tree.
 
-**Blocked by:** F-lesser-trees
+**Unblocked by:** F-lesser-trees
 **Related:** F-lesser-trees, F-multi-tree, F-tree-db
 
 ### UI & Presentation

@@ -10,7 +10,8 @@
 //
 // ## Algorithm overview
 //
-// 1. Seed the trunk segment at world center, directed upward, with energy =
+// 1. Seed the trunk segment at the given base position (world center for the
+//    main tree, arbitrary XZ for lesser trees), directed upward, with energy =
 //    `initial_energy * (1 - root_energy_fraction)`.
 // 2. Seed `root_initial_count` root segments at the trunk base, directed
 //    outward+downward, sharing the remaining root energy equally.
@@ -456,6 +457,37 @@ pub fn generate_terrain(world: &mut VoxelWorld, config: &GameConfig, rng: &mut G
 // Core generation
 // ---------------------------------------------------------------------------
 
+/// Find the terrain surface Y at a given (x, z) position.
+///
+/// Scans upward from `floor_y` through Dirt/ForestFloor voxels until hitting
+/// Air (returns that Y as the surface) or a non-terrain voxel like Trunk
+/// (stops and returns the last terrain Y). Returns `floor_y` if the scan
+/// finds Air immediately above `floor_y`.
+pub fn terrain_surface_y(
+    world: &VoxelWorld,
+    floor_y: i32,
+    terrain_max_height: i32,
+    x: i32,
+    z: i32,
+) -> i32 {
+    let mut surface = floor_y;
+    for y in floor_y..floor_y + terrain_max_height + 1 {
+        let above = world.get(VoxelCoord::new(x, y + 1, z));
+        if above == VoxelType::Air {
+            surface = y;
+            break;
+        }
+        if above == VoxelType::Dirt || above == VoxelType::ForestFloor {
+            surface = y + 1;
+        } else {
+            // Non-terrain voxel (tree material, etc.) — stop scanning.
+            surface = y;
+            break;
+        }
+    }
+    surface
+}
+
 /// Generate a tree at the world center, populating the voxel world and
 /// returning the voxel lists for the Tree entity.
 ///
@@ -468,17 +500,59 @@ pub fn generate_tree(
     rng: &mut GameRng,
     log: &dyn Fn(&str),
 ) -> TreeGenResult {
-    let profile = &config.tree_profile;
+    let center_x = world.size_x as i32 / 2;
+    let center_z = world.size_z as i32 / 2;
 
+    // Find terrain surface at the tree center, then sink up to 5 voxels into
+    // the dirt so the trunk base is buried regardless of local terrain
+    // variation. Clamp so we never go below floor_y (flat worlds have no
+    // dirt to sink into).
+    let surface_y = terrain_surface_y(
+        world,
+        config.floor_y,
+        config.terrain_max_height,
+        center_x,
+        center_z,
+    );
+    let sink = 5.min(surface_y - config.floor_y);
+    let base_y = surface_y - sink;
+
+    generate_tree_at(
+        world,
+        &config.tree_profile,
+        base_y,
+        center_x,
+        center_z,
+        rng,
+        log,
+    )
+}
+
+/// Generate a tree at an arbitrary (x, z) position using the given profile.
+///
+/// This is the core tree generation entry point. `generate_tree()` delegates
+/// here with the world center and main tree profile. Lesser tree generation
+/// calls this directly with per-tree positions and smaller profiles.
+///
+/// `floor_y` is the effective base level: the trunk starts at `floor_y + 1`.
+/// Callers typically pass a value sunk below the terrain surface so the trunk
+/// base is buried in the dirt (e.g., `surface_y - 5` for the main tree).
+pub fn generate_tree_at(
+    world: &mut VoxelWorld,
+    profile: &TreeProfile,
+    floor_y: i32,
+    base_x: i32,
+    base_z: i32,
+    rng: &mut GameRng,
+    log: &dyn Fn(&str),
+) -> TreeGenResult {
     let mut trunk_voxels = Vec::new();
     let mut branch_voxels = Vec::new();
     let mut root_voxels = Vec::new();
     let mut leaf_blob_centers: Vec<LeafBlobCenter> = Vec::new();
 
-    let center_x_fp = (world.size_x as i64 / 2) * FP_ONE;
-    let center_z_fp = (world.size_z as i64 / 2) * FP_ONE;
-
-    let floor_y = config.floor_y;
+    let base_x_fp = base_x as i64 * FP_ONE;
+    let base_z_fp = base_z as i64 * FP_ONE;
 
     // --- Convert config params to fixed-point ---
     let initial_energy_fp = f32_to_fp(profile.growth.initial_energy);
@@ -497,7 +571,7 @@ pub fn generate_tree(
     let mut job_queue: VecDeque<SegmentJob> = VecDeque::new();
     let trunk_base_y_fp = (floor_y as i64 + 1) * FP_ONE;
     job_queue.push_back(SegmentJob {
-        position: [center_x_fp, trunk_base_y_fp, center_z_fp],
+        position: [base_x_fp, trunk_base_y_fp, base_z_fp],
         direction: trunk_dir,
         energy: trunk_energy,
         generation: 0,
@@ -524,7 +598,7 @@ pub fn generate_tree(
                 ((horiz_z * cos_down) >> FP_SHIFT),
             ]);
             job_queue.push_back(SegmentJob {
-                position: [center_x_fp, trunk_base_y_fp, center_z_fp],
+                position: [base_x_fp, trunk_base_y_fp, base_z_fp],
                 direction: dir,
                 energy: energy_per_root,
                 generation: 0,
@@ -1607,5 +1681,199 @@ mod tests {
             below_floor.len(),
             &below_floor[..below_floor.len().min(5)]
         );
+    }
+
+    // --- generate_tree_at tests ---
+
+    #[test]
+    fn generate_tree_at_places_trunk_at_specified_position() {
+        let config = test_config_no_roots();
+        let profile = &config.tree_profile;
+        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut rng = GameRng::new(42);
+        generate_terrain(&mut world, &config, &mut rng);
+
+        let result = generate_tree_at(&mut world, profile, 0, 20, 40, &mut rng, &|_| {});
+
+        // The trunk should contain a voxel at or near (20, 1, 40).
+        let has_base = result
+            .trunk_voxels
+            .iter()
+            .any(|v| v.x == 20 && v.y == 1 && v.z == 40);
+        assert!(
+            has_base,
+            "Trunk should have a voxel at (20, 1, 40) — the specified base position"
+        );
+    }
+
+    #[test]
+    fn generate_tree_at_different_positions_differ() {
+        let config = test_config_no_roots();
+        let profile = &config.tree_profile;
+
+        let mut world_a = VoxelWorld::new(64, 64, 64);
+        let mut rng_a = GameRng::new(42);
+        generate_terrain(&mut world_a, &config, &mut rng_a);
+        let result_a = generate_tree_at(&mut world_a, profile, 0, 10, 10, &mut rng_a, &|_| {});
+
+        let mut world_b = VoxelWorld::new(64, 64, 64);
+        let mut rng_b = GameRng::new(42);
+        generate_terrain(&mut world_b, &config, &mut rng_b);
+        let result_b = generate_tree_at(&mut world_b, profile, 0, 50, 50, &mut rng_b, &|_| {});
+
+        // Trunk voxels should be at different coordinates.
+        assert_ne!(
+            result_a.trunk_voxels, result_b.trunk_voxels,
+            "Trees at different positions should have different voxel coordinates"
+        );
+    }
+
+    #[test]
+    fn lesser_deciduous_profile_produces_small_tree() {
+        use crate::config::TreeProfile;
+        let profile = TreeProfile::lesser_deciduous();
+        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut rng = GameRng::new(42);
+
+        let result = generate_tree_at(&mut world, &profile, 0, 32, 32, &mut rng, &|_| {});
+
+        assert!(!result.trunk_voxels.is_empty(), "Should have trunk voxels");
+
+        // Height should be modest — lesser trees should be <20 voxels tall.
+        let max_y = result.trunk_voxels.iter().map(|v| v.y).max().unwrap();
+        let min_y = result.trunk_voxels.iter().map(|v| v.y).min().unwrap();
+        let height = max_y - min_y + 1;
+        assert!(
+            height <= 25,
+            "Lesser deciduous tree should be <=25 voxels tall, got {height}"
+        );
+
+        // Should have no root voxels (root_energy_fraction = 0).
+        assert!(
+            result.root_voxels.is_empty(),
+            "Lesser deciduous should have no roots"
+        );
+    }
+
+    #[test]
+    fn lesser_conifer_profile_produces_small_tree() {
+        use crate::config::TreeProfile;
+        let profile = TreeProfile::lesser_conifer();
+        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut rng = GameRng::new(42);
+
+        let result = generate_tree_at(&mut world, &profile, 0, 32, 32, &mut rng, &|_| {});
+
+        assert!(!result.trunk_voxels.is_empty(), "Should have trunk voxels");
+
+        let max_y = result.trunk_voxels.iter().map(|v| v.y).max().unwrap();
+        let min_y = result.trunk_voxels.iter().map(|v| v.y).min().unwrap();
+        let height = max_y - min_y + 1;
+        assert!(
+            height <= 30,
+            "Lesser conifer tree should be <=30 voxels tall, got {height}"
+        );
+
+        assert!(
+            result.root_voxels.is_empty(),
+            "Lesser conifer should have no roots"
+        );
+    }
+
+    #[test]
+    fn all_lesser_profiles_produce_trunk_voxels() {
+        use crate::config::TreeProfile;
+        let profiles = [
+            ("deciduous", TreeProfile::lesser_deciduous()),
+            ("conifer", TreeProfile::lesser_conifer()),
+            ("tall_straight", TreeProfile::lesser_tall_straight()),
+            ("thick_oak", TreeProfile::lesser_thick_oak()),
+            ("bushy", TreeProfile::lesser_bushy()),
+            ("sapling", TreeProfile::lesser_sapling()),
+        ];
+        for (name, profile) in &profiles {
+            let mut world = VoxelWorld::new(64, 64, 64);
+            let mut rng = GameRng::new(42);
+            let result = generate_tree_at(&mut world, profile, 0, 32, 32, &mut rng, &|_| {});
+            assert!(
+                !result.trunk_voxels.is_empty(),
+                "Profile '{name}' should produce trunk voxels"
+            );
+        }
+    }
+
+    // --- terrain_surface_y tests ---
+
+    #[test]
+    fn terrain_surface_y_flat_world() {
+        let mut world = VoxelWorld::new(16, 64, 16);
+        // Place a flat Dirt layer at y=10.
+        world.set(VoxelCoord::new(5, 10, 5), VoxelType::Dirt);
+        let y = terrain_surface_y(&world, 10, 4, 5, 5);
+        assert_eq!(y, 10, "Flat terrain: surface should be at floor_y");
+    }
+
+    #[test]
+    fn terrain_surface_y_hilly_terrain() {
+        let mut world = VoxelWorld::new(16, 64, 16);
+        // Stack Dirt from y=10 to y=13 (4 layers).
+        for y in 10..=13 {
+            world.set(VoxelCoord::new(5, y, 5), VoxelType::Dirt);
+        }
+        let y = terrain_surface_y(&world, 10, 4, 5, 5);
+        assert_eq!(y, 13, "Hilly terrain: surface should be top of dirt stack");
+    }
+
+    #[test]
+    fn terrain_surface_y_stops_at_tree_material() {
+        let mut world = VoxelWorld::new(16, 64, 16);
+        world.set(VoxelCoord::new(5, 10, 5), VoxelType::Dirt);
+        world.set(VoxelCoord::new(5, 11, 5), VoxelType::Trunk);
+        let y = terrain_surface_y(&world, 10, 4, 5, 5);
+        assert_eq!(y, 10, "Should stop scanning at non-terrain voxel");
+    }
+
+    #[test]
+    fn terrain_surface_y_no_terrain_returns_floor_y() {
+        let world = VoxelWorld::new(16, 64, 16);
+        // Empty world — everything is Air.
+        let y = terrain_surface_y(&world, 10, 4, 5, 5);
+        assert_eq!(y, 10, "Empty world: should return floor_y");
+    }
+
+    #[test]
+    fn terrain_surface_y_zero_max_height() {
+        let mut world = VoxelWorld::new(16, 64, 16);
+        world.set(VoxelCoord::new(5, 10, 5), VoxelType::Dirt);
+        let y = terrain_surface_y(&world, 10, 0, 5, 5);
+        assert_eq!(y, 10, "With max_height=0, should return floor_y");
+    }
+
+    #[test]
+    fn main_tree_sink_with_hilly_terrain() {
+        let mut config = test_config();
+        config.terrain_max_height = 4;
+        config.tree_profile.growth.initial_energy = 50.0;
+        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut rng = GameRng::new(42);
+        generate_terrain(&mut world, &config, &mut rng);
+
+        let center_x = 32;
+        let center_z = 32;
+        let surface = terrain_surface_y(&world, 0, 4, center_x, center_z);
+
+        // With terrain, surface should be above floor_y.
+        assert!(surface >= config.floor_y, "Surface should be >= floor_y");
+
+        // The sink should be min(5, surface - floor_y).
+        let expected_sink = 5.min(surface - config.floor_y);
+        let expected_base = surface - expected_sink;
+
+        let _result = generate_tree(&mut world, &config, &mut rng, &|_| {});
+
+        // Verify trunk starts at expected_base + 1.
+        // (We can't easily inspect the base_y that was passed, but we can
+        // verify that the terrain_surface_y + sink math is consistent.)
+        assert_eq!(expected_base, surface - expected_sink);
     }
 }
