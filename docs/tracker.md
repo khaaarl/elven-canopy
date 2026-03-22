@@ -60,7 +60,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-flying-arrow-chase   Flying creatures excluded from arrow-chase
 [ ] B-flying-tasks         Flying creatures skip task system entirely
-[ ] B-raid-spawn           Raiders sometimes spawn inside map instead of at perimeter
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
 [ ] F-adventure-mode       Control individual elf (RPG-like)
@@ -3936,6 +3935,53 @@ instead of replacing it. An unshifted right-click replaces the queue
 as it does today. Queued commands execute sequentially as each one
 completes (move: arrived, attack: target dead, attack-move: arrived
 at destination).
+
+**Goal:** With an elf selected, right-click on A sends it to A (as
+today). Shift+right-click on B then shift+right-click on C queues
+B after A and C after B — the elf goes A → B → C in order. An
+unshifted right-click at any point cancels the entire queue and
+replaces it with the new command.
+
+**Approach — two new fields on the Task table:**
+
+1. `restrict_to_creature_id: Option<CreatureId>` (indexed) — When
+   set, only this creature may claim the task. `find_available_task`
+   skips tasks whose `restrict_to_creature_id` doesn't match the
+   searching creature. Sits alongside the existing `required_species`
+   filter.
+
+2. `prerequisite_task_id: Option<TaskId>` (indexed) — When set, the
+   task stays unavailable until its prerequisite reaches `Complete`.
+   For a queue A → B → C, B points to A and C points to B (a linked
+   list). `find_available_task` skips tasks whose prerequisite isn't
+   complete.
+
+**Queue creation (GDScript → SimCommand):**
+
+- Unshifted right-click: issue the command as today (single task,
+  no restrict/prerequisite fields). Before creating it, cancel/remove
+  any existing queued tasks for the creature that have
+  `origin == PlayerDirected` (query by `restrict_to_creature_id`
+  filtered to player-directed tasks only, so future non-command
+  restricted tasks are unaffected).
+- Shift+right-click: create the new task with
+  `restrict_to_creature_id` set to the commanded creature and
+  `prerequisite_task_id` set to the creature's current tail task
+  (its `current_task` if no queue exists, or the last queued task).
+
+**Cancellation cascade:** When a task is cancelled or interrupted,
+look up any tasks whose `prerequisite_task_id` points to it and
+cancel those too (recursing down the chain). This handles both
+explicit queue replacement (unshifted right-click) and implicit
+interruption (creature death, etc.). The `restrict_to_creature_id`
+index also enables a bulk-cancel path: find all player-directed
+tasks restricted to a creature and cancel them all, which is simpler
+for the "replace entire queue" case.
+
+**Completion flow:** When a task completes normally, no special
+cascade is needed — dependent tasks simply become available because
+their prerequisite is now `Complete`. `find_available_task` will
+pick them up on the creature's next activation.
 
 **Related:** F-rts-selection
 
