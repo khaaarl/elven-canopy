@@ -38,8 +38,8 @@ impl SimState {
             _ => return,
         };
         let target = match self.db.creatures.get(&target_id) {
-            Some(c) if c.vital_status == VitalStatus::Alive => c,
-            _ => return,
+            Some(c) if c.vital_status != VitalStatus::Dead => c,
+            _ => return, // dead or missing — not targetable
         };
         if attacker_id == target_id {
             return;
@@ -254,12 +254,12 @@ impl SimState {
         let target_creature = self.db.tasks.get(&task_id).and_then(|t| t.target_creature);
 
         if let Some(target_id) = target_creature {
-            let target_alive = self
+            let target_present = self
                 .db
                 .creatures
                 .get(&target_id)
-                .is_some_and(|c| c.vital_status == VitalStatus::Alive);
-            if !target_alive {
+                .is_some_and(|c| c.vital_status != VitalStatus::Dead);
+            if !target_present {
                 // Target dead/missing — disengage and fall through to scan.
                 self.disengage_attack_move(task_id, dest_nav_node, creature_id);
             } else {
@@ -561,9 +561,9 @@ impl SimState {
         target_id: CreatureId,
         events: &mut Vec<SimEvent>,
     ) {
-        // Check if target is still alive.
+        // Check if target is still alive or incapacitated (not dead).
         let target = match self.db.creatures.get(&target_id) {
-            Some(c) if c.vital_status == VitalStatus::Alive => c,
+            Some(c) if c.vital_status != VitalStatus::Dead => c,
             _ => return,
         };
 
@@ -657,13 +657,13 @@ impl SimState {
                 return;
             }
         };
-        // Check if target is dead — mission accomplished.
-        let target_alive = self
+        // Check if target is dead or missing — mission accomplished.
+        let target_dead = self
             .db
             .creatures
             .get(&target_id)
-            .is_some_and(|c| c.vital_status == VitalStatus::Alive);
-        if !target_alive {
+            .is_none_or(|c| c.vital_status == VitalStatus::Dead);
+        if target_dead {
             self.complete_task(task_id);
             self.schedule_reactivation(creature_id);
             return;
@@ -686,8 +686,8 @@ impl SimState {
             None => return false,
         };
         let target = match self.db.creatures.get(&target_id) {
-            Some(c) if c.vital_status == VitalStatus::Alive => c,
-            _ => return false,
+            Some(c) if c.vital_status != VitalStatus::Dead => c,
+            _ => return false, // dead or missing — not targetable
         };
 
         let species = attacker.species;
@@ -969,11 +969,79 @@ impl SimState {
         );
     }
 
+    /// Handle a creature becoming incapacitated (HP reached 0 but above
+    /// `-hp_max`). Aborts the creature's current task/action, sets
+    /// `vital_status = Incapacitated`, and emits a `CreatureIncapacitated`
+    /// event plus a notification. The creature remains in the world and is
+    /// still targetable — it will bleed out (lose 1 HP per heartbeat) unless
+    /// healed above 0 HP.
+    pub(crate) fn handle_creature_incapacitation(
+        &mut self,
+        creature_id: CreatureId,
+        events: &mut Vec<SimEvent>,
+    ) {
+        let (species, position) = match self.db.creatures.get(&creature_id) {
+            Some(c) if c.vital_status != VitalStatus::Dead => (c.species, c.position),
+            _ => return,
+        };
+
+        // Abort current task/action (same pattern as handle_creature_death).
+        if let Some(task_id) = self
+            .db
+            .creatures
+            .get(&creature_id)
+            .and_then(|c| c.current_task)
+        {
+            self.interrupt_task(creature_id, task_id);
+        } else {
+            self.abort_current_action(creature_id);
+        }
+
+        // Set vital_status = Incapacitated (indexed field → update_no_fk).
+        if let Some(mut c) = self.db.creatures.get(&creature_id) {
+            c.vital_status = VitalStatus::Incapacitated;
+            let _ = self.db.creatures.update_no_fk(c);
+        }
+
+        // Emit CreatureIncapacitated event.
+        events.push(SimEvent {
+            tick: self.tick,
+            kind: SimEventKind::CreatureIncapacitated {
+                creature_id,
+                species,
+                position,
+            },
+        });
+
+        // Create a notification for the player.
+        let creature_name = self
+            .db
+            .creatures
+            .get(&creature_id)
+            .map(|c| c.name.clone())
+            .unwrap_or_default();
+        let species_str = format!("{:?}", species);
+        let msg = if creature_name.is_empty() {
+            format!("A {} has been incapacitated.", species_str)
+        } else {
+            format!("{} ({}) has been incapacitated.", creature_name, species_str)
+        };
+        let _ = self
+            .db
+            .notifications
+            .insert_auto_no_fk(|id| crate::db::Notification {
+                id,
+                tick: self.tick,
+                message: msg,
+            });
+    }
+
     /// Handle a creature's death. Sets `vital_status = Dead`, interrupts any
     /// current task, drops all owned inventory as a ground pile, clears
     /// `assigned_home`, and emits a `CreatureDied` event. The creature row
     /// is NOT deleted — it remains in the database for future states (ghost,
-    /// spirit, etc.) and to preserve history.
+    /// spirit, etc.) and to preserve history. Accepts both Alive and
+    /// Incapacitated creatures.
     ///
     /// Heartbeat and activation events for dead creatures are no-ops: the
     /// handlers check `vital_status` and skip rescheduling.
@@ -984,7 +1052,7 @@ impl SimState {
         events: &mut Vec<SimEvent>,
     ) {
         let (species, position) = match self.db.creatures.get(&creature_id) {
-            Some(c) if c.vital_status == VitalStatus::Alive => (c.species, c.position),
+            Some(c) if c.vital_status != VitalStatus::Dead => (c.species, c.position),
             _ => return, // already dead or doesn't exist
         };
 
@@ -1096,9 +1164,12 @@ impl SimState {
             });
     }
 
-    /// Apply damage to a creature. Positive `amount` reduces HP. If HP
-    /// reaches 0 the creature dies via `handle_creature_death` with the
-    /// given cause.
+    /// Apply damage to a creature. Positive `amount` reduces HP.
+    ///
+    /// - Dead creature: no-op.
+    /// - Alive creature: `hp -= amount`. If `hp <= 0` and `hp > -hp_max`:
+    ///   incapacitate. If `hp <= -hp_max`: die outright.
+    /// - Incapacitated creature: `hp -= amount`. If `hp <= -hp_max`: die.
     pub(crate) fn apply_damage_with_cause(
         &mut self,
         creature_id: CreatureId,
@@ -1109,19 +1180,50 @@ impl SimState {
         if amount <= 0 {
             return;
         }
-        let should_die = if let Some(mut c) = self.db.creatures.get(&creature_id) {
-            if c.vital_status != VitalStatus::Alive {
-                return;
-            }
-            c.hp = (c.hp - amount).max(0);
-            let die = c.hp == 0;
+
+        #[derive(PartialEq)]
+        enum Outcome {
+            None,
+            Incapacitate,
+            Die,
+        }
+
+        let outcome = if let Some(mut c) = self.db.creatures.get(&creature_id) {
+            let result = match c.vital_status {
+                VitalStatus::Dead => return,
+                VitalStatus::Alive => {
+                    c.hp -= amount;
+                    if c.hp <= -c.hp_max {
+                        Outcome::Die
+                    } else if c.hp <= 0 {
+                        Outcome::Incapacitate
+                    } else {
+                        Outcome::None
+                    }
+                }
+                VitalStatus::Incapacitated => {
+                    c.hp -= amount;
+                    if c.hp <= -c.hp_max {
+                        Outcome::Die
+                    } else {
+                        Outcome::None
+                    }
+                }
+            };
             let _ = self.db.creatures.update_no_fk(c);
-            die
+            result
         } else {
             return;
         };
-        if should_die {
-            self.handle_creature_death(creature_id, cause, events);
+
+        match outcome {
+            Outcome::Incapacitate => {
+                self.handle_creature_incapacitation(creature_id, events);
+            }
+            Outcome::Die => {
+                self.handle_creature_death(creature_id, cause, events);
+            }
+            Outcome::None => {}
         }
     }
 
@@ -1137,17 +1239,29 @@ impl SimState {
     }
 
     /// Heal a creature. Positive `amount` restores HP up to `hp_max`.
-    /// No effect on dead creatures.
+    /// No effect on dead creatures. If an incapacitated creature's HP rises
+    /// above 0, it revives to Alive and its activation chain is restarted.
     pub(crate) fn apply_heal(&mut self, creature_id: CreatureId, amount: i64) {
         if amount <= 0 {
             return;
         }
-        let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
-            if c.vital_status != VitalStatus::Alive {
+        let mut revived = false;
+        if let Some(mut c) = self.db.creatures.get(&creature_id) {
+            if c.vital_status == VitalStatus::Dead {
                 return;
             }
             c.hp = (c.hp + amount).min(c.hp_max);
-        });
+            if c.vital_status == VitalStatus::Incapacitated && c.hp > 0 {
+                c.vital_status = VitalStatus::Alive;
+                revived = true;
+            }
+            // vital_status is indexed → must use update_no_fk.
+            let _ = self.db.creatures.update_no_fk(c);
+        }
+        // Restart the activation chain so the revived creature can act again.
+        if revived {
+            self.schedule_reactivation(creature_id);
+        }
     }
 
     /// Compute the maximum melee range a creature can achieve, considering
@@ -1294,8 +1408,8 @@ impl SimState {
             _ => return false,
         };
         let target = match self.db.creatures.get(&target_id) {
-            Some(c) if c.vital_status == VitalStatus::Alive => c,
-            _ => return false,
+            Some(c) if c.vital_status != VitalStatus::Dead => c,
+            _ => return false, // dead or missing — not targetable
         };
 
         // 2. Attacker must be idle.
@@ -1384,8 +1498,8 @@ impl SimState {
             _ => return false,
         };
         let target = match self.db.creatures.get(&target_id) {
-            Some(c) if c.vital_status == VitalStatus::Alive => c,
-            _ => return false,
+            Some(c) if c.vital_status != VitalStatus::Dead => c,
+            _ => return false, // dead or missing — not targetable
         };
 
         // 2. Attacker must be idle.
@@ -1656,7 +1770,7 @@ impl SimState {
                             .db
                             .creatures
                             .get(cid)
-                            .is_some_and(|c| c.vital_status == VitalStatus::Alive);
+                            .is_some_and(|c| c.vital_status != VitalStatus::Dead);
                         if !alive {
                             return false;
                         }
@@ -2903,7 +3017,7 @@ impl SimState {
                     Some(c) => c,
                     None => continue,
                 };
-                if creature.vital_status != VitalStatus::Alive {
+                if creature.vital_status == VitalStatus::Dead {
                     continue;
                 }
                 // Resolve target's position to a nav node on the attacker's graph
@@ -3341,7 +3455,7 @@ impl SimState {
                     None => continue,
                 };
                 let target = match self.db.creatures.get(&target_id) {
-                    Some(c) if c.vital_status == VitalStatus::Alive => c,
+                    Some(c) if c.vital_status != VitalStatus::Dead => c,
                     _ => continue,
                 };
 
@@ -3416,7 +3530,7 @@ impl SimState {
         let current_node = graph.node_at(creature.position)?;
 
         let target = self.db.creatures.get(&target_id)?;
-        if target.vital_status != VitalStatus::Alive {
+        if target.vital_status == VitalStatus::Dead {
             return None;
         }
         let target_pos = target.position;

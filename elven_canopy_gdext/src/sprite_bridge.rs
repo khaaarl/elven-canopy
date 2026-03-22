@@ -7,6 +7,7 @@
 //
 // API:
 // - `species_sprite(species_name, seed)` → `ImageTexture` (base sprite, no equipment)
+// - `species_sprite_fallen(species_name, seed)` → `ImageTexture` (rotated 90° CW for incapacitated)
 // - `fruit_sprite(shape, r, g, b, size_percent, glows)` → `ImageTexture`
 //
 // Elf sprites with equipment are handled by the Rust-side sprite cache in
@@ -43,33 +44,54 @@ pub(crate) fn pixel_buffer_to_texture(buf: &PixelBuffer) -> Option<Gd<ImageTextu
     ImageTexture::create_from_image(&image)
 }
 
+/// Parse a species name string into a `Species` enum value.
+fn parse_species_name(name: &str) -> Option<Species> {
+    match name {
+        "Elf" => Some(Species::Elf),
+        "Capybara" => Some(Species::Capybara),
+        "Boar" => Some(Species::Boar),
+        "Deer" => Some(Species::Deer),
+        "Elephant" => Some(Species::Elephant),
+        "Goblin" => Some(Species::Goblin),
+        "Monkey" => Some(Species::Monkey),
+        "Orc" => Some(Species::Orc),
+        "Squirrel" => Some(Species::Squirrel),
+        "Troll" => Some(Species::Troll),
+        "Hornet" => Some(Species::Hornet),
+        "Wyvern" => Some(Species::Wyvern),
+        _ => None,
+    }
+}
+
 #[godot_api]
 impl SpriteGenerator {
     /// Generate a creature sprite texture from species name and integer seed.
     /// Returns null if the species name is unknown.
     #[func]
     fn species_sprite(species_name: GString, seed: i64) -> Option<Gd<ImageTexture>> {
-        let species = match species_name.to_string().as_str() {
-            "Elf" => Species::Elf,
-            "Capybara" => Species::Capybara,
-            "Boar" => Species::Boar,
-            "Deer" => Species::Deer,
-            "Elephant" => Species::Elephant,
-            "Goblin" => Species::Goblin,
-            "Monkey" => Species::Monkey,
-            "Orc" => Species::Orc,
-            "Squirrel" => Species::Squirrel,
-            "Troll" => Species::Troll,
-            "Hornet" => Species::Hornet,
-            "Wyvern" => Species::Wyvern,
-            _ => {
-                godot_warn!("SpriteGenerator: unknown species '{species_name}'");
-                return None;
-            }
-        };
+        let species = parse_species_name(&species_name.to_string()).or_else(|| {
+            godot_warn!("SpriteGenerator: unknown species '{species_name}'");
+            None
+        })?;
         let params = species_params_from_seed(species, seed);
         let buf = create_species_sprite(&params);
         pixel_buffer_to_texture(&buf)
+    }
+
+    /// Generate a creature sprite rotated 90° clockwise (fallen/incapacitated).
+    /// Same as `species_sprite` but the image is rotated so the creature
+    /// appears lying on its side. Used by creature renderers for incapacitated
+    /// creatures since billboard mode prevents node-level rotation.
+    #[func]
+    fn species_sprite_fallen(species_name: GString, seed: i64) -> Option<Gd<ImageTexture>> {
+        let species = parse_species_name(&species_name.to_string()).or_else(|| {
+            godot_warn!("SpriteGenerator: unknown species '{species_name}'");
+            None
+        })?;
+        let params = species_params_from_seed(species, seed);
+        let buf = create_species_sprite(&params);
+        let rotated = buf.rotate_90_cw();
+        pixel_buffer_to_texture(&rotated)
     }
 
     /// Generate a 16x16 fruit sprite texture from appearance parameters.

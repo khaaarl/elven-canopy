@@ -140,7 +140,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-greenhouse-revamp    Greenhouse planter growth cycle and pluck tasks
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-herbalism            Herbalism and alchemy
-[ ] F-incapacitation       Incapacitation at 0 HP instead of instant death
 [ ] F-infra-decay          Infrastructure decay with automated maintenance
 [ ] F-insect-husbandry     Beekeeping and insect husbandry
 [ ] F-instinctual-flee     Instinctual flee thresholds (species-level fear overrides)
@@ -330,6 +329,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-hp-death             HP, VitalStatus, and creature death handling
 [x] F-hp-ui                HP bars in creature UI
 [x] F-immediate-commands   Immediate command application (zero-tick updates)
+[x] F-incapacitation       Incapacitation at 0 HP instead of instant death
 [x] F-item-color           Item color system (material-derived and dye override)
 [x] F-item-durability      Item durability system (current/max HP on items)
 [x] F-items                Items and inventory system
@@ -2832,17 +2832,17 @@ Display creature HP in the game UI. Two elements:
 **Related:** F-hp-death, F-incapacitation
 
 #### F-incapacitation — Incapacitation at 0 HP instead of instant death
-**Status:** Todo
+**Status:** Done
 
 Creatures reaching 0 HP become incapacitated rather than dying instantly.
 Incapacitated creatures fall over (sprite rotated 90 degrees), cannot act,
 and begin bleeding out — HP continues to decrease. True death occurs when
 HP reaches the negative of max HP (e.g., a creature with 100 max HP dies
-at -100 HP). The red HP bar is replaced with a black-on-gray bar with a
-skull icon during incapacitation. This creates a rescue window (see
+at -100 HP). The red HP bar is replaced with a dark-gray-on-black bar
+during incapacitation. This creates a rescue window (see
 F-rescue) and makes combat feel less binary.
 
-**Blocks:** F-rescue
+**Unblocked:** F-rescue
 **Related:** F-anatomy, F-funeral-rites, F-hp-death, F-hp-ui, F-rescue, F-soul-mech, F-starvation-rework
 
 #### F-instinctual-flee — Instinctual flee thresholds (species-level fear overrides)
@@ -3045,7 +3045,7 @@ apply first aid to stabilize bleeding. A complex feature involving new task
 types, pathfinding with a carried creature, and medical/stabilization
 mechanics. Design TBD.
 
-**Blocked by:** F-incapacitation
+**Unblocked by:** F-incapacitation
 **Related:** F-herbalism, F-incapacitation
 
 #### F-skirmish — Ranged skirmish/kite behavior (shoot-retreat loop)

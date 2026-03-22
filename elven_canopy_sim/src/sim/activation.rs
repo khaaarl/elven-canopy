@@ -639,15 +639,16 @@ impl SimState {
             .map(|t| t.kind_tag)
             .unwrap_or(crate::db::TaskKindTag::GoTo);
         if task_kind_tag == crate::db::TaskKindTag::AttackTarget {
-            // Check if target is still alive before doing anything.
+            // Check if target is dead before doing anything. Incapacitated
+            // targets are still valid — the attacker should finish them off.
             if let Some(attack_data) = self.task_attack_target_data(task_id) {
                 let target_id = attack_data.target;
-                let target_alive = self
+                let target_dead = self
                     .db
                     .creatures
                     .get(&target_id)
-                    .is_some_and(|c| c.vital_status == VitalStatus::Alive);
-                if !target_alive {
+                    .is_none_or(|c| c.vital_status == VitalStatus::Dead);
+                if target_dead {
                     self.complete_task(task_id);
                     self.schedule_reactivation(creature_id);
                     return;

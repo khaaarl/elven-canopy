@@ -29,6 +29,16 @@ impl PixelBuffer {
         }
     }
 
+    /// Create a pixel buffer from pre-existing RGBA8 data.
+    pub fn from_raw(width: u32, height: u32, data: Vec<u8>) -> Self {
+        debug_assert_eq!(data.len(), (width * height * 4) as usize);
+        Self {
+            width,
+            height,
+            data,
+        }
+    }
+
     /// Buffer width in pixels.
     pub fn width(&self) -> u32 {
         self.width
@@ -117,6 +127,28 @@ impl PixelBuffer {
             for px in x0..(x0 + w) {
                 self.set_px(px, py, color);
             }
+        }
+    }
+
+    /// Rotate the buffer 90° clockwise: (x, y) → (height-1-y, x).
+    /// Returns a new buffer with width = old height, height = old width.
+    pub fn rotate_90_cw(&self) -> Self {
+        let w = self.width as usize;
+        let h = self.height as usize;
+        let mut dst = vec![0u8; self.data.len()];
+        for y in 0..h {
+            for x in 0..w {
+                let src_idx = (y * w + x) * 4;
+                let new_x = h - 1 - y;
+                let new_y = x;
+                let dst_idx = (new_y * h + new_x) * 4;
+                dst[dst_idx..dst_idx + 4].copy_from_slice(&self.data[src_idx..src_idx + 4]);
+            }
+        }
+        Self {
+            width: self.height,
+            height: self.width,
+            data: dst,
         }
     }
 
@@ -252,5 +284,41 @@ mod tests {
         assert!(buf.data().iter().all(|&b| b == 0));
         buf.draw_ellipse(4, 4, 3, 0, Color::rgb(1.0, 0.0, 0.0));
         assert!(buf.data().iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn rotate_90_cw_non_square() {
+        // 3x2 buffer (W=3, H=2) rotated CW should become 2x3 (W=2, H=3).
+        // Original layout (row-major, each letter = 1 pixel):
+        //   A B C
+        //   D E F
+        // After 90° CW:
+        //   D A
+        //   E B
+        //   F C
+        let mut buf = PixelBuffer::new(3, 2);
+        let red = Color::rgb(1.0, 0.0, 0.0);
+        let blue = Color::rgb(0.0, 0.0, 1.0);
+        buf.set_px(0, 0, red);   // A = red
+        buf.set_px(2, 1, blue);  // F = blue
+
+        let rot = buf.rotate_90_cw();
+        assert_eq!(rot.width(), 2);
+        assert_eq!(rot.height(), 3);
+        // A was at (0,0), should now be at (h-1-0, 0) = (1, 0).
+        assert_eq!(rot.get_px(1, 0).r, 255);
+        // F was at (2,1), should now be at (h-1-1, 2) = (0, 2).
+        assert_eq!(rot.get_px(0, 2).b, 255);
+    }
+
+    #[test]
+    fn rotate_90_cw_1x1() {
+        let mut buf = PixelBuffer::new(1, 1);
+        buf.set_px(0, 0, Color::rgb(0.5, 0.5, 0.5));
+        let rot = buf.rotate_90_cw();
+        assert_eq!(rot.width(), 1);
+        assert_eq!(rot.height(), 1);
+        let px = rot.get_px(0, 0);
+        assert_eq!(px.r, 127); // 0.5 * 255 ≈ 127
     }
 }

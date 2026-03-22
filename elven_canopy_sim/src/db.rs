@@ -17,8 +17,10 @@
 // `projectiles` — the primary simulation entities, keyed by UUID-based or
 // sequential IDs.
 // `Creature` includes `hp`/`hp_max` (hit points) and `vital_status`
-// (`Alive`/`Dead`, `#[indexed]` for efficient filtering). Dead creatures
-// remain in the DB; all live-creature queries filter by vital_status.
+// (`Alive`/`Incapacitated`/`Dead`, `#[indexed]` for efficient filtering).
+// Dead creatures remain in the DB; all live-creature queries filter by
+// vital_status. Incapacitated creatures are rendered and targetable but
+// cannot act.
 //
 // **Child tables:** `thoughts`, `creature_traits`, `move_actions`,
 // `notifications`, `inventories`, `item_stacks`, `ground_piles`,
@@ -296,9 +298,10 @@ pub struct Creature {
     /// Maximum hit points (set from `SpeciesData::hp_max` at spawn).
     #[serde(default)]
     pub hp_max: i64,
-    /// Whether this creature is alive, dead, or in a future supernatural state.
-    /// Dead creatures remain in the table but are excluded from all active
-    /// simulation queries (rendering, task assignment, heartbeat, etc.).
+    /// Whether this creature is alive, incapacitated, dead, or in a future
+    /// supernatural state. Dead creatures are excluded from all active
+    /// simulation queries. Incapacitated creatures are rendered and targetable
+    /// but cannot act, move, or be assigned tasks.
     #[serde(default)]
     #[indexed]
     pub vital_status: VitalStatus,

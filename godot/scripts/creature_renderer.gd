@@ -33,6 +33,8 @@ var _species_name: String
 var _y_offset: float
 var _sprites: Array[Sprite3D] = []
 var _hp_bars: Array[Sprite3D] = []
+var _normal_textures: Array[Texture2D] = []
+var _fallen_textures: Array[Texture2D] = []
 var _render_tick: float = 0.0
 
 
@@ -57,13 +59,16 @@ func _process(_delta: float) -> void:
 
 	var positions := _bridge.get_creature_positions(_species_name, _render_tick)
 	var hp_ratios := _bridge.get_creature_hp_ratios(_species_name)
+	var incap_flags := _bridge.get_creature_incapacitated(_species_name)
 	var count := positions.size()
 
 	# Add sprites if we have more creatures than sprites.
 	while _sprites.size() < count:
 		var idx := _sprites.size()
 		var sprite := Sprite3D.new()
-		sprite.texture = SpriteGenerator.species_sprite(_species_name, idx)
+		var normal_tex := SpriteGenerator.species_sprite(_species_name, idx)
+		var fallen_tex := SpriteGenerator.species_sprite_fallen(_species_name, idx)
+		sprite.texture = normal_tex
 		sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		sprite.pixel_size = 0.02
 		sprite.transparent = true
@@ -71,6 +76,8 @@ func _process(_delta: float) -> void:
 		sprite.render_priority = 1
 		add_child(sprite)
 		_sprites.append(sprite)
+		_normal_textures.append(normal_tex)
+		_fallen_textures.append(fallen_tex)
 		var bar: Sprite3D = HpBar.create_bar_sprite()
 		add_child(bar)
 		_hp_bars.append(bar)
@@ -80,9 +87,17 @@ func _process(_delta: float) -> void:
 		if i < count:
 			_sprites[i].visible = true
 			var pos := positions[i]
+			var is_incap := i < incap_flags.size() and incap_flags[i] != 0
 			_sprites[i].global_position = Vector3(pos.x + 0.5, pos.y + _y_offset, pos.z + 0.5)
-			var ratio: float = hp_ratios[i] if i < hp_ratios.size() else 1.0
-			HpBar.update_bar(_hp_bars[i], ratio)
+			# Swap to fallen texture when incapacitated (billboard mode
+			# prevents node-level rotation from working).
+			if is_incap:
+				_sprites[i].texture = _fallen_textures[i]
+				HpBar.update_bar_incapacitated(_hp_bars[i])
+			else:
+				_sprites[i].texture = _normal_textures[i]
+				var ratio: float = hp_ratios[i] if i < hp_ratios.size() else 1.0
+				HpBar.update_bar(_hp_bars[i], ratio)
 			_hp_bars[i].global_position = Vector3(
 				pos.x + 0.5, pos.y + _y_offset * 2.0 + HP_BAR_GAP, pos.z + 0.5
 			)

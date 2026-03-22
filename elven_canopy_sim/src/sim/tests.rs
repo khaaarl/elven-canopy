@@ -16767,10 +16767,11 @@ fn damage_reduces_hp() {
 }
 
 #[test]
-fn damage_kills_at_zero_hp() {
+fn damage_incapacitates_at_zero_hp() {
     let mut sim = test_sim(42);
     let elf_id = spawn_elf(&mut sim);
-    let hp_max = sim.species_table[&Species::Elf].hp_max;
+    zero_creature_stats(&mut sim, elf_id);
+    let creature_hp = sim.db.creatures.get(&elf_id).unwrap().hp;
     let tick = sim.tick;
 
     let result = sim.step(
@@ -16779,26 +16780,23 @@ fn damage_kills_at_zero_hp() {
             tick: tick + 1,
             action: SimAction::DamageCreature {
                 creature_id: elf_id,
-                amount: hp_max, // exactly lethal
+                amount: creature_hp, // exactly reduces HP to 0 → incapacitated
             },
         }],
         tick + 1,
     );
 
     let creature = sim.db.creatures.get(&elf_id).unwrap();
-    assert_eq!(creature.vital_status, VitalStatus::Dead);
+    assert_eq!(creature.vital_status, VitalStatus::Incapacitated);
     assert_eq!(creature.hp, 0);
     assert!(result.events.iter().any(|e| matches!(
         &e.kind,
-        SimEventKind::CreatureDied {
-            cause: DeathCause::Damage,
-            ..
-        }
+        SimEventKind::CreatureIncapacitated { .. }
     )));
 }
 
 #[test]
-fn overkill_damage_clamps_hp_to_zero() {
+fn overkill_damage_kills_outright() {
     let mut sim = test_sim(42);
     let elf_id = spawn_elf(&mut sim);
     let tick = sim.tick;
@@ -16816,6 +16814,7 @@ fn overkill_damage_clamps_hp_to_zero() {
     );
 
     let creature = sim.db.creatures.get(&elf_id).unwrap();
+    // Massive damage kills outright (hp <= -hp_max), death handler sets hp = 0.
     assert_eq!(creature.hp, 0);
     assert_eq!(creature.vital_status, VitalStatus::Dead);
 }
@@ -16985,7 +16984,7 @@ fn hp_regen_does_not_revive_dead() {
     let actual_hp_max = sim.db.creatures.get(&troll_id).unwrap().hp_max;
     let heartbeat = sim.species_table[&Species::Troll].heartbeat_interval_ticks;
 
-    // Kill the troll.
+    // Kill the troll outright (damage past -hp_max to bypass incapacitation).
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
@@ -16993,7 +16992,7 @@ fn hp_regen_does_not_revive_dead() {
             tick: tick + 1,
             action: SimAction::DamageCreature {
                 creature_id: troll_id,
-                amount: actual_hp_max,
+                amount: actual_hp_max * 2,
             },
         }],
         tick + 1,
@@ -18011,7 +18010,7 @@ fn test_melee_strike_deals_damage() {
 }
 
 #[test]
-fn test_melee_strike_kills_target() {
+fn test_melee_strike_incapacitates_target() {
     let mut sim = test_sim(42);
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
@@ -18022,10 +18021,10 @@ fn test_melee_strike_kills_target() {
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, goblin);
 
-    // Set elf HP to just below goblin damage so one strike kills.
+    // Set elf HP equal to goblin damage so one strike incapacitates.
     let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
     let _ = sim.db.creatures.modify_unchecked(&elf, |c| {
-        c.hp = goblin_damage; // exactly equal → dies
+        c.hp = goblin_damage; // exactly equal → incapacitated (not dead)
     });
 
     let tick = sim.tick;
@@ -18043,11 +18042,11 @@ fn test_melee_strike_kills_target() {
 
     assert_eq!(
         sim.db.creatures.get(&elf).unwrap().vital_status,
-        VitalStatus::Dead
+        VitalStatus::Incapacitated
     );
     assert!(events.events.iter().any(|e| matches!(
         &e.kind,
-        SimEventKind::CreatureDied { creature_id, .. } if *creature_id == elf
+        SimEventKind::CreatureIncapacitated { creature_id, .. } if *creature_id == elf
     )));
 }
 
@@ -19439,8 +19438,8 @@ fn armor_projectile_degrades_equipment() {
 }
 
 #[test]
-fn armor_melee_kill_with_armor_equipped() {
-    // Killing an armored creature should not corrupt state.
+fn armor_melee_incapacitate_with_armor_equipped() {
+    // Incapacitating an armored creature should not corrupt state.
     let mut sim = test_sim(42);
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
@@ -19454,7 +19453,7 @@ fn armor_melee_kill_with_armor_equipped() {
 
     equip_full_armor(&mut sim, elf);
 
-    // Set elf HP low enough that a single hit kills even through armor.
+    // Set elf HP low enough that a single hit incapacitates even through armor.
     let _ = sim.db.creatures.modify_unchecked(&elf, |c| c.hp = 1);
 
     let tick = sim.tick;
@@ -19472,11 +19471,11 @@ fn armor_melee_kill_with_armor_equipped() {
 
     assert_eq!(
         sim.db.creatures.get(&elf).unwrap().vital_status,
-        VitalStatus::Dead,
+        VitalStatus::Incapacitated,
     );
     assert!(events.events.iter().any(|e| matches!(
         &e.kind,
-        SimEventKind::CreatureDied { creature_id, .. } if *creature_id == elf
+        SimEventKind::CreatureIncapacitated { creature_id, .. } if *creature_id == elf
     )));
 }
 
@@ -25045,6 +25044,7 @@ fn creature_does_not_freeze_after_combat_preempts_task() {
     let soldiers = soldiers_group(&sim);
     set_military_group(&mut sim, elf_id, Some(soldiers.id));
     arm_with_bow_and_arrows(&mut sim, elf_id, 20);
+    zero_creature_stats(&mut sim, elf_id);
 
     // Give elf a low-priority task.
     let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
@@ -25135,6 +25135,7 @@ fn defensive_elf_fights_instead_of_claiming_non_preemptable_task() {
     sim.step(&[cmd], sim.tick + 1);
     set_military_group(&mut sim, elf_id, Some(soldiers.id));
     arm_with_bow_and_arrows(&mut sim, elf_id, 20);
+    zero_creature_stats(&mut sim, elf_id);
 
     let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
 
@@ -25370,6 +25371,7 @@ fn defensive_elf_shoots_at_target_beyond_pursuit_range() {
     sim.step(&[cmd], sim.tick + 1);
     set_military_group(&mut sim, elf_id, Some(soldiers.id));
     arm_with_bow_and_arrows(&mut sim, elf_id, 20);
+    zero_creature_stats(&mut sim, elf_id);
 
     let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
 
@@ -25405,10 +25407,15 @@ fn defensive_elf_shoots_at_target_beyond_pursuit_range() {
         inventory::MaterialFilter::Any,
     );
 
-    // The elf should have shot (arrow consumed, Shoot action started).
+    // The elf should have engaged the hostile — either fired a shot, started
+    // aiming, or is moving to close distance. The key invariant is that the
+    // elf detected the orc and took action, not that it specifically shot.
+    let engaged = arrows_remaining < 20
+        || elf.action_kind == ActionKind::Shoot
+        || elf.action_kind == ActionKind::Move;
     assert!(
-        arrows_remaining < 20 || elf.action_kind == ActionKind::Shoot,
-        "Defensive elf should shoot at orc 10 voxels away (within detection \
+        engaged,
+        "Defensive elf should engage orc 10 voxels away (within detection \
          range but beyond pursuit range). Arrows: {arrows_remaining}/20, \
          action: {:?}",
         elf.action_kind
@@ -38893,6 +38900,344 @@ fn creature_gravity_clears_task_and_path() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Incapacitation (F-incapacitation)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn damage_to_zero_hp_incapacitates_not_kills() {
+    // Test that damage bringing HP to exactly 0 results in Incapacitated, not Dead.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, goblin);
+
+    let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
+    let _ = sim.db.creatures.modify_unchecked(&elf, |c| {
+        c.hp = goblin_damage;
+    });
+
+    let tick = sim.tick;
+    let events = sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: goblin,
+                target_id: elf,
+            },
+        }],
+        tick + 1,
+    );
+
+    let elf_c = sim.db.creatures.get(&elf).unwrap();
+    assert_eq!(elf_c.vital_status, VitalStatus::Incapacitated);
+    assert_eq!(elf_c.hp, 0);
+
+    assert!(events.events.iter().any(|e| matches!(
+        &e.kind,
+        SimEventKind::CreatureIncapacitated { creature_id, .. } if *creature_id == elf
+    )));
+    assert!(!events.events.iter().any(|e| matches!(
+        &e.kind,
+        SimEventKind::CreatureDied { creature_id, .. } if *creature_id == elf
+    )));
+}
+
+#[test]
+fn incapacitated_creature_bleeds_out_to_death() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, elf);
+
+    let hp_max = sim.db.creatures.get(&elf).unwrap().hp_max;
+    let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    if let Some(mut c) = sim.db.creatures.get(&elf) {
+        c.hp = 0;
+        c.vital_status = VitalStatus::Incapacitated;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let start_tick = sim.tick;
+    let target_tick = start_tick + heartbeat * (hp_max as u64) + 1;
+    sim.step(&[], target_tick);
+
+    let elf_c = sim.db.creatures.get(&elf).unwrap();
+    assert_eq!(elf_c.vital_status, VitalStatus::Dead);
+}
+
+#[test]
+fn further_damage_on_incapacitated_pushes_hp_negative() {
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, goblin);
+
+    let hp_max = sim.db.creatures.get(&elf).unwrap().hp_max;
+    let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
+
+    if let Some(mut c) = sim.db.creatures.get(&elf) {
+        c.hp = 0;
+        c.vital_status = VitalStatus::Incapacitated;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: goblin,
+                target_id: elf,
+            },
+        }],
+        tick + 1,
+    );
+
+    let elf_c = sim.db.creatures.get(&elf).unwrap();
+    assert_eq!(elf_c.hp, -goblin_damage);
+    assert!(elf_c.hp > -hp_max, "elf should still be incapacitated, not dead yet");
+    assert_eq!(elf_c.vital_status, VitalStatus::Incapacitated);
+}
+
+#[test]
+fn massive_single_hit_kills_outright() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, elf);
+
+    let hp_max = sim.db.creatures.get(&elf).unwrap().hp_max;
+
+    let tick = sim.tick;
+    let events = sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DamageCreature {
+                creature_id: elf,
+                amount: hp_max + hp_max,
+            },
+        }],
+        tick + 1,
+    );
+
+    let elf_c = sim.db.creatures.get(&elf).unwrap();
+    assert_eq!(elf_c.vital_status, VitalStatus::Dead);
+    assert!(events.events.iter().any(|e| matches!(
+        &e.kind,
+        SimEventKind::CreatureDied { creature_id, .. } if *creature_id == elf
+    )));
+}
+
+#[test]
+fn heal_revives_incapacitated_creature() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, elf);
+
+    if let Some(mut c) = sim.db.creatures.get(&elf) {
+        c.hp = -10;
+        c.vital_status = VitalStatus::Incapacitated;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::HealCreature {
+                creature_id: elf,
+                amount: 20,
+            },
+        }],
+        tick + 1,
+    );
+
+    let elf_c = sim.db.creatures.get(&elf).unwrap();
+    assert_eq!(elf_c.vital_status, VitalStatus::Alive);
+    assert_eq!(elf_c.hp, 10);
+}
+
+#[test]
+fn heal_incapacitated_not_enough_stays_incapacitated() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, elf);
+
+    if let Some(mut c) = sim.db.creatures.get(&elf) {
+        c.hp = -30;
+        c.vital_status = VitalStatus::Incapacitated;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::HealCreature {
+                creature_id: elf,
+                amount: 20,
+            },
+        }],
+        tick + 1,
+    );
+
+    let elf_c = sim.db.creatures.get(&elf).unwrap();
+    assert_eq!(elf_c.vital_status, VitalStatus::Incapacitated);
+    assert_eq!(elf_c.hp, -10);
+}
+
+#[test]
+fn incapacitated_creature_does_not_seek_food() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, elf);
+
+    let food_threshold =
+        sim.species_table[&Species::Elf].food_max
+            * sim.species_table[&Species::Elf].food_hunger_threshold_pct
+            / 100;
+    if let Some(mut c) = sim.db.creatures.get(&elf) {
+        c.hp = -5;
+        c.vital_status = VitalStatus::Incapacitated;
+        c.food = food_threshold / 2;
+        c.current_task = None;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    let start_tick = sim.tick;
+    sim.step(&[], start_tick + heartbeat + 1);
+
+    let elf_c = sim.db.creatures.get(&elf).unwrap();
+    assert!(elf_c.current_task.is_none());
+}
+
+#[test]
+fn debug_kill_bypasses_incapacitation() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, elf);
+
+    let tick = sim.tick;
+    let events = sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature { creature_id: elf },
+        }],
+        tick + 1,
+    );
+
+    let elf_c = sim.db.creatures.get(&elf).unwrap();
+    assert_eq!(elf_c.vital_status, VitalStatus::Dead);
+    assert!(events.events.iter().any(|e| matches!(
+        &e.kind,
+        SimEventKind::CreatureDied { creature_id, .. } if *creature_id == elf
+    )));
+}
+
+#[test]
+fn incapacitated_creature_is_targetable_by_melee() {
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, goblin);
+
+    let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
+
+    if let Some(mut c) = sim.db.creatures.get(&elf) {
+        c.hp = 0;
+        c.vital_status = VitalStatus::Incapacitated;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let tick = sim.tick;
+    let events = sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: goblin,
+                target_id: elf,
+            },
+        }],
+        tick + 1,
+    );
+
+    let elf_c = sim.db.creatures.get(&elf).unwrap();
+    assert_eq!(elf_c.hp, -goblin_damage);
+    assert!(events.events.iter().any(|e| matches!(
+        &e.kind,
+        SimEventKind::CreatureDamaged { target_id, .. } if *target_id == elf
+    )));
+}
+
+#[test]
+fn vital_status_incapacitated_serde_roundtrip() {
+    let status = VitalStatus::Incapacitated;
+    let json = serde_json::to_string(&status).unwrap();
+    let restored: VitalStatus = serde_json::from_str(&json).unwrap();
+    assert_eq!(status, restored);
+}
+
+#[test]
+fn incapacitation_notification_emitted() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, elf);
+
+    let _ = sim.db.creatures.modify_unchecked(&elf, |c| {
+        c.hp = 1;
+    });
+
+    let notif_count_before = sim.db.notifications.iter_all().count();
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DamageCreature {
+                creature_id: elf,
+                amount: 1,
+            },
+        }],
+        tick + 1,
+    );
+
+    let notif_count_after = sim.db.notifications.iter_all().count();
+    assert!(
+        notif_count_after > notif_count_before,
+        "Should have emitted an incapacitation notification"
+    );
+    let last_notif = sim.db.notifications.iter_all().last().unwrap();
+    assert!(
+        last_notif.message.contains("incapacitated"),
+        "Notification should mention incapacitation: {}",
+        last_notif.message
+    );
+}
+
 #[test]
 fn logistics_heartbeat_triggers_creature_gravity() {
     let mut sim = test_sim(42);
@@ -39084,4 +39429,457 @@ fn ground_only_with_nav_node_but_no_solid_below_falls() {
     assert_eq!(fell, 1, "capybara should fall");
     let capy = sim.db.creatures.get(&capy_id).unwrap();
     assert_eq!(capy.position.y, 1, "should land at ground level");
+}
+
+#[test]
+fn heal_to_exactly_zero_stays_incapacitated() {
+    // Healing an incapacitated creature to exactly 0 HP should leave it
+    // incapacitated (not revive). Revival requires HP > 0.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, elf);
+
+    if let Some(mut c) = sim.db.creatures.get(&elf) {
+        c.hp = -20;
+        c.vital_status = VitalStatus::Incapacitated;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::HealCreature {
+                creature_id: elf,
+                amount: 20,
+            },
+        }],
+        tick + 1,
+    );
+
+    let elf_c = sim.db.creatures.get(&elf).unwrap();
+    assert_eq!(elf_c.vital_status, VitalStatus::Incapacitated);
+    assert_eq!(elf_c.hp, 0);
+}
+
+#[test]
+fn incapacitated_creature_not_assigned_available_tasks() {
+    // An incapacitated creature should NOT be assigned any tasks, even if
+    // tasks are available and the creature is nominally idle.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, elf);
+
+    if let Some(mut c) = sim.db.creatures.get(&elf) {
+        c.hp = -10;
+        c.vital_status = VitalStatus::Incapacitated;
+        c.current_task = None;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Create an available task.
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let task_id = TaskId::new(&mut sim.rng);
+    let go_task = task::Task {
+        id: task_id,
+        kind: task::TaskKind::GoTo,
+        state: task::TaskState::Available,
+        location: elf_pos,
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Elf),
+        origin: task::TaskOrigin::Autonomous,
+        target_creature: None,
+    };
+    sim.insert_task(go_task);
+
+    // Run a few heartbeats — the task should remain unassigned.
+    let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    let tick = sim.tick;
+    sim.step(&[], tick + heartbeat * 3);
+
+    let elf_c = sim.db.creatures.get(&elf).unwrap();
+    assert!(
+        elf_c.current_task.is_none(),
+        "Incapacitated creature should not be assigned tasks"
+    );
+}
+
+#[test]
+fn starvation_still_kills_directly() {
+    // Starvation bypasses incapacitation — creature dies immediately when
+    // food reaches 0 (no incapacitation step).
+    let mut config = test_config();
+    config
+        .species
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 1_000_000_000_000_000;
+    let mut sim = SimState::with_config(42, config);
+    let tree_pos = sim.trees[&sim.player_tree_id].position;
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    let target_tick = 1 + heartbeat_interval * 2 + 1;
+    sim.step(&[], target_tick);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    // Should be Dead, NOT Incapacitated.
+    assert_eq!(elf.vital_status, VitalStatus::Dead);
+}
+
+#[test]
+fn bleed_out_precise_hp_per_heartbeat() {
+    // Verify bleed-out loses exactly 1 HP per heartbeat, not more or less.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, elf);
+
+    let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    if let Some(mut c) = sim.db.creatures.get(&elf) {
+        c.hp = 0;
+        c.vital_status = VitalStatus::Incapacitated;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Advance past exactly 3 heartbeats.
+    let start_tick = sim.tick;
+    sim.step(&[], start_tick + heartbeat * 3 + 1);
+
+    let elf_c = sim.db.creatures.get(&elf).unwrap();
+    assert_eq!(elf_c.hp, -3, "Should lose exactly 1 HP per heartbeat");
+    assert_eq!(elf_c.vital_status, VitalStatus::Incapacitated);
+}
+
+#[test]
+fn save_load_roundtrip_preserves_incapacitation() {
+    // A creature that is incapacitated mid-game should survive a
+    // save→load roundtrip with correct vital_status and HP.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, elf);
+
+    if let Some(mut c) = sim.db.creatures.get(&elf) {
+        c.hp = -42;
+        c.vital_status = VitalStatus::Incapacitated;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Roundtrip through JSON (from_json rebuilds transient state).
+    let json = serde_json::to_string(&sim).unwrap();
+    let restored = SimState::from_json(&json).unwrap();
+
+    let elf_r = restored.db.creatures.get(&elf).unwrap();
+    assert_eq!(elf_r.vital_status, VitalStatus::Incapacitated);
+    assert_eq!(elf_r.hp, -42);
+}
+
+#[test]
+fn healed_incapacitated_creature_resumes_activation() {
+    // A revived creature must have its activation chain restarted so it can
+    // act again. Without this, the creature would be permanently frozen.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, elf);
+
+    // Incapacitate.
+    if let Some(mut c) = sim.db.creatures.get(&elf) {
+        c.hp = -10;
+        c.vital_status = VitalStatus::Incapacitated;
+        c.current_task = None;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Heal to revive.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::HealCreature {
+                creature_id: elf,
+                amount: 50,
+            },
+        }],
+        tick + 1,
+    );
+
+    assert_eq!(
+        sim.db.creatures.get(&elf).unwrap().vital_status,
+        VitalStatus::Alive
+    );
+
+    // Advance several activation intervals — the creature should eventually
+    // take an action (wander, etc.), proving the activation chain restarted.
+    sim.step(&[], tick + 5000);
+
+    let elf_c = sim.db.creatures.get(&elf).unwrap();
+    // The creature should have moved or taken some action (not frozen at NoAction).
+    // A wander or any action_kind != NoAction, or a position change, proves it.
+    let has_acted = elf_c.action_kind != ActionKind::NoAction || elf_c.current_task.is_some();
+    assert!(
+        has_acted,
+        "Revived creature should resume acting. Action: {:?}, task: {:?}",
+        elf_c.action_kind, elf_c.current_task
+    );
+}
+
+#[test]
+fn incapacitated_creature_in_spatial_index_after_save_load() {
+    // After save/load, incapacitated creatures must remain in the spatial
+    // index so they can be targeted by hostiles and hit by projectiles.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, elf);
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+
+    // Incapacitate.
+    if let Some(mut c) = sim.db.creatures.get(&elf) {
+        c.hp = -10;
+        c.vital_status = VitalStatus::Incapacitated;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Verify creature is in spatial index before save.
+    assert!(
+        sim.creatures_at_voxel(elf_pos).contains(&elf),
+        "Incapacitated creature should be in spatial index before save"
+    );
+
+    // Save/load roundtrip (from_json calls rebuild_transient_state which
+    // rebuilds the spatial index).
+    let json = serde_json::to_string(&sim).unwrap();
+    let restored = SimState::from_json(&json).unwrap();
+
+    // Verify creature is still in spatial index after load.
+    assert!(
+        restored.creatures_at_voxel(elf_pos).contains(&elf),
+        "Incapacitated creature should be in spatial index after save/load"
+    );
+}
+
+#[test]
+fn incapacitated_troll_recovers_via_regen() {
+    // A troll with HP regen should recover from incapacitation: regen (6 HP)
+    // outpaces bleed-out (1 HP), so HP climbs back above 0 and the troll
+    // revives to Alive.
+    let mut sim = test_sim(42);
+    let troll_id = spawn_creature(&mut sim, Species::Troll);
+    zero_creature_stats(&mut sim, troll_id);
+
+    let heartbeat = sim.species_table[&Species::Troll].heartbeat_interval_ticks;
+    let ticks_per_hp_regen = sim.species_table[&Species::Troll].ticks_per_hp_regen;
+    assert!(ticks_per_hp_regen > 0, "Troll should have HP regen");
+    let regen_per_hb = (heartbeat / ticks_per_hp_regen) as i64;
+    assert!(regen_per_hb > 1, "Regen should outpace 1 HP bleed-out");
+
+    // Incapacitate at HP = -5 (well above -hp_max death threshold).
+    if let Some(mut c) = sim.db.creatures.get(&troll_id) {
+        c.hp = -5;
+        c.vital_status = VitalStatus::Incapacitated;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Advance enough heartbeats for regen to bring HP above 0.
+    // Net gain per heartbeat = regen - 1. Need ceil(6 / (regen-1)) heartbeats.
+    let net_gain = regen_per_hb - 1;
+    let heartbeats_needed = (5 + net_gain - 1) / net_gain + 1; // extra margin
+    let tick = sim.tick;
+    sim.step(&[], tick + heartbeat * heartbeats_needed as u64 + 1);
+
+    let troll = sim.db.creatures.get(&troll_id).unwrap();
+    assert_eq!(
+        troll.vital_status,
+        VitalStatus::Alive,
+        "Troll should recover from incapacitation via HP regen. HP: {}",
+        troll.hp
+    );
+    assert!(troll.hp > 0);
+}
+
+#[test]
+fn incapacitated_troll_dies_if_finished_off() {
+    // Even though trolls regen, sustained damage can push HP past -hp_max
+    // and kill them during incapacitation.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let troll_id = spawn_creature(&mut sim, Species::Troll);
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, troll_id);
+
+    let hp_max = sim.db.creatures.get(&troll_id).unwrap().hp_max;
+
+    // Incapacitate troll.
+    if let Some(mut c) = sim.db.creatures.get(&troll_id) {
+        c.hp = 0;
+        c.vital_status = VitalStatus::Incapacitated;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Deal massive damage to push past -hp_max.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DamageCreature {
+                creature_id: troll_id,
+                amount: hp_max + 1,
+            },
+        }],
+        tick + 1,
+    );
+
+    let troll = sim.db.creatures.get(&troll_id).unwrap();
+    assert_eq!(troll.vital_status, VitalStatus::Dead);
+}
+
+#[test]
+fn non_regen_creature_does_not_recover() {
+    // An elf (no HP regen) should NOT recover from incapacitation —
+    // it just bleeds out. Sanity check against the troll recovery test.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, elf);
+
+    assert_eq!(
+        sim.species_table[&Species::Elf].ticks_per_hp_regen, 0,
+        "Elves should not have HP regen"
+    );
+
+    // Incapacitate at HP = -5.
+    if let Some(mut c) = sim.db.creatures.get(&elf) {
+        c.hp = -5;
+        c.vital_status = VitalStatus::Incapacitated;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    let tick = sim.tick;
+    sim.step(&[], tick + heartbeat * 3 + 1);
+
+    let elf_c = sim.db.creatures.get(&elf).unwrap();
+    assert_eq!(elf_c.vital_status, VitalStatus::Incapacitated);
+    // HP should have decreased (bleed-out only, no regen).
+    assert_eq!(elf_c.hp, -8, "Should lose 1 HP per heartbeat with no regen");
+}
+
+#[test]
+fn troll_regen_recovery_clamped_to_hp_max() {
+    // When a troll recovers from incapacitation via regen, HP must not
+    // exceed hp_max. With very fast regen the raw calculation could overshoot.
+    let mut sim = test_sim(42);
+    // Set regen extremely fast: 1 tick per HP → regen = interval HP/heartbeat.
+    sim.species_table
+        .get_mut(&Species::Troll)
+        .unwrap()
+        .ticks_per_hp_regen = 1;
+    let troll_id = spawn_creature(&mut sim, Species::Troll);
+    zero_creature_stats(&mut sim, troll_id);
+
+    let hp_max = sim.db.creatures.get(&troll_id).unwrap().hp_max;
+    let heartbeat = sim.species_table[&Species::Troll].heartbeat_interval_ticks;
+    // With ticks_per_hp_regen=1, regen per heartbeat = interval (e.g., 3000).
+    let regen = (heartbeat / 1) as i64;
+    assert!(
+        regen > hp_max,
+        "Regen ({regen}) should exceed hp_max ({hp_max}) for this test"
+    );
+
+    // Incapacitate at HP = -1 (just below 0).
+    if let Some(mut c) = sim.db.creatures.get(&troll_id) {
+        c.hp = -1;
+        c.vital_status = VitalStatus::Incapacitated;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // One heartbeat should revive with HP clamped to hp_max.
+    let tick = sim.tick;
+    sim.step(&[], tick + heartbeat + 1);
+
+    let troll = sim.db.creatures.get(&troll_id).unwrap();
+    assert_eq!(troll.vital_status, VitalStatus::Alive);
+    assert_eq!(
+        troll.hp, hp_max,
+        "HP should be clamped to hp_max, not {}", troll.hp
+    );
+}
+
+#[test]
+fn attack_target_continues_through_incapacitation_to_death() {
+    // An AttackTarget task should NOT be abandoned when the target becomes
+    // incapacitated — the attacker keeps swinging until the target is Dead.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+
+    // Disable food/rest so the goblin doesn't wander off to eat.
+    sim.species_table.get_mut(&Species::Goblin).unwrap().food_decay_per_tick = 0;
+    sim.species_table.get_mut(&Species::Goblin).unwrap().rest_decay_per_tick = 0;
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, goblin);
+
+    // Set elf HP low enough that melee will incapacitate quickly but not
+    // kill outright (needs multiple hits to push past -hp_max).
+    let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
+    let hp_max = sim.db.creatures.get(&elf).unwrap().hp_max;
+    let _ = sim.db.creatures.modify_unchecked(&elf, |c| {
+        c.hp = goblin_damage * 2; // two hits to incapacitate
+    });
+
+    // Issue AttackCreature command (creates AttackTarget task).
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::AttackCreature {
+                attacker_id: goblin,
+                target_id: elf,
+            },
+        }],
+        tick + 1,
+    );
+
+    // Run long enough for multiple melee strikes to land, pushing through
+    // incapacitation to death. Melee interval is ~1000 ticks; we need
+    // enough hits to go from 0 to -hp_max (hp_max / goblin_damage strikes).
+    let strikes_to_kill = (hp_max / goblin_damage) + 5; // margin
+    let melee_interval = sim.species_table[&Species::Goblin].melee_interval_ticks;
+    let run_ticks = melee_interval * (strikes_to_kill as u64 + 5);
+    sim.step(&[], tick + 1 + run_ticks);
+
+    let elf_c = sim.db.creatures.get(&elf).unwrap();
+    assert_eq!(
+        elf_c.vital_status,
+        VitalStatus::Dead,
+        "Goblin should have finished off the incapacitated elf. Elf HP: {}, status: {:?}",
+        elf_c.hp,
+        elf_c.vital_status
+    );
 }

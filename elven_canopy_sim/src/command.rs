@@ -42,8 +42,8 @@
 // - `SetCivOpinion` — update a civ's opinion of another civ. No-op if
 //   unaware (no CivRelationship row exists).
 // - `DebugKillCreature` — kill a creature immediately (debug/testing).
-// - `DamageCreature` — reduce a creature's HP. Death at 0 HP.
-// - `HealCreature` — restore a creature's HP (clamped to hp_max, no-op on dead).
+// - `DamageCreature` — reduce a creature's HP. Incapacitation at 0 HP, death at -hp_max.
+// - `HealCreature` — restore a creature's HP (clamped to hp_max, revives incapacitated, no-op on dead).
 // - `AttackCreature` — player-directed attack: creates an AttackTarget task with
 //   PlayerCombat preemption, pursues target until dead.
 // - `DirectedGoTo` — player-directed goto for a specific creature, preempting
@@ -250,8 +250,8 @@ pub enum SimAction {
     /// Kill a creature immediately (debug/testing). Triggers full death
     /// handling: task interruption, inventory drop, event emission, etc.
     DebugKillCreature { creature_id: CreatureId },
-    /// Deal damage to a creature. Positive `amount` reduces HP. If HP reaches
-    /// 0 the creature dies via the standard death handler.
+    /// Deal damage to a creature. Positive `amount` reduces HP. At 0 HP the
+    /// creature becomes incapacitated; at -hp_max it dies.
     DamageCreature {
         creature_id: CreatureId,
         amount: i64,

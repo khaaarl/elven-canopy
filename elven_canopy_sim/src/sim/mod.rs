@@ -219,12 +219,16 @@
 // restrictions) come from data in `SpeciesData` — Dwarf Fortress-style
 // data-driven design. See `species.rs` and `config.rs`.
 //
-// ## HP and death
+// ## HP, incapacitation, and death
 //
 // Each creature has `hp` and `hp_max` (set from `SpeciesData` at spawn) and
-// a `vital_status` field (Alive or Dead). `DamageCreature` reduces HP;
-// reaching 0 triggers `handle_creature_death`. `HealCreature` restores HP
-// (clamped to `hp_max`, no-op on dead). `DebugKillCreature` kills instantly.
+// a `vital_status` field (Alive/Incapacitated/Dead). `DamageCreature`
+// reduces HP; reaching 0 incapacitates (sets `Incapacitated`, aborts action,
+// emits event). Incapacitated creatures bleed out at 1 HP per heartbeat;
+// true death at `-hp_max`. Massive hits past `-hp_max` kill outright.
+// `HealCreature` restores HP (clamped to `hp_max`, revives incapacitated
+// creatures above 0 HP, no-op on dead). `DebugKillCreature` kills instantly
+// (bypasses incapacitation). Starvation also bypasses incapacitation.
 // Species with `ticks_per_hp_regen > 0` passively regenerate HP at heartbeat
 // (see `species.rs` for the field definition).
 //
@@ -1165,14 +1169,19 @@ impl SimState {
     fn process_event(&mut self, kind: ScheduledEventKind, events: &mut Vec<SimEvent>) {
         match kind {
             ScheduledEventKind::CreatureHeartbeat { creature_id } => {
-                // Dead creatures: do not process heartbeat or reschedule.
-                if self
-                    .db
-                    .creatures
-                    .get(&creature_id)
-                    .is_none_or(|c| c.vital_status != VitalStatus::Alive)
-                {
-                    return;
+                // Check vital status: dead → no-op, incapacitated → bleed tick,
+                // alive → normal heartbeat.
+                let vital_status = match self.db.creatures.get(&creature_id) {
+                    Some(c) => c.vital_status,
+                    None => return,
+                };
+                match vital_status {
+                    VitalStatus::Dead => return,
+                    VitalStatus::Incapacitated => {
+                        self.process_incapacitated_heartbeat(creature_id, events);
+                        return;
+                    }
+                    VitalStatus::Alive => {} // continue with normal heartbeat
                 }
 
                 // Heartbeat is for periodic non-movement checks (mood, mana, etc.).
@@ -1456,6 +1465,70 @@ impl SimState {
             ScheduledEventKind::ProjectileTick => {
                 self.process_projectile_tick(events);
             }
+        }
+    }
+
+    /// Process an incapacitated creature's heartbeat: apply HP regen (if the
+    /// species has it) minus 1 HP bleed-out. If regen outpaces bleeding, the
+    /// creature recovers to Alive (e.g., trolls). Death at HP <= -hp_max.
+    fn process_incapacitated_heartbeat(
+        &mut self,
+        creature_id: CreatureId,
+        events: &mut Vec<SimEvent>,
+    ) {
+        enum Outcome {
+            Die,
+            Revive,
+            StillDown,
+        }
+
+        let outcome = if let Some(mut c) = self.db.creatures.get(&creature_id) {
+            let species_data = &self.species_table[&c.species];
+            let interval = species_data.heartbeat_interval_ticks;
+
+            // HP regen (same formula as the alive heartbeat).
+            let hp_regen = if species_data.ticks_per_hp_regen > 0 {
+                (interval / species_data.ticks_per_hp_regen) as i64
+            } else {
+                0
+            };
+
+            // Net change: regen minus 1 HP bleed-out, clamped to hp_max.
+            c.hp = (c.hp + hp_regen - 1).min(c.hp_max);
+
+            let outcome = if c.hp <= -c.hp_max {
+                Outcome::Die
+            } else if c.hp > 0 {
+                c.vital_status = VitalStatus::Alive;
+                Outcome::Revive
+            } else {
+                Outcome::StillDown
+            };
+
+            let _ = self.db.creatures.update_no_fk(c);
+
+            // Reschedule heartbeat unless dying.
+            if !matches!(outcome, Outcome::Die) {
+                self.event_queue.schedule(
+                    self.tick + interval,
+                    ScheduledEventKind::CreatureHeartbeat { creature_id },
+                );
+            }
+
+            outcome
+        } else {
+            return;
+        };
+
+        match outcome {
+            Outcome::Die => {
+                self.handle_creature_death(creature_id, DeathCause::Damage, events);
+            }
+            Outcome::Revive => {
+                // Restart the activation chain so the creature can act again.
+                self.schedule_reactivation(creature_id);
+            }
+            Outcome::StillDown => {}
         }
     }
 
@@ -1825,7 +1898,7 @@ impl SimState {
             .db
             .creatures
             .iter_all()
-            .filter(|c| c.vital_status == VitalStatus::Alive)
+            .filter(|c| c.vital_status != VitalStatus::Dead)
             .map(|c| (c.id, c.species, c.position))
             .collect();
         for (cid, species, pos) in entries {

@@ -21,7 +21,7 @@
 // - **Creature biology:** `TraitKind` (enum of all biological trait names)
 //   and `TraitValue` (Int or Text sum type). Stored in the `creature_traits`
 //   table in `db.rs`. See `sim/creature.rs` for trait rolling at spawn time.
-// - **Vital status:** `VitalStatus` (Alive/Dead), `DeathCause` (Debug/Damage/Starvation).
+// - **Vital status:** `VitalStatus` (Alive/Incapacitated/Dead), `DeathCause` (Debug/Damage/Starvation).
 //   Dead creatures remain in the DB; all live-creature queries filter by status.
 // - **Thought system:** `ThoughtKind` — event-driven creature thoughts with
 //   per-kind dedup and expiry. `Thought` — a timestamped thought instance.
@@ -846,7 +846,9 @@ impl FurnitureKind {
 
 /// Whether a creature is alive or dead. Dead creatures remain in the database
 /// (row NOT deleted) to support future states (ghost, spirit absorbed into
-/// tree, undead) and to preserve history for UI/narrative. The `Dead` variant
+/// tree, undead) and to preserve history for UI/narrative. `Incapacitated`
+/// creatures are at or below 0 HP and bleeding out — they cannot act but are
+/// still targetable and rendered (with visual changes). The `Dead` variant
 /// terminates heartbeat/activation chains and excludes the creature from
 /// rendering, task assignment, and all active simulation queries.
 #[derive(
@@ -855,6 +857,9 @@ impl FurnitureKind {
 pub enum VitalStatus {
     #[default]
     Alive,
+    /// Creature is at or below 0 HP and bleeding out. Cannot act, but is
+    /// still targetable. True death occurs when HP reaches `-hp_max`.
+    Incapacitated,
     Dead,
     // Future: Ghost, SpiritInTree, Undead, etc.
 }
@@ -866,7 +871,7 @@ pub enum VitalStatus {
 pub enum DeathCause {
     /// Killed by debug command.
     Debug,
-    /// HP reduced to zero by damage.
+    /// HP reduced past -hp_max by damage (incapacitation bleed-out or overkill).
     Damage,
     /// Food gauge reached zero.
     Starvation,

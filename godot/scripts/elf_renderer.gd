@@ -32,7 +32,25 @@ var _bridge: SimBridge
 var _elf_sprites: Array[Sprite3D] = []
 var _hp_bars: Array[Sprite3D] = []
 var _mp_bars: Array[Sprite3D] = []
+## Normal (upright) textures cached per elf, parallel to _elf_sprites.
+var _normal_textures: Array[Texture2D] = []
+## Fallen (90° CW rotated) textures cached per elf, regenerated when sprite changes.
+var _fallen_textures: Array[Texture2D] = []
 var _render_tick: float = 0.0
+
+
+## Rotate an ImageTexture 90° clockwise for incapacitated (fallen) display.
+static func _rotate_texture_90cw(tex: Texture2D) -> ImageTexture:
+	var img := tex.get_image()
+	if img == null:
+		return tex
+	var w := img.get_width()
+	var h := img.get_height()
+	var rotated := Image.create(h, w, false, img.get_format())
+	for y in h:
+		for x in w:
+			rotated.set_pixel(h - 1 - y, x, img.get_pixel(x, y))
+	return ImageTexture.create_from_image(rotated)
 
 
 ## Call after SimBridge is initialized.
@@ -54,6 +72,7 @@ func _process(_delta: float) -> void:
 	var positions := _bridge.get_elf_positions(_render_tick)
 	var hp_ratios := _bridge.get_creature_hp_ratios("Elf")
 	var mp_ratios := _bridge.get_creature_mp_ratios("Elf")
+	var incap_flags := _bridge.get_creature_incapacitated("Elf")
 	var sprite_data: Dictionary = _bridge.get_elf_sprites()
 	var sprite_textures: Array = sprite_data.get("textures", [])
 	var sprite_changed: PackedByteArray = sprite_data.get("changed", PackedByteArray())
@@ -64,8 +83,10 @@ func _process(_delta: float) -> void:
 		var idx := _elf_sprites.size()
 		var sprite := Sprite3D.new()
 		# Initial texture comes from the Rust cache (already in sprite_textures).
+		var tex: Texture2D = null
 		if idx < sprite_textures.size():
-			sprite.texture = sprite_textures[idx]
+			tex = sprite_textures[idx]
+			sprite.texture = tex
 		sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 		sprite.pixel_size = 0.02  # Scale: 48px * 0.02 = 0.96 world units (~1.9m)
 		sprite.transparent = true
@@ -73,6 +94,8 @@ func _process(_delta: float) -> void:
 		sprite.render_priority = 1
 		add_child(sprite)
 		_elf_sprites.append(sprite)
+		_normal_textures.append(tex)
+		_fallen_textures.append(_rotate_texture_90cw(tex) if tex else null)
 		var bar: Sprite3D = HpBar.create_bar_sprite()
 		add_child(bar)
 		_hp_bars.append(bar)
@@ -85,10 +108,23 @@ func _process(_delta: float) -> void:
 		if i < elf_count:
 			_elf_sprites[i].visible = true
 			var pos := positions[i]
+			var is_incap := i < incap_flags.size() and incap_flags[i] != 0
 			# Nav node pos is the air voxel; feet at pos.y, center at +half sprite height.
 			_elf_sprites[i].global_position = Vector3(pos.x + 0.5, pos.y + Y_OFFSET, pos.z + 0.5)
-			var ratio: float = hp_ratios[i] if i < hp_ratios.size() else 1.0
-			HpBar.update_bar(_hp_bars[i], ratio)
+			# Only update texture when Rust reports a change (equipment swap, etc.).
+			if i < sprite_changed.size() and sprite_changed[i] != 0:
+				if i < sprite_textures.size():
+					_normal_textures[i] = sprite_textures[i]
+					_fallen_textures[i] = _rotate_texture_90cw(sprite_textures[i])
+			# Swap to fallen texture when incapacitated (billboard mode
+			# prevents node-level rotation from working).
+			if is_incap:
+				_elf_sprites[i].texture = _fallen_textures[i]
+				HpBar.update_bar_incapacitated(_hp_bars[i])
+			else:
+				_elf_sprites[i].texture = _normal_textures[i]
+				var ratio: float = hp_ratios[i] if i < hp_ratios.size() else 1.0
+				HpBar.update_bar(_hp_bars[i], ratio)
 			_hp_bars[i].global_position = Vector3(
 				pos.x + 0.5, pos.y + Y_OFFSET * 2.0 + HP_BAR_GAP, pos.z + 0.5
 			)
@@ -97,10 +133,6 @@ func _process(_delta: float) -> void:
 			_mp_bars[i].global_position = Vector3(
 				pos.x + 0.5, pos.y + Y_OFFSET * 2.0 + MP_BAR_GAP, pos.z + 0.5
 			)
-			# Only update texture when Rust reports a change.
-			if i < sprite_changed.size() and sprite_changed[i] != 0:
-				if i < sprite_textures.size():
-					_elf_sprites[i].texture = sprite_textures[i]
 		else:
 			_elf_sprites[i].visible = false
 			_hp_bars[i].visible = false

@@ -43,6 +43,7 @@ var _rest_label: Label
 var _mp_bar: ProgressBar
 var _mp_label: Label
 var _mp_row: HBoxContainer
+var _status_label: Label
 var _military_group_btn: Button
 var _military_group_id: int = -1
 var _mood_label: Label
@@ -95,6 +96,14 @@ func _ready() -> void:
 	# Name (Vaelith name for elves, fallback "Species #N" for unnamed creatures).
 	_name_label = Label.new()
 	vbox.add_child(_name_label)
+
+	# Status label (shown only when incapacitated).
+	_status_label = Label.new()
+	_status_label.text = "INCAPACITATED"
+	_status_label.add_theme_color_override("font_color", Color(0.9, 0.3, 0.3))
+	_status_label.add_theme_font_size_override("font_size", 16)
+	_status_label.visible = false
+	vbox.add_child(_status_label)
 
 	# Military group (clickable, opens military panel).
 	_military_group_btn = Button.new()
@@ -282,6 +291,7 @@ func show_creature(creature_id: String, info: Dictionary) -> void:
 			_name_label.text = "Name: %s" % creature_name
 		else:
 			_name_label.text = "Name: %s (%s)" % [creature_name, meaning]
+	_update_status(info)
 	_update_hp(info)
 	_update_mp(info)
 	_update_position(info)
@@ -298,6 +308,7 @@ func show_creature(creature_id: String, info: Dictionary) -> void:
 
 
 func update_info(info: Dictionary) -> void:
+	_update_status(info)
 	_update_hp(info)
 	_update_mp(info)
 	_update_position(info)
@@ -328,9 +339,26 @@ func _update_hp(info: Dictionary) -> void:
 	var hp_max: int = info.get("hp_max", 1)
 	if hp_max <= 0:
 		hp_max = 1
-	var pct: float = 100.0 * float(hp) / float(hp_max)
-	_hp_bar.value = pct
+	var is_incap: bool = info.get("incapacitated", false)
+	if is_incap:
+		# Incapacitated: gray bar, always visible.
+		var hp_style := StyleBoxFlat.new()
+		hp_style.bg_color = Color(0.35, 0.35, 0.35)
+		_hp_bar.add_theme_stylebox_override("fill", hp_style)
+		# Show negative HP as proportion of -hp_max..0 range.
+		_hp_bar.value = 50.0
+	else:
+		var hp_style := StyleBoxFlat.new()
+		hp_style.bg_color = Color(0.6, 0.15, 0.1)
+		_hp_bar.add_theme_stylebox_override("fill", hp_style)
+		var pct: float = 100.0 * float(hp) / float(hp_max)
+		_hp_bar.value = pct
 	_hp_label.text = "%d / %d" % [hp, hp_max]
+
+
+func _update_status(info: Dictionary) -> void:
+	var is_incap: bool = info.get("incapacitated", false)
+	_status_label.visible = is_incap
 
 
 func _update_mp(info: Dictionary) -> void:
