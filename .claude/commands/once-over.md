@@ -118,7 +118,7 @@ documentation staleness, and anything that would be embarrassing to merge.
    documentation and style issues, fix them directly.
 
 5. **Run checks.** After any fixes, run `scripts/build.sh check` and
-   `scripts/build.sh test` to confirm everything still passes.
+   `scripts/build.sh quicktest` to confirm everything still passes.
 
 6. **Commit fixes.** If you made changes, commit them to the feature branch
    with a message like "Once-over fixes: [brief summary]" and push.

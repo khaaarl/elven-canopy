@@ -77,14 +77,14 @@ git rebase main
 5. Stage resolved files and run `git rebase --continue`.
 
 After conflict resolution:
-- Run `scripts/build.sh quicktest` to verify correctness.
+- Run `scripts/build.sh check` and `scripts/build.sh quicktest` to verify.
 - If the conflicts were trivial (ordering, adjacent lines, no semantic
-  interaction) and quicktest passes, proceed without asking.
+  interaction) and check & quicktest pass, proceed without asking.
 - If the conflicts required non-trivial edits (integrating two features that
   touch the same code), **stop and report back to the outer context** for user
   approval before continuing — tests may not catch all semantic issues.
-- If quicktest fails, diagnose and fix, then re-run. If you cannot resolve the
-  failures, **stop and report back** for help.
+- If check or quicktest fails, diagnose and fix, then re-run. If you cannot
+  resolve the failures, **stop and report back** for help.
 - If anything about the resolution feels wrong or surprising or even just
   suspicious — unexpected interactions, code that doesn't quite make sense,
   unclear intent — investigate thoroughly before proceeding. **Stop and report
