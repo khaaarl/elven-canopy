@@ -60,12 +60,13 @@
 //   defensive/passive), ammo exhaustion behavior (switch to melee/flee), and
 //   disengage threshold (HP% below which the creature flees). For civ creatures,
 //   the military group's `engagement_style` overrides the species default.
-// - `hostile_detection_range_sq` — maximum squared 3D euclidean distance at
-//   which a creature can detect hostiles. 0 = no detection (passive species).
-//   E.g. 225 = 15-voxel radius, 400 = 20-voxel radius. Height is included,
-//   so ground-level goblins cannot detect canopy elves directly. Elves have
-//   a detection range (225) for flee behavior — they detect approaching
-//   hostiles and run away. See `sim/combat.rs` `should_flee()` / `ground_flee_step()`.
+// - `hostile_detection_range_sq` — base squared 3D euclidean distance at
+//   which a creature can detect hostiles, modified at runtime by the
+//   creature's Perception stat via `effective_detection_range_sq()` in
+//   `sim/creature.rs`. 0 = no detection (passive species, unaffected by
+//   Perception). E.g. 225 = 15-voxel radius, 400 = 20-voxel radius. Height
+//   is included, so ground-level goblins cannot detect canopy elves directly.
+//   See `sim/combat.rs` `should_flee()` / `flee_step()`.
 //
 // See also: `config.rs` where the species table lives as part of `GameConfig`,
 // `sim/mod.rs` for the unified `Creature` type and `sim/activation.rs` for the

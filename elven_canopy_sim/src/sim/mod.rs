@@ -64,7 +64,8 @@
 //
 //   0. **Flee check** (F-flee): before the decision cascade, if the creature
 //      should flee (based on `engagement_style` disengage threshold) and detects
-//      a hostile within `hostile_detection_range_sq`, interrupt any current task
+//      a hostile within its effective detection range (base `hostile_detection_range_sq`
+//      scaled by Perception via `effective_detection_range_sq()`), interrupt any current task
 //      and perform a greedy retreat step (pick the nav neighbor that maximizes
 //      squared distance from the nearest threat). Ties broken by `NavNodeId`.
 //   1. If the creature has no task (`current_task == None`), check for an

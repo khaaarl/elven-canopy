@@ -175,7 +175,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-path-stuck           Deep commitment personality drift and refusal
 [ ] F-path-ui              Path management UI and notifications
 [ ] F-patrol               Patrol command for military groups
-[ ] F-per-detection        Perception stat modifies hostile detection range
 [ ] F-personality          Personality axes affecting behavior
 [ ] F-phased-archery       Phased archery (nock/draw/loose) with skill-gated mobility
 [ ] F-poetry-reading       Social gatherings and poetry readings
@@ -379,6 +378,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-orbital-cam          Orbital camera controller
 [x] F-pathfinding          A* pathfinding over nav graph
 [x] F-pause-menu           In-game pause overlay
+[x] F-per-detection        Perception stat modifies hostile detection range
 [x] F-pile-gravity         Ground pile gravity and merging
 [x] F-placement-ui         Revamp construction placement UX
 [x] F-player-identity      Persistent player identity with username
@@ -1305,7 +1305,7 @@ meaningful tactical tool. Also improves general simulation fidelity.
 Eight per-creature stats rolled at spawn from species-specific distributions
 (mean + stdev in SpeciesData): Strength, Agility, Dexterity, Constitution,
 Willpower, Intelligence, Perception, Charisma. Integer scale centered on 0
-(human baseline), with exponential effect: every +10 doubles the stat's
+(human baseline), with exponential effect: every +100 doubles the stat's
 mechanical intensity. Lookup table maps stat → multiplier in 2^20 fixed-point.
 All integer math, no floating point (multiplayer determinism).
 
@@ -3114,7 +3114,7 @@ perimeters and trade routes.
 **Related:** F-military-groups
 
 #### F-per-detection — Perception stat modifies hostile detection range
-**Status:** Todo
+**Status:** Done
 
 Perception stat applies an exponential multiplier to the species-level
 `hostile_detection_range_sq` in SpeciesData. Higher PER = detects hostiles

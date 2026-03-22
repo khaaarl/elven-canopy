@@ -334,7 +334,7 @@ impl SimState {
         // --- Autonomous combat check (shared) ---
         {
             let style = self.resolve_engagement_style(creature_id);
-            let detection_range_sq = self.species_table[&species].hostile_detection_range_sq;
+            let detection_range_sq = self.effective_detection_range_sq(creature_id, species);
             if detection_range_sq > 0
                 && matches!(
                     style.initiative,

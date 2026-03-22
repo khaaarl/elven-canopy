@@ -445,7 +445,7 @@ pub enum TraitKind {
     /// Index into `SCALE_PATTERNS` array (0–2).
     ScalePattern,
     // -- Creature stats (F-creature-stats) --
-    // Integer scale centered on 0 (human baseline). Every +10 doubles
+    // Integer scale centered on 0 (human baseline). Every +100 doubles
     // mechanical intensity via the exponential stat multiplier table.
     /// Physical power. Melee damage multiplier, projectile velocity.
     Strength,

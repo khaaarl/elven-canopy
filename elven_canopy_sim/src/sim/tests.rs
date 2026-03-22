@@ -788,7 +788,7 @@ fn strength_modifies_melee_damage() {
         .db
         .creature_traits
         .modify_unchecked(&(goblin, TraitKind::Strength), |t| {
-            t.value = TraitValue::Int(10);
+            t.value = TraitValue::Int(100);
         });
 
     // Position them adjacent and make the goblin strike.
@@ -801,11 +801,173 @@ fn strength_modifies_melee_damage() {
     sim.try_melee_strike(goblin, elf, &mut events);
 
     let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
-    let expected_damage = crate::stats::apply_stat_multiplier(base_damage, 10);
+    let expected_damage = crate::stats::apply_stat_multiplier(base_damage, 100);
     assert_eq!(
         elf_hp_before - elf_hp_after,
         expected_damage,
-        "STR +10 should double damage: base={base_damage}, expected={expected_damage}"
+        "STR +100 should double damage: base={base_damage}, expected={expected_damage}"
+    );
+}
+
+#[test]
+fn troll_spawn_hp_approximately_400() {
+    // Troll has CON mean +200 (4x multiplier on base 100), so effective HP
+    // should be approximately 400. Allow variance from stochastic stat roll.
+    let mut sim = test_sim(42);
+    let troll = spawn_creature(&mut sim, Species::Troll);
+    let hp_max = sim.db.creatures.get(&troll).unwrap().hp_max;
+    assert!(
+        hp_max >= 200 && hp_max <= 800,
+        "Troll hp_max should be approximately 400 (got {hp_max})"
+    );
+}
+
+#[test]
+fn uniform_base_stats_all_species() {
+    // All species should share the same base hp_max and walk_ticks_per_voxel.
+    let config = GameConfig::default();
+    for (&species, data) in &config.species {
+        assert_eq!(
+            data.hp_max, 100,
+            "{species:?} should have uniform base hp_max=100"
+        );
+        assert_eq!(
+            data.walk_ticks_per_voxel, 500,
+            "{species:?} should have uniform base walk_ticks_per_voxel=500"
+        );
+    }
+}
+
+#[test]
+fn effective_detection_range_sq_passive_returns_zero() {
+    // Passive species (base=0) should always return 0, regardless of Perception.
+    let mut sim = test_sim(42);
+    let capy = spawn_creature(&mut sim, Species::Capybara);
+    let range = sim.effective_detection_range_sq(capy, Species::Capybara);
+    assert_eq!(range, 0, "Passive species should have 0 detection range");
+}
+
+#[test]
+fn effective_detection_range_sq_perception_zero_returns_base() {
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, goblin);
+    let base = sim.species_table[&Species::Goblin].hostile_detection_range_sq;
+    let range = sim.effective_detection_range_sq(goblin, Species::Goblin);
+    assert_eq!(
+        range, base,
+        "Perception 0 should return base detection range"
+    );
+}
+
+#[test]
+fn effective_detection_range_sq_high_perception_extends() {
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, goblin);
+    let _ = sim
+        .db
+        .creature_traits
+        .modify_unchecked(&(goblin, TraitKind::Perception), |t| {
+            t.value = TraitValue::Int(200);
+        });
+    let base = sim.species_table[&Species::Goblin].hostile_detection_range_sq;
+    let range = sim.effective_detection_range_sq(goblin, Species::Goblin);
+    // PER +200 = 4x linear range → 16x squared range (applied twice).
+    let once = crate::stats::apply_stat_multiplier(base, 200);
+    let expected = crate::stats::apply_stat_multiplier(once, 200);
+    assert_eq!(range, expected);
+    assert!(range > base, "PER +200 should extend detection range");
+}
+
+#[test]
+fn effective_detection_range_sq_low_perception_shrinks() {
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, goblin);
+    let _ = sim
+        .db
+        .creature_traits
+        .modify_unchecked(&(goblin, TraitKind::Perception), |t| {
+            t.value = TraitValue::Int(-200);
+        });
+    let base = sim.species_table[&Species::Goblin].hostile_detection_range_sq;
+    let range = sim.effective_detection_range_sq(goblin, Species::Goblin);
+    assert!(range > 0, "Detection range should be clamped to >= 1");
+    assert!(range < base, "PER -200 should shrink detection range");
+}
+
+#[test]
+fn effective_detection_range_sq_per_100_quadruples_squared() {
+    // PER +100 should double the linear radius, which means quadrupling the
+    // squared range. This verifies the double-application invariant.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, goblin);
+    let _ = sim
+        .db
+        .creature_traits
+        .modify_unchecked(&(goblin, TraitKind::Perception), |t| {
+            t.value = TraitValue::Int(100);
+        });
+    let base = sim.species_table[&Species::Goblin].hostile_detection_range_sq; // 225
+    let range = sim.effective_detection_range_sq(goblin, Species::Goblin);
+    // PER +100 doubles linear radius → 4x squared range.
+    assert_eq!(range, base * 4, "PER +100 should quadruple squared range");
+}
+
+#[test]
+fn stat_modified_hp_max_survives_serde_roundtrip() {
+    // Verify that a creature with CON-modified hp_max survives serialization.
+    let mut sim = test_sim(42);
+    let troll = spawn_creature(&mut sim, Species::Troll);
+    let hp_max_before = sim.db.creatures.get(&troll).unwrap().hp_max;
+    assert!(hp_max_before > 100, "Troll should have CON-boosted HP");
+
+    let json = serde_json::to_string(&sim.db).unwrap();
+    let restored: crate::db::SimDb = serde_json::from_str(&json).unwrap();
+    let hp_max_after = restored.creatures.get(&troll).unwrap().hp_max;
+    assert_eq!(
+        hp_max_before, hp_max_after,
+        "hp_max should survive serde roundtrip"
+    );
+}
+
+#[test]
+fn disengage_uses_creature_hp_max_not_species_base() {
+    // A creature with high CON has stat-modified hp_max >> species base (100).
+    // The disengage check must use creature.hp_max, not the uniform base.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, goblin);
+
+    // Give this goblin CON +200 → hp_max ≈ 400 (4x base 100).
+    let _ = sim
+        .db
+        .creature_traits
+        .modify_unchecked(&(goblin, TraitKind::Constitution), |t| {
+            t.value = TraitValue::Int(200);
+        });
+    let effective_hp = crate::stats::apply_stat_multiplier(100, 200);
+    let _ = sim.db.creatures.modify_unchecked(&goblin, |c| {
+        c.hp_max = effective_hp;
+        c.hp = effective_hp;
+    });
+
+    // Set disengage threshold to 50%. With hp_max=400, hp=150 is 37.5% → flee.
+    // With species base 100, hp=150 would be 150% → would NOT flee (bug).
+    sim.species_table
+        .get_mut(&Species::Goblin)
+        .unwrap()
+        .engagement_style
+        .disengage_threshold_pct = 50;
+    let _ = sim.db.creatures.modify_unchecked(&goblin, |c| {
+        c.hp = 150;
+    });
+
+    assert!(
+        sim.should_flee(goblin, Species::Goblin),
+        "Goblin at 150/400 HP (37.5%) should flee with 50% threshold"
     );
 }
 
@@ -2341,11 +2503,11 @@ fn species_data_loaded_from_config() {
 
     let boar_data = &sim.species_table[&Species::Boar];
     assert!(boar_data.ground_only);
-    assert_eq!(boar_data.walk_ticks_per_voxel, 600);
+    assert_eq!(boar_data.walk_ticks_per_voxel, 500); // uniform base
 
     let deer_data = &sim.species_table[&Species::Deer];
     assert!(deer_data.ground_only);
-    assert_eq!(deer_data.walk_ticks_per_voxel, 400);
+    assert_eq!(deer_data.walk_ticks_per_voxel, 500); // uniform base
 
     let monkey_data = &sim.species_table[&Species::Monkey];
     assert!(!monkey_data.ground_only);
@@ -19249,12 +19411,13 @@ fn armor_degradation_non_penetrating_rare() {
         sim.inv_unequip_slot(inv_id, slot);
     }
 
-    // Equip full armor (total=9) and reduce goblin damage to ensure non-penetrating.
+    // Equip full armor (total=9) and reduce goblin base damage to ensure
+    // non-penetrating even after STR scaling (goblin STR mean +58).
     equip_full_armor(&mut sim, elf);
     sim.species_table
         .get_mut(&Species::Goblin)
         .unwrap()
-        .melee_damage = 5;
+        .melee_damage = 2;
 
     // Force degradation to always target torso.
     sim.config.armor_degrade_location_weights = [1, 0, 0, 0, 0];
@@ -19984,7 +20147,8 @@ fn armor_non_penetrating_degrade_disabled_when_recip_zero() {
     );
     force_idle(&mut sim, goblin);
 
-    // Unequip all, equip full armor (total=9), reduce goblin damage below armor.
+    // Unequip all, equip full armor (total=9), reduce goblin base damage
+    // below armor even after STR scaling (goblin STR mean +58).
     let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
     for slot in [
         inventory::EquipSlot::Head,
@@ -19999,7 +20163,7 @@ fn armor_non_penetrating_degrade_disabled_when_recip_zero() {
     sim.species_table
         .get_mut(&Species::Goblin)
         .unwrap()
-        .melee_damage = 5;
+        .melee_damage = 2;
     // Disable non-penetrating degradation.
     sim.config.armor_non_penetrating_degrade_chance_recip = 0;
     // Force all degradation to torso.
@@ -25132,7 +25296,8 @@ fn disengage_threshold_boundary_exact_value() {
     };
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
-    let hp_max = sim.species_table[&Species::Goblin].hp_max; // 80
+    zero_creature_stats(&mut sim, goblin);
+    let hp_max = sim.db.creatures.get(&goblin).unwrap().hp_max;
 
     // At exactly 50% HP, should flee (threshold is inclusive: <=).
     let _ = sim.db.creatures.modify_unchecked(&goblin, |c| {
@@ -25144,7 +25309,6 @@ fn disengage_threshold_boundary_exact_value() {
     );
 
     // At 1 HP above the 50% mark, should not flee.
-    // hp_max=80: 50% is 40 HP, so 41 HP → hp_pct = 41*100/80 = 51 > 50.
     let _ = sim.db.creatures.modify_unchecked(&goblin, |c| {
         c.hp = hp_max * 50 / 100 + 1;
     });
@@ -25431,7 +25595,7 @@ fn aggressive_soldier_interrupts_low_priority_task_to_fight() {
         inventory::MaterialFilter::Any,
     );
     let orc_hp = sim.db.creatures.get(&orc_id).map(|c| c.hp).unwrap_or(0);
-    let orc_hp_max = sim.species_table[&Species::Orc].hp_max;
+    let orc_hp_max = sim.db.creatures.get(&orc_id).map(|c| c.hp_max).unwrap_or(0);
 
     assert!(
         arrows_after < arrows_before || orc_hp < orc_hp_max,
@@ -30323,7 +30487,7 @@ fn voxel_exclusion_hostile_pursue_blocked() {
     // Goblin should either stay put or have dealt damage (melee from
     // adjacent position).
     let elf_hp = sim.db.creatures.get(&elf).unwrap().hp;
-    let elf_max_hp = sim.species_table[&Species::Elf].hp_max;
+    let elf_max_hp = sim.db.creatures.get(&elf).unwrap().hp_max;
     let goblin_moved = goblin_pos_before != goblin_pos_after;
     let dealt_damage = elf_hp < elf_max_hp;
     assert!(
@@ -38116,14 +38280,14 @@ fn weapon_damage_scales_with_strength() {
         .db
         .creature_traits
         .modify_unchecked(&(elf, TraitKind::Strength), |t| {
-            t.value = TraitValue::Int(10);
+            t.value = TraitValue::Int(100);
         });
 
     let club_damage = sim.config.club_base_damage;
-    let expected = crate::stats::apply_stat_multiplier(club_damage, 10);
+    let expected = crate::stats::apply_stat_multiplier(club_damage, 100);
     assert!(
         expected > club_damage,
-        "STR +10 should increase damage: {expected} > {club_damage}"
+        "STR +100 should double damage: {expected} > {club_damage}"
     );
 
     let target_hp_before = sim.db.creatures.get(&target).unwrap().hp;
@@ -38926,7 +39090,7 @@ fn wyvern_species_in_config() {
     assert_eq!(data.flight_ticks_per_voxel, Some(200));
     assert_eq!(data.footprint, [2, 2, 2]);
     assert!(data.melee_damage > 0);
-    assert!(data.hp_max > 200); // tougher than hornet
+    assert_eq!(data.hp_max, 100); // uniform base; CON stat provides toughness
 }
 
 #[test]

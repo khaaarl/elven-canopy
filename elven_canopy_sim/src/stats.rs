@@ -1,8 +1,8 @@
 // Creature stat multiplier table and helpers.
 //
-// Implements the exponential scaling system where every +10 in a stat doubles
-// its mechanical intensity. A flat precomputed `[i64; 131]` lookup table maps
-// stat values from -60 to +70 to multipliers in 2^20 (1,048,576) fixed-point.
+// Implements the exponential scaling system where every +100 in a stat doubles
+// its mechanical intensity. A flat precomputed `[i64; 1301]` lookup table maps
+// stat values from -600 to +700 to multipliers in 2^20 (1,048,576) fixed-point.
 //
 // Core operations:
 // - `stat_multiplier(stat)` — raw table lookup, returns 2^20 fixed-point.
@@ -25,18 +25,18 @@ pub const STAT_SHIFT: u32 = 20;
 pub const STAT_ONE: i64 = 1i64 << STAT_SHIFT;
 
 /// Minimum stat value in the lookup table.
-const STAT_MIN: i64 = -60;
+const STAT_MIN: i64 = -600;
 
 /// Maximum stat value in the lookup table.
-const STAT_MAX: i64 = 70;
+const STAT_MAX: i64 = 700;
 
 /// Table size: covers STAT_MIN..=STAT_MAX.
-const TABLE_SIZE: usize = (STAT_MAX - STAT_MIN + 1) as usize; // 131
+const TABLE_SIZE: usize = (STAT_MAX - STAT_MIN + 1) as usize; // 1301
 
 /// Precomputed multiplier table. Entry `i` corresponds to stat value
-/// `i as i64 + STAT_MIN`. Values at multiples of 10 are exact powers of 2;
+/// `i as i64 + STAT_MIN`. Values at multiples of 100 are exact powers of 2;
 /// intermediate values are linearly interpolated within each octave.
-/// Maximum error vs true `2^(s/10)` is ~6% at octave midpoints.
+/// Maximum error vs true `2^(s/100)` is ~6% at octave midpoints.
 const STAT_TABLE: [i64; TABLE_SIZE] = generate_stat_table();
 
 /// Generate the lookup table at compile time.
@@ -46,15 +46,15 @@ const fn generate_stat_table() -> [i64; TABLE_SIZE] {
     while i < TABLE_SIZE {
         let s = i as i64 + STAT_MIN;
         // Euclidean division: floor toward negative infinity.
-        let decade = s.div_euclid(10);
-        let frac = s.rem_euclid(10); // always 0..9
-        let lo = if decade >= 0 {
-            STAT_ONE << decade
+        let century = s.div_euclid(100);
+        let frac = s.rem_euclid(100); // always 0..99
+        let lo = if century >= 0 {
+            STAT_ONE << century
         } else {
-            STAT_ONE >> (-decade)
+            STAT_ONE >> (-century)
         };
         let hi = lo * 2;
-        table[i] = lo + (hi - lo) * frac / 10;
+        table[i] = lo + (hi - lo) * frac / 100;
         i += 1;
     }
     table
@@ -62,25 +62,25 @@ const fn generate_stat_table() -> [i64; TABLE_SIZE] {
 
 /// Look up the exponential multiplier for a stat value.
 /// Returns a 2^20 fixed-point value. Stat 0 → 1,048,576 (1x).
-/// Values outside [-60, +70] clamp to the table endpoints.
+/// Values outside [-600, +700] clamp to the table endpoints.
 pub fn stat_multiplier(stat: i64) -> i64 {
     let idx = (stat - STAT_MIN).clamp(0, (TABLE_SIZE - 1) as i64) as usize;
     STAT_TABLE[idx]
 }
 
 /// Apply the stat multiplier to a base value (multiply path).
-/// `base * 2^(stat/10)`, computed in integer arithmetic.
+/// `base * 2^(stat/100)`, computed in integer arithmetic.
 ///
-/// Example: `apply_stat_multiplier(25, 30)` = 25 * 8 = 200.
+/// Example: `apply_stat_multiplier(100, 200)` = 100 * 4 = 400.
 pub fn apply_stat_multiplier(base: i64, stat: i64) -> i64 {
     (base * stat_multiplier(stat)) >> STAT_SHIFT
 }
 
 /// Apply the stat multiplier as a divisor (inverse path).
-/// `base / 2^(stat/10)`, computed in integer arithmetic.
+/// `base / 2^(stat/100)`, computed in integer arithmetic.
 /// Used when higher stat should *reduce* the base (e.g., move ticks).
 ///
-/// Example: `apply_stat_divisor(500, 10)` = 500 / 2 = 250 (twice as fast).
+/// Example: `apply_stat_divisor(500, 100)` = 500 / 2 = 250 (twice as fast).
 pub fn apply_stat_divisor(base: i64, stat: i64) -> i64 {
     let mult = stat_multiplier(stat);
     if mult == 0 {
@@ -207,13 +207,13 @@ mod tests {
 
     #[test]
     fn stat_table_powers_of_two() {
-        // Every multiple of 10 should be an exact power of 2.
-        for decade in -6..=7i64 {
-            let s = decade * 10;
-            let expected = if decade >= 0 {
-                STAT_ONE << decade
+        // Every multiple of 100 should be an exact power of 2.
+        for century in -6..=7i64 {
+            let s = century * 100;
+            let expected = if century >= 0 {
+                STAT_ONE << century
             } else {
-                STAT_ONE >> (-decade)
+                STAT_ONE >> (-century)
             };
             assert_eq!(
                 stat_multiplier(s),
@@ -231,24 +231,26 @@ mod tests {
 
     #[test]
     fn apply_stat_multiplier_double() {
-        assert_eq!(apply_stat_multiplier(100, 10), 200);
+        // +100 stat doubles the base.
+        assert_eq!(apply_stat_multiplier(100, 100), 200);
     }
 
     #[test]
     fn apply_stat_multiplier_half() {
-        assert_eq!(apply_stat_multiplier(100, -10), 50);
+        // -100 stat halves the base.
+        assert_eq!(apply_stat_multiplier(100, -100), 50);
     }
 
     #[test]
-    fn apply_stat_multiplier_troll_example() {
-        // Troll STR +30, base_melee_damage 25 → 200.
-        assert_eq!(apply_stat_multiplier(25, 30), 200);
+    fn apply_stat_multiplier_troll_con_example() {
+        // Troll CON +200, base HP 100 → 400.
+        assert_eq!(apply_stat_multiplier(100, 200), 400);
     }
 
     #[test]
-    fn apply_stat_multiplier_elf_str_example() {
-        // Elf STR -3, base_melee_damage 10 → 8.
-        assert_eq!(apply_stat_multiplier(10, -3), 8);
+    fn apply_stat_multiplier_quadruple() {
+        // +200 stat quadruples the base.
+        assert_eq!(apply_stat_multiplier(10, 200), 40);
     }
 
     #[test]
@@ -258,21 +260,21 @@ mod tests {
 
     #[test]
     fn apply_stat_divisor_double_speed() {
-        // AGI +10 → half the ticks (twice as fast).
-        assert_eq!(apply_stat_divisor(500, 10), 250);
+        // AGI +100 → half the ticks (twice as fast).
+        assert_eq!(apply_stat_divisor(500, 100), 250);
     }
 
     #[test]
     fn apply_stat_divisor_half_speed() {
-        // AGI -10 → double the ticks (half as fast).
-        assert_eq!(apply_stat_divisor(500, -10), 1000);
+        // AGI -100 → double the ticks (half as fast).
+        assert_eq!(apply_stat_divisor(500, -100), 1000);
     }
 
     #[test]
     fn stat_table_clamps_extremes() {
         // Values beyond table bounds should clamp.
-        assert_eq!(stat_multiplier(-100), stat_multiplier(-60));
-        assert_eq!(stat_multiplier(100), stat_multiplier(70));
+        assert_eq!(stat_multiplier(-1000), stat_multiplier(-600));
+        assert_eq!(stat_multiplier(1000), stat_multiplier(700));
     }
 
     #[test]
@@ -291,7 +293,7 @@ mod tests {
     #[test]
     fn apply_stat_multiplier_negative_base() {
         // Negative base values (shouldn't happen in practice but shouldn't panic).
-        assert_eq!(apply_stat_multiplier(-10, 10), -20);
+        assert_eq!(apply_stat_multiplier(-10, 100), -20);
     }
 
     #[test]
@@ -344,7 +346,7 @@ mod tests {
         };
         let base_ppm = 50000;
 
-        // Sample many shots at DEX 0 vs DEX +20, compare deviation magnitudes.
+        // Sample many shots at DEX 0 vs DEX +200, compare deviation magnitudes.
         let mut low_dex_total: i64 = 0;
         let mut high_dex_total: i64 = 0;
         let n = 1000;
@@ -354,13 +356,13 @@ mod tests {
             low_dex_total += (r.x - vel.x).abs() + (r.z - vel.z).abs();
 
             let mut rng2 = crate::prng::GameRng::new(seed);
-            let r2 = apply_dex_deviation(&mut rng2, vel, 20, base_ppm);
+            let r2 = apply_dex_deviation(&mut rng2, vel, 200, base_ppm);
             high_dex_total += (r2.x - vel.x).abs() + (r2.z - vel.z).abs();
         }
         // High DEX should produce significantly less total deviation.
         assert!(
             high_dex_total < low_dex_total / 2,
-            "DEX +20 should have <50% the deviation of DEX 0: high={high_dex_total}, low={low_dex_total}"
+            "DEX +200 should have <50% the deviation of DEX 0: high={high_dex_total}, low={low_dex_total}"
         );
     }
 
@@ -374,8 +376,8 @@ mod tests {
         };
         let mut rng1 = crate::prng::GameRng::new(99);
         let mut rng2 = crate::prng::GameRng::new(99);
-        let r1 = apply_dex_deviation(&mut rng1, vel, 5, 50000);
-        let r2 = apply_dex_deviation(&mut rng2, vel, 5, 50000);
+        let r1 = apply_dex_deviation(&mut rng1, vel, 50, 50000);
+        let r2 = apply_dex_deviation(&mut rng2, vel, 50, 50000);
         assert_eq!(r1.x, r2.x);
         assert_eq!(r1.y, r2.y);
         assert_eq!(r1.z, r2.z);

@@ -406,7 +406,7 @@ impl SimState {
                     .stat_distributions
                     .get(&kind)
                     .map(|d| (d.mean as i64, d.stdev as i64))
-                    .unwrap_or((0, 5));
+                    .unwrap_or((0, 50));
                 (kind, mean, stdev)
             })
             .collect();
@@ -447,6 +447,30 @@ impl SimState {
             .get(&(creature_id, kind))
             .map(|t| t.value.as_text(default))
             .unwrap_or_else(|| default.to_string())
+    }
+
+    /// Compute the effective hostile detection range² for a creature, applying
+    /// the Perception stat multiplier to the linear detection range and
+    /// returning the squared result. Perception scales the linear radius
+    /// (so PER +100 doubles the radius, quadrupling the squared range).
+    /// Returns 0 for species with no detection (passive creatures).
+    pub(crate) fn effective_detection_range_sq(
+        &self,
+        creature_id: CreatureId,
+        species: Species,
+    ) -> i64 {
+        let base_sq = self.species_table[&species].hostile_detection_range_sq;
+        if base_sq == 0 {
+            return 0;
+        }
+        let perception = self.trait_int(creature_id, TraitKind::Perception, 0);
+        if perception == 0 {
+            return base_sq;
+        }
+        // Apply the multiplier twice: once per dimension of the squared range.
+        // This makes Perception scale the linear radius, not the squared range.
+        let once = crate::stats::apply_stat_multiplier(base_sq, perception);
+        crate::stats::apply_stat_multiplier(once, perception).max(1)
     }
 
     /// Find the lowest non-solid Y position at the given (x, z) column.

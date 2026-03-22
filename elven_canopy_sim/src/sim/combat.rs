@@ -363,8 +363,7 @@ impl SimState {
             && let Some(creature) = self.db.creatures.get(&creature_id)
         {
             let species = creature.species;
-            let species_data = &self.species_table[&species];
-            let detection_range_sq = species_data.hostile_detection_range_sq;
+            let detection_range_sq = self.effective_detection_range_sq(creature_id, species);
 
             if detection_range_sq > 0 {
                 let targets = self.detect_hostile_targets(
@@ -467,7 +466,7 @@ impl SimState {
 
         // Check if the origin is already within detection range — if so,
         // normal hostile_pursue will handle engagement on the next activation.
-        let detection_range_sq = self.species_table[&species].hostile_detection_range_sq;
+        let detection_range_sq = self.effective_detection_range_sq(target_id, species);
         let pos = creature.position;
         let dx = pos.x as i64 - origin_voxel.x as i64;
         let dy = pos.y as i64 - origin_voxel.y as i64;
@@ -2806,7 +2805,7 @@ impl SimState {
             return true;
         }
         if style.disengage_threshold_pct > 0 {
-            let hp_max = species_data.hp_max;
+            let hp_max = creature.hp_max;
             if hp_max > 0 {
                 let hp_pct = (creature.hp * 100 / hp_max) as u8;
                 if hp_pct <= style.disengage_threshold_pct {
@@ -2841,7 +2840,7 @@ impl SimState {
         };
         let pos = creature.position;
         let civ_id = creature.civ_id;
-        let detection_range_sq = self.species_table[&species].hostile_detection_range_sq;
+        let detection_range_sq = self.effective_detection_range_sq(creature_id, species);
 
         // Detect threats (hostile creatures within range).
         let threats =
@@ -2971,7 +2970,7 @@ impl SimState {
         };
         let attacker_pos = attacker.position;
         let attacker_civ = attacker.civ_id;
-        let detection_range_sq = self.species_table[&species].hostile_detection_range_sq;
+        let detection_range_sq = self.effective_detection_range_sq(creature_id, species);
         let attacker_footprint = self.species_table[&species].footprint;
         let melee_range_sq = self.max_melee_range_sq(creature_id);
 
@@ -3702,7 +3701,7 @@ impl SimState {
         let species = creature.species;
         let pos = creature.position;
         let civ_id = creature.civ_id;
-        let detection_range_sq = self.species_table[&species].hostile_detection_range_sq;
+        let detection_range_sq = self.effective_detection_range_sq(creature_id, species);
 
         if detection_range_sq <= 0 {
             return false;
