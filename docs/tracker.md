@@ -869,7 +869,9 @@ walks to the building and removes furniture incrementally.
 #### F-visual-smooth — Smooth voxel surface rendering
 **Status:** Todo · **Phase:** 2 · **Refs:** §8
 
-Platforms and construction should render with smoothed surfaces rather than raw cubes. Exact technique TBD (marching cubes variant, dual contouring, surface nets, or shader-based rounding). Sim truth remains a discrete voxel grid — smoothing is purely a rendering concern.
+Subdivide each visible solid-voxel face into 8 triangles (4 corners, 4 edge midpoints, 1 center), then chamfer and iteratively smooth using a Laplacian curvature-minimizing algorithm with Jacobi-style updates. Solid voxels only (leaves/fruit deferred). Smooth shading with computed vertex normals. Texturing dropped for now (vertex colors only). Sim truth remains a discrete voxel grid — smoothing is purely a rendering concern.
+
+**Draft:** `docs/draft_visual_smooth.md`
 
 **AO interaction:** Smooth rendering changes vertex positions from grid corners to interpolated edge/interior points. The per-vertex AO algorithm (F-voxel-ao) must adapt: instead of the binary 0-1-2-3 corner sampling used for cubic voxels, smooth meshes need a hybrid approach — sample the voxel density field in a small radius around each vertex, weighted by distance and oriented by the vertex normal. Since the sim truth is still a discrete grid, this samples the voxel grid (not the smooth surface), keeping it bounded and cacheable. Plan: implement cubic AO first (F-voxel-ao), then adapt when smooth rendering lands.
 
