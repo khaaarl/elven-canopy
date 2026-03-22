@@ -30514,7 +30514,10 @@ fn voxel_exclusion_ground_move_one_step_returns_false_when_blocked() {
     let elf_pos_before = sim.db.creatures.get(&elf).unwrap().position;
     let result = sim.ground_move_one_step(elf, Species::Elf, edge_idx);
 
-    assert!(!result, "ground_move_one_step should return false when blocked");
+    assert!(
+        !result,
+        "ground_move_one_step should return false when blocked"
+    );
     let elf_pos_after = sim.db.creatures.get(&elf).unwrap().position;
     assert_eq!(
         elf_pos_before, elf_pos_after,
@@ -40591,11 +40594,7 @@ fn arrow_chase_flying_creature_gets_chase_task() {
         creature.current_task.is_some(),
         "Flying creature should get an arrow-chase AttackMove task"
     );
-    let task = sim
-        .db
-        .tasks
-        .get(&creature.current_task.unwrap())
-        .unwrap();
+    let task = sim.db.tasks.get(&creature.current_task.unwrap()).unwrap();
     assert_eq!(task.kind_tag, crate::db::TaskKindTag::AttackMove);
     assert_eq!(task.origin, TaskOrigin::Autonomous);
 }
@@ -40730,7 +40729,10 @@ fn flying_creature_goto_reaches_destination() {
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
     // Spawn hornet above elf (known flyable area), then reposition.
-    let hornet = spawn_hornet_at(&mut sim, VoxelCoord::new(elf_pos.x, elf_pos.y + 3, elf_pos.z));
+    let hornet = spawn_hornet_at(
+        &mut sim,
+        VoxelCoord::new(elf_pos.x, elf_pos.y + 3, elf_pos.z),
+    );
     force_idle_and_cancel_activations(&mut sim, hornet);
     // Move hornet high above elves to avoid combat interference.
     let start = VoxelCoord::new(elf_pos.x, elf_pos.y + 20, elf_pos.z);
@@ -40808,7 +40810,10 @@ fn flying_creature_attack_move_reaches_destination() {
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
     // Spawn hornet above elf, then reposition high to avoid combat.
-    let hornet = spawn_hornet_at(&mut sim, VoxelCoord::new(elf_pos.x, elf_pos.y + 3, elf_pos.z));
+    let hornet = spawn_hornet_at(
+        &mut sim,
+        VoxelCoord::new(elf_pos.x, elf_pos.y + 3, elf_pos.z),
+    );
     force_idle_and_cancel_activations(&mut sim, hornet);
     let start = VoxelCoord::new(elf_pos.x, elf_pos.y + 20, elf_pos.z);
     force_position(&mut sim, hornet, start);
@@ -41162,7 +41167,11 @@ fn flying_creature_directed_goto_mid_move_defers() {
     sim.process_creature_activation(hornet, &mut events);
 
     let creature = sim.db.creatures.get(&hornet).unwrap();
-    assert_eq!(creature.action_kind, ActionKind::Move, "Should be mid-wander");
+    assert_eq!(
+        creature.action_kind,
+        ActionKind::Move,
+        "Should be mid-wander"
+    );
     assert!(creature.current_task.is_none(), "No task yet");
     let wander_end_tick = creature.next_available_tick.unwrap();
 
@@ -41227,5 +41236,8 @@ fn flying_creature_pursue_closest_target() {
     assert!(pursued, "Flying creature should pursue a detected hostile");
     // Hornet should have moved (melee strike or flight step toward near elf).
     let new_pos = sim.db.creatures.get(&hornet).unwrap().position;
-    assert_ne!(new_pos, hornet_pos, "Hornet should have moved toward target");
+    assert_ne!(
+        new_pos, hornet_pos,
+        "Hornet should have moved toward target"
+    );
 }

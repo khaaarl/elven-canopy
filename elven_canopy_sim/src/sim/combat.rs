@@ -313,15 +313,12 @@ impl SimState {
 
                 // Combat failed — try repositioning for a clear ranged shot.
                 // (Ground only — flying creatures reposition via fly_toward_target.)
-                if !is_flying {
-                    if let Some(creature) = self.db.creatures.get(&creature_id) {
-                        let species = creature.species;
-                        if let Some(edge_idx) =
-                            self.find_ranged_reposition_edge(creature_id, target_id)
-                        {
-                            self.ground_move_one_step(creature_id, species, edge_idx);
-                            return;
-                        }
+                if !is_flying && let Some(creature) = self.db.creatures.get(&creature_id) {
+                    let species = creature.species;
+                    if let Some(edge_idx) = self.find_ranged_reposition_edge(creature_id, target_id)
+                    {
+                        self.ground_move_one_step(creature_id, species, edge_idx);
+                        return;
                     }
                 }
 
@@ -334,7 +331,12 @@ impl SimState {
                 } else {
                     None
                 };
-                if !self.at_task_location(creature_id, current_node, target_node, task_location_coord) {
+                if !self.at_task_location(
+                    creature_id,
+                    current_node,
+                    target_node,
+                    task_location_coord,
+                ) {
                     self.walk_toward_attack_move_target(
                         creature_id,
                         task_id,
@@ -576,6 +578,7 @@ impl SimState {
     /// Walk toward an attack-move engagement target. On pathfinding failure,
     /// immediately disengages (unlike AttackTarget which retries). Works for
     /// both ground (nav-graph A*) and flying (voxel A*) creatures.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn walk_toward_attack_move_target(
         &mut self,
         creature_id: CreatureId,
@@ -1042,12 +1045,12 @@ impl SimState {
                         self.fly_wander(creature_id, events);
                         return;
                     }
-                    let _ =
-                        self.db
-                            .task_attack_target_data
-                            .modify_unchecked(&data.task_id, |d| {
-                                d.path_failures = new_failures;
-                            });
+                    let _ = self
+                        .db
+                        .task_attack_target_data
+                        .modify_unchecked(&data.task_id, |d| {
+                            d.path_failures = new_failures;
+                        });
                 }
                 self.event_queue.schedule(
                     self.tick + 500,
@@ -3095,7 +3098,13 @@ impl SimState {
                 if pursuit_targets.is_empty() {
                     return false;
                 }
-                self.pursue_closest_target(creature_id, current_node, species, &pursuit_targets, events)
+                self.pursue_closest_target(
+                    creature_id,
+                    current_node,
+                    species,
+                    &pursuit_targets,
+                    events,
+                )
             }
             WeaponPreference::PreferMelee => {
                 // Try to close distance first (pursuit range only).

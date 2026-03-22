@@ -216,32 +216,32 @@ impl SimState {
         };
 
         // Guard: dead nav node resnap (ground creatures only).
-        if let Some(cn) = current_node {
-            if !self.graph_for_species(species).is_node_alive(cn) {
-                self.abort_current_action(creature_id);
-                let pos = self
-                    .db
-                    .creatures
-                    .get(&creature_id)
-                    .map(|c| c.position)
-                    .unwrap();
-                let graph = self.graph_for_species(species);
-                let new_node = match graph.find_nearest_node(pos) {
-                    Some(n) => n,
-                    None => return,
-                };
-                let new_pos = graph.node(new_node).position;
-                let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
-                    c.position = new_pos;
-                    c.path = None;
-                });
-                self.update_creature_spatial_index(creature_id, species, pos, new_pos);
-                self.event_queue.schedule(
-                    self.tick + 1,
-                    ScheduledEventKind::CreatureActivation { creature_id },
-                );
-                return;
-            }
+        if let Some(cn) = current_node
+            && !self.graph_for_species(species).is_node_alive(cn)
+        {
+            self.abort_current_action(creature_id);
+            let pos = self
+                .db
+                .creatures
+                .get(&creature_id)
+                .map(|c| c.position)
+                .unwrap();
+            let graph = self.graph_for_species(species);
+            let new_node = match graph.find_nearest_node(pos) {
+                Some(n) => n,
+                None => return,
+            };
+            let new_pos = graph.node(new_node).position;
+            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+                c.position = new_pos;
+                c.path = None;
+            });
+            self.update_creature_spatial_index(creature_id, species, pos, new_pos);
+            self.event_queue.schedule(
+                self.tick + 1,
+                ScheduledEventKind::CreatureActivation { creature_id },
+            );
+            return;
         }
 
         // --- Step 1: Resolve completed action (shared) ---
@@ -670,7 +670,12 @@ impl SimState {
             }
 
             // Not in combat range — walk toward target.
-            if !self.at_task_location(creature_id, current_node, task_location_node, task_location_coord) {
+            if !self.at_task_location(
+                creature_id,
+                current_node,
+                task_location_node,
+                task_location_coord,
+            ) {
                 self.walk_toward_attack_target(
                     creature_id,
                     task_id,
@@ -689,11 +694,22 @@ impl SimState {
         }
 
         if task_kind_tag == crate::db::TaskKindTag::AttackMove {
-            self.execute_attack_move(creature_id, task_id, task_location_coord, current_node, events);
+            self.execute_attack_move(
+                creature_id,
+                task_id,
+                task_location_coord,
+                current_node,
+                events,
+            );
             return;
         }
 
-        if self.at_task_location(creature_id, current_node, task_location_node, task_location_coord) {
+        if self.at_task_location(
+            creature_id,
+            current_node,
+            task_location_node,
+            task_location_coord,
+        ) {
             // At task location — run the kind-specific completion/work logic.
             self.execute_task_at_location(creature_id, task_id, events);
         } else {
