@@ -224,7 +224,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-terrain-manip        Temporary voxel/zone placement with expiry
 [ ] F-traders              Visiting traders from other civs
 [ ] F-tree-capacity        Per-tree carrying capacity limits
-[ ] F-tree-db              Trees as DB entities with elf-tree bonding
 [ ] F-tree-disease         Tree diseases and parasites
 [ ] F-tree-memory          Ancient tree knowledge/vision system
 [ ] F-tree-species         Multiple tree species with properties
@@ -425,6 +424,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-textile-crafting     Textile and clothing crafting recipes
 [x] F-thoughts             Creature thoughts (DF-style event reactions)
 [x] F-tiling-tex           Prime-period tiling textures for bark and ground
+[x] F-tree-db              Trees as DB entities with elf-tree bonding
 [x] F-tree-gen             Procedural tree generation (trunk+branches)
 [x] F-tree-info            Tree stats/info panel
 [x] F-tree-overlap         Construction overlap with tree geometry
@@ -3441,8 +3441,8 @@ straight, thick oak, bushy, and sapling. Trees use the same energy-based
 generation algorithm as the great tree but with much smaller profiles
 sized for real-life trees at 2m/voxel (~3-20 voxels tall). Both the main
 tree and lesser trees are sunk into the terrain surface so trunks emerge
-naturally from the ground. Stored in the existing `trees` BTreeMap with
-no owner, no mana, no fruit. No DB schema changes.
+naturally from the ground. All trees (great and lesser) stored in the
+`trees` SimDb table with no owner, no mana, no fruit.
 
 **Future:** Poisson disk sampling for better spatial distribution,
 harvestable wood, fruit-bearing lesser trees, species variety, interaction
@@ -3462,8 +3462,8 @@ their own elves and mana, in cooperative or competitive configurations
 per-player entity ownership, per-player command validation, and per-player
 fog of war rendering.
 
-**Blocked by:** F-tree-db
 **Blocks:** F-cultural-drift, F-root-network
+**Unblocked by:** F-tree-db
 **Related:** F-bigger-world, F-multiplayer, F-settlement-gen, F-tree-capacity, F-tree-db, F-tree-species, F-uplift-tree, F-zone-world
 
 #### F-rm-floor-extent — Remove floor_extent and ForestFloor layer
@@ -4986,7 +4986,7 @@ as `SimDb` (16 tables) — see F-sim-tab-migrate.
 **Status:** Done
 
 #### F-tree-db — Trees as DB entities with elf-tree bonding
-**Status:** Todo
+**Status:** Done
 
 Trees as first-class entities in SimDb with columns for position, species,
 mana_stored, mana_capacity, etc. Each elf has a bonded_tree_id foreign key.
@@ -4994,7 +4994,7 @@ Prerequisite for F-multi-tree: the current implicit "the one tree" must become
 an explicit DB row before multiple trees can coexist. Also enables per-tree
 mana pools, per-tree elf rosters, and tree-specific stats/upgrades.
 
-**Blocks:** F-multi-tree
+**Unblocked:** F-multi-tree
 **Related:** F-multi-tree, F-uplift-tree, F-zone-world
 
 #### F-tree-gen — Procedural tree generation (trunk+branches)

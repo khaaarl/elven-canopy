@@ -299,8 +299,8 @@ mod tests {
         let mut buf = PixelBuffer::new(3, 2);
         let red = Color::rgb(1.0, 0.0, 0.0);
         let blue = Color::rgb(0.0, 0.0, 1.0);
-        buf.set_px(0, 0, red);   // A = red
-        buf.set_px(2, 1, blue);  // F = blue
+        buf.set_px(0, 0, red); // A = red
+        buf.set_px(2, 1, blue); // F = blue
 
         let rot = buf.rotate_90_cw();
         assert_eq!(rot.width(), 2);

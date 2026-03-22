@@ -32,7 +32,7 @@ elven-canopy/
 │       │   ├── needs.rs        #   Eating, sleeping, moping, personal item acquisition
 │       │   ├── raid.rs         #   Raid triggering (hostile civ raiding parties)
 │       │   └── task_helpers.rs #   Task extension table accessors, insert_task
-│       ├── db.rs               # SimDb — tabulosity relational store (36 tables, all entities)
+│       ├── db.rs               # SimDb — tabulosity relational store (38 tables, all entities)
 │       ├── mesh_gen.rs         # Chunk-based voxel mesh generation with face culling
 │       ├── texture_gen.rs      # Prime-period tiling textures (tileable Perlin noise, bark + ground)
 │       ├── nav.rs              # NavGraph, NavNode, NavEdge, graph construction

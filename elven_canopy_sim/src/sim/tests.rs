@@ -57,10 +57,11 @@ fn test_sim(seed: u64) -> SimState {
 #[test]
 fn new_sim_has_home_tree() {
     let sim = test_sim(42);
-    assert!(sim.trees.contains_key(&sim.player_tree_id));
-    let tree = &sim.trees[&sim.player_tree_id];
+    assert!(sim.db.trees.contains(&sim.player_tree_id));
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     assert_eq!(tree.owner, sim.player_civ_id);
-    assert_eq!(tree.mana_stored, sim.config.starting_mana_mm);
+    let great_info = sim.db.great_tree_infos.get(&sim.player_tree_id).unwrap();
+    assert_eq!(great_info.mana_stored, sim.config.starting_mana_mm);
 }
 
 #[test]
@@ -116,6 +117,113 @@ fn serialization_roundtrip() {
 }
 
 #[test]
+fn serialization_roundtrip_preserves_tree_and_great_tree_info() {
+    let mut sim = test_sim(42);
+    // Fast-forward a bit so fruit may have spawned.
+    sim.step(&[], 500);
+
+    let tree_id = sim.player_tree_id;
+    let orig_tree = sim.db.trees.get(&tree_id).unwrap().clone();
+    let orig_info = sim.db.great_tree_infos.get(&tree_id).unwrap();
+
+    let json = serde_json::to_string(&sim).unwrap();
+    let restored: SimState = serde_json::from_str(&json).unwrap();
+
+    // Tree row fields survive roundtrip.
+    let rt = restored.db.trees.get(&tree_id).unwrap();
+    assert_eq!(rt.position, orig_tree.position);
+    assert_eq!(rt.health, orig_tree.health);
+    assert_eq!(rt.growth_level, orig_tree.growth_level);
+    assert_eq!(rt.owner, orig_tree.owner);
+    assert_eq!(rt.trunk_voxels.len(), orig_tree.trunk_voxels.len());
+    assert_eq!(rt.branch_voxels.len(), orig_tree.branch_voxels.len());
+    assert_eq!(rt.leaf_voxels.len(), orig_tree.leaf_voxels.len());
+    assert_eq!(rt.root_voxels.len(), orig_tree.root_voxels.len());
+    assert_eq!(rt.fruit_positions, orig_tree.fruit_positions);
+    assert_eq!(rt.fruit_species_id, orig_tree.fruit_species_id);
+
+    // GreatTreeInfo row fields survive roundtrip.
+    let ri = restored.db.great_tree_infos.get(&tree_id).unwrap();
+    assert_eq!(ri.mana_stored, orig_info.mana_stored);
+    assert_eq!(ri.mana_capacity, orig_info.mana_capacity);
+    assert_eq!(
+        ri.fruit_production_rate_ppm,
+        orig_info.fruit_production_rate_ppm
+    );
+    assert_eq!(ri.carrying_capacity, orig_info.carrying_capacity);
+    assert_eq!(ri.current_load, orig_info.current_load);
+}
+
+#[test]
+fn tree_owner_index_finds_player_tree() {
+    let sim = test_sim(42);
+    let civ_id = sim.player_civ_id.unwrap();
+    let trees_for_civ = sim
+        .db
+        .trees
+        .by_owner(&Some(civ_id), tabulosity::QueryOpts::ASC);
+    assert_eq!(trees_for_civ.len(), 1);
+    assert_eq!(trees_for_civ[0].id, sim.player_tree_id);
+}
+
+#[test]
+fn tree_owner_index_lesser_trees_have_no_owner() {
+    let sim = test_sim(42);
+    let unowned = sim.db.trees.by_owner(&None, tabulosity::QueryOpts::ASC);
+    // All trees except the player's tree should have no owner.
+    assert_eq!(unowned.len(), sim.db.trees.len() - 1);
+}
+
+#[test]
+fn remove_fruit_from_trees_no_op_when_not_found() {
+    let mut sim = test_sim(42);
+    let bogus_pos = VoxelCoord::new(0, 0, 0);
+    // Capture fruit count before the call.
+    let before: usize = sim
+        .db
+        .trees
+        .iter_all()
+        .map(|t| t.fruit_positions.len())
+        .sum();
+    // Should not panic on a position no tree owns.
+    sim.remove_fruit_from_trees(bogus_pos);
+    let after: usize = sim
+        .db
+        .trees
+        .iter_all()
+        .map(|t| t.fruit_positions.len())
+        .sum();
+    assert_eq!(before, after, "No fruit should have been removed");
+}
+
+#[test]
+fn remove_fruit_from_trees_removes_correct_fruit() {
+    let mut sim = test_sim(42);
+    let tree_id = sim.player_tree_id;
+
+    // Manually add two fruit positions to the home tree.
+    let fruit_a = VoxelCoord::new(10, 60, 10);
+    let fruit_b = VoxelCoord::new(11, 60, 11);
+    let _ = sim.db.trees.modify_unchecked(&tree_id, |t| {
+        t.fruit_positions.push(fruit_a);
+        t.fruit_positions.push(fruit_b);
+    });
+
+    // Remove fruit_a — fruit_b should remain.
+    sim.remove_fruit_from_trees(fruit_a);
+
+    let tree = sim.db.trees.get(&tree_id).unwrap();
+    assert!(
+        !tree.fruit_positions.contains(&fruit_a),
+        "fruit_a should be removed"
+    );
+    assert!(
+        tree.fruit_positions.contains(&fruit_b),
+        "fruit_b should still be present"
+    );
+}
+
+#[test]
 fn determinism_after_stepping() {
     let mut sim_a = test_sim(42);
     let mut sim_b = test_sim(42);
@@ -140,7 +248,7 @@ fn determinism_after_stepping() {
 #[test]
 fn new_sim_has_tree_voxels() {
     let sim = test_sim(42);
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     assert!(
         !tree.trunk_voxels.is_empty(),
         "Tree should have trunk voxels"
@@ -163,7 +271,7 @@ fn new_sim_has_nav_graph() {
 #[test]
 fn spawn_elf_command() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -188,7 +296,7 @@ fn spawn_elf_command() {
 #[test]
 fn spawned_elf_has_vaelith_name() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -227,7 +335,7 @@ fn spawned_elf_name_is_deterministic() {
     // Same seed should produce the same elf name.
     let mut sim1 = test_sim(42);
     let mut sim2 = test_sim(42);
-    let tree_pos = sim1.trees[&sim1.player_tree_id].position;
+    let tree_pos = sim1.db.trees.get(&sim1.player_tree_id).unwrap().position;
 
     let cmd1 = SimCommand {
         player_name: String::new(),
@@ -258,7 +366,7 @@ fn spawned_elf_name_is_deterministic() {
 #[test]
 fn spawned_non_elf_has_no_name() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -287,7 +395,7 @@ fn spawned_non_elf_has_no_name() {
 
 /// Helper: spawn a creature and return its ID.
 fn spawn_creature(sim: &mut SimState, species: Species) -> CreatureId {
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let tick = sim.tick + 1;
     let cmd = SimCommand {
         player_name: String::new(),
@@ -840,7 +948,7 @@ fn old_save_without_creature_traits_deserializes() {
 #[test]
 fn elf_wanders_after_spawn() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn elf.
     let spawn_cmd = SimCommand {
@@ -876,7 +984,7 @@ fn determinism_with_elf_after_1000_ticks() {
     let mut sim_a = test_sim(42);
     let mut sim_b = test_sim(42);
 
-    let tree_pos = sim_a.trees[&sim_a.player_tree_id].position;
+    let tree_pos = sim_a.db.trees.get(&sim_a.player_tree_id).unwrap().position;
 
     let spawn = SimCommand {
         player_name: String::new(),
@@ -903,7 +1011,7 @@ fn determinism_with_elf_after_1000_ticks() {
 #[test]
 fn spawn_capybara_command() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -938,7 +1046,7 @@ fn spawn_capybara_command() {
 #[test]
 fn capybara_wanders_on_ground() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -969,7 +1077,7 @@ fn capybara_wanders_on_ground() {
 #[test]
 fn capybara_stays_on_ground() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -1003,7 +1111,7 @@ fn determinism_with_capybara() {
     let mut sim_a = test_sim(42);
     let mut sim_b = test_sim(42);
 
-    let tree_pos = sim_a.trees[&sim_a.player_tree_id].position;
+    let tree_pos = sim_a.db.trees.get(&sim_a.player_tree_id).unwrap().position;
 
     let spawn = SimCommand {
         player_name: String::new(),
@@ -1028,7 +1136,7 @@ fn determinism_with_capybara() {
 #[test]
 fn creature_wanders_via_activation_chain() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -1080,7 +1188,7 @@ fn creature_wanders_via_activation_chain() {
 #[test]
 fn wandering_creature_stays_on_nav_graph() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -1129,7 +1237,7 @@ fn spawn_elf(sim: &mut SimState) -> CreatureId {
         .filter(|c| c.species == Species::Elf)
         .map(|c| c.id)
         .collect();
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let cmd = SimCommand {
         player_name: String::new(),
         tick: sim.tick + 1,
@@ -1292,7 +1400,7 @@ fn completed_task_creature_resumes_wandering() {
 #[test]
 fn create_task_command_adds_task() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -1314,7 +1422,7 @@ fn create_task_command_adds_task() {
 #[test]
 fn end_to_end_summon_task() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn an elf.
     let spawn_cmd = SimCommand {
@@ -1365,7 +1473,7 @@ fn end_to_end_summon_task() {
 #[test]
 fn only_one_creature_claims_goto_task() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn multiple elves and capybaras.
     for _ in 0..3 {
@@ -1438,7 +1546,7 @@ fn only_one_creature_claims_goto_task() {
 #[test]
 fn new_sim_has_initial_fruit() {
     let sim = test_sim(42);
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     assert!(
         !tree.fruit_positions.is_empty(),
         "Tree should have some initial fruit (got 0)"
@@ -1448,7 +1556,7 @@ fn new_sim_has_initial_fruit() {
 #[test]
 fn fruit_hangs_below_leaf_voxels() {
     let sim = test_sim(42);
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     for fruit_pos in &tree.fruit_positions {
         // The leaf above the fruit should be in the tree's leaf_voxels.
         let leaf_above = VoxelCoord::new(fruit_pos.x, fruit_pos.y + 1, fruit_pos.z);
@@ -1464,7 +1572,7 @@ fn fruit_hangs_below_leaf_voxels() {
 #[test]
 fn fruit_set_in_world_grid() {
     let sim = test_sim(42);
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     for fruit_pos in &tree.fruit_positions {
         assert_eq!(
             sim.world.get(*fruit_pos),
@@ -1486,7 +1594,12 @@ fn fruit_grows_during_heartbeat() {
     let tree_id = sim.player_tree_id;
 
     assert!(
-        sim.trees[&tree_id].fruit_positions.is_empty(),
+        sim.db
+            .trees
+            .get(&tree_id)
+            .unwrap()
+            .fruit_positions
+            .is_empty(),
         "Should start with no fruit when initial_attempts = 0"
     );
 
@@ -1494,7 +1607,12 @@ fn fruit_grows_during_heartbeat() {
     sim.step(&[], 50000);
 
     assert!(
-        !sim.trees[&tree_id].fruit_positions.is_empty(),
+        !sim.db
+            .trees
+            .get(&tree_id)
+            .unwrap()
+            .fruit_positions
+            .is_empty(),
         "Fruit should grow during tree heartbeats"
     );
 }
@@ -1506,7 +1624,7 @@ fn fruit_respects_max_count() {
     config.fruit_initial_attempts = 100; // Many attempts, but max is 3.
     config.fruit_production_rate_ppm = 1_000_000;
     let sim = SimState::with_config(42, config);
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
 
     assert!(
         tree.fruit_positions.len() <= 3,
@@ -1519,15 +1637,15 @@ fn fruit_respects_max_count() {
 fn fruit_deterministic() {
     let sim_a = test_sim(42);
     let sim_b = test_sim(42);
-    let tree_a = &sim_a.trees[&sim_a.player_tree_id];
-    let tree_b = &sim_b.trees[&sim_b.player_tree_id];
+    let tree_a = sim_a.db.trees.get(&sim_a.player_tree_id).unwrap();
+    let tree_b = sim_b.db.trees.get(&sim_b.player_tree_id).unwrap();
     assert_eq!(tree_a.fruit_positions, tree_b.fruit_positions);
 }
 
 #[test]
 fn tree_has_fruit_species_assigned() {
     let sim = test_sim(42);
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     assert!(
         tree.fruit_species_id.is_some(),
         "Home tree should have a fruit species assigned during worldgen"
@@ -1544,7 +1662,7 @@ fn tree_has_fruit_species_assigned() {
 #[test]
 fn fruit_voxels_have_species_tracked() {
     let sim = test_sim(42);
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     // Every fruit voxel should have a species entry in the map.
     for &fruit_pos in &tree.fruit_positions {
         assert!(
@@ -1568,7 +1686,7 @@ fn fruit_voxels_have_species_tracked() {
 #[test]
 fn fruit_species_at_returns_species() {
     let sim = test_sim(42);
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     if let Some(first_fruit) = tree.fruit_positions.first() {
         let species = sim.fruit_species_at(*first_fruit);
         assert!(
@@ -1590,12 +1708,12 @@ fn fruit_species_at_returns_species() {
 #[test]
 fn fruit_voxel_species_roundtrip() {
     let sim = test_sim(42);
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     assert!(!tree.fruit_positions.is_empty(), "need fruit for this test");
 
     let json = sim.to_json().unwrap();
     let loaded = SimState::from_json(&json).unwrap();
-    let loaded_tree = &loaded.trees[&loaded.player_tree_id];
+    let loaded_tree = loaded.db.trees.get(&loaded.player_tree_id).unwrap();
 
     // Fruit voxel species map should survive roundtrip.
     assert_eq!(
@@ -1621,7 +1739,7 @@ fn fruit_voxel_species_roundtrip() {
 #[test]
 fn harvest_fruit_carries_species_material() {
     let mut sim = test_sim(42);
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     let fruit_pos = tree.fruit_positions[0];
     let tree_species = tree.fruit_species_id.unwrap();
 
@@ -1688,7 +1806,7 @@ fn fruit_heartbeat_tracks_species() {
     // Step past heartbeats to grow fruit.
     sim.step(&[], 50000);
 
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     assert!(
         !tree.fruit_positions.is_empty(),
         "Should have grown some fruit"
@@ -1710,7 +1828,7 @@ fn fruit_heartbeat_tracks_species() {
 #[test]
 fn save_load_preserves_world_voxels() {
     let sim = test_sim(42);
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
 
     // Roundtrip through JSON (world is now serialized, not rebuilt).
     let json = sim.to_json().unwrap();
@@ -1799,7 +1917,7 @@ fn rebuild_transient_state_restores_nav_graph() {
 #[test]
 fn json_roundtrip_preserves_state() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn creatures and advance ticks.
     let cmds = vec![
@@ -1840,7 +1958,7 @@ fn json_roundtrip_preserves_state() {
 #[test]
 fn json_roundtrip_continues_deterministically() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn creatures and advance.
     let spawn = SimCommand {
@@ -1876,7 +1994,7 @@ fn json_roundtrip_continues_deterministically() {
 #[test]
 fn elf_spawned_after_roundtrip_gets_name() {
     let sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Save and restore (no creatures yet).
     let mut restored = SimState::from_json(&sim.to_json().unwrap()).unwrap();
@@ -2046,7 +2164,7 @@ fn troll_spawns_on_large_graph() {
 #[test]
 fn creature_species_preserved() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn one elf and one capybara.
     let cmds = vec![
@@ -2094,7 +2212,7 @@ fn creature_species_preserved() {
 #[test]
 fn food_decreases_over_heartbeats() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let food_max = sim.species_table[&Species::Elf].food_max;
     let decay_per_tick = sim.species_table[&Species::Elf].food_decay_per_tick;
@@ -2144,7 +2262,7 @@ fn food_does_not_go_below_zero() {
         .unwrap()
         .food_decay_per_tick = 1_000_000_000_000_000; // Depletes in 1 tick
     let mut sim = SimState::with_config(42, config);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn an elf.
     let cmd = SimCommand {
@@ -2181,7 +2299,7 @@ fn creature_dies_when_food_reaches_zero() {
         .unwrap()
         .food_decay_per_tick = 1_000_000_000_000_000;
     let mut sim = SimState::with_config(42, config);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn an elf.
     let cmd = SimCommand {
@@ -2232,7 +2350,7 @@ fn starvation_death_notification_mentions_starvation() {
         .unwrap()
         .food_decay_per_tick = 1_000_000_000_000_000;
     let mut sim = SimState::with_config(42, config);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -2271,7 +2389,7 @@ fn no_heartbeat_after_starvation_death() {
         .unwrap()
         .food_decay_per_tick = 1_000_000_000_000_000;
     let mut sim = SimState::with_config(42, config);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -2306,7 +2424,7 @@ fn creature_with_food_remaining_does_not_starve() {
     // Default config — food_max is large, decay is slow. Creature should
     // survive a few heartbeats without issue.
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -2343,7 +2461,7 @@ fn creature_with_food_remaining_does_not_starve() {
 #[test]
 fn rest_decreases_over_heartbeats() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let rest_max = sim.species_table[&Species::Elf].rest_max;
     let decay_per_tick = sim.species_table[&Species::Elf].rest_decay_per_tick;
@@ -2390,7 +2508,7 @@ fn rest_does_not_go_below_zero() {
     elf.rest_decay_per_tick = 1_000_000_000_000_000; // Depletes in 1 tick
     elf.rest_per_sleep_tick = 0; // Prevent sleep from restoring rest.
     let mut sim = SimState::with_config(42, config);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -2418,7 +2536,7 @@ fn rest_does_not_go_below_zero() {
 #[test]
 fn tired_idle_elf_creates_sleep_task() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
@@ -2469,7 +2587,7 @@ fn tired_idle_elf_creates_sleep_task() {
 #[test]
 fn rested_elf_does_not_create_sleep_task() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
     // Spawn an elf — starts at full rest.
@@ -2502,7 +2620,7 @@ fn rested_elf_does_not_create_sleep_task() {
 #[test]
 fn busy_tired_elf_does_not_create_sleep_task() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
@@ -2577,14 +2695,17 @@ fn busy_tired_elf_does_not_create_sleep_task() {
 fn hungry_takes_priority_over_tired() {
     let mut sim = test_sim(42);
     sim.config.elf_starting_bread = 0;
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let food_max = sim.species_table[&Species::Elf].food_max;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
     // Need fruit.
     assert!(
-        sim.trees.values().any(|t| !t.fruit_positions.is_empty()),
+        sim.db
+            .trees
+            .iter_all()
+            .any(|t| !t.fruit_positions.is_empty()),
         "Tree must have fruit"
     );
 
@@ -2635,7 +2756,7 @@ fn hungry_takes_priority_over_tired() {
 fn ground_sleep_fallback_when_no_beds() {
     // No dormitories exist — tired elf should get a ground Sleep task.
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
@@ -2690,7 +2811,7 @@ fn ground_sleep_fallback_when_no_beds() {
 #[test]
 fn find_nearest_bed_excludes_occupied() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
@@ -2813,7 +2934,7 @@ fn tired_elf_sleeps_and_rest_increases() {
     elf_species.food_decay_per_tick = 0;
     elf_species.rest_decay_per_tick = 0;
     let mut sim = SimState::with_config(42, config);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
 
     // Add a dormitory with beds near the tree.
@@ -3000,7 +3121,7 @@ fn interpolated_position_stationary() {
 #[test]
 fn wander_sets_movement_metadata() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn an elf at tick 1, step only to tick 1 so the first activation
     // (scheduled at tick 2) hasn't fired yet.
@@ -3074,7 +3195,7 @@ fn wander_sets_movement_metadata() {
 /// Find an Air voxel that is face-adjacent to a trunk voxel.
 /// Panics if none found (should never happen with a generated tree).
 fn find_air_adjacent_to_trunk(sim: &SimState) -> VoxelCoord {
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     for &trunk_coord in &tree.trunk_voxels {
         for &(dx, dy, dz) in &[
             (1, 0, 0),
@@ -3347,7 +3468,7 @@ fn designate_build_rejects_out_of_bounds() {
 #[test]
 fn designate_build_rejects_non_air() {
     let mut sim = test_sim(42);
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     let trunk_coord = tree.trunk_voxels[0];
 
     let cmd = SimCommand {
@@ -3673,7 +3794,7 @@ fn blueprint_determinism() {
 #[test]
 fn spawn_boar_command() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -3707,7 +3828,7 @@ fn spawn_boar_command() {
 #[test]
 fn spawn_deer_command() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -3741,7 +3862,7 @@ fn spawn_deer_command() {
 #[test]
 fn spawn_monkey_command() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -3766,7 +3887,7 @@ fn spawn_monkey_command() {
 #[test]
 fn spawn_squirrel_command() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -3791,7 +3912,7 @@ fn spawn_squirrel_command() {
 #[test]
 fn boar_stays_on_ground() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -3823,7 +3944,7 @@ fn boar_stays_on_ground() {
 #[test]
 fn deer_stays_on_ground() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -3854,7 +3975,7 @@ fn deer_stays_on_ground() {
 #[test]
 fn monkey_can_climb() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -3885,7 +4006,7 @@ fn monkey_can_climb() {
 #[test]
 fn squirrel_can_climb() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -3911,7 +4032,7 @@ fn squirrel_can_climb() {
 #[test]
 fn all_small_species_spawn_and_coexist() {
     let mut sim = test_sim(300);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Only non-hostile species — hostile species (Goblin, Orc) would fight
     // and kill friendlies during the 50k-tick coexistence window, especially
@@ -3964,7 +4085,7 @@ fn all_small_species_spawn_and_coexist() {
 /// Helper: find N air voxels adjacent to trunk, all face-adjacent to
 /// each other or to solid geometry (valid for a multi-voxel blueprint).
 fn find_air_strip_adjacent_to_trunk(sim: &SimState, count: usize) -> Vec<VoxelCoord> {
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     // Find a trunk voxel with an air voxel to the +x side, then extend
     // in the +x direction.
     for &trunk_coord in &tree.trunk_voxels {
@@ -4175,7 +4296,7 @@ fn build_displaces_creature_on_occupied_voxel() {
 
     // Spawn a SECOND elf to do the building (the first one is standing
     // on the build site, so we need another builder).
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let cmd = SimCommand {
         player_name: String::new(),
         tick: sim.tick + 1,
@@ -4696,7 +4817,7 @@ fn completed_structure_sequential_ids() {
 
     // Find another air coord for the second build.
     let mut second_air = None;
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     for &trunk_coord in &tree.trunk_voxels {
         for (dx, dy, dz) in [
             (1, 0, 0),
@@ -5224,10 +5345,14 @@ fn rename_nonexistent_structure_is_noop() {
 #[test]
 fn find_nearest_fruit_returns_reachable() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // The tree should have fruit after initialization (fruit_initial_attempts).
-    let has_fruit = sim.trees.values().any(|t| !t.fruit_positions.is_empty());
+    let has_fruit = sim
+        .db
+        .trees
+        .iter_all()
+        .any(|t| !t.fruit_positions.is_empty());
     assert!(has_fruit, "Test tree should have some fruit after init");
 
     // Spawn an elf near the tree so it has a nav node.
@@ -5259,8 +5384,9 @@ fn find_nearest_fruit_returns_reachable() {
 
     // The fruit_pos should actually be in a tree's fruit list.
     let in_tree = sim
+        .db
         .trees
-        .values()
+        .iter_all()
         .any(|t| t.fruit_positions.contains(&fruit_pos));
     assert!(in_tree, "Returned fruit should be in a tree's fruit list");
 
@@ -5271,7 +5397,7 @@ fn find_nearest_fruit_returns_reachable() {
 #[test]
 fn eat_fruit_task_restores_food_on_arrival() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let food_max = sim.species_table[&Species::Elf].food_max;
     let restore_pct = sim.species_table[&Species::Elf].food_restore_pct;
 
@@ -5342,12 +5468,16 @@ fn eat_fruit_task_restores_food_on_arrival() {
 fn hungry_idle_elf_creates_eat_fruit_task() {
     let mut sim = test_sim(42);
     sim.config.elf_starting_bread = 0;
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let food_max = sim.species_table[&Species::Elf].food_max;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
     // Need fruit to exist.
-    let has_fruit = sim.trees.values().any(|t| !t.fruit_positions.is_empty());
+    let has_fruit = sim
+        .db
+        .trees
+        .iter_all()
+        .any(|t| !t.fruit_positions.is_empty());
     assert!(has_fruit, "Tree must have fruit for this test");
 
     // Spawn an elf.
@@ -5396,7 +5526,7 @@ fn hungry_idle_elf_creates_eat_fruit_task() {
 #[test]
 fn well_fed_elf_does_not_create_eat_fruit_task() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
     // Spawn an elf — starts at full food.
@@ -5429,7 +5559,7 @@ fn well_fed_elf_does_not_create_eat_fruit_task() {
 #[test]
 fn busy_hungry_elf_does_not_create_eat_fruit_task() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let food_max = sim.species_table[&Species::Elf].food_max;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
@@ -5509,7 +5639,7 @@ fn hungry_elf_eats_fruit_and_food_increases() {
     // so the test is deterministic regardless of tree shape.
     let mut sim = test_sim(42);
     sim.config.elf_starting_bread = 0; // Force fruit foraging, not bread eating.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let food_max = sim.species_table[&Species::Elf].food_max;
 
     // Spawn an elf.
@@ -5537,11 +5667,9 @@ fn hungry_elf_eats_fruit_and_food_increases() {
     let fruit_pos = elf_pos;
     sim.world.set(fruit_pos, VoxelType::Fruit);
     let tree_id = sim.player_tree_id;
-    sim.trees
-        .get_mut(&tree_id)
-        .unwrap()
-        .fruit_positions
-        .push(fruit_pos);
+    let _ = sim.db.trees.modify_unchecked(&tree_id, |t| {
+        t.fruit_positions.push(fruit_pos);
+    });
 
     // Set food to 20% — well below the 50% hunger threshold.
     let _ = sim
@@ -5570,7 +5698,7 @@ fn hungry_elf_eats_fruit_and_food_increases() {
 #[test]
 fn hungry_elf_with_bread_creates_eat_bread_task() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let food_max = sim.species_table[&Species::Elf].food_max;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
@@ -5630,7 +5758,7 @@ fn hungry_elf_with_bread_creates_eat_bread_task() {
 fn eat_bread_restores_food_and_removes_bread() {
     let mut sim = test_sim(42);
     sim.config.elf_starting_bread = 0;
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let food_max = sim.species_table[&Species::Elf].food_max;
     let bread_restore_pct = sim.species_table[&Species::Elf].bread_restore_pct;
 
@@ -5715,12 +5843,15 @@ fn hungry_elf_without_bread_still_seeks_fruit() {
     // Elf is hungry but has no bread — should create EatFruit, not EatBread.
     let mut sim = test_sim(42);
     sim.config.elf_starting_bread = 0;
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let food_max = sim.species_table[&Species::Elf].food_max;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
     assert!(
-        sim.trees.values().any(|t| !t.fruit_positions.is_empty()),
+        sim.db
+            .trees
+            .iter_all()
+            .any(|t| !t.fruit_positions.is_empty()),
         "Tree must have fruit"
     );
 
@@ -5769,12 +5900,15 @@ fn hungry_elf_with_unowned_bread_seeks_fruit() {
     // Elf has bread but doesn't own it — should seek fruit instead.
     let mut sim = test_sim(42);
     sim.config.elf_starting_bread = 0;
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let food_max = sim.species_table[&Species::Elf].food_max;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
     assert!(
-        sim.trees.values().any(|t| !t.fruit_positions.is_empty()),
+        sim.db
+            .trees
+            .iter_all()
+            .any(|t| !t.fruit_positions.is_empty()),
         "Tree must have fruit"
     );
 
@@ -5830,7 +5964,7 @@ fn hungry_elf_with_unowned_bread_seeks_fruit() {
 #[test]
 fn eat_bread_generates_thought() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let food_max = sim.species_table[&Species::Elf].food_max;
 
     // Spawn an elf.
@@ -5918,7 +6052,7 @@ fn eat_bread_generates_thought() {
 /// voxel (not just any solid — must be adjacent to structural wood so the
 /// structural validator can reach the ground).
 fn find_leaf_adjacent_to_wood(sim: &SimState) -> VoxelCoord {
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     for &leaf_coord in &tree.leaf_voxels {
         for &(dx, dy, dz) in &[
             (1, 0, 0),
@@ -5965,7 +6099,7 @@ fn overlap_platform_at_leaf_creates_blueprint() {
 #[test]
 fn overlap_all_trunk_rejects_nothing_to_build() {
     let mut sim = test_sim(42);
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     let trunk_coord = tree.trunk_voxels[0];
 
     let cmd = SimCommand {
@@ -6231,7 +6365,7 @@ fn walk_toward_dead_task_node_does_not_panic() {
     // nav node gets removed by an incremental update. The creature should
     // gracefully abandon the task instead of panicking in pathfinding.
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn an elf.
     let spawn_cmd = SimCommand {
@@ -6311,7 +6445,7 @@ fn walk_toward_dead_task_node_does_not_panic() {
 /// structure). Picks the highest trunk voxel so removing it doesn't sever
 /// the tree's connection to ground.
 fn find_carvable_voxel(sim: &SimState) -> VoxelCoord {
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     // Pick the highest trunk voxel — removing the top is structurally safe.
     tree.trunk_voxels
         .iter()
@@ -6357,7 +6491,7 @@ fn test_carve_execution_removes_voxels() {
     assert!(sim.world.get(solid).is_solid());
 
     // Spawn an elf near the tree so it can claim the task.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z + 3);
 
     let spawn_cmd = SimCommand {
@@ -6409,7 +6543,7 @@ fn test_carve_execution_removes_voxels() {
 /// ensuring at least `height` air voxels above it. Returns (anchor, orientation)
 /// where orientation is the face of the anchor pointing toward the trunk.
 fn find_ladder_column(sim: &SimState, height: i32) -> (VoxelCoord, FaceDirection) {
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     for &trunk_coord in &tree.trunk_voxels {
         for &(dx, dz) in &[(1, 0), (-1, 0), (0, 1), (0, -1)] {
             let base = VoxelCoord::new(trunk_coord.x + dx, trunk_coord.y, trunk_coord.z + dz);
@@ -6692,13 +6826,13 @@ fn test_cancel_carve_restores_originals() {
     let mut sim = SimState::with_config(42, config);
 
     // Find two adjacent trunk voxels for carving.
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     let v1 = tree.trunk_voxels.iter().copied().find(|v| v.y > 0).unwrap();
     let original_type = sim.world.get(v1);
     assert!(original_type.is_solid());
 
     // Spawn elf and designate carve.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z + 3);
     let spawn_cmd = SimCommand {
         player_name: String::new(),
@@ -6814,7 +6948,7 @@ fn designate_rope_ladder_multiheight() {
     // top voxel adjacent to solid — but the anchor is at the bottom.
     // With height=3, the top (anchor.y+2) must have its ladder face
     // neighbor be solid.
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     let mut found = None;
     for &trunk_coord in &tree.trunk_voxels {
         for &(dx, dz) in &[(1, 0), (-1, 0), (0, 1), (0, -1)] {
@@ -6936,7 +7070,7 @@ fn test_carve_nav_graph_update() {
     );
 
     // Spawn elf and designate carve.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z + 3);
     let spawn_cmd = SimCommand {
         player_name: String::new(),
@@ -6981,7 +7115,7 @@ fn test_carve_save_load_roundtrip() {
     let original_type = sim.world.get(solid);
 
     // Spawn elf and designate carve.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z + 3);
     let spawn_cmd = SimCommand {
         player_name: String::new(),
@@ -7288,7 +7422,7 @@ fn carve_partial_overlap_filters_claimed_voxels() {
     // blueprint and some are not, only unclaimed voxels appear in the
     // new carve blueprint.
     let mut sim = test_sim(42);
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
 
     // Find two carvable (solid, above bedrock) voxels.
     let carvable: Vec<VoxelCoord> = tree
@@ -7344,7 +7478,7 @@ fn build_partial_overlap_rejected() {
     // If a multi-voxel designation has even one voxel overlapping an
     // existing blueprint, the entire designation is rejected.
     let mut sim = test_sim(42);
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
 
     // Find two adjacent air voxels next to trunk.
     let mut air_pair: Option<(VoxelCoord, VoxelCoord)> = None;
@@ -7398,7 +7532,7 @@ fn build_partial_overlap_rejected() {
 #[test]
 fn non_overlapping_builds_both_succeed() {
     let mut sim = test_sim(42);
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
 
     // Find two separate air voxels next to trunk.
     let mut air_voxels = Vec::new();
@@ -7457,7 +7591,7 @@ fn completed_blueprint_does_not_block_carve() {
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     // Spawn an elf and designate a platform.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z + 3);
     let spawn_cmd = SimCommand {
         player_name: String::new(),
@@ -7693,7 +7827,7 @@ fn state_checksum_changes_after_mutation() {
     let before = sim.state_checksum();
 
     // Spawn an elf to mutate state.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let spawn_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
     let cmd = SimCommand {
         player_name: String::new(),
@@ -8334,7 +8468,7 @@ fn first_non_cultivable_species(sim: &SimState) -> Option<FruitSpeciesId> {
 #[test]
 fn furnish_greenhouse_sets_species_and_creates_task() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
     let structure_id = insert_completed_building(&mut sim, anchor);
 
@@ -8371,7 +8505,7 @@ fn furnish_greenhouse_sets_species_and_creates_task() {
 #[test]
 fn furnish_greenhouse_rejects_non_cultivable_species() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
     let structure_id = insert_completed_building(&mut sim, anchor);
 
@@ -8400,7 +8534,7 @@ fn furnish_greenhouse_rejects_non_cultivable_species() {
 #[test]
 fn furnish_greenhouse_rejects_missing_species() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
     let structure_id = insert_completed_building(&mut sim, anchor);
 
@@ -8426,7 +8560,7 @@ fn furnish_greenhouse_rejects_missing_species() {
 #[test]
 fn furnish_greenhouse_rejects_unknown_species() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
     let structure_id = insert_completed_building(&mut sim, anchor);
 
@@ -8452,7 +8586,7 @@ fn furnish_greenhouse_rejects_unknown_species() {
 #[test]
 fn greenhouse_produces_fruit_after_interval() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
     let structure_id = insert_completed_building(&mut sim, anchor);
 
@@ -8506,7 +8640,7 @@ fn greenhouse_produces_fruit_after_interval() {
 #[test]
 fn greenhouse_display_name() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
     let structure_id = insert_completed_building(&mut sim, anchor);
 
@@ -8534,7 +8668,7 @@ fn greenhouse_display_name() {
 #[test]
 fn greenhouse_serde_roundtrip() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
     let structure_id = insert_completed_building(&mut sim, anchor);
 
@@ -8596,7 +8730,7 @@ fn insert_completed_home(sim: &mut SimState, anchor: VoxelCoord) -> StructureId 
 #[test]
 fn assign_home_sets_bidirectional_refs() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
     let home_id = insert_completed_home(&mut sim, anchor);
 
@@ -8647,7 +8781,7 @@ fn assign_home_sets_bidirectional_refs() {
 #[test]
 fn assign_home_unassign() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
     let home_id = insert_completed_home(&mut sim, anchor);
 
@@ -8709,7 +8843,7 @@ fn assign_home_unassign() {
 #[test]
 fn assign_home_replaces_old_assignment() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor_a = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
     let anchor_b = VoxelCoord::new(tree_pos.x + 10, 0, tree_pos.z + 5);
     let home_a = insert_completed_home(&mut sim, anchor_a);
@@ -8785,7 +8919,7 @@ fn assign_home_replaces_old_assignment() {
 #[test]
 fn assign_home_evicts_previous_occupant() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
     let home_id = insert_completed_home(&mut sim, anchor);
 
@@ -8873,7 +9007,7 @@ fn assign_home_evicts_previous_occupant() {
 #[test]
 fn assign_home_rejects_non_home() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
     let structure_id = insert_completed_building(&mut sim, anchor);
 
@@ -8926,7 +9060,7 @@ fn assign_home_rejects_non_home() {
 #[test]
 fn assign_home_rejects_non_elf() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
     let home_id = insert_completed_home(&mut sim, anchor);
 
@@ -8973,7 +9107,7 @@ fn assign_home_rejects_non_elf() {
 #[test]
 fn tired_elf_sleeps_in_assigned_home() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
@@ -9054,7 +9188,7 @@ fn tired_elf_without_home_uses_dormitory() {
     // This is largely the same as existing tests, but verifies the new
     // code path doesn't break dormitory fallback.
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
@@ -9121,7 +9255,7 @@ fn tired_elf_without_home_uses_dormitory() {
 #[test]
 fn assigned_home_unfurnished_falls_back() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
@@ -9437,7 +9571,7 @@ fn ground_sleep_generates_thought() {
     elf_species.food_decay_per_tick = 0; // No hunger interference.
     elf_species.rest_decay_per_tick = 0; // Manual control of rest.
     let mut sim = SimState::with_config(42, config);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
@@ -9502,12 +9636,15 @@ fn ground_sleep_generates_thought() {
 fn eating_generates_thought() {
     // Integration test: elf eats fruit → has AteMeal thought.
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let food_max = sim.species_table[&Species::Elf].food_max;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
     assert!(
-        sim.trees.values().any(|t| !t.fruit_positions.is_empty()),
+        sim.db
+            .trees
+            .iter_all()
+            .any(|t| !t.fruit_positions.is_empty()),
         "Tree must have fruit for this test"
     );
 
@@ -9596,7 +9733,7 @@ fn dormitory_sleep_generates_thought() {
     elf_species.food_decay_per_tick = 0;
     elf_species.rest_decay_per_tick = 0;
     let mut sim = SimState::with_config(42, config);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
 
     // Add a dormitory with beds near the tree.
@@ -9749,7 +9886,7 @@ fn home_sleep_generates_thought() {
     elf_species.food_decay_per_tick = 0;
     elf_species.rest_decay_per_tick = 0;
     let mut sim = SimState::with_config(42, config);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
 
     // Add a home with a bed near the tree.
@@ -9869,7 +10006,7 @@ fn low_ceiling_generates_thought() {
     elf_species.food_decay_per_tick = 0;
     elf_species.rest_decay_per_tick = 0;
     let mut sim = SimState::with_config(42, config);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
 
     // Add a dormitory with height=1 (low ceiling).
@@ -10163,7 +10300,7 @@ fn logistics_heartbeat_creates_haul_tasks() {
     let mut sim = test_sim(42);
 
     // Place a ground pile with bread.
-    let pile_pos = sim.trees[&sim.player_tree_id].position;
+    let pile_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     {
         let pile_id = sim.ensure_ground_pile(pile_pos);
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
@@ -10230,7 +10367,7 @@ fn logistics_respects_priority() {
     let mut sim = test_sim(42);
 
     // Place bread on the ground.
-    let pile_pos = sim.trees[&sim.player_tree_id].position;
+    let pile_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     {
         let pile_id = sim.ensure_ground_pile(pile_pos);
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
@@ -10302,7 +10439,7 @@ fn logistics_skips_reserved_items() {
     let mut sim = test_sim(42);
 
     // Place bread on the ground, some already reserved.
-    let pile_pos = sim.trees[&sim.player_tree_id].position;
+    let pile_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let task_id = TaskId::new(&mut sim.rng);
     {
         let pile_id = sim.ensure_ground_pile(pile_pos);
@@ -10357,7 +10494,7 @@ fn logistics_counts_in_transit() {
     let mut sim = test_sim(42);
 
     // Place 10 bread on ground.
-    let pile_pos = sim.trees[&sim.player_tree_id].position;
+    let pile_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     {
         let pile_id = sim.ensure_ground_pile(pile_pos);
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
@@ -10424,7 +10561,7 @@ fn logistics_counts_in_transit() {
 fn logistics_pulls_from_lower_priority_building() {
     let mut sim = test_sim(42);
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Building A (priority 3) has bread.
     let anchor_a = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
@@ -10477,7 +10614,7 @@ fn logistics_pulls_from_lower_priority_building() {
 fn logistics_surplus_source_from_higher_priority_building() {
     let mut sim = test_sim(42);
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Kitchen (priority 8) has 10 bread, wants 0 bread → 10 surplus.
     let anchor_k = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
@@ -10539,7 +10676,7 @@ fn logistics_caps_tasks_per_heartbeat() {
     // Override max tasks to 2.
     sim.config.max_haul_tasks_per_heartbeat = 2;
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     {
         let pile_id = sim.ensure_ground_pile(tree_pos);
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
@@ -10586,7 +10723,7 @@ fn harvest_task_creates_ground_pile() {
     let mut sim = test_sim(42);
 
     // Find a fruit voxel on the tree.
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     assert!(
         !tree.fruit_positions.is_empty(),
         "Tree should have fruit for this test"
@@ -10636,7 +10773,7 @@ fn harvest_task_creates_ground_pile() {
     );
 
     // Assert: fruit removed from tree's fruit_positions.
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     assert!(
         !tree.fruit_positions.contains(&fruit_pos),
         "Fruit should be removed from tree"
@@ -10673,7 +10810,7 @@ fn logistics_heartbeat_creates_harvest_tasks() {
     let mut sim = test_sim(42);
 
     // Verify the tree has fruit voxels.
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     let fruit_count = tree.fruit_positions.len();
     assert!(fruit_count > 0, "Tree should have fruit for this test");
 
@@ -10681,7 +10818,7 @@ fn logistics_heartbeat_creates_harvest_tasks() {
     assert_eq!(sim.db.ground_piles.len(), 0);
 
     // Create a building that wants fruit (kitchen with logistics).
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let site = VoxelCoord::new(tree_pos.x + 3, 0, tree_pos.z);
     let kitchen_priority = sim.config.kitchen_default_priority;
     let sid = insert_building(
@@ -10735,7 +10872,7 @@ fn logistics_heartbeat_creates_harvest_tasks() {
 fn haul_source_empty_cancels() {
     let mut sim = test_sim(42);
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
     let sid = insert_building(&mut sim, anchor, Some(5), Vec::new());
 
@@ -11051,7 +11188,7 @@ fn acquire_item_picks_up_and_owns() {
     let mut sim = test_sim(42);
 
     // Create a ground pile with unowned bread.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
     {
         let pile_id = sim.ensure_ground_pile(pile_pos);
@@ -11179,7 +11316,7 @@ fn idle_elf_below_want_target_acquires_item() {
     assert_eq!(sim.inv_wants(sim.creature_inv(elf_id)).len(), 1);
 
     // Create unowned bread in a ground pile near the elf.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
     {
         let pile_id = sim.ensure_ground_pile(pile_pos);
@@ -11235,7 +11372,7 @@ fn acquire_item_reserves_prevent_double_claim() {
     }];
 
     // Create exactly 2 unowned bread.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
     {
         let pile_id = sim.ensure_ground_pile(pile_pos);
@@ -11294,7 +11431,7 @@ fn mope_test_setup(
     elf_species.food_decay_per_tick = 0;
     elf_species.rest_decay_per_tick = 0;
     let mut sim = SimState::with_config(99, config);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -11579,7 +11716,7 @@ fn mope_does_not_interrupt_autonomous_sleep() {
     elf_species.rest_decay_per_tick = 0;
     elf_species.rest_per_sleep_tick = 1; // Tiny restore so rest_full won't trigger.
     let mut sim = SimState::with_config(99, config);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -11766,7 +11903,7 @@ fn mope_task_location_is_home_when_assigned() {
     elf_species.food_decay_per_tick = 0;
     elf_species.rest_decay_per_tick = 0;
     let mut sim = SimState::with_config(99, config);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Create a home.
     let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
@@ -11871,7 +12008,7 @@ fn elf_at_want_target_does_not_acquire() {
     );
 
     // Add unowned bread to world.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
     {
         let pile_id = sim.ensure_ground_pile(pile_pos);
@@ -14498,7 +14635,7 @@ fn pickup_action_transitions_haul_phase() {
     elf_species.food_decay_per_tick = 0;
     elf_species.rest_decay_per_tick = 0;
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Place bread on the ground.
     let pile_pos = tree_pos;
@@ -14643,7 +14780,7 @@ fn sleep_adaptive_completion_rest_full_exits_early() {
     config.sleep_action_ticks = 1000;
     config.sleep_ticks_ground = 1_000_000; // Very long sleep by progress.
     let mut sim = SimState::with_config(42, config);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
 
     // Spawn elf (step to tick 1 only, before first activation).
@@ -14793,7 +14930,7 @@ fn mope_interrupts_build_action() {
     let mut sim = SimState::with_config(99, config);
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let cmd_spawn = SimCommand {
         player_name: String::new(),
         tick: 1,
@@ -14921,7 +15058,7 @@ fn eat_action_ticks_controls_timing() {
     elf_species.food_decay_per_tick = 0;
     elf_species.rest_decay_per_tick = 0;
     let mut sim = SimState::with_config(42, config);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn elf.
     let mut events = Vec::new();
@@ -15000,7 +15137,7 @@ fn carve_uses_separate_duration_from_build() {
 
     // Find a non-forest-floor solid voxel to carve (e.g., a trunk voxel
     // that isn't on the ground).
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     let carve_coord = tree
         .trunk_voxels
         .iter()
@@ -15061,7 +15198,7 @@ fn config_backward_compat_action_ticks_defaults() {
 #[test]
 fn abort_no_action_is_harmless() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn elf but only step to tick 1 (before first activation).
     let cmd = SimCommand {
@@ -15127,7 +15264,7 @@ fn action_kind_serde_roundtrip_all_variants() {
 #[test]
 fn abort_build_action_clears_state_only() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn elf but only step to tick 1 (before first activation).
     let cmd = SimCommand {
@@ -15172,7 +15309,7 @@ fn abort_build_action_clears_state_only() {
 #[test]
 fn spawned_elf_gets_player_civ_id() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -15199,7 +15336,7 @@ fn spawned_elf_gets_player_civ_id() {
 #[test]
 fn spawned_non_elf_has_no_civ_id() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -15522,7 +15659,7 @@ fn spawn_second_elf(sim: &mut SimState) -> CreatureId {
         .filter(|c| c.species == Species::Elf)
         .map(|c| c.id)
         .collect();
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let cmd = SimCommand {
         player_name: String::new(),
         tick: sim.tick + 1,
@@ -15883,7 +16020,7 @@ fn blueprint_overlay_maps_carve_to_air() {
     let mut sim = test_sim(42);
 
     // Find a solid carvable voxel from the tree's trunk.
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     let carve_coord = *tree
         .trunk_voxels
         .iter()
@@ -15966,7 +16103,7 @@ fn adjacent_platform_sees_blueprint_support() {
     // Search across trunk voxels and all 4 horizontal directions for a
     // strip of air that eventually leaves all solid face neighbors behind.
     let directions: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     let mut best: Option<(Vec<VoxelCoord>, usize)> = None; // (strip, split_index)
     'outer: for &trunk_coord in &tree.trunk_voxels {
         for &(dx, dz) in &directions {
@@ -16040,7 +16177,7 @@ fn overlapping_carve_designations_rejected() {
     // the overlay maps them to Air (nothing to carve).
     let mut sim = test_sim(42);
 
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     let carve_coord = *tree
         .trunk_voxels
         .iter()
@@ -16789,10 +16926,12 @@ fn damage_incapacitates_at_zero_hp() {
     let creature = sim.db.creatures.get(&elf_id).unwrap();
     assert_eq!(creature.vital_status, VitalStatus::Incapacitated);
     assert_eq!(creature.hp, 0);
-    assert!(result.events.iter().any(|e| matches!(
-        &e.kind,
-        SimEventKind::CreatureIncapacitated { .. }
-    )));
+    assert!(
+        result
+            .events
+            .iter()
+            .any(|e| matches!(&e.kind, SimEventKind::CreatureIncapacitated { .. }))
+    );
 }
 
 #[test]
@@ -17334,7 +17473,7 @@ fn death_clears_assigned_home() {
     let elf_id = spawn_elf(&mut sim);
 
     // Build a home and assign the elf.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
     let structure_id = insert_completed_home(&mut sim, anchor);
     let tick = sim.tick;
@@ -17802,7 +17941,7 @@ fn spawn_species(sim: &mut SimState, species: Species) -> CreatureId {
         .filter(|c| c.species == species)
         .map(|c| c.id)
         .collect();
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let cmd = SimCommand {
         player_name: String::new(),
         tick: sim.tick + 1,
@@ -21346,7 +21485,7 @@ fn test_attack_move_creates_task() {
     let elf = spawn_elf(&mut sim);
     force_idle(&mut sim, elf);
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let dest = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
 
     let tick = sim.tick;
@@ -21551,7 +21690,7 @@ fn test_attack_move_preempts_lower_priority() {
     let goto_task_id = insert_goto_task(&mut sim, far_node);
     sim.claim_task(elf, goto_task_id);
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let dest = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
 
     let tick = sim.tick;
@@ -21585,7 +21724,7 @@ fn test_attack_move_flee_exempt() {
     let mut sim = test_sim(42);
     let mut events = Vec::new();
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
         .spawn_creature(Species::Elf, tree_pos, &mut events)
         .expect("should spawn elf");
@@ -21652,7 +21791,7 @@ fn directed_goto_creates_task_for_specific_creature() {
     force_idle(&mut sim, elf);
 
     // Pick a target position.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let target_pos = VoxelCoord::new(tree_pos.x + 3, 1, tree_pos.z);
 
     let tick = sim.tick;
@@ -21699,7 +21838,7 @@ fn directed_goto_replaces_player_directed_task() {
     sim.insert_task(task);
     sim.claim_task(elf, task_id);
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let target_pos = VoxelCoord::new(tree_pos.x + 2, 1, tree_pos.z);
 
     let tick = sim.tick;
@@ -21748,7 +21887,7 @@ fn directed_goto_preempts_autonomous_task() {
     sim.insert_task(task);
     sim.claim_task(elf, task_id);
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let target_pos = VoxelCoord::new(tree_pos.x + 2, 1, tree_pos.z);
 
     let tick = sim.tick;
@@ -21784,7 +21923,7 @@ fn directed_goto_does_not_abort_mid_walk_action() {
     force_idle_and_cancel_activations(&mut sim, elf);
 
     // Issue a first DirectedGoTo to start the elf walking.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let target_a = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
     let tick = sim.tick;
     let cmd_a = SimCommand {
@@ -21875,7 +22014,7 @@ fn directed_goto_mid_action_command_does_not_schedule_extra_activation() {
     let elf = spawn_elf(&mut sim);
     force_idle_and_cancel_activations(&mut sim, elf);
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let target_a = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
 
     // Issue first DirectedGoTo and advance until mid-walk.
@@ -21954,7 +22093,7 @@ fn group_goto_spreads_creatures_to_different_nodes() {
     force_idle_and_cancel_activations(&mut sim, elf_b);
     force_idle_and_cancel_activations(&mut sim, elf_c);
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let dest = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
 
     let tick = sim.tick;
@@ -21995,7 +22134,7 @@ fn group_goto_single_creature_delegates_to_normal() {
     let elf = spawn_elf(&mut sim);
     force_idle_and_cancel_activations(&mut sim, elf);
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let dest = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
 
     let tick = sim.tick;
@@ -22025,7 +22164,7 @@ fn group_attack_move_spreads_creatures() {
     force_idle_and_cancel_activations(&mut sim, elf_a);
     force_idle_and_cancel_activations(&mut sim, elf_b);
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let dest = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
 
     let tick = sim.tick;
@@ -22066,7 +22205,7 @@ fn group_attack_move_spreads_creatures() {
 fn group_goto_empty_list_is_noop() {
     let mut sim = test_sim(42);
     let tick = sim.tick;
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let dest = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
 
     // Should not panic or create any tasks.
@@ -22105,7 +22244,7 @@ fn group_goto_skips_dead_creatures() {
         tick + 2,
     );
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let dest = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
 
     let tick2 = sim.tick;
@@ -22176,7 +22315,7 @@ fn abort_current_action_cancels_orphaned_activation_events() {
     force_idle_and_cancel_activations(&mut sim, elf);
 
     // Issue a DirectedGoTo and advance until the elf is mid-walk.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let target = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
     let tick = sim.tick;
     let cmd = SimCommand {
@@ -22746,7 +22885,7 @@ fn logistics_heartbeat_specific_filter_hauls_correct_species() {
     let species_b = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(2));
 
     // Place a ground pile with mixed fruit.
-    let pile_pos = sim.trees[&sim.player_tree_id].position;
+    let pile_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     {
         let pile_id = sim.ensure_ground_pile(pile_pos);
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
@@ -23144,7 +23283,7 @@ fn in_transit_counting_uses_hauled_material() {
     let species_b = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(2));
 
     // Place ground piles with species A and B.
-    let pile_pos = sim.trees[&sim.player_tree_id].position;
+    let pile_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     {
         let pile_id = sim.ensure_ground_pile(pile_pos);
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
@@ -23249,7 +23388,7 @@ fn haul_preserves_material_through_pickup_and_dropoff() {
     let species_a = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(1));
 
     // Place a ground pile with fruit that has a species material.
-    let pile_pos = sim.trees[&sim.player_tree_id].position;
+    let pile_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_id = sim.ensure_ground_pile(pile_pos);
     let pile = sim.db.ground_piles.get(&pile_id).unwrap();
     sim.inv_add_item(
@@ -23319,7 +23458,7 @@ fn haul_preserves_material_through_pickup_and_dropoff() {
 #[test]
 fn find_available_task_prefers_nearest_by_nav_distance() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn an elf near the tree.
     let cmd = SimCommand {
@@ -23410,7 +23549,7 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
 #[test]
 fn find_available_task_single_candidate_skips_dijkstra() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -23465,7 +23604,7 @@ fn find_available_task_single_candidate_skips_dijkstra() {
 #[test]
 fn find_available_task_respects_species_filter_with_proximity() {
     let mut sim = test_sim(42);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn a capybara (non-elf).
     let cmd = SimCommand {
@@ -23648,7 +23787,7 @@ fn creature_reassignment_to_group_and_back() {
     let mut events = Vec::new();
 
     // Spawn an elf.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
         .spawn_creature(Species::Elf, tree_pos, &mut events)
         .expect("should spawn elf");
@@ -23695,7 +23834,7 @@ fn reassign_between_non_civilian_groups() {
     let mut sim = test_sim(42);
     let mut events = Vec::new();
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
         .spawn_creature(Species::Elf, tree_pos, &mut events)
         .expect("should spawn elf");
@@ -23756,7 +23895,7 @@ fn should_flee_with_fight_group() {
     let mut sim = test_sim(42);
     let mut events = Vec::new();
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
         .spawn_creature(Species::Elf, tree_pos, &mut events)
         .expect("should spawn elf");
@@ -23782,7 +23921,7 @@ fn should_flee_with_flee_group() {
     let mut sim = test_sim(42);
     let mut events = Vec::new();
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
         .spawn_creature(Species::Elf, tree_pos, &mut events)
         .expect("should spawn elf");
@@ -23805,7 +23944,7 @@ fn should_flee_player_combat_override() {
     let mut sim = test_sim(42);
     let mut events = Vec::new();
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
         .spawn_creature(Species::Elf, tree_pos, &mut events)
         .expect("should spawn elf");
@@ -23841,7 +23980,7 @@ fn delete_military_group_nullifies_members() {
     let mut sim = test_sim(42);
     let mut events = Vec::new();
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
         .spawn_creature(Species::Elf, tree_pos, &mut events)
         .expect("should spawn elf");
@@ -23940,7 +24079,7 @@ fn dead_creature_not_counted_in_member_count() {
     let mut sim = test_sim(42);
     let mut events = Vec::new();
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_a = sim
         .spawn_creature(Species::Elf, tree_pos, &mut events)
         .expect("spawn elf a");
@@ -24004,7 +24143,7 @@ fn cross_civ_reassignment_rejected() {
         .expect("AI civ should have a non-civilian group");
 
     // Spawn an elf (player civ).
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
         .spawn_creature(Species::Elf, tree_pos, &mut events)
         .expect("spawn elf");
@@ -24032,7 +24171,7 @@ fn non_civ_creature_reassignment_rejected() {
     let mut sim = test_sim(42);
     let mut events = Vec::new();
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let goblin_id = sim
         .spawn_creature(Species::Goblin, tree_pos, &mut events)
         .expect("spawn goblin");
@@ -24250,7 +24389,7 @@ fn aggressive_group_civ_creature_auto_engages() {
     let mut sim = test_sim(42);
     let mut events = Vec::new();
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
         .spawn_creature(Species::Elf, tree_pos, &mut events)
         .expect("spawn elf");
@@ -24273,7 +24412,7 @@ fn resolve_engagement_style_implicit_civilian() {
     let mut sim = test_sim(42);
     let mut events = Vec::new();
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
         .spawn_creature(Species::Elf, tree_pos, &mut events)
         .expect("spawn elf");
@@ -24291,7 +24430,7 @@ fn resolve_engagement_style_non_civ_creature() {
     let mut sim = test_sim(42);
     let mut events = Vec::new();
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let goblin_id = sim
         .spawn_creature(Species::Goblin, tree_pos, &mut events)
         .expect("spawn goblin");
@@ -24463,7 +24602,7 @@ fn player_combat_task_overrides_flee() {
     // if its engagement style says to.
     let mut sim = test_sim(42);
     let mut events = Vec::new();
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
         .spawn_creature(Species::Elf, tree_pos, &mut events)
         .expect("spawn elf");
@@ -24761,7 +24900,7 @@ fn non_civ_defensive_creature_not_targeted_by_civ() {
         .hostile_detection_range_sq = 225;
 
     let mut events = Vec::new();
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
         .spawn_creature(Species::Elf, tree_pos, &mut events)
         .expect("spawn elf");
@@ -24797,7 +24936,7 @@ fn is_non_hostile_symmetry() {
     // Verify is_non_hostile(a, b) == is_non_hostile(b, a) for all relevant pairs.
     let mut sim = test_sim(42);
     let mut events = Vec::new();
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let elf_id = sim
         .spawn_creature(Species::Elf, tree_pos, &mut events)
@@ -24898,7 +25037,7 @@ fn group_style_change_affects_should_flee() {
     };
     let mut sim = test_sim(42);
     let mut events = Vec::new();
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let elf_id = sim
         .spawn_creature(Species::Elf, tree_pos, &mut events)
@@ -24952,7 +25091,7 @@ fn aggressive_soldier_interrupts_low_priority_task_to_fight() {
     sim.config.elf_starting_arrows = 0;
     let mut events = Vec::new();
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
         .spawn_creature(Species::Elf, tree_pos, &mut events)
         .expect("spawn elf");
@@ -25037,7 +25176,7 @@ fn creature_does_not_freeze_after_combat_preempts_task() {
     sim.config.elf_starting_arrows = 0;
     let mut events = Vec::new();
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
         .spawn_creature(Species::Elf, tree_pos, &mut events)
         .expect("spawn elf");
@@ -25114,7 +25253,7 @@ fn defensive_elf_fights_instead_of_claiming_non_preemptable_task() {
     sim.config.elf_starting_arrows = 0;
     let mut events = Vec::new();
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
         .spawn_creature(Species::Elf, tree_pos, &mut events)
         .expect("spawn elf");
@@ -25226,7 +25365,7 @@ fn aggressive_soldier_shoots_repeatedly_over_time() {
     sim.config.elf_starting_arrows = 0;
     let mut events = Vec::new();
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
         .spawn_creature(Species::Elf, tree_pos, &mut events)
         .expect("spawn elf");
@@ -25287,7 +25426,7 @@ fn civilian_elf_flees_instead_of_fighting() {
     sim.config.elf_starting_arrows = 0;
     let mut events = Vec::new();
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
         .spawn_creature(Species::Elf, tree_pos, &mut events)
         .expect("spawn elf");
@@ -25349,7 +25488,7 @@ fn defensive_elf_shoots_at_target_beyond_pursuit_range() {
     sim.config.elf_starting_arrows = 0;
     let mut events = Vec::new();
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
         .spawn_creature(Species::Elf, tree_pos, &mut events)
         .expect("spawn elf");
@@ -25435,7 +25574,7 @@ fn defensive_elf_with_flee_ammo_shoots_troll_at_10_voxels() {
     sim.config.elf_starting_arrows = 0;
     let mut events = Vec::new();
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
         .spawn_creature(Species::Elf, tree_pos, &mut events)
         .expect("spawn elf");
@@ -25544,7 +25683,7 @@ fn defensive_elf_does_not_freeze_after_shooting_once() {
     sim.config.elf_starting_arrows = 0;
     let mut events = Vec::new();
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
         .spawn_creature(Species::Elf, tree_pos, &mut events)
         .expect("spawn elf");
@@ -25629,7 +25768,7 @@ fn defensive_elf_with_task_interrupts_to_shoot_troll_at_10_voxels() {
     sim.config.elf_starting_arrows = 0;
     let mut events = Vec::new();
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
         .spawn_creature(Species::Elf, tree_pos, &mut events)
         .expect("spawn elf");
@@ -25739,7 +25878,7 @@ fn debug_spawn_troll_via_command_elf_detects_and_shoots() {
     sim.config.elf_starting_arrows = 0;
     let mut events = Vec::new();
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
         .spawn_creature(Species::Elf, tree_pos, &mut events)
         .expect("spawn elf");
@@ -25886,7 +26025,7 @@ fn troll_pursues_elf_cross_graph_pathfinding() {
     // the large graph.
     let mut sim = test_sim(42);
     let mut events = Vec::new();
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn troll near the tree.
     let troll_id = sim
@@ -26897,7 +27036,7 @@ fn greenhouse_fruit_haul_to_extraction_kitchen() {
 /// Find two air voxels adjacent to trunk that form a valid 2-voxel strut
 /// line (face-adjacent pair, at least one endpoint adjacent to trunk).
 fn find_strut_endpoints(sim: &SimState) -> (VoxelCoord, VoxelCoord) {
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     for &trunk_coord in &tree.trunk_voxels {
         // Try +X direction: two air voxels extending from trunk.
         let a = VoxelCoord::new(trunk_coord.x + 1, trunk_coord.y, trunk_coord.z);
@@ -27037,7 +27176,7 @@ fn strut_rejects_player_built_structure() {
 #[test]
 fn strut_replaces_trunk_records_originals() {
     let mut sim = test_sim(42);
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     // Find a trunk voxel with air on both sides (+X).
     let mut found = None;
     for &trunk_coord in &tree.trunk_voxels {
@@ -27247,7 +27386,7 @@ fn strut_serde_roundtrip() {
 #[test]
 fn strut_replaces_replaceable_types() {
     let mut sim = test_sim(42);
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
 
     // Find a trunk voxel at y > 1 to place air→trunk→air line.
     let trunk_coord = tree
@@ -27341,7 +27480,7 @@ fn strut_cancel_restores_original_voxels() {
     // original_voxels. Manually materializing the strut voxel and
     // cancelling should restore the original trunk type.
     let mut sim = test_sim(42);
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
 
     // Find a trunk voxel with air on both sides.
     let trunk_coord = tree
@@ -27764,7 +27903,7 @@ fn inv_equip_rejects_non_clothing() {
 fn acquire_item_auto_equips_one_from_multi_qty() {
     let mut sim = test_sim(42);
     let elf_id = spawn_elf(&mut sim);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
 
     // Create a ground pile with 3 Hats.
@@ -27934,7 +28073,7 @@ fn acquire_item_preserves_material() {
     // preserves material and quality (bug fix verification).
     let mut sim = test_sim(42);
     let elf_id = spawn_elf(&mut sim);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
 
     // Create a ground pile with material-bearing Cloth.
@@ -28025,7 +28164,7 @@ fn acquire_item_preserves_material() {
 fn acquire_item_auto_equips_clothing() {
     let mut sim = test_sim(42);
     let elf_id = spawn_elf(&mut sim);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
 
     // Create a ground pile with a Tunic.
@@ -28096,7 +28235,7 @@ fn acquire_item_auto_equips_clothing() {
 fn acquire_item_does_not_equip_if_slot_occupied() {
     let mut sim = test_sim(42);
     let elf_id = spawn_elf(&mut sim);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
 
     // Pre-equip a Tunic in the elf's inventory.
@@ -28818,7 +28957,7 @@ fn elf_does_not_acquire_wood_boots_as_clothing() {
     let elf_id = spawn_elf(&mut sim);
 
     // Place wood boots on the ground near the tree.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x + 1, 1, tree_pos.z);
     let pile_id = sim.ensure_ground_pile(pile_pos);
     let pile_inv = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
@@ -28860,7 +28999,7 @@ fn elf_acquires_non_wood_boots_as_clothing() {
     let elf_id = spawn_elf(&mut sim);
 
     // Place fruit-material boots on the ground.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x + 1, 1, tree_pos.z);
     let pile_id = sim.ensure_ground_pile(pile_pos);
     let pile_inv = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
@@ -29294,7 +29433,7 @@ fn directed_goto_on_wandering_creature_does_not_schedule_extra_activation() {
     );
 
     // Issue a DirectedGoTo while mid-wander-move.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let target = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
     let tick = sim.tick;
     sim.step(
@@ -29343,7 +29482,7 @@ fn directed_goto_on_wandering_creature_preserves_move_action() {
     let move_to_before = move_action_before.move_to;
 
     // Issue DirectedGoTo.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let target = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
     let tick = sim.tick;
     sim.step(
@@ -29402,7 +29541,7 @@ fn directed_goto_spam_does_not_accumulate_activations() {
     force_idle_and_cancel_activations(&mut sim, elf);
 
     // Start the elf walking via first DirectedGoTo.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let target_a = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
     let tick = sim.tick;
     sim.step(
@@ -29494,7 +29633,7 @@ fn attack_move_on_wandering_creature_does_not_schedule_extra_activation() {
     assert!(c.current_task.is_none());
     assert_eq!(sim.count_pending_activations_for(elf), 1);
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let target = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
     let tick = sim.tick;
     sim.step(
@@ -31908,7 +32047,7 @@ fn soldier_acquires_military_equipment_no_ownership_change() {
     }
 
     // Create a ground pile with an unowned bow.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
     {
         let pile_id = sim.ensure_ground_pile(pile_pos);
@@ -32409,7 +32548,7 @@ fn heartbeat_military_equip_creates_task_for_missing_bow() {
     }
 
     // Create a ground pile with a bow.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
     {
         let pile_id = sim.ensure_ground_pile(pile_pos);
@@ -32597,7 +32736,7 @@ fn check_military_equipment_wants_overwrites_task_on_non_idle_elf() {
     }
 
     // Create a ground pile with a bow.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
     {
         let pile_id = sim.ensure_ground_pile(pile_pos);
@@ -32642,7 +32781,7 @@ fn military_equip_phase_runs_before_personal_wants() {
     }
 
     // Create piles with both a bow and bread (for personal wants).
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
     {
         let pile_id = sim.ensure_ground_pile(pile_pos);
@@ -32696,7 +32835,7 @@ fn cleanup_acquire_military_equipment_clears_reservations() {
     }
 
     // Create a ground pile with a bow.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
     let pile_inv;
     {
@@ -33736,7 +33875,7 @@ fn military_equipment_auto_equips_wearable_on_pickup() {
     }
 
     // Place a helmet on the ground.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
     {
         let pile_id = sim.ensure_ground_pile(pile_pos);
@@ -33827,7 +33966,7 @@ fn military_equipment_auto_equip_displaces_existing_clothing() {
     }
 
     // Place a helmet on the ground.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
     {
         let pile_id = sim.ensure_ground_pile(pile_pos);
@@ -33952,7 +34091,7 @@ fn military_equipment_non_wearable_not_equipped() {
     }
 
     // Place a bow on the ground.
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
     {
         let pile_id = sim.ensure_ground_pile(pile_pos);
@@ -34156,7 +34295,7 @@ fn player_persists_across_serde_roundtrip() {
 #[test]
 fn tree_owner_is_civ_id() {
     let sim = test_sim(42);
-    let tree = &sim.trees[&sim.player_tree_id];
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     assert_eq!(tree.owner, sim.player_civ_id);
 }
 
@@ -34792,24 +34931,26 @@ fn elf_mana_overflow_goes_to_tree() {
     assert_eq!(sim.db.creatures.get(&elf_id).unwrap().mp, elf_mp_max);
 
     // Set tree mana to 0 so we can measure what gets added.
-    sim.trees.get_mut(&tree_id).unwrap().mana_stored = 0;
+    let _ = sim.db.great_tree_infos.modify_unchecked(&tree_id, |info| {
+        info.mana_stored = 0;
+    });
 
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
     sim.step(&[], sim.tick + heartbeat + 1);
 
-    let tree = &sim.trees[&tree_id];
+    let info = sim.db.great_tree_infos.get(&tree_id).unwrap();
     assert!(
-        tree.mana_stored > 0,
+        info.mana_stored > 0,
         "tree should have gained mana from elf overflow: {}",
-        tree.mana_stored
+        info.mana_stored
     );
     // Should gain exactly mana_base_generation_rate_mm (1000 millimana) per
     // heartbeat when fully overflowing.
     let expected = sim.config.mana_base_generation_rate_mm;
     assert_eq!(
-        tree.mana_stored, expected,
+        info.mana_stored, expected,
         "expected {expected} millimana, got {}",
-        tree.mana_stored
+        info.mana_stored
     );
 }
 
@@ -34820,15 +34961,17 @@ fn tree_mana_capped_at_capacity() {
     let tree_id = sim.player_tree_id;
 
     // Fill tree to capacity.
-    let cap = sim.trees[&tree_id].mana_capacity;
-    sim.trees.get_mut(&tree_id).unwrap().mana_stored = cap;
+    let cap = sim.db.great_tree_infos.get(&tree_id).unwrap().mana_capacity;
+    let _ = sim.db.great_tree_infos.modify_unchecked(&tree_id, |info| {
+        info.mana_stored = cap;
+    });
 
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
     sim.step(&[], sim.tick + heartbeat + 1);
 
-    let tree = &sim.trees[&tree_id];
+    let info = sim.db.great_tree_infos.get(&tree_id).unwrap();
     assert_eq!(
-        tree.mana_stored, cap,
+        info.mana_stored, cap,
         "tree mana should not exceed capacity"
     );
 }
@@ -34845,14 +34988,16 @@ fn wild_creature_mana_overflow_is_lost() {
     let _ = sim.db.creatures.update_no_fk(elf);
 
     // Set tree mana to 0.
-    sim.trees.get_mut(&tree_id).unwrap().mana_stored = 0;
+    let _ = sim.db.great_tree_infos.modify_unchecked(&tree_id, |info| {
+        info.mana_stored = 0;
+    });
 
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
     sim.step(&[], sim.tick + heartbeat + 1);
 
-    let tree = &sim.trees[&tree_id];
+    let info = sim.db.great_tree_infos.get(&tree_id).unwrap();
     assert_eq!(
-        tree.mana_stored, 0,
+        info.mana_stored, 0,
         "wild elf overflow should not reach the tree"
     );
 }
@@ -35287,20 +35432,22 @@ fn multiple_elves_overflow_to_same_tree() {
 
     // Zero tree mana, then advance two full heartbeat intervals to ensure
     // both elves get at least one heartbeat from this baseline.
-    sim.trees.get_mut(&tree_id).unwrap().mana_stored = 0;
+    let _ = sim.db.great_tree_infos.modify_unchecked(&tree_id, |info| {
+        info.mana_stored = 0;
+    });
 
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
     sim.step(&[], sim.tick + heartbeat * 2 + 1);
 
-    let tree = &sim.trees[&tree_id];
+    let info = sim.db.great_tree_infos.get(&tree_id).unwrap();
     // Two elves at full mp, each contributing base_generation_rate_mm per
     // heartbeat. Over 2 intervals, each elf contributes ~2×, total ~4×.
     // We just check that we got contributions from both (> 1×).
     let single_heartbeat = sim.config.mana_base_generation_rate_mm;
     assert!(
-        tree.mana_stored > single_heartbeat,
+        info.mana_stored > single_heartbeat,
         "tree should receive overflow from multiple elves: got {}",
-        tree.mana_stored
+        info.mana_stored
     );
 }
 
@@ -35600,7 +35747,7 @@ fn spawn_creature_with_civ_sets_civ_id() {
     let hostile_civ = ensure_hostile_civ(&mut sim);
     let mut events = Vec::new();
 
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let creature_id = sim
         .spawn_creature_with_civ(Species::Goblin, tree_pos, Some(hostile_civ), &mut events)
         .expect("should spawn goblin");
@@ -38099,7 +38246,7 @@ fn voxel_type_is_flyable() {
 fn hornet_spawn_in_solid_returns_none() {
     let mut sim = test_sim(42);
     // Find a trunk voxel (guaranteed to exist — the tree is there).
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     assert!(!sim.world.get(tree_pos).is_flyable());
     let mut events = Vec::new();
     assert!(
@@ -39008,7 +39155,10 @@ fn further_damage_on_incapacitated_pushes_hp_negative() {
 
     let elf_c = sim.db.creatures.get(&elf).unwrap();
     assert_eq!(elf_c.hp, -goblin_damage);
-    assert!(elf_c.hp > -hp_max, "elf should still be incapacitated, not dead yet");
+    assert!(
+        elf_c.hp > -hp_max,
+        "elf should still be incapacitated, not dead yet"
+    );
     assert_eq!(elf_c.vital_status, VitalStatus::Incapacitated);
 }
 
@@ -39107,10 +39257,9 @@ fn incapacitated_creature_does_not_seek_food() {
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf);
 
-    let food_threshold =
-        sim.species_table[&Species::Elf].food_max
-            * sim.species_table[&Species::Elf].food_hunger_threshold_pct
-            / 100;
+    let food_threshold = sim.species_table[&Species::Elf].food_max
+        * sim.species_table[&Species::Elf].food_hunger_threshold_pct
+        / 100;
     if let Some(mut c) = sim.db.creatures.get(&elf) {
         c.hp = -5;
         c.vital_status = VitalStatus::Incapacitated;
@@ -39517,7 +39666,7 @@ fn starvation_still_kills_directly() {
         .unwrap()
         .food_decay_per_tick = 1_000_000_000_000_000;
     let mut sim = SimState::with_config(42, config);
-    let tree_pos = sim.trees[&sim.player_tree_id].position;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -39763,7 +39912,8 @@ fn non_regen_creature_does_not_recover() {
     zero_creature_stats(&mut sim, elf);
 
     assert_eq!(
-        sim.species_table[&Species::Elf].ticks_per_hp_regen, 0,
+        sim.species_table[&Species::Elf].ticks_per_hp_regen,
+        0,
         "Elves should not have HP regen"
     );
 
@@ -39821,7 +39971,8 @@ fn troll_regen_recovery_clamped_to_hp_max() {
     assert_eq!(troll.vital_status, VitalStatus::Alive);
     assert_eq!(
         troll.hp, hp_max,
-        "HP should be clamped to hp_max, not {}", troll.hp
+        "HP should be clamped to hp_max, not {}",
+        troll.hp
     );
 }
 
@@ -39836,8 +39987,14 @@ fn attack_target_continues_through_incapacitation_to_death() {
     zero_creature_stats(&mut sim, elf);
 
     // Disable food/rest so the goblin doesn't wander off to eat.
-    sim.species_table.get_mut(&Species::Goblin).unwrap().food_decay_per_tick = 0;
-    sim.species_table.get_mut(&Species::Goblin).unwrap().rest_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Goblin)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Goblin)
+        .unwrap()
+        .rest_decay_per_tick = 0;
 
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);

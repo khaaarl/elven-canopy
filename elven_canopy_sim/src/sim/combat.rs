@@ -1024,7 +1024,10 @@ impl SimState {
         let msg = if creature_name.is_empty() {
             format!("A {} has been incapacitated.", species_str)
         } else {
-            format!("{} ({}) has been incapacitated.", creature_name, species_str)
+            format!(
+                "{} ({}) has been incapacitated.",
+                creature_name, species_str
+            )
         };
         let _ = self
             .db

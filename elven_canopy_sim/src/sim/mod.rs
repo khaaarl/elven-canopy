@@ -1,7 +1,7 @@
 // Core simulation state and tick loop.
 //
 // `SimState` is the single source of truth for the entire game world. Entity
-// data (creatures, tasks, blueprints, structures, ground piles) lives in
+// data (creatures, tasks, blueprints, structures, ground piles, trees) lives in
 // `SimState.db` (a tabulosity `SimDb`). The sim also owns the voxel world,
 // the nav graph, the event queue, the PRNG, and the game config.
 // The sim is a pure function:
@@ -320,10 +320,7 @@ pub struct SimState {
     #[serde(default)]
     pub db: SimDb,
 
-    /// All tree entities, keyed by ID. BTreeMap for deterministic iteration.
-    pub trees: BTreeMap<TreeId, Tree>,
-
-    // creatures field removed — now in self.db.creatures
+    // trees field removed — now in self.db.trees / self.db.great_tree_infos
     /// Voxels placed by construction (persisted for save/load).
     /// Each entry is `(coord, voxel_type)`. On world rebuild, these are
     /// placed after tree voxels to restore construction progress.
@@ -433,37 +430,6 @@ pub struct SimState {
     /// floating blue swirl sprites.
     #[serde(skip)]
     pub mana_wasted_positions: Vec<VoxelCoord>,
-}
-
-/// A tree entity — the primary world structure.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Tree {
-    pub id: TreeId,
-    pub position: VoxelCoord,
-    pub health: i64,
-    pub growth_level: u32,
-    /// Tree-scale mana in millimana (1000 = 1.0 display mana).
-    pub mana_stored: i64,
-    /// Maximum tree mana in millimana.
-    pub mana_capacity: i64,
-    /// Fruit spawn chance per heartbeat, in parts per million (500_000 = 50%).
-    pub fruit_production_rate_ppm: u32,
-    pub carrying_capacity: i64,
-    pub current_load: i64,
-    pub owner: Option<CivId>,
-    pub trunk_voxels: Vec<VoxelCoord>,
-    pub branch_voxels: Vec<VoxelCoord>,
-    /// Leaf voxel positions (blobs at branch terminals).
-    pub leaf_voxels: Vec<VoxelCoord>,
-    /// Root voxel positions (at or below ground level).
-    pub root_voxels: Vec<VoxelCoord>,
-    /// Positions of fruit hanging below leaf voxels.
-    pub fruit_positions: Vec<VoxelCoord>,
-    /// The fruit species this tree produces. Assigned during worldgen from the
-    /// world's procedurally generated fruit species roster. `None` for
-    /// pre-fruit-variety saves (defaults to first species if available).
-    #[serde(default)]
-    pub fruit_species_id: Option<crate::fruit::FruitSpeciesId>,
 }
 
 /// A creature's current path through the nav graph.
@@ -601,6 +567,22 @@ impl SimState {
         }
     }
 
+    /// Remove a fruit position from whichever tree owns it.
+    pub(crate) fn remove_fruit_from_trees(&mut self, fruit_pos: VoxelCoord) {
+        // Find the tree containing this fruit position and remove it.
+        let tree_id = self
+            .db
+            .trees
+            .iter_all()
+            .find(|t| t.fruit_positions.contains(&fruit_pos))
+            .map(|t| t.id);
+        if let Some(tree_id) = tree_id {
+            let _ = self.db.trees.modify_unchecked(&tree_id, |t| {
+                t.fruit_positions.retain(|&p| p != fruit_pos);
+            });
+        }
+    }
+
     /// Create a new simulation with the given seed and config.
     ///
     /// Delegates world creation to `worldgen::run_worldgen()`, which runs
@@ -623,13 +605,7 @@ impl SimState {
 
         let wg = worldgen::run_worldgen(seed, &config, log);
 
-        let player_tree_id = wg.home_tree.id;
-
-        let mut trees = BTreeMap::new();
-        trees.insert(player_tree_id, wg.home_tree);
-        for lesser in wg.lesser_trees {
-            trees.insert(lesser.id, lesser);
-        }
+        let player_tree_id = wg.player_tree_id;
 
         // Build species table from config.
         let species_table = config.species.clone();
@@ -640,7 +616,6 @@ impl SimState {
             config,
             event_queue: EventQueue::new(),
             db: wg.db,
-            trees,
             placed_voxels: Vec::new(),
             carved_voxels: Vec::new(),
             face_data_list: Vec::new(),
@@ -1251,11 +1226,20 @@ impl SimState {
                         let clamped_overflow = mana_overflow.min(mana_gen);
                         let tree_gain =
                             clamped_overflow * self.config.mana_base_generation_rate_mm / mana_gen;
-                        if let Some(tree) =
-                            self.trees.values_mut().find(|t| t.owner == Some(civ_id))
+                        // Find the tree owned by this civ and add mana to its
+                        // GreatTreeInfo row.
+                        if let Some(tree) = self
+                            .db
+                            .trees
+                            .by_owner(&Some(civ_id), tabulosity::QueryOpts::ASC)
+                            .into_iter()
+                            .next()
                         {
-                            tree.mana_stored =
-                                (tree.mana_stored + tree_gain).min(tree.mana_capacity);
+                            let tree_id = tree.id;
+                            let _ = self.db.great_tree_infos.modify_unchecked(&tree_id, |info| {
+                                info.mana_stored =
+                                    (info.mana_stored + tree_gain).min(info.mana_capacity);
+                            });
                         }
                     }
 
@@ -1439,7 +1423,7 @@ impl SimState {
                 self.process_creature_activation(creature_id, events);
             }
             ScheduledEventKind::TreeHeartbeat { tree_id } => {
-                if self.trees.contains_key(&tree_id) {
+                if self.db.trees.contains(&tree_id) {
                     // Fruit production.
                     self.attempt_fruit_spawn(tree_id);
 

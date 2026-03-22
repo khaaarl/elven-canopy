@@ -604,9 +604,9 @@ impl SimBridge {
     #[func]
     fn home_tree_mana(&self) -> f64 {
         self.session.sim.as_ref().map_or(0.0, |s| {
-            s.trees
+            s.db.great_tree_infos
                 .get(&s.player_tree_id)
-                .map_or(0.0, |t| t.mana_stored as f64 / 1000.0)
+                .map_or(0.0, |info| info.mana_stored as f64 / 1000.0)
         })
     }
 
@@ -717,7 +717,7 @@ impl SimBridge {
         let Some(sim) = &self.session.sim else {
             return PackedInt32Array::new();
         };
-        let tree = match sim.trees.get(&sim.player_tree_id) {
+        let tree = match sim.db.trees.get(&sim.player_tree_id) {
             Some(t) => t,
             None => return PackedInt32Array::new(),
         };
@@ -819,22 +819,32 @@ impl SimBridge {
         let Some(sim) = &self.session.sim else {
             return VarDictionary::new();
         };
-        let Some(tree) = sim.trees.get(&sim.player_tree_id) else {
+        let Some(tree) = sim.db.trees.get(&sim.player_tree_id) else {
             return VarDictionary::new();
         };
+        let info = sim.db.great_tree_infos.get(&sim.player_tree_id);
 
         let mut dict = VarDictionary::new();
         dict.set("health", tree.health as i32);
         dict.set("growth_level", tree.growth_level as i32);
-        dict.set("mana_stored", tree.mana_stored as f64 / 1000.0);
-        dict.set("mana_capacity", tree.mana_capacity as f64 / 1000.0);
+        dict.set(
+            "mana_stored",
+            info.map_or(0.0, |i| i.mana_stored as f64 / 1000.0),
+        );
+        dict.set(
+            "mana_capacity",
+            info.map_or(0.0, |i| i.mana_capacity as f64 / 1000.0),
+        );
         dict.set("fruit_count", tree.fruit_positions.len() as i32);
         dict.set(
             "fruit_production_rate",
-            tree.fruit_production_rate_ppm as f64 / 1_000_000.0,
+            info.map_or(0.0, |i| i.fruit_production_rate_ppm as f64 / 1_000_000.0),
         );
-        dict.set("carrying_capacity", tree.carrying_capacity as i32);
-        dict.set("current_load", tree.current_load as i32);
+        dict.set(
+            "carrying_capacity",
+            info.map_or(0, |i| i.carrying_capacity as i32),
+        );
+        dict.set("current_load", info.map_or(0, |i| i.current_load as i32));
 
         let trunk = tree.trunk_voxels.len() as i32;
         let branch = tree.branch_voxels.len() as i32;
@@ -893,7 +903,7 @@ impl SimBridge {
     #[func]
     fn fruit_count(&self) -> i32 {
         self.session.sim.as_ref().map_or(0, |s| {
-            s.trees
+            s.db.trees
                 .get(&s.player_tree_id)
                 .map_or(0, |t| t.fruit_positions.len() as i32)
         })

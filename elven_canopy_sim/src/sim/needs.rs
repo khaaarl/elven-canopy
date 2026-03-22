@@ -37,7 +37,7 @@ impl SimState {
         // Map each fruit position to its nearest nav node, keeping the association.
         let mut nav_to_fruit: Vec<(NavNodeId, VoxelCoord)> = Vec::new();
         let mut target_nodes: Vec<NavNodeId> = Vec::new();
-        for tree in self.trees.values() {
+        for tree in self.db.trees.iter_all() {
             for &fruit_pos in &tree.fruit_positions {
                 if let Some(nav_node) = graph.find_nearest_node(fruit_pos) {
                     target_nodes.push(nav_node);
@@ -98,9 +98,7 @@ impl SimState {
         self.fruit_voxel_species.remove(&fruit_pos);
         self.fruit_voxel_species_list
             .retain(|(pos, _)| *pos != fruit_pos);
-        for tree in self.trees.values_mut() {
-            tree.fruit_positions.retain(|&p| p != fruit_pos);
-        }
+        self.remove_fruit_from_trees(fruit_pos);
 
         // Generate AteMeal thought.
         self.add_creature_thought(creature_id, ThoughtKind::AteMeal);
@@ -129,9 +127,7 @@ impl SimState {
 
             // Remove fruit from world and tree's fruit_positions list.
             self.world.set(fruit_pos, VoxelType::Air);
-            for tree in self.trees.values_mut() {
-                tree.fruit_positions.retain(|&p| p != fruit_pos);
-            }
+            self.remove_fruit_from_trees(fruit_pos);
 
             // Create ground pile at creature's position with species material.
             if let Some(creature) = self.db.creatures.get(&creature_id) {

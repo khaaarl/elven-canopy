@@ -77,7 +77,7 @@ impl SimState {
     /// This is the single code path for all fruit spawning — both the initial
     /// fast-forward during `with_config()` and the periodic `TreeHeartbeat`.
     pub(crate) fn attempt_fruit_spawn(&mut self, tree_id: TreeId) -> bool {
-        let tree = match self.trees.get(&tree_id) {
+        let tree = match self.db.trees.get(&tree_id) {
             Some(t) => t,
             None => return false,
         };
@@ -119,9 +119,11 @@ impl SimState {
 
         // Place the fruit and record its species.
         self.world.set(fruit_pos, VoxelType::Fruit);
-        let tree = self.trees.get_mut(&tree_id).unwrap();
-        tree.fruit_positions.push(fruit_pos);
-        if let Some(species_id) = tree.fruit_species_id {
+        let species_id = tree.fruit_species_id;
+        let _ = self.db.trees.modify_unchecked(&tree_id, |t| {
+            t.fruit_positions.push(fruit_pos);
+        });
+        if let Some(species_id) = species_id {
             self.fruit_voxel_species.insert(fruit_pos, species_id);
             self.fruit_voxel_species_list.push((fruit_pos, species_id));
         }

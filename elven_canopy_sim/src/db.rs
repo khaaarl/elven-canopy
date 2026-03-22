@@ -6,16 +6,17 @@
 //
 // ## Table layout
 //
-// The database has 36 tables organized in four tiers:
+// The database has 38 tables organized in four tiers:
 //
 // **Player tables:** `players` — human operators identified by username string.
 // One entry per connected human player; persisted in save files.
 // `selection_groups` — SC2-style numbered selection groups (Ctrl+1–9) per
 // player, storing creature and structure IDs for instant recall.
 //
-// **Entity tables:** `creatures`, `tasks`, `blueprints`, `structures`,
+// **Entity tables:** `trees`, `creatures`, `tasks`, `blueprints`, `structures`,
 // `projectiles` — the primary simulation entities, keyed by UUID-based or
-// sequential IDs.
+// sequential IDs. `great_tree_infos` is a 1:1 child of `trees` storing
+// mana economy and carrying capacity for the player's great tree.
 // `Creature` includes `hp`/`hp_max` (hit points) and `vital_status`
 // (`Alive`/`Incapacitated`/`Dead`, `#[indexed]` for efficient filtering).
 // Dead creatures remain in the DB; all live-creature queries filter by
@@ -65,12 +66,12 @@ use crate::task::{HaulPhase, TaskOrigin, TaskState};
 use crate::types::{
     ActiveRecipeId, ActiveRecipeTargetId, BuildType, CivId, CivOpinion, CivRelationshipId,
     CivSpecies, CompositionId, CreatureId, CreatureTraitId, CultureTag, EnchantmentEffectId,
-    EnchantmentId, FurnishingType, FurnitureId, GroundPileId, InventoryId, ItemStackId,
-    ItemSubcomponentId, LogisticsWantId, MilitaryGroupId, NotificationId, ProjectId, ProjectileId,
-    SelectionGroupId, Species, StructureId, StrutId, TaskAcquireDataId, TaskAttackMoveDataId,
-    TaskAttackTargetDataId, TaskBlueprintRefId, TaskCraftDataId, TaskHaulDataId, TaskId,
-    TaskSleepDataId, TaskStructureRefId, TaskVoxelRefId, ThoughtId, ThoughtKind, TraitKind,
-    TraitValue, VitalStatus, VoxelCoord,
+    EnchantmentId, FruitSpeciesId, FurnishingType, FurnitureId, GroundPileId, InventoryId,
+    ItemStackId, ItemSubcomponentId, LogisticsWantId, MilitaryGroupId, NotificationId, ProjectId,
+    ProjectileId, SelectionGroupId, Species, StructureId, StrutId, TaskAcquireDataId,
+    TaskAttackMoveDataId, TaskAttackTargetDataId, TaskBlueprintRefId, TaskCraftDataId,
+    TaskHaulDataId, TaskId, TaskSleepDataId, TaskStructureRefId, TaskVoxelRefId, ThoughtId,
+    ThoughtKind, TraitKind, TraitValue, TreeId, VitalStatus, VoxelCoord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -250,6 +251,62 @@ pub enum InventoryOwnerKind {
 // ---------------------------------------------------------------------------
 // Row types
 // ---------------------------------------------------------------------------
+
+/// A tree entity — the primary world structure.
+///
+/// Stores both the player's great tree and lesser decorative trees. Great-tree-
+/// specific data (mana, carrying capacity) lives in the `GreatTreeInfo` child
+/// table, linked by a parent-PK FK (1:1). Fruit fields (`fruit_positions`,
+/// `fruit_species_id`) are on this table because any tree may bear fruit.
+///
+/// See also: `GreatTreeInfo` (child table), `worldgen.rs` (tree construction),
+/// `greenhouse.rs` (fruit spawning), `sim/mod.rs` (mana overflow).
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct Tree {
+    #[primary_key]
+    pub id: TreeId,
+    pub position: VoxelCoord,
+    pub health: i64,
+    pub growth_level: u32,
+    /// Civilization that owns this tree (`None` for wild/lesser trees).
+    #[indexed]
+    pub owner: Option<CivId>,
+    pub trunk_voxels: Vec<VoxelCoord>,
+    pub branch_voxels: Vec<VoxelCoord>,
+    /// Leaf voxel positions (blobs at branch terminals).
+    pub leaf_voxels: Vec<VoxelCoord>,
+    /// Root voxel positions (at or below ground level).
+    pub root_voxels: Vec<VoxelCoord>,
+    /// Positions of fruit hanging below leaf voxels.
+    pub fruit_positions: Vec<VoxelCoord>,
+    /// The fruit species this tree produces. `None` if the tree doesn't bear
+    /// fruit (or for pre-fruit-variety saves).
+    #[serde(default)]
+    #[indexed]
+    pub fruit_species_id: Option<FruitSpeciesId>,
+}
+
+/// Great-tree-specific data — mana economy and carrying capacity.
+///
+/// 1:1 child of `Tree` via parent-PK FK: the primary key is the `TreeId` of
+/// the parent `Tree` row. Only the player's home tree (and potentially future
+/// sentient trees) get a `GreatTreeInfo` row.
+///
+/// See also: `Tree` (parent table), `sim/mod.rs` (mana overflow),
+/// `sim_bridge.rs` (exposing mana/capacity to Godot).
+#[derive(Table, Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct GreatTreeInfo {
+    #[primary_key]
+    pub id: TreeId,
+    /// Tree-scale mana in millimana (1000 = 1.0 display mana).
+    pub mana_stored: i64,
+    /// Maximum tree mana in millimana.
+    pub mana_capacity: i64,
+    /// Fruit spawn chance per heartbeat, in parts per million (500_000 = 50%).
+    pub fruit_production_rate_ppm: u32,
+    pub carrying_capacity: i64,
+    pub current_load: i64,
+}
 
 /// A creature entity — an autonomous agent (elf, capybara, etc.).
 ///
@@ -1241,6 +1298,8 @@ impl std::fmt::Debug for SimDb {
             .field("civilizations", &self.civilizations.len())
             .field("selection_groups", &self.selection_groups.len())
             .field("fruit_species", &self.fruit_species.len())
+            .field("trees", &self.trees.len())
+            .field("great_tree_infos", &self.great_tree_infos.len())
             .field("military_groups", &self.military_groups.len())
             .field("civ_relationships", &self.civ_relationships.len())
             .field("creatures", &self.creatures.len())
@@ -1273,6 +1332,15 @@ pub struct SimDb {
 
     #[table(singular = "fruit_species")]
     pub fruit_species: FruitSpeciesTable,
+
+    #[table(singular = "tree",
+            fks(owner? = "civilizations" on_delete nullify,
+                fruit_species_id? = "fruit_species"))]
+    pub trees: TreeTable,
+
+    #[table(singular = "great_tree_info",
+            fks(id = "trees" pk))]
+    pub great_tree_infos: GreatTreeInfoTable,
 
     #[table(singular = "military_group",
             auto,

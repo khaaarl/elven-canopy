@@ -87,7 +87,7 @@ fn two_player_lifecycle() {
     assert_eq!(host_sim.tick, joiner_sim.tick);
     assert_eq!(host_sim.player_tree_id, joiner_sim.player_tree_id);
     assert_eq!(host_sim.db.creatures.len(), joiner_sim.db.creatures.len());
-    assert_eq!(host_sim.trees.len(), joiner_sim.trees.len());
+    assert_eq!(host_sim.db.trees.len(), joiner_sim.db.trees.len());
 
     // Verify full state match via JSON serialization.
     let host_json = host_sim.to_json().unwrap();
@@ -111,7 +111,12 @@ fn command_round_trip() {
 
     // Find a valid spawn position: use the home tree's position at ground level.
     let host_sim = host.sim.as_ref().unwrap();
-    let tree_pos = host_sim.trees[&host_sim.player_tree_id].position;
+    let tree_pos = host_sim
+        .db
+        .trees
+        .get(&host_sim.player_tree_id)
+        .unwrap()
+        .position;
     let spawn_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
 
     // Host sends SpawnCreature.
@@ -150,7 +155,12 @@ fn bidirectional_commands() {
     start_game(&mut host, &mut joiner);
 
     let host_sim = host.sim.as_ref().unwrap();
-    let tree_pos = host_sim.trees[&host_sim.player_tree_id].position;
+    let tree_pos = host_sim
+        .db
+        .trees
+        .get(&host_sim.player_tree_id)
+        .unwrap()
+        .position;
     let spawn_pos_1 = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
     let spawn_pos_2 = VoxelCoord::new(tree_pos.x + 1, 1, tree_pos.z);
 
@@ -204,7 +214,12 @@ fn multi_turn_determinism() {
     start_game(&mut host, &mut joiner);
 
     let host_sim = host.sim.as_ref().unwrap();
-    let tree_pos = host_sim.trees[&host_sim.player_tree_id].position;
+    let tree_pos = host_sim
+        .db
+        .trees
+        .get(&host_sim.player_tree_id)
+        .unwrap()
+        .position;
     let spawn_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
 
     // Turn 1: spawn an elf.
@@ -422,7 +437,12 @@ fn mid_game_join_snapshot() {
 
     // Host spawns an elf so there's visible state to verify in the snapshot.
     let host_sim = host.sim.as_ref().unwrap();
-    let tree_pos = host_sim.trees[&host_sim.player_tree_id].position;
+    let tree_pos = host_sim
+        .db
+        .trees
+        .get(&host_sim.player_tree_id)
+        .unwrap()
+        .position;
     let spawn_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
 
     host.send_action(&SimAction::SpawnCreature {
@@ -489,7 +509,12 @@ fn mid_game_join_then_commands() {
     start_game(&mut host, &mut joiner);
 
     let host_sim = host.sim.as_ref().unwrap();
-    let tree_pos = host_sim.trees[&host_sim.player_tree_id].position;
+    let tree_pos = host_sim
+        .db
+        .trees
+        .get(&host_sim.player_tree_id)
+        .unwrap()
+        .position;
     let spawn_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
 
     // Spawn an elf before mid-join.
@@ -592,7 +617,12 @@ fn mid_game_join_checksum() {
 
     // Spawn an elf so there's some state.
     let host_sim = host.sim.as_ref().unwrap();
-    let tree_pos = host_sim.trees[&host_sim.player_tree_id].position;
+    let tree_pos = host_sim
+        .db
+        .trees
+        .get(&host_sim.player_tree_id)
+        .unwrap()
+        .position;
     let spawn_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
 
     host.send_action(&SimAction::SpawnCreature {
@@ -647,7 +677,12 @@ fn disconnect_mid_game() {
 
     // Spawn an elf so there's some state.
     let host_sim = host.sim.as_ref().unwrap();
-    let tree_pos = host_sim.trees[&host_sim.player_tree_id].position;
+    let tree_pos = host_sim
+        .db
+        .trees
+        .get(&host_sim.player_tree_id)
+        .unwrap()
+        .position;
     let spawn_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
 
     host.send_action(&SimAction::SpawnCreature {
