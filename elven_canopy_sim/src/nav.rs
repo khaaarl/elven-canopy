@@ -1230,9 +1230,7 @@ fn derive_edge_type(
         (Trunk, Branch) | (Branch, Trunk) | (Trunk, Leaf) | (Leaf, Trunk) => EdgeType::TrunkClimb,
         _ => {
             // GrownWall → climb-like; everything else → walk-like.
-            if matches!(from_surface, GrownWall)
-                || matches!(to_surface, GrownWall)
-            {
+            if matches!(from_surface, GrownWall) || matches!(to_surface, GrownWall) {
                 EdgeType::TrunkClimb
             } else {
                 EdgeType::BranchWalk
