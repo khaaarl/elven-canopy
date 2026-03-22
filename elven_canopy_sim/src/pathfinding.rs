@@ -287,7 +287,7 @@ pub fn astar_filtered(
 /// target in `targets` is popped from the priority queue.
 ///
 /// `allowed_edges`: if `Some`, only edges of the listed types are traversed
-/// (e.g. capybaras restricted to `ForestFloor`). If `None`, all edges allowed.
+/// (e.g. capybaras restricted to `Ground`). If `None`, all edges allowed.
 ///
 /// Returns `None` if no target is reachable.
 #[allow(clippy::too_many_arguments)]
@@ -446,8 +446,8 @@ mod tests {
 
     use crate::nav::DIST_SCALE;
 
-    /// Shorthand: all test nodes use ForestFloor surface type.
-    const S: VoxelType = VoxelType::ForestFloor;
+    /// Shorthand: all test nodes use Dirt surface type.
+    const S: VoxelType = VoxelType::Dirt;
 
     /// Helper: distance in scaled units for test edges.
     const fn dist(voxels: u32) -> u32 {
@@ -474,8 +474,8 @@ mod tests {
         let b = graph.add_node(VoxelCoord::new(5, 0, 0), S);
         let c = graph.add_node(VoxelCoord::new(10, 0, 0), S);
         // Edges store scaled integer distance.
-        graph.add_edge(a, b, EdgeType::ForestFloor, dist(5));
-        graph.add_edge(b, c, EdgeType::ForestFloor, dist(5));
+        graph.add_edge(a, b, EdgeType::Ground, dist(5));
+        graph.add_edge(b, c, EdgeType::Ground, dist(5));
 
         // walk_tpv=1 → cost = distance_scaled * 1.
         let result = astar(&graph, a, c, 1, Some(2), None, None);
@@ -493,10 +493,10 @@ mod tests {
         let b = graph.add_node(VoxelCoord::new(5, 0, 0), S);
         let c = graph.add_node(VoxelCoord::new(10, 0, 0), S);
         // Direct long-distance edge a->c.
-        graph.add_edge(a, c, EdgeType::ForestFloor, dist(20));
+        graph.add_edge(a, c, EdgeType::Ground, dist(20));
         // Shorter via b.
-        graph.add_edge(a, b, EdgeType::ForestFloor, dist(3));
-        graph.add_edge(b, c, EdgeType::ForestFloor, dist(3));
+        graph.add_edge(a, b, EdgeType::Ground, dist(3));
+        graph.add_edge(b, c, EdgeType::Ground, dist(3));
 
         let result = astar(&graph, a, c, 1, Some(2), None, None).unwrap();
         assert_eq!(result.nodes, vec![a, b, c]);
@@ -519,21 +519,12 @@ mod tests {
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
         let b = graph.add_node(VoxelCoord::new(5, 0, 0), S);
         let c = graph.add_node(VoxelCoord::new(10, 0, 0), S);
-        // a->b via ForestFloor, b->c via TrunkClimb.
-        graph.add_edge(a, b, EdgeType::ForestFloor, dist(5));
+        // a->b via Ground, b->c via TrunkClimb.
+        graph.add_edge(a, b, EdgeType::Ground, dist(5));
         graph.add_edge(b, c, EdgeType::TrunkClimb, dist(5));
 
-        // Only allow ForestFloor — path a->c should fail (can't cross TrunkClimb).
-        let result = astar_filtered(
-            &graph,
-            a,
-            c,
-            1,
-            Some(2),
-            None,
-            None,
-            &[EdgeType::ForestFloor],
-        );
+        // Only allow Ground — path a->c should fail (can't cross TrunkClimb).
+        let result = astar_filtered(&graph, a, c, 1, Some(2), None, None, &[EdgeType::Ground]);
         assert!(result.is_none());
 
         // Allow both — should succeed.
@@ -545,7 +536,7 @@ mod tests {
             Some(2),
             None,
             None,
-            &[EdgeType::ForestFloor, EdgeType::TrunkClimb],
+            &[EdgeType::Ground, EdgeType::TrunkClimb],
         );
         assert!(result.is_some());
         assert_eq!(result.unwrap().nodes, vec![a, b, c]);
@@ -555,16 +546,7 @@ mod tests {
     fn astar_filtered_same_start_and_goal() {
         let mut graph = NavGraph::new();
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
-        let result = astar_filtered(
-            &graph,
-            a,
-            a,
-            1,
-            Some(2),
-            None,
-            None,
-            &[EdgeType::ForestFloor],
-        );
+        let result = astar_filtered(&graph, a, a, 1, Some(2), None, None, &[EdgeType::Ground]);
         assert!(result.is_some());
         assert_eq!(result.unwrap().total_cost, 0);
     }
@@ -576,8 +558,8 @@ mod tests {
         let b = graph.add_node(VoxelCoord::new(3, 0, 0), S);
         let c = graph.add_node(VoxelCoord::new(6, 0, 0), S);
         let d = graph.add_node(VoxelCoord::new(3, 3, 0), S);
-        graph.add_edge(a, b, EdgeType::ForestFloor, dist(3));
-        graph.add_edge(b, c, EdgeType::ForestFloor, dist(3));
+        graph.add_edge(a, b, EdgeType::Ground, dist(3));
+        graph.add_edge(b, c, EdgeType::Ground, dist(3));
         graph.add_edge(a, d, EdgeType::TrunkClimb, dist(4));
         graph.add_edge(d, c, EdgeType::TrunkClimb, dist(4));
 
@@ -612,8 +594,8 @@ mod tests {
         let b = graph.add_node(VoxelCoord::new(3, 0, 0), S);
         let c = graph.add_node(VoxelCoord::new(10, 0, 0), S);
         // a->b short, a->c long (but c is spatially further).
-        graph.add_edge(a, b, EdgeType::ForestFloor, dist(3));
-        graph.add_edge(b, c, EdgeType::ForestFloor, dist(7));
+        graph.add_edge(a, b, EdgeType::Ground, dist(3));
+        graph.add_edge(b, c, EdgeType::Ground, dist(7));
 
         // Both b and c are targets — b should win (closer by travel cost).
         let result = dijkstra_nearest(&graph, a, &[b, c], 1, Some(1), None, None, None);
@@ -626,11 +608,11 @@ mod tests {
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
         let b = graph.add_node(VoxelCoord::new(3, 0, 0), S);
         let c = graph.add_node(VoxelCoord::new(6, 0, 0), S);
-        // a->b via ForestFloor (short), b->c via TrunkClimb.
-        graph.add_edge(a, b, EdgeType::ForestFloor, dist(3));
+        // a->b via Ground (short), b->c via TrunkClimb.
+        graph.add_edge(a, b, EdgeType::Ground, dist(3));
         graph.add_edge(b, c, EdgeType::TrunkClimb, dist(3));
 
-        // Only ForestFloor allowed — c is unreachable.
+        // Only Ground allowed — c is unreachable.
         let result = dijkstra_nearest(
             &graph,
             a,
@@ -639,11 +621,11 @@ mod tests {
             Some(1),
             None,
             None,
-            Some(&[EdgeType::ForestFloor]),
+            Some(&[EdgeType::Ground]),
         );
         assert_eq!(result, None);
 
-        // b is reachable via ForestFloor.
+        // b is reachable via Ground.
         let result = dijkstra_nearest(
             &graph,
             a,
@@ -652,7 +634,7 @@ mod tests {
             Some(1),
             None,
             None,
-            Some(&[EdgeType::ForestFloor]),
+            Some(&[EdgeType::Ground]),
         );
         assert_eq!(result, Some(b));
     }
@@ -663,9 +645,9 @@ mod tests {
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
         let b = graph.add_node(VoxelCoord::new(5, 0, 0), S);
         let c = graph.add_node(VoxelCoord::new(0, 5, 0), S);
-        // a->b: short distance via ForestFloor (walk speed).
+        // a->b: short distance via Ground (walk speed).
         // a->c: short distance via TrunkClimb (climb speed — slower).
-        graph.add_edge(a, b, EdgeType::ForestFloor, dist(5));
+        graph.add_edge(a, b, EdgeType::Ground, dist(5));
         graph.add_edge(a, c, EdgeType::TrunkClimb, dist(5));
 
         // walk_tpv=500, climb_tpv=1250.
@@ -720,10 +702,10 @@ mod tests {
         let g1_c = g1.add_node(pos_c, S);
         let g1_d = g1.add_node(pos_d, S);
         // Diamond: A-B, A-C, B-D, C-D — all cost dist(1).
-        g1.add_edge(g1_a, g1_b, EdgeType::ForestFloor, dist(1));
-        g1.add_edge(g1_a, g1_c, EdgeType::ForestFloor, dist(1));
-        g1.add_edge(g1_b, g1_d, EdgeType::ForestFloor, dist(1));
-        g1.add_edge(g1_c, g1_d, EdgeType::ForestFloor, dist(1));
+        g1.add_edge(g1_a, g1_b, EdgeType::Ground, dist(1));
+        g1.add_edge(g1_a, g1_c, EdgeType::Ground, dist(1));
+        g1.add_edge(g1_b, g1_d, EdgeType::Ground, dist(1));
+        g1.add_edge(g1_c, g1_d, EdgeType::Ground, dist(1));
 
         // Graph 2: add nodes in reversed order D, C, B, A.
         let mut g2 = NavGraph::new();
@@ -732,10 +714,10 @@ mod tests {
         let g2_b = g2.add_node(pos_b, S);
         let g2_a = g2.add_node(pos_a, S);
         // Same diamond edges.
-        g2.add_edge(g2_a, g2_b, EdgeType::ForestFloor, dist(1));
-        g2.add_edge(g2_a, g2_c, EdgeType::ForestFloor, dist(1));
-        g2.add_edge(g2_b, g2_d, EdgeType::ForestFloor, dist(1));
-        g2.add_edge(g2_c, g2_d, EdgeType::ForestFloor, dist(1));
+        g2.add_edge(g2_a, g2_b, EdgeType::Ground, dist(1));
+        g2.add_edge(g2_a, g2_c, EdgeType::Ground, dist(1));
+        g2.add_edge(g2_b, g2_d, EdgeType::Ground, dist(1));
+        g2.add_edge(g2_c, g2_d, EdgeType::Ground, dist(1));
 
         // NavNodeIds differ: in g1, A=0,B=1,C=2,D=3; in g2, A=3,B=2,C=1,D=0.
         assert_ne!(g1_a, g2_a, "IDs should differ between graphs");

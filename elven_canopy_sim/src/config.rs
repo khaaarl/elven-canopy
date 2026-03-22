@@ -149,14 +149,6 @@ impl Default for StructuralConfig {
             },
         );
         materials.insert(
-            VoxelType::ForestFloor,
-            MaterialProperties {
-                density: 999.0,
-                stiffness: 999.0,
-                strength: 999.0,
-            },
-        );
-        materials.insert(
             VoxelType::Dirt,
             MaterialProperties {
                 density: 999.0,
@@ -1924,11 +1916,6 @@ pub struct GameConfig {
     /// World dimensions in voxels (x, y, z).
     pub world_size: (u32, u32, u32),
 
-    /// Half-extent of the forest floor around the world center.
-    /// The floor covers `(center - floor_extent)` to `(center + floor_extent)`
-    /// in both X and Z at `floor_y`.
-    pub floor_extent: i32,
-
     /// Y level of the forest floor. Tree trunk starts at `floor_y + 1`,
     /// creatures walk at `floor_y + 1`. Voxels below this are available
     /// for future underground content.
@@ -2014,7 +2001,7 @@ pub struct GameConfig {
     /// restrictions, spawn rules). Keyed by `Species` enum.
     pub species: BTreeMap<Species, SpeciesData>,
 
-    /// Maximum height of dirt terrain above ForestFloor (1–4 voxels in
+    /// Maximum height of dirt terrain above the base floor_y level (1–4 voxels in
     /// practice). Set to 0 to disable terrain generation (backward compat
     /// for old saves — `#[serde(default)]` produces 0).
     #[serde(default)]
@@ -2503,7 +2490,7 @@ impl Default for GameConfig {
                 climb_ticks_per_voxel: None,
                 flight_ticks_per_voxel: None,
                 heartbeat_interval_ticks: 4000,
-                allowed_edge_types: Some(vec![EdgeType::ForestFloor]),
+                allowed_edge_types: Some(vec![EdgeType::Ground]),
                 ground_only: true,
                 hp_max: 60,
                 ticks_per_hp_regen: 0,
@@ -2546,7 +2533,7 @@ impl Default for GameConfig {
                 climb_ticks_per_voxel: None,
                 flight_ticks_per_voxel: None,
                 heartbeat_interval_ticks: 4000,
-                allowed_edge_types: Some(vec![EdgeType::ForestFloor]),
+                allowed_edge_types: Some(vec![EdgeType::Ground]),
                 ground_only: true,
                 hp_max: 80,
                 ticks_per_hp_regen: 0,
@@ -2589,7 +2576,7 @@ impl Default for GameConfig {
                 climb_ticks_per_voxel: None,
                 flight_ticks_per_voxel: None,
                 heartbeat_interval_ticks: 3500,
-                allowed_edge_types: Some(vec![EdgeType::ForestFloor]),
+                allowed_edge_types: Some(vec![EdgeType::Ground]),
                 ground_only: true,
                 hp_max: 50,
                 ticks_per_hp_regen: 0,
@@ -2632,7 +2619,7 @@ impl Default for GameConfig {
                 climb_ticks_per_voxel: None,
                 flight_ticks_per_voxel: None,
                 heartbeat_interval_ticks: 5000,
-                allowed_edge_types: Some(vec![EdgeType::ForestFloor]),
+                allowed_edge_types: Some(vec![EdgeType::Ground]),
                 ground_only: true,
                 hp_max: 300,
                 ticks_per_hp_regen: 0,
@@ -3008,7 +2995,6 @@ impl Default for GameConfig {
             fruit_max_per_tree: 20,
             fruit_initial_attempts: 12,
             world_size: (1024, 255, 1024),
-            floor_extent: 20,
             floor_y: 50,
             starting_mana_mm: 100_000,
             starting_mana_capacity_mm: 500_000,
@@ -3346,8 +3332,7 @@ mod tests {
             "fruit_initial_attempts": 12,
             "build_work_ticks_per_voxel": 1000,
             "world_size": [1024, 255, 1024],
-            "floor_extent": 20,
-            "floor_y": 50,
+                        "floor_y": 50,
             "starting_mana_mm": 100000,
             "starting_mana_capacity_mm": 500000,
             "tree_profile": {
@@ -3381,8 +3366,7 @@ mod tests {
             "fruit_initial_attempts": 15,
             "build_work_ticks_per_voxel": 2000,
             "world_size": [128, 64, 128],
-            "floor_extent": 15,
-            "starting_mana_mm": 200000,
+                        "starting_mana_mm": 200000,
             "starting_mana_capacity_mm": 1000000,
             "tree_profile": {
                 "growth": {
@@ -3435,7 +3419,7 @@ mod tests {
                     "walk_ticks_per_voxel": 800,
                     "climb_ticks_per_voxel": null,
                     "heartbeat_interval_ticks": 4000,
-                    "allowed_edge_types": ["ForestFloor"],
+                    "allowed_edge_types": ["Ground"],
                     "ground_only": true
                 }
             }
@@ -3498,8 +3482,7 @@ mod tests {
             "fruit_initial_attempts": 12,
             "build_work_ticks_per_voxel": 1000,
             "world_size": [1024, 255, 1024],
-            "floor_extent": 20,
-            "starting_mana_mm": 100000,
+                        "starting_mana_mm": 100000,
             "starting_mana_capacity_mm": 500000,
             "tree_profile": {
                 "growth": { "initial_energy": 200.0, "energy_to_radius": 0.07, "min_radius": 0.5, "growth_step_length": 1.0, "energy_per_step": 1.0 },

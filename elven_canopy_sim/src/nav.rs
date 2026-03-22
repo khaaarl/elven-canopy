@@ -5,7 +5,7 @@
 // world by `build_nav_graph()` and used by `pathfinding.rs` for A* search.
 //
 // **Edges store distance, not time-cost.** Each edge records the euclidean
-// distance between its endpoints and the edge type (ForestFloor, TrunkClimb,
+// distance between its endpoints and the edge type (Ground, TrunkClimb,
 // etc.). The pathfinder computes actual traversal time at search time using
 // per-species speed parameters (walk_ticks_per_voxel, climb_ticks_per_voxel
 // from `species.rs`). This means graph construction needs only the voxel
@@ -45,7 +45,7 @@
 // Each nav node carries a `surface_type` derived from the solid voxel it
 // touches (see `derive_surface_type()`). Edge types are derived from the
 // surface types of the two endpoints (see `derive_edge_type()`). Root voxels
-// are treated as walkable surfaces (BranchWalk), with ForestFloor and
+// are treated as walkable surfaces (BranchWalk), with Ground and
 // TrunkClimb transitions at boundaries.
 //
 // **Stable node IDs and incremental updates.** Nodes are stored as
@@ -121,7 +121,7 @@ pub struct NavNode {
     pub id: NavNodeId,
     pub position: VoxelCoord,
     /// The type of solid surface this node is adjacent to. Determines what
-    /// kind of creature movement is valid here (e.g. `ForestFloor` for ground
+    /// kind of creature movement is valid here (e.g. `Dirt` for ground
     /// walking, `Trunk` for climbing).
     pub surface_type: VoxelType,
     /// Edge IDs for edges that originate from this node. Uses
@@ -135,8 +135,9 @@ pub struct NavNode {
 /// Serializable because it appears in species config (`allowed_edge_types`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum EdgeType {
-    /// Walking on the forest floor around the trunk base.
-    ForestFloor,
+    /// Walking on the ground (dirt terrain) around the trunk base.
+    #[serde(alias = "ForestFloor")]
+    Ground,
     /// Climbing up/down the raw trunk surface.
     TrunkClimb,
     /// Walking along a branch.
@@ -353,12 +354,12 @@ impl NavGraph {
         self.expanding_box_search(pos, |_| true)
     }
 
-    /// Find the nearest ground-level node (surface type `ForestFloor`) to the
+    /// Find the nearest ground-level node (surface type `Dirt`) to the
     /// given position. Returns `None` if no ground nodes exist.
     ///
     /// Uses an expanding-box search on the column index when available.
     pub fn find_nearest_ground_node(&self, pos: VoxelCoord) -> Option<NavNodeId> {
-        self.expanding_box_search(pos, |n| n.surface_type == VoxelType::ForestFloor)
+        self.expanding_box_search(pos, |n| n.surface_type == VoxelType::Dirt)
     }
 
     /// Common expanding-box search: starts at the query column, expands radius
@@ -457,10 +458,10 @@ impl NavGraph {
         }
     }
 
-    /// Return all ground-level node IDs (surface type `ForestFloor`).
+    /// Return all ground-level node IDs (surface type `Dirt`).
     pub fn ground_node_ids(&self) -> Vec<NavNodeId> {
         self.live_nodes()
-            .filter(|n| n.surface_type == VoxelType::ForestFloor)
+            .filter(|n| n.surface_type == VoxelType::Dirt)
             .map(|n| n.id)
             .collect()
     }
@@ -1085,11 +1086,6 @@ fn derive_surface_type(
     let below = VoxelCoord::new(pos.x, pos.y - 1, pos.z);
     let below_type = world.get(below);
     if below_type.is_solid() {
-        // Dirt behaves like ForestFloor for navigation — ground-only creatures
-        // can walk on hilly dirt terrain.
-        if below_type == VoxelType::Dirt {
-            return VoxelType::ForestFloor;
-        }
         return below_type;
     }
     // Check if below is BuildingInterior with a Ceiling face pointing up.
@@ -1107,9 +1103,6 @@ fn derive_surface_type(
         let neighbor = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
         let ntype = world.get(neighbor);
         if ntype.is_solid() {
-            if ntype == VoxelType::Dirt {
-                return VoxelType::ForestFloor;
-            }
             return ntype;
         }
         // Check if neighbor is BuildingInterior with blocking face toward pos.
@@ -1130,7 +1123,7 @@ fn derive_surface_type(
     }
 
     // Shouldn't happen — only called for voxels with solid face neighbors.
-    VoxelType::ForestFloor
+    VoxelType::Dirt
 }
 
 /// Check whether face data blocks movement from `from` to `to`.
@@ -1193,7 +1186,7 @@ fn derive_edge_type(
     // Same surface type on both sides.
     if from_surface == to_surface {
         return match from_surface {
-            ForestFloor | Dirt => EdgeType::ForestFloor,
+            Dirt => EdgeType::Ground,
             Trunk => {
                 if from_pos.y != to_pos.y {
                     EdgeType::TrunkClimb
@@ -1221,11 +1214,8 @@ fn derive_edge_type(
 
     // Mixed surface types.
     match (from_surface, to_surface) {
-        (ForestFloor, Trunk) | (Trunk, ForestFloor) => EdgeType::GroundToTrunk,
         (Dirt, Trunk) | (Trunk, Dirt) => EdgeType::GroundToTrunk,
-        (ForestFloor, Dirt) | (Dirt, ForestFloor) => EdgeType::ForestFloor,
-        (ForestFloor, Root) | (Root, ForestFloor) => EdgeType::ForestFloor,
-        (Dirt, Root) | (Root, Dirt) => EdgeType::ForestFloor,
+        (Dirt, Root) | (Root, Dirt) => EdgeType::Ground,
         (Trunk, Root) | (Root, Trunk) => EdgeType::TrunkClimb,
         (Trunk, Branch) | (Branch, Trunk) | (Trunk, Leaf) | (Leaf, Trunk) => EdgeType::TrunkClimb,
         _ => {
@@ -1810,7 +1800,7 @@ const LARGE_NAV_8_NEIGHBORS: [(i32, i32); 8] = [
 /// 6. Sequential edge insertion sorted by (from_slot, direction_index) to
 ///    preserve deterministic edge_indices ordering.
 ///
-/// All edges are `ForestFloor` type since large creatures are ground-only.
+/// All edges are `Ground` type since large creatures are ground-only.
 /// The resulting graph uses the same `NavGraph` struct as the standard graph,
 /// so all existing pathfinding code works unchanged.
 pub fn build_large_nav_graph(world: &VoxelWorld) -> NavGraph {
@@ -1916,7 +1906,7 @@ pub fn build_large_nav_graph(world: &VoxelWorld) -> NavGraph {
     for z_anchors in per_z_anchors {
         for (ax, az, air_y) in z_anchors {
             let coord = VoxelCoord::new(ax, air_y, az);
-            let node_id = graph.add_node(coord, VoxelType::ForestFloor);
+            let node_id = graph.add_node(coord, VoxelType::Dirt);
             graph.spatial_insert(coord, node_id.0);
             anchor_in_graph.insert((ax, az), ());
             current_layer_coords.push(coord);
@@ -2011,7 +2001,7 @@ pub fn build_large_nav_graph(world: &VoxelWorld) -> NavGraph {
                 continue;
             }
             let coord = VoxelCoord::new(nx, n_air_y, nz);
-            let node_id = graph.add_node(coord, VoxelType::ForestFloor);
+            let node_id = graph.add_node(coord, VoxelType::Dirt);
             graph.spatial_insert(coord, node_id.0);
             anchor_in_graph.insert((nx, nz), ());
             next_layer.push(coord);
@@ -2045,7 +2035,7 @@ pub fn build_large_nav_graph(world: &VoxelWorld) -> NavGraph {
     );
 
     // Parallel validation: check is_large_edge_valid, resolve slots, compute
-    // distance. All large edges are ForestFloor type. Each result is
+    // distance. All large edges are Ground type. Each result is
     // Option<(from_slot, to_slot, distance, dir_index)>.
     let validated_edges: Vec<Option<(u32, u32, u32, u8)>> = all_edge_pairs
         .par_iter()
@@ -2096,7 +2086,7 @@ pub fn build_large_nav_graph(world: &VoxelWorld) -> NavGraph {
         graph.add_edge(
             NavNodeId(from_slot),
             NavNodeId(to_slot),
-            EdgeType::ForestFloor,
+            EdgeType::Ground,
             dist,
         );
     }
@@ -2184,7 +2174,7 @@ pub fn update_large_after_voxel_solidified(
             graph.nodes[free] = Some(NavNode {
                 id,
                 position: coord,
-                surface_type: VoxelType::ForestFloor,
+                surface_type: VoxelType::Dirt,
                 edge_indices: SmallVec::new(),
             });
             free
@@ -2194,7 +2184,7 @@ pub fn update_large_after_voxel_solidified(
             graph.nodes.push(Some(NavNode {
                 id,
                 position: coord,
-                surface_type: VoxelType::ForestFloor,
+                surface_type: VoxelType::Dirt,
                 edge_indices: SmallVec::new(),
             }));
             slot
@@ -2327,7 +2317,7 @@ pub fn update_large_after_voxel_solidified(
             let to_node_y = graph.nodes[ns].as_ref().unwrap().position.y;
             let dy = to_node_y - from_node_y;
             let dist = scaled_distance(dx, dy, dz);
-            graph.add_edge(from_id, to_id, EdgeType::ForestFloor, dist);
+            graph.add_edge(from_id, to_id, EdgeType::Ground, dist);
         }
     }
 
@@ -2372,8 +2362,8 @@ mod tests {
     #[test]
     fn add_node_assigns_sequential_ids() {
         let mut graph = NavGraph::new();
-        let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::ForestFloor);
-        let b = graph.add_node(VoxelCoord::new(1, 0, 0), VoxelType::ForestFloor);
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::Dirt);
+        let b = graph.add_node(VoxelCoord::new(1, 0, 0), VoxelType::Dirt);
         let c = graph.add_node(VoxelCoord::new(2, 0, 0), VoxelType::Trunk);
         assert_eq!(a, NavNodeId(0));
         assert_eq!(b, NavNodeId(1));
@@ -2384,9 +2374,9 @@ mod tests {
     #[test]
     fn add_edge_creates_bidirectional() {
         let mut graph = NavGraph::new();
-        let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::ForestFloor);
-        let b = graph.add_node(VoxelCoord::new(5, 0, 0), VoxelType::ForestFloor);
-        graph.add_edge(a, b, EdgeType::ForestFloor, 5 * DIST_SCALE);
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::Dirt);
+        let b = graph.add_node(VoxelCoord::new(5, 0, 0), VoxelType::Dirt);
+        graph.add_edge(a, b, EdgeType::Ground, 5 * DIST_SCALE);
 
         let a_edges: Vec<_> = graph
             .neighbors(a)
@@ -2406,9 +2396,9 @@ mod tests {
     #[test]
     fn spread_destinations_returns_center_for_single() {
         let mut graph = NavGraph::new();
-        let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::ForestFloor);
-        let b = graph.add_node(VoxelCoord::new(1, 0, 0), VoxelType::ForestFloor);
-        graph.add_edge(a, b, EdgeType::ForestFloor, DIST_SCALE);
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::Dirt);
+        let b = graph.add_node(VoxelCoord::new(1, 0, 0), VoxelType::Dirt);
+        graph.add_edge(a, b, EdgeType::Ground, DIST_SCALE);
 
         let result = graph.spread_destinations(a, 1);
         assert_eq!(result, vec![a]);
@@ -2418,13 +2408,13 @@ mod tests {
     fn spread_destinations_bfs_order() {
         // Build a linear chain: A -- B -- C -- D
         let mut graph = NavGraph::new();
-        let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::ForestFloor);
-        let b = graph.add_node(VoxelCoord::new(1, 0, 0), VoxelType::ForestFloor);
-        let c = graph.add_node(VoxelCoord::new(2, 0, 0), VoxelType::ForestFloor);
-        let d = graph.add_node(VoxelCoord::new(3, 0, 0), VoxelType::ForestFloor);
-        graph.add_edge(a, b, EdgeType::ForestFloor, DIST_SCALE);
-        graph.add_edge(b, c, EdgeType::ForestFloor, DIST_SCALE);
-        graph.add_edge(c, d, EdgeType::ForestFloor, DIST_SCALE);
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::Dirt);
+        let b = graph.add_node(VoxelCoord::new(1, 0, 0), VoxelType::Dirt);
+        let c = graph.add_node(VoxelCoord::new(2, 0, 0), VoxelType::Dirt);
+        let d = graph.add_node(VoxelCoord::new(3, 0, 0), VoxelType::Dirt);
+        graph.add_edge(a, b, EdgeType::Ground, DIST_SCALE);
+        graph.add_edge(b, c, EdgeType::Ground, DIST_SCALE);
+        graph.add_edge(c, d, EdgeType::Ground, DIST_SCALE);
 
         // Spread from B, requesting 3 destinations.
         let result = graph.spread_destinations(b, 3);
@@ -2438,11 +2428,11 @@ mod tests {
     #[test]
     fn spread_destinations_limits_to_count() {
         let mut graph = NavGraph::new();
-        let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::ForestFloor);
-        let b = graph.add_node(VoxelCoord::new(1, 0, 0), VoxelType::ForestFloor);
-        let c = graph.add_node(VoxelCoord::new(2, 0, 0), VoxelType::ForestFloor);
-        graph.add_edge(a, b, EdgeType::ForestFloor, DIST_SCALE);
-        graph.add_edge(b, c, EdgeType::ForestFloor, DIST_SCALE);
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::Dirt);
+        let b = graph.add_node(VoxelCoord::new(1, 0, 0), VoxelType::Dirt);
+        let c = graph.add_node(VoxelCoord::new(2, 0, 0), VoxelType::Dirt);
+        graph.add_edge(a, b, EdgeType::Ground, DIST_SCALE);
+        graph.add_edge(b, c, EdgeType::Ground, DIST_SCALE);
 
         let result = graph.spread_destinations(b, 2);
         assert_eq!(result.len(), 2);
@@ -2452,9 +2442,9 @@ mod tests {
     #[test]
     fn spread_destinations_handles_fewer_nodes_than_requested() {
         let mut graph = NavGraph::new();
-        let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::ForestFloor);
-        let b = graph.add_node(VoxelCoord::new(1, 0, 0), VoxelType::ForestFloor);
-        graph.add_edge(a, b, EdgeType::ForestFloor, DIST_SCALE);
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::Dirt);
+        let b = graph.add_node(VoxelCoord::new(1, 0, 0), VoxelType::Dirt);
+        graph.add_edge(a, b, EdgeType::Ground, DIST_SCALE);
 
         // Request 5 but only 2 nodes exist.
         let result = graph.spread_destinations(a, 5);
@@ -2466,18 +2456,18 @@ mod tests {
     #[test]
     fn spread_destinations_empty_on_zero_count() {
         let mut graph = NavGraph::new();
-        let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::ForestFloor);
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::Dirt);
         assert!(graph.spread_destinations(a, 0).is_empty());
     }
 
     #[test]
     fn spread_destinations_skips_dead_nodes() {
         let mut graph = NavGraph::new();
-        let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::ForestFloor);
-        let b = graph.add_node(VoxelCoord::new(1, 0, 0), VoxelType::ForestFloor);
-        let c = graph.add_node(VoxelCoord::new(2, 0, 0), VoxelType::ForestFloor);
-        graph.add_edge(a, b, EdgeType::ForestFloor, DIST_SCALE);
-        graph.add_edge(b, c, EdgeType::ForestFloor, DIST_SCALE);
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::Dirt);
+        let b = graph.add_node(VoxelCoord::new(1, 0, 0), VoxelType::Dirt);
+        let c = graph.add_node(VoxelCoord::new(2, 0, 0), VoxelType::Dirt);
+        graph.add_edge(a, b, EdgeType::Ground, DIST_SCALE);
+        graph.add_edge(b, c, EdgeType::Ground, DIST_SCALE);
 
         // Kill node B — A can't reach C.
         graph.kill_node(b);
@@ -2489,8 +2479,8 @@ mod tests {
     #[test]
     fn find_nearest_node_works() {
         let mut graph = NavGraph::new();
-        graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::ForestFloor);
-        graph.add_node(VoxelCoord::new(10, 0, 0), VoxelType::ForestFloor);
+        graph.add_node(VoxelCoord::new(0, 0, 0), VoxelType::Dirt);
+        graph.add_node(VoxelCoord::new(10, 0, 0), VoxelType::Dirt);
         graph.add_node(VoxelCoord::new(5, 5, 0), VoxelType::Trunk);
 
         let nearest = graph.find_nearest_node(VoxelCoord::new(4, 4, 0));
@@ -2506,9 +2496,9 @@ mod tests {
     #[test]
     fn ground_node_ids_filters_by_surface_type() {
         let mut graph = NavGraph::new();
-        graph.add_node(VoxelCoord::new(0, 1, 0), VoxelType::ForestFloor);
+        graph.add_node(VoxelCoord::new(0, 1, 0), VoxelType::Dirt);
         graph.add_node(VoxelCoord::new(1, 5, 0), VoxelType::Trunk);
-        graph.add_node(VoxelCoord::new(2, 1, 0), VoxelType::ForestFloor);
+        graph.add_node(VoxelCoord::new(2, 1, 0), VoxelType::Dirt);
 
         let ground = graph.ground_node_ids();
         assert_eq!(ground.len(), 2);
@@ -2519,9 +2509,9 @@ mod tests {
     #[test]
     fn find_nearest_ground_node_filters_by_surface_type() {
         let mut graph = NavGraph::new();
-        graph.add_node(VoxelCoord::new(0, 1, 0), VoxelType::ForestFloor);
+        graph.add_node(VoxelCoord::new(0, 1, 0), VoxelType::Dirt);
         graph.add_node(VoxelCoord::new(1, 1, 0), VoxelType::Trunk);
-        graph.add_node(VoxelCoord::new(5, 1, 0), VoxelType::ForestFloor);
+        graph.add_node(VoxelCoord::new(5, 1, 0), VoxelType::Dirt);
 
         // Closest overall is the Trunk node, but ground search skips it.
         let nearest = graph.find_nearest_ground_node(VoxelCoord::new(1, 1, 0));
@@ -2569,7 +2559,7 @@ mod tests {
         // Node at the far corner; query at the near corner.
         let mut graph = NavGraph::with_world_size(32, 32, 32);
         let far = VoxelCoord::new(31, 1, 31);
-        let node_id = graph.add_node(far, VoxelType::ForestFloor);
+        let node_id = graph.add_node(far, VoxelType::Dirt);
         graph.spatial_insert(far, node_id.0);
 
         let result = graph.find_nearest_node(VoxelCoord::new(0, 1, 0));
@@ -2584,12 +2574,12 @@ mod tests {
 
         // Place a node at (0, 1, 0) — the corner of the world.
         let corner = VoxelCoord::new(0, 1, 0);
-        let corner_id = graph.add_node(corner, VoxelType::ForestFloor);
+        let corner_id = graph.add_node(corner, VoxelType::Dirt);
         graph.spatial_insert(corner, corner_id.0);
 
         // Place a farther node.
         let far = VoxelCoord::new(5, 1, 5);
-        let far_id = graph.add_node(far, VoxelType::ForestFloor);
+        let far_id = graph.add_node(far, VoxelType::Dirt);
         graph.spatial_insert(far, far_id.0);
 
         // Query at (1, 1, 0) — corner node is distance 1, far node is distance 9.
@@ -2606,10 +2596,10 @@ mod tests {
     #[test]
     fn surface_type_standing_on_floor() {
         let mut world = VoxelWorld::new(8, 8, 8);
-        world.set(VoxelCoord::new(4, 0, 4), VoxelType::ForestFloor);
-        // Air at y=1 is above ForestFloor.
+        world.set(VoxelCoord::new(4, 0, 4), VoxelType::Dirt);
+        // Air at y=1 is above Dirt.
         let surface = derive_surface_type(&world, &no_faces(), VoxelCoord::new(4, 1, 4));
-        assert_eq!(surface, VoxelType::ForestFloor);
+        assert_eq!(surface, VoxelType::Dirt);
     }
 
     #[test]
@@ -2633,37 +2623,64 @@ mod tests {
 
     #[test]
     fn surface_type_floor_takes_priority_over_trunk() {
-        // Node at y=1 with ForestFloor below and Trunk to the side — should
-        // be ForestFloor (standing on it takes priority).
+        // Node at y=1 with Dirt below and Trunk to the side — should
+        // be Dirt (standing on it takes priority).
         let mut world = VoxelWorld::new(8, 8, 8);
-        world.set(VoxelCoord::new(4, 0, 4), VoxelType::ForestFloor);
+        world.set(VoxelCoord::new(4, 0, 4), VoxelType::Dirt);
         world.set(VoxelCoord::new(3, 1, 4), VoxelType::Trunk);
         let surface = derive_surface_type(&world, &no_faces(), VoxelCoord::new(4, 1, 4));
-        assert_eq!(surface, VoxelType::ForestFloor);
+        assert_eq!(surface, VoxelType::Dirt);
     }
 
     #[test]
-    fn air_above_dirt_has_forest_floor_surface() {
+    fn air_above_dirt_has_dirt_surface() {
         let mut world = VoxelWorld::new(8, 8, 8);
-        world.set(VoxelCoord::new(4, 0, 4), VoxelType::ForestFloor);
+        world.set(VoxelCoord::new(4, 0, 4), VoxelType::Dirt);
         world.set(VoxelCoord::new(4, 1, 4), VoxelType::Dirt);
         world.set(VoxelCoord::new(4, 2, 4), VoxelType::Dirt);
-        // Air at y=3 is above Dirt — should map to ForestFloor for nav.
+        // Air at y=3 is above Dirt — should map to Dirt for nav.
         let surface = derive_surface_type(&world, &no_faces(), VoxelCoord::new(4, 3, 4));
-        assert_eq!(surface, VoxelType::ForestFloor);
+        assert_eq!(surface, VoxelType::Dirt);
     }
 
     // --- Edge type derivation tests ---
 
     #[test]
-    fn edge_type_forest_floor() {
+    fn edge_type_ground() {
         let et = derive_edge_type(
-            VoxelType::ForestFloor,
-            VoxelType::ForestFloor,
+            VoxelType::Dirt,
+            VoxelType::Dirt,
             VoxelCoord::new(0, 1, 0),
             VoxelCoord::new(1, 1, 0),
         );
-        assert_eq!(et, EdgeType::ForestFloor);
+        assert_eq!(et, EdgeType::Ground);
+    }
+
+    #[test]
+    fn edge_type_dirt_to_root() {
+        let et = derive_edge_type(
+            VoxelType::Dirt,
+            VoxelType::Root,
+            VoxelCoord::new(4, 1, 4),
+            VoxelCoord::new(5, 1, 4),
+        );
+        assert_eq!(et, EdgeType::Ground);
+    }
+
+    #[test]
+    fn edge_type_ground_serde_roundtrip() {
+        let et = EdgeType::Ground;
+        let json = serde_json::to_string(&et).unwrap();
+        assert_eq!(json, r#""Ground""#);
+        let restored: EdgeType = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, EdgeType::Ground);
+    }
+
+    #[test]
+    fn edge_type_old_forest_floor_deserializes_as_ground() {
+        let json = r#""ForestFloor""#;
+        let et: EdgeType = serde_json::from_str(json).unwrap();
+        assert_eq!(et, EdgeType::Ground);
     }
 
     #[test]
@@ -2691,7 +2708,7 @@ mod tests {
     #[test]
     fn edge_type_ground_to_trunk() {
         let et = derive_edge_type(
-            VoxelType::ForestFloor,
+            VoxelType::Dirt,
             VoxelType::Trunk,
             VoxelCoord::new(4, 1, 4),
             VoxelCoord::new(4, 2, 4),
@@ -2776,14 +2793,14 @@ mod tests {
 
         let ground_nodes: Vec<_> = graph
             .live_nodes()
-            .filter(|n| n.surface_type == VoxelType::ForestFloor)
+            .filter(|n| n.surface_type == VoxelType::Dirt)
             .collect();
         assert!(
             ground_nodes.len() >= 4,
             "Expected at least 4 ground nodes, got {}",
             ground_nodes.len(),
         );
-        // Ground nodes should be at y=1 (air above ForestFloor at y=0).
+        // Ground nodes should be at y=1 (air above Dirt at y=0).
         for n in &ground_nodes {
             assert_eq!(
                 n.position.y, 1,
@@ -3040,9 +3057,9 @@ mod tests {
     fn platform_world() -> VoxelWorld {
         let mut world = VoxelWorld::new(8, 8, 8);
         // Solid floor at y=0: (3,0,3), (4,0,3), (5,0,3)
-        world.set(VoxelCoord::new(3, 0, 3), VoxelType::ForestFloor);
-        world.set(VoxelCoord::new(4, 0, 3), VoxelType::ForestFloor);
-        world.set(VoxelCoord::new(5, 0, 3), VoxelType::ForestFloor);
+        world.set(VoxelCoord::new(3, 0, 3), VoxelType::Dirt);
+        world.set(VoxelCoord::new(4, 0, 3), VoxelType::Dirt);
+        world.set(VoxelCoord::new(5, 0, 3), VoxelType::Dirt);
         world
     }
 
@@ -3148,10 +3165,7 @@ mod tests {
         let mut world = VoxelWorld::new(sx, sy, sz);
         for z in 0..sz {
             for x in 0..sx {
-                world.set(
-                    VoxelCoord::new(x as i32, 0, z as i32),
-                    VoxelType::ForestFloor,
-                );
+                world.set(VoxelCoord::new(x as i32, 0, z as i32), VoxelType::Dirt);
             }
         }
         world
@@ -3360,7 +3374,7 @@ mod tests {
         assert!(!graph.has_node_at(VoxelCoord::new(5, 1, 5)));
 
         // Restore the floor cell.
-        world.set(VoxelCoord::new(5, 0, 5), VoxelType::ForestFloor);
+        world.set(VoxelCoord::new(5, 0, 5), VoxelType::Dirt);
         let removed =
             update_large_after_voxel_solidified(&mut graph, &world, VoxelCoord::new(5, 0, 5));
 
@@ -3378,7 +3392,7 @@ mod tests {
     // --- Large nav height tolerance tests ---
 
     /// Helper: create a world with controlled terrain heights for large nav tests.
-    /// Sets ForestFloor at y=0 everywhere, then stacks Dirt up to the given
+    /// Sets Dirt at y=0 everywhere, then stacks more Dirt up to the given
     /// height at each (x, z). Heights are given as (x, z, surface_y) tuples
     /// where surface_y is the y of the topmost solid voxel.
     fn hilly_world(sx: u32, sy: u32, sz: u32, hills: &[(i32, i32, i32)]) -> VoxelWorld {
@@ -3386,10 +3400,7 @@ mod tests {
         // Base floor everywhere.
         for z in 0..sz {
             for x in 0..sx {
-                world.set(
-                    VoxelCoord::new(x as i32, 0, z as i32),
-                    VoxelType::ForestFloor,
-                );
+                world.set(VoxelCoord::new(x as i32, 0, z as i32), VoxelType::Dirt);
             }
         }
         // Add dirt columns to reach desired heights.
@@ -3591,7 +3602,7 @@ mod tests {
         // Lay solid foundation at y=0.
         for x in 3..6 {
             for z in 3..6 {
-                world.set(VoxelCoord::new(x, 0, z), VoxelType::ForestFloor);
+                world.set(VoxelCoord::new(x, 0, z), VoxelType::Dirt);
             }
         }
         // Place 3x3x1 building interior at y=1.
@@ -3777,7 +3788,7 @@ mod tests {
         // Foundation.
         for x in 3..6 {
             for z in 3..6 {
-                world.set(VoxelCoord::new(x, 0, z), VoxelType::ForestFloor);
+                world.set(VoxelCoord::new(x, 0, z), VoxelType::Dirt);
             }
         }
 
@@ -3808,7 +3819,7 @@ mod tests {
         let mut world = VoxelWorld::new(16, 16, 16);
         for x in 3..6 {
             for z in 3..6 {
-                world.set(VoxelCoord::new(x, 0, z), VoxelType::ForestFloor);
+                world.set(VoxelCoord::new(x, 0, z), VoxelType::Dirt);
             }
         }
 
@@ -3906,7 +3917,7 @@ mod tests {
         // qualifies as a nav node.
         let floor = VoxelCoord::new(5, 0, 5);
         let ladder = VoxelCoord::new(5, 1, 5);
-        world.set(floor, VoxelType::ForestFloor);
+        world.set(floor, VoxelType::Dirt);
         world.set(ladder, VoxelType::WoodLadder);
 
         let surface = derive_surface_type(&world, &faces, ladder);

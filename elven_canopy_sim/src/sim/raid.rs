@@ -1,9 +1,14 @@
 // Raid triggering — spawns hostile raiding parties from enemy civilizations.
 //
 // The `trigger_raid()` method picks a random hostile civ, spawns a species-
-// appropriate number of raiders at the forest floor perimeter, and gives each
+// appropriate number of raiders at the terrain perimeter, and gives each
 // an attack-move task toward the tree. Currently debug-only (no periodic
 // trigger or detection gating).
+//
+// Spawn positions are found by scanning the nav graph's ground nodes for
+// the actual terrain bounding box, picking a random point along the chosen
+// edge, then selecting the nearest `count` ground nodes to that point so
+// raiders spawn clustered together.
 //
 // See also: `creature.rs` for `spawn_creature_with_civ()`, `combat.rs` for
 // `command_attack_move()`, `worldgen.rs` for civ/relationship generation,
@@ -17,7 +22,7 @@ impl SimState {
     ///
     /// 1. Finds all civs hostile to the player.
     /// 2. Picks one at random.
-    /// 3. Spawns `raid_size` creatures at the forest floor perimeter.
+    /// 3. Spawns `raid_size` creatures at the terrain perimeter.
     /// 4. Attack-moves each toward a wood-adjacent nav node near the tree.
     /// 5. Fires a notification.
     pub(crate) fn trigger_raid(&mut self, events: &mut Vec<SimEvent>) {
@@ -140,56 +145,78 @@ impl SimState {
         ));
     }
 
-    /// Find ground-level nav node positions at the forest floor perimeter in the
-    /// given cardinal direction. Returns up to `count` positions.
+    /// Find ground-level nav node positions at the terrain perimeter in the
+    /// given cardinal direction. Returns up to `count` positions clustered
+    /// together near a random point along the chosen edge.
+    ///
+    /// Computes the actual terrain bounding box from ground nodes, picks a
+    /// random anchor point on the edge, then selects the nearest `count`
+    /// ground nodes to that anchor (sorted by Manhattan distance).
     ///
     /// Note: uses `self.nav_graph` (1x1x1 graph). All current raiding species
     /// (Goblin, Orc, Troll) have 1x1x1 footprints. If a large-footprint species
     /// ever raids, this should switch to `graph_for_species(species)`.
-    fn find_perimeter_positions(&self, direction: u8, count: usize) -> Vec<VoxelCoord> {
-        let cx = self.config.world_size.0 as i32 / 2;
-        let cz = self.config.world_size.2 as i32 / 2;
-        let extent = self.config.floor_extent;
-
-        // The perimeter band: positions within 2 voxels of the edge.
+    fn find_perimeter_positions(&mut self, direction: u8, count: usize) -> Vec<VoxelCoord> {
         let ground_nodes = self.nav_graph.ground_node_ids();
-
-        let mut candidates: Vec<VoxelCoord> = ground_nodes
-            .iter()
-            .map(|&nid| self.nav_graph.node(nid).position)
-            .filter(|pos| {
-                match direction {
-                    // North: low Z edge
-                    0 => pos.z >= cz - extent && pos.z <= cz - extent + 2,
-                    // South: high Z edge
-                    1 => pos.z <= cz + extent && pos.z >= cz + extent - 2,
-                    // East: high X edge
-                    2 => pos.x <= cx + extent && pos.x >= cx + extent - 2,
-                    // West: low X edge
-                    _ => pos.x >= cx - extent && pos.x <= cx - extent + 2,
-                }
-            })
-            .collect();
-
-        // Sort for determinism, then pick up to `count` spread across the edge.
-        candidates.sort();
-
-        if candidates.is_empty() {
+        if ground_nodes.is_empty() {
             return Vec::new();
         }
 
-        let mut result = Vec::with_capacity(count);
-        if candidates.len() <= count {
-            return candidates;
+        // Compute the actual terrain bounding box from ground nodes.
+        let mut min_x = i32::MAX;
+        let mut max_x = i32::MIN;
+        let mut min_z = i32::MAX;
+        let mut max_z = i32::MIN;
+        for &nid in &ground_nodes {
+            let pos = self.nav_graph.node(nid).position;
+            min_x = min_x.min(pos.x);
+            max_x = max_x.max(pos.x);
+            min_z = min_z.min(pos.z);
+            max_z = max_z.max(pos.z);
         }
 
-        // Spread evenly across available positions.
-        let step = candidates.len() / count;
-        for i in 0..count {
-            let idx = (i * step) % candidates.len();
-            result.push(candidates[idx]);
-        }
-        result
+        // Pick a random anchor point along the chosen edge. The anchor sits
+        // on the edge itself; the perpendicular coordinate is randomized
+        // across the edge's span so the raid can arrive at different points.
+        let anchor = match direction {
+            // North: low Z edge, random X.
+            0 => {
+                let x = min_x + (self.rng.next_u64() % (max_x - min_x + 1) as u64) as i32;
+                VoxelCoord::new(x, 0, min_z)
+            }
+            // South: high Z edge, random X.
+            1 => {
+                let x = min_x + (self.rng.next_u64() % (max_x - min_x + 1) as u64) as i32;
+                VoxelCoord::new(x, 0, max_z)
+            }
+            // East: high X edge, random Z.
+            2 => {
+                let z = min_z + (self.rng.next_u64() % (max_z - min_z + 1) as u64) as i32;
+                VoxelCoord::new(max_x, 0, z)
+            }
+            // West: low X edge, random Z.
+            _ => {
+                let z = min_z + (self.rng.next_u64() % (max_z - min_z + 1) as u64) as i32;
+                VoxelCoord::new(min_x, 0, z)
+            }
+        };
+
+        // Collect all ground node positions with their distance to the anchor
+        // (Manhattan distance in XZ only — Y doesn't matter for clustering).
+        let mut scored: Vec<(i32, VoxelCoord)> = ground_nodes
+            .iter()
+            .map(|&nid| {
+                let pos = self.nav_graph.node(nid).position;
+                let dist = (pos.x - anchor.x).abs() + (pos.z - anchor.z).abs();
+                (dist, pos)
+            })
+            .collect();
+
+        // Sort by distance (then by position for determinism among ties).
+        scored.sort();
+
+        scored.truncate(count);
+        scored.into_iter().map(|(_, pos)| pos).collect()
     }
 
     /// Find nav node positions adjacent to wood voxels (Trunk, Branch, Root,
@@ -202,8 +229,8 @@ impl SimState {
         let mut targets = Vec::new();
 
         for node in graph.live_nodes() {
-            // If species is ground_only, only consider ForestFloor nodes.
-            if ground_only && node.surface_type != VoxelType::ForestFloor {
+            // If species is ground_only, only consider ground (Dirt) nodes.
+            if ground_only && node.surface_type != VoxelType::Dirt {
                 continue;
             }
 

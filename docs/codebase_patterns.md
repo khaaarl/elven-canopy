@@ -16,7 +16,7 @@ Things that are non-obvious or surprising about the Elven Canopy codebase. Read 
 
 - Y is up. The world is (x, z) horizontal, y vertical.
 - Flat array indexing: `x + z * size_x + y * size_x * size_z`. Y is the outermost axis, not the middle one.
-- Forest floor is at y=0 (solid `ForestFloor` voxels). Creatures walk on air voxels at y=1 (above the floor). Nav nodes start at y=1.
+- Terrain floor is at `floor_y` (solid `Dirt` voxels). Creatures walk on air voxels above the topmost dirt. Nav nodes start at the air layer above terrain.
 - Voxel coordinates are integer corners. Renderers offset by +0.5 to center meshes/sprites on the voxel.
 
 ## Navigation Graph

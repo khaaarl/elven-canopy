@@ -23,7 +23,7 @@
 //   traverse. `None` = all edges (elves can climb trunks and walk branches).
 //   `Some(vec)` = only listed types (capybaras are ground-only).
 // - `ground_only` — if true, spawning and wandering are restricted to
-//   ground-level nav nodes (`ForestFloor` surface type).
+//   ground-level nav nodes (`Dirt` surface type).
 // - `food_max` — maximum (and starting) food level. Large i64 to avoid
 //   floating-point determinism issues.
 // - `food_decay_per_tick` — food subtracted per sim tick, batch-applied at

@@ -112,8 +112,7 @@ impl SimState {
                     | VoxelType::Dirt
                     | VoxelType::Trunk
                     | VoxelType::Branch
-                    | VoxelType::Root
-                    | VoxelType::ForestFloor => {
+                    | VoxelType::Root => {
                         ov.push((coord, self.world.get(coord)));
                     }
                     VoxelType::Strut | VoxelType::GrownPlatform => {

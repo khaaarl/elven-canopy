@@ -26,7 +26,7 @@
 // - **Thought system:** `ThoughtKind` — event-driven creature thoughts with
 //   per-kind dedup and expiry. `Thought` — a timestamped thought instance.
 // - **Voxel types:** `VoxelType` — the material at each grid cell (`Air`,
-//   `Trunk`, `Branch`, `Root`, `Leaf`, `ForestFloor`, etc.).
+//   `Trunk`, `Branch`, `Root`, `Leaf`, `Dirt`, etc.).
 //
 // `SimUuid` is a hand-rolled UUID v4 (RFC 4122) generated deterministically
 // from the sim's `GameRng`. It serializes as the standard 8-4-4-4-12 hex
@@ -1141,8 +1141,8 @@ pub enum VoxelType {
     Branch = 2,
     GrownPlatform = 3,
     GrownWall = 4,
-    // 5 and 6 formerly GrownStairs and Bridge — removed (dead code, never producible).
-    ForestFloor = 7,
+    // 5 and 6 formerly GrownStairs and Bridge — removed.
+    // 7 formerly ForestFloor — removed (Dirt terrain covers the world).
     Dirt = 8,
     Leaf = 9,
     Fruit = 10,
@@ -1176,7 +1176,7 @@ pub enum OverlapClassification {
     Convertible,
     /// Trunk, Branch, or Root — already wood, skip (no blueprint voxel needed).
     AlreadyWood,
-    /// ForestFloor, existing construction — blocks placement.
+    /// Dirt, existing construction — blocks placement.
     Blocked,
 }
 
@@ -1184,15 +1184,14 @@ impl VoxelType {
     /// Returns `true` for opaque voxel types that block visibility of
     /// adjacent faces for mesh generation. Opaque voxels cull the faces of
     /// neighboring voxels that touch them. Distinct from `is_solid()`:
-    /// `ForestFloor` is both opaque and solid, but `Leaf` is solid and
-    /// non-opaque (transparent faces must still be rendered).
+    /// `Leaf` is solid but non-opaque (transparent faces must still be
+    /// rendered).
     pub fn is_opaque(self) -> bool {
         matches!(
             self,
             VoxelType::Trunk
                 | VoxelType::Branch
                 | VoxelType::Root
-                | VoxelType::ForestFloor
                 | VoxelType::Dirt
                 | VoxelType::GrownPlatform
                 | VoxelType::GrownWall
@@ -1247,7 +1246,7 @@ impl VoxelType {
             3 => VoxelType::GrownPlatform,
             4 => VoxelType::GrownWall,
             // 5, 6: formerly GrownStairs, Bridge — removed.
-            7 => VoxelType::ForestFloor,
+            // 7: formerly ForestFloor — removed.
             8 => VoxelType::Dirt,
             9 => VoxelType::Leaf,
             10 => VoxelType::Fruit,
@@ -1273,8 +1272,7 @@ impl VoxelType {
             VoxelType::Trunk | VoxelType::Branch | VoxelType::Root => {
                 OverlapClassification::AlreadyWood
             }
-            VoxelType::ForestFloor
-            | VoxelType::Dirt
+            VoxelType::Dirt
             | VoxelType::GrownPlatform
             | VoxelType::GrownWall
             | VoxelType::BuildingInterior
@@ -1373,7 +1371,7 @@ mod tests {
         assert_eq!(VoxelType::GrownPlatform as u8, 3);
         assert_eq!(VoxelType::GrownWall as u8, 4);
         // 5, 6: removed (formerly GrownStairs, Bridge)
-        assert_eq!(VoxelType::ForestFloor as u8, 7);
+        // 7: removed (formerly ForestFloor)
         assert_eq!(VoxelType::Dirt as u8, 8);
         assert_eq!(VoxelType::Leaf as u8, 9);
         assert_eq!(VoxelType::Fruit as u8, 10);
@@ -1507,10 +1505,6 @@ mod tests {
     #[test]
     fn classify_for_overlap_blocked() {
         assert_eq!(
-            VoxelType::ForestFloor.classify_for_overlap(),
-            OverlapClassification::Blocked
-        );
-        assert_eq!(
             VoxelType::GrownPlatform.classify_for_overlap(),
             OverlapClassification::Blocked
         );
@@ -1530,7 +1524,6 @@ mod tests {
         assert!(VoxelType::Trunk.is_opaque());
         assert!(VoxelType::Branch.is_opaque());
         assert!(VoxelType::Root.is_opaque());
-        assert!(VoxelType::ForestFloor.is_opaque());
         assert!(VoxelType::Dirt.is_opaque());
         assert!(VoxelType::GrownPlatform.is_opaque());
         assert!(VoxelType::GrownWall.is_opaque());

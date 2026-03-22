@@ -1275,16 +1275,14 @@ mod tests {
     }
 
     #[test]
-    fn scan_ignores_air_and_forest_floor() {
+    fn scan_finds_chunk_with_dirt_and_trunk() {
         let mut world = VoxelWorld::new(16, 16, 16);
-        // ForestFloor doesn't produce geometry.
-        world.set(VoxelCoord::new(8, 0, 8), VoxelType::ForestFloor);
-        // But a trunk does.
+        world.set(VoxelCoord::new(8, 0, 8), VoxelType::Dirt);
         world.set(VoxelCoord::new(8, 1, 8), VoxelType::Trunk);
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
 
-        // Should find the chunk because of the trunk.
+        // Should find the chunk because both Dirt and Trunk produce geometry.
         assert_eq!(cache.megachunks.len(), 1);
     }
 

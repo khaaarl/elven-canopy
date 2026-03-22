@@ -35825,12 +35825,22 @@ fn trigger_raid_spawns_at_perimeter() {
     let mut sim = test_sim(42);
     let hostile_civ = ensure_hostile_civ(&mut sim);
 
+    // Compute the actual terrain bounding box from ground nodes.
+    let ground_nodes = sim.nav_graph.ground_node_ids();
+    let mut min_x = i32::MAX;
+    let mut max_x = i32::MIN;
+    let mut min_z = i32::MAX;
+    let mut max_z = i32::MIN;
+    for &nid in &ground_nodes {
+        let pos = sim.nav_graph.node(nid).position;
+        min_x = min_x.min(pos.x);
+        max_x = max_x.max(pos.x);
+        min_z = min_z.min(pos.z);
+        max_z = max_z.max(pos.z);
+    }
+
     let mut events = Vec::new();
     sim.trigger_raid(&mut events);
-
-    let cx = sim.config.world_size.0 as i32 / 2;
-    let cz = sim.config.world_size.2 as i32 / 2;
-    let extent = sim.config.floor_extent;
 
     let raiders: Vec<_> = sim
         .db
@@ -35839,21 +35849,62 @@ fn trigger_raid_spawns_at_perimeter() {
         .filter(|c| c.civ_id == Some(hostile_civ) && c.vital_status == VitalStatus::Alive)
         .collect();
 
+    // Allow a margin of 5 voxels from the terrain edge for nav snapping.
+    let margin = 5;
     for raider in &raiders {
         let pos = raider.position;
-        // Should be near one of the four edges (within 3 voxels to allow nav snapping).
-        let near_north = pos.z <= cz - extent + 3;
-        let near_south = pos.z >= cz + extent - 3;
-        let near_east = pos.x >= cx + extent - 3;
-        let near_west = pos.x <= cx - extent + 3;
+        let near_north = pos.z <= min_z + margin;
+        let near_south = pos.z >= max_z - margin;
+        let near_east = pos.x >= max_x - margin;
+        let near_west = pos.x <= min_x + margin;
         assert!(
             near_north || near_south || near_east || near_west,
-            "raider at {:?} should be near the perimeter (cx={}, cz={}, extent={})",
+            "raider at {:?} should be near terrain edge (x=[{}..{}], z=[{}..{}])",
             pos,
-            cx,
-            cz,
-            extent
+            min_x,
+            max_x,
+            min_z,
+            max_z,
         );
+    }
+}
+
+#[test]
+fn trigger_raid_raiders_cluster_together() {
+    // Raiders should spawn clustered near one point on the map edge,
+    // not scattered across the entire perimeter.
+    let mut sim = test_sim(42);
+    let hostile_civ = ensure_hostile_civ(&mut sim);
+
+    let mut events = Vec::new();
+    sim.trigger_raid(&mut events);
+
+    let raiders: Vec<_> = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.civ_id == Some(hostile_civ) && c.vital_status == VitalStatus::Alive)
+        .collect();
+
+    if raiders.len() >= 2 {
+        // All raiders should be within a reasonable distance of each other.
+        // With the nearest-to-anchor selection, they should cluster tightly.
+        let max_spread = 20; // generous upper bound for clustering
+        for i in 0..raiders.len() {
+            for j in (i + 1)..raiders.len() {
+                let a = raiders[i].position;
+                let b = raiders[j].position;
+                let dx = (a.x - b.x).abs();
+                let dz = (a.z - b.z).abs();
+                assert!(
+                    dx + dz <= max_spread,
+                    "raiders at {:?} and {:?} are too far apart (Manhattan dist {})",
+                    a,
+                    b,
+                    dx + dz,
+                );
+            }
+        }
     }
 }
 
@@ -38228,7 +38279,6 @@ fn voxel_type_is_flyable() {
     assert!(!VoxelType::Trunk.is_flyable());
     assert!(!VoxelType::Branch.is_flyable());
     assert!(!VoxelType::GrownWall.is_flyable());
-    assert!(!VoxelType::ForestFloor.is_flyable());
     assert!(!VoxelType::Dirt.is_flyable());
 }
 

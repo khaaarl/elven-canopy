@@ -1,16 +1,10 @@
-[gd_scene load_steps=10 format=3 uid="uid://bqxk3rmkv2y5x"]
+[gd_scene load_steps=7 format=3 uid="uid://bqxk3rmkv2y5x"]
 
 [ext_resource type="Script" path="res://scripts/orbital_camera.gd" id="1_camera"]
 [ext_resource type="Script" path="res://scripts/main.gd" id="2_main"]
 [ext_resource type="Script" path="res://scripts/tree_renderer.gd" id="3_tree_renderer"]
 [ext_resource type="Script" path="res://scripts/elf_renderer.gd" id="4_elf_renderer"]
 [ext_resource type="Script" path="res://scripts/capybara_renderer.gd" id="5_capybara_renderer"]
-
-[sub_resource type="BoxMesh" id="BoxMesh_ground"]
-size = Vector3(80, 0.2, 80)
-
-[sub_resource type="StandardMaterial3D" id="Material_ground"]
-albedo_color = Color(0.25, 0.45, 0.2, 1)
 
 [sub_resource type="Environment" id="Environment_main"]
 background_mode = 1
@@ -47,11 +41,6 @@ focal_y_max = 255.0
 [node name="Camera3D" type="Camera3D" parent="CameraPivot"]
 current = true
 far = 2000.0
-
-[node name="Ground" type="MeshInstance3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 512, 50, 512)
-mesh = SubResource("BoxMesh_ground")
-surface_material_override/0 = SubResource("Material_ground")
 
 [node name="SimBridge" type="SimBridge" parent="."]
 

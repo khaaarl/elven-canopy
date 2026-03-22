@@ -143,7 +143,7 @@ pub enum SimAction {
         priority: Priority,
     },
     /// Designate a rectangular region of solid voxels for carving (removal to Air).
-    /// Air and ForestFloor voxels in the selection are silently skipped.
+    /// Air and Dirt voxels in the selection are silently skipped.
     DesignateCarve {
         voxels: Vec<VoxelCoord>,
         priority: Priority,

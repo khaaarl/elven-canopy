@@ -1265,7 +1265,7 @@ mod tests {
     fn has_solid_face_neighbor_at_boundary() {
         let mut world = VoxelWorld::new(8, 8, 8);
         // Place solid at the edge of the world.
-        world.set(VoxelCoord::new(0, 0, 0), VoxelType::ForestFloor);
+        world.set(VoxelCoord::new(0, 0, 0), VoxelType::Dirt);
         // Neighbor at (1,0,0) should detect the solid.
         assert!(world.has_solid_face_neighbor(VoxelCoord::new(1, 0, 0)));
         // Out-of-bounds neighbors return Air, so (-1,0,0) has no solid neighbor
@@ -1372,7 +1372,7 @@ mod tests {
     fn heightmap_returns_max_solid_y() {
         let mut world = VoxelWorld::new(4, 16, 4);
         // Place solids at different heights in the same column (x=1, z=2).
-        world.set(VoxelCoord::new(1, 3, 2), VoxelType::ForestFloor);
+        world.set(VoxelCoord::new(1, 3, 2), VoxelType::Dirt);
         world.set(VoxelCoord::new(1, 7, 2), VoxelType::Trunk);
         world.set(VoxelCoord::new(1, 12, 2), VoxelType::Branch);
 
@@ -1524,7 +1524,6 @@ mod tests {
             VoxelType::Branch,
             VoxelType::GrownPlatform,
             VoxelType::GrownWall,
-            VoxelType::ForestFloor,
             VoxelType::Dirt,
             VoxelType::Leaf,
             VoxelType::Fruit,
@@ -1606,7 +1605,6 @@ mod tests {
             VoxelType::Dirt,
             VoxelType::Leaf,
             VoxelType::Branch,
-            VoxelType::ForestFloor,
         ];
 
         for _ in 0..2000 {
@@ -1663,7 +1661,7 @@ mod tests {
                 // Gap value — maps to Air but doesn't round-trip.
                 continue;
             }
-            assert_eq!(vt.to_u8(), i);
+            assert_eq!(vt.to_u8(), i, "roundtrip failed for discriminant {i}");
         }
         // Out of range returns Air.
         assert_eq!(VoxelType::from_u8(255), VoxelType::Air);
@@ -1676,10 +1674,12 @@ mod tests {
 
     #[test]
     fn from_u8_gap_values_return_air() {
-        // Discriminants 5 (formerly GrownStairs) and 6 (formerly Bridge) were
-        // removed. Old save data containing these values must degrade to Air.
+        // Discriminants 5, 6 (formerly GrownStairs, Bridge) and 7 (formerly
+        // ForestFloor) were removed. Old save data containing these must
+        // degrade to Air.
         assert_eq!(VoxelType::from_u8(5), VoxelType::Air);
         assert_eq!(VoxelType::from_u8(6), VoxelType::Air);
+        assert_eq!(VoxelType::from_u8(7), VoxelType::Air);
     }
 
     #[test]
@@ -1970,7 +1970,7 @@ mod tests {
         // Build a column with varied content and verify span iteration
         // agrees with per-voxel get().
         let mut world = VoxelWorld::new(4, 32, 4);
-        world.set(VoxelCoord::new(2, 0, 2), VoxelType::ForestFloor);
+        world.set(VoxelCoord::new(2, 0, 2), VoxelType::Dirt);
         for y in 1..5 {
             world.set(VoxelCoord::new(2, y, 2), VoxelType::Trunk);
         }

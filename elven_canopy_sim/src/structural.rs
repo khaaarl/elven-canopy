@@ -334,7 +334,7 @@ pub fn build_network(
     // This captures the tree geometry plus just the thin shell of terrain that
     // provides structural grounding, keeping node count proportional to the
     // tree size rather than the world size.
-    let is_terrain = |vt: VoxelType| vt == VoxelType::Dirt || vt == VoxelType::ForestFloor;
+    let is_terrain = |vt: VoxelType| vt == VoxelType::Dirt;
     let is_core = |vt: VoxelType| {
         !matches!(vt, VoxelType::Air | VoxelType::Leaf | VoxelType::Fruit) && !is_terrain(vt)
     };
@@ -838,7 +838,7 @@ pub fn validate_tree(world: &VoxelWorld, config: &GameConfig) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Check whether all `proposed_voxels` would be connected to ground (any
-/// ForestFloor voxel) via face-adjacent solid voxels in the hypothetical
+/// Dirt voxel) via face-adjacent solid voxels in the hypothetical
 /// world where `proposed_voxels` are set to `proposed_type`.
 ///
 /// Returns `true` if all proposed voxels are reachable from ground.
@@ -867,14 +867,14 @@ pub fn flood_fill_connected(
         }
     };
 
-    // Find a starting ground voxel (Dirt or ForestFloor) for BFS.
+    // Find a starting ground voxel (Dirt) for BFS.
     let mut start = None;
     for y in 0..world.size_y as i32 {
         for z in 0..world.size_z as i32 {
             for x in 0..world.size_x as i32 {
                 let coord = VoxelCoord::new(x, y, z);
                 let vt = world.get(coord);
-                if vt == VoxelType::ForestFloor || vt == VoxelType::Dirt {
+                if vt == VoxelType::Dirt {
                     start = Some(coord);
                     break;
                 }
@@ -893,7 +893,7 @@ pub fn flood_fill_connected(
         None => return false, // No ground at all.
     };
 
-    // BFS from the starting ForestFloor voxel through face-adjacent solid voxels.
+    // BFS from the starting Dirt voxel through face-adjacent solid voxels.
     let mut visited = BTreeMap::new();
     let mut queue = std::collections::VecDeque::new();
     visited.insert(start, ());
@@ -1070,7 +1070,7 @@ fn build_network_from_set(
             pinned = false;
         } else if let Some(mat) = structural.materials.get(&vt) {
             mass = f32_to_fp(mat.density);
-            pinned = vt == VoxelType::ForestFloor || vt == VoxelType::Dirt;
+            pinned = vt == VoxelType::Dirt;
         } else {
             continue;
         }
@@ -1224,7 +1224,7 @@ fn add_rod_springs(
 ///
 /// 1. BFS outward from proposed voxels through face-adjacent solid voxels
 ///    (treating proposed and overlay voxels as their target types). This
-///    simultaneously checks connectivity (did we reach ForestFloor?) and
+///    simultaneously checks connectivity (did we reach Dirt?) and
 ///    collects the connected component.
 ///
 /// 2. Builds a network from the visited set only (typically ~5K voxels).
@@ -1279,7 +1279,7 @@ pub fn validate_blueprint_fast(
         if is_structural(vt) {
             visited.insert(coord, vt);
             queue.push_back(coord);
-            if vt == VoxelType::ForestFloor {
+            if vt == VoxelType::Dirt {
                 reached_ground = true;
             }
         }
@@ -1302,7 +1302,7 @@ pub fn validate_blueprint_fast(
             let vt = hypo_type(neighbor);
             if is_structural(vt) {
                 visited.insert(neighbor, vt);
-                let is_terrain = vt == VoxelType::ForestFloor || vt == VoxelType::Dirt;
+                let is_terrain = vt == VoxelType::Dirt;
                 if is_terrain {
                     // Terrain acts as a pinned ground anchor but we don't
                     // flood through it — on a large world the terrain layer
@@ -1531,11 +1531,11 @@ pub fn validate_carve_fast(
             let vt = hypo_type(neighbor);
             if is_structural(vt) {
                 // Seed from non-ground structural neighbors only.
-                // Dirt/ForestFloor is ground — the question is whether the
+                // Dirt is ground — the question is whether the
                 // remaining *above-ground* structure can still reach it.
                 // If ground were a seed, disconnected voxels above
                 // would appear connected via the shared BFS frontier.
-                let is_ground = vt == VoxelType::ForestFloor || vt == VoxelType::Dirt;
+                let is_ground = vt == VoxelType::Dirt;
                 if is_ground {
                     // Mark as visited so BFS reaching this coord counts
                     // as reaching ground, but don't enqueue — we don't
@@ -1574,7 +1574,7 @@ pub fn validate_carve_fast(
             let vt = hypo_type(neighbor);
             if is_structural(vt) {
                 visited.insert(neighbor, vt);
-                let is_terrain = vt == VoxelType::ForestFloor || vt == VoxelType::Dirt;
+                let is_terrain = vt == VoxelType::Dirt;
                 if is_terrain {
                     reached_ground = true;
                 } else {
@@ -1711,7 +1711,7 @@ mod tests {
         // Forest floor at y=0.
         for x in floor_range.clone() {
             for z in floor_range.clone() {
-                world.set(VoxelCoord::new(x, 0, z), VoxelType::ForestFloor);
+                world.set(VoxelCoord::new(x, 0, z), VoxelType::Dirt);
             }
         }
 
@@ -2398,7 +2398,7 @@ mod tests {
     fn fast_platform_on_dirt_terrain_ok() {
         // A short platform on a trunk column should pass even when the floor
         // has Dirt voxels (hilly terrain). Dirt must be pinned in the fast
-        // validator just like ForestFloor, otherwise its high density (999)
+        // validator as pinned terrain, otherwise its high density (999)
         // causes bogus structural failure.
         let config = GameConfig::default();
         let mut world = VoxelWorld::new(16, 16, 16);
@@ -2406,7 +2406,7 @@ mod tests {
         // Forest floor at y=0.
         for x in 0..8 {
             for z in 0..8 {
-                world.set(VoxelCoord::new(x, 0, z), VoxelType::ForestFloor);
+                world.set(VoxelCoord::new(x, 0, z), VoxelType::Dirt);
             }
         }
         // Dirt terrain at y=1 (hilly area).
@@ -2612,7 +2612,7 @@ mod tests {
         // Expected: The only spring connecting a ladder voxel to a
         // non-ladder voxel should be between (5,4,4) and (5,5,4).
         // The bottom ladder voxel at (5,1,4) should NOT have a spring
-        // to the ForestFloor at (5,0,4).
+        // to the Dirt at (5,0,4).
         let mut world = make_column_world(16, 0..8, 4, 4, 5);
         add_horizontal_arm(&mut world, 5, 4, 5, 7, VoxelType::GrownPlatform);
 
@@ -2724,7 +2724,7 @@ mod tests {
         let network = build_network(&world, &BTreeMap::new(), &config);
 
         // The ladder's bottom voxel (15,1,8) should NOT have a spring to
-        // the ForestFloor at (15,0,8).
+        // the Dirt at (15,0,8).
         let ladder_bottom_idx = network.coord_to_node.get(&VoxelCoord::new(15, 1, 8));
         let floor_idx = network.coord_to_node.get(&VoxelCoord::new(15, 0, 8));
 
@@ -2842,12 +2842,12 @@ mod tests {
     #[test]
     fn wood_ladder_anchors_at_bottom_on_floor() {
         // A wood ladder column with no platform above — only the floor below.
-        // The bottom ladder voxel at y=1 is adjacent to ForestFloor at y=0.
+        // The bottom ladder voxel at y=1 is adjacent to Dirt at y=0.
         // Wood ladders CAN anchor at the bottom (they lean against things).
         let mut world = VoxelWorld::new(16, 16, 16);
         for x in 0..8 {
             for z in 0..8 {
-                world.set(VoxelCoord::new(x, 0, z), VoxelType::ForestFloor);
+                world.set(VoxelCoord::new(x, 0, z), VoxelType::Dirt);
             }
         }
         // Freestanding ladder column with no trunk nearby except the floor.
@@ -2880,13 +2880,13 @@ mod tests {
     fn rope_ladder_collapses_when_only_floor_below() {
         // A rope ladder column with no platform above — only the floor below.
         // Rope ladders must hang from above, so the bottom voxel at y=1
-        // adjacent to ForestFloor should NOT become the anchor. The rope
+        // adjacent to Dirt should NOT become the anchor. The rope
         // ladder has no valid anchor and should be fully disconnected from
         // non-ladder structure.
         let mut world = VoxelWorld::new(16, 16, 16);
         for x in 0..8 {
             for z in 0..8 {
-                world.set(VoxelCoord::new(x, 0, z), VoxelType::ForestFloor);
+                world.set(VoxelCoord::new(x, 0, z), VoxelType::Dirt);
             }
         }
         for y in 1..=4 {
@@ -3117,11 +3117,11 @@ mod tests {
         // stress at mid-height voxels.
         let config = GameConfig::default();
 
-        // Small world with ForestFloor at y=0 (no trunk).
+        // Small world with Dirt at y=0 (no trunk).
         let mut world = VoxelWorld::new(24, 24, 24);
         for x in 0..16 {
             for z in 0..16 {
-                world.set(VoxelCoord::new(x, 0, z), VoxelType::ForestFloor);
+                world.set(VoxelCoord::new(x, 0, z), VoxelType::Dirt);
             }
         }
 
@@ -3229,10 +3229,10 @@ mod tests {
         let config = GameConfig::default();
 
         let mut world = VoxelWorld::new(48, 24, 24);
-        // ForestFloor at y=0.
+        // Dirt at y=0.
         for x in 0..32 {
             for z in 0..16 {
-                world.set(VoxelCoord::new(x, 0, z), VoxelType::ForestFloor);
+                world.set(VoxelCoord::new(x, 0, z), VoxelType::Dirt);
             }
         }
         // Trunk column at x=5,z=5 from y=1 to y=15.
@@ -3315,7 +3315,7 @@ mod tests {
         let mut world = VoxelWorld::new(24, 24, 24);
         for x in 0..16 {
             for z in 0..16 {
-                world.set(VoxelCoord::new(x, 0, z), VoxelType::ForestFloor);
+                world.set(VoxelCoord::new(x, 0, z), VoxelType::Dirt);
             }
         }
         for y in 1..=10 {
@@ -3509,15 +3509,15 @@ mod tests {
 
     #[test]
     fn strut_pinning_behavior() {
-        // A strut voxel replacing ForestFloor or Dirt should NOT be pinned,
-        // but adjacent Dirt/ForestFloor voxels should remain pinned.
+        // A strut voxel replacing Dirt should NOT be pinned,
+        // but adjacent Dirt voxels should remain pinned.
         let config = GameConfig::default();
         let mut world = VoxelWorld::new(16, 16, 16);
 
-        // ForestFloor at y=0.
+        // Dirt at y=0.
         for x in 0..8 {
             for z in 0..8 {
-                world.set(VoxelCoord::new(x, 0, z), VoxelType::ForestFloor);
+                world.set(VoxelCoord::new(x, 0, z), VoxelType::Dirt);
             }
         }
         // Dirt at y=1.
@@ -3548,12 +3548,12 @@ mod tests {
             "Adjacent Dirt should remain pinned"
         );
 
-        // ForestFloor below should still be pinned.
+        // Dirt below should still be pinned.
         let ground = VoxelCoord::new(4, 0, 4);
         let ground_idx = network.coord_to_node[&ground];
         assert!(
             network.nodes[ground_idx].pinned,
-            "ForestFloor below should remain pinned"
+            "Dirt below should remain pinned"
         );
     }
 
@@ -3580,7 +3580,7 @@ mod tests {
 
         // Verify a strut node in a network uses the correct mass.
         let mut world = VoxelWorld::new(8, 8, 8);
-        world.set(VoxelCoord::new(3, 0, 3), VoxelType::ForestFloor);
+        world.set(VoxelCoord::new(3, 0, 3), VoxelType::Dirt);
         world.set(VoxelCoord::new(3, 1, 3), VoxelType::Strut);
 
         let network = build_network(&world, &BTreeMap::new(), &config);

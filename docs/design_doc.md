@@ -485,7 +485,7 @@ enum EdgeType {
     TrunkClimb,
     Stairs,
     Bridge,
-    ForestFloor,
+    Ground,
 }
 ```
 
@@ -526,7 +526,7 @@ Flying creatures (invaders, potentially tamed animals, winged elves) would use a
 
 The nav graph is built directly from the voxel world rather than from hardcoded geometric patterns. Every air voxel that is face-adjacent to at least one solid voxel becomes a nav node. Edges connect nav nodes within the 26-neighborhood (face, edge, and vertex adjacent). This approach means the navigation topology automatically reflects the actual world geometry.
 
-**Node creation:** Air voxels at y≥1 with at least one solid face neighbor. Each node carries a `surface_type` derived from its adjacent solid voxel (priority: voxel below first, then horizontal/above). Ground nodes above `ForestFloor` get surface type `ForestFloor`; nodes clinging to the trunk get `Trunk`; etc.
+**Node creation:** Air voxels at y≥1 with at least one solid face neighbor. Each node carries a `surface_type` derived from its adjacent solid voxel (priority: voxel below first, then horizontal/above). Ground nodes above `Dirt` get surface type `Dirt`; nodes clinging to the trunk get `Trunk`; etc.
 
 **Edge creation:** 26-connectivity (13 positive-half neighbors to avoid duplicate bidirectional edges). Edge types and costs are derived from the surface types of both endpoints. Euclidean distance / speed determines cost.
 

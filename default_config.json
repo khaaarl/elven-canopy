@@ -18,7 +18,6 @@
     128,
     256
   ],
-  "floor_extent": 20,
   "starting_mana_mm": 100000,
   "starting_mana_capacity_mm": 500000,
   "build_work_ticks_per_voxel": 1000,
@@ -111,7 +110,7 @@
       "climb_ticks_per_voxel": null,
       "heartbeat_interval_ticks": 4000,
       "allowed_edge_types": [
-        "ForestFloor"
+        "Ground"
       ],
       "ground_only": true,
       "hp_max": 60,
@@ -139,7 +138,7 @@
       "climb_ticks_per_voxel": null,
       "heartbeat_interval_ticks": 4000,
       "allowed_edge_types": [
-        "ForestFloor"
+        "Ground"
       ],
       "ground_only": true,
       "hp_max": 80,
@@ -167,7 +166,7 @@
       "climb_ticks_per_voxel": null,
       "heartbeat_interval_ticks": 3500,
       "allowed_edge_types": [
-        "ForestFloor"
+        "Ground"
       ],
       "ground_only": true,
       "hp_max": 50,
@@ -195,7 +194,7 @@
       "climb_ticks_per_voxel": null,
       "heartbeat_interval_ticks": 5000,
       "allowed_edge_types": [
-        "ForestFloor"
+        "Ground"
       ],
       "ground_only": true,
       "hp_max": 300,
@@ -502,11 +501,6 @@
         "density": 0.6,
         "stiffness": 20.0,
         "strength": 8.0
-      },
-      "ForestFloor": {
-        "density": 999.0,
-        "stiffness": 999.0,
-        "strength": 999.0
       },
       "Dirt": {
         "density": 999.0,

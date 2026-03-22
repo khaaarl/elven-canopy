@@ -341,7 +341,7 @@ fn try_place_voxel(
 // Terrain generation — value noise with bilinear interpolation (integer)
 // ---------------------------------------------------------------------------
 
-/// Generate hilly dirt terrain above ForestFloor using value noise.
+/// Generate hilly dirt terrain using value noise.
 ///
 /// Produces a `Vec<VoxelCoord>` of dirt positions from y=1 upward. Each (x, z)
 /// column within the floor extent gets at least 1 dirt voxel (minimum height 1)
@@ -459,7 +459,7 @@ pub fn generate_terrain(world: &mut VoxelWorld, config: &GameConfig, rng: &mut G
 
 /// Find the terrain surface Y at a given (x, z) position.
 ///
-/// Scans upward from `floor_y` through Dirt/ForestFloor voxels until hitting
+/// Scans upward from `floor_y` through Dirt voxels until hitting
 /// Air (returns that Y as the surface) or a non-terrain voxel like Trunk
 /// (stops and returns the last terrain Y). Returns `floor_y` if the scan
 /// finds Air immediately above `floor_y`.
@@ -477,7 +477,7 @@ pub fn terrain_surface_y(
             surface = y;
             break;
         }
-        if above == VoxelType::Dirt || above == VoxelType::ForestFloor {
+        if above == VoxelType::Dirt {
             surface = y + 1;
         } else {
             // Non-terrain voxel (tree material, etc.) — stop scanning.

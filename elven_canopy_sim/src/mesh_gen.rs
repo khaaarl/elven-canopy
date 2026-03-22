@@ -23,9 +23,6 @@
 // - Leaf→Leaf: both faces rendered (transparency needs them)
 // - Leaf→Air: face rendered
 //
-// ForestFloor is opaque (blocks adjacent faces) but produces no geometry itself —
-// the ground plane in the Godot scene handles floor visuals.
-//
 // ## Geometry
 //
 // Each visible face produces 4 vertices and 6 indices (2 triangles). Vertices
@@ -156,7 +153,6 @@ pub fn voxel_color(vt: VoxelType) -> [f32; 4] {
 }
 
 /// Returns true if this voxel type should produce geometry in the chunk mesh.
-/// ForestFloor is opaque (culls neighbors) but produces no geometry itself.
 pub fn produces_geometry(vt: VoxelType) -> bool {
     matches!(
         vt,
@@ -418,17 +414,20 @@ mod tests {
     }
 
     #[test]
-    fn forest_floor_produces_no_geometry_but_culls_adjacent() {
+    fn dirt_below_trunk_culls_shared_face() {
         let mut world = one_chunk_world();
-        // Place ForestFloor and a trunk voxel above it.
-        world.set(VoxelCoord::new(8, 0, 8), VoxelType::ForestFloor);
+        // Place Dirt and a trunk voxel above it.
+        world.set(VoxelCoord::new(8, 0, 8), VoxelType::Dirt);
         world.set(VoxelCoord::new(8, 1, 8), VoxelType::Trunk);
         let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None);
 
-        // ForestFloor produces no geometry, but the trunk's -Y face should be
-        // culled because ForestFloor is opaque. Trunk = 5 visible faces.
+        // Both are opaque: the shared face is culled.
+        // Trunk = 5 visible faces (bark surface).
         assert_eq!(mesh.bark.vertex_count(), 20); // 5 * 4
         assert_eq!(mesh.bark.indices.len(), 30); // 5 * 6
+        // Dirt = 5 visible faces (ground surface).
+        assert_eq!(mesh.ground.vertex_count(), 20); // 5 * 4
+        assert_eq!(mesh.ground.indices.len(), 30); // 5 * 6
     }
 
     #[test]
@@ -758,7 +757,6 @@ mod tests {
         assert!(produces_geometry(VoxelType::Dirt));
         assert!(produces_geometry(VoxelType::Strut));
         assert!(!produces_geometry(VoxelType::Air));
-        assert!(!produces_geometry(VoxelType::ForestFloor));
         assert!(!produces_geometry(VoxelType::Fruit));
     }
 }

@@ -58,7 +58,6 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
-[ ] B-raid-spawn           Raiders sometimes spawn inside map instead of at perimeter
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
 [ ] F-adventure-mode       Control individual elf (RPG-like)
@@ -187,7 +186,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-raid-polish          Raid polish: military groups, provisions for long treks
 [ ] F-recipe-any-mat       Any-material recipe parameter support
 [ ] F-rescue               Rescue and stabilize incapacitated creatures
-[ ] F-rm-floor-extent      Remove floor_extent and ForestFloor layer
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
 [ ] F-round-building       Round/circular building construction
@@ -260,6 +258,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-erratic-movement     Erratic/too-fast creature movement after move commands
 [x] B-hostile-detect-nav   detect_hostile_targets panics on flying targets (NavNodeId u32::MAX hack)
 [x] B-preview-blueprints   Preview treats blueprints as complete
+[x] B-raid-spawn           Raiders sometimes spawn inside map instead of at perimeter
 [x] B-sim-floats           Remaining f32/f64 in sim logic threaten determinism
 [x] B-tab-serde-tests      Fix tabulosity test compilation under feature unification
 [x] F-alt-deselect         Alt+click to remove from selection
@@ -389,6 +388,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-relay-multi-game     Relay server supports multiple simultaneous games
 [x] F-relay-release        Standalone relay server release build
 [x] F-rle-voxels           RLE column-based voxel storage
+[x] F-rm-floor-extent      Remove floor_extent and ForestFloor layer
 [x] F-roof-click-select    Roof click selects building, not elf underneath
 [x] F-rts-selection        RTS box selection and multi-creature commands
 [x] F-rust-mesh-gen        Rust-side voxel mesh gen with face culling
@@ -2647,7 +2647,7 @@ on your grid that is in melee range of the target's position; if
 none exists, don't try to path to it. Remove the u32::MAX hack.
 
 #### B-raid-spawn — Raiders sometimes spawn inside map instead of at perimeter
-**Status:** Todo
+**Status:** Done
 
 Raiders are supposed to spawn at the map edge perimeter, but some spawn closer to the center. Likely related to floor_extent no longer matching the actual terrain extent — floor_extent defines the raid perimeter band, but terrain now covers the full world (1024x1024). The perimeter filter in find_perimeter_positions (raid.rs) uses floor_extent to determine "edge" positions, which may be much smaller than the actual map edge with the bigger world.
 
@@ -3569,7 +3569,7 @@ fog of war rendering.
 **Related:** F-bigger-world, F-multiplayer, F-settlement-gen, F-tree-capacity, F-tree-db, F-tree-species, F-uplift-tree, F-zone-world
 
 #### F-rm-floor-extent — Remove floor_extent and ForestFloor layer
-**Status:** Todo
+**Status:** Done
 
 Remove the vestigial `floor_extent` config field and the `ForestFloor`
 voxel type. The terrain system (hilly dirt via value noise) now covers

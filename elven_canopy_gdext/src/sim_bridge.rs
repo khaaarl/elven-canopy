@@ -1068,7 +1068,7 @@ impl SimBridge {
         arr
     }
 
-    /// Return ground-level (ForestFloor surface type) nav node positions as a
+    /// Return ground-level (Dirt surface type) nav node positions as a
     /// PackedVector3Array.
     #[func]
     fn get_ground_nav_nodes(&self) -> PackedVector3Array {
@@ -1095,7 +1095,7 @@ impl SimBridge {
     /// closest walkable position. Returns `{hit: true, position: Vector3}`
     /// or `{hit: false}`.
     ///
-    /// `ground_only`: restrict to ForestFloor nodes (for ground-only species).
+    /// `ground_only`: restrict to ground (Dirt) nodes (for ground-only species).
     /// `large`: use the large (2x2x2) nav graph instead of the standard one.
     #[func]
     fn snap_placement_to_ray(
@@ -3965,7 +3965,7 @@ impl SimBridge {
     /// **Blueprint-aware:** Treats designated (not yet built) blueprints as
     /// their target voxel types for carvability and structural checks.
     ///
-    /// Counts carvable solid voxels (not Air, not ForestFloor, considering
+    /// Counts carvable solid voxels (not Air, not Dirt, considering
     /// overlay) in the region. Returns a `VarDictionary` with `"tier"` and
     /// `"message"` keys.
     #[func]
@@ -4000,7 +4000,7 @@ impl SimBridge {
             }
         }
 
-        // Collect carvable coords: solid, not ForestFloor, and not already
+        // Collect carvable coords: solid, not Dirt, and not already
         // claimed by an existing blueprint (F-no-bp-overlap).
         let mut carve_coords = Vec::new();
         for dy in 0..h {
@@ -4011,7 +4011,7 @@ impl SimBridge {
                         continue;
                     }
                     let vt = effective_type(coord);
-                    if vt.is_solid() && vt != VoxelType::ForestFloor {
+                    if vt.is_solid() && vt != VoxelType::Dirt {
                         carve_coords.push(coord);
                     }
                 }
@@ -4116,7 +4116,6 @@ impl SimBridge {
                 | VoxelType::Trunk
                 | VoxelType::Branch
                 | VoxelType::Root
-                | VoxelType::ForestFloor
                 | VoxelType::Strut
                 | VoxelType::GrownPlatform => {}
                 _ => {
