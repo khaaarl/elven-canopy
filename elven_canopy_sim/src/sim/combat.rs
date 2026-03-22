@@ -506,14 +506,13 @@ impl SimState {
         };
         self.insert_task(new_task);
 
-        let _ =
-            self.db
-                .task_attack_move_data
-                .insert_auto_no_fk(|id| crate::db::TaskAttackMoveData {
-                    id,
-                    task_id,
-                    destination: origin_voxel,
-                });
+        let _ = self
+            .db
+            .task_attack_move_data
+            .insert_no_fk(crate::db::TaskAttackMoveData {
+                task_id,
+                destination: origin_voxel,
+            });
 
         // Assign directly.
         if let Some(mut c) = self.db.creatures.get(&target_id) {
