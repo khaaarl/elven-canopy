@@ -58,6 +58,9 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
+[ ] B-flying-arrow-chase   Flying creatures excluded from arrow-chase
+[ ] B-flying-tasks         Flying creatures skip task system entirely
+[ ] B-raid-spawn           Raiders sometimes spawn inside map instead of at perimeter
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
 [ ] F-adventure-mode       Control individual elf (RPG-like)
@@ -65,7 +68,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-ai-test-harness      Headless test harness for AI-driven manual testing
 [ ] F-anatomy              DF-style hit location anatomy system
 [ ] F-apprentice           Skill transfer via proximity
-[ ] F-arrow-chase          Enemies chase toward arrow source outside detection range
 [ ] F-async-sim            Async sim: decouple sim thread from render thread via delta channel
 [ ] F-audio-sampled        Sampled vocal syllables from conlang
 [ ] F-audio-vocal          Continuous vocal synthesis
@@ -262,6 +264,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-tab-serde-tests      Fix tabulosity test compilation under feature unification
 [x] F-alt-deselect         Alt+click to remove from selection
 [x] F-armor                Wearable armor system
+[x] F-arrow-chase          Enemies chase toward arrow source outside detection range
 [x] F-arrow-durability     Arrow durability and recovery
 [x] F-attack-move          Attack-move task (walk + fight en route)
 [x] F-attack-task          AttackCreature task (player-directed target pursuit)
@@ -1191,6 +1194,22 @@ computed from edge distance and per-species speed config.
 
 ### Creatures & Needs
 
+#### B-flying-tasks — Flying creatures skip task system entirely
+**Status:** Todo
+
+Flying creatures (Hornet, Wyvern, and future winged elves) use a separate
+hardcoded activation loop (process_flying_creature_activation) that skips
+the task system entirely — no task dispatch, no preemption, no player
+commands. This means flying creatures cannot be given GoTo, AttackMove,
+or any other task-based orders. The current loop only handles: resolve
+action → flee check → detect hostiles → pursue/melee → wander. Unifying
+the flying activation loop with the standard task-based activation
+pipeline is required before flying creatures can participate in any
+task-driven system (player commands, construction, hauling, etc.).
+
+**Blocks:** B-flying-arrow-chase, F-winged-elf
+**Related:** F-arrow-chase
+
 #### F-bread — Bread items and elf food management
 **Status:** Done · **Phase:** 3
 
@@ -1546,6 +1565,7 @@ A kind of elf that can join the player's civilization with wings.
 Has a winged sprite variant and only flight speed (no walking or
 climbing speed). Requires F-flying-nav.
 
+**Blocked by:** B-flying-tasks
 **Unblocked by:** F-flying-nav
 
 #### F-wyvern — Wyvern hostile flying creature (2×2×2)
@@ -2633,6 +2653,19 @@ infrastructure.
 
 ### Combat & Defense
 
+#### B-flying-arrow-chase — Flying creatures excluded from arrow-chase
+**Status:** Todo
+
+Flying creatures (Hornet, Wyvern) are currently excluded from
+maybe_arrow_chase because their activation loop ignores tasks. Once
+B-flying-tasks is resolved and flying creatures use the standard
+task-based activation pipeline, remove the flight_ticks_per_voxel
+guard in maybe_arrow_chase so flying creatures also chase toward
+arrow sources outside their detection range.
+
+**Blocked by:** B-flying-tasks
+**Related:** F-arrow-chase
+
 #### B-hostile-detect-nav — detect_hostile_targets panics on flying targets (NavNodeId u32::MAX hack)
 **Status:** Done
 
@@ -2673,7 +2706,7 @@ Armor items that can be worn in clothing slots, providing damage reduction in co
 **Related:** F-anatomy, F-footwear-split
 
 #### F-arrow-chase — Enemies chase toward arrow source outside detection range
-**Status:** Todo
+**Status:** Done
 
 When a hostile creature is hit by a projectile from outside its detection
 range, it infers the approximate direction of the attacker. If the creature
@@ -2681,7 +2714,7 @@ is aggressive, it chases in that direction for a limited time/distance before
 giving up. Adds tactical depth — sniping from range has consequences, and
 enemies don't just stand there absorbing arrows from the fog.
 
-**Related:** F-enemy-ai
+**Related:** B-flying-arrow-chase, B-flying-tasks, F-enemy-ai
 
 #### F-arrow-durability — Arrow durability and recovery
 **Status:** Done · **Phase:** 3

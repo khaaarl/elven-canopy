@@ -8,8 +8,11 @@
 // enforcement. Also includes civilization diplomacy, military group management,
 // arrow durability degradation on impact (apply_arrow_impact_damage),
 // melee weapon degradation on strike (apply_melee_weapon_impact_damage),
-// arrow-condition damage scaling (scale_damage_by_arrow_hp), and armor
-// damage reduction with equipment degradation (apply_armor_reduction).
+// arrow-condition damage scaling (scale_damage_by_arrow_hp), armor
+// damage reduction with equipment degradation (apply_armor_reduction),
+// and arrow-chase behavior (maybe_arrow_chase) where non-passive hostiles
+// hit by projectiles from outside their detection range create an autonomous
+// AttackMove toward the arrow's origin voxel.
 //
 // See also: `projectile.rs` (sub-voxel trajectory math), `preemption.rs`
 // (task priority for combat interruption), `movement.rs` (tactical repositioning).
@@ -381,6 +384,152 @@ impl SimState {
         let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
             c.path = None;
         });
+    }
+
+    /// When a creature is hit by a projectile from outside its detection range,
+    /// create an autonomous AttackMove task toward the arrow's origin voxel.
+    /// This makes hostiles chase toward the source of incoming fire rather than
+    /// standing still absorbing arrows from beyond their detection radius.
+    ///
+    /// Skips if:
+    /// - The creature is dead or passive (never initiates combat).
+    /// - The origin is within detection range (normal hostile_pursue handles it).
+    /// - The creature's current task cannot be preempted by AutonomousCombat.
+    ///
+    /// If the creature already has an autonomous AttackMove (from a previous
+    /// arrow hit), updates the destination to the new origin instead of
+    /// creating a second task.
+    pub(crate) fn maybe_arrow_chase(&mut self, target_id: CreatureId, origin_voxel: VoxelCoord) {
+        let creature = match self.db.creatures.get(&target_id) {
+            Some(c) if c.vital_status == VitalStatus::Alive => c,
+            _ => return,
+        };
+        let species = creature.species;
+
+        // Passive creatures never chase.
+        let style = self.resolve_engagement_style(target_id);
+        if style.initiative == crate::species::EngagementInitiative::Passive {
+            return;
+        }
+
+        // Flying creatures use their own pursuit loop in
+        // process_flying_creature_activation, which ignores tasks entirely.
+        // Creating an AttackMove task for a flyer would orphan the task.
+        if self.species_table[&species]
+            .flight_ticks_per_voxel
+            .is_some()
+        {
+            return;
+        }
+
+        // Check if the origin is already within detection range — if so,
+        // normal hostile_pursue will handle engagement on the next activation.
+        let detection_range_sq = self.species_table[&species].hostile_detection_range_sq;
+        let pos = creature.position;
+        let dx = pos.x as i64 - origin_voxel.x as i64;
+        let dy = pos.y as i64 - origin_voxel.y as i64;
+        let dz = pos.z as i64 - origin_voxel.z as i64;
+        let dist_sq = dx * dx + dy * dy + dz * dz;
+        if dist_sq <= detection_range_sq {
+            return;
+        }
+
+        // If the creature already has an autonomous AttackMove task (from a
+        // prior arrow hit), update its destination to the new origin.
+        if let Some(current_task_id) = creature.current_task
+            && let Some(current_task) = self.db.tasks.get(&current_task_id)
+            && current_task.kind_tag == crate::db::TaskKindTag::AttackMove
+            && current_task.origin == task::TaskOrigin::Autonomous
+        {
+            // Update the AttackMove destination to the new origin.
+            if let Some(mut amd) = self.task_attack_move_data(current_task_id) {
+                amd.destination = origin_voxel;
+                let _ = self.db.task_attack_move_data.update_no_fk(amd);
+            }
+            // Update task location so pathing heads to the new target.
+            if let Some(mut t) = self.db.tasks.get(&current_task_id) {
+                t.location = origin_voxel;
+                t.target_creature = None;
+                let _ = self.db.tasks.update_no_fk(t);
+            }
+            // Clear cached path so pathing recomputes.
+            let _ = self
+                .db
+                .creatures
+                .modify_unchecked(&target_id, |c| c.path = None);
+            return;
+        }
+
+        // Check if we can find the destination on the nav graph.
+        if self
+            .graph_for_species(species)
+            .find_nearest_node(origin_voxel)
+            .is_none()
+        {
+            return;
+        }
+
+        // Check preemption against current task.
+        let mut mid_move = false;
+        if let Some(current_task_id) = creature.current_task
+            && let Some(current_task) = self.db.tasks.get(&current_task_id)
+        {
+            let current_level =
+                preemption::preemption_level(current_task.kind_tag, current_task.origin);
+            let current_origin = current_task.origin;
+            if !preemption::can_preempt(
+                current_level,
+                current_origin,
+                preemption::PreemptionLevel::AutonomousCombat,
+                task::TaskOrigin::Autonomous,
+            ) {
+                return;
+            }
+            mid_move = self.preempt_task(target_id, current_task_id);
+        } else if creature.action_kind == ActionKind::Move && creature.next_available_tick.is_some()
+        {
+            mid_move = true;
+        }
+
+        // Create an autonomous AttackMove toward the arrow origin.
+        let task_id = TaskId::new(&mut self.rng);
+        let new_task = task::Task {
+            id: task_id,
+            kind: task::TaskKind::AttackMove,
+            state: task::TaskState::InProgress,
+            location: origin_voxel,
+            progress: 0,
+            total_cost: 0,
+            required_species: Some(species),
+            origin: task::TaskOrigin::Autonomous,
+            target_creature: None,
+        };
+        self.insert_task(new_task);
+
+        let _ =
+            self.db
+                .task_attack_move_data
+                .insert_auto_no_fk(|id| crate::db::TaskAttackMoveData {
+                    id,
+                    task_id,
+                    destination: origin_voxel,
+                });
+
+        // Assign directly.
+        if let Some(mut c) = self.db.creatures.get(&target_id) {
+            c.current_task = Some(task_id);
+            c.path = None;
+            let _ = self.db.creatures.update_no_fk(c);
+        }
+
+        if !mid_move {
+            self.event_queue.schedule(
+                self.tick + 1,
+                ScheduledEventKind::CreatureActivation {
+                    creature_id: target_id,
+                },
+            );
+        }
     }
 
     /// Walk toward an attack-move engagement target. On pathfinding failure,
@@ -1867,6 +2016,7 @@ impl SimState {
         };
         let shooter_id = proj.shooter;
         let proj_inv = proj.inventory_id;
+        let origin_voxel = proj.origin_voxel;
 
         // Compute damage from impact speed (momentum-based: linear in speed).
         // REFERENCE_SPEED is arrow_base_speed (the "normal" launch speed).
@@ -1899,6 +2049,12 @@ impl SimState {
                 shooter_id,
             },
         });
+
+        // Arrow chase: if the target is a non-passive hostile hit from outside
+        // its detection range, it attack-moves toward the arrow's origin.
+        if remaining_hp > 0 {
+            self.maybe_arrow_chase(target_id, origin_voxel);
+        }
 
         // Apply random durability damage to the arrow.
         let arrow_broke = self.apply_arrow_impact_damage(proj_inv, events);

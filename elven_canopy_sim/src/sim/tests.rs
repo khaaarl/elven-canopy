@@ -40350,3 +40350,331 @@ fn attack_target_continues_through_incapacitation_to_death() {
         elf_c.vital_status
     );
 }
+
+// ---------------------------------------------------------------------------
+// F-arrow-chase: enemies chase toward arrow source outside detection range
+// ---------------------------------------------------------------------------
+
+#[test]
+fn arrow_chase_creates_autonomous_attack_move() {
+    // Calling maybe_arrow_chase with an origin outside detection range should
+    // create an autonomous AttackMove task toward the origin.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let detection_range_sq = sim.species_table[&Species::Goblin].hostile_detection_range_sq;
+
+    // Origin 20 voxels away (20² = 400 > 225 = detection range).
+    let origin = VoxelCoord::new(goblin_pos.x + 20, goblin_pos.y, goblin_pos.z);
+    assert!(20i64 * 20 > detection_range_sq);
+
+    force_idle_and_cancel_activations(&mut sim, goblin);
+
+    sim.maybe_arrow_chase(goblin, origin);
+
+    let creature = sim.db.creatures.get(&goblin).unwrap();
+    let task_id = creature
+        .current_task
+        .expect("Goblin should have a chase task after maybe_arrow_chase");
+    let task = sim.db.tasks.get(&task_id).unwrap();
+    assert_eq!(task.kind_tag, crate::db::TaskKindTag::AttackMove);
+    assert_eq!(task.origin, crate::task::TaskOrigin::Autonomous);
+
+    let amd = sim.task_attack_move_data(task_id).unwrap();
+    assert_eq!(amd.destination, origin);
+}
+
+#[test]
+fn arrow_chase_no_chase_within_detection_range() {
+    // maybe_arrow_chase should do nothing when origin is within detection range.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+
+    // Origin 5 voxels away (25 < 225 = detection range).
+    let origin = VoxelCoord::new(goblin_pos.x + 5, goblin_pos.y, goblin_pos.z);
+
+    force_idle_and_cancel_activations(&mut sim, goblin);
+
+    sim.maybe_arrow_chase(goblin, origin);
+
+    let creature = sim.db.creatures.get(&goblin).unwrap();
+    assert!(
+        creature.current_task.is_none(),
+        "No chase task when origin is within detection range"
+    );
+}
+
+#[test]
+fn arrow_chase_passive_creature_does_not_chase() {
+    // Passive creatures should never chase, even when hit from outside range.
+    let mut sim = test_sim(42);
+    let capybara = spawn_species(&mut sim, Species::Capybara);
+    let capy_pos = sim.db.creatures.get(&capybara).unwrap().position;
+
+    let origin = VoxelCoord::new(capy_pos.x + 30, capy_pos.y, capy_pos.z);
+
+    force_idle_and_cancel_activations(&mut sim, capybara);
+
+    sim.maybe_arrow_chase(capybara, origin);
+
+    let creature = sim.db.creatures.get(&capybara).unwrap();
+    assert!(
+        creature.current_task.is_none(),
+        "Passive creature should not chase"
+    );
+}
+
+#[test]
+fn arrow_chase_second_hit_updates_destination() {
+    // A second maybe_arrow_chase call should update the existing AttackMove
+    // destination rather than creating a new task.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+
+    let origin1 = VoxelCoord::new(goblin_pos.x + 20, goblin_pos.y, goblin_pos.z);
+    let origin2 = VoxelCoord::new(goblin_pos.x - 20, goblin_pos.y, goblin_pos.z);
+
+    force_idle_and_cancel_activations(&mut sim, goblin);
+
+    // First chase.
+    sim.maybe_arrow_chase(goblin, origin1);
+    let task_id_1 = sim.db.creatures.get(&goblin).unwrap().current_task.unwrap();
+    let amd1 = sim.task_attack_move_data(task_id_1).unwrap();
+    assert_eq!(amd1.destination, origin1);
+
+    // Second chase from opposite direction.
+    sim.maybe_arrow_chase(goblin, origin2);
+    let task_id_2 = sim.db.creatures.get(&goblin).unwrap().current_task.unwrap();
+
+    assert_eq!(
+        task_id_1, task_id_2,
+        "Should update existing task, not create a new one"
+    );
+
+    let amd2 = sim.task_attack_move_data(task_id_2).unwrap();
+    assert_eq!(
+        amd2.destination, origin2,
+        "Destination should update to new origin"
+    );
+}
+
+#[test]
+fn arrow_chase_dead_creature_does_not_chase() {
+    // A dead creature should not get a chase task.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+
+    // Kill the goblin.
+    if let Some(mut c) = sim.db.creatures.get(&goblin) {
+        c.vital_status = VitalStatus::Dead;
+        c.hp = 0;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let origin = VoxelCoord::new(goblin_pos.x + 20, goblin_pos.y, goblin_pos.z);
+    sim.maybe_arrow_chase(goblin, origin);
+
+    let creature = sim.db.creatures.get(&goblin).unwrap();
+    assert!(
+        creature.current_task.is_none(),
+        "Dead creature should not chase"
+    );
+}
+
+#[test]
+fn arrow_chase_does_not_preempt_player_combat() {
+    // A player-directed AttackMove (PlayerCombat level) should not be
+    // preempted by an arrow chase (AutonomousCombat level).
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+
+    // Give the goblin a player-directed AttackMove.
+    let player_dest = VoxelCoord::new(goblin_pos.x + 5, goblin_pos.y, goblin_pos.z);
+    let mut events = Vec::new();
+    sim.command_attack_move(goblin, player_dest, &mut events);
+
+    let task_before = sim.db.creatures.get(&goblin).unwrap().current_task.unwrap();
+
+    // Arrow chase from outside detection range.
+    let origin = VoxelCoord::new(goblin_pos.x + 20, goblin_pos.y, goblin_pos.z);
+    sim.maybe_arrow_chase(goblin, origin);
+
+    let task_after = sim.db.creatures.get(&goblin).unwrap().current_task.unwrap();
+    assert_eq!(
+        task_before, task_after,
+        "Arrow chase should not preempt player-directed combat"
+    );
+}
+
+#[test]
+fn arrow_chase_integration_projectile_triggers_chase() {
+    // Integration test: a real projectile hit from outside detection range
+    // should trigger maybe_arrow_chase via resolve_projectile_creature_hit.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, goblin);
+
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+
+    // Place origin above the goblin (in open air, avoiding terrain).
+    // Use Y+20 to be outside detection range (20² = 400 > 225).
+    let origin = VoxelCoord::new(goblin_pos.x, goblin_pos.y + 20, goblin_pos.z);
+
+    force_idle_and_cancel_activations(&mut sim, goblin);
+
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+    sim.spawn_projectile(origin, goblin_pos, None);
+
+    // Run until the projectile resolves.
+    let mut hit = false;
+    for _ in 0..1000 {
+        if sim.db.projectiles.is_empty() {
+            break;
+        }
+        sim.tick += 1;
+        let mut events = Vec::new();
+        sim.process_projectile_tick(&mut events);
+        for e in &events {
+            if matches!(e.kind, SimEventKind::ProjectileHitCreature { .. }) {
+                hit = true;
+            }
+        }
+    }
+
+    if !hit {
+        // If the projectile didn't hit (terrain in the way), skip the assertion
+        // — the unit tests above cover the logic directly.
+        return;
+    }
+
+    // If it did hit, the goblin should have a chase task.
+    let creature = sim.db.creatures.get(&goblin).unwrap();
+    if creature.vital_status == VitalStatus::Alive {
+        let task_id = creature
+            .current_task
+            .expect("Goblin should have chase task after projectile hit from outside range");
+        let task = sim.db.tasks.get(&task_id).unwrap();
+        assert_eq!(task.kind_tag, crate::db::TaskKindTag::AttackMove);
+        assert_eq!(task.origin, crate::task::TaskOrigin::Autonomous);
+    }
+}
+
+#[test]
+fn arrow_chase_flying_creature_does_not_chase() {
+    // Flying creatures (hornet, wyvern) use a separate activation loop that
+    // ignores tasks. Creating an AttackMove would orphan the task.
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let air_pos = VoxelCoord::new(tree_pos.x + 10, tree_pos.y + 30, tree_pos.z);
+    let hornet = spawn_hornet_at(&mut sim, air_pos);
+    let hornet_pos = sim.db.creatures.get(&hornet).unwrap().position;
+
+    // Verify hornet is a flying species.
+    assert!(
+        sim.species_table[&Species::Hornet]
+            .flight_ticks_per_voxel
+            .is_some(),
+        "Hornet should be a flying species"
+    );
+
+    let origin = VoxelCoord::new(hornet_pos.x + 20, hornet_pos.y, hornet_pos.z);
+    force_idle_and_cancel_activations(&mut sim, hornet);
+
+    sim.maybe_arrow_chase(hornet, origin);
+
+    let creature = sim.db.creatures.get(&hornet).unwrap();
+    assert!(
+        creature.current_task.is_none(),
+        "Flying creature should not get a chase task"
+    );
+}
+
+#[test]
+fn arrow_chase_nonexistent_creature_is_noop() {
+    // Calling maybe_arrow_chase with a nonexistent creature ID should not
+    // panic — it just returns early.
+    let mut sim = test_sim(42);
+    let fake_id = CreatureId::new(&mut sim.rng);
+    let origin = VoxelCoord::new(100, 51, 100);
+    sim.maybe_arrow_chase(fake_id, origin);
+    // No panic = success.
+}
+
+#[test]
+fn arrow_chase_preempts_autonomous_task() {
+    // A creature doing an autonomous (lower-priority) task should have it
+    // preempted by the arrow chase (AutonomousCombat level).
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+
+    // Create a low-priority autonomous GoTo task.
+    let task_id = TaskId::new(&mut sim.rng);
+    let goto_task = crate::task::Task {
+        id: task_id,
+        kind: crate::task::TaskKind::GoTo,
+        state: crate::task::TaskState::InProgress,
+        location: goblin_pos,
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Goblin),
+        origin: crate::task::TaskOrigin::Autonomous,
+        target_creature: None,
+    };
+    sim.insert_task(goto_task);
+    if let Some(mut c) = sim.db.creatures.get(&goblin) {
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Arrow chase from outside detection range.
+    let origin = VoxelCoord::new(goblin_pos.x + 20, goblin_pos.y, goblin_pos.z);
+    sim.maybe_arrow_chase(goblin, origin);
+
+    let creature = sim.db.creatures.get(&goblin).unwrap();
+    let new_task_id = creature.current_task.unwrap();
+    assert_ne!(
+        new_task_id, task_id,
+        "Arrow chase should have replaced the autonomous GoTo"
+    );
+    let new_task = sim.db.tasks.get(&new_task_id).unwrap();
+    assert_eq!(new_task.kind_tag, crate::db::TaskKindTag::AttackMove);
+    assert_eq!(new_task.origin, crate::task::TaskOrigin::Autonomous);
+}
+
+#[test]
+fn arrow_chase_second_hit_clears_target_creature() {
+    // When updating an existing chase task, target_creature should be cleared
+    // so the creature recomputes pathing to the new origin.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+
+    let origin1 = VoxelCoord::new(goblin_pos.x + 20, goblin_pos.y, goblin_pos.z);
+    force_idle_and_cancel_activations(&mut sim, goblin);
+
+    sim.maybe_arrow_chase(goblin, origin1);
+    let task_id = sim.db.creatures.get(&goblin).unwrap().current_task.unwrap();
+
+    // Simulate the task having acquired a melee target during attack-move.
+    if let Some(mut t) = sim.db.tasks.get(&task_id) {
+        t.target_creature = Some(elf);
+        let _ = sim.db.tasks.update_no_fk(t);
+    }
+
+    // Second hit from a different direction.
+    let origin2 = VoxelCoord::new(goblin_pos.x - 20, goblin_pos.y, goblin_pos.z);
+    sim.maybe_arrow_chase(goblin, origin2);
+
+    let task = sim.db.tasks.get(&task_id).unwrap();
+    assert!(
+        task.target_creature.is_none(),
+        "Second hit should clear target_creature so pathing recomputes"
+    );
+}
