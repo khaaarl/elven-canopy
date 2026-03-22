@@ -57,7 +57,6 @@ This reduces merge conflicts when parallel work streams add items.
 ### Todo
 
 ```
-[ ] B-dead-enums           Remove dead GrownStairs/Bridge code and add explicit enum discriminants
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-raid-spawn           Raiders sometimes spawn inside map instead of at perimeter
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
@@ -255,6 +254,7 @@ This reduces merge conflicts when parallel work streams add items.
 ### Done
 
 ```
+[x] B-dead-enums           Remove dead GrownStairs/Bridge code and add explicit enum discriminants
 [x] B-dead-node-panic      Panic on dead nav node in pathfinding
 [x] B-dirt-not-pinned      Dirt unpinned in fast structural validator
 [x] B-erratic-movement     Erratic/too-fast creature movement after move commands
@@ -4782,7 +4782,7 @@ cutaway, or hide-upper-levels toggle. Open design question (§27).
 ### Sim Engine
 
 #### B-dead-enums — Remove dead GrownStairs/Bridge code and add explicit enum discriminants
-**Status:** Todo
+**Status:** Done
 
 GrownStairs, Bridge (VoxelType), and Stairs, Bridge (BuildType) exist in code but there is no way to produce them in-game. They are not planned for implementation in the foreseeable future. Remove all code referencing these variants — enum definitions, match arms, trait impls, tests, and any other references.
 

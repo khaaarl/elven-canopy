@@ -1523,8 +1523,6 @@ impl SimBridge {
             dict.set("id", structure.id.0 as i64);
             let build_type_str = match structure.build_type {
                 BuildType::Platform => "Platform",
-                BuildType::Bridge => "Bridge",
-                BuildType::Stairs => "Stairs",
                 BuildType::Wall => "Wall",
                 BuildType::Enclosure => "Enclosure",
                 BuildType::Building => "Building",
@@ -1776,8 +1774,6 @@ impl SimBridge {
         dict.set("id", structure.id.0 as i64);
         let build_type_str = match structure.build_type {
             BuildType::Platform => "Platform",
-            BuildType::Bridge => "Bridge",
-            BuildType::Stairs => "Stairs",
             BuildType::Wall => "Wall",
             BuildType::Enclosure => "Enclosure",
             BuildType::Building => "Building",
@@ -4096,10 +4092,10 @@ impl SimBridge {
         }
 
         // Blueprint overlap check (F-no-bp-overlap). Struts can overlap with
-        // platform and bridge blueprints (they pass through flat structures).
+        // platform blueprints (they pass through flat structures).
         for &coord in &line {
             if let Some(&bp_vt) = overlay.voxels.get(&coord)
-                && !matches!(bp_vt, VoxelType::GrownPlatform | VoxelType::Bridge)
+                && !matches!(bp_vt, VoxelType::GrownPlatform)
             {
                 let mut dict =
                     Self::preview_result("Blocked", "Strut overlaps an existing blueprint.");
@@ -4122,8 +4118,7 @@ impl SimBridge {
                 | VoxelType::Root
                 | VoxelType::ForestFloor
                 | VoxelType::Strut
-                | VoxelType::GrownPlatform
-                | VoxelType::Bridge => {}
+                | VoxelType::GrownPlatform => {}
                 _ => {
                     let mut dict = Self::preview_result(
                         "Blocked",

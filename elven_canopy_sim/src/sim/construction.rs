@@ -65,7 +65,7 @@ impl SimState {
             overlay.voxels.get(v).is_some_and(|&vt| {
                 if strut_overlap_ok {
                     // Struts only conflict with non-flat blueprint types.
-                    !matches!(vt, VoxelType::GrownPlatform | VoxelType::Bridge)
+                    !matches!(vt, VoxelType::GrownPlatform)
                 } else {
                     true
                 }
@@ -116,14 +116,13 @@ impl SimState {
                     | VoxelType::ForestFloor => {
                         ov.push((coord, self.world.get(coord)));
                     }
-                    VoxelType::Strut | VoxelType::GrownPlatform | VoxelType::Bridge => {
-                        // Struts can pass through platforms, bridges, and
-                        // existing struts. Record the original type for
-                        // restoration on cancel.
+                    VoxelType::Strut | VoxelType::GrownPlatform => {
+                        // Struts can pass through platforms and existing
+                        // struts. Record the original type for restoration
+                        // on cancel.
                         ov.push((coord, self.world.get(coord)));
                     }
                     VoxelType::GrownWall
-                    | VoxelType::GrownStairs
                     | VoxelType::BuildingInterior
                     | VoxelType::WoodLadder
                     | VoxelType::RopeLadder => {
@@ -940,8 +939,8 @@ impl SimState {
     }
 
     /// Compute the creature-scale (i64) mana cost for one work action of the
-    /// given build type. Platform and Bridge use their specific config costs;
-    /// all others (Furnish, Carve, Stairs, etc.) use `default_mana_cost_per_mille`.
+    /// given build type. Platform uses its specific config cost; all others
+    /// (Furnish, Carve, Wall, etc.) use `default_mana_cost_per_mille`.
     ///
     /// Config costs are in per-mille of creature mp_max (20 = 2%).
     /// Conversion: `mp_max / 1000 × cost` — pure integer math, no floats.
@@ -951,7 +950,6 @@ impl SimState {
     pub(crate) fn mana_cost_per_action(&self, build_type: Option<BuildType>) -> i64 {
         let cost_per_mille = match build_type {
             Some(BuildType::Platform) => self.config.platform_mana_cost_per_mille,
-            Some(BuildType::Bridge) => self.config.bridge_mana_cost_per_mille,
             _ => self.config.default_mana_cost_per_mille,
         };
         let elf_mp_max = self.species_table[&Species::Elf].mp_max;

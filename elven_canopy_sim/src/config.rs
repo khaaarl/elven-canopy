@@ -149,22 +149,6 @@ impl Default for StructuralConfig {
             },
         );
         materials.insert(
-            VoxelType::GrownStairs,
-            MaterialProperties {
-                density: 0.5,
-                stiffness: 45.0,
-                strength: 18.0,
-            },
-        );
-        materials.insert(
-            VoxelType::Bridge,
-            MaterialProperties {
-                density: 0.5,
-                stiffness: 45.0,
-                strength: 18.0,
-            },
-        );
-        materials.insert(
             VoxelType::ForestFloor,
             MaterialProperties {
                 density: 999.0,
@@ -1908,13 +1892,9 @@ pub struct GameConfig {
     #[serde(default = "default_platform_mana_cost_per_mille")]
     pub platform_mana_cost_per_mille: u32,
 
-    /// Mana cost to grow one voxel of bridge/walkway, in per-mille of mp_max.
-    #[serde(default = "default_bridge_mana_cost_per_mille")]
-    pub bridge_mana_cost_per_mille: u32,
-
     /// Default mana cost per work action for build types that don't have a
-    /// specific config field (stairs, walls, struts, carving, ladders,
-    /// furnishing), in per-mille of mp_max.
+    /// specific config field (walls, struts, carving, ladders, furnishing),
+    /// in per-mille of mp_max.
     #[serde(default = "default_mana_cost_per_mille")]
     pub default_mana_cost_per_mille: u32,
 
@@ -2306,10 +2286,6 @@ pub struct GameConfig {
 
 fn default_platform_mana_cost_per_mille() -> u32 {
     20
-}
-
-fn default_bridge_mana_cost_per_mille() -> u32 {
-    30
 }
 
 fn default_mana_cost_per_mille() -> u32 {
@@ -3025,7 +3001,6 @@ impl Default for GameConfig {
             mana_base_generation_rate_mm: 1000,
             mana_mood_multiplier_range_permille: (200, 2000),
             platform_mana_cost_per_mille: 20,
-            bridge_mana_cost_per_mille: 30,
             default_mana_cost_per_mille: 20,
             grow_mana_cost_per_mille: 20,
             mana_abandon_threshold: 3,
@@ -3365,7 +3340,7 @@ mod tests {
             "mana_base_generation_rate_mm": 1000,
             "mana_mood_multiplier_range_permille": [200, 2000],
             "platform_mana_cost_per_mille": 20,
-            "bridge_mana_cost_per_mille": 30,
+
             "fruit_production_rate_ppm": 500000,
             "fruit_max_per_tree": 20,
             "fruit_initial_attempts": 12,
@@ -3400,7 +3375,7 @@ mod tests {
             "mana_base_generation_rate_mm": 2000,
             "mana_mood_multiplier_range_permille": [100, 3000],
             "platform_mana_cost_per_mille": 16,
-            "bridge_mana_cost_per_mille": 24,
+
             "fruit_production_rate_ppm": 800000,
             "fruit_max_per_tree": 25,
             "fruit_initial_attempts": 15,
@@ -3517,7 +3492,7 @@ mod tests {
             "mana_base_generation_rate_mm": 1000,
             "mana_mood_multiplier_range_permille": [200, 2000],
             "platform_mana_cost_per_mille": 20,
-            "bridge_mana_cost_per_mille": 30,
+
             "fruit_production_rate_ppm": 500000,
             "fruit_max_per_tree": 20,
             "fruit_initial_attempts": 12,

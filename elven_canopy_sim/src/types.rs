@@ -941,24 +941,23 @@ impl MoodTier {
 /// Types of structures that can be built.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildType {
-    Platform,
-    Bridge,
-    Stairs,
-    Wall,
-    Enclosure,
+    Platform = 0,
+    // 1 and 2 formerly Bridge and Stairs — removed (dead code, never producible).
+    Wall = 3,
+    Enclosure = 4,
     /// A building with paper-thin walls. Produces `BuildingInterior` voxels
     /// with per-face restrictions stored in `SimState.face_data`.
-    Building,
+    Building = 5,
     /// A wood ladder — anchored to any adjacent solid voxel along its face.
-    WoodLadder,
+    WoodLadder = 6,
     /// A rope ladder — hangs from the topmost anchor point.
-    RopeLadder,
+    RopeLadder = 7,
     /// Carve (remove) solid voxels to Air. The inverse of construction.
-    Carve,
+    Carve = 8,
     /// A diagonal support strut between two endpoints. Produces `Strut` voxels
     /// along a 6-connected line. Uses custom replacement validation instead of
     /// the normal `allows_tree_overlap()` flow.
-    Strut,
+    Strut = 9,
 }
 
 impl BuildType {
@@ -970,11 +969,7 @@ impl BuildType {
     pub fn allows_tree_overlap(self) -> bool {
         matches!(
             self,
-            BuildType::Platform
-                | BuildType::Bridge
-                | BuildType::Stairs
-                | BuildType::WoodLadder
-                | BuildType::RopeLadder
+            BuildType::Platform | BuildType::WoodLadder | BuildType::RopeLadder
         )
     }
 
@@ -987,8 +982,6 @@ impl BuildType {
     pub fn to_voxel_type(self) -> VoxelType {
         match self {
             BuildType::Platform => VoxelType::GrownPlatform,
-            BuildType::Bridge => VoxelType::Bridge,
-            BuildType::Stairs => VoxelType::GrownStairs,
             BuildType::Wall | BuildType::Enclosure => VoxelType::GrownWall,
             BuildType::Building => VoxelType::BuildingInterior,
             BuildType::WoodLadder => VoxelType::WoodLadder,
@@ -1143,32 +1136,31 @@ impl FaceData {
 #[repr(u8)]
 pub enum VoxelType {
     #[default]
-    Air,
-    Trunk,
-    Branch,
-    GrownPlatform,
-    GrownWall,
-    GrownStairs,
-    Bridge,
-    ForestFloor,
-    Dirt,
-    Leaf,
-    Fruit,
-    Root,
+    Air = 0,
+    Trunk = 1,
+    Branch = 2,
+    GrownPlatform = 3,
+    GrownWall = 4,
+    // 5 and 6 formerly GrownStairs and Bridge — removed (dead code, never producible).
+    ForestFloor = 7,
+    Dirt = 8,
+    Leaf = 9,
+    Fruit = 10,
+    Root = 11,
     /// A passable voxel inside a building. Movement restrictions come from
     /// per-face `FaceData` stored separately in `SimState.face_data`, not from
     /// the voxel type itself. This means `is_solid()` returns false.
-    BuildingInterior,
+    BuildingInterior = 12,
     /// A wood ladder voxel. Non-solid, with per-face restrictions in `face_data`
     /// and orientation stored in `ladder_orientations`.
-    WoodLadder,
+    WoodLadder = 13,
     /// A rope ladder voxel. Non-solid, same face/orientation storage as WoodLadder.
-    RopeLadder,
+    RopeLadder = 14,
     /// A support strut voxel. Solid like wood, but carries rod-spring metadata
     /// for efficient diagonal load transfer via chain-topology springs along
     /// the strut axis. Can be placed through natural materials (dirt, trunk,
     /// leaves) and existing completed struts.
-    Strut,
+    Strut = 15,
 }
 
 /// Classification of a voxel for construction overlap with tree geometry.
@@ -1204,8 +1196,6 @@ impl VoxelType {
                 | VoxelType::Dirt
                 | VoxelType::GrownPlatform
                 | VoxelType::GrownWall
-                | VoxelType::GrownStairs
-                | VoxelType::Bridge
                 | VoxelType::Strut
         )
     }
@@ -1243,17 +1233,30 @@ impl VoxelType {
         matches!(self, VoxelType::WoodLadder | VoxelType::RopeLadder)
     }
 
-    /// Number of VoxelType variants. Used for compile-time validation.
-    pub const COUNT: usize = 16;
+    /// One past the highest discriminant value. Used for iteration in tests.
+    /// Not equal to the variant count when there are gaps from removed variants.
+    pub const MAX_DISCRIMINANT_PLUS_ONE: usize = 16;
 
     /// Convert a `u8` discriminant back to a `VoxelType`. Returns `Air` for
-    /// out-of-range values. Safe because `VoxelType` is `#[repr(u8)]`.
+    /// out-of-range or gap values.
     pub fn from_u8(v: u8) -> Self {
-        if (v as usize) < Self::COUNT {
-            // SAFETY: VoxelType is #[repr(u8)] with COUNT variants numbered 0..COUNT-1.
-            unsafe { std::mem::transmute::<u8, VoxelType>(v) }
-        } else {
-            VoxelType::Air
+        match v {
+            0 => VoxelType::Air,
+            1 => VoxelType::Trunk,
+            2 => VoxelType::Branch,
+            3 => VoxelType::GrownPlatform,
+            4 => VoxelType::GrownWall,
+            // 5, 6: formerly GrownStairs, Bridge — removed.
+            7 => VoxelType::ForestFloor,
+            8 => VoxelType::Dirt,
+            9 => VoxelType::Leaf,
+            10 => VoxelType::Fruit,
+            11 => VoxelType::Root,
+            12 => VoxelType::BuildingInterior,
+            13 => VoxelType::WoodLadder,
+            14 => VoxelType::RopeLadder,
+            15 => VoxelType::Strut,
+            _ => VoxelType::Air,
         }
     }
 
@@ -1274,8 +1277,6 @@ impl VoxelType {
             | VoxelType::Dirt
             | VoxelType::GrownPlatform
             | VoxelType::GrownWall
-            | VoxelType::GrownStairs
-            | VoxelType::Bridge
             | VoxelType::BuildingInterior
             | VoxelType::WoodLadder
             | VoxelType::RopeLadder
@@ -1284,22 +1285,8 @@ impl VoxelType {
     }
 }
 
-// Compile-time check: VoxelType::COUNT must match the actual variant count.
-// If a variant is added or removed without updating COUNT, this will fail.
+// Compile-time check: VoxelType fits in a u8.
 const _: () = assert!(std::mem::size_of::<VoxelType>() == 1);
-// This array has COUNT elements; if COUNT != actual variants, from_u8 is unsound.
-const _VOXEL_TYPE_EXHAUSTIVE: [(); VoxelType::COUNT] = {
-    // Ensure every discriminant 0..COUNT maps to a known variant by round-tripping.
-    let mut arr = [(); VoxelType::COUNT];
-    let mut i = 0;
-    while i < VoxelType::COUNT {
-        // Transmute is valid because repr(u8) and i < COUNT.
-        let v: VoxelType = unsafe { std::mem::transmute(i as u8) };
-        arr[v as u8 as usize] = ();
-        i += 1;
-    }
-    arr
-};
 
 /// Compute the `FaceData` for a ladder voxel with the given orientation.
 ///
@@ -1377,13 +1364,32 @@ mod tests {
     }
 
     #[test]
+    fn voxel_type_discriminant_values() {
+        // Explicit discriminants are load-bearing for save compatibility.
+        // If these change, old saves with packed voxel data will break.
+        assert_eq!(VoxelType::Air as u8, 0);
+        assert_eq!(VoxelType::Trunk as u8, 1);
+        assert_eq!(VoxelType::Branch as u8, 2);
+        assert_eq!(VoxelType::GrownPlatform as u8, 3);
+        assert_eq!(VoxelType::GrownWall as u8, 4);
+        // 5, 6: removed (formerly GrownStairs, Bridge)
+        assert_eq!(VoxelType::ForestFloor as u8, 7);
+        assert_eq!(VoxelType::Dirt as u8, 8);
+        assert_eq!(VoxelType::Leaf as u8, 9);
+        assert_eq!(VoxelType::Fruit as u8, 10);
+        assert_eq!(VoxelType::Root as u8, 11);
+        assert_eq!(VoxelType::BuildingInterior as u8, 12);
+        assert_eq!(VoxelType::WoodLadder as u8, 13);
+        assert_eq!(VoxelType::RopeLadder as u8, 14);
+        assert_eq!(VoxelType::Strut as u8, 15);
+    }
+
+    #[test]
     fn build_type_to_voxel_type() {
         assert_eq!(
             BuildType::Platform.to_voxel_type(),
             VoxelType::GrownPlatform
         );
-        assert_eq!(BuildType::Bridge.to_voxel_type(), VoxelType::Bridge);
-        assert_eq!(BuildType::Stairs.to_voxel_type(), VoxelType::GrownStairs);
         assert_eq!(BuildType::Wall.to_voxel_type(), VoxelType::GrownWall);
         assert_eq!(BuildType::Enclosure.to_voxel_type(), VoxelType::GrownWall);
         assert_eq!(
@@ -1445,8 +1451,6 @@ mod tests {
     #[test]
     fn allows_tree_overlap_structural_types() {
         assert!(BuildType::Platform.allows_tree_overlap());
-        assert!(BuildType::Bridge.allows_tree_overlap());
-        assert!(BuildType::Stairs.allows_tree_overlap());
     }
 
     #[test]
@@ -1515,14 +1519,6 @@ mod tests {
             OverlapClassification::Blocked
         );
         assert_eq!(
-            VoxelType::GrownStairs.classify_for_overlap(),
-            OverlapClassification::Blocked
-        );
-        assert_eq!(
-            VoxelType::Bridge.classify_for_overlap(),
-            OverlapClassification::Blocked
-        );
-        assert_eq!(
             VoxelType::BuildingInterior.classify_for_overlap(),
             OverlapClassification::Blocked
         );
@@ -1538,8 +1534,6 @@ mod tests {
         assert!(VoxelType::Dirt.is_opaque());
         assert!(VoxelType::GrownPlatform.is_opaque());
         assert!(VoxelType::GrownWall.is_opaque());
-        assert!(VoxelType::GrownStairs.is_opaque());
-        assert!(VoxelType::Bridge.is_opaque());
         // Non-opaque types — faces toward these are still visible.
         assert!(!VoxelType::Air.is_opaque());
         assert!(!VoxelType::Leaf.is_opaque());

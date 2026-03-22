@@ -34857,7 +34857,6 @@ fn game_config_has_mana_cost_defaults() {
     assert!(config.default_mana_cost_per_mille > 0);
     assert!(config.mana_abandon_threshold > 0);
     assert!(config.platform_mana_cost_per_mille > 0);
-    assert!(config.bridge_mana_cost_per_mille > 0);
     assert!(config.grow_mana_cost_per_mille > 0);
 }
 
@@ -35023,17 +35022,10 @@ fn capybara_generates_no_mana() {
 fn mana_cost_per_action_uses_build_type() {
     let sim = test_sim(42);
     let platform_cost = sim.mana_cost_per_action(Some(BuildType::Platform));
-    let bridge_cost = sim.mana_cost_per_action(Some(BuildType::Bridge));
     let default_cost = sim.mana_cost_per_action(None);
 
     assert!(platform_cost > 0, "platform cost should be positive");
-    assert!(bridge_cost > 0, "bridge cost should be positive");
     assert!(default_cost > 0, "default cost should be positive");
-    // Bridge is more expensive than platform in default config (15 vs 10).
-    assert!(
-        bridge_cost > platform_cost,
-        "bridge should cost more: {bridge_cost} vs {platform_cost}"
-    );
 }
 
 #[test]
@@ -35460,7 +35452,6 @@ fn config_backward_compat_mana_fields_from_old_json() {
     let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
     let obj = value.as_object_mut().unwrap();
     obj.remove("platform_mana_cost_per_mille");
-    obj.remove("bridge_mana_cost_per_mille");
     obj.remove("default_mana_cost_per_mille");
     obj.remove("grow_mana_cost_per_mille");
     obj.remove("mana_abandon_threshold");
@@ -35468,7 +35459,6 @@ fn config_backward_compat_mana_fields_from_old_json() {
 
     let restored: GameConfig = serde_json::from_str(&stripped).unwrap();
     assert_eq!(restored.platform_mana_cost_per_mille, 20);
-    assert_eq!(restored.bridge_mana_cost_per_mille, 30);
     assert_eq!(restored.default_mana_cost_per_mille, 20);
     assert_eq!(restored.grow_mana_cost_per_mille, 20);
     assert_eq!(restored.mana_abandon_threshold, 3);

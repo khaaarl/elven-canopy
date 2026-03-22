@@ -1524,8 +1524,6 @@ mod tests {
             VoxelType::Branch,
             VoxelType::GrownPlatform,
             VoxelType::GrownWall,
-            VoxelType::GrownStairs,
-            VoxelType::Bridge,
             VoxelType::ForestFloor,
             VoxelType::Dirt,
             VoxelType::Leaf,
@@ -1658,14 +1656,30 @@ mod tests {
 
     #[test]
     fn voxel_type_from_u8_roundtrip() {
-        for i in 0..VoxelType::COUNT as u8 {
+        // Valid discriminants round-trip; gaps (removed variants) map to Air.
+        for i in 0..VoxelType::MAX_DISCRIMINANT_PLUS_ONE as u8 {
             let vt = VoxelType::from_u8(i);
+            if vt == VoxelType::Air && i != 0 {
+                // Gap value — maps to Air but doesn't round-trip.
+                continue;
+            }
             assert_eq!(vt.to_u8(), i);
         }
         // Out of range returns Air.
         assert_eq!(VoxelType::from_u8(255), VoxelType::Air);
-        // Exact boundary: COUNT itself is out of range.
-        assert_eq!(VoxelType::from_u8(VoxelType::COUNT as u8), VoxelType::Air);
+        // Exact boundary: MAX_DISCRIMINANT_PLUS_ONE itself is out of range.
+        assert_eq!(
+            VoxelType::from_u8(VoxelType::MAX_DISCRIMINANT_PLUS_ONE as u8),
+            VoxelType::Air
+        );
+    }
+
+    #[test]
+    fn from_u8_gap_values_return_air() {
+        // Discriminants 5 (formerly GrownStairs) and 6 (formerly Bridge) were
+        // removed. Old save data containing these values must degrade to Air.
+        assert_eq!(VoxelType::from_u8(5), VoxelType::Air);
+        assert_eq!(VoxelType::from_u8(6), VoxelType::Air);
     }
 
     #[test]

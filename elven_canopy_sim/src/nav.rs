@@ -1201,10 +1201,10 @@ fn derive_edge_type(
                     EdgeType::TrunkCircumference
                 }
             }
-            Branch | Leaf | Fruit | GrownPlatform | Bridge | Root | BuildingInterior | Strut => {
+            Branch | Leaf | Fruit | GrownPlatform | Root | BuildingInterior | Strut => {
                 EdgeType::BranchWalk
             }
-            GrownStairs | GrownWall => EdgeType::TrunkClimb,
+            GrownWall => EdgeType::TrunkClimb,
             WoodLadder => EdgeType::WoodLadderClimb,
             RopeLadder => EdgeType::RopeLadderClimb,
             Air => EdgeType::BranchWalk, // shouldn't happen
@@ -1229,9 +1229,9 @@ fn derive_edge_type(
         (Trunk, Root) | (Root, Trunk) => EdgeType::TrunkClimb,
         (Trunk, Branch) | (Branch, Trunk) | (Trunk, Leaf) | (Leaf, Trunk) => EdgeType::TrunkClimb,
         _ => {
-            // GrownStairs / GrownWall → climb-like; everything else → walk-like.
-            if matches!(from_surface, GrownStairs | GrownWall)
-                || matches!(to_surface, GrownStairs | GrownWall)
+            // GrownWall → climb-like; everything else → walk-like.
+            if matches!(from_surface, GrownWall)
+                || matches!(to_surface, GrownWall)
             {
                 EdgeType::TrunkClimb
             } else {

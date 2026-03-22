@@ -193,7 +193,7 @@ impl SimState {
     }
 
     /// Find nav node positions adjacent to wood voxels (Trunk, Branch, Root,
-    /// GrownPlatform, GrownWall, GrownStairs, Bridge, Strut). Used as
+    /// GrownPlatform, GrownWall, Strut). Used as
     /// attack-move destinations for raiders.
     fn find_wood_adjacent_nodes(&self, species: Species) -> Vec<VoxelCoord> {
         let ground_only = self.species_table[&species].ground_only;
@@ -226,8 +226,6 @@ impl SimState {
                         | VoxelType::Root
                         | VoxelType::GrownPlatform
                         | VoxelType::GrownWall
-                        | VoxelType::GrownStairs
-                        | VoxelType::Bridge
                         | VoxelType::Strut
                 )
             });

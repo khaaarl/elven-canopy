@@ -734,8 +734,6 @@ impl CompletedStructure {
         }
         let type_str = match self.build_type {
             BuildType::Platform => "Platform",
-            BuildType::Bridge => "Bridge",
-            BuildType::Stairs => "Stairs",
             BuildType::Wall => "Wall",
             BuildType::Enclosure => "Enclosure",
             BuildType::Building => "Building",
@@ -822,8 +820,8 @@ impl CompletedStructure {
     /// Return true if `coord` is a roof voxel of this structure.
     ///
     /// A roof voxel is defined as the topmost Y layer of the bounding box for
-    /// Building and Enclosure types. Other structure types (Platform, Bridge,
-    /// Stairs, etc.) have no concept of a roof.
+    /// Building and Enclosure types. Other structure types (Platform, Wall,
+    /// etc.) have no concept of a roof.
     ///
     /// Used by `selection_controller.gd` to decide whether a click on a
     /// structure voxel should shield creatures inside from selection.
