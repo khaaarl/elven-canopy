@@ -186,6 +186,7 @@ elven-canopy/
 │   ├── organic_tree_vision.md  # Tree generation design notes
 │   ├── code_quality_plan.md    # Code quality improvement plan
 │   ├── construction_roadmap.md # Construction system roadmap
+│   ├── design/                 # Approved/in-progress design documents
 │   └── drafts/                 # Working design documents
 ├── scripts/
 │   ├── build.sh                # Build, test, and run script

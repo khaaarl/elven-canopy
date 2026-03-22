@@ -170,6 +170,13 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-narrative-log        Events and narrative log
 [ ] F-night-predators      Nocturnal predators
 [ ] F-partial-struct       Structural checks on incomplete builds
+[ ] F-path-civil           Civil path definitions and organic self-assignment
+[ ] F-path-combat          Combat path definitions and player assignment
+[ ] F-path-core            Elf path system core (Way/Calling/Attunement)
+[ ] F-path-residue         Skill residue from past paths
+[ ] F-path-specialize      Path specialization branching and prerequisites
+[ ] F-path-stuck           Deep commitment personality drift and refusal
+[ ] F-path-ui              Path management UI and notifications
 [ ] F-patrol               Patrol command for military groups
 [ ] F-per-detection        Perception stat modifies hostile detection range
 [ ] F-personality          Personality axes affecting behavior
@@ -2052,6 +2059,22 @@ section).
 
 **Related:** F-batch-craft, F-bldg-kitchen, F-bread, F-items, F-sculptures
 
+#### F-path-civil — Civil path definitions and organic self-assignment
+**Status:** Todo · **Phase:** 4 · **Refs:** §18
+
+Civil path definitions (Cook, Harvester, Artisan, Woodsinger, Poet) and
+organic self-assignment. Civil paths can be player-assigned or self-assigned:
+an elf who completes enough tasks of a given type triggers self-assignment
+via the PathAffinity counter, with a notification to the player. Leveling
+improves task speed, output quality, and recipe availability. Poet path
+provides passive mana generation bonus scaling with CHA. Personality-based
+compatibility checks deferred until F-personality exists — initial
+self-assignment is purely counter-based.
+
+**Blocked by:** F-path-core
+**Blocks:** F-path-specialize
+**Related:** F-personality
+
 #### F-pile-gravity — Ground pile gravity and merging
 **Status:** Done · **Phase:** 4
 
@@ -2251,6 +2274,8 @@ into the tree's living surface.
 Elves learn skills by working near skilled elves. Apprenticeship as an
 emergent social/economic system.
 
+**Related:** F-path-core
+
 #### F-emotions — Multi-dimensional emotional state
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
 
@@ -2258,7 +2283,7 @@ Emotions as multiple simultaneous dimensions: joy, fulfillment, sorrow,
 stress, pain, fear, anxiety. Not a single "happiness" number.
 
 **Blocks:** F-elf-leave, F-hedonic-adapt, F-mana-mood
-**Related:** F-social-graph
+**Related:** F-path-core, F-path-stuck, F-social-graph
 
 #### F-emotions-basic — Mood score from thought weights
 **Status:** Done · **Phase:** 4 · **Refs:** §18
@@ -2365,14 +2390,75 @@ Toast-style notification system for important sim events.
 **Blocks:** F-elf-leave
 **Related:** F-status-bar
 
+#### F-path-core — Elf path system core (Way/Calling/Attunement)
+**Status:** Todo · **Phase:** 4 · **Refs:** §18
+
+Core data model for the elf path system. Paths are disciplines elves commit
+to with escalating depth: Way (flexible, learning) → Calling (committed,
+faster XP) → Attunement (permanent, identity-defining). Adds PathAssignment,
+PathHistory, and PathAffinity tables to SimDb, PathConfig to GameConfig, XP
+tracking, level thresholds, and tier transition logic including Attunement
+lock and warning window. Integer math only for determinism. Tier transitions
+are initially threshold-based (time + level); personality gating deferred
+until F-personality exists. Foundation for all other path features.
+
+**Draft:** docs/design/F-elf-paths.md
+
+**Blocks:** F-path-civil, F-path-combat, F-path-residue, F-path-stuck, F-path-ui
+**Related:** F-apprentice, F-emotions, F-personality
+
+#### F-path-residue — Skill residue from past paths
+**Status:** Todo · **Phase:** 4 · **Refs:** §18
+
+When an elf leaves a path, a configurable fraction of their accumulated
+stat bonuses is retained as a permanent passive modifier (skill residue).
+An ex-Warrior archer is slightly tougher than a pure archer. Additionally,
+re-entering a previously walked path has reduced XP cost. Residue does not
+grant active abilities from the old path — only stat echoes. Attuned elves
+cannot leave their category, so residue only applies to Way/Calling-tier
+transitions. Residue fraction is configurable per path via
+residue_fraction_permille. Woodsinging has a higher residue fraction than
+other craft paths.
+
+**Blocked by:** F-path-core
+
+#### F-path-specialize — Path specialization branching and prerequisites
+**Status:** Todo · **Phase:** 4 · **Refs:** §18
+
+Specialization branching within base paths. At a configurable level
+threshold, an elf can fork into a narrower discipline (e.g., Warrior →
+Blademaster, Archer → Sharpshooter, Artisan → Carver). Specializations
+have prerequisites beyond just level — Champion requires civil path
+experience, Healer requires both Woodsinger and Harvester levels.
+Specialization narrows ability: a Spoon Carver refuses to craft chairs.
+For combat paths, the player picks the specialization. For civil paths,
+organic specialization is possible via repeated narrow task performance.
+
+**Blocked by:** F-path-civil, F-path-combat
+
+#### F-path-stuck — Deep commitment personality drift and refusal
+**Status:** Todo · **Phase:** 4 · **Refs:** §18
+
+Deep commitment personality effects. Elves deeply invested in a path
+undergo personality drift — personality axes shift toward stereotypes of
+their discipline (Warriors become aggressive, Artisans become perfectionist).
+Forced reassignment at Calling tier incurs mood penalties scaled by
+personality. Note: the Attunement lock itself (hard refusal to leave
+category) is part of F-path-core's tier transition logic and does not
+require personality. This feature covers only the personality-dependent
+aspects: drift, mood scaling, and personality-informed behavior changes.
+
+**Blocked by:** F-path-core, F-personality
+**Related:** F-emotions
+
 #### F-personality — Personality axes affecting behavior
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
 
 Multi-axis personality model affecting task preferences, social behavior,
 stress responses, and creative output.
 
-**Blocks:** F-cultural-drift
-**Related:** F-social-graph
+**Blocks:** F-cultural-drift, F-path-stuck
+**Related:** F-path-civil, F-path-core, F-social-graph
 
 #### F-poetry-reading — Social gatherings and poetry readings
 **Status:** Todo · **Phase:** 4 · **Refs:** §18, §20
@@ -2651,7 +2737,7 @@ berserk, and future buff-granting spells.
 
 **Blocked by:** F-spell-system
 **Blocks:** F-combat-singing, F-spell-berserk, F-spell-ench-arrow
-**Related:** F-combat-singing, F-status-effects
+**Related:** F-combat-singing, F-path-combat, F-status-effects
 
 #### F-combat — Combat and invader threat system
 **Status:** Todo · **Phase:** 8+ · **Refs:** §16
@@ -2963,6 +3049,22 @@ meaningful beyond just pacing. Depends on F-day-night.
 
 **Blocked by:** F-day-night
 **Related:** F-day-night
+
+#### F-path-combat — Combat path definitions and player assignment
+**Status:** Todo · **Phase:** 4 · **Refs:** §18
+
+Combat path definitions (Warrior, Archer, Guard) and player assignment UI.
+Combat paths are always player-assigned — the player explicitly sets an
+elf's combat path via SimAction::AssignPath. Leveling grants fixed stat
+bonuses (STR/CON for warriors, DEX/PER for archers) that flow through
+the existing creature stat multiplier pipeline via effective_stat(). XP
+gained from combat actions (melee hits, ranged kills, damage taken). All
+combat-path elves of the same type and level behave identically — no
+per-elf perk divergence, keeping the system RTS-friendly.
+
+**Blocked by:** F-path-core
+**Blocks:** F-path-specialize
+**Related:** F-buff-system
 
 #### F-patrol — Patrol command for military groups
 **Status:** Todo · **Phase:** 5
@@ -4367,6 +4469,18 @@ shapes.
 **Status:** Done · **Phase:** 0 · **Refs:** §23
 
 Orbit, zoom, pan. Smooth interpolation. Follow mode for creatures.
+
+#### F-path-ui — Path management UI and notifications
+**Status:** Todo · **Phase:** 4 · **Refs:** §18
+
+UI for path management. Path info displayed in creature info panel (current
+path, tier, level, XP progress). Player-facing controls for assigning
+combat paths and specializations. Notifications for tier transitions,
+self-assignments, and Attunement warnings. Elf roster view showing path
+distribution at a glance (who's flexible, who's committed, who's locked in).
+Specialization picker when an elf reaches the branching threshold.
+
+**Blocked by:** F-path-core
 
 #### F-pause-menu — In-game pause overlay
 **Status:** Done · **Refs:** §26
