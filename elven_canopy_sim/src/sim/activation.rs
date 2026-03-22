@@ -166,39 +166,44 @@ impl SimState {
     /// Creature activation: fires when a creature's current action completes
     /// (at `next_available_tick`) or when the creature is idle.
     ///
+    /// Unified pipeline for both ground and flying creatures. Branching occurs
+    /// only at: gravity (skip for flyers), nav-node lookup (None for flyers),
+    /// flee dispatch, and wander dispatch. Everything else is shared.
+    ///
     /// Flow:
     /// 1. Resolve the completed action's effects (e.g., delete MoveAction row).
     /// 2. Clear action state.
-    /// 3. Decision cascade: continue task, find new task, or wander.
+    /// 3. Decision cascade: flee → autonomous combat → continue task → find new task → wander.
     pub(crate) fn process_creature_activation(
         &mut self,
         creature_id: CreatureId,
         events: &mut Vec<SimEvent>,
     ) {
-        // Flying creatures use a separate, simpler activation path that
-        // doesn't depend on the nav graph.
-        {
-            let creature = match self.db.creatures.get(&creature_id) {
-                Some(c) if c.vital_status == VitalStatus::Alive => c,
-                _ => return,
-            };
-            if self.species_table[&creature.species]
-                .flight_ticks_per_voxel
-                .is_some()
-            {
-                self.process_flying_creature_activation(creature_id, events);
-                return;
-            }
-        }
+        let creature = match self.db.creatures.get(&creature_id) {
+            Some(c) if c.vital_status == VitalStatus::Alive => c,
+            _ => return,
+        };
+        let species = creature.species;
+        let is_flying = self.species_table[&species]
+            .flight_ticks_per_voxel
+            .is_some();
 
-        // Gravity check: if the creature is unsupported (no nav node, or
-        // ground-only without solid below), apply gravity and bail.
-        if !self.creature_is_supported(creature_id) {
+        // Gravity check: ground creatures only.
+        if !is_flying && !self.creature_is_supported(creature_id) {
             self.apply_single_creature_gravity(creature_id, events);
             return;
         }
 
-        let (mut current_node, species, action_kind) = {
+        // Nav-node lookup: ground creatures get a NavNodeId, flyers get None.
+        let (mut current_node, action_kind) = if is_flying {
+            let action_kind = self
+                .db
+                .creatures
+                .get(&creature_id)
+                .map(|c| c.action_kind)
+                .unwrap_or(ActionKind::NoAction);
+            (None, action_kind)
+        } else {
             let creature = match self.db.creatures.get(&creature_id) {
                 Some(c) if c.vital_status == VitalStatus::Alive => c,
                 _ => return,
@@ -206,43 +211,41 @@ impl SimState {
             let node = self
                 .graph_for_species(creature.species)
                 .node_at(creature.position)
-                .unwrap(); // safe: checked above
-            (node, creature.species, creature.action_kind)
+                .unwrap(); // safe: creature_is_supported passed
+            (Some(node), creature.action_kind)
         };
 
-        // Guard: if current_node is a dead slot (removed by incremental nav
-        // update), abort any in-progress action and resnap the creature.
-        if !self.graph_for_species(species).is_node_alive(current_node) {
-            self.abort_current_action(creature_id);
-            let pos = self
-                .db
-                .creatures
-                .get(&creature_id)
-                .map(|c| c.position)
-                .unwrap();
-            let graph = self.graph_for_species(species);
-            let new_node = match graph.find_nearest_node(pos) {
-                Some(n) => n,
-                None => return,
-            };
-            let new_pos = graph.node(new_node).position;
-            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
-                c.position = new_pos;
-                c.path = None;
-            });
-            self.update_creature_spatial_index(creature_id, species, pos, new_pos);
-            // Action was aborted — skip resolve, schedule a fresh activation
-            // so the creature can find a new task or wander.
-            self.event_queue.schedule(
-                self.tick + 1,
-                ScheduledEventKind::CreatureActivation { creature_id },
-            );
-            return;
+        // Guard: dead nav node resnap (ground creatures only).
+        if let Some(cn) = current_node {
+            if !self.graph_for_species(species).is_node_alive(cn) {
+                self.abort_current_action(creature_id);
+                let pos = self
+                    .db
+                    .creatures
+                    .get(&creature_id)
+                    .map(|c| c.position)
+                    .unwrap();
+                let graph = self.graph_for_species(species);
+                let new_node = match graph.find_nearest_node(pos) {
+                    Some(n) => n,
+                    None => return,
+                };
+                let new_pos = graph.node(new_node).position;
+                let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+                    c.position = new_pos;
+                    c.path = None;
+                });
+                self.update_creature_spatial_index(creature_id, species, pos, new_pos);
+                self.event_queue.schedule(
+                    self.tick + 1,
+                    ScheduledEventKind::CreatureActivation { creature_id },
+                );
+                return;
+            }
         }
 
-        // --- Step 1: Resolve completed action ---
+        // --- Step 1: Resolve completed action (shared) ---
         if action_kind == ActionKind::Move {
-            // Move action completed — clean up the MoveAction row.
             let _ = self.db.move_actions.remove_no_fk(&creature_id);
             let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
                 c.action_kind = ActionKind::NoAction;
@@ -250,26 +253,23 @@ impl SimState {
             });
         }
         if action_kind == ActionKind::Build {
-            // Resolve the Build action — materialize one voxel.
             let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
                 c.action_kind = ActionKind::NoAction;
                 c.next_available_tick = None;
             });
             let completed = self.resolve_build_action(creature_id);
-            // Re-read current_node: voxel materialization may have resnaped
-            // the creature to a different node.
-            current_node = match self
-                .db
-                .creatures
-                .get(&creature_id)
-                .and_then(|c| self.graph_for_species(c.species).node_at(c.position))
-            {
-                Some(n) => n,
-                None => return,
-            };
+            // Re-read current_node for ground creatures.
+            if !is_flying {
+                current_node = self
+                    .db
+                    .creatures
+                    .get(&creature_id)
+                    .and_then(|c| self.graph_for_species(c.species).node_at(c.position));
+                if current_node.is_none() {
+                    return;
+                }
+            }
             if !completed {
-                // Task still in progress — re-enter task behavior to start the
-                // next Build action (or walk if creature moved off the location).
                 let task_id = self
                     .db
                     .creatures
@@ -280,12 +280,9 @@ impl SimState {
                     return;
                 }
             }
-            // Fall through to decision cascade (task completed or creature
-            // lost its task during resolution).
         }
 
-        // Resolve simple work actions (no nav graph changes, just clear state
-        // and re-enter task behavior if not completed).
+        // Resolve simple work actions (shared).
         if matches!(
             action_kind,
             ActionKind::Furnish
@@ -319,22 +316,22 @@ impl SimState {
             }
         }
 
-        // --- Flee check (F-flee) ---
-        // Before the decision cascade, check if this creature should flee from
-        // a nearby hostile (based on engagement style: passive initiative or
-        // disengage threshold exceeded). If a flee step is taken, skip the
-        // normal decision cascade entirely.
-        if self.should_flee(creature_id, species)
-            && self.flee_step(creature_id, current_node, species)
-        {
-            return;
+        // --- Flee check ---
+        // Dispatch: ground uses nav-graph edges (ground_flee_step),
+        // flying uses fly_wander (B-flying-flee tracks proper directional flee).
+        if self.should_flee(creature_id, species) {
+            if let Some(cn) = current_node {
+                if self.ground_flee_step(creature_id, cn, species) {
+                    return;
+                }
+            } else {
+                // Flying flee: wander away (imperfect but functional).
+                self.fly_wander(creature_id, events);
+                return;
+            }
         }
 
-        // --- Autonomous combat check (F-engagement-style) ---
-        // Non-passive creatures with detection range should interrupt
-        // low-priority tasks to engage hostiles. This check runs before
-        // the task execution so that an elf fetching clothes will stop
-        // to shoot at a charging orc.
+        // --- Autonomous combat check (shared) ---
         {
             let style = self.resolve_engagement_style(creature_id);
             let detection_range_sq = self.species_table[&species].hostile_detection_range_sq;
@@ -345,11 +342,6 @@ impl SimState {
                         | crate::species::EngagementInitiative::Defensive
                 )
             {
-                // Check if the current task (if any) can be preempted by
-                // autonomous combat. Only preempts Autonomous-level tasks
-                // (haul, cook, craft, harvest, acquire items). Player-directed
-                // commands and survival tasks are NOT interrupted — the player's
-                // explicit orders take priority over autonomous behavior.
                 let should_try_combat = if let Some(task_id) = self
                     .db
                     .creatures
@@ -360,17 +352,10 @@ impl SimState {
                     let current_level = preemption::preemption_level(task.kind_tag, task.origin);
                     current_level == preemption::PreemptionLevel::Autonomous
                 } else {
-                    // No task — try combat before find_available_task claims
-                    // a new one (otherwise the creature might pick up a
-                    // non-preemptable task and stop fighting).
                     true
                 };
 
                 if should_try_combat {
-                    // Check if there are actually hostiles to fight before
-                    // interrupting the current task. Uses full detection range
-                    // — defensive creatures can shoot at targets beyond their
-                    // pursuit range. detect_hostile_targets is a read-only scan.
                     let creature = self.db.creatures.get(&creature_id).unwrap();
                     let has_targets = !self
                         .detect_hostile_targets(
@@ -383,11 +368,6 @@ impl SimState {
                         .is_empty();
 
                     if has_targets {
-                        // Interrupt the task BEFORE calling hostile_pursue.
-                        // hostile_pursue may schedule a new activation (via
-                        // start_simple_action), and interrupt_task calls
-                        // abort_current_action which cancels all scheduled
-                        // activations — doing it after would wipe the new one.
                         if let Some(task_id) = self
                             .db
                             .creatures
@@ -399,15 +379,12 @@ impl SimState {
                         if self.hostile_pursue(creature_id, current_node, species, events) {
                             return;
                         }
-                        // hostile_pursue failed despite targets detected
-                        // (e.g., no path). Fall through to decision cascade.
                     }
                 }
             }
         }
 
-        // --- Step 2: Decision cascade ---
-        // Re-read current_task since it may have changed during resolution.
+        // --- Decision cascade (shared) ---
         let current_task = self
             .db
             .creatures
@@ -415,16 +392,13 @@ impl SimState {
             .and_then(|c| c.current_task);
 
         if let Some(task_id) = current_task {
-            // --- Has task: run task behavior ---
             self.execute_task_behavior(creature_id, task_id, current_node, events);
         } else {
-            // --- No task: try to claim one, or wander ---
             if let Some(task_id) = self.find_available_task(creature_id) {
                 self.claim_task(creature_id, task_id);
-                // Run task behavior immediately on the same activation.
                 self.execute_task_behavior(creature_id, task_id, current_node, events);
             } else {
-                self.wander(creature_id, current_node, events);
+                self.wander_dispatch(creature_id, current_node, events);
             }
         }
     }
@@ -437,7 +411,15 @@ impl SimState {
     pub(crate) fn find_available_task(&self, creature_id: CreatureId) -> Option<TaskId> {
         let creature = self.db.creatures.get(&creature_id)?;
         let species = creature.species;
-        let current_node = self.graph_for_species(species).node_at(creature.position)?;
+        let is_flying = self.species_table[&species]
+            .flight_ticks_per_voxel
+            .is_some();
+        let creature_pos = creature.position;
+        let current_node = if is_flying {
+            None
+        } else {
+            Some(self.graph_for_species(species).node_at(creature_pos)?)
+        };
         let is_nonmagical = creature.mp_max == 0;
         // Minimum mana needed to attempt one mana-requiring work action.
         let min_mana_cost = self.mana_cost_per_action(None);
@@ -481,11 +463,27 @@ impl SimState {
             return None;
         }
 
-        // Single candidate — skip Dijkstra.
+        // Single candidate — skip distance calculation.
         if candidates.len() == 1 {
             return Some(candidates[0].0);
         }
 
+        // Flying creatures: pick nearest task by squared Euclidean distance.
+        // Ground creatures: use Dijkstra on the nav graph for true path cost.
+        if is_flying {
+            let nearest = candidates
+                .iter()
+                .map(|&(id, loc)| {
+                    let dx = creature_pos.x as i64 - loc.x as i64;
+                    let dy = creature_pos.y as i64 - loc.y as i64;
+                    let dz = creature_pos.z as i64 - loc.z as i64;
+                    (id, dx * dx + dy * dy + dz * dz)
+                })
+                .min_by_key(|&(id, dist)| (dist, id))?;
+            return Some(nearest.0);
+        }
+
+        let current_node = current_node.unwrap();
         let species_data = &self.species_table[&species];
         let graph = self.graph_for_species(species);
 
@@ -532,14 +530,26 @@ impl SimState {
         }
     }
 
-    /// Execute one activation's worth of task behavior.
+    /// Execute one activation's worth of task behavior. Works for both ground
+    /// and flying creatures — `current_node` is `None` for flyers.
     pub(crate) fn execute_task_behavior(
         &mut self,
         creature_id: CreatureId,
         task_id: TaskId,
-        current_node: NavNodeId,
+        current_node: Option<NavNodeId>,
         events: &mut Vec<SimEvent>,
     ) {
+        let is_flying = self
+            .db
+            .creatures
+            .get(&creature_id)
+            .map(|c| {
+                self.species_table[&c.species]
+                    .flight_ticks_per_voxel
+                    .is_some()
+            })
+            .unwrap_or(false);
+
         let (mut task_location_coord, target_creature) = match self.db.tasks.get(&task_id) {
             Some(t) => (t.location, t.target_creature),
             None => {
@@ -550,7 +560,7 @@ impl SimState {
                     c.path = None;
                     let _ = self.db.creatures.update_no_fk(c);
                 }
-                self.wander(creature_id, current_node, events);
+                self.wander_dispatch(creature_id, current_node, events);
                 return;
             }
         };
@@ -562,7 +572,7 @@ impl SimState {
                 None => {
                     // Target creature is gone — abandon.
                     self.interrupt_task(creature_id, task_id);
-                    self.wander(creature_id, current_node, events);
+                    self.wander_dispatch(creature_id, current_node, events);
                     return;
                 }
                 Some(target_coord) => {
@@ -580,58 +590,59 @@ impl SimState {
             }
         }
 
-        // Resolve the task location VoxelCoord to a NavNodeId.
         let species = self
             .db
             .creatures
             .get(&creature_id)
             .map(|c| c.species)
             .unwrap_or(Species::Elf);
-        let graph = self.graph_for_species(species);
 
-        let task_location = match graph.find_nearest_node(task_location_coord) {
-            Some(n) => n,
-            None => {
-                // No reachable nav node for the task location — abandon.
+        // Ground creatures: resolve task location to nav node and check liveness.
+        // Flying creatures skip nav-node resolution entirely.
+        let task_location_node: Option<NavNodeId> = if !is_flying {
+            let graph = self.graph_for_species(species);
+            match graph.find_nearest_node(task_location_coord) {
+                Some(n) => Some(n),
+                None => {
+                    // No reachable nav node for the task location — abandon.
+                    self.interrupt_task(creature_id, task_id);
+                    if let Some(c) = self.db.creatures.get(&creature_id) {
+                        let old_pos = c.position;
+                        let graph = self.graph_for_species(species);
+                        if let Some(new_node) = graph.find_nearest_node(old_pos) {
+                            self.ground_wander(creature_id, new_node, events);
+                        }
+                    }
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+
+        // Ground creatures: check that both current_node and task_location are
+        // still alive in the nav graph. Flying creatures skip this check.
+        if let (Some(cn), Some(tl)) = (current_node, task_location_node) {
+            let graph = self.graph_for_species(species);
+            if !graph.is_node_alive(cn) || !graph.is_node_alive(tl) {
                 self.interrupt_task(creature_id, task_id);
+                let graph = self.graph_for_species(species);
                 if let Some(c) = self.db.creatures.get(&creature_id) {
                     let old_pos = c.position;
-                    let graph = self.graph_for_species(species);
                     if let Some(new_node) = graph.find_nearest_node(old_pos) {
-                        self.wander(creature_id, new_node, events);
+                        let new_pos = graph.node(new_node).position;
+                        let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+                            c.position = new_pos;
+                        });
+                        self.update_creature_spatial_index(creature_id, species, old_pos, new_pos);
+                        self.ground_wander(creature_id, new_node, events);
                     }
                 }
                 return;
             }
-        };
-
-        // Check that both current_node and task_location are still alive in
-        // the nav graph. They can become dead slots after incremental updates
-        // (e.g. construction solidifying a voxel). If either is dead, abandon
-        // the task and wander.
-        let graph = self.graph_for_species(species);
-        if !graph.is_node_alive(current_node) || !graph.is_node_alive(task_location) {
-            // Clean up action and task state before abandoning.
-            self.interrupt_task(creature_id, task_id);
-            // Resnap the creature to a live node before wandering.
-            let graph = self.graph_for_species(species);
-            if let Some(c) = self.db.creatures.get(&creature_id) {
-                let old_pos = c.position;
-                if let Some(new_node) = graph.find_nearest_node(old_pos) {
-                    let new_pos = graph.node(new_node).position;
-                    let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
-                        c.position = new_pos;
-                    });
-                    self.update_creature_spatial_index(creature_id, species, old_pos, new_pos);
-                    self.wander(creature_id, new_node, events);
-                }
-            }
-            return;
         }
 
-        // AttackTarget tasks: check combat range before walking. The creature
-        // may be able to attack from a nearby node without reaching the exact
-        // target location. Also handles pathfinding retry limits.
+        // AttackTarget tasks: check combat range before walking.
         let task_kind_tag = self
             .db
             .tasks
@@ -639,8 +650,6 @@ impl SimState {
             .map(|t| t.kind_tag)
             .unwrap_or(crate::db::TaskKindTag::GoTo);
         if task_kind_tag == crate::db::TaskKindTag::AttackTarget {
-            // Check if target is dead before doing anything. Incapacitated
-            // targets are still valid — the attacker should finish them off.
             if let Some(attack_data) = self.task_attack_target_data(task_id) {
                 let target_id = attack_data.target;
                 let target_dead = self
@@ -661,11 +670,11 @@ impl SimState {
             }
 
             // Not in combat range — walk toward target.
-            if current_node != task_location {
+            if !self.at_task_location(creature_id, current_node, task_location_node, task_location_coord) {
                 self.walk_toward_attack_target(
                     creature_id,
                     task_id,
-                    task_location,
+                    task_location_coord,
                     current_node,
                     events,
                 );
@@ -680,16 +689,54 @@ impl SimState {
         }
 
         if task_kind_tag == crate::db::TaskKindTag::AttackMove {
-            self.execute_attack_move(creature_id, task_id, task_location, current_node, events);
+            self.execute_attack_move(creature_id, task_id, task_location_coord, current_node, events);
             return;
         }
 
-        if current_node == task_location {
+        if self.at_task_location(creature_id, current_node, task_location_node, task_location_coord) {
             // At task location — run the kind-specific completion/work logic.
             self.execute_task_at_location(creature_id, task_id, events);
         } else {
-            // Not at location — walk one edge toward it.
-            self.walk_toward_task(creature_id, task_location, current_node, events);
+            // Not at location — walk toward it.
+            self.walk_toward_task(creature_id, task_location_coord, current_node, events);
+        }
+    }
+
+    /// Check if a creature is at the task location. Ground creatures compare
+    /// nav node IDs; flying creatures compare position proximity (within 1 voxel).
+    pub(crate) fn at_task_location(
+        &self,
+        creature_id: CreatureId,
+        current_node: Option<NavNodeId>,
+        task_location_node: Option<NavNodeId>,
+        task_location_coord: VoxelCoord,
+    ) -> bool {
+        // Ground creatures: compare nav node IDs.
+        if let (Some(cn), Some(tl)) = (current_node, task_location_node) {
+            return cn == tl;
+        }
+        // Flying creatures: position proximity.
+        let pos = match self.db.creatures.get(&creature_id) {
+            Some(c) => c.position,
+            None => return false,
+        };
+        let dx = (pos.x - task_location_coord.x).abs();
+        let dy = (pos.y - task_location_coord.y).abs();
+        let dz = (pos.z - task_location_coord.z).abs();
+        dx <= 1 && dy <= 1 && dz <= 1
+    }
+
+    /// Dispatch to the appropriate wander function based on locomotion type.
+    fn wander_dispatch(
+        &mut self,
+        creature_id: CreatureId,
+        current_node: Option<NavNodeId>,
+        events: &mut Vec<SimEvent>,
+    ) {
+        if let Some(cn) = current_node {
+            self.ground_wander(creature_id, cn, events);
+        } else {
+            self.fly_wander(creature_id, events);
         }
     }
 
@@ -1222,132 +1269,6 @@ impl SimState {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Flying creature activation (separate from nav-graph-based ground AI)
-    // -----------------------------------------------------------------------
-
-    /// Simplified activation for flying creatures (those with `flight_ticks_per_voxel`).
-    ///
-    /// Flying creatures use vanilla A* on the voxel grid instead of the nav graph.
-    /// Their AI loop:
-    /// 1. Resolve completed action (Move, MeleeStrike).
-    /// 2. Flee if HP is below disengage threshold.
-    /// 3. Detect hostile targets and pursue/melee.
-    /// 4. Random fly-wander if idle.
-    fn process_flying_creature_activation(
-        &mut self,
-        creature_id: CreatureId,
-        events: &mut Vec<SimEvent>,
-    ) {
-        let (species, action_kind) = {
-            let creature = match self.db.creatures.get(&creature_id) {
-                Some(c) if c.vital_status == VitalStatus::Alive => c,
-                _ => return,
-            };
-            (creature.species, creature.action_kind)
-        };
-
-        // --- Step 1: Resolve completed action ---
-        if action_kind == ActionKind::Move {
-            let _ = self.db.move_actions.remove_no_fk(&creature_id);
-            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
-                c.action_kind = ActionKind::NoAction;
-                c.next_available_tick = None;
-            });
-        }
-        if action_kind == ActionKind::MeleeStrike {
-            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
-                c.action_kind = ActionKind::NoAction;
-                c.next_available_tick = None;
-            });
-        }
-
-        // --- Step 2: Flee check ---
-        // If HP is below disengage threshold, fly away from nearest hostile.
-        let style = self.resolve_engagement_style(creature_id);
-        if style.disengage_threshold_pct > 0 {
-            let creature = self.db.creatures.get(&creature_id).unwrap();
-            let hp_pct = if creature.hp_max > 0 {
-                (creature.hp * 100 / creature.hp_max) as u8
-            } else {
-                100
-            };
-            if hp_pct <= style.disengage_threshold_pct {
-                // Fly in a random direction away from threats.
-                self.fly_wander(creature_id, events);
-                return;
-            }
-        }
-
-        // --- Step 3: Hostile detection + pursuit ---
-        let detection_range_sq = self.species_table[&species].hostile_detection_range_sq;
-        if detection_range_sq > 0 {
-            let creature = self.db.creatures.get(&creature_id).unwrap();
-            let attacker_pos = creature.position;
-            let attacker_civ = creature.civ_id;
-            let attacker_footprint = self.species_table[&species].footprint;
-            let melee_range_sq = self.max_melee_range_sq(creature_id);
-
-            let targets = self.detect_hostile_targets(
-                creature_id,
-                species,
-                attacker_pos,
-                attacker_civ,
-                detection_range_sq,
-            );
-
-            if !targets.is_empty() {
-                // Try melee if any target is in range.
-                let melee_target = targets.iter().find(|&&(target_id, _)| {
-                    let target = match self.db.creatures.get(&target_id) {
-                        Some(c) => c,
-                        None => return false,
-                    };
-                    let target_footprint = self.species_table[&target.species].footprint;
-                    in_melee_range(
-                        attacker_pos,
-                        attacker_footprint,
-                        target.position,
-                        target_footprint,
-                        melee_range_sq,
-                    )
-                });
-
-                if let Some(&(target_id, _)) = melee_target {
-                    if self.try_melee_strike(creature_id, target_id, events) {
-                        return;
-                    }
-                    // Strike on cooldown — wait.
-                    if let Some(next_tick) = self
-                        .db
-                        .creatures
-                        .get(&creature_id)
-                        .and_then(|c| c.next_available_tick)
-                    {
-                        self.event_queue.schedule(
-                            next_tick,
-                            ScheduledEventKind::CreatureActivation { creature_id },
-                        );
-                    } else {
-                        self.event_queue.schedule(
-                            self.tick + 100,
-                            ScheduledEventKind::CreatureActivation { creature_id },
-                        );
-                    }
-                    return;
-                }
-
-                // Fly toward nearest target.
-                let nearest_target_pos = self.db.creatures.get(&targets[0].0).map(|c| c.position);
-                if let Some(target_pos) = nearest_target_pos
-                    && self.fly_toward_target(creature_id, target_pos, events)
-                {
-                    return;
-                }
-            }
-        }
-
-        // --- Step 4: No targets — wander ---
-        self.fly_wander(creature_id, events);
-    }
+    // process_flying_creature_activation has been merged into
+    // process_creature_activation (B-flying-tasks).
 }

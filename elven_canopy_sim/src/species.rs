@@ -65,7 +65,7 @@
 //   E.g. 225 = 15-voxel radius, 400 = 20-voxel radius. Height is included,
 //   so ground-level goblins cannot detect canopy elves directly. Elves have
 //   a detection range (225) for flee behavior — they detect approaching
-//   hostiles and run away. See `sim/combat.rs` `should_flee()` / `flee_step()`.
+//   hostiles and run away. See `sim/combat.rs` `should_flee()` / `ground_flee_step()`.
 //
 // See also: `config.rs` where the species table lives as part of `GameConfig`,
 // `sim/mod.rs` for the unified `Creature` type and `sim/activation.rs` for the
@@ -115,7 +115,7 @@ pub enum EngagementInitiative {
 /// Lives on both `SpeciesData` (species defaults for non-civ creatures)
 /// and `MilitaryGroup` (player-configurable per-group overrides for civ
 /// creatures). The combat decision logic (`should_flee`, `hostile_pursue`,
-/// `wander`, `flee_step`) reads from a single resolved `EngagementStyle`.
+/// `ground_wander`, `ground_flee_step`) reads from a single resolved `EngagementStyle`.
 ///
 /// See also: `sim/combat.rs` for the combat decision cascade,
 /// `config.rs` for per-species defaults, `db.rs` for `MilitaryGroup`.

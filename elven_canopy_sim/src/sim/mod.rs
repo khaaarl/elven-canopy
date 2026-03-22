@@ -85,8 +85,8 @@
 // destination footprint voxels. When blocked, the creature stays put and
 // schedules a retry after `config.voxel_exclusion_retry_ticks`.
 //
-// Enforcement points: `move_one_step()` (safety net for all callers),
-// `random_wander()` (pre-filters edges), `flee_step()` (pre-filters with
+// Enforcement points: `ground_move_one_step()` (safety net for all callers),
+// `ground_random_wander()` (pre-filters edges), `ground_flee_step()` (pre-filters with
 // fallback if cornered), and the three `walk_toward_*()` inline movers.
 //
 // Pathfinding (`pathfinding.rs`) intentionally knows nothing about occupancy —

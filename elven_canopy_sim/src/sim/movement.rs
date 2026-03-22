@@ -29,7 +29,12 @@ impl SimState {
             _ => return,
         };
 
-        if self.nav_graph.find_nearest_node(position).is_none() {
+        // Ground creatures need a reachable nav node at the destination.
+        // Flying creatures can go anywhere in open air.
+        let is_flying = self.species_table[&creature.species]
+            .flight_ticks_per_voxel
+            .is_some();
+        if !is_flying && self.nav_graph.find_nearest_node(position).is_none() {
             return;
         }
 
@@ -191,12 +196,15 @@ impl SimState {
         assignments
     }
 
-    /// Walk one edge toward a task location using a stored or computed A* path.
+    /// Move one step toward a target position. Flying creatures use voxel-grid
+    /// A* via `fly_toward_target`; ground creatures use nav-graph A* and
+    /// `ground_move_one_step`. Both store cached paths in `creature.path` as
+    /// `Vec<VoxelCoord>`.
     pub(crate) fn walk_toward_task(
         &mut self,
         creature_id: CreatureId,
-        task_location: NavNodeId,
-        current_node: NavNodeId,
+        target_coord: VoxelCoord,
+        current_node: Option<NavNodeId>,
         events: &mut Vec<SimEvent>,
     ) {
         let creature = match self.db.creatures.get(&creature_id) {
@@ -204,11 +212,39 @@ impl SimState {
             None => return,
         };
         let species = creature.species;
+
+        // Flying creatures: delegate to flight pathfinding.
+        if self.species_table[&species]
+            .flight_ticks_per_voxel
+            .is_some()
+        {
+            if !self.fly_toward_target(creature_id, target_coord, events) {
+                // Can't reach target — unassign and wander.
+                self.unassign_creature_from_task(creature_id);
+                self.fly_wander(creature_id, events);
+            }
+            return;
+        }
+
+        // Ground creatures: resolve target to nav node and use graph A*.
+        let current_node = match current_node {
+            Some(n) => n,
+            None => return,
+        };
         let species_data = &self.species_table[&species];
         let graph = self.graph_for_species(species);
+        let task_location = match graph.find_nearest_node(target_coord) {
+            Some(n) => n,
+            None => {
+                self.unassign_creature_from_task(creature_id);
+                self.ground_wander(creature_id, current_node, events);
+                return;
+            }
+        };
 
         // Check if we already have a path. If so, resolve the next position
         // to a nav node + edge. If not (or path is exhausted), compute a new one.
+        let creature = self.db.creatures.get(&creature_id).unwrap();
         let cn = graph.node_at(creature.position);
         let next_step = if let Some(ref path) = creature.path {
             if let Some(&next_pos) = path.remaining_positions.first() {
@@ -268,7 +304,7 @@ impl SimState {
                 _ => {
                     // Can't reach task — unassign and wander.
                     self.unassign_creature_from_task(creature_id);
-                    self.wander(creature_id, current_node, events);
+                    self.ground_wander(creature_id, current_node, events);
                     return;
                 }
             };
@@ -364,7 +400,7 @@ impl SimState {
     /// Creatures with aggressive or defensive initiative auto-engage detected
     /// hostiles via `hostile_pursue()` before falling back to random wandering.
     /// Passive creatures never pursue.
-    pub(crate) fn wander(
+    pub(crate) fn ground_wander(
         &mut self,
         creature_id: CreatureId,
         current_node: NavNodeId,
@@ -385,12 +421,12 @@ impl SimState {
         if matches!(
             style.initiative,
             EngagementInitiative::Aggressive | EngagementInitiative::Defensive
-        ) && self.hostile_pursue(creature_id, current_node, species, events)
+        ) && self.hostile_pursue(creature_id, Some(current_node), species, events)
         {
             return;
         }
 
-        self.random_wander(creature_id, current_node, species);
+        self.ground_random_wander(creature_id, current_node, species);
     }
 
     /// Move a creature one step along the given nav graph edge: update position,
@@ -402,19 +438,19 @@ impl SimState {
     /// creature stays put and a short retry activation is scheduled.
     ///
     /// `skip_exclusion`: if `true`, the voxel exclusion check is bypassed.
-    /// Used by `flee_step()` when a cornered creature has no unblocked exit
+    /// Used by `ground_flee_step()` when a cornered creature has no unblocked exit
     /// and must force through a hostile-occupied voxel.
-    pub(crate) fn move_one_step(
+    pub(crate) fn ground_move_one_step(
         &mut self,
         creature_id: CreatureId,
         species: Species,
         edge_idx: NavEdgeId,
     ) -> bool {
-        self.move_one_step_inner(creature_id, species, edge_idx, false)
+        self.ground_move_one_step_inner(creature_id, species, edge_idx, false)
     }
 
-    /// Inner implementation of `move_one_step` with an optional exclusion bypass.
-    pub(crate) fn move_one_step_inner(
+    /// Inner implementation of `ground_move_one_step` with an optional exclusion bypass.
+    pub(crate) fn ground_move_one_step_inner(
         &mut self,
         creature_id: CreatureId,
         species: Species,
@@ -485,7 +521,7 @@ impl SimState {
     }
 
     /// Random wander: pick a random eligible edge and move one step.
-    pub(crate) fn random_wander(
+    pub(crate) fn ground_random_wander(
         &mut self,
         creature_id: CreatureId,
         current_node: NavNodeId,
@@ -555,7 +591,7 @@ impl SimState {
         let chosen_idx = self.rng.range_u64(0, edges_to_pick.len() as u64) as usize;
         let edge_idx = edges_to_pick[chosen_idx];
 
-        self.move_one_step(creature_id, species, edge_idx);
+        self.ground_move_one_step(creature_id, species, edge_idx);
     }
 
     // -----------------------------------------------------------------------

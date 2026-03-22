@@ -58,8 +58,7 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
-[ ] B-flying-arrow-chase   Flying creatures excluded from arrow-chase
-[ ] B-flying-tasks         Flying creatures skip task system entirely
+[ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
 [ ] F-adventure-mode       Control individual elf (RPG-like)
@@ -256,6 +255,8 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-dead-node-panic      Panic on dead nav node in pathfinding
 [x] B-dirt-not-pinned      Dirt unpinned in fast structural validator
 [x] B-erratic-movement     Erratic/too-fast creature movement after move commands
+[x] B-flying-arrow-chase   Flying creatures excluded from arrow-chase
+[x] B-flying-tasks         Flying creatures skip task system entirely
 [x] B-hostile-detect-nav   detect_hostile_targets panics on flying targets (NavNodeId u32::MAX hack)
 [x] B-preview-blueprints   Preview treats blueprints as complete
 [x] B-raid-spawn           Raiders sometimes spawn inside map instead of at perimeter
@@ -1194,7 +1195,7 @@ computed from edge distance and per-species speed config.
 ### Creatures & Needs
 
 #### B-flying-tasks — Flying creatures skip task system entirely
-**Status:** Todo
+**Status:** Done
 
 Flying creatures (Hornet, Wyvern, and future winged elves) use a separate
 hardcoded activation loop (process_flying_creature_activation) that skips
@@ -1206,7 +1207,7 @@ the flying activation loop with the standard task-based activation
 pipeline is required before flying creatures can participate in any
 task-driven system (player commands, construction, hauling, etc.).
 
-**Blocks:** B-flying-arrow-chase, F-winged-elf
+**Unblocked:** B-flying-arrow-chase, F-winged-elf
 **Related:** F-arrow-chase
 
 #### F-bread — Bread items and elf food management
@@ -1564,8 +1565,7 @@ A kind of elf that can join the player's civilization with wings.
 Has a winged sprite variant and only flight speed (no walking or
 climbing speed). Requires F-flying-nav.
 
-**Blocked by:** B-flying-tasks
-**Unblocked by:** F-flying-nav
+**Unblocked by:** B-flying-tasks, F-flying-nav
 
 #### F-wyvern — Wyvern hostile flying creature (2×2×2)
 **Status:** Done
@@ -2653,7 +2653,7 @@ infrastructure.
 ### Combat & Defense
 
 #### B-flying-arrow-chase — Flying creatures excluded from arrow-chase
-**Status:** Todo
+**Status:** Done
 
 Flying creatures (Hornet, Wyvern) are currently excluded from
 maybe_arrow_chase because their activation loop ignores tasks. Once
@@ -2662,8 +2662,13 @@ task-based activation pipeline, remove the flight_ticks_per_voxel
 guard in maybe_arrow_chase so flying creatures also chase toward
 arrow sources outside their detection range.
 
-**Blocked by:** B-flying-tasks
+**Unblocked by:** B-flying-tasks
 **Related:** F-arrow-chase
+
+#### B-flying-flee — Flying creatures flee by random wander instead of directionally
+**Status:** Todo
+
+Flying creatures (Hornet, Wyvern) flee by calling fly_wander (random direction) instead of directionally away from threats like ground creatures do with ground_flee_step (picks nav edge maximizing distance from nearest hostile). A proper fly_flee_step should pick the flyable neighbor voxel that maximizes distance from the nearest threat.
 
 #### B-hostile-detect-nav — detect_hostile_targets panics on flying targets (NavNodeId u32::MAX hack)
 **Status:** Done

@@ -23389,9 +23389,9 @@ fn elf_resumes_normal_behavior_after_threat_leaves() {
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, elf);
 
-    // Verify the elf would flee (flee_step finds a threat and returns true).
+    // Verify the elf would flee (ground_flee_step finds a threat and returns true).
     assert!(
-        sim.flee_step(elf, elf_node, Species::Elf),
+        sim.ground_flee_step(elf, elf_node, Species::Elf),
         "Elf should flee from nearby goblin"
     );
 
@@ -23412,12 +23412,12 @@ fn elf_resumes_normal_behavior_after_threat_leaves() {
         tick + 1,
     );
 
-    // flee_step should return false (no living threats detected).
+    // ground_flee_step should return false (no living threats detected).
     force_position(&mut sim, elf, elf_pos);
     force_idle(&mut sim, elf);
     let elf_node = creature_node(&sim, elf);
     assert!(
-        !sim.flee_step(elf, elf_node, Species::Elf),
+        !sim.ground_flee_step(elf, elf_node, Species::Elf),
         "Elf should not flee from a dead goblin"
     );
 }
@@ -23491,7 +23491,7 @@ fn passive_species_does_not_flee() {
 
 #[test]
 fn flee_step_returns_true_when_threat_detected() {
-    // Verify flee_step directly returns true when a threat is in range
+    // Verify ground_flee_step directly returns true when a threat is in range
     // and the creature has neighbors to flee to.
     let mut sim = test_sim(42);
     let elf = spawn_elf(&mut sim);
@@ -23505,7 +23505,7 @@ fn flee_step_returns_true_when_threat_detected() {
     force_idle(&mut sim, elf);
 
     assert!(
-        sim.flee_step(elf, elf_node, Species::Elf),
+        sim.ground_flee_step(elf, elf_node, Species::Elf),
         "Flee step should return true when threat is in range"
     );
 }
@@ -24854,7 +24854,7 @@ fn defensive_creature_does_not_chase_far() {
 
     // But should_not pursue a far target (hostile_pursue returns false).
     let mut events = Vec::new();
-    let pursued = sim.hostile_pursue(goblin, goblin_node, Species::Goblin, &mut events);
+    let pursued = sim.hostile_pursue(goblin, Some(goblin_node), Species::Goblin, &mut events);
     assert!(
         !pursued,
         "Defensive creature should not pursue target beyond defensive_pursuit_range_sq"
@@ -24864,7 +24864,7 @@ fn defensive_creature_does_not_chase_far() {
     let near_pos = VoxelCoord::new(goblin_pos.x + 2, goblin_pos.y, goblin_pos.z);
     force_position(&mut sim, elf, near_pos);
 
-    let pursued_near = sim.hostile_pursue(goblin, goblin_node, Species::Goblin, &mut events);
+    let pursued_near = sim.hostile_pursue(goblin, Some(goblin_node), Species::Goblin, &mut events);
     assert!(
         pursued_near,
         "Defensive creature should pursue target within defensive_pursuit_range_sq"
@@ -24941,7 +24941,7 @@ fn ammo_exhausted_flee_disengages() {
     force_idle(&mut sim, elf);
 
     let mut events = Vec::new();
-    let pursued = sim.hostile_pursue(goblin, goblin_node, Species::Goblin, &mut events);
+    let pursued = sim.hostile_pursue(goblin, Some(goblin_node), Species::Goblin, &mut events);
     assert!(
         !pursued,
         "PreferRanged creature with bow but no arrows and AmmoExhaustedBehavior::Flee \
@@ -24983,7 +24983,7 @@ fn ammo_exhausted_switch_to_melee_pursues() {
     force_idle(&mut sim, elf);
 
     let mut events = Vec::new();
-    let pursued = sim.hostile_pursue(goblin, goblin_node, Species::Goblin, &mut events);
+    let pursued = sim.hostile_pursue(goblin, Some(goblin_node), Species::Goblin, &mut events);
     assert!(
         pursued,
         "PreferRanged creature with AmmoExhaustedBehavior::SwitchToMelee \
@@ -25026,7 +25026,7 @@ fn prefer_melee_closes_distance_before_shooting() {
     force_idle(&mut sim, elf);
 
     let mut events = Vec::new();
-    let pursued = sim.hostile_pursue(goblin, goblin_node, Species::Goblin, &mut events);
+    let pursued = sim.hostile_pursue(goblin, Some(goblin_node), Species::Goblin, &mut events);
     assert!(pursued, "PreferMelee creature should pursue target");
 
     // No projectile should have been spawned — creature should close distance
@@ -25080,7 +25080,7 @@ fn prefer_ranged_shoots_before_closing() {
     force_idle(&mut sim, elf);
 
     let mut events = Vec::new();
-    let pursued = sim.hostile_pursue(goblin, goblin_node, Species::Goblin, &mut events);
+    let pursued = sim.hostile_pursue(goblin, Some(goblin_node), Species::Goblin, &mut events);
     assert!(pursued, "PreferRanged creature should engage target");
 
     // A projectile should have been spawned (shot an arrow).
@@ -25290,17 +25290,17 @@ fn defensive_creature_flees_far_threat_but_does_not_pursue() {
     // hostile_pursue should return false (target beyond pursuit range).
     let mut events = Vec::new();
     assert!(
-        !sim.hostile_pursue(goblin, goblin_node, Species::Goblin, &mut events),
+        !sim.hostile_pursue(goblin, Some(goblin_node), Species::Goblin, &mut events),
         "Defensive creature should not pursue target beyond defensive_pursuit_range_sq"
     );
 
-    // Now via wander: the goblin should just random_wander (not pursue).
+    // Now via wander: the goblin should just ground_random_wander (not pursue).
     let goblin_pos_before = sim.db.creatures.get(&goblin).unwrap().position;
-    sim.wander(goblin, goblin_node, &mut events);
+    sim.ground_wander(goblin, goblin_node, &mut events);
 
     // Goblin moved (random wander), but did NOT pursue toward the elf.
     // We can't easily verify direction, but the key is hostile_pursue returned
-    // false above — wander falls through to random_wander.
+    // false above — wander falls through to ground_random_wander.
 }
 
 #[test]
@@ -26348,7 +26348,7 @@ fn troll_pursues_elf_cross_graph_pathfinding() {
     force_idle_and_cancel_activations(&mut sim, elf_id);
 
     let troll_node = creature_node(&sim, troll_id);
-    let pursued = sim.hostile_pursue(troll_id, troll_node, Species::Troll, &mut events);
+    let pursued = sim.hostile_pursue(troll_id, Some(troll_node), Species::Troll, &mut events);
 
     assert!(
         pursued,
@@ -29695,7 +29695,7 @@ fn directed_goto_on_wandering_creature_does_not_schedule_extra_activation() {
     // Put the elf into a wander state: no task, mid-Move.
     let elf_node = creature_node(&sim, elf);
     let mut events = Vec::new();
-    sim.wander(elf, elf_node, &mut events);
+    sim.ground_wander(elf, elf_node, &mut events);
 
     // Verify the elf is now mid-wander-move with no task.
     let c = sim.db.creatures.get(&elf).unwrap();
@@ -29746,7 +29746,7 @@ fn directed_goto_on_wandering_creature_preserves_move_action() {
     // Put the elf into a wander state.
     let elf_node = creature_node(&sim, elf);
     let mut events = Vec::new();
-    sim.wander(elf, elf_node, &mut events);
+    sim.ground_wander(elf, elf_node, &mut events);
 
     let c = sim.db.creatures.get(&elf).unwrap();
     assert_eq!(c.action_kind, ActionKind::Move);
@@ -29901,7 +29901,7 @@ fn attack_move_on_wandering_creature_does_not_schedule_extra_activation() {
 
     let elf_node = creature_node(&sim, elf);
     let mut events = Vec::new();
-    sim.wander(elf, elf_node, &mut events);
+    sim.ground_wander(elf, elf_node, &mut events);
 
     let c = sim.db.creatures.get(&elf).unwrap();
     assert_eq!(c.action_kind, ActionKind::Move);
@@ -30490,8 +30490,8 @@ fn voxel_exclusion_flee_cornered_still_moves() {
 }
 
 #[test]
-fn voxel_exclusion_move_one_step_returns_false_when_blocked() {
-    // Directly test move_one_step returns false when destination is hostile.
+fn voxel_exclusion_ground_move_one_step_returns_false_when_blocked() {
+    // Directly test ground_move_one_step returns false when destination is hostile.
     let mut sim = test_sim(42);
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
@@ -30512,9 +30512,9 @@ fn voxel_exclusion_move_one_step_returns_false_when_blocked() {
         .expect("Should have edge from A to B");
 
     let elf_pos_before = sim.db.creatures.get(&elf).unwrap().position;
-    let result = sim.move_one_step(elf, Species::Elf, edge_idx);
+    let result = sim.ground_move_one_step(elf, Species::Elf, edge_idx);
 
-    assert!(!result, "move_one_step should return false when blocked");
+    assert!(!result, "ground_move_one_step should return false when blocked");
     let elf_pos_after = sim.db.creatures.get(&elf).unwrap().position;
     assert_eq!(
         elf_pos_before, elf_pos_after,
@@ -30524,9 +30524,9 @@ fn voxel_exclusion_move_one_step_returns_false_when_blocked() {
 
 #[test]
 fn voxel_exclusion_skip_exclusion_allows_blocked_move() {
-    // move_one_step_inner with skip_exclusion=true should succeed even
+    // ground_move_one_step_inner with skip_exclusion=true should succeed even
     // when the destination is hostile-occupied. This is the mechanism
-    // used by flee_step's cornered fallback.
+    // used by ground_flee_step's cornered fallback.
     let mut sim = test_sim(42);
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
@@ -30546,20 +30546,20 @@ fn voxel_exclusion_skip_exclusion_allows_blocked_move() {
         .expect("Should have edge from A to B");
 
     // Without skip_exclusion: blocked.
-    let result_blocked = sim.move_one_step(elf, Species::Elf, edge_idx);
+    let result_blocked = sim.ground_move_one_step(elf, Species::Elf, edge_idx);
     assert!(
         !result_blocked,
-        "move_one_step should block when hostile present"
+        "ground_move_one_step should block when hostile present"
     );
 
     // Cancel the retry activation scheduled by the failed move.
     sim.event_queue.cancel_creature_activations(elf);
 
     // With skip_exclusion: allowed.
-    let result_forced = sim.move_one_step_inner(elf, Species::Elf, edge_idx, true);
+    let result_forced = sim.ground_move_one_step_inner(elf, Species::Elf, edge_idx, true);
     assert!(
         result_forced,
-        "move_one_step_inner with skip_exclusion should succeed"
+        "ground_move_one_step_inner with skip_exclusion should succeed"
     );
 
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
@@ -30571,8 +30571,8 @@ fn voxel_exclusion_skip_exclusion_allows_blocked_move() {
 }
 
 #[test]
-fn voxel_exclusion_move_one_step_returns_true_when_clear() {
-    // move_one_step should return true when destination is clear.
+fn voxel_exclusion_ground_move_one_step_returns_true_when_clear() {
+    // ground_move_one_step should return true when destination is clear.
     let mut sim = test_sim(42);
     let elf = spawn_elf(&mut sim);
 
@@ -30588,10 +30588,10 @@ fn voxel_exclusion_move_one_step_returns_true_when_clear() {
         .find(|&idx| sim.nav_graph.edge(idx).to == node_b)
         .expect("Should have edge from A to B");
 
-    let result = sim.move_one_step(elf, Species::Elf, edge_idx);
+    let result = sim.ground_move_one_step(elf, Species::Elf, edge_idx);
     assert!(
         result,
-        "move_one_step should return true when path is clear"
+        "ground_move_one_step should return true when path is clear"
     );
 
     let elf_pos_after = sim.db.creatures.get(&elf).unwrap().position;
@@ -30624,7 +30624,7 @@ fn voxel_exclusion_blocked_schedules_retry() {
         .expect("Should have edge from A to B");
 
     let activations_before = sim.count_pending_activations_for(elf);
-    sim.move_one_step(elf, Species::Elf, edge_idx);
+    sim.ground_move_one_step(elf, Species::Elf, edge_idx);
     let activations_after = sim.count_pending_activations_for(elf);
 
     assert_eq!(
@@ -30842,7 +30842,7 @@ fn voxel_exclusion_config_retry_ticks_respected() {
         .expect("Should have edge from A to B");
 
     let tick_at_block = sim.tick;
-    sim.move_one_step(elf, Species::Elf, edge_idx);
+    sim.ground_move_one_step(elf, Species::Elf, edge_idx);
 
     // Step to just before the retry — activation should NOT have fired.
     let activations_before = sim.count_pending_activations_for(elf);
@@ -31028,7 +31028,7 @@ fn voxel_exclusion_hostile_dies_creature_retries_and_moves() {
         .find(|&idx| sim.nav_graph.edge(idx).to == node_b)
         .expect("Should have edge from A to B");
 
-    let result = sim.move_one_step(elf, Species::Elf, edge_idx);
+    let result = sim.ground_move_one_step(elf, Species::Elf, edge_idx);
     assert!(!result, "Should be blocked while goblin is alive");
     assert_eq!(
         sim.db.creatures.get(&elf).unwrap().position,
@@ -31056,7 +31056,7 @@ fn voxel_exclusion_hostile_dies_creature_retries_and_moves() {
     );
 
     // Now manually retry the move — should succeed.
-    let result2 = sim.move_one_step(elf, Species::Elf, edge_idx);
+    let result2 = sim.ground_move_one_step(elf, Species::Elf, edge_idx);
     assert!(result2, "Move should succeed after goblin dies");
     assert_eq!(
         sim.db.creatures.get(&elf).unwrap().position,
@@ -40565,16 +40565,15 @@ fn arrow_chase_integration_projectile_triggers_chase() {
 }
 
 #[test]
-fn arrow_chase_flying_creature_does_not_chase() {
-    // Flying creatures (hornet, wyvern) use a separate activation loop that
-    // ignores tasks. Creating an AttackMove would orphan the task.
+fn arrow_chase_flying_creature_gets_chase_task() {
+    // Flying creatures now use the unified activation pipeline and can
+    // receive arrow-chase AttackMove tasks (B-flying-arrow-chase).
     let mut sim = test_sim(42);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let air_pos = VoxelCoord::new(tree_pos.x + 10, tree_pos.y + 30, tree_pos.z);
     let hornet = spawn_hornet_at(&mut sim, air_pos);
     let hornet_pos = sim.db.creatures.get(&hornet).unwrap().position;
 
-    // Verify hornet is a flying species.
     assert!(
         sim.species_table[&Species::Hornet]
             .flight_ticks_per_voxel
@@ -40589,9 +40588,16 @@ fn arrow_chase_flying_creature_does_not_chase() {
 
     let creature = sim.db.creatures.get(&hornet).unwrap();
     assert!(
-        creature.current_task.is_none(),
-        "Flying creature should not get a chase task"
+        creature.current_task.is_some(),
+        "Flying creature should get an arrow-chase AttackMove task"
     );
+    let task = sim
+        .db
+        .tasks
+        .get(&creature.current_task.unwrap())
+        .unwrap();
+    assert_eq!(task.kind_tag, crate::db::TaskKindTag::AttackMove);
+    assert_eq!(task.origin, TaskOrigin::Autonomous);
 }
 
 #[test]
@@ -40677,4 +40683,549 @@ fn arrow_chase_second_hit_clears_target_creature() {
         task.target_creature.is_none(),
         "Second hit should clear target_creature so pathing recomputes"
     );
+}
+
+// ===================================================================
+// Flying creature task integration (B-flying-tasks, B-flying-arrow-chase)
+// ===================================================================
+
+/// DirectedGoTo should create a GoTo task for a flying creature, even
+/// though the destination may have no nearby nav node.
+#[test]
+fn flying_creature_directed_goto_creates_task() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let air_pos = VoxelCoord::new(tree_pos.x + 5, tree_pos.y + 10, tree_pos.z);
+    let hornet = spawn_hornet_at(&mut sim, air_pos);
+    force_idle_and_cancel_activations(&mut sim, hornet);
+
+    // Target is also in the air — no nav node nearby.
+    let target = VoxelCoord::new(tree_pos.x + 15, tree_pos.y + 10, tree_pos.z);
+
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: hornet,
+            position: target,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    let creature = sim.db.creatures.get(&hornet).unwrap();
+    assert!(
+        creature.current_task.is_some(),
+        "Flying creature should receive a GoTo task"
+    );
+    let task = sim.db.tasks.get(&creature.current_task.unwrap()).unwrap();
+    assert_eq!(task.kind_tag, crate::db::TaskKindTag::GoTo);
+}
+
+/// A flying creature with a GoTo task should fly to the destination and
+/// complete the task.
+#[test]
+fn flying_creature_goto_reaches_destination() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    // Spawn hornet above elf (known flyable area), then reposition.
+    let hornet = spawn_hornet_at(&mut sim, VoxelCoord::new(elf_pos.x, elf_pos.y + 3, elf_pos.z));
+    force_idle_and_cancel_activations(&mut sim, hornet);
+    // Move hornet high above elves to avoid combat interference.
+    let start = VoxelCoord::new(elf_pos.x, elf_pos.y + 20, elf_pos.z);
+    force_position(&mut sim, hornet, start);
+
+    let target = VoxelCoord::new(elf_pos.x + 5, elf_pos.y + 20, elf_pos.z);
+
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: hornet,
+            position: target,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    // Verify the task was accepted.
+    let creature = sim.db.creatures.get(&hornet).unwrap();
+    assert!(creature.current_task.is_some(), "GoTo task should exist");
+    let task = sim.db.tasks.get(&creature.current_task.unwrap()).unwrap();
+    assert_eq!(task.kind_tag, crate::db::TaskKindTag::GoTo);
+
+    // Run enough ticks for the hornet to fly ~5 voxels (250 tpv = 1250 ticks).
+    // Give generous time in case of pathing detours.
+    let target_tick = sim.tick + 10_000;
+    sim.step(&[], target_tick);
+
+    let creature = sim.db.creatures.get(&hornet).unwrap();
+    assert!(
+        creature.current_task.is_none(),
+        "GoTo task should be completed: hornet pos={:?}, target={:?}",
+        creature.position,
+        target,
+    );
+}
+
+/// AttackMove should create a task for a flying creature.
+#[test]
+fn flying_creature_attack_move_creates_task() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let air_pos = VoxelCoord::new(tree_pos.x + 5, tree_pos.y + 10, tree_pos.z);
+    let hornet = spawn_hornet_at(&mut sim, air_pos);
+    force_idle_and_cancel_activations(&mut sim, hornet);
+
+    let dest = VoxelCoord::new(tree_pos.x + 20, tree_pos.y + 10, tree_pos.z);
+
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: tick + 1,
+        action: SimAction::AttackMove {
+            creature_id: hornet,
+            destination: dest,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    let creature = sim.db.creatures.get(&hornet).unwrap();
+    assert!(
+        creature.current_task.is_some(),
+        "Flying creature should receive an AttackMove task"
+    );
+    let task = sim.db.tasks.get(&creature.current_task.unwrap()).unwrap();
+    assert_eq!(task.kind_tag, crate::db::TaskKindTag::AttackMove);
+}
+
+/// A flying creature with an AttackMove task should fly toward the
+/// destination and complete on arrival.
+#[test]
+fn flying_creature_attack_move_reaches_destination() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    // Spawn hornet above elf, then reposition high to avoid combat.
+    let hornet = spawn_hornet_at(&mut sim, VoxelCoord::new(elf_pos.x, elf_pos.y + 3, elf_pos.z));
+    force_idle_and_cancel_activations(&mut sim, hornet);
+    let start = VoxelCoord::new(elf_pos.x, elf_pos.y + 20, elf_pos.z);
+    force_position(&mut sim, hornet, start);
+
+    let dest = VoxelCoord::new(elf_pos.x + 5, elf_pos.y + 20, elf_pos.z);
+
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: tick + 1,
+        action: SimAction::AttackMove {
+            creature_id: hornet,
+            destination: dest,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    let target_tick = sim.tick + 10_000;
+    sim.step(&[], target_tick);
+
+    let creature = sim.db.creatures.get(&hornet).unwrap();
+    assert!(
+        creature.current_task.is_none(),
+        "AttackMove task should be completed on arrival: hornet pos={:?}, dest={:?}",
+        creature.position,
+        dest
+    );
+}
+
+/// maybe_arrow_chase should create an AttackMove task for a flying creature
+/// hit by an arrow from outside detection range (B-flying-arrow-chase).
+#[test]
+fn arrow_chase_creates_task_for_flying_creature() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let air_pos = VoxelCoord::new(tree_pos.x + 10, tree_pos.y + 30, tree_pos.z);
+    let hornet = spawn_hornet_at(&mut sim, air_pos);
+    force_idle_and_cancel_activations(&mut sim, hornet);
+
+    // Arrow origin far outside detection range.
+    let hornet_pos = sim.db.creatures.get(&hornet).unwrap().position;
+    let origin = VoxelCoord::new(hornet_pos.x + 50, hornet_pos.y, hornet_pos.z);
+
+    sim.maybe_arrow_chase(hornet, origin);
+
+    let creature = sim.db.creatures.get(&hornet).unwrap();
+    assert!(
+        creature.current_task.is_some(),
+        "Flying creature should get an AttackMove task from arrow chase"
+    );
+    let task = sim.db.tasks.get(&creature.current_task.unwrap()).unwrap();
+    assert_eq!(task.kind_tag, crate::db::TaskKindTag::AttackMove);
+    assert_eq!(task.origin, TaskOrigin::Autonomous);
+}
+
+/// A flying creature's autonomous combat should preempt a low-priority
+/// task when hostiles are detected.
+#[test]
+fn flying_creature_autonomous_combat_preempts_task() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let air_pos = VoxelCoord::new(tree_pos.x + 5, tree_pos.y + 10, tree_pos.z);
+    let hornet = spawn_hornet_at(&mut sim, air_pos);
+    zero_creature_stats(&mut sim, hornet);
+    force_idle_and_cancel_activations(&mut sim, hornet);
+
+    // Give the hornet a GoTo task (PlayerDirected level). The hornet still
+    // engages the elf because hostile_pursue runs during the activation loop
+    // when the hornet encounters the elf while flying toward the GoTo target.
+    let dest = VoxelCoord::new(tree_pos.x + 30, tree_pos.y + 10, tree_pos.z);
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: hornet,
+            position: dest,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    // Now spawn an elf near the hornet (within detection range).
+    let elf = spawn_elf(&mut sim);
+    let hornet_pos = sim.db.creatures.get(&hornet).unwrap().position;
+    force_position(
+        &mut sim,
+        elf,
+        VoxelCoord::new(hornet_pos.x + 2, hornet_pos.y, hornet_pos.z),
+    );
+
+    // Run — hornet should detect the elf and engage rather than continuing GoTo.
+    let target_tick = sim.tick + 3000;
+    sim.step(&[], target_tick);
+
+    let elf_creature = sim.db.creatures.get(&elf).unwrap();
+    assert!(
+        elf_creature.hp < elf_creature.hp_max,
+        "Elf should have taken damage from hornet engaging in autonomous combat"
+    );
+}
+
+/// find_available_task should find tasks for flying creatures using
+/// Euclidean distance instead of nav-graph Dijkstra.
+#[test]
+fn find_available_task_works_for_flying_creature() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let air_pos = VoxelCoord::new(tree_pos.x + 5, tree_pos.y + 10, tree_pos.z);
+    let hornet = spawn_hornet_at(&mut sim, air_pos);
+    force_idle_and_cancel_activations(&mut sim, hornet);
+
+    // Create an Available GoTo task near the hornet.
+    let task_pos = VoxelCoord::new(tree_pos.x + 8, tree_pos.y + 10, tree_pos.z);
+    let task_id = TaskId::new(&mut sim.rng);
+    let task = task::Task {
+        id: task_id,
+        kind: task::TaskKind::GoTo,
+        state: task::TaskState::Available,
+        location: task_pos,
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Hornet),
+        origin: task::TaskOrigin::Autonomous,
+        target_creature: None,
+    };
+    sim.insert_task(task);
+
+    let found = sim.find_available_task(hornet);
+    assert_eq!(
+        found,
+        Some(task_id),
+        "find_available_task should find tasks for flying creatures"
+    );
+}
+
+/// at_task_location: flying creature within 1 voxel is at location,
+/// 2+ voxels away is not.
+#[test]
+fn flying_creature_at_task_location_proximity() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let hornet = spawn_hornet_at(
+        &mut sim,
+        VoxelCoord::new(elf_pos.x, elf_pos.y + 3, elf_pos.z),
+    );
+    force_idle_and_cancel_activations(&mut sim, hornet);
+    let hornet_pos = sim.db.creatures.get(&hornet).unwrap().position;
+
+    let target = VoxelCoord::new(hornet_pos.x + 1, hornet_pos.y, hornet_pos.z); // 1 voxel away
+    assert!(
+        sim.at_task_location(hornet, None, None, target),
+        "Flying creature 1 voxel away should be at task location"
+    );
+
+    let far_target = VoxelCoord::new(hornet_pos.x + 3, hornet_pos.y, hornet_pos.z); // 3 voxels away
+    assert!(
+        !sim.at_task_location(hornet, None, None, far_target),
+        "Flying creature 3 voxels away should not be at task location"
+    );
+
+    // Diagonal: (1,1,1) away — should be at location (Chebyshev distance <= 1).
+    let diag_target = VoxelCoord::new(hornet_pos.x + 1, hornet_pos.y + 1, hornet_pos.z + 1);
+    assert!(
+        sim.at_task_location(hornet, None, None, diag_target),
+        "Flying creature at diagonal (1,1,1) should be at task location"
+    );
+}
+
+/// walk_toward_task: when fly_toward_target fails for a flying creature,
+/// the creature is unassigned from its task and wanders.
+#[test]
+fn flying_creature_walk_toward_task_unreachable_unassigns() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let hornet = spawn_hornet_at(
+        &mut sim,
+        VoxelCoord::new(elf_pos.x, elf_pos.y + 3, elf_pos.z),
+    );
+    force_idle_and_cancel_activations(&mut sim, hornet);
+
+    // Create and assign a task at an unreachable position (inside solid ground).
+    let task_id = TaskId::new(&mut sim.rng);
+    let task = task::Task {
+        id: task_id,
+        kind: task::TaskKind::GoTo,
+        state: task::TaskState::InProgress,
+        location: VoxelCoord::new(32, -10, 32), // below world — unreachable
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Hornet),
+        origin: task::TaskOrigin::PlayerDirected,
+        target_creature: None,
+    };
+    sim.insert_task(task);
+    sim.claim_task(hornet, task_id);
+
+    let mut events = Vec::new();
+    sim.walk_toward_task(hornet, VoxelCoord::new(32, -10, 32), None, &mut events);
+
+    // Creature should be unassigned from task.
+    let creature = sim.db.creatures.get(&hornet).unwrap();
+    assert!(
+        creature.current_task.is_none(),
+        "Flying creature should be unassigned from unreachable task"
+    );
+}
+
+/// A flying creature with an AttackMove task should engage hostiles it
+/// encounters en route to the destination.
+#[test]
+fn flying_creature_attack_move_engages_hostile_en_route() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    zero_creature_stats(&mut sim, elf);
+
+    // Spawn hornet above the elf. AttackMove destination is far past the elf.
+    let hornet_pos = VoxelCoord::new(elf_pos.x, elf_pos.y + 3, elf_pos.z);
+    let hornet = spawn_hornet_at(&mut sim, hornet_pos);
+    zero_creature_stats(&mut sim, hornet);
+    force_idle_and_cancel_activations(&mut sim, hornet);
+
+    // AttackMove to a far destination — the hornet must pass near the elf.
+    let dest = VoxelCoord::new(elf_pos.x + 30, elf_pos.y + 3, elf_pos.z);
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: tick + 1,
+        action: SimAction::AttackMove {
+            creature_id: hornet,
+            destination: dest,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    // Run enough ticks for the hornet to detect and engage the elf.
+    let target_tick = sim.tick + 5000;
+    sim.step(&[], target_tick);
+
+    let elf_creature = sim.db.creatures.get(&elf).unwrap();
+    assert!(
+        elf_creature.hp < elf_creature.hp_max,
+        "Elf should have taken damage from hornet engaging en route: hp={}/{}",
+        elf_creature.hp,
+        elf_creature.hp_max
+    );
+}
+
+/// find_available_task for a flying creature with multiple tasks should
+/// pick the nearest by squared Euclidean distance.
+#[test]
+fn flying_creature_find_available_task_nearest_by_euclidean() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let hornet = spawn_hornet_at(
+        &mut sim,
+        VoxelCoord::new(elf_pos.x, elf_pos.y + 3, elf_pos.z),
+    );
+    force_idle_and_cancel_activations(&mut sim, hornet);
+    let hornet_pos = sim.db.creatures.get(&hornet).unwrap().position;
+
+    // Create two tasks: one near, one far.
+    let near_task_id = TaskId::new(&mut sim.rng);
+    let near_task = task::Task {
+        id: near_task_id,
+        kind: task::TaskKind::GoTo,
+        state: task::TaskState::Available,
+        location: VoxelCoord::new(hornet_pos.x + 2, hornet_pos.y, hornet_pos.z),
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Hornet),
+        origin: task::TaskOrigin::Autonomous,
+        target_creature: None,
+    };
+    sim.insert_task(near_task);
+
+    let far_task_id = TaskId::new(&mut sim.rng);
+    let far_task = task::Task {
+        id: far_task_id,
+        kind: task::TaskKind::GoTo,
+        state: task::TaskState::Available,
+        location: VoxelCoord::new(hornet_pos.x + 20, hornet_pos.y, hornet_pos.z),
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Hornet),
+        origin: task::TaskOrigin::Autonomous,
+        target_creature: None,
+    };
+    sim.insert_task(far_task);
+
+    let found = sim.find_available_task(hornet);
+    assert_eq!(
+        found,
+        Some(near_task_id),
+        "find_available_task should pick the nearest task by Euclidean distance"
+    );
+}
+
+/// A flying creature with no task and no hostiles should wander via
+/// fly_wander (dispatched through wander_dispatch).
+#[test]
+fn flying_creature_idle_wanders() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    // Spawn hornet far from elf to avoid combat.
+    let hornet = spawn_hornet_at(
+        &mut sim,
+        VoxelCoord::new(elf_pos.x, elf_pos.y + 20, elf_pos.z),
+    );
+    force_idle_and_cancel_activations(&mut sim, hornet);
+    let hornet_pos = sim.db.creatures.get(&hornet).unwrap().position;
+
+    // Trigger one activation. With no task and no hostiles in range,
+    // the hornet should wander (move to a neighboring voxel).
+    let mut events = Vec::new();
+    sim.process_creature_activation(hornet, &mut events);
+
+    let creature = sim.db.creatures.get(&hornet).unwrap();
+    // Should have started a move action (fly_wander picks a neighbor).
+    assert_eq!(
+        creature.action_kind,
+        ActionKind::Move,
+        "Idle flying creature should wander (Move action)"
+    );
+    assert!(
+        creature.next_available_tick.is_some(),
+        "Wander should schedule next activation"
+    );
+}
+
+/// DirectedGoTo issued to a flying creature mid-wander-move should defer
+/// the activation (not create a duplicate) and the hornet should pick up
+/// the GoTo after the current move completes.
+#[test]
+fn flying_creature_directed_goto_mid_move_defers() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let hornet = spawn_hornet_at(
+        &mut sim,
+        VoxelCoord::new(elf_pos.x, elf_pos.y + 20, elf_pos.z),
+    );
+    force_idle_and_cancel_activations(&mut sim, hornet);
+
+    // Trigger one activation to start a wander move.
+    let mut events = Vec::new();
+    sim.process_creature_activation(hornet, &mut events);
+
+    let creature = sim.db.creatures.get(&hornet).unwrap();
+    assert_eq!(creature.action_kind, ActionKind::Move, "Should be mid-wander");
+    assert!(creature.current_task.is_none(), "No task yet");
+    let wander_end_tick = creature.next_available_tick.unwrap();
+
+    // Issue DirectedGoTo while mid-wander-move.
+    let target = VoxelCoord::new(elf_pos.x + 5, elf_pos.y + 20, elf_pos.z);
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: hornet,
+            position: target,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    // The hornet should now have the GoTo task.
+    let creature = sim.db.creatures.get(&hornet).unwrap();
+    assert!(creature.current_task.is_some(), "Should have GoTo task");
+
+    // The move action should still be in progress (not aborted).
+    assert_eq!(
+        creature.action_kind,
+        ActionKind::Move,
+        "Mid-move should continue, not be aborted"
+    );
+
+    // After the wander move completes, the hornet should pick up the GoTo.
+    sim.step(&[], wander_end_tick + 1);
+    let creature = sim.db.creatures.get(&hornet).unwrap();
+    assert!(
+        creature.current_task.is_some(),
+        "Should still have GoTo task after wander completes"
+    );
+}
+
+/// pursue_closest_target: flying creature picks nearest target by Euclidean
+/// distance and flies toward it.
+#[test]
+fn flying_creature_pursue_closest_target() {
+    let mut sim = test_sim(42);
+    let elf_near = spawn_elf(&mut sim);
+    let elf_far = spawn_elf(&mut sim);
+    let elf_near_pos = sim.db.creatures.get(&elf_near).unwrap().position;
+
+    // Spawn hornet above the near elf.
+    let hornet_pos = VoxelCoord::new(elf_near_pos.x, elf_near_pos.y + 3, elf_near_pos.z);
+    let hornet = spawn_hornet_at(&mut sim, hornet_pos);
+    zero_creature_stats(&mut sim, hornet);
+    force_idle_and_cancel_activations(&mut sim, hornet);
+
+    // Move far elf far away.
+    force_position(
+        &mut sim,
+        elf_far,
+        VoxelCoord::new(elf_near_pos.x + 20, elf_near_pos.y, elf_near_pos.z),
+    );
+
+    let mut events = Vec::new();
+    let pursued = sim.hostile_pursue(hornet, None, Species::Hornet, &mut events);
+
+    assert!(pursued, "Flying creature should pursue a detected hostile");
+    // Hornet should have moved (melee strike or flight step toward near elf).
+    let new_pos = sim.db.creatures.get(&hornet).unwrap().position;
+    assert_ne!(new_pos, hornet_pos, "Hornet should have moved toward target");
 }
