@@ -552,8 +552,7 @@ fn trait_int_returns_default_for_text_value() {
     let _ = sim
         .db
         .creature_traits
-        .insert_auto_no_fk(|id| crate::db::CreatureTrait {
-            id,
+        .insert_no_fk(crate::db::CreatureTrait {
             creature_id: elf_id,
             trait_kind: TraitKind::WarPaint,
             value: TraitValue::Text("blue".into()),
@@ -570,12 +569,11 @@ fn compound_unique_prevents_duplicate_traits() {
     let mut sim = test_sim(42);
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
-    // Trying to insert a second HairColor should fail.
+    // Trying to insert a second HairColor should fail (duplicate PK).
     let result = sim
         .db
         .creature_traits
-        .insert_auto_no_fk(|id| crate::db::CreatureTrait {
-            id,
+        .insert_no_fk(crate::db::CreatureTrait {
             creature_id: elf_id,
             trait_kind: TraitKind::HairColor,
             value: TraitValue::Int(99),
@@ -781,16 +779,15 @@ fn strength_modifies_melee_damage() {
     let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
 
     // Set goblin STR to +10 (doubles damage).
-    let trait_rows: Vec<_> = sim.db.creature_traits.by_creature_trait_kind(
-        &goblin,
-        &TraitKind::Strength,
-        tabulosity::QueryOpts::ASC,
+    assert!(
+        sim.db
+            .creature_traits
+            .contains(&(goblin, TraitKind::Strength))
     );
-    assert!(!trait_rows.is_empty());
     let _ = sim
         .db
         .creature_traits
-        .modify_unchecked(&trait_rows[0].id, |t| {
+        .modify_unchecked(&(goblin, TraitKind::Strength), |t| {
             t.value = TraitValue::Int(10);
         });
 
@@ -943,6 +940,289 @@ fn old_save_without_creature_traits_deserializes() {
     assert!(restored.db.creatures.get(&elf_id).is_some());
     assert_eq!(restored.trait_int(elf_id, TraitKind::HairColor, -1), -1);
     assert_eq!(restored.trait_int(elf_id, TraitKind::BioSeed, 0), 0);
+}
+
+/// Verify that old-format saves (auto-PK tables serialized as
+/// `{"next_id": N, "rows": [...]}`) load correctly after the
+/// F-child-table-pks migration. Tables that changed from auto-PK
+/// to plain/compound/parent PK now serialize as `[...]`, but the
+/// backward-compat deserializer must still accept the old format.
+#[test]
+fn old_save_format_backward_compat_for_converted_tables() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    // Insert a thought to populate the thoughts table.
+    sim.tick = 1000;
+    sim.add_creature_thought(elf_id, ThoughtKind::AteMeal);
+
+    let json = serde_json::to_string(&sim).unwrap();
+    let mut parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+    // Convert plain tables (creature_traits, civ_relationships) from new
+    // array format back to old auto-PK format: {"next_id": N, "rows": [...]}.
+    let db = parsed.get_mut("db").unwrap().as_object_mut().unwrap();
+    for table_name in &[
+        "creature_traits",
+        "civ_relationships",
+        "task_haul_data",
+        "task_sleep_data",
+        "task_acquire_data",
+        "task_craft_data",
+        "task_attack_target_data",
+        "task_attack_move_data",
+    ] {
+        if let Some(val) = db.get(*table_name) {
+            if val.is_array() {
+                let rows = val.clone();
+                let wrapper = serde_json::json!({
+                    "next_id": rows.as_array().map_or(0, |a| a.len()),
+                    "rows": rows,
+                });
+                db.insert(table_name.to_string(), wrapper);
+            }
+        }
+    }
+
+    // Also simulate old format for nonpk_auto tables: rename "next_seq" to
+    // "next_id" (old auto-PK counter name). The deserializer should ignore
+    // the unrecognized "next_id" and recompute from max(seq) + 1.
+    for table_name in &[
+        "thoughts",
+        "task_blueprint_refs",
+        "task_structure_refs",
+        "task_voxel_refs",
+        "logistics_want_rows",
+        "item_subcomponents",
+        "enchantment_effects",
+    ] {
+        if let Some(val) = db.get(*table_name) {
+            if let Some(obj) = val.as_object() {
+                let mut new_obj = obj.clone();
+                if let Some(counter) = new_obj.remove("next_seq") {
+                    new_obj.insert("next_id".to_string(), counter);
+                }
+                db.insert(table_name.to_string(), serde_json::Value::Object(new_obj));
+            }
+        }
+    }
+
+    let old_format_json = serde_json::to_string(&parsed).unwrap();
+    let restored: SimState = serde_json::from_str(&old_format_json).unwrap();
+
+    // Verify creatures and traits survived.
+    assert!(restored.db.creatures.get(&elf_id).is_some());
+    let traits = restored
+        .db
+        .creature_traits
+        .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC);
+    assert!(!traits.is_empty(), "traits should survive old-format load");
+
+    // Verify thoughts survived (nonpk_auto table with renamed counter).
+    let thoughts = restored
+        .db
+        .thoughts
+        .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(thoughts.len(), 1);
+    assert_eq!(thoughts[0].kind, ThoughtKind::AteMeal);
+}
+
+#[test]
+fn thought_insert_after_roundtrip_continues_seq() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    sim.tick = 1000;
+    sim.add_creature_thought(elf_id, ThoughtKind::AteMeal);
+    sim.tick = 2000;
+    sim.add_creature_thought(elf_id, ThoughtKind::SleptOnGround);
+
+    // Roundtrip via serde.
+    let json = serde_json::to_string(&sim).unwrap();
+    let mut restored: SimState = serde_json::from_str(&json).unwrap();
+
+    // Insert a new thought after roundtrip — seq counter must continue.
+    // Use a large tick gap to exceed the 150_000-tick dedup cooldown.
+    restored.tick = 200_000;
+    restored.add_creature_thought(elf_id, ThoughtKind::AteMeal);
+
+    let thoughts = restored
+        .db
+        .thoughts
+        .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(
+        thoughts.len(),
+        3,
+        "Expected 3 thoughts, got {}: {:?}",
+        thoughts.len(),
+        thoughts
+            .iter()
+            .map(|t| (&t.kind, t.seq, t.tick))
+            .collect::<Vec<_>>()
+    );
+    // All seq values must be unique (no collision).
+    let mut seqs: Vec<u64> = thoughts.iter().map(|t| t.seq).collect();
+    seqs.sort();
+    seqs.dedup();
+    assert_eq!(seqs.len(), 3, "seq values must be unique after roundtrip");
+}
+
+/// Verify that thoughts loaded from old-format saves (with "next_id" instead
+/// of "next_seq") get a correctly recomputed seq counter, so new inserts after
+/// load don't collide with existing PKs.
+#[test]
+fn thought_seq_counter_survives_old_format_roundtrip() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    sim.tick = 1000;
+    sim.add_creature_thought(elf_id, ThoughtKind::AteMeal);
+
+    let json = serde_json::to_string(&sim).unwrap();
+    let mut parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+    // Simulate old format: rename "next_seq" to "next_id" in thoughts table.
+    let db = parsed.get_mut("db").unwrap().as_object_mut().unwrap();
+    if let Some(val) = db.get("thoughts") {
+        if let Some(obj) = val.as_object() {
+            let mut new_obj = obj.clone();
+            if let Some(counter) = new_obj.remove("next_seq") {
+                new_obj.insert("next_id".to_string(), counter);
+            }
+            db.insert("thoughts".to_string(), serde_json::Value::Object(new_obj));
+        }
+    }
+
+    let old_json = serde_json::to_string(&parsed).unwrap();
+    let mut restored: SimState = serde_json::from_str(&old_json).unwrap();
+
+    // The thought should survive.
+    let thoughts = restored
+        .db
+        .thoughts
+        .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(thoughts.len(), 1);
+
+    // Insert a new thought — seq counter must have been recomputed from rows.
+    restored.tick = 200_000;
+    restored.add_creature_thought(elf_id, ThoughtKind::SleptOnGround);
+
+    let thoughts = restored
+        .db
+        .thoughts
+        .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(thoughts.len(), 2);
+    // Seq values must differ (no collision from counter reset).
+    assert_ne!(thoughts[0].seq, thoughts[1].seq);
+}
+
+/// Verify that set_inv_wants correctly removes and re-inserts logistics want
+/// rows using the new compound PK (inventory_id, seq).
+#[test]
+fn logistics_want_row_remove_and_reinsert_with_compound_pk() {
+    let mut sim = test_sim(42);
+    let pos = VoxelCoord::new(10, 1, 20);
+    let pile_id = sim.ensure_ground_pile(pos);
+    let inv_id = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
+
+    // Set initial wants.
+    sim.set_inv_wants(
+        inv_id,
+        &[crate::building::LogisticsWant {
+            item_kind: inventory::ItemKind::Bread,
+            material_filter: inventory::MaterialFilter::Any,
+            target_quantity: 5,
+        }],
+    );
+    assert_eq!(sim.inv_wants(inv_id).len(), 1);
+    assert_eq!(sim.inv_wants(inv_id)[0].target_quantity, 5);
+
+    // Replace wants — old rows should be removed by compound PK, new ones inserted.
+    sim.set_inv_wants(
+        inv_id,
+        &[
+            crate::building::LogisticsWant {
+                item_kind: inventory::ItemKind::Bread,
+                material_filter: inventory::MaterialFilter::Any,
+                target_quantity: 10,
+            },
+            crate::building::LogisticsWant {
+                item_kind: inventory::ItemKind::Fruit,
+                material_filter: inventory::MaterialFilter::Any,
+                target_quantity: 3,
+            },
+        ],
+    );
+    let wants = sim.inv_wants(inv_id);
+    assert_eq!(wants.len(), 2);
+
+    // Clear all wants.
+    sim.set_inv_wants(inv_id, &[]);
+    assert_eq!(sim.inv_wants(inv_id).len(), 0);
+}
+
+/// Verify CivRelationship compound PK operations: get, contains, modify_unchecked.
+#[test]
+fn civ_relationship_compound_pk_operations() {
+    let mut sim = test_sim(42);
+
+    let civ_a = CivId(0);
+    // Find a target civ that exists.
+    let civ_b = sim
+        .db
+        .civilizations
+        .iter_all()
+        .find(|c| c.id != civ_a)
+        .map(|c| c.id);
+    let civ_b = match civ_b {
+        Some(id) => id,
+        None => return, // Only one civ in this seed, skip.
+    };
+
+    // Remove any existing relationship so we start clean.
+    let _ = sim.db.civ_relationships.remove_no_fk(&(civ_a, civ_b));
+
+    // Insert a new relationship.
+    sim.db
+        .civ_relationships
+        .insert_no_fk(crate::db::CivRelationship {
+            from_civ: civ_a,
+            to_civ: civ_b,
+            opinion: CivOpinion::Neutral,
+        })
+        .unwrap();
+
+    // get() returns the relationship.
+    let rel = sim.db.civ_relationships.get(&(civ_a, civ_b)).unwrap();
+    assert_eq!(rel.opinion, CivOpinion::Neutral);
+
+    // contains() works.
+    assert!(sim.db.civ_relationships.contains(&(civ_a, civ_b)));
+    assert!(!sim.db.civ_relationships.contains(&(civ_b, CivId(999))));
+
+    // modify_unchecked() changes opinion.
+    let _ = sim
+        .db
+        .civ_relationships
+        .modify_unchecked(&(civ_a, civ_b), |r| {
+            r.opinion = CivOpinion::Hostile;
+        });
+    assert_eq!(
+        sim.db
+            .civ_relationships
+            .get(&(civ_a, civ_b))
+            .unwrap()
+            .opinion,
+        CivOpinion::Hostile
+    );
+
+    // Duplicate insert fails.
+    let err = sim
+        .db
+        .civ_relationships
+        .insert_no_fk(crate::db::CivRelationship {
+            from_civ: civ_a,
+            to_civ: civ_b,
+            opinion: CivOpinion::Friendly,
+        });
+    assert!(err.is_err());
 }
 
 #[test]
@@ -12555,9 +12835,9 @@ fn item_subcomponent_cascade_delete() {
     let _ = sim
         .db
         .item_subcomponents
-        .insert_auto_no_fk(|id| crate::db::ItemSubcomponent {
-            id,
+        .insert_auto_no_fk(|seq| crate::db::ItemSubcomponent {
             item_stack_id: stack_id,
+            seq,
             component_kind: inventory::ItemKind::Bowstring,
             material: None,
             quality: 0,
@@ -12589,9 +12869,9 @@ fn enchantment_effect_cascade_delete() {
     let _ = sim
         .db
         .enchantment_effects
-        .insert_auto_no_fk(|id| crate::db::EnchantmentEffect {
-            id,
+        .insert_auto_no_fk(|seq| crate::db::EnchantmentEffect {
             enchantment_id: ench_id,
+            seq,
             effect_kind: inventory::EffectKind::Placeholder,
             magnitude: 10,
             threshold: None,
@@ -15378,10 +15658,10 @@ fn discover_civ_creates_relationship() {
         .by_from_civ(&civ_a, tabulosity::QueryOpts::ASC)
         .into_iter()
         .filter(|r| r.to_civ == civ_b)
-        .map(|r| r.id)
+        .map(|r| (r.from_civ, r.to_civ))
         .collect();
-    for id in existing {
-        let _ = sim.db.civ_relationships.remove_no_fk(&id);
+    for pk in existing {
+        let _ = sim.db.civ_relationships.remove_no_fk(&pk);
     }
 
     let cmd = SimCommand {
@@ -15419,10 +15699,10 @@ fn discover_civ_is_idempotent() {
         .by_from_civ(&civ_a, tabulosity::QueryOpts::ASC)
         .into_iter()
         .filter(|r| r.to_civ == civ_b)
-        .map(|r| r.id)
+        .map(|r| (r.from_civ, r.to_civ))
         .collect();
-    for id in existing {
-        let _ = sim.db.civ_relationships.remove_no_fk(&id);
+    for pk in existing {
+        let _ = sim.db.civ_relationships.remove_no_fk(&pk);
     }
 
     // Discover twice.
@@ -15485,7 +15765,6 @@ fn set_civ_opinion_updates_relationship() {
         "Need at least one relationship for this test"
     );
     let rel = rel.unwrap();
-    let rel_id = rel.id;
     let from_civ = rel.from_civ;
     let to_civ = rel.to_civ;
     let new_opinion = if rel.opinion == CivOpinion::Hostile {
@@ -15505,7 +15784,7 @@ fn set_civ_opinion_updates_relationship() {
     };
     sim.step(&[cmd], 1);
 
-    let updated = sim.db.civ_relationships.get(&rel_id).unwrap();
+    let updated = sim.db.civ_relationships.get(&(from_civ, to_civ)).unwrap();
     assert_eq!(updated.opinion, new_opinion, "Opinion should be updated");
 }
 
@@ -18011,16 +18290,12 @@ fn zero_creature_stats(sim: &mut SimState, creature_id: CreatureId) {
     use crate::stats::STAT_TRAIT_KINDS;
     use crate::types::TraitValue;
     for kind in STAT_TRAIT_KINDS {
-        let rows = sim.db.creature_traits.by_creature_trait_kind(
-            &creature_id,
-            &kind,
-            tabulosity::QueryOpts::ASC,
-        );
-        for row in rows {
-            let _ = sim.db.creature_traits.modify_unchecked(&row.id, |t| {
+        let _ = sim
+            .db
+            .creature_traits
+            .modify_unchecked(&(creature_id, kind), |t| {
                 t.value = TraitValue::Int(0);
             });
-        }
     }
     // Reset HP to species base (undo CON modifier applied at spawn).
     let species = sim.db.creatures.get(&creature_id).unwrap().species;
@@ -28456,10 +28731,10 @@ fn diplomatic_relation_neutral_civs() {
         .by_from_civ(&civ_a, tabulosity::QueryOpts::ASC)
         .into_iter()
         .filter(|r| r.to_civ == civ_b)
-        .map(|r| r.id)
+        .map(|r| (r.from_civ, r.to_civ))
         .collect();
-    for id in existing {
-        let _ = sim.db.civ_relationships.remove_no_fk(&id);
+    for pk in existing {
+        let _ = sim.db.civ_relationships.remove_no_fk(&pk);
     }
 
     assert_eq!(
@@ -28702,10 +28977,10 @@ fn is_non_hostile_different_civs_neutral() {
         .by_from_civ(&civ_a, tabulosity::QueryOpts::ASC)
         .into_iter()
         .filter(|r| r.to_civ == civ_b)
-        .map(|r| r.id)
+        .map(|r| (r.from_civ, r.to_civ))
         .collect();
-    for id in existing {
-        let _ = sim.db.civ_relationships.remove_no_fk(&id);
+    for pk in existing {
+        let _ = sim.db.civ_relationships.remove_no_fk(&pk);
     }
 
     let elf_a = spawn_elf(&mut sim);
@@ -35702,10 +35977,10 @@ fn remove_all_hostile_rels(sim: &mut SimState) {
         .by_from_civ(&player_civ, tabulosity::QueryOpts::ASC)
         .into_iter()
         .filter(|r| r.opinion == CivOpinion::Hostile)
-        .map(|r| r.id)
+        .map(|r| (r.from_civ, r.to_civ))
         .collect();
-    for id in forward_ids {
-        let _ = sim.db.civ_relationships.remove_no_fk(&id);
+    for pk in forward_ids {
+        let _ = sim.db.civ_relationships.remove_no_fk(&pk);
     }
     // Reverse: they consider the player hostile.
     let reverse_ids: Vec<_> = sim
@@ -35714,10 +35989,10 @@ fn remove_all_hostile_rels(sim: &mut SimState) {
         .by_to_civ(&player_civ, tabulosity::QueryOpts::ASC)
         .into_iter()
         .filter(|r| r.opinion == CivOpinion::Hostile)
-        .map(|r| r.id)
+        .map(|r| (r.from_civ, r.to_civ))
         .collect();
-    for id in reverse_ids {
-        let _ = sim.db.civ_relationships.remove_no_fk(&id);
+    for pk in reverse_ids {
+        let _ = sim.db.civ_relationships.remove_no_fk(&pk);
     }
 }
 
@@ -37833,16 +38108,11 @@ fn weapon_damage_scales_with_strength() {
         None,
         None,
     );
-    let trait_rows: Vec<_> = sim.db.creature_traits.by_creature_trait_kind(
-        &elf,
-        &TraitKind::Strength,
-        tabulosity::QueryOpts::ASC,
-    );
-    assert!(!trait_rows.is_empty());
+    assert!(sim.db.creature_traits.contains(&(elf, TraitKind::Strength)));
     let _ = sim
         .db
         .creature_traits
-        .modify_unchecked(&trait_rows[0].id, |t| {
+        .modify_unchecked(&(elf, TraitKind::Strength), |t| {
             t.value = TraitValue::Int(10);
         });
 

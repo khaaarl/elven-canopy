@@ -212,10 +212,10 @@ impl SimState {
         }) {
             let stack_id = output_stack.id;
             for sub in subcomponent_records {
-                let _ = self.db.item_subcomponents.insert_auto_no_fk(|id| {
+                let _ = self.db.item_subcomponents.insert_auto_no_fk(|seq| {
                     crate::db::ItemSubcomponent {
-                        id,
                         item_stack_id: stack_id,
+                        seq,
                         component_kind: sub.input_kind,
                         material: None,
                         quality: 0,
@@ -378,8 +378,8 @@ impl SimState {
 
             // Overwrite the TaskCraftData with the recipe + material + ar_id
             // (insert_task already created a row via task decomposition).
-            if let Some(tcd) = self.task_craft_data(task_id) {
-                let _ = self.db.task_craft_data.modify_unchecked(&tcd.id, |d| {
+            if self.task_craft_data(task_id).is_some() {
+                let _ = self.db.task_craft_data.modify_unchecked(&task_id, |d| {
                     d.recipe = recipe;
                     d.material = material;
                     d.active_recipe_id = ar_id;

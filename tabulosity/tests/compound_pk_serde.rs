@@ -246,3 +246,79 @@ fn database_serde_detects_orphaned_compound_pk_child() {
         }
     }
 }
+
+// --- Backward-compat: compound PK table accepts old auto-PK format at DB level ---
+
+#[test]
+fn database_deserialize_compound_pk_table_from_old_auto_format() {
+    // Simulate old save where creature_trait_fks was an auto-PK table
+    // serialized as {"next_id": N, "rows": [...]}. The new compound PK
+    // table should accept this via the __RowsSeed backward-compat path.
+    let json = r#"{
+        "schema_version": 1,
+        "creatures": [{"id": 1, "name": "Elf"}],
+        "creature_trait_fks": {
+            "next_id": 5,
+            "rows": [
+                {"creature_id": 1, "trait_kind": 10, "value": 42},
+                {"creature_id": 1, "trait_kind": 20, "value": 99}
+            ]
+        }
+    }"#;
+
+    let db: TestDb = serde_json::from_str(json).unwrap();
+    assert_eq!(db.creatures.len(), 1);
+    assert_eq!(db.creature_trait_fks.len(), 2);
+    assert_eq!(
+        db.creature_trait_fks
+            .get(&(CreatureId(1), TraitKind(10)))
+            .unwrap()
+            .value,
+        42
+    );
+    assert_eq!(
+        db.creature_trait_fks
+            .get(&(CreatureId(1), TraitKind(20)))
+            .unwrap()
+            .value,
+        99
+    );
+}
+
+#[test]
+fn database_deserialize_compound_pk_table_old_format_with_extra_row_fields() {
+    // Old rows may contain an "id" field from the old auto-PK that no longer
+    // exists in the struct. Serde should silently ignore it.
+    let json = r#"{
+        "schema_version": 1,
+        "creatures": [{"id": 1, "name": "Elf"}],
+        "creature_trait_fks": {
+            "next_id": 3,
+            "rows": [
+                {"id": 0, "creature_id": 1, "trait_kind": 10, "value": 42}
+            ]
+        }
+    }"#;
+
+    let db: TestDb = serde_json::from_str(json).unwrap();
+    assert_eq!(db.creature_trait_fks.len(), 1);
+    assert_eq!(
+        db.creature_trait_fks
+            .get(&(CreatureId(1), TraitKind(10)))
+            .unwrap()
+            .value,
+        42
+    );
+}
+
+#[test]
+fn database_deserialize_compound_pk_table_old_format_empty() {
+    let json = r#"{
+        "schema_version": 1,
+        "creatures": [],
+        "creature_trait_fks": {"next_id": 0, "rows": []}
+    }"#;
+
+    let db: TestDb = serde_json::from_str(json).unwrap();
+    assert_eq!(db.creature_trait_fks.len(), 0);
+}

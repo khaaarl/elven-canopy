@@ -288,3 +288,63 @@ fn serde_duplicate_child_pk_detected() {
         "error should mention duplicate key: {err_msg}"
     );
 }
+
+// --- Backward-compat: parent-PK table accepts old auto-PK format at DB level ---
+
+#[test]
+fn serde_parent_pk_from_old_auto_format() {
+    // Simulate old save where creature_stats was an auto-PK table serialized
+    // as {"next_id": N, "rows": [{...}]}. The new parent-PK table should
+    // accept this via the __RowsSeed backward-compat path.
+    //
+    // In the parent-PK schema, "id" is the creature ID (PK = FK to creatures).
+    // The old auto-PK "id" was the same field, so the values are creature IDs.
+    let json = r#"{
+        "creatures": [{"id": 1, "name": "Elf"}, {"id": 2, "name": "Orc"}],
+        "creature_stats": {
+            "next_id": 3,
+            "rows": [
+                {"id": 1, "health": 100, "mana": 50},
+                {"id": 2, "health": 80, "mana": 30}
+            ]
+        },
+        "creature_positions": []
+    }"#;
+
+    let db: TestDb = serde_json::from_str(json).unwrap();
+    assert_eq!(db.creature_stats.len(), 2);
+    assert_eq!(db.creature_stats.get(&CreatureId(1)).unwrap().health, 100);
+    assert_eq!(db.creature_stats.get(&CreatureId(2)).unwrap().health, 80);
+}
+
+#[test]
+fn serde_parent_pk_from_old_auto_format_empty() {
+    let json = r#"{
+        "creatures": [],
+        "creature_stats": {"next_id": 0, "rows": []},
+        "creature_positions": {"next_id": 0, "rows": []}
+    }"#;
+
+    let db: TestDb = serde_json::from_str(json).unwrap();
+    assert_eq!(db.creature_stats.len(), 0);
+    assert_eq!(db.creature_positions.len(), 0);
+}
+
+#[test]
+fn serde_parent_pk_from_old_auto_format_with_cascade() {
+    // Also test that FK validation still works on old-format data.
+    // creature_positions has on_delete cascade, but FK validation only
+    // checks existence (restrict/cascade/nullify doesn't matter at load time).
+    let json = r#"{
+        "creatures": [{"id": 1, "name": "Elf"}],
+        "creature_stats": [],
+        "creature_positions": {
+            "next_id": 1,
+            "rows": [{"id": 1, "x": 10, "y": 20}]
+        }
+    }"#;
+
+    let db: TestDb = serde_json::from_str(json).unwrap();
+    assert_eq!(db.creature_positions.len(), 1);
+    assert_eq!(db.creature_positions.get(&CreatureId(1)).unwrap().x, 10);
+}

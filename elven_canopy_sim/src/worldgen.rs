@@ -861,8 +861,7 @@ fn generate_diplomacy(rng: &mut GameRng, config: &CivConfig, db: &mut SimDb) {
             }
 
             db.civ_relationships
-                .insert_auto_no_fk(|id| CivRelationship {
-                    id,
+                .insert_no_fk(CivRelationship {
                     from_civ: civ_a,
                     to_civ: civ_b,
                     opinion,
@@ -894,22 +893,17 @@ fn generate_diplomacy(rng: &mut GameRng, config: &CivConfig, db: &mut SimDb) {
 /// Ensure a Hostile relationship exists from `from_civ` to `to_civ`.
 /// If a relationship already exists, upgrade it to Hostile. Otherwise insert one.
 fn ensure_hostile_rel(db: &mut SimDb, from_civ: CivId, to_civ: CivId) {
-    let existing = db
-        .civ_relationships
-        .by_from_civ(&from_civ, tabulosity::QueryOpts::ASC)
-        .into_iter()
-        .find(|r| r.to_civ == to_civ);
-
-    if let Some(rel) = existing {
+    if let Some(rel) = db.civ_relationships.get(&(from_civ, to_civ)) {
         if rel.opinion != CivOpinion::Hostile {
-            let _ = db.civ_relationships.modify_unchecked(&rel.id, |r| {
-                r.opinion = CivOpinion::Hostile;
-            });
+            let _ = db
+                .civ_relationships
+                .modify_unchecked(&(from_civ, to_civ), |r| {
+                    r.opinion = CivOpinion::Hostile;
+                });
         }
     } else {
         db.civ_relationships
-            .insert_auto_no_fk(|id| CivRelationship {
-                id,
+            .insert_no_fk(CivRelationship {
                 from_civ,
                 to_civ,
                 opinion: CivOpinion::Hostile,

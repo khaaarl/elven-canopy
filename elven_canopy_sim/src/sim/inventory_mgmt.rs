@@ -919,7 +919,10 @@ impl SimState {
             .logistics_want_rows
             .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
         for row in &existing {
-            let _ = self.db.logistics_want_rows.remove_no_fk(&row.id);
+            let _ = self
+                .db
+                .logistics_want_rows
+                .remove_no_fk(&(row.inventory_id, row.seq));
         }
         // Deduplicate by (kind, filter), taking max quantity.
         let mut deduped: std::collections::BTreeMap<
@@ -936,9 +939,9 @@ impl SimState {
             let _ =
                 self.db
                     .logistics_want_rows
-                    .insert_auto_no_fk(|id| crate::db::LogisticsWantRow {
-                        id,
+                    .insert_auto_no_fk(|seq| crate::db::LogisticsWantRow {
                         inventory_id: inv_id,
+                        seq,
                         item_kind: *item_kind,
                         material_filter: *material_filter,
                         target_quantity: *target_quantity,

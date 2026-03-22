@@ -1775,12 +1775,15 @@ impl SimState {
             return;
         }
         // Insert the new thought.
-        let _ = self.db.thoughts.insert_auto_no_fk(|id| crate::db::Thought {
-            id,
-            creature_id,
-            kind: kind.clone(),
-            tick: self.tick,
-        });
+        let _ = self
+            .db
+            .thoughts
+            .insert_auto_no_fk(|seq| crate::db::Thought {
+                creature_id,
+                seq,
+                kind: kind.clone(),
+                tick: self.tick,
+            });
         // Cap enforcement: remove oldest if over cap.
         let thoughts = self
             .db
@@ -1788,7 +1791,10 @@ impl SimState {
             .by_creature_id(&creature_id, tabulosity::QueryOpts::ASC);
         if thoughts.len() > self.config.thoughts.cap {
             // Remove the oldest (first in ASC order by PK, which is insertion order).
-            let _ = self.db.thoughts.remove_no_fk(&thoughts[0].id);
+            let _ = self
+                .db
+                .thoughts
+                .remove_no_fk(&(thoughts[0].creature_id, thoughts[0].seq));
         }
     }
 
@@ -1811,7 +1817,7 @@ impl SimState {
             .by_creature_id(&creature_id, tabulosity::QueryOpts::ASC);
         for t in &thoughts {
             if self.tick.saturating_sub(t.tick) >= self.config.thoughts.expiry_ticks(&t.kind) {
-                let _ = self.db.thoughts.remove_no_fk(&t.id);
+                let _ = self.db.thoughts.remove_no_fk(&(t.creature_id, t.seq));
             }
         }
     }

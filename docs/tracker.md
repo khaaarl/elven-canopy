@@ -84,7 +84,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-build-queue-ui       Construction queue/progress UI
 [ ] F-building-door        Player-controlled building door orientation
 [ ] F-cascade-fail         Cascading structural failure
-[ ] F-child-table-pks      Convert child tables to natural compound primary keys
 [ ] F-choir-build          Choir-based construction singing
 [ ] F-choir-harmony        Ensemble harmony in construction singing
 [ ] F-civ-knowledge        Civilization knowledge system (fruit tiers, discovery)
@@ -279,6 +278,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-cam-follow           Camera follow mode for creatures
 [x] F-capybara             Capybara species
 [x] F-carve-holes          Remove material (doors, storage hollows)
+[x] F-child-table-pks      Convert child tables to natural compound primary keys
 [x] F-civilizations        Procedural civilization generation and diplomacy
 [x] F-clothing             Wearable clothing system
 [x] F-component-recipes    Component-based crafting recipes (bread, thread, bowstring)
@@ -5124,7 +5124,7 @@ type priority prevents overwrites.
 **Status:** Done
 
 #### F-child-table-pks — Convert child tables to natural compound primary keys
-**Status:** Todo
+**Status:** Done
 
 Convert child tables in SimDb from synthetic auto-increment primary keys to natural compound primary keys. The auto-increment IDs on these tables are never referenced outside of `types.rs` and `db.rs` — they exist only to satisfy the "every table needs a PK" requirement. Replacing them with natural keys eliminates dead ID types, makes the schema self-documenting, and in the case of 1:1 extension tables, allows direct `.get(&parent_id)` lookups instead of `by_parent_id(...).into_iter().next()`.
 

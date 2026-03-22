@@ -64,14 +64,11 @@ use crate::inventory::{EffectKind, EquipSlot, ItemColor, ItemKind, Material};
 use crate::projectile::{SubVoxelCoord, SubVoxelVec};
 use crate::task::{HaulPhase, TaskOrigin, TaskState};
 use crate::types::{
-    ActiveRecipeId, ActiveRecipeTargetId, BuildType, CivId, CivOpinion, CivRelationshipId,
-    CivSpecies, CompositionId, CreatureId, CreatureTraitId, CultureTag, EnchantmentEffectId,
-    EnchantmentId, FruitSpeciesId, FurnishingType, FurnitureId, GroundPileId, InventoryId,
-    ItemStackId, ItemSubcomponentId, LogisticsWantId, MilitaryGroupId, NotificationId, ProjectId,
-    ProjectileId, SelectionGroupId, Species, StructureId, StrutId, TaskAcquireDataId,
-    TaskAttackMoveDataId, TaskAttackTargetDataId, TaskBlueprintRefId, TaskCraftDataId,
-    TaskHaulDataId, TaskId, TaskSleepDataId, TaskStructureRefId, TaskVoxelRefId, ThoughtId,
-    ThoughtKind, TraitKind, TraitValue, TreeId, VitalStatus, VoxelCoord,
+    ActiveRecipeId, ActiveRecipeTargetId, BuildType, CivId, CivOpinion, CivSpecies, CompositionId,
+    CreatureId, CultureTag, EnchantmentId, FruitSpeciesId, FurnishingType, FurnitureId,
+    GroundPileId, InventoryId, ItemStackId, MilitaryGroupId, NotificationId, ProjectId,
+    ProjectileId, SelectionGroupId, Species, StructureId, StrutId, TaskId, ThoughtKind, TraitKind,
+    TraitValue, TreeId, VitalStatus, VoxelCoord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -379,31 +376,27 @@ pub struct Creature {
 
 /// A timestamped thought belonging to a creature.
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
+#[primary_key("creature_id", "seq")]
 pub struct Thought {
-    #[primary_key(auto_increment)]
-    pub id: ThoughtId,
     #[indexed]
     pub creature_id: CreatureId,
+    #[auto_increment]
+    #[serde(rename = "id")]
+    pub seq: u64,
     pub kind: ThoughtKind,
     pub tick: u64,
 }
 
 /// A biological trait for a creature. Each row stores one trait kind and its
-/// value. The compound unique index on `(creature_id, trait_kind)` ensures
-/// at most one value per trait per creature.
+/// value. The compound PK `(creature_id, trait_kind)` ensures at most one
+/// value per trait per creature.
 ///
 /// Visual traits store palette indices as `TraitValue::Int`. `BioSeed` stores
 /// a raw PRNG output for future trait derivation. Cascade-on-delete removes
 /// all traits when the creature is deleted.
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
-#[index(
-    name = "creature_trait_kind",
-    fields("creature_id", "trait_kind"),
-    unique
-)]
+#[primary_key("creature_id", "trait_kind")]
 pub struct CreatureTrait {
-    #[primary_key(auto_increment)]
-    pub id: CreatureTraitId,
     #[indexed]
     pub creature_id: CreatureId,
     pub trait_kind: TraitKind,
@@ -501,22 +494,26 @@ pub struct Task {
 
 /// Task-to-blueprint reference (Build tasks only).
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
+#[primary_key("task_id", "seq")]
 pub struct TaskBlueprintRef {
-    #[primary_key(auto_increment)]
-    pub id: TaskBlueprintRefId,
     #[indexed]
     pub task_id: TaskId,
+    #[auto_increment]
+    #[serde(rename = "id")]
+    pub seq: u64,
     #[indexed]
     pub project_id: ProjectId,
 }
 
 /// Task-to-structure reference with role discriminant.
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
+#[primary_key("task_id", "seq")]
 pub struct TaskStructureRef {
-    #[primary_key(auto_increment)]
-    pub id: TaskStructureRefId,
     #[indexed]
     pub task_id: TaskId,
+    #[auto_increment]
+    #[serde(rename = "id")]
+    pub seq: u64,
     #[indexed]
     pub structure_id: StructureId,
     pub role: TaskStructureRole,
@@ -524,23 +521,22 @@ pub struct TaskStructureRef {
 
 /// Task-to-voxel position reference with role discriminant.
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
+#[primary_key("task_id", "seq")]
 pub struct TaskVoxelRef {
-    #[primary_key(auto_increment)]
-    pub id: TaskVoxelRefId,
     #[indexed]
     pub task_id: TaskId,
+    #[auto_increment]
+    #[serde(rename = "id")]
+    pub seq: u64,
     pub coord: VoxelCoord,
     #[indexed]
     pub role: TaskVoxelRole,
 }
 
-/// Haul-specific mutable state (extension table). Uses auto-PK so that
-/// task_id can be an indexed FK field for cascade-delete support.
+/// Haul-specific mutable state (1:1 extension table, PK = task_id).
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
 pub struct TaskHaulData {
-    #[primary_key(auto_increment)]
-    pub id: TaskHaulDataId,
-    #[indexed]
+    #[primary_key]
     pub task_id: TaskId,
     pub item_kind: ItemKind,
     pub quantity: u32,
@@ -557,22 +553,18 @@ pub struct TaskHaulData {
     pub hauled_material: Option<Material>,
 }
 
-/// Sleep-specific state (extension table).
+/// Sleep-specific state (1:1 extension table, PK = task_id).
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
 pub struct TaskSleepData {
-    #[primary_key(auto_increment)]
-    pub id: TaskSleepDataId,
-    #[indexed]
+    #[primary_key]
     pub task_id: TaskId,
     pub sleep_location: SleepLocationType,
 }
 
-/// AcquireItem-specific state (extension table).
+/// AcquireItem-specific state (1:1 extension table, PK = task_id).
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
 pub struct TaskAcquireData {
-    #[primary_key(auto_increment)]
-    pub id: TaskAcquireDataId,
-    #[indexed]
+    #[primary_key]
     pub task_id: TaskId,
     pub item_kind: ItemKind,
     pub quantity: u32,
@@ -963,11 +955,13 @@ pub struct GroundPile {
 
 /// A desired item kind, material filter, and target quantity for an inventory.
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
+#[primary_key("inventory_id", "seq")]
 pub struct LogisticsWantRow {
-    #[primary_key(auto_increment)]
-    pub id: LogisticsWantId,
     #[indexed]
     pub inventory_id: InventoryId,
+    #[auto_increment]
+    #[serde(rename = "id")]
+    pub seq: u64,
     pub item_kind: ItemKind,
     #[serde(default)]
     pub material_filter: crate::inventory::MaterialFilter,
@@ -977,11 +971,13 @@ pub struct LogisticsWantRow {
 /// A subcomponent record for a crafted item stack. Records what went into
 /// crafting each item in the stack (e.g., a Bow contains 1 Bowstring).
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
+#[primary_key("item_stack_id", "seq")]
 pub struct ItemSubcomponent {
-    #[primary_key(auto_increment)]
-    pub id: ItemSubcomponentId,
     #[indexed]
     pub item_stack_id: ItemStackId,
+    #[auto_increment]
+    #[serde(rename = "id")]
+    pub seq: u64,
     pub component_kind: ItemKind,
     pub material: Option<Material>,
     pub quality: i32,
@@ -999,11 +995,13 @@ pub struct ItemEnchantment {
 
 /// An individual effect within an enchantment.
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
+#[primary_key("enchantment_id", "seq")]
 pub struct EnchantmentEffect {
-    #[primary_key(auto_increment)]
-    pub id: EnchantmentEffectId,
     #[indexed]
     pub enchantment_id: EnchantmentId,
+    #[auto_increment]
+    #[serde(rename = "id")]
+    pub seq: u64,
     pub effect_kind: EffectKind,
     pub magnitude: i32,
     pub threshold: Option<i32>,
@@ -1014,9 +1012,7 @@ pub struct EnchantmentEffect {
 /// find and interrupt in-progress craft tasks for the removed recipe.
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
 pub struct TaskCraftData {
-    #[primary_key(auto_increment)]
-    pub id: TaskCraftDataId,
-    #[indexed]
+    #[primary_key]
     pub task_id: TaskId,
     pub recipe: crate::recipe::Recipe,
     #[serde(default)]
@@ -1087,9 +1083,7 @@ pub struct ActiveRecipeTarget {
 /// or missing.
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
 pub struct TaskAttackTargetData {
-    #[primary_key(auto_increment)]
-    pub id: TaskAttackTargetDataId,
-    #[indexed]
+    #[primary_key]
     pub task_id: TaskId,
     /// Target creature to pursue and attack. Plain ID, not FK — checked each tick.
     pub target: CreatureId,
@@ -1103,9 +1097,7 @@ pub struct TaskAttackTargetData {
 /// target is tracked on the base `Task.target_creature` field.
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
 pub struct TaskAttackMoveData {
-    #[primary_key(auto_increment)]
-    pub id: TaskAttackMoveDataId,
-    #[indexed]
+    #[primary_key]
     pub task_id: TaskId,
     /// The destination the creature is walking toward (original command target).
     pub destination: VoxelCoord,
@@ -1223,12 +1215,10 @@ pub struct MilitaryGroup {
 /// Absence of a row means unaware. Awareness is asymmetric — Civ A can know
 /// about Civ B while B has never heard of A.
 ///
-/// Invariant: at most one row per (from_civ, to_civ) pair. Enforced by
-/// lookup-before-insert in the worldgen and command processing code.
+/// PK `(from_civ, to_civ)` enforces at most one row per directed pair.
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
+#[primary_key("from_civ", "to_civ")]
 pub struct CivRelationship {
-    #[primary_key(auto_increment)]
-    pub id: CivRelationshipId,
     #[indexed]
     pub from_civ: CivId,
     #[indexed]
@@ -1346,7 +1336,6 @@ pub struct SimDb {
     pub military_groups: MilitaryGroupTable,
 
     #[table(singular = "civ_relationship",
-            auto,
             fks(from_civ = "civilizations" on_delete cascade,
                 to_civ = "civilizations" on_delete cascade))]
     pub civ_relationships: CivRelationshipTable,
@@ -1363,12 +1352,11 @@ pub struct SimDb {
     pub move_actions: MoveActionTable,
 
     #[table(singular = "thought",
-            auto,
+            nonpk_auto,
             fks(creature_id = "creatures" on_delete cascade))]
     pub thoughts: ThoughtTable,
 
     #[table(singular = "creature_trait",
-            auto,
             fks(creature_id = "creatures" on_delete cascade))]
     pub creature_traits: CreatureTraitTable,
 
@@ -1377,40 +1365,36 @@ pub struct SimDb {
     pub tasks: TaskTable,
 
     #[table(singular = "task_blueprint_ref",
-            auto,
+            nonpk_auto,
             fks(task_id = "tasks" on_delete cascade,
                 project_id = "blueprints"))]
     pub task_blueprint_refs: TaskBlueprintRefTable,
 
     #[table(singular = "task_structure_ref",
-            auto,
+            nonpk_auto,
             fks(task_id = "tasks" on_delete cascade,
                 structure_id = "structures"))]
     pub task_structure_refs: TaskStructureRefTable,
 
     #[table(singular = "task_voxel_ref",
-            auto,
+            nonpk_auto,
             fks(task_id = "tasks" on_delete cascade))]
     pub task_voxel_refs: TaskVoxelRefTable,
 
     #[table(singular = "task_haul_data",
-            auto,
-            fks(task_id = "tasks" on_delete cascade))]
+            fks(task_id = "tasks" pk on_delete cascade))]
     pub task_haul_data: TaskHaulDataTable,
 
     #[table(singular = "task_sleep_data",
-            auto,
-            fks(task_id = "tasks" on_delete cascade))]
+            fks(task_id = "tasks" pk on_delete cascade))]
     pub task_sleep_data: TaskSleepDataTable,
 
     #[table(singular = "task_acquire_data",
-            auto,
-            fks(task_id = "tasks" on_delete cascade))]
+            fks(task_id = "tasks" pk on_delete cascade))]
     pub task_acquire_data: TaskAcquireDataTable,
 
     #[table(singular = "task_craft_data",
-            auto,
-            fks(task_id = "tasks" on_delete cascade))]
+            fks(task_id = "tasks" pk on_delete cascade))]
     pub task_craft_data: TaskCraftDataTable,
 
     #[table(singular = "active_recipe", auto, fks(structure_id = "structures"))]
@@ -1422,13 +1406,11 @@ pub struct SimDb {
     pub active_recipe_targets: ActiveRecipeTargetTable,
 
     #[table(singular = "task_attack_target_data",
-            auto,
-            fks(task_id = "tasks" on_delete cascade))]
+            fks(task_id = "tasks" pk on_delete cascade))]
     pub task_attack_target_data: TaskAttackTargetDataTable,
 
     #[table(singular = "task_attack_move_data",
-            auto,
-            fks(task_id = "tasks" on_delete cascade))]
+            fks(task_id = "tasks" pk on_delete cascade))]
     pub task_attack_move_data: TaskAttackMoveDataTable,
 
     #[table(singular = "music_composition", auto)]
@@ -1454,7 +1436,7 @@ pub struct SimDb {
     pub item_stacks: ItemStackTable,
 
     #[table(singular = "item_subcomponent",
-            auto,
+            nonpk_auto,
             fks(item_stack_id = "item_stacks" on_delete cascade))]
     pub item_subcomponents: ItemSubcomponentTable,
 
@@ -1462,7 +1444,7 @@ pub struct SimDb {
     pub item_enchantments: ItemEnchantmentTable,
 
     #[table(singular = "enchantment_effect",
-            auto,
+            nonpk_auto,
             fks(enchantment_id = "item_enchantments" on_delete cascade))]
     pub enchantment_effects: EnchantmentEffectTable,
 
@@ -1471,7 +1453,7 @@ pub struct SimDb {
 
     #[table(
         singular = "logistics_want_row",
-        auto,
+        nonpk_auto,
         fks(inventory_id = "inventories")
     )]
     pub logistics_want_rows: LogisticsWantRowTable,

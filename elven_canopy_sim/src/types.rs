@@ -348,52 +348,24 @@ macro_rules! auto_pk_id {
     };
 }
 
-auto_pk_id!(/// Auto-increment ID for creature thoughts.
-ThoughtId);
 auto_pk_id!(/// Auto-increment ID for abstract inventory containers.
 InventoryId);
 auto_pk_id!(/// Auto-increment ID for item stacks within inventories.
 ItemStackId);
 auto_pk_id!(/// Auto-increment ID for ground item piles.
 GroundPileId);
-auto_pk_id!(/// Auto-increment ID for logistics want entries.
-LogisticsWantId);
 auto_pk_id!(/// Auto-increment ID for furniture placements.
 FurnitureId);
-auto_pk_id!(/// Auto-increment ID for task-to-blueprint references.
-TaskBlueprintRefId);
-auto_pk_id!(/// Auto-increment ID for task-to-structure references.
-TaskStructureRefId);
-auto_pk_id!(/// Auto-increment ID for task-to-voxel references.
-TaskVoxelRefId);
-auto_pk_id!(/// Auto-increment ID for haul task extension data.
-TaskHaulDataId);
-auto_pk_id!(/// Auto-increment ID for sleep task extension data.
-TaskSleepDataId);
-auto_pk_id!(/// Auto-increment ID for acquire task extension data.
-TaskAcquireDataId);
 auto_pk_id!(/// Auto-increment ID for player-visible notifications.
 NotificationId);
-auto_pk_id!(/// Auto-increment ID for item subcomponent records.
-ItemSubcomponentId);
 auto_pk_id!(/// Auto-increment ID for item enchantment instances.
 EnchantmentId);
-auto_pk_id!(/// Auto-increment ID for individual enchantment effects.
-EnchantmentEffectId);
-auto_pk_id!(/// Auto-increment ID for craft task extension data.
-TaskCraftDataId);
 auto_pk_id!(/// Auto-increment ID for active recipe entries on crafting buildings.
 ActiveRecipeId);
 auto_pk_id!(/// Auto-increment ID for per-output target rows on active recipes.
 ActiveRecipeTargetId);
-auto_pk_id!(/// Auto-increment ID for attack target task extension data.
-TaskAttackTargetDataId);
-auto_pk_id!(/// Auto-increment ID for attack-move task extension data.
-TaskAttackMoveDataId);
 auto_pk_id!(/// Auto-increment ID for music compositions.
 CompositionId);
-auto_pk_id!(/// Auto-increment ID for directed civ relationship records.
-CivRelationshipId);
 auto_pk_id!(/// Auto-increment ID for projectiles in flight.
 ProjectileId);
 auto_pk_id!(/// Auto-increment ID for support struts.
@@ -402,8 +374,6 @@ auto_pk_id!(/// Auto-increment ID for military groups within a civilization.
 MilitaryGroupId);
 auto_pk_id!(/// Auto-increment ID for player selection groups (Ctrl+1–9).
 SelectionGroupId);
-auto_pk_id!(/// Auto-increment ID for creature biology trait rows.
-CreatureTraitId);
 
 // ---------------------------------------------------------------------------
 // Creature biology traits
@@ -1597,8 +1567,8 @@ mod tests {
     #[test]
     fn thought_serialization_roundtrip() {
         let thought = crate::db::Thought {
-            id: ThoughtId(1),
             creature_id: CreatureId(SimUuid::new_v4(&mut crate::prng::GameRng::new(1))),
+            seq: 1,
             kind: ThoughtKind::SleptInOwnHome(StructureId(42)),
             tick: 12345,
         };

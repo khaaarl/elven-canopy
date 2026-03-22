@@ -15,11 +15,7 @@ use crate::task;
 impl SimState {
     /// Get the TaskCraftData for a task, if it exists.
     pub(crate) fn task_craft_data(&self, task_id: TaskId) -> Option<crate::db::TaskCraftData> {
-        self.db
-            .task_craft_data
-            .by_task_id(&task_id, tabulosity::QueryOpts::ASC)
-            .into_iter()
-            .next()
+        self.db.task_craft_data.get(&task_id)
     }
 
     /// Get the AttackTarget extension data for a task.
@@ -27,11 +23,7 @@ impl SimState {
         &self,
         task_id: TaskId,
     ) -> Option<crate::db::TaskAttackTargetData> {
-        self.db
-            .task_attack_target_data
-            .by_task_id(&task_id, tabulosity::QueryOpts::ASC)
-            .into_iter()
-            .next()
+        self.db.task_attack_target_data.get(&task_id)
     }
 
     /// Get the AttackMove extension data for a task.
@@ -39,11 +31,7 @@ impl SimState {
         &self,
         task_id: TaskId,
     ) -> Option<crate::db::TaskAttackMoveData> {
-        self.db
-            .task_attack_move_data
-            .by_task_id(&task_id, tabulosity::QueryOpts::ASC)
-            .into_iter()
-            .next()
+        self.db.task_attack_move_data.get(&task_id)
     }
 
     /// Get the project_id for a Build task from the task_blueprint_refs table.
@@ -86,29 +74,17 @@ impl SimState {
 
     /// Get the haul data for a Haul task.
     pub(crate) fn task_haul_data(&self, task_id: TaskId) -> Option<crate::db::TaskHaulData> {
-        self.db
-            .task_haul_data
-            .by_task_id(&task_id, tabulosity::QueryOpts::ASC)
-            .into_iter()
-            .next()
+        self.db.task_haul_data.get(&task_id)
     }
 
     /// Get the sleep data for a Sleep task.
     pub(crate) fn task_sleep_data(&self, task_id: TaskId) -> Option<crate::db::TaskSleepData> {
-        self.db
-            .task_sleep_data
-            .by_task_id(&task_id, tabulosity::QueryOpts::ASC)
-            .into_iter()
-            .next()
+        self.db.task_sleep_data.get(&task_id)
     }
 
     /// Get the acquire data for an AcquireItem task.
     pub(crate) fn task_acquire_data(&self, task_id: TaskId) -> Option<crate::db::TaskAcquireData> {
-        self.db
-            .task_acquire_data
-            .by_task_id(&task_id, tabulosity::QueryOpts::ASC)
-            .into_iter()
-            .next()
+        self.db.task_acquire_data.get(&task_id)
     }
 
     /// Reconstruct a HaulSource enum from the task's extension tables.
@@ -180,10 +156,10 @@ impl SimState {
         // Populate relationship and extension tables.
         match kind {
             task::TaskKind::Build { project_id } => {
-                let _ = self.db.task_blueprint_refs.insert_auto_no_fk(|id| {
+                let _ = self.db.task_blueprint_refs.insert_auto_no_fk(|seq| {
                     crate::db::TaskBlueprintRef {
-                        id,
                         task_id,
+                        seq,
                         project_id: *project_id,
                     }
                 });
@@ -192,17 +168,17 @@ impl SimState {
                 let _ = self
                     .db
                     .task_voxel_refs
-                    .insert_auto_no_fk(|id| crate::db::TaskVoxelRef {
-                        id,
+                    .insert_auto_no_fk(|seq| crate::db::TaskVoxelRef {
+                        seq,
                         task_id,
                         coord: *fruit_pos,
                         role: crate::db::TaskVoxelRole::FruitTarget,
                     });
             }
             task::TaskKind::Furnish { structure_id } => {
-                let _ = self.db.task_structure_refs.insert_auto_no_fk(|id| {
+                let _ = self.db.task_structure_refs.insert_auto_no_fk(|seq| {
                     crate::db::TaskStructureRef {
-                        id,
+                        seq,
                         task_id,
                         structure_id: *structure_id,
                         role: crate::db::TaskStructureRole::FurnishTarget,
@@ -214,8 +190,8 @@ impl SimState {
                     let _ =
                         self.db
                             .task_voxel_refs
-                            .insert_auto_no_fk(|id| crate::db::TaskVoxelRef {
-                                id,
+                            .insert_auto_no_fk(|seq| crate::db::TaskVoxelRef {
+                                seq,
                                 task_id,
                                 coord: *pos,
                                 role: crate::db::TaskVoxelRole::BedPosition,
@@ -223,9 +199,9 @@ impl SimState {
                 }
                 let sleep_loc = match location {
                     task::SleepLocation::Home(sid) => {
-                        let _ = self.db.task_structure_refs.insert_auto_no_fk(|id| {
+                        let _ = self.db.task_structure_refs.insert_auto_no_fk(|seq| {
                             crate::db::TaskStructureRef {
-                                id,
+                                seq,
                                 task_id,
                                 structure_id: *sid,
                                 role: crate::db::TaskStructureRole::SleepAt,
@@ -234,9 +210,9 @@ impl SimState {
                         crate::db::SleepLocationType::Home
                     }
                     task::SleepLocation::Dormitory(sid) => {
-                        let _ = self.db.task_structure_refs.insert_auto_no_fk(|id| {
+                        let _ = self.db.task_structure_refs.insert_auto_no_fk(|seq| {
                             crate::db::TaskStructureRef {
-                                id,
+                                seq,
                                 task_id,
                                 structure_id: *sid,
                                 role: crate::db::TaskStructureRole::SleepAt,
@@ -249,8 +225,7 @@ impl SimState {
                 let _ = self
                     .db
                     .task_sleep_data
-                    .insert_auto_no_fk(|id| crate::db::TaskSleepData {
-                        id,
+                    .insert_no_fk(crate::db::TaskSleepData {
                         task_id,
                         sleep_location: sleep_loc,
                     });
@@ -264,9 +239,9 @@ impl SimState {
                 destination_coord,
             } => {
                 // Destination structure ref.
-                let _ = self.db.task_structure_refs.insert_auto_no_fk(|id| {
+                let _ = self.db.task_structure_refs.insert_auto_no_fk(|seq| {
                     crate::db::TaskStructureRef {
-                        id,
+                        seq,
                         task_id,
                         structure_id: *destination,
                         role: crate::db::TaskStructureRole::HaulDestination,
@@ -275,9 +250,9 @@ impl SimState {
                 // Source ref.
                 let source_kind = match source {
                     task::HaulSource::GroundPile(pos) => {
-                        let _ = self.db.task_voxel_refs.insert_auto_no_fk(|id| {
+                        let _ = self.db.task_voxel_refs.insert_auto_no_fk(|seq| {
                             crate::db::TaskVoxelRef {
-                                id,
+                                seq,
                                 task_id,
                                 coord: *pos,
                                 role: crate::db::TaskVoxelRole::HaulSourcePile,
@@ -286,9 +261,9 @@ impl SimState {
                         crate::db::HaulSourceKind::Pile
                     }
                     task::HaulSource::Building(sid) => {
-                        let _ = self.db.task_structure_refs.insert_auto_no_fk(|id| {
+                        let _ = self.db.task_structure_refs.insert_auto_no_fk(|seq| {
                             crate::db::TaskStructureRef {
-                                id,
+                                seq,
                                 task_id,
                                 structure_id: *sid,
                                 role: crate::db::TaskStructureRole::HaulSourceBuilding,
@@ -300,8 +275,7 @@ impl SimState {
                 let _ = self
                     .db
                     .task_haul_data
-                    .insert_auto_no_fk(|id| crate::db::TaskHaulData {
-                        id,
+                    .insert_no_fk(crate::db::TaskHaulData {
                         task_id,
                         item_kind: *item_kind,
                         quantity: *quantity,
@@ -319,9 +293,9 @@ impl SimState {
             } => {
                 let source_kind = match source {
                     task::HaulSource::GroundPile(pos) => {
-                        let _ = self.db.task_voxel_refs.insert_auto_no_fk(|id| {
+                        let _ = self.db.task_voxel_refs.insert_auto_no_fk(|seq| {
                             crate::db::TaskVoxelRef {
-                                id,
+                                seq,
                                 task_id,
                                 coord: *pos,
                                 role: crate::db::TaskVoxelRole::AcquireSourcePile,
@@ -330,9 +304,9 @@ impl SimState {
                         crate::db::HaulSourceKind::Pile
                     }
                     task::HaulSource::Building(sid) => {
-                        let _ = self.db.task_structure_refs.insert_auto_no_fk(|id| {
+                        let _ = self.db.task_structure_refs.insert_auto_no_fk(|seq| {
                             crate::db::TaskStructureRef {
-                                id,
+                                seq,
                                 task_id,
                                 structure_id: *sid,
                                 role: crate::db::TaskStructureRole::AcquireSourceBuilding,
@@ -341,24 +315,23 @@ impl SimState {
                         crate::db::HaulSourceKind::Building
                     }
                 };
-                let _ =
-                    self.db
-                        .task_acquire_data
-                        .insert_auto_no_fk(|id| crate::db::TaskAcquireData {
-                            id,
-                            task_id,
-                            item_kind: *item_kind,
-                            quantity: *quantity,
-                            source_kind,
-                        });
+                let _ = self
+                    .db
+                    .task_acquire_data
+                    .insert_no_fk(crate::db::TaskAcquireData {
+                        task_id,
+                        item_kind: *item_kind,
+                        quantity: *quantity,
+                        source_kind,
+                    });
             }
             task::TaskKind::Craft {
                 structure_id,
                 active_recipe_id,
             } => {
-                let _ = self.db.task_structure_refs.insert_auto_no_fk(|id| {
+                let _ = self.db.task_structure_refs.insert_auto_no_fk(|seq| {
                     crate::db::TaskStructureRef {
-                        id,
+                        seq,
                         task_id,
                         structure_id: *structure_id,
                         role: crate::db::TaskStructureRole::CraftAt,
@@ -370,8 +343,7 @@ impl SimState {
                 let _ = self
                     .db
                     .task_craft_data
-                    .insert_auto_no_fk(|id| crate::db::TaskCraftData {
-                        id,
+                    .insert_no_fk(crate::db::TaskCraftData {
                         task_id,
                         recipe: crate::recipe::Recipe::Extract,
                         material: None,
@@ -379,14 +351,14 @@ impl SimState {
                     });
             }
             task::TaskKind::AttackTarget { target } => {
-                let _ = self.db.task_attack_target_data.insert_auto_no_fk(|id| {
-                    crate::db::TaskAttackTargetData {
-                        id,
-                        task_id,
-                        target: *target,
-                        path_failures: 0,
-                    }
-                });
+                let _ =
+                    self.db
+                        .task_attack_target_data
+                        .insert_no_fk(crate::db::TaskAttackTargetData {
+                            task_id,
+                            target: *target,
+                            path_failures: 0,
+                        });
             }
             task::TaskKind::AcquireMilitaryEquipment {
                 source,
@@ -395,9 +367,9 @@ impl SimState {
             } => {
                 let source_kind = match source {
                     task::HaulSource::GroundPile(pos) => {
-                        let _ = self.db.task_voxel_refs.insert_auto_no_fk(|id| {
+                        let _ = self.db.task_voxel_refs.insert_auto_no_fk(|seq| {
                             crate::db::TaskVoxelRef {
-                                id,
+                                seq,
                                 task_id,
                                 coord: *pos,
                                 role: crate::db::TaskVoxelRole::AcquireSourcePile,
@@ -406,9 +378,9 @@ impl SimState {
                         crate::db::HaulSourceKind::Pile
                     }
                     task::HaulSource::Building(sid) => {
-                        let _ = self.db.task_structure_refs.insert_auto_no_fk(|id| {
+                        let _ = self.db.task_structure_refs.insert_auto_no_fk(|seq| {
                             crate::db::TaskStructureRef {
-                                id,
+                                seq,
                                 task_id,
                                 structure_id: *sid,
                                 role: crate::db::TaskStructureRole::AcquireSourceBuilding,
@@ -417,16 +389,15 @@ impl SimState {
                         crate::db::HaulSourceKind::Building
                     }
                 };
-                let _ =
-                    self.db
-                        .task_acquire_data
-                        .insert_auto_no_fk(|id| crate::db::TaskAcquireData {
-                            id,
-                            task_id,
-                            item_kind: *item_kind,
-                            quantity: *quantity,
-                            source_kind,
-                        });
+                let _ = self
+                    .db
+                    .task_acquire_data
+                    .insert_no_fk(crate::db::TaskAcquireData {
+                        task_id,
+                        item_kind: *item_kind,
+                        quantity: *quantity,
+                        source_kind,
+                    });
             }
             // AttackMove — extension data inserted by the command handler
             // (command_attack_move) since the destination VoxelCoord is not

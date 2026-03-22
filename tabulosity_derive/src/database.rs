@@ -811,9 +811,10 @@ fn generate_serde_impls(
         .iter()
         .map(|(_, _, _, _, tns, _, _)| tns.clone())
         .collect();
-    // Map access: deserialize each field. Non-auto tables are deserialized as
-    // Vec<Row>; auto tables are deserialized directly as the table type (since
-    // they serialize as `{"next_id": N, "rows": [...]}`).
+    // Map access: deserialize each field. Non-auto tables accept both:
+    //   - `[row1, row2, ...]` (current format)
+    //   - `{"next_id": N, "rows": [...]}` (old auto-PK format)
+    // Auto/nonpk_auto tables are deserialized directly as the table type.
     let map_access_arms: Vec<TokenStream> = field_infos
         .iter()
         .enumerate()
@@ -834,6 +835,11 @@ fn generate_serde_impls(
                     }
                 }
             } else {
+                // Non-auto tables: accept both current array format `[row, ...]`
+                // and old auto-PK format `{"next_id": N, "rows": [...]}`.
+                // Uses a DeserializeSeed wrapper to call deserialize_any with a
+                // Visitor that handles both sequences and maps. Deserialized as
+                // Vec<Row> for FK-checked rebuilding by the Database build step.
                 quote! {
                     #field_name_str => {
                         if #vec_var.is_some() {
@@ -841,8 +847,43 @@ fn generate_serde_impls(
                                 ::serde::de::Error::duplicate_field(#field_name_str),
                             );
                         }
+                        struct __RowsSeed<R>(::std::marker::PhantomData<R>);
+                        impl<'__de, R: ::serde::Deserialize<'__de>> ::serde::de::DeserializeSeed<'__de> for __RowsSeed<R> {
+                            type Value = ::std::vec::Vec<R>;
+                            fn deserialize<D: ::serde::Deserializer<'__de>>(self, deserializer: D) -> ::std::result::Result<Self::Value, D::Error> {
+                                struct __Vis<R>(::std::marker::PhantomData<R>);
+                                impl<'__de, R: ::serde::Deserialize<'__de>> ::serde::de::Visitor<'__de> for __Vis<R> {
+                                    type Value = ::std::vec::Vec<R>;
+                                    fn expecting(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                                        f.write_str("a sequence of rows or {\"rows\": [...]}")
+                                    }
+                                    fn visit_seq<S: ::serde::de::SeqAccess<'__de>>(self, mut seq: S) -> ::std::result::Result<Self::Value, S::Error> {
+                                        let mut rows = ::std::vec::Vec::new();
+                                        while let ::std::option::Option::Some(row) = seq.next_element()? {
+                                            rows.push(row);
+                                        }
+                                        ::std::result::Result::Ok(rows)
+                                    }
+                                    fn visit_map<M: ::serde::de::MapAccess<'__de>>(self, mut m: M) -> ::std::result::Result<Self::Value, M::Error> {
+                                        let mut rows_vec: ::std::option::Option<::std::vec::Vec<R>> = ::std::option::Option::None;
+                                        while let ::std::option::Option::Some(key) = m.next_key::<::std::string::String>()? {
+                                            if key == "rows" {
+                                                if rows_vec.is_some() {
+                                                    return ::std::result::Result::Err(::serde::de::Error::duplicate_field("rows"));
+                                                }
+                                                rows_vec = ::std::option::Option::Some(m.next_value()?);
+                                            } else {
+                                                let _ = m.next_value::<::serde::de::IgnoredAny>()?;
+                                            }
+                                        }
+                                        ::std::result::Result::Ok(rows_vec.unwrap_or_default())
+                                    }
+                                }
+                                deserializer.deserialize_any(__Vis::<R>(::std::marker::PhantomData))
+                            }
+                        }
                         #vec_var = ::std::option::Option::Some(
-                            map.next_value::<::std::vec::Vec<#row_ty>>()?
+                            map.next_value_seed(__RowsSeed::<#row_ty>(::std::marker::PhantomData))?
                         );
                     }
                 }

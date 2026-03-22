@@ -889,7 +889,7 @@ Based on the current sim architecture, likely tables include:
 | `tasks` | `TaskId` | `assignee`, `status`, `task_type` | `assignee -> creatures` |
 | `items` | `ItemId` | `owner`, `item_type`, `location` | `owner? -> creatures` |
 | `buildings` | `BuildingId` | `building_type`, `location` | -- |
-| `thoughts` | `ThoughtId` | `creature`, `category` | `creature -> creatures` |
+| `thoughts` | `(CreatureId, seq)` | `creature`, `category` | `creature -> creatures` |
 
 Compound indexes would be valuable for queries like:
 - "all pending tasks assigned to creature X" (compound: assignee + status)

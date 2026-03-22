@@ -421,15 +421,11 @@ impl SimState {
 
     /// Insert a single trait row for a creature.
     fn insert_trait(&mut self, creature_id: CreatureId, trait_kind: TraitKind, value: TraitValue) {
-        let _ = self
-            .db
-            .creature_traits
-            .insert_auto_no_fk(|id| CreatureTrait {
-                id,
-                creature_id,
-                trait_kind,
-                value: value.clone(),
-            });
+        let _ = self.db.creature_traits.insert_no_fk(CreatureTrait {
+            creature_id,
+            trait_kind,
+            value: value.clone(),
+        });
     }
 
     /// Look up an integer trait value for a creature, returning `default` if
@@ -437,9 +433,7 @@ impl SimState {
     pub fn trait_int(&self, creature_id: CreatureId, kind: TraitKind, default: i64) -> i64 {
         self.db
             .creature_traits
-            .by_creature_trait_kind(&creature_id, &kind, tabulosity::QueryOpts::ASC)
-            .into_iter()
-            .next()
+            .get(&(creature_id, kind))
             .map(|t| t.value.as_int(default))
             .unwrap_or(default)
     }
@@ -450,9 +444,7 @@ impl SimState {
     pub fn trait_text(&self, creature_id: CreatureId, kind: TraitKind, default: &str) -> String {
         self.db
             .creature_traits
-            .by_creature_trait_kind(&creature_id, &kind, tabulosity::QueryOpts::ASC)
-            .into_iter()
-            .next()
+            .get(&(creature_id, kind))
             .map(|t| t.value.as_text(default))
             .unwrap_or_else(|| default.to_string())
     }

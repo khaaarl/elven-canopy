@@ -169,6 +169,52 @@ fn empty_table_serializes_as_empty_array() {
     assert_eq!(json, "[]");
 }
 
+// --- Backward-compat: plain table accepts old auto-PK format ---
+
+#[test]
+fn plain_table_deserializes_old_auto_format() {
+    // Old auto-PK tables serialized as {"next_id": N, "rows": [...]}.
+    // After converting to a natural/compound PK, the plain table deserializer
+    // should still accept this format (extracting rows, ignoring next_id).
+    let json = r#"{"next_id": 5, "rows": [
+        {"id": 1, "name": "A", "species": "Elf"},
+        {"id": 2, "name": "B", "species": "Capybara"}
+    ]}"#;
+
+    let table: CreatureTable = serde_json::from_str(json).unwrap();
+    assert_eq!(table.len(), 2);
+    assert_eq!(table.get(&CreatureId(1)).unwrap().name, "A");
+    assert_eq!(table.get(&CreatureId(2)).unwrap().name, "B");
+    // Index should be rebuilt.
+    assert_eq!(table.count_by_species(&Species::Elf, QueryOpts::ASC), 1);
+}
+
+#[test]
+fn plain_table_old_format_ignores_extra_fields() {
+    // Old format may have fields like "next_id" that should be silently ignored.
+    let json = r#"{"next_id": 99, "extra": "stuff", "rows": [
+        {"id": 1, "name": "A", "species": "Elf"}
+    ]}"#;
+
+    let table: CreatureTable = serde_json::from_str(json).unwrap();
+    assert_eq!(table.len(), 1);
+}
+
+#[test]
+fn plain_table_old_format_empty_rows() {
+    let json = r#"{"next_id": 0, "rows": []}"#;
+    let table: CreatureTable = serde_json::from_str(json).unwrap();
+    assert_eq!(table.len(), 0);
+}
+
+#[test]
+fn plain_table_old_format_missing_rows_defaults_to_empty() {
+    // If the old format somehow has no "rows" key, default to empty.
+    let json = r#"{"next_id": 0}"#;
+    let table: CreatureTable = serde_json::from_str(json).unwrap();
+    assert_eq!(table.len(), 0);
+}
+
 // --- Serde roundtrip verifies PK order ---
 
 #[test]

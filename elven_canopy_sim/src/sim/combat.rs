@@ -166,14 +166,13 @@ impl SimState {
         self.insert_task(new_task);
 
         // Insert extension row with destination.
-        let _ =
-            self.db
-                .task_attack_move_data
-                .insert_auto_no_fk(|id| crate::db::TaskAttackMoveData {
-                    id,
-                    task_id,
-                    destination,
-                });
+        let _ = self
+            .db
+            .task_attack_move_data
+            .insert_no_fk(crate::db::TaskAttackMoveData {
+                task_id,
+                destination,
+            });
 
         // Assign directly — skip Available state.
         if let Some(mut c) = self.db.creatures.get(&creature_id) {
@@ -762,11 +761,10 @@ impl SimState {
         if result {
             // Reset path failure counter on combat contact.
             if let Some(data) = self.task_attack_target_data(task_id) {
-                let data_id = data.id;
                 let _ = self
                     .db
                     .task_attack_target_data
-                    .modify_unchecked(&data_id, |d| {
+                    .modify_unchecked(&data.task_id, |d| {
                         d.path_failures = 0;
                     });
             }
@@ -821,11 +819,10 @@ impl SimState {
             if let Some(data) = self.task_attack_target_data(task_id)
                 && data.path_failures > 0
             {
-                let data_id = data.id;
                 let _ = self
                     .db
                     .task_attack_target_data
-                    .modify_unchecked(&data_id, |d| {
+                    .modify_unchecked(&data.task_id, |d| {
                         d.path_failures = 0;
                     });
             }
@@ -867,13 +864,12 @@ impl SimState {
                             self.wander(creature_id, current_node, events);
                             return;
                         }
-                        let data_id = data.id;
-                        let _ = self
-                            .db
-                            .task_attack_target_data
-                            .modify_unchecked(&data_id, |d| {
-                                d.path_failures = new_failures;
-                            });
+                        let _ =
+                            self.db
+                                .task_attack_target_data
+                                .modify_unchecked(&data.task_id, |d| {
+                                    d.path_failures = new_failures;
+                                });
                     }
                     // Retry next activation.
                     self.event_queue.schedule(
@@ -2154,8 +2150,7 @@ impl SimState {
         let _ = self
             .db
             .civ_relationships
-            .insert_auto_no_fk(|id| crate::db::CivRelationship {
-                id,
+            .insert_no_fk(crate::db::CivRelationship {
                 from_civ: civ_id,
                 to_civ: discovered_civ,
                 opinion: initial_opinion,
@@ -2206,18 +2201,12 @@ impl SimState {
         target_civ: CivId,
         opinion: CivOpinion,
     ) {
-        let rel_id = self
-            .db
-            .civ_relationships
-            .by_from_civ(&civ_id, tabulosity::QueryOpts::ASC)
-            .into_iter()
-            .find(|r| r.to_civ == target_civ)
-            .map(|r| r.id);
-        if let Some(id) = rel_id {
+        let pk = (civ_id, target_civ);
+        if self.db.civ_relationships.contains(&pk) {
             let _ = self
                 .db
                 .civ_relationships
-                .modify_unchecked(&id, |r| r.opinion = opinion);
+                .modify_unchecked(&pk, |r| r.opinion = opinion);
         }
     }
 

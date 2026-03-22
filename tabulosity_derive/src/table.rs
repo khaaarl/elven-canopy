@@ -2901,7 +2901,14 @@ fn gen_serde_impls_plain(
     let extract_key = pk_info.extract_key_from_row();
 
     if hash_indexes.is_empty() {
-        // No hash indexes — use original flat array format.
+        // No hash indexes — serialize as flat JSON array.
+        // Deserialize accepts BOTH:
+        //   - `[row1, row2, ...]` (current format)
+        //   - `{"next_id": N, "rows": [row1, ...], ...}` (old auto-PK format,
+        //     for backward-compatible loading of saves created before the table
+        //     was converted from auto-PK to natural/compound PK)
+        let visitor_name = format_ident!("__{}PlainVisitor", table_name);
+        let table_name_str_owned = table_name_str.to_string();
         quote! {
             #[cfg(feature = "serde")]
             impl ::serde::Serialize for #table_name
@@ -2924,19 +2931,71 @@ fn gen_serde_impls_plain(
                 #row_name: ::serde::Deserialize<'de>,
             {
                 fn deserialize<D: ::serde::Deserializer<'de>>(deserializer: D) -> ::std::result::Result<Self, D::Error> {
-                    let rows: ::std::vec::Vec<#row_name> = ::serde::Deserialize::deserialize(deserializer)?;
-                    let mut table = Self::new();
-                    for row in rows {
-                        let pk = #extract_key;
-                        if table.rows.contains_key(&pk) {
-                            return ::std::result::Result::Err(::serde::de::Error::custom(
-                                ::std::format!("duplicate key in {}: {:?}", #table_name_str, pk),
-                            ));
+                    struct #visitor_name;
+
+                    impl #visitor_name {
+                        fn build_table<E: ::serde::de::Error>(rows: ::std::vec::Vec<#row_name>) -> ::std::result::Result<#table_name, E> {
+                            let mut table = #table_name::new();
+                            for row in rows {
+                                let pk = #extract_key;
+                                if table.rows.contains_key(&pk) {
+                                    return ::std::result::Result::Err(E::custom(
+                                        ::std::format!("duplicate key in {}: {:?}", #table_name_str, pk),
+                                    ));
+                                }
+                                table.rows.insert(pk, row);
+                            }
+                            #rebuild_call
+                            ::std::result::Result::Ok(table)
                         }
-                        table.rows.insert(pk, row);
                     }
-                    #rebuild_call
-                    ::std::result::Result::Ok(table)
+
+                    impl<'de> ::serde::de::Visitor<'de> for #visitor_name
+                    where
+                        #row_name: ::serde::Deserialize<'de>,
+                    {
+                        type Value = #table_name;
+
+                        fn expecting(&self, formatter: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                            formatter.write_str(#table_name_str_owned)
+                        }
+
+                        // Current format: flat JSON array of rows.
+                        fn visit_seq<A: ::serde::de::SeqAccess<'de>>(
+                            self,
+                            mut seq: A,
+                        ) -> ::std::result::Result<Self::Value, A::Error> {
+                            let mut rows = ::std::vec::Vec::new();
+                            while let ::std::option::Option::Some(row) = seq.next_element::<#row_name>()? {
+                                rows.push(row);
+                            }
+                            Self::build_table(rows)
+                        }
+
+                        // Old auto-PK format: `{"next_id": N, "rows": [...]}`.
+                        // Extract the "rows" array and ignore everything else.
+                        fn visit_map<A: ::serde::de::MapAccess<'de>>(
+                            self,
+                            mut map: A,
+                        ) -> ::std::result::Result<Self::Value, A::Error> {
+                            let mut rows_vec: ::std::option::Option<::std::vec::Vec<#row_name>> = ::std::option::Option::None;
+                            while let ::std::option::Option::Some(key) = map.next_key::<::std::string::String>()? {
+                                if key == "rows" {
+                                    if rows_vec.is_some() {
+                                        return ::std::result::Result::Err(::serde::de::Error::duplicate_field("rows"));
+                                    }
+                                    rows_vec = ::std::option::Option::Some(map.next_value()?);
+                                } else {
+                                    // Skip unknown fields (next_id, etc.).
+                                    let _ = map.next_value::<::serde::de::IgnoredAny>()?;
+                                }
+                            }
+                            let rows = rows_vec.unwrap_or_default();
+                            Self::build_table(rows)
+                        }
+                    }
+
+                    deserializer.deserialize_any(#visitor_name)
                 }
             }
         }

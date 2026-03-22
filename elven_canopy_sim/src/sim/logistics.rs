@@ -486,8 +486,8 @@ impl SimState {
                     // These are set after insert_task creates the base TaskHaulData row.
                     self.insert_task(new_task);
                     // Patch the TaskHaulData row with material info.
-                    if let Some(haul_data) = self.task_haul_data(task_id) {
-                        let _ = self.db.task_haul_data.modify_unchecked(&haul_data.id, |h| {
+                    if self.task_haul_data(task_id).is_some() {
+                        let _ = self.db.task_haul_data.modify_unchecked(&task_id, |h| {
                             h.material_filter = filter;
                             h.hauled_material = hauled_material;
                         });
