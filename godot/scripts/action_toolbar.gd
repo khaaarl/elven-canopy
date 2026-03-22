@@ -2,7 +2,7 @@
 ##
 ## The main toolbar row contains gameplay buttons: speed controls (pause/play/
 ## fast/very fast), Build, Tasks, Structures, Units, Military, Tree Info, and Debug toggle.
-## A "Debug" toggle button (or F12) reveals a second row with dev/test tools:
+## A "Debug" toggle button (or F12) reveals a flow-wrapping row of dev/test tools:
 ## creature spawn buttons, Summon Elf, Test Notif (sends a debug
 ## notification through the full sim command pipeline via SimBridge),
 ## Trigger Raid (spawns a hostile raiding party at the forest edge),
@@ -44,7 +44,7 @@ signal speed_changed(speed_name: String)
 ## Ordered list of speed names for +/- cycling (excludes Paused).
 const SPEED_ORDER: Array = ["Normal", "Fast", "VeryFast"]
 
-var _debug_row: HBoxContainer
+var _debug_row: HFlowContainer
 var _debug_button: Button
 var _debug_visible: bool = false
 var _scale_button: Button
@@ -154,8 +154,9 @@ func _ready() -> void:
 	main_row.add_child(_debug_button)
 
 	# --- Debug row (hidden by default) ---
-	_debug_row = HBoxContainer.new()
-	_debug_row.add_theme_constant_override("separation", 8)
+	_debug_row = HFlowContainer.new()
+	_debug_row.add_theme_constant_override("h_separation", 8)
+	_debug_row.add_theme_constant_override("v_separation", 4)
 	_debug_row.visible = false
 	vbox.add_child(_debug_row)
 
