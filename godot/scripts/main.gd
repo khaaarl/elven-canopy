@@ -126,8 +126,10 @@ var _roof_btn: Control
 var _height_btn: Control
 ## Highest notification ID seen so far, for polling new notifications.
 ## Initialized from the sim after load so historical notifications aren't
-## replayed as toasts.
-var _last_notification_id: int = 0
+## replayed as toasts.  Starts at -1 because notification IDs begin at 0;
+## using 0 as the sentinel would cause the first notification to be skipped
+## by the `> _last_notification_id` filter.
+var _last_notification_id: int = -1
 var _escape_menu: ColorRect
 var _lobby_overlay: ColorRect
 var _elfcyclopedia_url_label: RichTextLabel

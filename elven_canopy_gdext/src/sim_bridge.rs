@@ -3241,22 +3241,25 @@ impl SimBridge {
         result
     }
 
-    /// Return the highest notification ID currently in the sim database.
+    /// Return the highest notification ID currently in the sim database,
+    /// or -1 if no notifications exist.
     ///
     /// Used by `main.gd` after loading a save to initialize
     /// `_last_notification_id` so that historical notifications are not
-    /// replayed as toasts.
+    /// replayed as toasts.  Returns -1 (not 0) for empty because
+    /// notification IDs start at 0 and `get_notifications_after` uses a
+    /// `<= after_id` filter — returning 0 would skip the first notification.
     #[func]
     fn get_max_notification_id(&self) -> i64 {
         let Some(sim) = &self.session.sim else {
-            return 0;
+            return -1;
         };
         sim.db
             .notifications
             .iter_all()
             .map(|n| n.id.0 as i64)
             .max()
-            .unwrap_or(0)
+            .unwrap_or(-1)
     }
 
     /// Send a debug notification through the full command pipeline.

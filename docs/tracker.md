@@ -258,6 +258,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-dirt-not-pinned      Dirt unpinned in fast structural validator
 [x] B-erratic-movement     Erratic/too-fast creature movement after move commands
 [x] B-escape-menu          Rename pause_menu to escape_menu and block hotkeys/buttons while it's open
+[x] B-first-notification   First notification not displayed (ID 0 skipped by polling cursor)
 [x] B-flying-arrow-chase   Flying creatures excluded from arrow-chase
 [x] B-flying-tasks         Flying creatures skip task system entirely
 [x] B-hostile-detect-nav   detect_hostile_targets panics on flying targets (NavNodeId u32::MAX hack)
@@ -3887,6 +3888,9 @@ Two related fixes for the ESC menu:
 1. **Rename pause_menu to escape_menu.** The current name is misleading — in multiplayer the menu doesn't pause the game. Rename pause_menu.gd → escape_menu.gd and update all references (_pause_menu vars, signal names, docstrings, CLAUDE.md mentions).
 
 2. **Block hotkeys and buttons while the escape menu is visible.** Currently in multiplayer (where the tree isn't paused), all gameplay hotkeys (B, T, U, M, I, Y, Space, F1–F3, etc.) and toolbar buttons still fire behind the overlay. The escape menu should suppress these while it's open — either by consuming all key input or by having the toolbar/main check an "escape menu is open" flag.
+
+#### B-first-notification — First notification not displayed (ID 0 skipped by polling cursor)
+**Status:** Done
 
 #### B-modifier-hotkeys — Hotkeys should not fire when modifier keys (Ctrl/Shift/Alt) are held
 **Status:** Done

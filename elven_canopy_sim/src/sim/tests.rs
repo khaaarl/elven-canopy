@@ -7,7 +7,7 @@ use crate::inventory::{ItemKind, Material};
 use crate::preemption;
 use crate::recipe::Recipe;
 use crate::task::{Task, TaskKind, TaskOrigin, TaskState};
-use crate::types::ActiveRecipeId;
+use crate::types::{ActiveRecipeId, NotificationId};
 use std::sync::LazyLock;
 
 /// Cached seed-42 SimState. Constructed once (tree gen + nav graph + lexicon),
@@ -12796,6 +12796,68 @@ fn debug_notification_command_creates_notification() {
     let notif = sim.db.notifications.iter_all().next().unwrap();
     assert_eq!(notif.message, "hello world");
     assert_eq!(notif.tick, 1);
+}
+
+/// The first notification gets ID 0. The bridge's `get_max_notification_id`
+/// must return -1 (not 0) when no notifications exist, otherwise the polling
+/// cursor `_last_notification_id` (initialized to `get_max_notification_id()`)
+/// will equal the first notification's ID and `get_notifications_after(0)`
+/// will skip it (the `<=` filter excludes ID 0).
+#[test]
+fn first_notification_gets_id_zero() {
+    let mut sim = test_sim(42);
+    sim.add_notification("first".to_string());
+
+    let notif = sim.db.notifications.iter_all().next().unwrap();
+    assert_eq!(
+        notif.id,
+        NotificationId(0),
+        "first auto-increment notification should have ID 0"
+    );
+}
+
+/// Verify the polling-cursor logic used by the bridge and GDScript:
+/// notifications with `id <= after_id` are excluded. With `after_id = -1`
+/// (the sentinel for "no notifications seen"), notification ID 0 must be
+/// included. With `after_id = 0`, it must be excluded.
+#[test]
+fn notification_polling_cursor_filters_correctly() {
+    let mut sim = test_sim(42);
+    sim.add_notification("first".to_string());
+    sim.add_notification("second".to_string());
+
+    // Simulate the bridge's get_notifications_after filter:
+    //   `if (notif.id.0 as i64) <= after_id { continue; }`
+    let filter = |after_id: i64| -> Vec<String> {
+        sim.db
+            .notifications
+            .iter_all()
+            .filter(|n| (n.id.0 as i64) > after_id)
+            .map(|n| n.message.clone())
+            .collect()
+    };
+
+    // Sentinel -1: both notifications (IDs 0 and 1) are included.
+    let all = filter(-1);
+    assert_eq!(all.len(), 2, "after_id=-1 should include all notifications");
+    assert_eq!(all[0], "first");
+    assert_eq!(all[1], "second");
+
+    // After seeing ID 0: only notification with ID 1 is included.
+    let after_zero = filter(0);
+    assert_eq!(
+        after_zero.len(),
+        1,
+        "after_id=0 should exclude the first notification"
+    );
+    assert_eq!(after_zero[0], "second");
+
+    // After seeing ID 1: no notifications remain.
+    let after_one = filter(1);
+    assert!(
+        after_one.is_empty(),
+        "after_id=1 should exclude all notifications"
+    );
 }
 
 #[test]
