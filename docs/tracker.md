@@ -114,7 +114,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-edge-scroll          Configurable edge scrolling (pan, rotate, or off)
 [ ] F-elf-assign           Elf-to-building assignment UI
 [ ] F-elf-leave            Devastated elves permanently leave
-[ ] F-elf-mana-pool        Per-elf mana pool wired to WIL/INT stats
 [ ] F-elfcyclopedia-know   Elfcyclopedia civ/fruit knowledge pages
 [ ] F-emotions             Multi-dimensional emotional state
 [ ] F-face-tint            Directional face tinting by normal (top warm, bottom cool)
@@ -150,6 +149,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-los-tuning           Line-of-sight tuning (terrain tolerance, tall creature bonus)
 [ ] F-magic-items          Magic item personalities and crafting
 [ ] F-mana-mood            Mana generation tied to elf mood
+[ ] F-mana-scale           Rescale mana to human-readable values and ticks_per_mp_regen
 [ ] F-mana-transfer        Tree-to-elf mana transfer
 [ ] F-mass-conserve        Wood mass tracking and conservation
 [ ] F-megachunk            MegaChunk spatial hierarchy with draw distance and frustum culling
@@ -307,6 +307,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-dye-crafting         Dye pressing from pigmented fruit components
 [x] F-dynamic-pursuit      Dynamic repathfinding for moving-target tasks
 [x] F-elf-acquire          Elf personal item acquisition
+[x] F-elf-mana-pool        Per-elf mana pool wired to WIL/INT stats
 [x] F-elf-names            Elf name generation from conlang rules
 [x] F-elf-needs            Hunger and rest self-direction
 [x] F-elf-sprite           Billboard elf sprite rendering
@@ -3787,7 +3788,7 @@ is a simulation fidelity hint, not a separate world.
 ### Soul Mechanics & Magic
 
 #### F-elf-mana-pool — Per-elf mana pool wired to WIL/INT stats
-**Status:** Todo
+**Status:** Done
 
 Wire WIL and INT stats to per-elf mana pool size and mana regeneration
 rate. WIL determines mp_max (exponential scaling: +10 WIL = 2x pool).
@@ -3797,8 +3798,8 @@ mental stats. Prereqs: F-mana-system (done), F-creature-stats (done).
 
 **Draft:** docs/drafts/war_magic.md
 
-**Blocks:** F-spell-system
-**Related:** F-creature-stats, F-mana-system, F-war-magic
+**Unblocked:** F-spell-system
+**Related:** F-creature-stats, F-mana-scale, F-mana-system, F-war-magic
 
 #### F-forest-radar — Forest awareness radar (world map detection)
 **Status:** Todo
@@ -3822,6 +3823,19 @@ and the souls/emotions imbued in them.
 
 **Related:** F-cloak-slot, F-crafting, F-soul-mech
 
+#### F-mana-scale — Rescale mana to human-readable values and ticks_per_mp_regen
+**Status:** Todo
+
+Rescale the mana system from the current 1e15 internal scale to
+human-comprehensible values (e.g. mp_max ~100–400, similar to HP).
+Replace mana_per_tick with ticks_per_mp_regen (matching the
+ticks_per_hp_regen pattern) so regen is expressed as "ticks per 1 MP"
+rather than "fractional MP per tick." This simplifies debugging,
+tooltips, and config tuning. Requires updating all mana consumers
+(construction drain, overflow-to-tree conversion, future spell costs).
+
+**Related:** F-elf-mana-pool
+
 #### F-soul-mech — Death, soul passage, resurrection
 **Status:** Todo · **Phase:** 8+ · **Refs:** §19
 
@@ -3843,8 +3857,9 @@ be granted via debug command.
 
 **Draft:** docs/drafts/war_magic.md
 
-**Blocked by:** F-elf-mana-pool, F-status-effects
+**Blocked by:** F-status-effects
 **Blocks:** F-buff-system, F-conjured-creatures, F-creature-control, F-spell-berserk, F-spell-blink, F-spell-cloak, F-spell-ench-arrow, F-spell-gust, F-spell-ice-shard, F-spell-mend, F-spell-mind-ctrl, F-spell-rootbind, F-spell-summon, F-spell-thornbriar, F-terrain-manip
+**Unblocked by:** F-elf-mana-pool
 **Related:** F-ability-hotkeys, F-war-magic
 
 #### F-uplift-tree — Uplift lesser tree into bonded great tree

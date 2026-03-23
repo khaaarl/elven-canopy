@@ -35420,10 +35420,9 @@ fn elf_spawns_with_mana() {
     let mut sim = test_sim(42);
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     let elf = sim.db.creatures.get(&elf_id).unwrap();
-    let elf_mp_max = sim.species_table[&Species::Elf].mp_max;
-    assert!(elf_mp_max > 0, "elves should be magical");
-    assert_eq!(elf.mp, elf_mp_max);
-    assert_eq!(elf.mp_max, elf_mp_max);
+    // mp_max is WIL-scaled from species base, so read from the creature.
+    assert!(elf.mp_max > 0, "elves should be magical");
+    assert_eq!(elf.mp, elf.mp_max, "elf should spawn at full mana");
     assert_eq!(elf.wasted_action_count, 0);
 }
 
@@ -35456,12 +35455,13 @@ fn mana_fields_serde_roundtrip() {
         c.wasted_action_count = 2;
     });
 
+    let elf_mp_max = sim.db.creatures.get(&elf_id).unwrap().mp_max;
+
     let json = serde_json::to_string(&sim.db).unwrap();
     let restored: crate::db::SimDb = serde_json::from_str(&json).unwrap();
     let elf = restored.creatures.get(&elf_id).unwrap();
-    let expected_mp = sim.species_table[&Species::Elf].mp_max / 2;
-    assert_eq!(elf.mp, expected_mp);
-    assert_eq!(elf.mp_max, sim.species_table[&Species::Elf].mp_max);
+    assert_eq!(elf.mp, elf_mp_max / 2);
+    assert_eq!(elf.mp_max, elf_mp_max);
     assert_eq!(elf.wasted_action_count, 2);
 }
 
@@ -35544,7 +35544,7 @@ fn elf_mana_regenerates_on_heartbeat() {
 fn elf_mana_does_not_exceed_max() {
     let mut sim = test_sim(42);
     let elf_id = spawn_creature(&mut sim, Species::Elf);
-    let elf_mp_max = sim.species_table[&Species::Elf].mp_max;
+    let elf_mp_max = sim.db.creatures.get(&elf_id).unwrap().mp_max;
 
     // Start at max — generation should not push above max.
     assert_eq!(sim.db.creatures.get(&elf_id).unwrap().mp, elf_mp_max);
@@ -35561,7 +35561,7 @@ fn elf_mana_overflow_goes_to_tree() {
     let mut sim = test_sim(42);
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     let tree_id = sim.player_tree_id;
-    let elf_mp_max = sim.species_table[&Species::Elf].mp_max;
+    let elf_mp_max = sim.db.creatures.get(&elf_id).unwrap().mp_max;
 
     // Elf starts at full mana → all generation overflows to tree.
     assert_eq!(sim.db.creatures.get(&elf_id).unwrap().mp, elf_mp_max);
@@ -35649,6 +35649,130 @@ fn capybara_generates_no_mana() {
     let capy = sim.db.creatures.get(&capy_id).unwrap();
     assert_eq!(capy.mp, 0);
     assert_eq!(capy.mp_max, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Mana system — Phase B2: stat-scaled mana pool and regeneration
+// ---------------------------------------------------------------------------
+
+#[test]
+fn elf_mp_max_scaled_by_willpower() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    let species_mp_max = sim.species_table[&Species::Elf].mp_max;
+    let wil = sim.trait_int(elf_id, TraitKind::Willpower, 0);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    let expected = crate::stats::apply_stat_multiplier(species_mp_max, wil).max(1);
+    assert_eq!(
+        elf.mp_max, expected,
+        "mp_max should be species base ({species_mp_max}) scaled by WIL ({wil}): expected {expected}, got {}",
+        elf.mp_max
+    );
+    // Creature should spawn at full (stat-scaled) mana.
+    assert_eq!(elf.mp, elf.mp_max);
+}
+
+#[test]
+fn elf_mp_max_unaffected_when_wil_is_zero() {
+    let mut sim = test_sim(42);
+    // Override elf WIL distribution to mean=0, stdev=0.
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .stat_distributions
+        .get_mut(&TraitKind::Willpower)
+        .unwrap()
+        .mean = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .stat_distributions
+        .get_mut(&TraitKind::Willpower)
+        .unwrap()
+        .stdev = 0;
+
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    let species_mp_max = sim.species_table[&Species::Elf].mp_max;
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    // WIL=0 means 1× multiplier, so mp_max == species base.
+    assert_eq!(elf.mp_max, species_mp_max);
+}
+
+#[test]
+fn elf_mana_regen_scaled_by_wil_int_average() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    let species_mpt = sim.species_table[&Species::Elf].mana_per_tick;
+    let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    let wil = sim.trait_int(elf_id, TraitKind::Willpower, 0);
+    let int = sim.trait_int(elf_id, TraitKind::Intelligence, 0);
+    let avg_stat = (wil + int) / 2;
+
+    // Drain the elf's mana to 0 so we can measure pure regen.
+    let mp_max = sim.db.creatures.get(&elf_id).unwrap().mp_max;
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.mp = 0;
+    });
+
+    sim.step(&[], sim.tick + heartbeat + 1);
+
+    let mp_after = sim.db.creatures.get(&elf_id).unwrap().mp;
+    let expected_regen =
+        crate::stats::apply_stat_multiplier(species_mpt, avg_stat) * heartbeat as i64;
+    // Regen should not exceed mp_max.
+    let expected = expected_regen.min(mp_max);
+    assert_eq!(
+        mp_after, expected,
+        "mana regen should be species base ({species_mpt}) scaled by avg(WIL={wil}, INT={int})={avg_stat}: \
+         expected {expected}, got {mp_after}"
+    );
+}
+
+#[test]
+fn elf_mp_max_reduced_by_negative_willpower() {
+    let mut sim = test_sim(42);
+    // Force negative WIL: mean=-50, stdev=0.
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .stat_distributions
+        .get_mut(&TraitKind::Willpower)
+        .unwrap()
+        .mean = -50;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .stat_distributions
+        .get_mut(&TraitKind::Willpower)
+        .unwrap()
+        .stdev = 0;
+
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    let species_mp_max = sim.species_table[&Species::Elf].mp_max;
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+
+    // WIL=-50 → 2^(-0.5) ≈ 0.707× multiplier, so mp_max < species base.
+    assert!(
+        elf.mp_max < species_mp_max,
+        "negative WIL should reduce mp_max: got {} (species base {})",
+        elf.mp_max,
+        species_mp_max
+    );
+    assert!(elf.mp_max >= 1, "mp_max floor is 1");
+    assert_eq!(elf.mp, elf.mp_max, "should spawn at full mana");
+}
+
+#[test]
+fn nonmagical_creature_mp_max_unaffected_by_stats() {
+    let mut sim = test_sim(42);
+    let capy_id = spawn_creature(&mut sim, Species::Capybara);
+
+    let capy = sim.db.creatures.get(&capy_id).unwrap();
+    // mp_max=0 species should stay 0 regardless of any stats.
+    assert_eq!(capy.mp_max, 0);
+    assert_eq!(capy.mp, 0);
 }
 
 // ---------------------------------------------------------------------------

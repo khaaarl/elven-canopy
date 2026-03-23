@@ -142,6 +142,17 @@ impl SimState {
             });
         }
 
+        // Apply Willpower to mana pool size (after traits are rolled).
+        // mp_max=0 species (nonmagical) are unaffected.
+        let willpower = self.trait_int(creature_id, TraitKind::Willpower, 0);
+        if willpower != 0 && mp_max > 0 {
+            let effective_mp = crate::stats::apply_stat_multiplier(mp_max, willpower).max(1);
+            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+                c.mp_max = effective_mp;
+                c.mp = effective_mp; // spawn at full mana
+            });
+        }
+
         // Register in spatial index.
         let footprint = self.species_table[&species].footprint;
         Self::register_creature_in_index(&mut self.spatial_index, creature_id, node_pos, footprint);

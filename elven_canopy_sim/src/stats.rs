@@ -107,7 +107,7 @@ pub fn stat_multiplier(stat: i64) -> i64 {
 ///
 /// Example: `apply_stat_multiplier(100, 200)` = 100 * 4 = 400.
 pub fn apply_stat_multiplier(base: i64, stat: i64) -> i64 {
-    (base * stat_multiplier(stat)) >> STAT_SHIFT
+    ((base as i128 * stat_multiplier(stat) as i128) >> STAT_SHIFT) as i64
 }
 
 /// Apply the stat multiplier as a divisor (inverse path).
@@ -120,7 +120,7 @@ pub fn apply_stat_divisor(base: i64, stat: i64) -> i64 {
     if mult == 0 {
         return base; // safety: shouldn't happen with valid table
     }
-    (base << STAT_SHIFT) / mult
+    (((base as i128) << STAT_SHIFT) / mult as i128) as i64
 }
 
 /// The 8 stat trait kinds in canonical order, used for iteration during
@@ -408,6 +408,25 @@ mod tests {
             (881742..=881744).contains(&m),
             "stat_multiplier(-25) should be ~881743, got {m}"
         );
+    }
+
+    #[test]
+    fn apply_stat_multiplier_large_base_no_overflow() {
+        // Mana-scale values (1e15) should not overflow thanks to i128 intermediates.
+        let base: i64 = 1_000_000_000_000_000;
+        let result = apply_stat_multiplier(base, 50);
+        // 2^0.5 ≈ 1.4142, so result ≈ 1.4142e15.
+        assert!(result > 1_400_000_000_000_000);
+        assert!(result < 1_420_000_000_000_000);
+    }
+
+    #[test]
+    fn apply_stat_divisor_large_base_no_overflow() {
+        let base: i64 = 1_000_000_000_000_000;
+        let result = apply_stat_divisor(base, 50);
+        // base / 2^0.5 ≈ 0.7071e15.
+        assert!(result > 700_000_000_000_000);
+        assert!(result < 710_000_000_000_000);
     }
 
     #[test]

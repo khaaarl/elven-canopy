@@ -18,12 +18,12 @@ Key stats for magic:
 
 | Stat | Role in magic |
 |------|---------------|
-| WIL  | Mana pool size, mana regen rate |
-| INT  | Spell effectiveness (damage, heal amount, duration) |
+| WIL  | Mana pool size (scales mp_max at spawn), mana regen rate (shared with INT) |
+| INT  | Mana regen rate (shared with WIL), spell effectiveness (damage, heal amount, duration) |
 | CHA  | Future: singing/buff effectiveness |
 
-These stats are already rolled and stored (F-creature-stats) but currently
-inert. War magic is one of their first mechanical hooks.
+WIL and INT are now wired (F-elf-mana-pool): WIL scales mp_max at spawn,
+avg(WIL, INT) scales mana_per_tick at each heartbeat.
 
 ## Command Card (F-ability-hotkeys)
 

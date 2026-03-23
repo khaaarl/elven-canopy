@@ -2468,8 +2468,8 @@ impl Default for GameConfig {
                     disengage_threshold_pct: 100,
                 },
                 hostile_detection_range_sq: 225, // 15-voxel detection radius
-                mp_max: 1_000_000_000_000_000,   // same scale as food_max/rest_max
-                mana_per_tick: 3_333_333_333,
+                mp_max: 707_106_972_102_150, // base; WIL scales at spawn (median WIL=50 → ~1e15)
+                mana_per_tick: 2_526_194_874, // base; avg(WIL,INT) scales at heartbeat (median avg=40 → ~3.3e9)
                 stat_distributions: stat_dists(&[
                     (TraitKind::Strength, 0, 40),
                     (TraitKind::Agility, 20, 40),

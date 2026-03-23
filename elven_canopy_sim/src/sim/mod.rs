@@ -1193,9 +1193,20 @@ impl SimState {
                     }
 
                     // Mana generation: batch-apply mana_per_tick over the
-                    // heartbeat interval. Excess beyond mp_max overflows
-                    // to the bonded tree.
-                    let mana_gen = species_data.mana_per_tick * interval as i64;
+                    // heartbeat interval, scaled by avg(WIL, INT). Excess
+                    // beyond mp_max overflows to the bonded tree.
+                    let mana_gen = if species_data.mana_per_tick > 0 {
+                        let wil = self.trait_int(creature_id, TraitKind::Willpower, 0);
+                        let int = self.trait_int(creature_id, TraitKind::Intelligence, 0);
+                        let avg_wil_int = (wil + int) / 2;
+                        let scaled_mpt = crate::stats::apply_stat_multiplier(
+                            species_data.mana_per_tick,
+                            avg_wil_int,
+                        );
+                        scaled_mpt * interval as i64
+                    } else {
+                        0
+                    };
                     let mp_before = creature.mp;
                     let mp_after = (mp_before + mana_gen).min(creature.mp_max);
                     let mana_overflow = (mp_before + mana_gen) - mp_after;
