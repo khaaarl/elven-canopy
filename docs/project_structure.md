@@ -142,6 +142,7 @@ elven-canopy/
 │   │   ├── gut_runner.gd          # GUT test runner configuration
 │   │   ├── test_escape_menu.gd    # Escape menu tests
 │   │   ├── test_focus_guard.gd    # Focus guard tests
+│   │   ├── test_game_config.gd    # GameConfig autoload tests
 │   │   ├── test_geometry_utils.gd # Geometry utility tests
 │   │   ├── test_harness_integration.gd # Harness integration tests
 │   │   ├── test_item_utils.gd     # Item utility tests
@@ -155,6 +156,7 @@ elven-canopy/
 │   │   └── test_wants_editor.gd   # Wants editor tests
 │   └── scripts/
 │       ├── main.gd             # Game scene controller, wires all subsystems
+│       ├── game_config.gd      # Autoload: persistent settings (user://config.json)
 │       ├── game_session.gd     # Autoload: persists seed/config across scenes
 │       ├── focus_guard.gd     # Autoload: disables keyboard focus on all buttons
 │       ├── main_menu.gd        # Main menu UI

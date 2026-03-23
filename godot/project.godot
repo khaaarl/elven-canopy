@@ -16,6 +16,7 @@ config/features=PackedStringArray("4.6")
 
 [autoload]
 
+GameConfig="*res://scripts/game_config.gd"
 GameSession="*res://scripts/game_session.gd"
 FocusGuard="*res://scripts/focus_guard.gd"
 

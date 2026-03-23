@@ -8,8 +8,8 @@
 ## 3. If the chosen session requires a password, prompt for it.
 ## 4. Store connection info in GameSession, transition to main.tscn.
 ##
-## See also: session_browser.rs (SessionBrowser class), game_session.gd,
-## multiplayer_menu.gd, main.gd.
+## See also: session_browser.rs (SessionBrowser class), game_config.gd,
+## game_session.gd, multiplayer_menu.gd, main.gd.
 
 extends Control
 
@@ -63,11 +63,10 @@ func _ready() -> void:
 	_address_input.text = "127.0.0.1:7878"
 	_address_input.call_deferred("grab_focus")
 
-	# Player name input — defaults to persistent player name from player.cfg.
+	# Player name input — defaults to persistent player name from config.json.
 	_add_label(_vbox, "Player Name:")
-	var default_name := (
-		GameSession.player_name if not GameSession.player_name.is_empty() else "Player"
-	)
+	var stored_name: String = GameConfig.get_setting("player_name")
+	var default_name := stored_name if not stored_name.is_empty() else "Player"
 	_name_input = _add_line_edit(_vbox, default_name)
 	_name_input.text = default_name
 

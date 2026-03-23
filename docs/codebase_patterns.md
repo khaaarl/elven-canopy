@@ -34,7 +34,8 @@ Things that are non-obvious or surprising about the Elven Canopy codebase. Read 
 ## GDScript UI
 
 - All UI is built programmatically in `_ready()` methods, not in `.tscn` scene files. The scene files are mostly empty shells.
-- `game_session.gd` is a Godot autoload singleton that persists seed, tree config, and player username across scene transitions (main menu → new game → game). The player name is loaded from `user://player.cfg` on startup.
+- `game_config.gd` is a Godot autoload singleton for persistent settings stored in `user://config.json` (player name, start-paused-on-load, etc.). It loads on startup and auto-saves on changes.
+- `game_session.gd` is a Godot autoload singleton that persists seed, tree config, and multiplayer parameters across scene transitions (main menu → new game → game).
 
 ## SimBridge Command Flow
 

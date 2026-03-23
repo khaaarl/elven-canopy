@@ -91,7 +91,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-cloak-slot           Cloak/cape equipment slot
 [ ] F-combat               Combat and invader threat system
 [ ] F-combat-singing       Combat singing buffs and musical instrument bands
-[ ] F-config-file          Game config file (user://config.json)
 [ ] F-config-ui            Settings UI panel (main menu + pause menu)
 [ ] F-conjured-creatures   Temporary creature spawning with lifetime and auto-despawn
 [ ] F-controls-config      Centralized controls config with rebinding and persistence
@@ -293,6 +292,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-command-queue        Shift+right-click to queue commands
 [x] F-component-recipes    Component-based crafting recipes (bread, thread, bowstring)
 [x] F-compound-pk          Compound (multi-column) primary keys
+[x] F-config-file          Game config file (user://config.json)
 [x] F-construction         Platform construction (designate/build/cancel)
 [x] F-core-types           VoxelCoord, IDs, SimCommand, GameConfig
 [x] F-crafting             Non-construction jobs and crafting
@@ -4207,27 +4207,28 @@ task (flee, eat, sleep) completes, the creature becomes idle,
 **Related:** F-rts-selection
 
 #### F-config-file — Game config file (user://config.json)
-**Status:** Todo · **Phase:** 2
+**Status:** Done · **Phase:** 2
 
 General game configuration file at user://config.json. Created with
 defaults on first launch, read on startup, written when settings change.
 Implemented as a GDScript autoload (GameConfig singleton) so any script
 can read settings.
 
-Initial options:
+Settings:
+- player_name: String (default "") — persistent player display name
+  (migrated from the old user://player.cfg used by F-player-identity)
 - start_paused_on_load: bool (default false) — load saves in paused state
-- player_name: String (default "") — player display name (may unify
-  with F-player-identity's player.cfg or remain separate)
 
-The autoload exposes get/set methods and a save() that writes to disk.
-Supports override_setting(key, value) for test harness use — tests can
-override config values in memory without touching the file, keeping
-test runs side-effect-free.
+The autoload exposes get_setting/set_setting methods (set_setting
+auto-saves) and override_setting(key, value) for test harness use —
+tests can override config values in memory without touching the file,
+keeping test runs side-effect-free.
 
 File format: flat JSON object with string keys. Unknown keys preserved
 on read (forward compatibility). Missing keys filled from defaults.
+Null values for known keys are treated as missing (default used instead).
 
-**Blocks:** F-config-ui
+**Unblocked:** F-config-ui
 **Related:** F-bridge-integ-tests, F-player-identity
 
 #### F-config-ui — Settings UI panel (main menu + pause menu)
@@ -4247,8 +4248,8 @@ sections to. F-controls-config-C adds the keybinding section here.
 Main menu gets a "Settings" button. Pause menu gets a "Settings" button
 alongside the existing Save/Load/Resume/Quit buttons.
 
-**Blocked by:** F-config-file
 **Blocks:** F-controls-config-C
+**Unblocked by:** F-config-file
 **Related:** F-controls-config
 
 #### F-controls-config — Centralized controls config with rebinding and persistence
@@ -5859,8 +5860,8 @@ Core changes:
 - Multiplayer: Player entry created per human on join
 
 Client side:
-- First launch prompts for username (no player.cfg found)
-- Username saved to user://player.cfg, reused across sessions
+- First launch prompts for username (no config.json player_name)
+- Username saved to user://config.json via GameConfig, reused across sessions
 - Host sends username from config (no more hardcoded "Host")
 - Relay rejects duplicate usernames within a session
 

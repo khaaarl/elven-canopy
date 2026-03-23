@@ -4,9 +4,9 @@
 ## "Load Game" button (enabled when saves exist), and "Quit Game" button.
 ## Transitions to the new-game screen or loads a save via GameSession.
 ##
-## On first launch (no player.cfg), shows a username prompt overlay before
-## enabling the menu buttons. The chosen name is saved to user://player.cfg
-## and reused across sessions.
+## On first launch (no config.json player_name), shows a username prompt
+## overlay before enabling the menu buttons. The chosen name is saved to
+## user://config.json via GameConfig and reused across sessions.
 ##
 ## Keyboard hotkeys: N = New Game, L = Load Game (if saves exist), Q = Quit.
 ## Hotkeys are suppressed while the load dialog or name prompt is open.
@@ -89,7 +89,8 @@ func _ready() -> void:
 	vbox.add_child(quit_btn)
 
 	# First launch: show username prompt if no player name is set.
-	if GameSession.player_name.is_empty():
+	var player_name: String = GameConfig.get_setting("player_name")
+	if player_name.is_empty():
 		_show_name_prompt()
 
 
@@ -223,8 +224,7 @@ func _show_name_prompt() -> void:
 		var chosen := name_input.text.strip_edges()
 		if chosen.is_empty():
 			return
-		GameSession.player_name = chosen
-		GameSession.save_player_name()
+		GameConfig.set_setting("player_name", chosen)
 		overlay.queue_free()
 		_name_prompt_open = false
 

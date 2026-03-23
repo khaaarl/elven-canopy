@@ -1132,7 +1132,7 @@ pub struct Furniture {
 /// A human player (operator). In single-player there is exactly one; in
 /// multiplayer there is one per connected human. The username string is the
 /// primary key — unique within a game, chosen by the player on first launch,
-/// and persisted client-side in `user://player.cfg`.
+/// and persisted client-side in `user://config.json`.
 ///
 /// `civ_id` records which civilization this player controls. Currently all
 /// players share the same civ, but the schema supports per-player civs for
