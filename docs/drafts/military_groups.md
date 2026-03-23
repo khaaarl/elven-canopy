@@ -319,7 +319,7 @@ closes the panel entirely. If the detail page is currently showing, pressing
 panel, [U] is for toggling it). ESC from the detail page navigates back to the
 summary page. ESC from the summary page closes the panel. This follows the
 input precedence chain: military panel intercepts ESC before it reaches
-pause_menu.
+escape_menu.
 
 **Layout:** Right-side panel, same anchor pattern as creature_info_panel
 (25% screen width, full height). Uses the same MarginContainer -> VBoxContainer

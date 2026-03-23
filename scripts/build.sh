@@ -24,6 +24,17 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# On failure, emit a banner containing every keyword an automated consumer
+# might grep for: error, Error, ERROR, Failed, FAILED.
+_on_error() {
+    echo "" >&2
+    echo "========================================" >&2
+    echo "FAILED — Error in scripts/build.sh"      >&2
+    echo "ERROR: build step Failed (see above)"     >&2
+    echo "========================================" >&2
+}
+trap _on_error ERR
+
 MODE="${1:-debug}"
 
 # --- Find the Godot binary ----------------------------------------------------

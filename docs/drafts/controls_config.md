@@ -122,7 +122,7 @@ Create the `ControlsConfig` autoload and migrate all existing input handling.
   5. Panels (T tasks, U units, I tree info, ? help, F12 debug)
   6. Selection (Left Click select, ESC deselect)
   7. General (ESC — the universal dismiss/cancel/close action)
-  8. Menus (N/L/M/Q main menu, Q/S pause menu, H/J/B multiplayer menu)
+  8. Menus (N/L/M/Q main menu, Q/S escape menu, H/J/B multiplayer menu)
 - Godot input action bindings (WASD, arrows, etc.) updated at runtime via
   `InputMap` API when overrides are loaded.
 - Hidden bindings: debug shortcuts (F12, debug-panel spawn keys) have
@@ -145,9 +145,9 @@ existing `_unhandled_input` precedence chain (node tree order + calling
   construction cancels on Backspace).
 - The precedence chain is unchanged: placement_controller -> construction_controller
   -> keybind_help -> task_panel / units_panel / structure_list_panel /
-  tree_info_panel -> selection_controller -> pause_menu.
-- `pause_menu.gd` currently uses `event.is_action_pressed("ui_cancel")` (a
-  Godot built-in action). During migration, `pause_menu.gd` switches to
+  tree_info_panel -> selection_controller -> escape_menu.
+- `escape_menu.gd` currently uses `event.is_action_pressed("ui_cancel")` (a
+  Godot built-in action). During migration, `escape_menu.gd` switches to
   `controls_config.is_action(event, "ui_cancel")` like all other handlers.
   ControlsConfig also updates the Godot `InputMap` for `ui_cancel` when
   overrides are loaded, so any Godot-internal uses of the action stay in
@@ -367,9 +367,9 @@ var bindings = {
 
     # Pause menu bindings (Q and S — same keys as main menu Q but different context)
     "menu_quit_pause": { "key": KEY_Q, "category": "Menus", "label": "Quit to Menu",
-                         "context": "pause_menu" },
+                         "context": "escape_menu" },
     "menu_save": { "key": KEY_S, "category": "Menus", "label": "Save Game",
-                   "context": "pause_menu" },
+                   "context": "escape_menu" },
 
     # Load dialog bindings (modal overlay — uses _input(), distinct context from main_menu)
     "load_confirm": { "key": KEY_ENTER, "alt_key": KEY_KP_ENTER, "category": "Menus",
@@ -414,7 +414,7 @@ be extended to an `alt_keys` array, but two covers all current cases.
 **Context field:** The `context` field indicates when a binding is active.
 Current values: `"global"` (always active), `"gameplay"` (in-game),
 `"construction"` (only inside construction mode), `"multiplayer_menu"` (only
-on the multiplayer menu screen), `"main_menu"`, `"pause_menu"`,
+on the multiplayer menu screen), `"main_menu"`, `"escape_menu"`,
 `"load_dialog"` (modal load-game overlay). Context is not enforced by
 ControlsConfig itself — handlers still do their own visibility/state checks.
 The field exists so F-binding-conflicts can use it for scope-aware conflict
@@ -430,22 +430,22 @@ two same-key bindings are a real conflict:
 - **`global`** overlaps with everything (always active).
 - **`gameplay`** overlaps with `construction` (construction is a sub-state of
   gameplay — the toolbar, camera, and ESC chain are all still active).
-- **`gameplay`** does NOT overlap with `main_menu`, `pause_menu`,
+- **`gameplay`** does NOT overlap with `main_menu`, `escape_menu`,
   `multiplayer_menu`, or `load_dialog` (these are separate screens/modals).
 - **`construction`** does NOT overlap with any menu context.
-- **`main_menu`**, **`pause_menu`**, **`multiplayer_menu`**, and
+- **`main_menu`**, **`escape_menu`**, **`multiplayer_menu`**, and
   **`load_dialog`** are all mutually exclusive — only one menu screen is
   active at a time. (Note: `load_dialog` is a modal overlay that fires
   before `main_menu` via `_input()`, so even though both are "visible,"
   the dialog consumes input first. They have distinct contexts to avoid
   false conflict reports for shared keys like L.)
-- **`pause_menu`** does NOT overlap with `gameplay` — when the pause menu
+- **`escape_menu`** does NOT overlap with `gameplay` — when the escape menu
   is open, gameplay input is blocked.
 
 Two bindings on the same key are a conflict only if their contexts overlap.
 The debug assertion checks this at startup for all default bindings. Example
 non-conflicts: B in `gameplay` (build_mode) vs B in `multiplayer_menu`
-(menu_back); Q in `main_menu` (quit) vs Q in `pause_menu` (quit to menu);
+(menu_back); Q in `main_menu` (quit) vs Q in `escape_menu` (quit to menu);
 L in `main_menu` (load game) vs L in `load_dialog` (load shortcut).
 
 ## File Changes
@@ -463,7 +463,7 @@ L in `main_menu` (load game) vs L in `load_dialog` (load shortcut).
   use `get_label_suffix()` for sub-mode button labels
 - `godot/scripts/selection_controller.gd` — query ControlsConfig
 - `godot/scripts/placement_controller.gd` — query ControlsConfig
-- `godot/scripts/pause_menu.gd` — switch from `ui_cancel` to ControlsConfig;
+- `godot/scripts/escape_menu.gd` — switch from `ui_cancel` to ControlsConfig;
   query ControlsConfig for Q/S hotkeys
 - `godot/scripts/main_menu.gd` — query ControlsConfig
 - `godot/scripts/multiplayer_menu.gd` — query ControlsConfig for H/J/B

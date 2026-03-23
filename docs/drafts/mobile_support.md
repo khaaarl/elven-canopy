@@ -314,9 +314,9 @@ Desktop:
 
 ## 7. Menus
 
-Desktop (main_menu.gd, pause_menu.gd, new_game_menu.gd):
+Desktop (main_menu.gd, escape_menu.gd, new_game_menu.gd):
 - Main menu with keyboard shortcuts (N/L/Q)
-- Pause menu via ESC
+- Escape menu via ESC
 - New game setup with seed input
 
 ### Mobile mapping
@@ -324,7 +324,7 @@ Desktop (main_menu.gd, pause_menu.gd, new_game_menu.gd):
 **Main menu:** Touch-friendly large buttons, no keyboard shortcuts. Same
 layout works on mobile with increased button sizes (~60dp height).
 
-**Pause menu:** Accessed via a "Menu" button in the top toolbar (replaces ESC).
+**Escape menu:** Accessed via a "Menu" button in the top toolbar (replaces ESC).
 Same overlay layout with larger buttons.
 
 **New game:** Seed input uses on-screen keyboard. Tree parameter sliders work
@@ -332,7 +332,7 @@ natively with touch. Preset buttons work as-is with larger touch targets.
 
 **Save/Load dialogs:** Same modal approach. File list rows need ~48dp height.
 Filename input uses on-screen keyboard. During gameplay, save/load is accessed
-through the pause menu's existing Save and Load buttons (replacing the desktop
+through the escape menu's existing Save and Load buttons (replacing the desktop
 keyboard shortcuts S and Q).
 
 ---
@@ -345,7 +345,7 @@ Desktop: F12 toggles debug row with spawn buttons and test controls.
 
 Debug tools are development-only and don't need mobile adaptation. If needed
 for testing, a three-finger tap could toggle a debug overlay, or debug
-controls can live in a submenu of the pause menu.
+controls can live in a submenu of the escape menu.
 
 ---
 
@@ -384,7 +384,7 @@ Chat (F-mp-chat, planned) would use a standard mobile chat input pattern
 ## 11. ESC Precedence Chain
 
 Desktop: ESC cascades through a priority chain (placement > construction >
-selection > panels > pause menu).
+selection > panels > escape menu).
 
 ### Mobile mapping
 

@@ -4,7 +4,7 @@
 ## (e.g. "#0"), the display name (custom name or default like "Platform #0"),
 ## and a "Zoom" button that emits zoom_to_structure to move the camera to the
 ## structure's anchor.
-## The panel does NOT pause the sim (unlike pause_menu.gd).
+## The panel does NOT pause the sim (unlike escape_menu.gd in single-player).
 ##
 ## Data flow: main.gd calls update_structures(data) each frame while the panel
 ## is visible, passing the result of bridge.get_structures(). The panel uses a
@@ -17,7 +17,7 @@
 ## - panel_closed — emitted when the panel is hidden (ESC or close button)
 ##
 ## ESC handling: when visible, consumes ESC in _unhandled_input and closes.
-## This sits in the ESC precedence chain between task_panel and pause_menu
+## This sits in the ESC precedence chain between task_panel and escape_menu
 ## (see main.gd docstring).
 ##
 ## See also: main.gd (creates and wires this panel), sim_bridge.rs for

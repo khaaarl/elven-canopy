@@ -49,7 +49,7 @@ Things that are non-obvious or surprising about the Elven Canopy codebase. Read 
 
 ## Input Precedence
 
-- ESC handling flows: placement_controller (cancel placement) → construction_controller (cancel construction) → selection_controller (deselect) → pause_menu (open/close menu). Each handler calls `set_input_as_handled()` to prevent downstream handlers from firing.
+- ESC handling flows: placement_controller (cancel placement) → construction_controller (cancel construction) → selection_controller (deselect) → escape_menu (open/close menu). Each handler calls `set_input_as_handled()` to prevent downstream handlers from firing. When the escape menu is open, it consumes all key input to block toolbar hotkeys.
 
 ## Keyboard Shortcut Assignment (CRITICAL)
 

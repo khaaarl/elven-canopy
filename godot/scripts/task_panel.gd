@@ -26,7 +26,7 @@
 ##
 ## ESC handling: when visible, consumes ESC in _unhandled_input and closes.
 ## This sits in the ESC precedence chain between selection_controller and
-## pause_menu (see main.gd docstring).
+## escape_menu (see main.gd docstring).
 ##
 ## See also: main.gd (creates and wires this panel), sim_bridge.rs for
 ## get_active_tasks(), action_toolbar.gd for the "Tasks [T]" button,

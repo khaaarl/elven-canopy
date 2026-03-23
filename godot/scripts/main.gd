@@ -13,7 +13,7 @@
 ##    and skip creature spawning (creatures are already in the loaded state).
 ## 4. Common path: set up renderers, toolbar, placement controller,
 ##    construction controller, selection controller, creature info panel,
-##    menu button, and pause menu.
+##    menu button, and escape menu.
 ##
 ## Per-frame (_process): calls bridge.frame_update(delta) which handles
 ## tick pacing (via LocalRelay in SP, network polling in MP) and returns a
@@ -31,7 +31,7 @@
 ## 6. units_panel — close units roster (if visible, on CanvasLayer layer 2)
 ## 7. structure_list_panel — close structure list (if visible, on CanvasLayer layer 2)
 ## 8. task_panel — close task list (if visible, on CanvasLayer layer 2)
-## 9. pause_menu — open/close (on CanvasLayer layer 2, added first)
+## 9. escape_menu — open/close (on CanvasLayer layer 2, added first)
 ##
 ## See also: orbital_camera.gd for camera controls, sim_bridge.rs and
 ## elfcyclopedia_server.rs (Rust) for the simulation interface and the embedded
@@ -56,7 +56,7 @@
 ## the task list overlay, structure_list_panel.gd for the structure list
 ## overlay, units_panel.gd for the creature roster overlay,
 ## game_session.gd for the autoload that carries the seed/load
-## path from the menu, pause_menu.gd for the ESC pause overlay.
+## path from the menu, escape_menu.gd for the ESC menu overlay.
 
 extends Node3D
 
@@ -128,7 +128,7 @@ var _height_btn: Control
 ## Initialized from the sim after load so historical notifications aren't
 ## replayed as toasts.
 var _last_notification_id: int = 0
-var _pause_menu: ColorRect
+var _escape_menu: ColorRect
 var _lobby_overlay: ColorRect
 var _elfcyclopedia_url_label: RichTextLabel
 
@@ -681,18 +681,18 @@ func _setup_common(bridge: SimBridge) -> void:
 
 		book_btn.pressed.connect(_toggle_elfcyclopedia_url)
 
-	# Pause menu overlay.
-	var pause_layer := CanvasLayer.new()
-	pause_layer.layer = 2
-	add_child(pause_layer)
+	# Escape menu overlay.
+	var escape_layer := CanvasLayer.new()
+	escape_layer.layer = 2
+	add_child(escape_layer)
 
-	var pause_script = load("res://scripts/pause_menu.gd")
-	_pause_menu = ColorRect.new()
-	_pause_menu.name = "PauseMenu"
-	_pause_menu.set_script(pause_script)
-	pause_layer.add_child(_pause_menu)
-	_pause_menu.setup(bridge)
-	menu_btn.pressed.connect(_pause_menu.toggle)
+	var escape_script = load("res://scripts/escape_menu.gd")
+	_escape_menu = ColorRect.new()
+	_escape_menu.name = "EscapeMenu"
+	_escape_menu.set_script(escape_script)
+	escape_layer.add_child(_escape_menu)
+	_escape_menu.setup(bridge)
+	menu_btn.pressed.connect(_escape_menu.toggle)
 
 	# Task panel overlay.
 	var task_panel_layer := CanvasLayer.new()
@@ -879,9 +879,9 @@ func _setup_common(bridge: SimBridge) -> void:
 
 	# Fix ESC precedence. _unhandled_input fires in reverse tree order (last
 	# child first). Move the three input controllers to the end so they get
-	# ESC before panels and the pause menu. Order after move:
-	#   ... → pause → tasks → structures → units → selector → construct → place
-	# Reverse (input order): place → construct → selector → units → panels → pause
+	# ESC before panels and the escape menu. Order after move:
+	#   ... → escape → tasks → structures → units → selector → construct → place
+	# Reverse (input order): place → construct → selector → units → panels → escape
 	move_child(_selector, -1)
 	move_child(_construction_controller, -1)
 	move_child(_placement_controller, -1)
@@ -948,7 +948,7 @@ func _process(delta: float) -> void:
 		_tooltip_controller.set_render_tick(render_tick)
 		# Suppress tooltip when any overlay panel is open.
 		var any_overlay := (
-			(_pause_menu and _pause_menu.visible)
+			(_escape_menu and _escape_menu.visible)
 			or (_task_panel and _task_panel.visible)
 			or (_structure_panel and _structure_panel.visible)
 			or (_units_panel and _units_panel.visible)

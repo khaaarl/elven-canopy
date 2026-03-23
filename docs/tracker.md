@@ -58,7 +58,6 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
-[ ] B-escape-menu          Rename pause_menu to escape_menu and block hotkeys/buttons while it's open
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-music-floats         Excise f32/f64 from music composition for determinism
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
@@ -259,6 +258,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-dead-node-panic      Panic on dead nav node in pathfinding
 [x] B-dirt-not-pinned      Dirt unpinned in fast structural validator
 [x] B-erratic-movement     Erratic/too-fast creature movement after move commands
+[x] B-escape-menu          Rename pause_menu to escape_menu and block hotkeys/buttons while it's open
 [x] B-flying-arrow-chase   Flying creatures excluded from arrow-chase
 [x] B-flying-tasks         Flying creatures skip task system entirely
 [x] B-hostile-detect-nav   detect_hostile_targets panics on flying targets (NavNodeId u32::MAX hack)
@@ -3880,7 +3880,7 @@ block.
 **Related:** F-selection-groups
 
 #### B-escape-menu — Rename pause_menu to escape_menu and block hotkeys/buttons while it's open
-**Status:** Todo
+**Status:** Done
 
 Two related fixes for the ESC menu:
 
@@ -4116,7 +4116,7 @@ movement actions), get_label_suffix(name) for dynamic button labels.
 
 Migrate every input handler to query ControlsConfig: action_toolbar,
 orbital_camera, construction_controller, selection_controller,
-placement_controller, pause_menu, main_menu, multiplayer_menu,
+placement_controller, escape_menu, main_menu, multiplayer_menu,
 save/load dialogs, tree_info_panel, task_panel, units_panel,
 structure_list_panel. Toolbar and construction buttons use
 get_label_suffix() so labels reflect current bindings.

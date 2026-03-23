@@ -5,13 +5,13 @@
 ## `save_requested(save_name)` when the player confirms.
 ##
 ## Keyboard: ESC cancels the dialog (caught via _input before it reaches
-## pause_menu). An _unhandled_input catch-all blocks stray keys (not consumed
-## by the LineEdit) from triggering pause_menu hotkeys.
+## escape_menu). An _unhandled_input catch-all blocks stray keys (not consumed
+## by the LineEdit) from triggering escape_menu hotkeys.
 ##
-## Created dynamically by pause_menu.gd when the Save button is pressed.
+## Created dynamically by escape_menu.gd when the Save button is pressed.
 ## The dialog runs in PROCESS_MODE_ALWAYS so it works while the tree is paused.
 ##
-## See also: pause_menu.gd (creates this dialog), load_dialog.gd (counterpart
+## See also: escape_menu.gd (creates this dialog), load_dialog.gd (counterpart
 ## for loading saves).
 
 extends ColorRect

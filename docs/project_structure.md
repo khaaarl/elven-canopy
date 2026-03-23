@@ -137,7 +137,7 @@ elven-canopy/
 │       ├── focus_guard.gd     # Autoload: disables keyboard focus on all buttons
 │       ├── main_menu.gd        # Main menu UI
 │       ├── new_game_menu.gd    # New game screen with tree parameter sliders
-│       ├── pause_menu.gd       # In-game pause overlay (ESC)
+│       ├── escape_menu.gd      # In-game escape menu overlay (ESC)
 │       ├── save_dialog.gd      # Modal save-game dialog (name input)
 │       ├── load_dialog.gd      # Modal load-game dialog (file list)
 │       ├── orbital_camera.gd   # Camera controls (orbit, follow, vertical snap)

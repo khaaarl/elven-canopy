@@ -11,7 +11,7 @@
 ## - Fruit: "Thúni Réva (red berry)" or "Fruit" if no species tracked
 ##
 ## The tooltip is suppressed during placement mode, construction mode, and
-## when UI overlays are open (pause menu, task panel, etc.). Tooltip text is
+## when UI overlays are open (escape menu, task panel, etc.). Tooltip text is
 ## regenerated every frame so live changes (e.g., activity transitions) are
 ## reflected immediately.
 ##

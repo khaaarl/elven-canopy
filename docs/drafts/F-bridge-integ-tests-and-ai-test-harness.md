@@ -224,7 +224,7 @@ difference:
 
 - **Tree pause** (`get_tree().paused = true`): Freezes `_process()` and
   `_physics_process()` for all nodes with default process mode
-  (`PROCESS_MODE_INHERIT`). The pause menu uses this — it sets
+  (`PROCESS_MODE_INHERIT`). The escape menu uses this — it sets
   `get_tree().paused = true` when opened and uses
   `PROCESS_MODE_ALWAYS` on itself to stay responsive.
 
@@ -233,10 +233,10 @@ renderers and UI responsive so `_wait_for` polls work and UI state
 can be read. The `_process()` loop still calls `frame_update()` each
 frame, but with zero speed no ticks advance — this is safe.
 
-**Pause menu caveat:** Test 4 opens the pause menu, which sets
+**Pause menu caveat:** Test 4 opens the escape menu, which sets
 `get_tree().paused = true`. This freezes the test node (which uses
 default process mode), preventing `await` from resuming. Tests that
-interact with the pause menu must set
+interact with the escape menu must set
 `process_mode = Node.PROCESS_MODE_ALWAYS` in `before_each()` so they
 continue processing while the tree is paused.
 
@@ -280,7 +280,7 @@ Setup and cleanup:
 ```gdscript
 func before_each() -> void:
     # Ensure test node keeps processing even when tree is paused
-    # (needed for Test 4 which opens the pause menu)
+    # (needed for Test 4 which opens the escape menu)
     process_mode = Node.PROCESS_MODE_ALWAYS
 
 func after_each() -> void:
@@ -561,7 +561,7 @@ explicit `.name` assignments for test discoverability.
 - `"UnitsPanel"` — `ColorRect` on CanvasLayer 2
 - `"StructureListPanel"` — `ColorRect` on CanvasLayer 2
 - `"HelpPanel"` — `ColorRect` on CanvasLayer 2
-- `"PauseMenu"` — `ColorRect` on CanvasLayer 2
+- `"EscapeMenu"` — `ColorRect` on CanvasLayer 2
 - `"MilitaryPanel"` — `PanelContainer` on CanvasLayer 3
 - `"StatusBar"` — `PanelContainer` on base CanvasLayer
 - `"Minimap"` — `PanelContainer` on base CanvasLayer
@@ -572,7 +572,7 @@ false)`. The `recursive=true` parameter is needed because panels are
 children of intermediate CanvasLayer nodes (which have auto-generated
 names like "CanvasLayer4"), not direct children of Main. Consider also
 naming the CanvasLayers (e.g., `"InfoPanelLayer"`, `"OverlayLayer"`,
-`"PauseMenuLayer"`) for debuggability, though this is not strictly
+`"EscapeMenuLayer"`) for debuggability, though this is not strictly
 required for tests since `find_child` with recursion handles it.
 
 ## Test designs
@@ -599,7 +599,7 @@ playable game with correct initial state visible in the UI.
    (`Vector3(128, 20, 128)` from the .tscn initial transform)
 6. Press Home key (synthetic `InputEventKey` with `KEY_HOME`) — poll with
    `_wait_for` until camera pivot moved to the home tree's position
-7. Verify pause menu ("PauseMenu") is hidden
+7. Verify escape menu ("EscapeMenu") is hidden
 
 **Bridge assertions:**
 - `get_home_tree_info()` returns a dict with expected keys
@@ -677,13 +677,13 @@ be consulted during implementation. The steps below are approximate.
 - Once complete, `get_structures()` should contain at least one structure
   with expected keys
 
-### Test 4: Save/load round-trip via pause menu
+### Test 4: Save/load round-trip via escape menu
 
-**Goal:** Verify that saving through the pause menu UI and reloading
+**Goal:** Verify that saving through the escape menu UI and reloading
 produces identical game state.
 
 **Note:** The save dialog interaction (finding Save Game button, entering
-a save name, confirming) depends on `pause_menu.gd`'s node structure,
+a save name, confirming) depends on `escape_menu.gd`'s node structure,
 which should be consulted during implementation. If the dialog flow proves
 too complex to automate reliably, this test can fall back to using
 `save_game_json()` via bridge for the save step while still testing the
@@ -699,12 +699,12 @@ load-via-UI path.
 
 **UI-driven test:**
 1. Load save, await scene ready
-2. Press ESC to open pause menu
-3. Poll with `_wait_for` until "PauseMenu" is visible
-4. Find and click the Save Game button within "PauseMenu"
+2. Press ESC to open escape menu
+3. Poll with `_wait_for` until "EscapeMenu" is visible
+4. Find and click the Save Game button within "EscapeMenu"
 5. Interact with save dialog (enter name, confirm) — exact node paths
-   TBD during implementation based on pause_menu.gd
-6. After saving, close pause menu (press ESC again)
+   TBD during implementation based on escape_menu.gd
+6. After saving, close escape menu (press ESC again)
 7. Step time to modify state: `_step_ticks(100)` via bridge
 8. Reload by creating a new `_load_game_scene()` with the saved file
 9. Poll with `_wait_for` until scene ready, verify state matches the
@@ -853,6 +853,6 @@ everything in one file for simplicity.
 **Phase 3: Complex workflows**
 - Implement Test 3 (construction) — consult `construction_controller.gd`
   and `placement_controller.gd` for the full interaction sequence
-- Implement Test 4 (save/load round-trip) — consult `pause_menu.gd` for
+- Implement Test 4 (save/load round-trip) — consult `escape_menu.gd` for
   the save dialog node structure
 - These depend on `_step_until` working reliably with the full scene

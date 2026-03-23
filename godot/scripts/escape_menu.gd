@@ -1,20 +1,22 @@
-## In-game pause menu overlay.
+## In-game escape menu overlay.
 ##
 ## A semi-transparent full-screen overlay with Resume, Save Game,
-## Main Menu, and Quit buttons. Uses Godot's built-in pause system:
-## when shown, get_tree().paused = true freezes _process in main.gd
-## (and all other default-mode nodes), stopping the sim. This node's
-## process_mode is PROCESS_MODE_ALWAYS so it keeps receiving input.
+## Main Menu, and Quit buttons. In single-player, opening the menu
+## pauses the game (get_tree().paused = true). In multiplayer the sim
+## keeps running but all gameplay hotkeys and toolbar buttons are
+## blocked while the overlay is visible.
 ##
-## Save Game opens a save_dialog.gd modal; the pause menu handles
+## Save Game opens a save_dialog.gd modal; the escape menu handles
 ## writing the JSON to `user://saves/<name>.json` via the SimBridge.
 ##
 ## ESC key toggles the menu via _unhandled_input. When the menu is hidden,
 ## placement_controller.gd, construction_controller.gd, and
 ## selection_controller.gd consume ESC first (via
-## set_input_as_handled), so the pause menu only opens when nothing
-## else claims ESC. While visible: Q = Quit, S = Save (if enabled). These
-## hotkeys are suppressed while the save dialog is open (_save_dialog_open).
+## set_input_as_handled), so the escape menu only opens when nothing
+## else claims ESC. While visible: Q = Quit, S = Save (if enabled). All
+## other key input is consumed to prevent toolbar hotkeys from firing
+## behind the overlay. These hotkeys are suppressed while the save
+## dialog is open (_save_dialog_open).
 ##
 ## Call `setup(bridge)` after construction to enable saving. Without it,
 ## the Save button remains disabled.
@@ -103,18 +105,18 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("ui_cancel"):
 		toggle()
 		get_viewport().set_input_as_handled()
-	elif (
-		visible
-		and not _save_dialog_open
-		and event is InputEventKey
-		and event.pressed
-		and not event.echo
-	):
-		if event.keycode == KEY_Q:
-			_quit_game()
-		elif event.keycode == KEY_S and not _save_btn.disabled:
-			_on_save_pressed()
-			get_viewport().set_input_as_handled()
+		return
+	if not visible:
+		return
+	# Menu is open — consume ALL key input so toolbar hotkeys (Space, B, T,
+	# U, M, I, F1–F3, etc.) cannot fire behind the overlay.
+	if event is InputEventKey and event.pressed and not event.echo:
+		if not _save_dialog_open:
+			if event.keycode == KEY_Q:
+				_quit_game()
+			elif event.keycode == KEY_S and not _save_btn.disabled:
+				_on_save_pressed()
+		get_viewport().set_input_as_handled()
 
 
 func toggle() -> void:
@@ -151,7 +153,7 @@ func _do_save(save_name: String) -> void:
 		return
 	var json := _bridge.save_game_json()
 	if json.is_empty():
-		push_error("PauseMenu: save_game_json returned empty string")
+		push_error("EscapeMenu: save_game_json returned empty string")
 		return
 
 	# Ensure saves directory exists.
@@ -166,11 +168,11 @@ func _do_save(save_name: String) -> void:
 
 	var file := FileAccess.open(path, FileAccess.WRITE)
 	if file == null:
-		push_error("PauseMenu: failed to open %s for writing" % path)
+		push_error("EscapeMenu: failed to open %s for writing" % path)
 		return
 	file.store_string(json)
 	file.close()
-	print("PauseMenu: saved game to %s" % path)
+	print("EscapeMenu: saved game to %s" % path)
 
 
 func _quit_game() -> void:

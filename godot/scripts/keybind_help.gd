@@ -186,7 +186,7 @@ func _build_sections(parent: VBoxContainer) -> void:
 		right,
 		"General",
 		[
-			["ESC", "Close panel / cancel / pause menu"],
+			["ESC", "Close panel / cancel / escape menu"],
 		]
 	)
 

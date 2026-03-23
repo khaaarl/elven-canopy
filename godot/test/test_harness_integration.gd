@@ -48,7 +48,7 @@ var _fixture: Dictionary = {}
 
 func before_each() -> void:
 	# Keep processing even when the Godot tree is paused (needed for tests
-	# that open the pause menu, which sets get_tree().paused = true).
+	# that open the escape menu, which sets get_tree().paused = true).
 	process_mode = Node.PROCESS_MODE_ALWAYS
 
 
@@ -327,8 +327,8 @@ func test_startup_scene_loads_and_initializes() -> void:
 	var status_bar_visible := await _wait_for(func(): return _is_panel_visible("StatusBar"))
 	assert_true(status_bar_visible, "Status bar should be visible")
 
-	# -- Verify pause menu is hidden --
-	assert_false(_is_panel_visible("PauseMenu"), "Pause menu should be hidden on startup")
+	# -- Verify escape menu is hidden --
+	assert_false(_is_panel_visible("EscapeMenu"), "Escape menu should be hidden on startup")
 
 	# -- Verify status bar shows correct population count --
 	# Status bar updates in _process, so wait for it to refresh.
