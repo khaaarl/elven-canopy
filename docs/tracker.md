@@ -99,6 +99,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-controls-config-B    Controls persistence and sensitivity settings
 [ ] F-controls-config-C    Controls settings screen with rebinding UI
 [ ] F-creature-control     Temporary allegiance change and AI override
+[ ] F-creature-skills      Creature skill system (17 universal skills with path-gated advancement)
 [ ] F-cultural-drift       Inter-tree cultural divergence
 [ ] F-dappled-light        Dappled light effect via scrolling noise on ground shader
 [ ] F-day-night            Day/night cycle and pacing
@@ -1309,6 +1310,27 @@ meaningful tactical tool. Also improves general simulation fidelity.
 **Unblocked:** F-spell-gust
 **Related:** F-pile-gravity
 
+#### F-creature-skills — Creature skill system (17 universal skills with path-gated advancement)
+**Status:** Todo · **Phase:** 4
+
+17 universal skills (Striking, Archery, Evasion, Ranging, Herbalism,
+Beastcraft, Cuisine, Tailoring, Woodcraft, Alchemy, Singing, Channeling,
+Literature, Art, Influence, Culture, Counsel) with exponential 2^(s/100)
+scaling reusing the stat multiplier pipeline. All skills universally
+available to all elves. Probabilistic advancement (no XP) — each relevant
+action rolls for +1 skill; momentous actions can grant multiple rolls or
+larger increments. Skills combine for composite applications (e.g.,
+Singing + Channeling + Art for construction woodsinging). Some applications
+gated by path (e.g., construction woodsinging requires Woodsinger path).
+No skill decay. Initial effect channels: speed and quality; efficiency,
+unlocks, and failure rate deferred.
+
+**Draft:** docs/drafts/F-creature-skills.md
+
+**Draft:** docs/drafts/F-creature-skills.md
+
+**Related:** F-apprentice, F-path-core
+
 #### F-creature-stats — Creature stats (str/agi/dex/con/wil/int/per/cha)
 **Status:** Done
 
@@ -2303,7 +2325,7 @@ into the tree's living surface.
 Elves learn skills by working near skilled elves. Apprenticeship as an
 emergent social/economic system.
 
-**Related:** F-path-core
+**Related:** F-creature-skills, F-path-core
 
 #### F-emotions — Multi-dimensional emotional state
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
@@ -2441,10 +2463,10 @@ lock and warning window. Integer math only for determinism. Tier transitions
 are initially threshold-based (time + level); personality gating deferred
 until F-personality exists. Foundation for all other path features.
 
-**Draft:** docs/design/F-elf-paths.md
+**Draft:** docs/drafts/F-elf-paths.md
 
 **Blocks:** F-path-civil, F-path-combat, F-path-residue, F-path-stuck, F-path-ui
-**Related:** F-apprentice, F-emotions, F-personality
+**Related:** F-apprentice, F-creature-skills, F-emotions, F-personality
 
 #### F-path-residue — Skill residue from past paths
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
@@ -5479,7 +5501,7 @@ key storage. Currently all indexes are `BTreeSet`-backed with O(log n)
 lookup; hash indexes give O(1) exact lookup with deterministic
 insertion-order iteration.
 
-**Draft:** `docs/design/F-tab-hash-idx.md`
+**Draft:** `docs/drafts/F-tab-hash-idx.md`
 
 **Key design decisions:**
 - `#[indexed(hash)]` / `#[index(..., kind = "hash")]` for hash secondary indexes
