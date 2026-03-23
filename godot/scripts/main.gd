@@ -661,7 +661,6 @@ func _setup_common(bridge: SimBridge) -> void:
 		book_btn.text = "B"
 		book_btn.tooltip_text = "Elfcyclopedia"
 		book_btn.custom_minimum_size = Vector2(28, 28)
-		book_btn.focus_mode = Control.FOCUS_NONE
 		book_btn.add_theme_font_size_override("font_size", 16)
 		book_btn.set_anchors_preset(Control.PRESET_TOP_RIGHT)
 		book_btn.position = Vector2(-120, 10)
@@ -1091,6 +1090,16 @@ func _process(delta: float) -> void:
 	# Poll for construction music composition completions.
 	if _construction_music:
 		_construction_music.poll_compositions()
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo:
+		var key := event as InputEventKey
+		if key.keycode == KEY_Y:
+			_height_btn.active = not _height_btn.active
+			_height_btn.queue_redraw()
+			_on_height_toggle(_height_btn.active)
+			get_viewport().set_input_as_handled()
 
 
 func _on_roof_toggle(is_active: bool) -> void:

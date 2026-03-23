@@ -58,7 +58,9 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
+[ ] B-escape-menu          Rename pause_menu to escape_menu and block hotkeys/buttons while it's open
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
+[ ] B-modifier-hotkeys     Hotkeys should not fire when modifier keys (Ctrl/Shift/Alt) are held
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
 [ ] F-adventure-mode       Control individual elf (RPG-like)
@@ -3842,6 +3844,20 @@ _shortcut_input with an InputMap action that panels can selectively
 block.
 
 **Related:** F-selection-groups
+
+#### B-escape-menu — Rename pause_menu to escape_menu and block hotkeys/buttons while it's open
+**Status:** Todo
+
+Two related fixes for the ESC menu:
+
+1. **Rename pause_menu to escape_menu.** The current name is misleading — in multiplayer the menu doesn't pause the game. Rename pause_menu.gd → escape_menu.gd and update all references (_pause_menu vars, signal names, docstrings, CLAUDE.md mentions).
+
+2. **Block hotkeys and buttons while the escape menu is visible.** Currently in multiplayer (where the tree isn't paused), all gameplay hotkeys (B, T, U, M, I, Y, Space, F1–F3, etc.) and toolbar buttons still fire behind the overlay. The escape menu should suppress these while it's open — either by consuming all key input or by having the toolbar/main check an "escape menu is open" flag.
+
+#### B-modifier-hotkeys — Hotkeys should not fire when modifier keys (Ctrl/Shift/Alt) are held
+**Status:** Todo
+
+Most gameplay hotkeys (B, T, U, M, I, Y, Space, F1–F3, F12, ?) fire even when Ctrl/Shift/Alt are held. They should generally be suppressed when modifiers are active, but some cases may need individual consideration (e.g., Ctrl+1–9 for selection groups already uses modifiers intentionally). Go through each hotkey handler in action_toolbar.gd, main.gd, construction_controller.gd, and selection_controller.gd on a case-by-case basis.
 
 #### F-ability-hotkeys — RTS-style bindable ability hotkeys on creatures
 **Status:** Todo

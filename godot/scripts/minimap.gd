@@ -594,7 +594,6 @@ func _make_icon_button(icon_type: String, tooltip: String) -> Button:
 	btn.tooltip_text = tooltip
 	btn.custom_minimum_size = Vector2(BTN_SIZE, BTN_SIZE)
 	btn.size = Vector2(BTN_SIZE, BTN_SIZE)
-	btn.focus_mode = Control.FOCUS_NONE
 	# Compact, semi-transparent style.
 	for state_name in ["normal", "hover", "pressed", "disabled"]:
 		var style := StyleBoxFlat.new()

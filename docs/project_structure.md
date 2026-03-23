@@ -134,6 +134,7 @@ elven-canopy/
 │   └── scripts/
 │       ├── main.gd             # Game scene controller, wires all subsystems
 │       ├── game_session.gd     # Autoload: persists seed/config across scenes
+│       ├── focus_guard.gd     # Autoload: disables keyboard focus on all buttons
 │       ├── main_menu.gd        # Main menu UI
 │       ├── new_game_menu.gd    # New game screen with tree parameter sliders
 │       ├── pause_menu.gd       # In-game pause overlay (ESC)

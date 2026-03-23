@@ -80,7 +80,6 @@ func _ready() -> void:
 	var pause_btn := Button.new()
 	pause_btn.text = "||"
 	pause_btn.custom_minimum_size = Vector2(32, 0)
-	pause_btn.focus_mode = Control.FOCUS_NONE
 	pause_btn.pressed.connect(_set_speed.bind("Paused"))
 	speed_container.add_child(pause_btn)
 	_speed_buttons["Paused"] = pause_btn
@@ -88,7 +87,6 @@ func _ready() -> void:
 	var normal_btn := Button.new()
 	normal_btn.text = "1x"
 	normal_btn.custom_minimum_size = Vector2(32, 0)
-	normal_btn.focus_mode = Control.FOCUS_NONE
 	normal_btn.pressed.connect(_set_speed.bind("Normal"))
 	speed_container.add_child(normal_btn)
 	_speed_buttons["Normal"] = normal_btn
@@ -96,7 +94,6 @@ func _ready() -> void:
 	var fast_btn := Button.new()
 	fast_btn.text = "2x"
 	fast_btn.custom_minimum_size = Vector2(32, 0)
-	fast_btn.focus_mode = Control.FOCUS_NONE
 	fast_btn.pressed.connect(_set_speed.bind("Fast"))
 	speed_container.add_child(fast_btn)
 	_speed_buttons["Fast"] = fast_btn
@@ -104,7 +101,6 @@ func _ready() -> void:
 	var vfast_btn := Button.new()
 	vfast_btn.text = "5x"
 	vfast_btn.custom_minimum_size = Vector2(40, 0)
-	vfast_btn.focus_mode = Control.FOCUS_NONE
 	vfast_btn.pressed.connect(_set_speed.bind("VeryFast"))
 	speed_container.add_child(vfast_btn)
 	_speed_buttons["VeryFast"] = vfast_btn
@@ -240,7 +236,6 @@ func _ready() -> void:
 
 	_scale_button = Button.new()
 	_scale_button.text = "3D Scale: 1.0"
-	_scale_button.focus_mode = Control.FOCUS_NONE
 	_scale_button.pressed.connect(_toggle_3d_scale)
 	_debug_row.add_child(_scale_button)
 

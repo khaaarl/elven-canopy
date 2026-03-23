@@ -53,7 +53,7 @@ Things that are non-obvious or surprising about the Elven Canopy codebase. Read 
 
 ## Keyboard Shortcut Assignment (CRITICAL)
 
-- Before assigning ANY new keyboard shortcut, **thoroughly audit all existing bindings** across every GDScript file. Search for `KEY_` in `godot/scripts/` to find all current bindings. Many keys are already in use (Space, 1-3, B, T, U, I, F12, ?, ESC, Enter, arrow keys, +/=).
+- Before assigning ANY new keyboard shortcut, **thoroughly audit all existing bindings** across every GDScript file. Search for `KEY_` in `godot/scripts/` to find all current bindings. Many keys are already in use (Space, F1–F3, F12, B, T, U, M, I, Y, F, ?, P/G/L/C (construction), 1–9/Ctrl+1–9/Shift+1–9 (selection groups), ESC, Enter, Home, PgUp/PgDn, arrow keys, +/=).
 - **Always ask the user** before assigning a shortcut — never pick one unilaterally.
 
 ## Dev Profile Tuning

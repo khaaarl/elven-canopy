@@ -176,6 +176,14 @@ func _build_sections(parent: VBoxContainer) -> void:
 
 	_add_section(
 		right,
+		"View",
+		[
+			["Y", "Toggle height cutoff"],
+		]
+	)
+
+	_add_section(
+		right,
 		"General",
 		[
 			["ESC", "Close panel / cancel / pause menu"],
