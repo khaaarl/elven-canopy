@@ -154,6 +154,8 @@ When the user asks to merge a feature branch to main, use the `/merge-to-main` s
 
 ## Key Constraints
 
+- **No silent deferrals.** If you notice a bug or issue, even if out of current scope of work or a pre-existing issue, you MUST alert the user LOUDLY. DO NOT merge to main unless you have fixed it and/or added a tracker bug. NO MERCY FOR BUGS.
+
 - **Determinism (sim crate)**: `elven_canopy_sim` must produce identical results given the same seed. No hash-order dependence, no set iteration, no floating-point arithmetic (precision varies across platforms/compilers), no stdlib PRNG. All crates share a hand-rolled xoshiro256++ PRNG from `elven_canopy_prng` (with SplitMix64 seeding) — no external PRNG crate dependencies. This enables consistency in multiplayer and verification of optimizations. **Scope:** The strict determinism constraint (identical results across platforms/compilers) applies to `elven_canopy_sim`. The music crate uses the same PRNG for seed-based reproducibility but doesn't participate in lockstep multiplayer or replay verification.
 
 ## Simulator: Test-Driven Workflow (CRITICAL)
