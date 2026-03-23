@@ -7,6 +7,7 @@
 ## - WASD: move the focal point horizontally, relative to camera facing.
 ## - Q/E or Left/Right arrows: rotate the camera around the focal point.
 ## - Up/Down arrows or middle-mouse drag: tilt the camera up/down.
+## - Ctrl+middle-mouse drag: pan the focal point horizontally.
 ## - Scroll wheel or +/= and - keys: zoom (distance from focal point to camera).
 ## - Page Up/Down: move the focal point vertically (clamped to world bounds).
 ## - Home: center focal point on the home tree (emits home_requested signal).
@@ -64,6 +65,8 @@ const SNAP_LERP_SPEED: float = 8.0
 @export var focal_y_min: float = 0.0
 ## Maximum focal point height (top of prototype world).
 @export var focal_y_max: float = 256.0
+## Mouse pan sensitivity (world-units per pixel at zoom=1; scaled by current zoom).
+@export var mouse_pan_sensitivity: float = 0.002
 
 ## Current orbit yaw (horizontal rotation), in radians.
 var _yaw: float = 0.0
@@ -73,6 +76,8 @@ var _pitch: float = 0.7  # ~40°, a comfortable default
 var _zoom: float = 30.0
 ## Whether middle mouse is being held for drag rotation/tilt.
 var _rotating: bool = false
+## Whether Ctrl+middle mouse is being held for drag panning.
+var _panning: bool = false
 ## Whether the camera is in follow mode (tracking a creature).
 var _following: bool = false
 ## Whether vertical-snap is enabled (construction mode — Y axis only).
@@ -139,7 +144,12 @@ func _unhandled_input(event: InputEvent) -> void:
 			_zoom = min(_zoom + zoom_speed, zoom_max)
 			_update_camera_transform()
 		elif mb.button_index == MOUSE_BUTTON_MIDDLE:
-			_rotating = mb.pressed
+			if mb.ctrl_pressed:
+				_panning = mb.pressed
+				_rotating = false
+			else:
+				_rotating = mb.pressed
+				_panning = false
 
 	# Home key: center camera on the home tree.
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -155,6 +165,16 @@ func _unhandled_input(event: InputEvent) -> void:
 		var mm := event as InputEventMouseMotion
 		_yaw -= mm.relative.x * mouse_rotation_sensitivity
 		_pitch = clamp(_pitch + mm.relative.y * mouse_pitch_sensitivity, pitch_min, pitch_max)
+		_update_camera_transform()
+
+	# Ctrl+middle-mouse drag to pan the focal point horizontally.
+	if event is InputEventMouseMotion and _panning:
+		var mm := event as InputEventMouseMotion
+		var right := Vector3(cos(_yaw), 0.0, -sin(_yaw))
+		var forward := Vector3(-sin(_yaw), 0.0, -cos(_yaw))
+		var pan_scale := mouse_pan_sensitivity * _zoom
+		position += right * mm.relative.x * pan_scale + forward * mm.relative.y * pan_scale
+		_following = false
 		_update_camera_transform()
 
 
@@ -245,7 +265,7 @@ func _process(delta: float) -> void:
 
 	# Vertical snap: when enabled and no inputs are active, smoothly pull the
 	# focal point's Y to the nearest voxel center Y. X and Z are not snapped.
-	if _vertical_snap and not moved and not _rotating:
+	if _vertical_snap and not moved and not _rotating and not _panning:
 		var snap_y: float
 		if _has_tentative:
 			snap_y = _tentative_target_y

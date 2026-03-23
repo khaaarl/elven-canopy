@@ -116,6 +116,7 @@ func _build_sections(parent: VBoxContainer) -> void:
 			["+  /  -", "Zoom in / out"],
 			["Scroll Wheel", "Zoom in / out"],
 			["Middle Mouse Drag", "Orbit camera"],
+			["Ctrl+Middle Mouse Drag", "Pan camera"],
 			["Page Up", "Move view up"],
 			["Page Down", "Move view down"],
 			["Home", "Center on home tree"],

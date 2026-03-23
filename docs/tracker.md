@@ -159,7 +159,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mesh-par             Parallel off-main-thread chunk mesh generation with camera-priority
 [ ] F-military-campaign    Send elves on world expeditions
 [ ] F-military-org         Squad management and organization
-[ ] F-mmb-pan              Ctrl+MMB drag to pan camera horizontally
 [ ] F-mobile-support       Mobile/touch platform support
 [ ] F-modding              Scripting layer for modding support
 [ ] F-modifier-keybinds    Modifier key combinations in bindings
@@ -367,6 +366,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-military-equip       Military group equipment acquisition
 [x] F-military-groups      Military group data model and configuration
 [x] F-minimap              Minimap with tree silhouette and creature positions
+[x] F-mmb-pan              Ctrl+MMB drag to pan camera horizontally
 [x] F-mood-system          Mood with escalating consequences
 [x] F-move-interp          Smooth creature movement interpolation
 [x] F-move-spread          Spread destinations for multi-creature move commands
@@ -4633,7 +4633,7 @@ map screen, side-view panel, etc.).
 **Related:** F-zlevel-vis
 
 #### F-mmb-pan — Ctrl+MMB drag to pan camera horizontally
-**Status:** Todo · **Phase:** 5
+**Status:** Done · **Phase:** 5
 
 Ctrl+middle-mouse-button drag to pan the camera horizontally.
 Mirrors Ctrl+scroll wheel for vertical movement (F-mouse-elevation),
