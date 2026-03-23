@@ -234,6 +234,7 @@ version = "0.1.0"
 dependencies = [
  "elven_canopy_lang",
  "elven_canopy_prng",
+ "elven_canopy_utils",
  "midly",
  "serde",
  "serde_json",
@@ -271,6 +272,7 @@ version = "0.1.0"
 dependencies = [
  "elven_canopy_lang",
  "elven_canopy_prng",
+ "elven_canopy_utils",
  "rayon",
  "serde",
  "serde_json",
@@ -295,6 +297,8 @@ dependencies = [
  "hashbrown",
  "rayon",
  "rustc-hash",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
