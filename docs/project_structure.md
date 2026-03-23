@@ -176,7 +176,7 @@ elven-canopy/
 │       ├── notification_display.gd  # Toast-style event notifications
 │       ├── status_bar.gd           # Persistent bottom-left status bar (population, idle, tasks, speed)
 │       ├── keybind_help.gd         # Keyboard shortcuts help overlay
-│       ├── creature_info_panel.gd   # Right-side creature info + follow button
+│       ├── creature_info_panel.gd   # Right-side creature info panel (tabbed: status/inventory/thoughts)
 │       ├── group_info_panel.gd     # Right-side multi-creature selection panel
 │       ├── selection_highlight.gd    # Faction-colored selection ring rendering (pool pattern)
 │       ├── hp_bar.gd               # Overhead HP/MP bar textures and sprite helpers
@@ -209,6 +209,7 @@ elven-canopy/
 │   ├── organic_tree_vision.md  # Tree generation design notes
 │   ├── code_quality_plan.md    # Code quality improvement plan
 │   ├── construction_roadmap.md # Construction system roadmap
+│   ├── godot_scroll_sizing.md  # ScrollContainer/PanelContainer sizing guide (required reading for LLMs)
 │   ├── design/                 # Approved/in-progress design documents
 │   └── drafts/                 # Working design documents
 ├── scripts/

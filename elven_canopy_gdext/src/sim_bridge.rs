@@ -186,7 +186,7 @@ use elven_canopy_sim::task::{TaskOrigin, TaskState};
 use elven_canopy_sim::types::{
     ActiveRecipeId, ActiveRecipeTargetId, BuildType, CreatureId, DiplomaticRelation, FaceDirection,
     FruitSpeciesId, FurnishingType, FurnitureKind, LadderKind, OverlapClassification, Priority,
-    SimUuid, Species, StructureId, VitalStatus, VoxelCoord, VoxelType,
+    SimUuid, Species, StructureId, TraitKind, VitalStatus, VoxelCoord, VoxelType,
 };
 use godot::classes::ImageTexture;
 use godot::prelude::*;
@@ -367,6 +367,27 @@ fn build_creature_info_dict(
         };
         dict.set("military_group_id", group_id);
         dict.set("military_group_name", GString::from(group_name.as_str()));
+    }
+    // Creature stats (ability scores).
+    for tk in elven_canopy_sim::stats::STAT_TRAIT_KINDS {
+        let val = sim
+            .db
+            .creature_traits
+            .get(&(c.id, tk))
+            .map(|t| t.value.as_int(0))
+            .unwrap_or(0);
+        let key = match tk {
+            TraitKind::Strength => "stat_str",
+            TraitKind::Agility => "stat_agi",
+            TraitKind::Dexterity => "stat_dex",
+            TraitKind::Constitution => "stat_con",
+            TraitKind::Willpower => "stat_wil",
+            TraitKind::Intelligence => "stat_int",
+            TraitKind::Perception => "stat_per",
+            TraitKind::Charisma => "stat_cha",
+            _ => continue,
+        };
+        dict.set(key, val);
     }
     dict
 }

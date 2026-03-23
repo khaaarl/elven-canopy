@@ -1,18 +1,13 @@
 ## Creature info panel displayed on the right side of the screen.
 ##
-## Shows information about the currently selected creature. Built
-## programmatically as a PanelContainer with labels and a Follow button.
-## Sits on the CanvasLayer alongside the spawn toolbar.
+## Shows information about the currently selected creature, organized into
+## three tabs: Status (vitals, position, task, needs, mood, ability scores),
+## Inventory (scrollable item list), and Thoughts (scrollable recent thoughts).
 ##
 ## The panel is ~25% screen width, full height, anchored to the right edge.
-## Shows species, name (Vaelith name for elves, fallback species name for
-## unnamed creatures), an HP bar (current/max as "87 / 100" inside a reddish
-## progress bar), position, task kind with a "Zoom" button to jump to the
-## task's target location (when available), a food gauge, a rest gauge
-## (both as progress bar + percentage), a mood label showing the derived
-## mood tier and numeric score, a "Recent Thoughts" section listing the
-## creature's accumulated thoughts (most recent first), and an inventory
-## section listing carried items. Updated every frame by main.gd.
+## A fixed header (species, name, status, military group) and Follow button
+## sit outside the tabs so they're always visible. Updated every frame by
+## main.gd.
 ##
 ## See also: selection_controller.gd which triggers show/hide,
 ## orbital_camera.gd which responds to follow/unfollow,
@@ -27,6 +22,11 @@ signal zoom_to_task_location(x: float, y: float, z: float)
 signal military_group_clicked(group_id: int)
 
 const MAX_DISPLAYED_THOUGHTS := 10
+
+## Index constants for the three tabs.
+const TAB_STATUS := 0
+const TAB_INVENTORY := 1
+const TAB_THOUGHTS := 2
 
 var _species_label: Label
 var _name_label: Label
@@ -47,18 +47,27 @@ var _status_label: Label
 var _military_group_btn: Button
 var _military_group_id: int = -1
 var _mood_label: Label
+var _stat_labels: Dictionary = {}
 var _thoughts_container: VBoxContainer
-var _thoughts_header: Label
 var _inventory_label: Label
 var _follow_button: Button
 var _is_following: bool = false
 var _selected_creature_id: String = ""
+
+## Tab switching state.
+var _tab_buttons: Array[Button] = []
+var _tab_contents: Array[Control] = []
+var _active_tab: int = TAB_STATUS
 
 
 func _ready() -> void:
 	# Anchor to the right edge, full height.
 	set_anchors_preset(PRESET_RIGHT_WIDE)
 	custom_minimum_size.x = 320
+	# PanelContainer shrinks to content minimum, and ScrollContainer has zero
+	# minimum height — force full viewport height so the scroll area is visible.
+	_match_viewport_height()
+	get_viewport().size_changed.connect(_match_viewport_height)
 
 	var margin := MarginContainer.new()
 	margin.add_theme_constant_override("margin_left", 12)
@@ -67,13 +76,47 @@ func _ready() -> void:
 	margin.add_theme_constant_override("margin_bottom", 12)
 	add_child(margin)
 
-	var vbox := VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 8)
-	margin.add_child(vbox)
+	var root_vbox := VBoxContainer.new()
+	root_vbox.add_theme_constant_override("separation", 8)
+	margin.add_child(root_vbox)
 
-	# Header with title and close button.
+	# -- Fixed header (always visible) --
+	_build_header(root_vbox)
+
+	# -- Tab bar --
+	var tab_bar := HBoxContainer.new()
+	tab_bar.add_theme_constant_override("separation", 4)
+	root_vbox.add_child(tab_bar)
+
+	for tab_name in ["Status", "Inventory", "Thoughts"]:
+		var btn := Button.new()
+		btn.text = tab_name
+		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		btn.pressed.connect(_on_tab_pressed.bind(_tab_buttons.size()))
+		tab_bar.add_child(btn)
+		_tab_buttons.append(btn)
+
+	root_vbox.add_child(HSeparator.new())
+
+	# -- Tab contents (direct children of root_vbox, only one visible) --
+	_tab_contents.append(_build_status_tab(root_vbox))
+	_tab_contents.append(_build_inventory_tab(root_vbox))
+	_tab_contents.append(_build_thoughts_tab(root_vbox))
+
+	# -- Follow button (always visible) --
+	_follow_button = Button.new()
+	_follow_button.text = "Follow"
+	_follow_button.pressed.connect(_on_follow_pressed)
+	root_vbox.add_child(_follow_button)
+
+	_switch_tab(TAB_STATUS)
+	visible = false
+
+
+## Build the fixed header: title row, species, name, status, military group.
+func _build_header(parent: VBoxContainer) -> void:
 	var header := HBoxContainer.new()
-	vbox.add_child(header)
+	parent.add_child(header)
 
 	var title := Label.new()
 	title.text = "Creature Info"
@@ -86,32 +129,40 @@ func _ready() -> void:
 	close_btn.pressed.connect(_on_close_pressed)
 	header.add_child(close_btn)
 
-	# Separator.
-	vbox.add_child(HSeparator.new())
+	parent.add_child(HSeparator.new())
 
-	# Species.
 	_species_label = Label.new()
-	vbox.add_child(_species_label)
+	parent.add_child(_species_label)
 
-	# Name (Vaelith name for elves, fallback "Species #N" for unnamed creatures).
 	_name_label = Label.new()
-	vbox.add_child(_name_label)
+	parent.add_child(_name_label)
 
-	# Status label (shown only when incapacitated).
 	_status_label = Label.new()
 	_status_label.text = "INCAPACITATED"
 	_status_label.add_theme_color_override("font_color", Color(0.9, 0.3, 0.3))
 	_status_label.add_theme_font_size_override("font_size", 16)
 	_status_label.visible = false
-	vbox.add_child(_status_label)
+	parent.add_child(_status_label)
 
-	# Military group (clickable, opens military panel).
 	_military_group_btn = Button.new()
 	_military_group_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
 	_military_group_btn.flat = true
 	_military_group_btn.visible = false
 	_military_group_btn.pressed.connect(_on_military_group_clicked)
-	vbox.add_child(_military_group_btn)
+	parent.add_child(_military_group_btn)
+
+
+## Build the Status tab: HP, MP, position, task, food, rest, mood, stats grid.
+func _build_status_tab(parent: VBoxContainer) -> ScrollContainer:
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	parent.add_child(scroll)
+
+	var vbox := VBoxContainer.new()
+	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vbox.add_theme_constant_override("separation", 8)
+	scroll.add_child(vbox)
 
 	# HP gauge.
 	var hp_row := HBoxContainer.new()
@@ -140,7 +191,7 @@ func _ready() -> void:
 	_hp_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	hp_row.add_child(_hp_label)
 
-	# MP (mana) gauge — hidden for nonmagical creatures (mp_max = 0).
+	# MP gauge — hidden for nonmagical creatures.
 	_mp_row = HBoxContainer.new()
 	_mp_row.add_theme_constant_override("separation", 6)
 	_mp_row.visible = false
@@ -172,7 +223,7 @@ func _ready() -> void:
 	_position_label = Label.new()
 	vbox.add_child(_position_label)
 
-	# Task status row (label + zoom button).
+	# Task status row.
 	_task_row = HBoxContainer.new()
 	_task_row.add_theme_constant_override("separation", 6)
 	vbox.add_child(_task_row)
@@ -240,42 +291,106 @@ func _ready() -> void:
 	_mood_label.text = "Mood: Neutral (0)"
 	vbox.add_child(_mood_label)
 
-	# Recent Thoughts section.
+	# Ability scores grid (4 rows × 2 columns).
 	vbox.add_child(HSeparator.new())
+	_build_stats_grid(vbox)
 
-	_thoughts_header = Label.new()
-	_thoughts_header.text = "Recent Thoughts"
-	_thoughts_header.add_theme_font_size_override("font_size", 16)
-	vbox.add_child(_thoughts_header)
+	return scroll
 
-	_thoughts_container = VBoxContainer.new()
-	_thoughts_container.add_theme_constant_override("separation", 2)
-	vbox.add_child(_thoughts_container)
 
-	# Inventory section.
-	vbox.add_child(HSeparator.new())
+## Build the 4×2 ability scores grid: DEX/AGI, STR/CON, WIL/INT, PER/CHA.
+func _build_stats_grid(parent: VBoxContainer) -> void:
+	var grid := GridContainer.new()
+	grid.columns = 4
+	grid.add_theme_constant_override("h_separation", 4)
+	grid.add_theme_constant_override("v_separation", 2)
+	parent.add_child(grid)
 
-	var inv_title := Label.new()
-	inv_title.text = "Inventory"
-	inv_title.add_theme_font_size_override("font_size", 16)
-	vbox.add_child(inv_title)
+	# Each stat is two cells: a fixed-width abbreviation label + a value label.
+	var stat_order: Array[String] = [
+		"stat_dex",
+		"stat_agi",
+		"stat_str",
+		"stat_con",
+		"stat_wil",
+		"stat_int",
+		"stat_per",
+		"stat_cha",
+	]
+	var abbrevs: Dictionary = {
+		"stat_dex": "DEX",
+		"stat_agi": "AGI",
+		"stat_str": "STR",
+		"stat_con": "CON",
+		"stat_wil": "WIL",
+		"stat_int": "INT",
+		"stat_per": "PER",
+		"stat_cha": "CHA",
+	}
+
+	for key in stat_order:
+		var abbr_lbl := Label.new()
+		abbr_lbl.text = abbrevs[key]
+		abbr_lbl.add_theme_font_size_override("font_size", 13)
+		abbr_lbl.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+		abbr_lbl.custom_minimum_size.x = 36
+		grid.add_child(abbr_lbl)
+
+		var val_lbl := Label.new()
+		val_lbl.text = "0"
+		val_lbl.add_theme_font_size_override("font_size", 13)
+		val_lbl.custom_minimum_size.x = 40
+		val_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		val_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		grid.add_child(val_lbl)
+
+		_stat_labels[key] = val_lbl
+
+
+## Build the Inventory tab: scrollable item list.
+func _build_inventory_tab(parent: VBoxContainer) -> ScrollContainer:
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	parent.add_child(scroll)
+
+	var vbox := VBoxContainer.new()
+	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vbox.add_theme_constant_override("separation", 4)
+	scroll.add_child(vbox)
 
 	_inventory_label = Label.new()
 	_inventory_label.text = "(empty)"
 	vbox.add_child(_inventory_label)
 
-	# Spacer to push the follow button toward the bottom-ish area.
-	var spacer := Control.new()
-	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	vbox.add_child(spacer)
+	return scroll
 
-	# Follow / Unfollow button.
-	_follow_button = Button.new()
-	_follow_button.text = "Follow"
-	_follow_button.pressed.connect(_on_follow_pressed)
-	vbox.add_child(_follow_button)
 
-	visible = false
+## Build the Thoughts tab: scrollable thought list.
+func _build_thoughts_tab(parent: VBoxContainer) -> ScrollContainer:
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	parent.add_child(scroll)
+
+	_thoughts_container = VBoxContainer.new()
+	_thoughts_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_thoughts_container.add_theme_constant_override("separation", 2)
+	scroll.add_child(_thoughts_container)
+
+	return scroll
+
+
+func _switch_tab(index: int) -> void:
+	_active_tab = index
+	for i in range(_tab_contents.size()):
+		_tab_contents[i].visible = (i == index)
+	for i in range(_tab_buttons.size()):
+		_tab_buttons[i].disabled = (i == index)
+
+
+func _on_tab_pressed(index: int) -> void:
+	_switch_tab(index)
 
 
 func show_creature(creature_id: String, info: Dictionary) -> void:
@@ -299,9 +414,12 @@ func show_creature(creature_id: String, info: Dictionary) -> void:
 	_update_food(info)
 	_update_rest(info)
 	_update_mood(info)
+	_update_stats(info)
 	_update_thoughts(info)
 	_update_inventory(info)
 	_update_military_group(info)
+	if _is_following:
+		unfollow_requested.emit()
 	_is_following = false
 	_follow_button.text = "Follow"
 	visible = true
@@ -316,6 +434,7 @@ func update_info(info: Dictionary) -> void:
 	_update_food(info)
 	_update_rest(info)
 	_update_mood(info)
+	_update_stats(info)
 	_update_thoughts(info)
 	_update_inventory(info)
 	_update_military_group(info)
@@ -326,6 +445,7 @@ func hide_panel() -> void:
 		unfollow_requested.emit()
 	_is_following = false
 	_follow_button.text = "Follow"
+	_switch_tab(TAB_STATUS)
 	visible = false
 
 
@@ -341,11 +461,9 @@ func _update_hp(info: Dictionary) -> void:
 		hp_max = 1
 	var is_incap: bool = info.get("incapacitated", false)
 	if is_incap:
-		# Incapacitated: gray bar, always visible.
 		var hp_style := StyleBoxFlat.new()
 		hp_style.bg_color = Color(0.35, 0.35, 0.35)
 		_hp_bar.add_theme_stylebox_override("fill", hp_style)
-		# Show negative HP as proportion of -hp_max..0 range.
 		_hp_bar.value = 50.0
 	else:
 		var hp_style := StyleBoxFlat.new()
@@ -398,6 +516,12 @@ func _update_mood(info: Dictionary) -> void:
 	_mood_label.text = "Mood: %s (%s%d)" % [tier, sign, score]
 
 
+func _update_stats(info: Dictionary) -> void:
+	for key in _stat_labels:
+		var val: int = info.get(key, 0)
+		_stat_labels[key].text = "%d" % val
+
+
 func _update_thoughts(info: Dictionary) -> void:
 	var thoughts: Array = info.get("thoughts", [])
 	var display_count := mini(thoughts.size(), MAX_DISPLAYED_THOUGHTS)
@@ -416,8 +540,6 @@ func _update_thoughts(info: Dictionary) -> void:
 	# Hide excess labels.
 	for i in range(display_count, _thoughts_container.get_child_count()):
 		_thoughts_container.get_child(i).visible = false
-	# Show/hide the header based on whether there are any thoughts.
-	_thoughts_header.visible = display_count > 0
 
 
 func _update_position(info: Dictionary) -> void:
@@ -431,7 +553,6 @@ func _update_task(info: Dictionary) -> void:
 	if has_task:
 		var kind: String = info.get("task_kind", "")
 		_task_label.text = "Task: %s" % kind if not kind.is_empty() else "Task: (unknown)"
-		# Show zoom button only when location data is present.
 		var has_loc: bool = info.has("task_location_x")
 		_task_zoom_btn.visible = has_loc
 		if has_loc:
@@ -489,6 +610,10 @@ func _update_military_group(info: Dictionary) -> void:
 func _on_military_group_clicked() -> void:
 	if _military_group_id >= 0:
 		military_group_clicked.emit(_military_group_id)
+
+
+func _match_viewport_height() -> void:
+	custom_minimum_size.y = get_viewport().get_visible_rect().size.y
 
 
 func _on_close_pressed() -> void:
