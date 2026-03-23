@@ -11,8 +11,9 @@
 //                     greenhouse, inventory_mgmt, logistics, movement, needs, task_helpers).
 // - `world.rs`:       RLE column-based voxel grid (the world's spatial truth).
 // - `tree_gen.rs`:    Energy-based recursive tree generation (trunk, branches, roots, leaves).
-// - `mesh_gen.rs`:    Chunk-based voxel mesh generation with per-face culling.
-// - `texture_gen.rs`: Procedural face texture generation (3D Perlin noise atlases).
+// - `mesh_gen.rs`:    Chunk-based voxel mesh generation with smooth surface rendering.
+// - `smooth_mesh.rs`: Smooth mesh pipeline: subdivision, anchoring, chamfer, smoothing.
+// - `texture_gen.rs`: Procedural face texture generation (kept for reference, not active).
 // - `nav.rs`:         Navigation graph structures + construction from tree geometry.
 // - `flight_pathfinding.rs`: Vanilla A* on voxel grid for flying creatures (26-connected).
 // - `pathfinding.rs`: A* pathfinding over the nav graph.
@@ -69,6 +70,7 @@ pub use tabulosity;
 pub mod recipe;
 pub mod session;
 pub mod sim;
+pub mod smooth_mesh;
 pub mod species;
 pub mod stats;
 pub mod structural;

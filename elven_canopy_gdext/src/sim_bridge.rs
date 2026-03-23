@@ -4964,6 +4964,22 @@ impl SimBridge {
         }
     }
 
+    /// Toggle the smoothing pass and smooth normals on/off. When off,
+    /// only chamfering is applied and flat per-face normals are used.
+    /// Requires a full mesh rebuild to take effect.
+    #[func]
+    fn set_smoothing_enabled(&mut self, enabled: bool) {
+        elven_canopy_sim::mesh_gen::set_smoothing_enabled(enabled);
+        elven_canopy_sim::mesh_gen::set_smooth_normals_enabled(enabled);
+        self.rebuild_mesh_cache();
+    }
+
+    /// Returns whether the smoothing pass is currently enabled.
+    #[func]
+    fn is_smoothing_enabled(&self) -> bool {
+        elven_canopy_sim::mesh_gen::smoothing_enabled()
+    }
+
     /// Set the mesh memory budget in bytes. Cached chunk meshes beyond this
     /// budget are evicted LRU. Pass 0 for unlimited (no eviction).
     #[func]

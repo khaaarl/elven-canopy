@@ -40,6 +40,7 @@ extends MarginContainer
 signal spawn_requested(species_name: String)
 signal action_requested(action_name: String)
 signal speed_changed(speed_name: String)
+signal smoothing_toggled(enabled: bool)
 
 ## Ordered list of speed names for +/- cycling (excludes Paused).
 const SPEED_ORDER: Array = ["Normal", "Fast", "VeryFast"]
@@ -231,6 +232,17 @@ func _ready() -> void:
 	wyvern_button.pressed.connect(_on_spawn.bind("Wyvern"))
 	_debug_row.add_child(wyvern_button)
 
+	var wireframe_button := Button.new()
+	wireframe_button.text = "Wireframe"
+	wireframe_button.toggle_mode = true
+	wireframe_button.pressed.connect(_toggle_wireframe.bind(wireframe_button))
+	_debug_row.add_child(wireframe_button)
+
+	var smooth_button := Button.new()
+	smooth_button.text = "Smoothing: OFF"
+	smooth_button.pressed.connect(_toggle_smoothing.bind(smooth_button))
+	_debug_row.add_child(smooth_button)
+
 	var debug_sep := VSeparator.new()
 	_debug_row.add_child(debug_sep)
 
@@ -329,6 +341,21 @@ func _update_speed_highlight() -> void:
 func _toggle_debug() -> void:
 	_debug_visible = not _debug_visible
 	_debug_row.visible = _debug_visible
+
+
+func _toggle_smoothing(button: Button) -> void:
+	var currently_on := button.text == "Smoothing: ON"
+	var new_state := not currently_on
+	button.text = "Smoothing: ON" if new_state else "Smoothing: OFF"
+	smoothing_toggled.emit(new_state)
+
+
+func _toggle_wireframe(button: Button) -> void:
+	var vp := get_viewport()
+	if button.button_pressed:
+		vp.debug_draw = Viewport.DEBUG_DRAW_WIREFRAME
+	else:
+		vp.debug_draw = Viewport.DEBUG_DRAW_DISABLED
 
 
 func _on_spawn(species_name: String) -> void:

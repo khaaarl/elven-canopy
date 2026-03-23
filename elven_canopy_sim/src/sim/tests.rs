@@ -30,6 +30,9 @@ fn test_config() -> GameConfig {
     };
     config.tree_profile.growth.initial_energy = 50.0;
     config.terrain_max_height = 0;
+    // Pin leaf config so tests don't break when visual defaults change.
+    config.tree_profile.leaves.leaf_density = 0.65;
+    config.tree_profile.leaves.leaf_size = 3;
     // Disable lesser trees in tests to avoid PRNG sequence shifts when the
     // default count changes. Tests that specifically exercise lesser trees
     // enable them explicitly.

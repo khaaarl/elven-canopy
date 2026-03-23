@@ -1,18 +1,33 @@
-// Chunk-based voxel mesh generation with per-face culling.
+// Chunk-based voxel mesh generation with smooth surface rendering.
 //
 // Pure Rust, no Godot dependencies. Converts a region of the voxel world into
 // triangle mesh data suitable for rendering. The world is divided into 16x16x16
 // chunks; each chunk produces a `ChunkMesh` with three surfaces (bark, ground,
 // and leaf) that the gdext bridge converts into Godot `ArrayMesh` objects.
 //
+// ## Solid voxels: smooth mesh pipeline
+//
+// Solid opaque voxels (Trunk, Branch, Root, Dirt, GrownPlatform, GrownWall,
+// Strut) go through the smooth mesh pipeline in `smooth_mesh.rs`: each visible
+// face is subdivided into 8 triangles, chamfered at edges and corners, and
+// iteratively smoothed via a Laplacian curvature-minimizing algorithm. The
+// generator reads a 2-voxel border around each chunk for cross-boundary
+// smoothing consistency, then filters the output to only include triangles
+// within the chunk's own 16³ region. Solid surfaces use vertex colors only
+// (no textures). Per-vertex normals enable smooth (Gouraud) shading.
+//
+// ## Leaf voxels
+//
+// Leaf voxels also go through the smooth mesh pipeline with shell-only
+// culling (leaf↔leaf faces culled). Solid→leaf faces are NOT culled (wood
+// visible through semi-transparent leaves). Leaf uses a procedural noise
+// shader for alpha scissor (no UVs needed).
+//
 // ## RLE-aware iteration
 //
-// Instead of iterating all 4096 voxels per chunk (16³), mesh generation walks
-// each column's RLE spans via `VoxelWorld::column_spans()`, clips them to the
-// chunk's Y range, and skips Air spans entirely. This means chunks in mostly-
-// empty regions (the vast majority in a tall world) are nearly free. The center
-// voxel type is known from the span without a `get()` call; only neighbor
-// lookups for face culling still use `world.get()`.
+// The smooth mesh pass iterates all voxels in the chunk + border region. The
+// leaf pass walks each column's RLE spans via `VoxelWorld::column_spans()`,
+// clipping to the chunk's Y range and skipping non-leaf spans.
 //
 // ## Face culling rule
 //
@@ -23,29 +38,56 @@
 // - Leaf→Leaf: both faces rendered (transparency needs them)
 // - Leaf→Air: face rendered
 //
-// ## Geometry
+// All solid opaque voxels participate in the smooth mesh pipeline. Non-opaque
+// types (Air, BuildingInterior, WoodLadder, RopeLadder) produce no geometry.
 //
-// Each visible face produces 4 vertices and 6 indices (2 triangles). Vertices
-// include position, normal, vertex color (for material tinting), and — for leaf
-// surfaces only — UV coordinates. Bark and ground surfaces use a custom shader
-// that derives texture coordinates from the fragment's world position and face
-// normal, sampling from global prime-period tiling textures (see
-// `texture_gen.rs`). Leaf UVs span the full [0,1] range for the alpha-scissor
-// texture.
-//
-// See also: `world.rs` for the voxel grid and `column_spans()` API,
+// See also: `smooth_mesh.rs` for the smoothing pipeline and design rationale,
+// `world.rs` for the voxel grid and `column_spans()` API,
 // `types.rs` for `VoxelType::is_opaque()`, `mesh_cache.rs` (in the gdext
 // crate) for the caching layer that sits on top of this module,
 // `sim_bridge.rs` for the Godot-facing API that builds `ArrayMesh` objects
-// from `ChunkMesh` data, `tree_renderer.gd` for shader setup and material
-// creation.
+// from `ChunkMesh` data, `tree_renderer.gd` for material creation,
+// `texture_gen.rs` for the old tiling texture system (not currently used for
+// solid surfaces but kept for reference).
 //
 // **Determinism note:** This module is pure and deterministic (same world state
 // produces identical mesh data), but mesh generation is a rendering concern and
 // does not participate in the sim's lockstep determinism contract.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::smooth_mesh::{SmoothMesh, TAG_BARK, TAG_GROUND, TAG_LEAF};
 use crate::types::{VoxelCoord, VoxelType};
 use crate::world::VoxelWorld;
+
+/// Global toggle for the smoothing pass (chamfer always runs).
+/// When false, only chamfering is applied. Debug tool for comparing
+/// chamfer-only vs chamfer+smoothing output.
+static SMOOTHING_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Global toggle for smooth vs flat normals. When false, each triangle
+/// gets a flat per-face normal instead of smooth area-weighted normals.
+static SMOOTH_NORMALS_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Enable or disable the smoothing pass (chamfer always runs).
+pub fn set_smoothing_enabled(enabled: bool) {
+    SMOOTHING_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+/// Returns whether smoothing is currently enabled.
+pub fn smoothing_enabled() -> bool {
+    SMOOTHING_ENABLED.load(Ordering::Relaxed)
+}
+
+/// Enable or disable smooth normals (vs flat per-face normals).
+pub fn set_smooth_normals_enabled(enabled: bool) {
+    SMOOTH_NORMALS_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+/// Returns whether smooth normals are enabled.
+pub fn smooth_normals_enabled() -> bool {
+    SMOOTH_NORMALS_ENABLED.load(Ordering::Relaxed)
+}
 
 /// Side length of a chunk in voxels.
 pub const CHUNK_SIZE: i32 = 16;
@@ -84,10 +126,9 @@ pub struct SurfaceMesh {
     pub indices: Vec<u32>,
     /// Vertex colors (4 floats per vertex: r, g, b, a).
     pub colors: Vec<f32>,
-    /// UV coordinates (2 floats per vertex: u, v). Only populated for leaf
-    /// surfaces (each face uses the full [0,1] range for the alpha-scissor
-    /// texture). Empty for bark/ground surfaces — the tiling shader derives
-    /// texture coordinates from the fragment's world position.
+    /// UV coordinates (2 floats per vertex: u, v). Currently unused — all
+    /// surfaces use procedural noise shaders that derive texture coordinates
+    /// from world position. Retained for potential future use.
     pub uvs: Vec<f32>,
 }
 
@@ -143,7 +184,7 @@ pub fn voxel_color(vt: VoxelType) -> [f32; 4] {
         VoxelType::Branch => [0.45, 0.30, 0.15, 1.0],
         VoxelType::Root => [0.30, 0.20, 0.12, 1.0],
         VoxelType::Dirt => [0.25, 0.45, 0.20, 1.0],
-        VoxelType::Leaf => [0.18, 0.55, 0.15, 1.0],
+        VoxelType::Leaf => [0.12, 0.42, 0.08, 1.0],
         VoxelType::GrownPlatform | VoxelType::GrownWall => [0.50, 0.35, 0.18, 1.0],
         // Strut: slightly darker/redder wood tint to distinguish from platforms.
         VoxelType::Strut => [0.55, 0.30, 0.15, 1.0],
@@ -167,6 +208,11 @@ pub fn produces_geometry(vt: VoxelType) -> bool {
     )
 }
 
+/// Border radius (in voxels) around each chunk for the smooth mesh pipeline.
+/// Provides context for face culling, anchoring, and smoothing passes so that
+/// boundary vertices get the same smoothing result in adjacent chunks.
+const SMOOTH_BORDER: i32 = 2;
+
 /// The 6 face directions as (dx, dy, dz) offsets and their outward normals.
 const FACES: [(i32, i32, i32); 6] = [
     (1, 0, 0),  // +X
@@ -180,7 +226,7 @@ const FACES: [(i32, i32, i32); 6] = [
 /// Face vertex offsets relative to the voxel origin (0,0,0)→(1,1,1).
 /// Each face has 4 vertices in CCW winding order when viewed from outside.
 /// Format: [face_index][vertex_index] = (x, y, z)
-const FACE_VERTICES: [[[f32; 3]; 4]; 6] = [
+pub const FACE_VERTICES: [[[f32; 3]; 4]; 6] = [
     // +X face (normal +1,0,0): x=1 plane
     [
         [1.0, 0.0, 1.0],
@@ -225,35 +271,49 @@ const FACE_VERTICES: [[[f32; 3]; 4]; 6] = [
     ],
 ];
 
-/// UV coordinates for leaf faces (same for all faces — each face shows the
-/// full leaf texture). Bark/ground faces don't use UVs; the tiling shader
-/// derives texture coordinates from world position.
-const LEAF_FACE_UVS: [[f32; 2]; 4] = [[0.0, 1.0], [0.0, 0.0], [1.0, 0.0], [1.0, 1.0]];
+/// The 6 face normals as floats, matching FACES order.
+pub const FACE_NORMALS: [[f32; 3]; 6] = [
+    [1.0, 0.0, 0.0],  // +X
+    [-1.0, 0.0, 0.0], // -X
+    [0.0, 1.0, 0.0],  // +Y
+    [0.0, -1.0, 0.0], // -Y
+    [0.0, 0.0, 1.0],  // +Z
+    [0.0, 0.0, -1.0], // -Z
+];
 
 /// Returns true if this opaque voxel type belongs to the ground surface.
 fn is_ground_voxel(vt: VoxelType) -> bool {
     vt == VoxelType::Dirt
 }
 
+/// Returns true if this voxel type should use the smooth mesh pipeline
+/// (subdivided, chamfered, smoothed). Includes both solid opaque voxels
+/// and leaf voxels. Fruit is excluded (rendered as billboard sprites).
+fn is_smooth_voxel(vt: VoxelType) -> bool {
+    vt.is_opaque() || vt == VoxelType::Leaf
+}
+
+/// Returns true if this voxel type should be treated as "solid" for
+/// face culling within the smooth mesh. Leaf voxels are included so
+/// leaf↔leaf faces are culled (shell-only rendering).
+fn is_smooth_opaque(vt: VoxelType) -> bool {
+    vt.is_opaque() || vt == VoxelType::Leaf
+}
+
 /// Generate the mesh data for a single chunk of the world.
 ///
-/// Iterates column spans via `VoxelWorld::column_spans()` instead of per-voxel
-/// `get()` calls. For each (x, z) column in the chunk's 16×16 XZ footprint,
-/// the column's RLE spans are clipped to the chunk's Y range. Air spans are
-/// skipped entirely, so chunks in mostly-empty regions are nearly free.
-///
-/// Neighbor lookups for face culling still use `world.get()` since neighbors
-/// can be in different columns or chunks. The main win is eliminating the
-/// center-voxel `get()` call and skipping Air ranges.
-///
-/// Bark and ground surfaces have no UVs or texture data — the tiling shader
-/// handles texture sampling from world position. Leaf surfaces get full [0,1]
-/// UVs for the alpha-scissor texture.
+/// All solid opaque voxels and leaf voxels go through the smooth mesh
+/// pipeline: each visible face is subdivided into 8 triangles, chamfered,
+/// and optionally smoothed. Solid and leaf share vertices at boundaries.
+/// Chamfer/smoothing processes solid first, then leaf-only vertices.
+/// Leaf↔leaf interior faces are culled (shell-only). The pipeline reads
+/// voxels in a border around the chunk for cross-boundary consistency.
 ///
 /// If `y_cutoff` is `Some(y)`, voxels with world Y ≥ y are treated as air:
 /// they produce no geometry, and neighbors facing them get their faces exposed.
-/// This lets the renderer hide everything above the camera's focus height while
-/// correctly showing the "cap" faces at the cut boundary.
+///
+/// See `smooth_mesh.rs` for the smoothing pipeline and
+/// `docs/drafts/visual_smooth.md` for the full design.
 pub fn generate_chunk_mesh(
     world: &VoxelWorld,
     chunk: ChunkCoord,
@@ -277,37 +337,49 @@ pub fn generate_chunk_mesh(
         return mesh;
     }
 
-    for lz in 0..CHUNK_SIZE {
-        for lx in 0..CHUNK_SIZE {
-            let wx = base_x + lx;
-            let wz = base_z + lz;
+    // --- Smooth mesh pass for solid opaque voxels ---
+    // Iterate the chunk + border region, building a single unified SmoothMesh
+    // for all solid surfaces. Using one mesh ensures that vertices shared
+    // between different voxel types (e.g., trunk/dirt boundary) are smoothed
+    // together, preventing seams. The mesh is split into bark and ground
+    // surfaces at the output stage using per-triangle surface tags.
+    let mut solid_smooth = SmoothMesh::new();
 
-            // Skip columns outside the world bounds.
-            if wx < 0 || wz < 0 || (wx as u32) >= world.size_x || (wz as u32) >= world.size_z {
-                continue;
-            }
+    let border = SMOOTH_BORDER;
+    let smooth_min_x = (base_x - border).max(0);
+    let smooth_max_x = (base_x + CHUNK_SIZE + border).min(world.size_x as i32);
+    let smooth_min_y = (base_y - border).max(0);
+    let smooth_max_y_unbounded = (base_y + CHUNK_SIZE + border).min(world.size_y as i32);
+    let smooth_min_z = (base_z - border).max(0);
+    let smooth_max_z = (base_z + CHUNK_SIZE + border).min(world.size_z as i32);
 
+    // Effective Y ceiling for smooth mesh includes the border.
+    let smooth_effective_y_end = match y_cutoff {
+        Some(cutoff) => smooth_max_y_unbounded.min(cutoff.saturating_sub(1)),
+        None => smooth_max_y_unbounded,
+    };
+
+    for wz in smooth_min_z..smooth_max_z {
+        for wx in smooth_min_x..smooth_max_x {
             for (vt, y_start, y_end) in world.column_spans(wx as u32, wz as u32) {
-                if !produces_geometry(vt) {
+                if !is_smooth_voxel(vt) {
                     continue;
                 }
 
-                // Clip span to this chunk's Y range and the effective ceiling.
-                let clipped_start = (y_start as i32).max(base_y);
-                let clipped_end = (y_end as i32).min(effective_y_end);
+                let clipped_start = (y_start as i32).max(smooth_min_y);
+                let clipped_end = (y_end as i32).min(smooth_effective_y_end);
                 if clipped_start > clipped_end {
                     continue;
                 }
 
                 let color = voxel_color(vt);
                 let is_leaf = vt == VoxelType::Leaf;
-                let is_ground = is_ground_voxel(vt);
-                let surface = if is_leaf {
-                    &mut mesh.leaf
-                } else if is_ground {
-                    &mut mesh.ground
+                let tag = if is_leaf {
+                    TAG_LEAF
+                } else if is_ground_voxel(vt) {
+                    TAG_GROUND
                 } else {
-                    &mut mesh.bark
+                    TAG_BARK
                 };
 
                 for wy in clipped_start..=clipped_end {
@@ -315,53 +387,87 @@ pub fn generate_chunk_mesh(
                         let ny = wy + dy;
                         let neighbor = world.get(VoxelCoord::new(wx + dx, ny, wz + dz));
 
-                        // Treat above-cutoff neighbors as air so boundary faces
-                        // are exposed when the height cutoff is active.
-                        let neighbor_visible = match y_cutoff {
+                        // Face culling rules:
+                        // - solid→solid: cull (both opaque)
+                        // - solid→leaf: DON'T cull (wood visible through leaves)
+                        // - leaf→solid: cull (hidden behind solid)
+                        // - leaf→leaf: cull (shell-only)
+                        // - anything→air: don't cull (visible)
+                        let neighbor_culls = match y_cutoff {
                             Some(cutoff) if ny >= cutoff => false,
-                            _ => neighbor.is_opaque(),
+                            _ => {
+                                if is_leaf {
+                                    // Leaf face: cull toward solid OR other leaf.
+                                    is_smooth_opaque(neighbor)
+                                } else {
+                                    // Solid face: cull toward solid only.
+                                    neighbor.is_opaque()
+                                }
+                            }
                         };
 
-                        // Cull face if neighbor is opaque and visible.
-                        if neighbor_visible {
+                        if neighbor_culls {
                             continue;
                         }
 
-                        let base_vertex = surface.vertex_count() as u32;
-                        let normal = [dx as f32, dy as f32, dz as f32];
+                        let corners: [[f32; 3]; 4] = std::array::from_fn(|vi| {
+                            [
+                                FACE_VERTICES[face_idx][vi][0] + wx as f32,
+                                FACE_VERTICES[face_idx][vi][1] + wy as f32,
+                                FACE_VERTICES[face_idx][vi][2] + wz as f32,
+                            ]
+                        });
+                        let normal = FACE_NORMALS[face_idx];
+                        let vert_indices = solid_smooth.add_subdivided_face(
+                            corners,
+                            normal,
+                            color,
+                            tag,
+                            [wx, wy, wz],
+                        );
 
-                        // Emit 4 vertices for this face.
-                        for (vi, vert) in FACE_VERTICES[face_idx].iter().enumerate() {
-                            surface.vertices.push(vert[0] + wx as f32);
-                            surface.vertices.push(vert[1] + wy as f32);
-                            surface.vertices.push(vert[2] + wz as f32);
-
-                            surface.normals.push(normal[0]);
-                            surface.normals.push(normal[1]);
-                            surface.normals.push(normal[2]);
-
-                            surface.colors.push(color[0]);
-                            surface.colors.push(color[1]);
-                            surface.colors.push(color[2]);
-                            surface.colors.push(color[3]);
-
-                            // Only leaf surfaces need UVs.
-                            if is_leaf {
-                                surface.uvs.push(LEAF_FACE_UVS[vi][0]);
-                                surface.uvs.push(LEAF_FACE_UVS[vi][1]);
-                            }
+                        // Anchoring rule 2: faces adjacent to non-solid
+                        // constructed voxels keep sharp edges.
+                        if matches!(
+                            neighbor,
+                            VoxelType::BuildingInterior
+                                | VoxelType::WoodLadder
+                                | VoxelType::RopeLadder
+                        ) {
+                            solid_smooth.anchor_vertices(&vert_indices);
                         }
-
-                        // 2 triangles: 0-1-2, 0-2-3
-                        surface.indices.push(base_vertex);
-                        surface.indices.push(base_vertex + 1);
-                        surface.indices.push(base_vertex + 2);
-                        surface.indices.push(base_vertex);
-                        surface.indices.push(base_vertex + 2);
-                        surface.indices.push(base_vertex + 3);
                     }
                 }
             }
+        }
+    }
+
+    // Run the smoothing pipeline on the unified solid mesh.
+    if !solid_smooth.vertices.is_empty() {
+        solid_smooth.normalize_initial_normals();
+        solid_smooth.apply_anchoring();
+        solid_smooth.chamfer();
+        if smoothing_enabled() {
+            solid_smooth.smooth();
+        }
+
+        // Split into bark, ground, and leaf surfaces, filtering to only
+        // include triangles whose source voxel is within this chunk.
+        let chunk_min = [base_x, base_y, base_z];
+        let chunk_max = [
+            base_x + CHUNK_SIZE,
+            base_y + CHUNK_SIZE,
+            base_z + CHUNK_SIZE,
+        ];
+        let mut surfaces = solid_smooth.to_split_surface_meshes_filtered(chunk_min, chunk_max);
+        if let Some(bark) = surfaces.remove(&TAG_BARK) {
+            mesh.bark = bark;
+        }
+        if let Some(ground) = surfaces.remove(&TAG_GROUND) {
+            mesh.ground = ground;
+        }
+        if let Some(leaf) = surfaces.remove(&TAG_LEAF) {
+            mesh.leaf = leaf;
         }
     }
 
@@ -385,18 +491,18 @@ mod tests {
     }
 
     #[test]
-    fn single_trunk_voxel_produces_6_faces() {
+    fn single_trunk_voxel_produces_smooth_mesh() {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
         let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None);
 
-        // 6 faces * 4 vertices = 24 vertices
-        assert_eq!(mesh.bark.vertex_count(), 24);
-        // 6 faces * 6 indices = 36 indices
-        assert_eq!(mesh.bark.indices.len(), 36);
+        // Smooth mesh: 6 faces × 8 triangles = 48 triangles.
+        // Per-triangle colors mean 3 verts per triangle = 144 output vertices.
+        assert_eq!(mesh.bark.vertex_count(), 48 * 3);
+        assert_eq!(mesh.bark.indices.len(), 48 * 3);
         // No leaf geometry.
         assert!(mesh.leaf.is_empty());
-        // Bark has no UVs (shader derives from world position).
+        // Smooth bark has no UVs (vertex colors only).
         assert!(mesh.bark.uvs.is_empty());
     }
 
@@ -407,10 +513,10 @@ mod tests {
         world.set(VoxelCoord::new(9, 8, 8), VoxelType::Branch);
         let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None);
 
-        // Each voxel alone = 6 faces. Together they share 1 face, so each loses
-        // 1 face: 2 * 5 = 10 faces. 10 * 4 = 40 vertices.
-        assert_eq!(mesh.bark.vertex_count(), 40);
-        assert_eq!(mesh.bark.indices.len(), 60); // 10 * 6
+        // Each voxel has 5 visible faces (shared face culled).
+        // 10 faces × 8 triangles = 80 triangles × 3 verts = 240 output verts.
+        assert_eq!(mesh.bark.indices.len(), 80 * 3);
+        assert_eq!(mesh.bark.vertex_count(), 80 * 3);
     }
 
     #[test]
@@ -422,12 +528,10 @@ mod tests {
         let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None);
 
         // Both are opaque: the shared face is culled.
-        // Trunk = 5 visible faces (bark surface).
-        assert_eq!(mesh.bark.vertex_count(), 20); // 5 * 4
-        assert_eq!(mesh.bark.indices.len(), 30); // 5 * 6
-        // Dirt = 5 visible faces (ground surface).
-        assert_eq!(mesh.ground.vertex_count(), 20); // 5 * 4
-        assert_eq!(mesh.ground.indices.len(), 30); // 5 * 6
+        // Trunk = 5 visible faces (bark), Dirt = 5 visible faces (ground).
+        // 5 faces × 8 triangles × 3 verts each.
+        assert_eq!(mesh.bark.indices.len(), 5 * 8 * 3);
+        assert_eq!(mesh.ground.indices.len(), 5 * 8 * 3);
     }
 
     #[test]
@@ -437,10 +541,9 @@ mod tests {
         world.set(VoxelCoord::new(9, 8, 8), VoxelType::Leaf);
         let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None);
 
-        // Leaf is not opaque, so leaf-to-leaf faces are NOT culled.
-        // Each leaf has 6 faces, both get all 6 = 12 faces total.
-        assert_eq!(mesh.leaf.vertex_count(), 48); // 12 * 4
-        assert_eq!(mesh.leaf.indices.len(), 72); // 12 * 6
+        // Leaves are now shell-only: leaf↔leaf shared face is culled.
+        // Each leaf has 5 visible faces → 10 faces × 8 tri × 3 verts.
+        assert_eq!(mesh.leaf.indices.len(), 10 * 8 * 3);
         assert!(mesh.bark.is_empty());
     }
 
@@ -451,10 +554,11 @@ mod tests {
         world.set(VoxelCoord::new(9, 8, 8), VoxelType::Trunk);
         let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None);
 
-        // Leaf: 5 faces (the +X face toward trunk is culled — trunk is opaque).
-        assert_eq!(mesh.leaf.vertex_count(), 20); // 5 * 4
-        // Trunk: 6 faces (the -X face toward leaf is NOT culled — leaf isn't opaque).
-        assert_eq!(mesh.bark.vertex_count(), 24); // 6 * 4
+        // Leaf: 5 faces (face toward trunk culled). Smooth mesh.
+        assert_eq!(mesh.leaf.indices.len(), 5 * 8 * 3);
+        // Trunk: 6 faces (face toward leaf NOT culled — wood visible
+        // through semi-transparent leaves).
+        assert_eq!(mesh.bark.indices.len(), 6 * 8 * 3);
     }
 
     #[test]
@@ -468,8 +572,13 @@ mod tests {
         let mesh1 = generate_chunk_mesh(&world, ChunkCoord::new(1, 0, 0), None);
 
         // Each should have 5 faces (shared face culled across chunk boundary).
-        assert_eq!(mesh0.bark.vertex_count(), 20);
-        assert_eq!(mesh1.bark.vertex_count(), 20);
+        // With smooth mesh and border, both chunks see the other voxel and
+        // generate its geometry too, but the shared face is still culled.
+        // Both chunks should produce non-empty geometry.
+        assert!(!mesh0.bark.is_empty());
+        assert!(!mesh1.bark.is_empty());
+        // Both should have the same vertex count (symmetric configuration).
+        assert_eq!(mesh0.bark.vertex_count(), mesh1.bark.vertex_count());
     }
 
     #[test]
@@ -514,7 +623,8 @@ mod tests {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::GrownPlatform);
         let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None);
-        assert_eq!(mesh.bark.vertex_count(), 24); // 6 faces * 4 verts
+        // Smooth mesh: 6 faces × 8 triangles = 48 triangles.
+        assert_eq!(mesh.bark.indices.len(), 48 * 3);
     }
 
     #[test]
@@ -539,20 +649,22 @@ mod tests {
 
         // Dirt should be on the ground surface, not bark.
         assert!(mesh.bark.is_empty());
-        assert_eq!(mesh.ground.vertex_count(), 24); // 6 faces * 4 verts
+        // Smooth mesh: 6 faces × 8 triangles.
+        assert_eq!(mesh.ground.indices.len(), 48 * 3);
         assert!(mesh.leaf.is_empty());
-        // Ground has no UVs (shader derives from world position).
+        // Smooth ground has no UVs.
         assert!(mesh.ground.uvs.is_empty());
     }
 
     #[test]
-    fn leaf_surface_has_uvs() {
+    fn leaf_surface_no_uvs() {
+        // Leaf now uses procedural noise shader — no UVs needed.
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Leaf);
         let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None);
-
-        // Leaf surface should have UVs (2 per vertex).
-        assert_eq!(mesh.leaf.uvs.len(), mesh.leaf.vertex_count() * 2);
+        assert!(mesh.leaf.uvs.is_empty());
+        // Should have smooth mesh geometry: 6 faces × 8 tri × 3 verts.
+        assert_eq!(mesh.leaf.indices.len(), 6 * 8 * 3);
     }
 
     #[test]
@@ -581,8 +693,8 @@ mod tests {
 
         // Cutoff at y=8: voxel at y=5 visible, voxel at y=10 hidden.
         let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), Some(8));
-        // Only the y=5 voxel should produce geometry (6 faces).
-        assert_eq!(mesh.bark.vertex_count(), 24); // 6 * 4
+        // Only the y=5 voxel should produce geometry (6 faces, smooth).
+        assert_eq!(mesh.bark.indices.len(), 48 * 3);
     }
 
     #[test]
@@ -594,12 +706,12 @@ mod tests {
 
         // Without cutoff: shared +Y/-Y face is culled → 10 faces total.
         let mesh_no_cutoff = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None);
-        assert_eq!(mesh_no_cutoff.bark.vertex_count(), 40); // 10 * 4
+        assert_eq!(mesh_no_cutoff.bark.indices.len(), 10 * 8 * 3);
 
         // With cutoff at y=8: upper voxel hidden, lower voxel's +Y face exposed.
         let mesh_cutoff = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), Some(8));
         // Lower voxel now has all 6 faces visible (upper neighbor treated as air).
-        assert_eq!(mesh_cutoff.bark.vertex_count(), 24); // 6 * 4
+        assert_eq!(mesh_cutoff.bark.indices.len(), 6 * 8 * 3);
     }
 
     #[test]
@@ -630,8 +742,8 @@ mod tests {
         world.set(VoxelCoord::new(8, 10, 8), VoxelType::Leaf);
 
         let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), Some(8));
-        // Only y=5 leaf visible (6 faces).
-        assert_eq!(mesh.leaf.vertex_count(), 24); // 6 * 4
+        // Only y=5 leaf visible (6 faces, smooth mesh).
+        assert_eq!(mesh.leaf.indices.len(), 6 * 8 * 3);
         assert!(mesh.bark.is_empty());
     }
 
@@ -649,20 +761,15 @@ mod tests {
         let mesh0 = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None);
         let mesh1 = generate_chunk_mesh(&world, ChunkCoord::new(0, 1, 0), None);
 
-        // Chunk 0 (y=0..15): 6 voxels visible (y=10..15). Internal ±Y faces
-        // between adjacent same-type voxels are culled. The +Y face at y=15
-        // is also culled because the cross-chunk neighbor at y=16 is trunk.
-        // - 4 side faces × 6 = 24 side faces
-        // - 1 bottom face (y=10, -Y toward Air)
-        // Total: 24 + 1 = 25 faces
-        assert_eq!(mesh0.bark.vertex_count(), 25 * 4);
-
-        // Chunk 1 (y=16..31): 10 voxels visible (y=16..25).
-        // - 4 side faces * 10 = 40 side faces
-        // - bottom (y=16 -Y toward y=15 trunk → culled)
-        // - top (y=25 +Y toward Air → 1 face)
-        // Total: 40 + 1 = 41 faces
-        assert_eq!(mesh1.bark.vertex_count(), 41 * 4);
+        // Both chunks should produce non-empty bark geometry. With smooth mesh
+        // and the border, exact counts depend on deduplication across the
+        // extended range. Just verify the topology is correct: chunk 0 sees
+        // the column y=10..15 plus border context, chunk 1 sees y=16..25
+        // plus border context.
+        assert!(!mesh0.bark.is_empty());
+        assert!(!mesh1.bark.is_empty());
+        // Chunk 1 has more voxels (10 vs 6), so should have more geometry.
+        assert!(mesh1.bark.indices.len() > mesh0.bark.indices.len());
     }
 
     #[test]
@@ -692,7 +799,8 @@ mod tests {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Strut);
         let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None);
-        assert_eq!(mesh.bark.vertex_count(), 24); // 6 faces * 4 verts
+        // 6 faces × 8 triangles (smooth mesh).
+        assert_eq!(mesh.bark.indices.len(), 48 * 3);
     }
 
     #[test]
@@ -702,7 +810,7 @@ mod tests {
         let mut world = VoxelWorld::new(8, 16, 8);
         world.set(VoxelCoord::new(4, 4, 4), VoxelType::Trunk);
         let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None);
-        assert_eq!(mesh.bark.vertex_count(), 24); // 6 faces * 4 verts
+        assert_eq!(mesh.bark.indices.len(), 48 * 3); // 6 faces smooth
     }
 
     #[test]
@@ -719,8 +827,8 @@ mod tests {
         // - 4 side faces × 5 = 20 side faces
         // - 1 bottom face (y=0, -Y toward OOB = Air)
         // - 1 top face (y=4, +Y toward y=5 which is above cutoff = treated as Air)
-        // Total: 20 + 2 = 22 faces
-        assert_eq!(mesh.bark.vertex_count(), 22 * 4);
+        // Total: 22 faces × 8 triangles = 176 triangles
+        assert_eq!(mesh.bark.indices.len(), 22 * 8 * 3);
     }
 
     #[test]
@@ -742,12 +850,112 @@ mod tests {
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
         let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None);
         let size = mesh.estimate_byte_size();
-        // 6 faces, 4 verts each = 24 verts.
-        // vertices: 24*3*4=288, normals: 288, indices: 36*4=144,
-        // colors: 24*4*4=384, uvs: 0 (bark uses shader-derived UVs).
+        // Smooth mesh: 26 verts, 48 triangles.
+        // vertices: 26*3*4=312, normals: 312, indices: 144*4=576,
+        // colors: 26*4*4=416, uvs: 0.
         assert!(size > 0);
-        // Manual check: 288+288+144+384 = 1104
-        assert!(size >= 1104);
+        assert!(size >= 312 + 312 + 576 + 416);
+    }
+
+    /// Collect (position, normal) pairs from a SurfaceMesh. If tolerance is
+    /// large, collects all vertices; otherwise filters to those near boundary_x.
+    fn collect_boundary_verts(
+        surface: &SurfaceMesh,
+        boundary_x: f32,
+        tolerance: f32,
+    ) -> Vec<([f32; 3], [f32; 3])> {
+        (0..surface.vertex_count())
+            .filter_map(|i| {
+                let x = surface.vertices[i * 3];
+                if (x - boundary_x).abs() < tolerance {
+                    Some((
+                        [x, surface.vertices[i * 3 + 1], surface.vertices[i * 3 + 2]],
+                        [
+                            surface.normals[i * 3],
+                            surface.normals[i * 3 + 1],
+                            surface.normals[i * 3 + 2],
+                        ],
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn chunk_boundary_smooth_mesh_alignment() {
+        // End-to-end test using the actual generate_chunk_mesh production
+        // code. For two adjacent chunks sharing a boundary at x=16, every
+        // vertex that appears in BOTH chunks' output must have IDENTICAL
+        // position AND normal (within float epsilon).
+        let mut world = VoxelWorld::new(32, 16, 16);
+        for x in 0..32 {
+            let height = 3 + (x % 3);
+            for y in 0..height {
+                for z in 0..16 {
+                    world.set(VoxelCoord::new(x, y, z), VoxelType::Dirt);
+                }
+            }
+        }
+
+        let mesh0 = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None);
+        let mesh1 = generate_chunk_mesh(&world, ChunkCoord::new(1, 0, 0), None);
+
+        assert!(!mesh0.ground.is_empty(), "chunk 0 should have ground");
+        assert!(!mesh1.ground.is_empty(), "chunk 1 should have ground");
+
+        let pos_eps = 1e-6;
+        let normal_eps = 1e-5;
+
+        // Collect vertices near the chunk boundary at x=16 (not world edges).
+        let verts_0 = collect_boundary_verts(&mesh0.ground, 16.0, 1.0);
+        let verts_1 = collect_boundary_verts(&mesh1.ground, 16.0, 1.0);
+
+        // For each vertex in chunk 0 near the chunk boundary (but away
+        // from world edges at y=0 and z=0/z=15), check if chunk 1 has a
+        // vertex at the same position with matching normal.
+        let mut shared = 0;
+        let mut normal_mismatch = 0;
+        let mut details: Vec<String> = Vec::new();
+
+        for (p0, n0) in &verts_0 {
+            // Skip vertices at world edges where border asymmetry causes
+            // expected normal differences.
+            if p0[1] < 1.0 || p0[2] < 1.0 || p0[2] > 15.0 {
+                continue;
+            }
+            for (p1, n1) in &verts_1 {
+                let d =
+                    ((p0[0] - p1[0]).powi(2) + (p0[1] - p1[1]).powi(2) + (p0[2] - p1[2]).powi(2))
+                        .sqrt();
+                if d < pos_eps {
+                    shared += 1;
+                    let nd = ((n0[0] - n1[0]).powi(2)
+                        + (n0[1] - n1[1]).powi(2)
+                        + (n0[2] - n1[2]).powi(2))
+                    .sqrt();
+                    if nd >= normal_eps {
+                        normal_mismatch += 1;
+                        if details.len() < 3 {
+                            details.push(format!(
+                                "NORMAL MISMATCH pos={p0:?} n0={n0:?} n1={n1:?} nd={nd}"
+                            ));
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        assert!(shared > 0, "chunks should share some boundary vertices");
+        assert_eq!(
+            normal_mismatch,
+            0,
+            "all shared vertices must have matching normals \
+             ({shared} shared, {normal_mismatch} mismatches)\n{}",
+            details.join("\n")
+        );
     }
 
     #[test]

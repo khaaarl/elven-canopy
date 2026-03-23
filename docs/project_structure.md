@@ -33,8 +33,9 @@ elven-canopy/
 │       │   ├── raid.rs         #   Raid triggering (hostile civ raiding parties)
 │       │   └── task_helpers.rs #   Task extension table accessors, insert_task
 │       ├── db.rs               # SimDb — tabulosity relational store (38 tables, all entities)
-│       ├── mesh_gen.rs         # Chunk-based voxel mesh generation with face culling
-│       ├── texture_gen.rs      # Prime-period tiling textures (tileable Perlin noise, bark + ground)
+│       ├── mesh_gen.rs         # Chunk-based voxel mesh generation with smooth surface rendering
+│       ├── smooth_mesh.rs      # Smooth mesh pipeline: subdivision, anchoring, chamfer, smoothing
+│       ├── texture_gen.rs      # Prime-period tiling textures (kept for reference, not active)
 │       ├── nav.rs              # NavGraph, NavNode, NavEdge, graph construction
 │       ├── pathfinding.rs      # A* search over NavGraph
 │       ├── flight_pathfinding.rs # Vanilla A* on voxel grid for flying creatures

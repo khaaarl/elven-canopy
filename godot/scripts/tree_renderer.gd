@@ -1,4 +1,4 @@
-## Renders the tree's voxels using Rust-generated chunk meshes with face culling.
+## Renders the tree's voxels using Rust-generated chunk meshes.
 ##
 ## Built at startup via setup(), then incrementally updated every frame via
 ## refresh() so that carved voxels disappear and new construction appears in
@@ -7,22 +7,24 @@
 ## have MeshInstance3D nodes.
 ##
 ## The Rust sim generates per-chunk ArrayMesh data with up to three surfaces:
-## - Surface 0 (bark): Trunk, Branch, Root, and construction voxels with
-##   per-face culling. Textured via a custom tiling shader that samples three
-##   global Texture2DArray caches at prime periods per axis. Bark caches use
-##   anisotropic noise with domain warping for organic grain lines.
-## - Surface 1 (ground): Dirt voxels, same shader but different tiling
-##   textures with isotropic noise (no grain, no warping).
-## - Surface 2 (leaf): Leaf voxels with alpha-scissor transparency, cull
-##   disabled so leaves are visible from both sides.
+## - Surface 0 (bark): Trunk, Branch, Root, and construction voxels. Uses the
+##   smooth mesh pipeline: each face is subdivided into 8 triangles, chamfered,
+##   and iteratively smoothed. Procedural value noise shader modulates vertex
+##   colors for organic surface variation. Bark uses anisotropic Y-scaling for
+##   vertical grain lines. Per-vertex normals enable smooth shading.
+## - Surface 1 (ground): Dirt voxels, same smooth mesh pipeline and noise
+##   shader as bark but with isotropic noise (no grain direction).
+## - Surface 2 (leaf): Leaf voxels, same smooth mesh pipeline as solid.
+##   Shell-only (leaf↔leaf culled). Procedural noise shader with alpha
+##   scissor for boolean transparency. Cull disabled (both sides visible).
 ##
 ## Empty surfaces are padded with degenerate placeholder triangles on the Rust
 ## side so surface indices are always stable (bark=0, ground=1, leaf=2).
 ##
 ## Each non-empty 16x16x16 chunk becomes one MeshInstance3D child with the
-## chunk's ArrayMesh. Bark and ground each get a global ShaderMaterial with
-## material-specific tiling textures; the leaf surface shares a single
-## StandardMaterial3D.
+## chunk's ArrayMesh. Bark and ground use a procedural noise ShaderMaterial
+## (`smooth_solid.gdshader`); the leaf surface uses a procedural noise
+## ShaderMaterial (`leaf_noise.gdshader`) with alpha scissor.
 ##
 ## ## Visibility pipeline (per frame)
 ##
@@ -35,24 +37,22 @@
 ## Fruit is rendered as billboarded Sprite3D nodes, one per fruit voxel,
 ## using procedural 16x16 pixel art textures from elven_canopy_sprites.
 ##
-## See also: mesh_gen.rs (sim crate) for the face-culled mesh generation
-## algorithm, texture_gen.rs for the prime-period tiling texture system,
-## mesh_cache.rs (gdext crate) for the MegaChunk hierarchy and LRU cache,
-## sim_bridge.rs for the bridge API, bark_ground.gdshader for the tiling
-## shader, main.gd which creates this node and calls setup() + refresh().
+## See also: mesh_gen.rs and smooth_mesh.rs (sim crate) for the smooth mesh
+## pipeline, mesh_cache.rs (gdext crate) for the MegaChunk hierarchy and LRU
+## cache, sim_bridge.rs for the bridge API, smooth_solid.gdshader and
+## leaf_noise.gdshader for the procedural noise shaders, main.gd which
+## creates this node and calls setup() + refresh().
 
 extends Node3D
 
 var _bridge: SimBridge
 ## Reference to the active Camera3D for frustum extraction.
 var _camera: Camera3D
-## Cached leaf texture — generated once, reused across refreshes.
-var _leaf_texture: ImageTexture
-## Leaf material: vertex color tinted alpha-scissor with procedural texture.
-var _leaf_material: StandardMaterial3D
-## Global tiling material for bark surfaces (anisotropic + domain-warped noise).
+## Leaf material: procedural noise shader with boolean alpha discard.
+var _leaf_material: ShaderMaterial
+## Global procedural-noise material for bark surfaces (anisotropic grain).
 var _bark_material: ShaderMaterial
-## Global tiling material for ground surfaces (isotropic noise).
+## Global procedural-noise material for ground surfaces (isotropic).
 var _ground_material: ShaderMaterial
 ## Map from chunk key ("cx,cy,cz") to MeshInstance3D for fast lookup.
 var _chunk_instances: Dictionary = {}
@@ -69,16 +69,13 @@ var _fruit_sprites: Array[Sprite3D] = []
 func setup(bridge: SimBridge, camera: Camera3D) -> void:
 	_bridge = bridge
 	_camera = camera
-	_leaf_texture = _generate_leaf_texture()
 	_leaf_material = _build_leaf_material()
 	_fruit_container = Node3D.new()
 	_fruit_container.name = "FruitSprites"
 	add_child(_fruit_container)
 	_bridge.build_world_mesh()
-	# Tiling materials must be built after build_world_mesh(), which creates
-	# the mesh cache that owns the tiling texture data.
-	_bark_material = _build_tiling_material(0)  # material 0 = bark
-	_ground_material = _build_tiling_material(1)  # material 1 = ground
+	_bark_material = _build_noise_material(0.3, 16.0)  # stretch Y, high freq
+	_ground_material = _build_noise_material(1.0, 8.0)  # isotropic, medium freq
 	_do_initial_visibility()
 	_cache_fruit_textures()
 	_refresh_fruit()
@@ -169,49 +166,24 @@ func _process_generated_chunks() -> void:
 		_rebuild_chunk(generated[idx], generated[idx + 1], generated[idx + 2])
 
 
-func _build_leaf_material() -> StandardMaterial3D:
-	var mat := StandardMaterial3D.new()
-	mat.vertex_color_use_as_albedo = true
-	mat.albedo_texture = _leaf_texture
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
-	mat.alpha_scissor_threshold = 0.5
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+func _build_leaf_material() -> ShaderMaterial:
+	var mat := ShaderMaterial.new()
+	var shader := load("res://shaders/leaf_noise.gdshader") as Shader
+	mat.shader = shader
+	mat.set_shader_parameter("noise_freq", 32.0)
+	mat.set_shader_parameter("alpha_threshold", 0.35)
 	return mat
 
 
-## Build a ShaderMaterial with the tiling shader for a specific material type.
-## material_id: 0=bark (anisotropic+warped), 1=ground (isotropic).
-func _build_tiling_material(material_id: int) -> ShaderMaterial:
+## Build a ShaderMaterial with procedural noise for smooth solid surfaces.
+## y_scale: Y-axis frequency multiplier (0.3 for bark grain, 1.0 for ground).
+func _build_noise_material(y_scale_val: float, freq: float) -> ShaderMaterial:
 	var mat := ShaderMaterial.new()
-	var shader := load("res://shaders/bark_ground.gdshader") as Shader
+	var shader := load("res://shaders/smooth_solid.gdshader") as Shader
 	mat.shader = shader
-
-	# Upload the three tiling caches for this material type.
-	var cache_names := ["a", "b", "c"]
-	for ci in 3:
-		var layer_count := _bridge.get_tiling_layer_count(ci)
-		var periods := _bridge.get_tiling_periods(ci)
-		var tpap := _bridge.get_tiling_tiles_per_axis_pair(ci)
-		var data := _bridge.get_tiling_texture_data(material_id, ci)
-
-		# Build Texture2DArray from flat R8 data.
-		var images: Array[Image] = []
-		var tile_bytes := 16 * 16  # TILE_SIZE^2
-		for layer_idx in layer_count:
-			var offset := layer_idx * tile_bytes
-			var layer_data := data.slice(offset, offset + tile_bytes)
-			var img := Image.create_from_data(16, 16, false, Image.FORMAT_R8, layer_data)
-			images.append(img)
-
-		var tex_array := Texture2DArray.new()
-		tex_array.create_from_images(images)
-
-		var suffix: String = cache_names[ci]
-		mat.set_shader_parameter("cache_" + suffix, tex_array)
-		mat.set_shader_parameter("periods_" + suffix, periods)
-		mat.set_shader_parameter("tpap_" + suffix, tpap)
-
+	mat.set_shader_parameter("y_scale", y_scale_val)
+	mat.set_shader_parameter("noise_freq", freq)
+	mat.set_shader_parameter("noise_strength", 0.4)
 	return mat
 
 
@@ -236,10 +208,10 @@ func _rebuild_chunk(cx: int, cy: int, cz: int) -> void:
 	if array_mesh.get_surface_count() == 0:
 		return
 
-	# Surface 0 = bark: anisotropic grain noise.
+	# Surface 0 = bark: procedural noise with anisotropic grain.
 	array_mesh.surface_set_material(0, _bark_material)
 
-	# Surface 1 = ground: isotropic noise.
+	# Surface 1 = ground: procedural noise, isotropic.
 	array_mesh.surface_set_material(1, _ground_material)
 
 	# Surface 2 = leaf: shared leaf material.
@@ -321,31 +293,3 @@ func _refresh_fruit() -> void:
 	# Hide excess sprites from pool.
 	for i in range(count, _fruit_sprites.size()):
 		_fruit_sprites[i].visible = false
-
-
-## Generate a Minecraft-style leaf texture: 16x16 with opaque green patches
-## and fully transparent holes, giving an organic canopy look.
-func _generate_leaf_texture() -> ImageTexture:
-	var size := 16
-	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
-	img.fill(Color(0.0, 0.0, 0.0, 0.0))  # Start fully transparent
-
-	# Several green shades for variation.
-	var greens := [
-		Color(0.18, 0.55, 0.15, 1.0),  # Base green
-		Color(0.15, 0.48, 0.12, 1.0),  # Dark green
-		Color(0.22, 0.62, 0.18, 1.0),  # Light green
-		Color(0.20, 0.50, 0.14, 1.0),  # Mid green
-	]
-
-	# Fill ~60% of pixels with green, leaving ~40% transparent (holes).
-	# Use a deterministic pattern based on pixel position.
-	for y in range(size):
-		for x in range(size):
-			# Simple hash for deterministic pseudo-random pattern.
-			var h := (x * 7 + y * 13 + x * y * 3) % 17
-			if h < 10:  # ~60% fill rate
-				var shade_idx := (x * 3 + y * 5) % greens.size()
-				img.set_pixel(x, y, greens[shade_idx])
-
-	return ImageTexture.create_from_image(img)

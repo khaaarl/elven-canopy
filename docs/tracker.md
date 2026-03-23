@@ -145,7 +145,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-instinctual-flee     Instinctual flee thresholds (species-level fear overrides)
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-leaf-sway            Foliage vertex sway shader (wind simulation)
-[ ] F-leaf-tex-rethink     Evaluate bringing leaves into tiling texture system
+[ ] F-leaf-tuning          Leaf visual fine-tuning and interior decisions
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-los-tuning           Line-of-sight tuning (terrain tolerance, tall creature bonus)
 [ ] F-magic-items          Magic item personalities and crafting
@@ -196,6 +196,8 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-settlement-gen       Procedural NPC settlement generation
 [ ] F-shadow-cull          Shadow-only rendering for culled chunks in light direction
 [ ] F-skirmish             Ranged skirmish/kite behavior (shoot-retreat loop)
+[ ] F-smooth-perf          Smooth mesh performance optimization
+[ ] F-smooth-ycutoff       Post-smoothing Y-cutoff with cap faces
 [ ] F-social-graph         Relationships and social contagion
 [ ] F-soul-mech            Death, soul passage, resurrection
 [ ] F-sound-effects        Basic ambient and action sound effects
@@ -237,7 +239,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-uplift-tree          Uplift lesser tree into bonded great tree
 [ ] F-vaelith-expand       Expand Vaelith language for runtime use
 [ ] F-vertical-garden      Vertical gardens on the tree
-[ ] F-visual-smooth        Smooth voxel surface rendering
 [ ] F-voxel-ao             Per-vertex ambient occlusion baked into chunk meshes
 [ ] F-war-magic            War magic (combat spells)
 [ ] F-weather              Weather within seasons
@@ -449,6 +450,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-tree-overlap         Construction overlap with tree geometry
 [x] F-troll-regen          Troll health regeneration over time
 [x] F-unified-craft-ui     Unified data-driven building crafting UI
+[x] F-visual-smooth        Smooth voxel surface rendering
 [x] F-voice-subsets        Variable voice count (SATB subsets)
 [x] F-voxel-exclusion      Creatures cannot enter voxels occupied by hostile creatures
 [x] F-voxel-fem            Voxel FEM structural analysis
@@ -779,6 +781,36 @@ the tree trunk more naturally and offer architectural variety.
 
 **Related:** F-construction
 
+#### F-smooth-perf — Smooth mesh performance optimization
+**Status:** Todo
+
+Optimize the smooth mesh pipeline for larger draw distances and denser worlds.
+
+Current issues:
+- 3 vertices emitted per triangle (per-triangle colors prevent sharing). Could dedup vertices with matching position+normal+color.
+- Draw distance temporarily reduced from 100 to 50 voxels.
+- Chunk boundary alignment test is O(n²) — slow but only runs in tests.
+- Smoothing iterations (when enabled) do ~157K vector evaluations per surface-heavy chunk.
+
+Potential optimizations:
+- Vertex dedup with (position, normal, color) key for shared-color triangles (same voxel type).
+- Restore draw distance to 100+ after profiling.
+- Profile chamfer/smoothing cost per chunk and optimize hot loops.
+- Consider reducing smooth mesh border from 2 to 1 voxel if chamfer-only (no smoothing iterations) is the default.
+
+**Related:** F-visual-smooth
+
+#### F-smooth-ycutoff — Post-smoothing Y-cutoff with cap faces
+**Status:** Todo
+
+Apply Y-cutoff post-smoothing by clipping the cached smoothed mesh at a Y plane, rather than pre-smoothing (which regenerates the full smooth mesh for every cutoff change, causing lag when scrolling).
+
+Requires: polygon-plane clipping (interpolate new vertices where triangle edges cross the cut), cap face generation (close the open cross-section), per-voxel-material caps (split cap polygon along voxel boundaries for correct vertex colors), and duplicated normals at cut edges (smooth normal for the surface side, (0,1,0) for the cap).
+
+See `docs/drafts/visual_smooth.md` Y-Cutoff Interaction section for full design notes.
+
+**Related:** F-visual-smooth
+
 #### F-stairs — Stairs and ramps for vertical movement
 **Status:** Todo · **Phase:** 3 · **Refs:** §11
 
@@ -888,16 +920,46 @@ walks to the building and removes furniture incrementally.
 **Related:** F-demolish, F-furnish
 
 #### F-visual-smooth — Smooth voxel surface rendering
-**Status:** Todo · **Phase:** 2 · **Refs:** §8
+**Status:** Done · **Phase:** 2 · **Refs:** §8
 
-Subdivide each visible solid-voxel face into 8 triangles (4 corners, 4 edge midpoints, 1 center), then chamfer and iteratively smooth using a Laplacian curvature-minimizing algorithm with Jacobi-style updates. Solid voxels only (leaves/fruit deferred). Smooth shading with computed vertex normals. Texturing dropped for now (vertex colors only). Sim truth remains a discrete voxel grid — smoothing is purely a rendering concern.
+Smooth voxel surface rendering — replaces blocky per-face geometry with subdivided and chamfered meshes for all solid opaque voxels and leaf voxels. Sim truth remains a discrete voxel grid; smoothing is purely a rendering concern.
 
-**Draft:** `docs/draft_visual_smooth.md`
+**Draft:** `docs/drafts/visual_smooth.md`
 
-**AO interaction:** Smooth rendering changes vertex positions from grid corners to interpolated edge/interior points. The per-vertex AO algorithm (F-voxel-ao) must adapt: instead of the binary 0-1-2-3 corner sampling used for cubic voxels, smooth meshes need a hybrid approach — sample the voxel density field in a small radius around each vertex, weighted by distance and oriented by the vertex normal. Since the sim truth is still a discrete grid, this samples the voxel grid (not the smooth surface), keeping it bounded and cacheable. Plan: implement cubic AO first (F-voxel-ao), then adapt when smooth rendering lands.
 
-**Blocks:** F-mesh-lod
-**Related:** F-megachunk, F-mesh-lod, F-voxel-ao
+**Implementation (complete):**
+
+**Geometry pipeline** (`smooth_mesh.rs`): Each visible face (solid and leaf) is subdivided into 8 triangles (pie-slice pattern). Vertices deduplicated by grid position. All voxel types share a single unified `SmoothMesh` with per-triangle surface tags (TAG_BARK, TAG_GROUND, TAG_LEAF). Shared vertices at solid/leaf boundaries ensure seamless transitions. Per-vertex `has_solid_face` / `has_leaf_face` flags classify vertices for ordered processing.
+
+**Face culling:**
+- Solid↔solid: culled (standard opaque)
+- Leaf↔leaf: culled (shell-only rendering)
+- Leaf→solid: culled (hidden behind solid)
+- Solid→leaf: NOT culled (wood visible through semi-transparent leaves)
+
+**Anchoring:** Face centers always anchored. Faces adjacent to non-solid constructed voxels (BuildingInterior, WoodLadder, RopeLadder) get all vertices anchored. Low-valence boundary vertices anchored. Uses `is_face_center` flag.
+
+**Chamfer (default mode):** Two-phase ordered chamfer: solid vertices first (leaf-only vertices invisible), then leaf-only vertices (seeing chamfered solid as anchors). Saddle-skip heuristic for 4+ anchored neighbors sharing axis coordinates. Direct offset toward anchored neighbor centroid (no normal projection).
+
+**Smoothing (optional, off by default):** 2 Jacobi-style iterations available via debug toggle. Within each iteration: solid vertices processed first, then leaf-only. Candidates that would introduce new saddle points are rejected. Uses Laplacian pointiness metric with squared cost. Default is chamfer-only with flat per-face normals, which currently looks better.
+
+**Chunk boundary handling:** Per-triangle source voxel position `[i32; 3]` for filtering. Vertex normals computed from ALL triangles before filtering. 2-voxel border for context.
+
+**Fragment shaders — Solid** (`smooth_solid.gdshader`): Procedural value noise, triplanar mapping, per-material frequency and Y-scale. Bark anisotropic (y_scale=0.3, freq=16), ground isotropic (freq=8).
+
+**Fragment shaders — Leaf** (`leaf_noise.gdshader`): Procedural noise with ALPHA_SCISSOR_THRESHOLD for boolean alpha (hardware alpha test path). Triplanar mapping. Low-frequency color noise for brightness/hue variation. cull_disabled for both-side rendering.
+
+**Debug tools:** Wireframe toggle and Smoothing ON/OFF toggle in debug toolbar. Smoothing toggle switches between chamfer-only+flat normals and chamfer+smoothing+smooth normals with full mesh rebuild.
+
+**Follow-up items:**
+- **F-leaf-tuning:** Leaf shader quality, per-species color, interior rendering decisions.
+- **F-smooth-ycutoff:** Post-smoothing Y-cutoff with cap faces.
+- **F-smooth-perf:** Draw distance restoration, vertex dedup, profiling.
+
+**AO interaction:** Smooth rendering changes vertex positions. F-voxel-ao must adapt when implemented.
+
+**Unblocked:** F-mesh-lod
+**Related:** F-leaf-tuning, F-megachunk, F-mesh-lod, F-smooth-perf, F-smooth-ycutoff, F-voxel-ao
 
 #### F-wireframe-ghost — Wireframe ghost for overlap preview
 **Status:** Todo · **Phase:** 2
@@ -4559,18 +4621,16 @@ chain, construction mode keys, etc. Pure GDScript UI — no sim changes.
 
 Vertex displacement in the leaf shader — offset leaf vertices by a sine wave keyed on world position and time. Zero CPU cost, no mesh regeneration. Amplitude modulated by height (higher = more sway) to simulate wind gradient. Makes the canopy feel alive.
 
-#### F-leaf-tex-rethink — Evaluate bringing leaves into tiling texture system
+#### F-leaf-tuning — Leaf visual fine-tuning and interior decisions
 **Status:** Todo
 
-Evaluate whether the leaf rendering system (currently a single shared
-alpha-scissor texture with full-range UVs) should be brought into the
-prime-period tiling texture system (F-tiling-tex). Leaves currently look
-uniform — tiling textures could add variety. But the alpha-scissor
-approach serves a different purpose (shape masking, not surface detail),
-so the integration may not be straightforward. Decision item, not
-implementation.
+Fine-tune leaf visual quality and decide on leaf interior rendering.
 
-**Related:** F-tiling-tex
+**Shader tuning:** The leaf noise shader (leaf_noise.gdshader) uses procedural value noise for alpha scissor and color/brightness variation. Current settings work but could be improved — sharper value transitions (more pixel-art-like), better color palette, per-tree-species color variation.
+
+**Interior decision:** Leaf blobs currently render as shells only (leaf↔leaf faces culled). This may look too thin for large canopies. Options to revisit: partial culling (only deeply buried faces), depth-based alpha density, or keeping some interior layers for visual thickness.
+
+**Related:** F-tiling-tex, F-visual-smooth
 
 #### F-lod-sprites — LOD sprites (chibi / detailed)
 **Status:** Todo · **Phase:** 8+ · **Refs:** §24
@@ -4614,7 +4674,7 @@ F-rle-voxels.
 
 Mesh level-of-detail for distant chunks. Once F-visual-smooth lands (smooth terrain rendering), LOD becomes viable: reduce triangle count for chunks far from the camera by generating coarser meshes (fewer subdivisions, simplified geometry). Multiple LOD tiers — e.g., full detail near camera, half-res at mid distance, quarter-res or billboard at far distance. LOD meshes can be pre-generated and cached alongside the full-detail mesh in the mesh cache, swapped based on camera distance. Pairs with F-megachunk (spatial hierarchy determines which LOD tier to use) and F-distance-fog (fog hides LOD transitions). Cubic voxels don't benefit much from LOD since they're already minimal geometry per face, but smooth surfaces have variable triangle density that can be decimated at distance.
 
-**Blocked by:** F-visual-smooth
+**Unblocked by:** F-visual-smooth
 **Related:** F-distance-fog, F-megachunk, F-mesh-cache-lru, F-visual-smooth
 
 #### F-mesh-par — Parallel off-main-thread chunk mesh generation with camera-priority
@@ -4957,7 +5017,7 @@ code in mesh_gen.rs. Leaf surfaces are unaffected (they use a separate
 alpha-scissor texture).
 
 **Unblocked:** F-bigger-world
-**Related:** F-leaf-tex-rethink
+**Related:** F-leaf-tuning
 
 #### F-tree-info — Tree stats/info panel
 **Status:** Done · **Phase:** 2

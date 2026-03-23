@@ -788,6 +788,9 @@ func _setup_common(bridge: SimBridge) -> void:
 			_military_panel.show_group_detail(group_id)
 	)
 
+	# Wire smoothing toggle.
+	toolbar.smoothing_toggled.connect(func(enabled: bool): bridge.set_smoothing_enabled(enabled))
+
 	# Wire speed controls.
 	toolbar.speed_changed.connect(
 		func(speed_name: String):

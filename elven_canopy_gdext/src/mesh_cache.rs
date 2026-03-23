@@ -410,7 +410,7 @@ impl MeshCache {
             chunk_bytes: BTreeMap::new(),
             total_cached_bytes: 0,
             frame_counter: 0,
-            draw_distance_voxels: 100.0,
+            draw_distance_voxels: 50.0,
             memory_budget: 0,
             max_gen_per_frame: 64,
             perf: PerfStats::new(),
