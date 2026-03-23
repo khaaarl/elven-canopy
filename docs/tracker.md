@@ -61,6 +61,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-escape-menu          Rename pause_menu to escape_menu and block hotkeys/buttons while it's open
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-modifier-hotkeys     Hotkeys should not fire when modifier keys (Ctrl/Shift/Alt) are held
+[ ] B-music-floats         Excise f32/f64 from music composition for determinism
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
 [ ] F-adventure-mode       Control individual elf (RPG-like)
@@ -138,6 +139,9 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fruit-sprite-ui      Fruit sprites in inventory/logistics/selection UI
 [ ] F-funeral-rites        Funeral rites and mourning
 [ ] F-greenhouse-revamp    Greenhouse planter growth cycle and pluck tasks
+[ ] F-group-activity       Multi-worker activity coordination layer
+[ ] F-group-chat           Group chat social activity
+[ ] F-group-dance          Group dance and social singing activities
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-herbalism            Herbalism and alchemy
 [ ] F-infra-decay          Infrastructure decay with automated maintenance
@@ -630,6 +634,7 @@ Elves assemble into choirs to sing the tree into growing. Construction speed
 and quality depend on choir composition and harmony. Ties into the music
 system.
 
+**Blocked by:** F-group-activity
 **Related:** F-choir-harmony, F-combat-singing, F-mana-system, F-music-runtime, F-sung-furniture
 
 #### F-construction — Platform construction (designate/build/cancel)
@@ -2338,6 +2343,16 @@ and F-social-graph (close relationships = deeper grief).
 
 **Related:** F-incapacitation, F-mood-system, F-social-graph, F-soul-mech
 
+#### F-group-chat — Group chat social activity
+**Status:** Todo
+
+**Blocked by:** F-group-activity
+
+#### F-group-dance — Group dance and social singing activities
+**Status:** Todo
+
+**Blocked by:** F-group-activity
+
 #### F-hedonic-adapt — Asymmetric hedonic adaptation
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
 
@@ -2519,6 +2534,21 @@ panel. Later feeds into emotional dimensions when `F-emotions` lands.
 
 ### Culture, Language & Music
 
+#### B-music-floats — Excise f32/f64 from music composition for determinism
+**Status:** Todo
+
+The music composition system (create_composition in elven_canopy_music,
+called from elven_canopy_sim) uses f32 arithmetic internally. This
+violates the sim's determinism constraint — f32 results can vary across
+platforms and compilers. If composition results feed back into sim state
+(e.g., choir harmony affecting construction speed), the floats must be
+replaced with fixed-point or integer arithmetic to maintain cross-platform
+determinism. The music crate's standalone use (CLI, audio rendering) is
+not affected, but any path from composition → sim state must be
+float-free.
+
+**Related:** F-choir-harmony
+
 #### F-audio-sampled — Sampled vocal syllables from conlang
 **Status:** Todo · **Phase:** 8+ · **Refs:** §21
 
@@ -2550,7 +2580,7 @@ Multiple elves singing in harmony during construction. Choir composition
 affects construction speed/quality. Ties music generation into the core
 gameplay loop.
 
-**Related:** F-choir-build, F-combat-singing, F-music-runtime
+**Related:** B-music-floats, F-choir-build, F-combat-singing, F-group-activity, F-music-runtime
 
 #### F-combat-singing — Combat singing buffs and musical instrument bands
 **Status:** Todo
@@ -2567,7 +2597,7 @@ effectiveness.
 **Draft:** docs/drafts/war_magic.md
 
 **Blocked by:** F-buff-system
-**Related:** F-buff-system, F-choir-build, F-choir-harmony
+**Related:** F-buff-system, F-choir-build, F-choir-harmony, F-group-activity
 
 #### F-elf-names — Elf name generation from conlang rules
 **Status:** Done · **Phase:** 6 · **Refs:** §20
@@ -4980,6 +5010,21 @@ Godot autoload persisting seed and tree config across scene transitions.
 
 GDExtension bridge crate exposing sim to Godot. SimBridge node with
 methods for commands, queries, and rendering data.
+
+#### F-group-activity — Multi-worker activity coordination layer
+**Status:** Todo
+
+Coordination layer above the task system for activities that require
+multiple participants. Activities own tasks (GoTo for assembly) rather
+than replacing them. Lifecycle: Recruiting → Assembling → Executing →
+Complete. Execution doesn't start until required participants have
+arrived at their positions. New tables: Activity, ActivityParticipant,
+plus kind-specific extension tables.
+
+**Draft:** docs/drafts/group_activities.md
+
+**Blocks:** F-choir-build, F-group-chat, F-group-dance
+**Related:** F-choir-harmony, F-combat-singing
 
 #### F-immediate-commands — Immediate command application (zero-tick updates)
 **Status:** Done · **Phase:** 2
