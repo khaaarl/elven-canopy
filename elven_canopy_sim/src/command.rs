@@ -280,6 +280,8 @@ pub enum SimAction {
     AttackCreature {
         attacker_id: CreatureId,
         target_id: CreatureId,
+        #[serde(default)]
+        queue: bool,
     },
     /// Player-directed goto for a specific creature. Creates a GoTo task and
     /// immediately assigns it to the specified creature, preempting lower-
@@ -287,6 +289,9 @@ pub enum SimAction {
     DirectedGoTo {
         creature_id: CreatureId,
         position: VoxelCoord,
+        /// If true, append to the creature's command queue instead of replacing.
+        #[serde(default)]
+        queue: bool,
     },
     /// Player-directed attack-move: the creature walks toward the destination,
     /// engaging any hostiles detected en route. Creates an AttackMove task with
@@ -294,6 +299,8 @@ pub enum SimAction {
     AttackMove {
         creature_id: CreatureId,
         destination: VoxelCoord,
+        #[serde(default)]
+        queue: bool,
     },
     /// Group move: spread multiple creatures across nearby nav nodes around the
     /// destination instead of stacking them all on the same voxel. Each creature
@@ -301,12 +308,16 @@ pub enum SimAction {
     GroupGoTo {
         creature_ids: Vec<CreatureId>,
         position: VoxelCoord,
+        #[serde(default)]
+        queue: bool,
     },
     /// Group attack-move: like `GroupGoTo` but each creature attack-moves to its
     /// assigned spread destination, engaging hostiles en route.
     GroupAttackMove {
         creature_ids: Vec<CreatureId>,
         destination: VoxelCoord,
+        #[serde(default)]
+        queue: bool,
     },
     /// Create a new military group for the player's civ.
     CreateMilitaryGroup { name: String },

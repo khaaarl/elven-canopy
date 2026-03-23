@@ -169,6 +169,7 @@ func _build_sections(parent: VBoxContainer) -> void:
 			["Left Click", "Select creature / structure / pile"],
 			["Shift + Click/Drag", "Add to selection"],
 			["Right Click", "Context command (attack / move)"],
+			["Shift + Right Click", "Queue command"],
 			["F + Click", "Attack-move to location"],
 			["ESC", "Deselect"],
 		]

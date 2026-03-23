@@ -943,9 +943,37 @@ impl SimState {
             }
         }
 
+        // Do NOT cascade-cancel dependent tasks here. The command queue
+        // should survive autonomous interruptions (flee, hunger, sleep).
+        // Player commands handle their own queue cancellation via
+        // cancel_creature_queue() before preempting, and creature death
+        // calls cancel_creature_queue() after interrupt_task().
+
         // Clear creature assignment. For resumable tasks (Build, Furnish),
         // this reverts the task to Available if no other creatures remain.
         // For non-resumable tasks, the task is already Complete.
         self.unassign_creature_from_task(creature_id);
+    }
+
+    /// Cancel all player-directed queued tasks restricted to a creature.
+    /// Used when an unshifted right-click replaces the entire command queue.
+    pub(crate) fn cancel_creature_queue(&mut self, creature_id: CreatureId) {
+        let queued: Vec<TaskId> = self
+            .db
+            .tasks
+            .by_restrict_to_creature_id(&Some(creature_id), tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .filter(|t| {
+                t.origin == task::TaskOrigin::PlayerDirected && t.state != task::TaskState::Complete
+            })
+            .map(|t| t.id)
+            .collect();
+
+        for tid in queued {
+            if let Some(mut t) = self.db.tasks.get(&tid) {
+                t.state = task::TaskState::Complete;
+                let _ = self.db.tasks.update_no_fk(t);
+            }
+        }
     }
 }

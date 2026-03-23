@@ -2,7 +2,8 @@
 //
 // Handles player-directed movement commands (GoTo, group GoTo), unit spreading
 // for group formations, task-oriented walking (`walk_toward_task`), single-step
-// movement execution with voxel exclusion, and idle wandering.
+// movement execution with voxel exclusion, idle wandering, and command queue
+// management (`find_queue_tail` for shift+right-click sequential queuing).
 //
 // See also: `pathfinding.rs` (A* implementation), `nav.rs` (graph structure),
 // `combat.rs` (attack-move walking, flee steps),
@@ -22,6 +23,7 @@ impl SimState {
         &mut self,
         creature_id: CreatureId,
         position: VoxelCoord,
+        queue: bool,
         _events: &mut Vec<SimEvent>,
     ) {
         let creature = match self.db.creatures.get(&creature_id) {
@@ -37,6 +39,38 @@ impl SimState {
         if !is_flying && self.nav_graph.find_nearest_node(position).is_none() {
             return;
         }
+
+        let species = creature.species;
+
+        // Queue mode: append to the creature's command queue instead of preempting.
+        if queue && let Some(tail_id) = self.find_queue_tail(creature_id) {
+            let task_id = TaskId::new(&mut self.rng);
+            let new_task = task::Task {
+                id: task_id,
+                kind: task::TaskKind::GoTo,
+                state: task::TaskState::Available,
+                location: position,
+                progress: 0,
+                total_cost: 0,
+                required_species: Some(species),
+                origin: task::TaskOrigin::PlayerDirected,
+                target_creature: None,
+                restrict_to_creature_id: Some(creature_id),
+                prerequisite_task_id: Some(tail_id),
+            };
+            self.insert_task(new_task);
+            return;
+        }
+        // Queue mode with no current task falls through to non-queue behavior.
+
+        // Non-queue: cancel any existing command queue for this creature.
+        self.cancel_creature_queue(creature_id);
+
+        // Re-fetch creature after potential queue cancellation.
+        let creature = match self.db.creatures.get(&creature_id) {
+            Some(c) if c.vital_status == VitalStatus::Alive => c,
+            _ => return,
+        };
 
         // Check preemption: can PlayerDirected preempt the current task?
         let mut mid_move = false;
@@ -73,9 +107,11 @@ impl SimState {
             location: position,
             progress: 0,
             total_cost: 0,
-            required_species: Some(creature.species),
+            required_species: Some(species),
             origin: task::TaskOrigin::PlayerDirected,
             target_creature: None,
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
         };
         self.insert_task(new_task);
         if let Some(mut c) = self.db.creatures.get(&creature_id) {
@@ -103,19 +139,83 @@ impl SimState {
         &mut self,
         creature_ids: &[CreatureId],
         position: VoxelCoord,
+        queue: bool,
         events: &mut Vec<SimEvent>,
     ) {
         if creature_ids.len() <= 1 {
             // Single creature — just delegate to the normal handler.
             if let Some(&cid) = creature_ids.first() {
-                self.command_directed_goto(cid, position, events);
+                self.command_directed_goto(cid, position, queue, events);
             }
             return;
         }
         let destinations = self.compute_spread_assignments(creature_ids, position);
         for (cid, dest) in destinations {
-            self.command_directed_goto(cid, dest, events);
+            self.command_directed_goto(cid, dest, queue, events);
         }
+    }
+
+    /// Find the last task in a creature's command queue. Starts from the
+    /// creature's current_task and follows prerequisite_task_id links forward
+    /// (finds tasks whose prerequisite is the current tail) to the end.
+    ///
+    /// If `current_task` is None (e.g., creature is fleeing), searches for
+    /// orphaned queued tasks via `restrict_to_creature_id` and walks to the
+    /// tail of that chain. This preserves the queue across autonomous
+    /// interruptions.
+    ///
+    /// Returns `None` if the creature has no queue at all, or if a cycle is
+    /// detected (defensive guard against corrupted data).
+    pub(crate) fn find_queue_tail(&self, creature_id: CreatureId) -> Option<TaskId> {
+        let creature = self.db.creatures.get(&creature_id)?;
+
+        let start = if let Some(task_id) = creature.current_task {
+            task_id
+        } else {
+            // No current task — look for orphaned queued tasks restricted
+            // to this creature. Find the chain head: the non-Complete task
+            // whose prerequisite is Complete or missing (i.e., already
+            // satisfied). If multiple exist, pick the first by BTree order
+            // for determinism.
+            let orphaned = self
+                .db
+                .tasks
+                .by_restrict_to_creature_id(&Some(creature_id), tabulosity::QueryOpts::ASC);
+            let head = orphaned.into_iter().find(|t| {
+                t.state != task::TaskState::Complete
+                    && t.prerequisite_task_id.is_none_or(|pid| {
+                        self.db
+                            .tasks
+                            .get(&pid)
+                            .is_none_or(|pt| pt.state == task::TaskState::Complete)
+                    })
+            })?;
+            head.id
+        };
+
+        // Walk the chain forward from `start` to find the tail.
+        let mut current = start;
+
+        // Cap iterations to prevent infinite loops on corrupted prerequisite
+        // chains. 256 is far beyond any realistic queue depth.
+        const MAX_CHAIN_LEN: usize = 256;
+
+        for _ in 0..MAX_CHAIN_LEN {
+            // Find any non-complete task whose prerequisite is `current`.
+            let next = self
+                .db
+                .tasks
+                .by_prerequisite_task_id(&Some(current), tabulosity::QueryOpts::ASC)
+                .into_iter()
+                .find(|t| t.state != task::TaskState::Complete);
+            match next {
+                Some(t) => current = t.id,
+                None => return Some(current),
+            }
+        }
+
+        // Chain exceeded max length — likely a cycle. Bail out.
+        None
     }
 
     /// Compute spread destination assignments for a group of creatures moving

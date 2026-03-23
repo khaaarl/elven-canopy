@@ -28,7 +28,7 @@ elven-canopy/
 │       │   ├── greenhouse.rs   #   Fruit spawning, harvest monitoring
 │       │   ├── inventory_mgmt.rs #  Item stack ops, reservations, equipment, durability
 │       │   ├── logistics.rs    #   Hauling, harvesting, pickup/dropoff, logistics heartbeat
-│       │   ├── movement.rs     #   GoTo commands, unit spreading, step execution, wandering
+│       │   ├── movement.rs     #   GoTo commands, unit spreading, step execution, wandering, command queue
 │       │   ├── needs.rs        #   Eating, sleeping, moping, personal item acquisition
 │       │   ├── raid.rs         #   Raid triggering (hostile civ raiding parties)
 │       │   └── task_helpers.rs #   Task extension table accessors, insert_task

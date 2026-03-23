@@ -290,6 +290,13 @@ pub struct Task {
     /// nav node, and the path is invalidated when the target moves.
     #[serde(default)]
     pub target_creature: Option<CreatureId>,
+    /// If set, only this creature may claim this task (command queue).
+    #[serde(default)]
+    pub restrict_to_creature_id: Option<CreatureId>,
+    /// If set, this task stays unavailable until the prerequisite completes.
+    /// Forms a linked list for sequential command queues (A → B → C).
+    #[serde(default)]
+    pub prerequisite_task_id: Option<TaskId>,
 }
 
 #[cfg(test)]
@@ -315,6 +322,8 @@ mod tests {
             required_species: Some(Species::Elf),
             origin: TaskOrigin::PlayerDirected,
             target_creature: None,
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
         };
 
         let json = serde_json::to_string(&task).unwrap();
@@ -348,6 +357,8 @@ mod tests {
             required_species: Some(Species::Elf),
             origin: TaskOrigin::Autonomous,
             target_creature: None,
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
         };
 
         let json = serde_json::to_string(&task).unwrap();
@@ -380,6 +391,8 @@ mod tests {
             required_species: None,
             origin: TaskOrigin::Autonomous,
             target_creature: None,
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
         };
 
         let json = serde_json::to_string(&task).unwrap();
@@ -411,6 +424,8 @@ mod tests {
             required_species: Some(Species::Elf),
             origin: TaskOrigin::Autonomous,
             target_creature: None,
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
         };
 
         let json = serde_json::to_string(&task).unwrap();
@@ -473,6 +488,8 @@ mod tests {
             required_species: Some(Species::Elf),
             origin: TaskOrigin::Automated,
             target_creature: None,
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
         };
 
         let json = serde_json::to_string(&task).unwrap();
@@ -518,6 +535,8 @@ mod tests {
             required_species: None,
             origin: TaskOrigin::Automated,
             target_creature: None,
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
         };
 
         let json2 = serde_json::to_string(&task2).unwrap();
@@ -552,6 +571,8 @@ mod tests {
             required_species: Some(Species::Elf),
             origin: TaskOrigin::Autonomous,
             target_creature: None,
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
         };
 
         let json = serde_json::to_string(&task).unwrap();
@@ -590,6 +611,8 @@ mod tests {
             required_species: Some(Species::Elf),
             origin: TaskOrigin::Autonomous,
             target_creature: None,
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
         };
 
         let json = serde_json::to_string(&task).unwrap();
@@ -623,6 +646,8 @@ mod tests {
             required_species: None,
             origin: TaskOrigin::PlayerDirected,
             target_creature: None,
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
         };
 
         let mut registry: BTreeMap<TaskId, Task> = BTreeMap::new();
@@ -635,5 +660,51 @@ mod tests {
 
         assert_eq!(retrieved.progress, 0);
         assert_eq!(retrieved.total_cost, 0);
+    }
+
+    #[test]
+    fn queue_fields_serde_roundtrip() {
+        let mut rng = GameRng::new(42);
+        let task_id = TaskId::new(&mut rng);
+        let creature_id = crate::types::CreatureId::new(&mut rng);
+        let prereq_id = TaskId::new(&mut rng);
+
+        let task = Task {
+            id: task_id,
+            kind: TaskKind::GoTo,
+            state: TaskState::Available,
+            location: VoxelCoord::new(10, 1, 10),
+            progress: 0,
+            total_cost: 0,
+            required_species: None,
+            origin: TaskOrigin::PlayerDirected,
+            target_creature: None,
+            restrict_to_creature_id: Some(creature_id),
+            prerequisite_task_id: Some(prereq_id),
+        };
+
+        let json = serde_json::to_string(&task).unwrap();
+        let restored: Task = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.restrict_to_creature_id, Some(creature_id));
+        assert_eq!(restored.prerequisite_task_id, Some(prereq_id));
+    }
+
+    #[test]
+    fn queue_fields_backward_compat() {
+        // Old save format without restrict_to_creature_id or prerequisite_task_id.
+        let json = r#"{
+            "id": "00000000-0000-0000-0000-000000000001",
+            "kind": "GoTo",
+            "state": "Available",
+            "location": [5, 0, 0],
+            "progress": 0,
+            "total_cost": 0,
+            "required_species": null,
+            "origin": "PlayerDirected"
+        }"#;
+        let task: Task = serde_json::from_str(json).unwrap();
+        assert_eq!(task.restrict_to_creature_id, None);
+        assert_eq!(task.prerequisite_task_id, None);
     }
 }

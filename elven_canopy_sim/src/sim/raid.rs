@@ -126,7 +126,7 @@ impl SimState {
                 let target_idx = (self.rng.next_u64() % attack_targets.len() as u64) as usize;
                 attack_targets[target_idx]
             };
-            self.command_attack_move(raider_id, target, events);
+            self.command_attack_move(raider_id, target, false, events);
         }
 
         let direction_name = match direction {

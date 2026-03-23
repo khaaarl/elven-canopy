@@ -418,6 +418,8 @@ impl SimState {
             required_species: task.required_species,
             origin: task.origin,
             target_creature: task.target_creature,
+            restrict_to_creature_id: task.restrict_to_creature_id,
+            prerequisite_task_id: task.prerequisite_task_id,
         };
         self.db.tasks.insert_no_fk(db_task).unwrap();
     }

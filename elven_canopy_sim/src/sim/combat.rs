@@ -33,6 +33,7 @@ impl SimState {
         &mut self,
         attacker_id: CreatureId,
         target_id: CreatureId,
+        queue: bool,
         _events: &mut Vec<SimEvent>,
     ) {
         // Validate: both creatures alive and distinct.
@@ -68,6 +69,40 @@ impl SimState {
                 return;
             }
         }
+
+        let attacker_species = attacker.species;
+        // Use target's current position (dynamic pursuit updates it each activation).
+        let target_pos = target.position;
+
+        // Queue mode: append to the creature's command queue.
+        if queue && let Some(tail_id) = self.find_queue_tail(attacker_id) {
+            let task_id = TaskId::new(&mut self.rng);
+            let new_task = task::Task {
+                id: task_id,
+                kind: task::TaskKind::AttackTarget { target: target_id },
+                state: task::TaskState::Available,
+                location: target_pos,
+                progress: 0,
+                total_cost: 0,
+                required_species: Some(attacker_species),
+                origin: task::TaskOrigin::PlayerDirected,
+                target_creature: Some(target_id),
+                restrict_to_creature_id: Some(attacker_id),
+                prerequisite_task_id: Some(tail_id),
+            };
+            self.insert_task(new_task);
+            return;
+        }
+        // Queue mode with no current task falls through to non-queue behavior.
+
+        // Non-queue: cancel any existing command queue.
+        self.cancel_creature_queue(attacker_id);
+
+        // Re-fetch after queue cancellation.
+        let attacker = match self.db.creatures.get(&attacker_id) {
+            Some(c) if c.vital_status == VitalStatus::Alive => c,
+            _ => return,
+        };
 
         // Check preemption: can PlayerCombat preempt the current task?
         let mut mid_move = false;
@@ -108,9 +143,11 @@ impl SimState {
             location: target_pos,
             progress: 0,
             total_cost: 0,
-            required_species: Some(attacker.species),
+            required_species: Some(attacker_species),
             origin: task::TaskOrigin::PlayerDirected,
             target_creature: Some(target_id),
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
         };
         self.insert_task(new_task);
         // Assign directly — skip Available state.
@@ -138,6 +175,7 @@ impl SimState {
         &mut self,
         creature_id: CreatureId,
         destination: VoxelCoord,
+        queue: bool,
         _events: &mut Vec<SimEvent>,
     ) {
         let creature = match self.db.creatures.get(&creature_id) {
@@ -153,6 +191,47 @@ impl SimState {
         if !is_flying && self.nav_graph.find_nearest_node(destination).is_none() {
             return;
         }
+
+        let species = creature.species;
+
+        // Queue mode: append to the creature's command queue.
+        if queue && let Some(tail_id) = self.find_queue_tail(creature_id) {
+            let task_id = TaskId::new(&mut self.rng);
+            let new_task = task::Task {
+                id: task_id,
+                kind: task::TaskKind::AttackMove,
+                state: task::TaskState::Available,
+                location: destination,
+                progress: 0,
+                total_cost: 0,
+                required_species: Some(species),
+                origin: task::TaskOrigin::PlayerDirected,
+                target_creature: None,
+                restrict_to_creature_id: Some(creature_id),
+                prerequisite_task_id: Some(tail_id),
+            };
+            self.insert_task(new_task);
+
+            // Insert extension row with destination.
+            let _ = self
+                .db
+                .task_attack_move_data
+                .insert_no_fk(crate::db::TaskAttackMoveData {
+                    task_id,
+                    destination,
+                });
+            return;
+        }
+        // Queue mode with no current task falls through to non-queue behavior.
+
+        // Non-queue: cancel any existing command queue.
+        self.cancel_creature_queue(creature_id);
+
+        // Re-fetch after queue cancellation.
+        let creature = match self.db.creatures.get(&creature_id) {
+            Some(c) if c.vital_status == VitalStatus::Alive => c,
+            _ => return,
+        };
 
         // Check preemption: can PlayerCombat preempt the current task?
         let mut mid_move = false;
@@ -178,7 +257,6 @@ impl SimState {
         }
 
         let task_id = TaskId::new(&mut self.rng);
-        let species = creature.species;
         let new_task = task::Task {
             id: task_id,
             kind: task::TaskKind::AttackMove,
@@ -189,6 +267,8 @@ impl SimState {
             required_species: Some(species),
             origin: task::TaskOrigin::PlayerDirected,
             target_creature: None,
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
         };
         self.insert_task(new_task);
 
@@ -223,17 +303,18 @@ impl SimState {
         &mut self,
         creature_ids: &[CreatureId],
         destination: VoxelCoord,
+        queue: bool,
         events: &mut Vec<SimEvent>,
     ) {
         if creature_ids.len() <= 1 {
             if let Some(&cid) = creature_ids.first() {
-                self.command_attack_move(cid, destination, events);
+                self.command_attack_move(cid, destination, queue, events);
             }
             return;
         }
         let destinations = self.compute_spread_assignments(creature_ids, destination);
         for (cid, dest) in destinations {
-            self.command_attack_move(cid, dest, events);
+            self.command_attack_move(cid, dest, queue, events);
         }
     }
 
@@ -546,6 +627,8 @@ impl SimState {
             required_species: Some(species),
             origin: task::TaskOrigin::Autonomous,
             target_creature: None,
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
         };
         self.insert_task(new_task);
 
@@ -1341,6 +1424,9 @@ impl SimState {
         };
 
         // 1. Interrupt current task (clears action, drops haul items, etc.)
+        //    Also cancel any queued tasks restricted to this creature — if the
+        //    creature dies between tasks (current_task is None), interrupt_task
+        //    won't cascade to the remaining queue.
         if let Some(task_id) = self
             .db
             .creatures
@@ -1352,6 +1438,7 @@ impl SimState {
             // No task, but still abort any in-progress action.
             self.abort_current_action(creature_id);
         }
+        self.cancel_creature_queue(creature_id);
 
         // 2. Drop all inventory items as a ground pile at death position.
         // Use inv_move_items to preserve all item properties (material,

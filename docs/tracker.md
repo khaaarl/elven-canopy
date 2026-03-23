@@ -92,7 +92,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-cloak-slot           Cloak/cape equipment slot
 [ ] F-combat               Combat and invader threat system
 [ ] F-combat-singing       Combat singing buffs and musical instrument bands
-[ ] F-command-queue        Shift+right-click to queue commands
 [ ] F-config-file          Game config file (user://config.json)
 [ ] F-config-ui            Settings UI panel (main menu + pause menu)
 [ ] F-conjured-creatures   Temporary creature spawning with lifetime and auto-despawn
@@ -289,6 +288,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-child-table-pks      Convert child tables to natural compound primary keys
 [x] F-civilizations        Procedural civilization generation and diplomacy
 [x] F-clothing             Wearable clothing system
+[x] F-command-queue        Shift+right-click to queue commands
 [x] F-component-recipes    Component-based crafting recipes (bread, thread, bowstring)
 [x] F-compound-pk          Compound (multi-column) primary keys
 [x] F-construction         Platform construction (designate/build/cancel)
@@ -3983,7 +3983,7 @@ panel button.
 **Related:** F-follow-multi
 
 #### F-command-queue — Shift+right-click to queue commands
-**Status:** Todo · **Phase:** 5
+**Status:** Done · **Phase:** 5
 
 Shift+right-click appends a command to the selected units' queue
 instead of replacing it. An unshifted right-click replaces the queue
@@ -4024,19 +4024,82 @@ replaces it with the new command.
   `prerequisite_task_id` set to the creature's current tail task
   (its `current_task` if no queue exists, or the last queued task).
 
-**Cancellation cascade:** When a task is cancelled or interrupted,
-look up any tasks whose `prerequisite_task_id` points to it and
-cancel those too (recursing down the chain). This handles both
-explicit queue replacement (unshifted right-click) and implicit
-interruption (creature death, etc.). The `restrict_to_creature_id`
-index also enables a bulk-cancel path: find all player-directed
-tasks restricted to a creature and cancel them all, which is simpler
-for the "replace entire queue" case.
+**Queue survival (CRITICAL design rule):** The command queue must
+survive autonomous interruptions. Only two things should clear the
+queue:
+
+1. An unshifted player command (explicit replacement).
+2. Completing all queued tasks naturally.
+
+The queue must NOT be cleared by:
+- Hostile auto-engage (and GoTo should not auto-engage at all — see
+  below).
+- Fleeing (once the creature recovers composure, it should resume
+  its queued commands).
+- Any other autonomous interruption.
+
+Death is a special case: the creature is gone, so cleanup is fine,
+but this is resource cleanup, not queue cancellation in the gameplay
+sense.
+
+**Implementation:** `cleanup_and_unassign_task` currently calls
+`cancel_dependent_tasks`, which wipes the entire queue on any
+interruption. This is too aggressive. The cascade should only
+happen when the interruption source is a player command replacement
+(i.e., the `cancel_creature_queue` path triggered by an unshifted
+command). For autonomous interruptions (flee, hostile pursuit,
+hunger/sleep preemption), the queue should be preserved:
+
+- When a creature is autonomously interrupted mid-queue (e.g., flee),
+  `cleanup_and_unassign_task` should NOT call `cancel_dependent_tasks`.
+  Instead, the dependent tasks stay Available with their prerequisite
+  still pointing to the now-Complete interrupted task. Since the
+  prerequisite is Complete, `find_available_task` will pick up the
+  next queued task once the creature becomes idle again after the
+  interruption resolves.
+
+- The key distinction is the interruption source: player-command
+  preemption (via `command_directed_goto` etc.) explicitly calls
+  `cancel_creature_queue` before preempting. Autonomous interruption
+  should not cascade.
+
+**GoTo should not auto-engage hostiles:** In standard RTS behavior,
+a move command (GoTo) does not stop to fight — the unit walks past
+danger. Only attack-move stops to engage hostiles en route. Currently,
+the activation pipeline may trigger hostile auto-engage even during
+a player-directed GoTo, which would interrupt the GoTo (and with the
+old cascade behavior, wipe the queue). The fix:
+
+- During `execute_task_behavior` for GoTo tasks with
+  `origin == PlayerDirected`, skip the hostile auto-engage check.
+  The creature walks to its destination regardless of nearby hostiles.
+- This matches RTS convention: right-click = "go here no matter
+  what", F-click (attack-move) = "go here but fight anything you
+  see".
+- Autonomous GoTo (e.g., going home to sleep) can still auto-engage
+  since the creature isn't under direct player control.
+
+**Cancellation cascade (revised):** `cancel_dependent_tasks` is
+called from `cleanup_and_unassign_task`. The revised behavior:
+
+- Remove the `cancel_dependent_tasks` call from
+  `cleanup_and_unassign_task` entirely.
+- Player-command handlers already call `cancel_creature_queue`
+  before preempting, which handles the "replace queue" case.
+- `handle_creature_death` already calls `cancel_creature_queue`
+  after `interrupt_task`, which handles the death case.
+- For autonomous interruptions (flee, hunger, sleep), the queue
+  survives because neither `cancel_dependent_tasks` nor
+  `cancel_creature_queue` is called.
 
 **Completion flow:** When a task completes normally, no special
 cascade is needed — dependent tasks simply become available because
 their prerequisite is now `Complete`. `find_available_task` will
-pick them up on the creature's next activation.
+pick them up on the creature's next activation. This also handles
+queue resumption after autonomous interruption: the interrupting
+task (flee, eat, sleep) completes, the creature becomes idle,
+`find_available_task` finds the next queued task whose prerequisite
+(the interrupted GoTo, now Complete) is done.
 
 **Related:** F-rts-selection
 

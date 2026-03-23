@@ -441,6 +441,23 @@ impl SimState {
                 if t.required_species.is_some_and(|s| s != species) {
                     return false;
                 }
+                // Command queue: skip tasks restricted to a different creature.
+                if t.restrict_to_creature_id
+                    .is_some_and(|cid| cid != creature_id)
+                {
+                    return false;
+                }
+                // Command queue: skip tasks whose prerequisite hasn't completed.
+                if let Some(prereq_id) = t.prerequisite_task_id {
+                    let prereq_complete = self
+                        .db
+                        .tasks
+                        .get(&prereq_id)
+                        .is_none_or(|pt| pt.state == task::TaskState::Complete);
+                    if !prereq_complete {
+                        return false;
+                    }
+                }
                 // Build/Furnish: nonmagical creatures cannot claim, magical need mana.
                 if t.kind_tag.requires_mana() {
                     return !is_nonmagical && has_mana_for_work;
@@ -946,6 +963,8 @@ impl SimState {
             required_species: None,
             origin: task::TaskOrigin::Autonomous,
             target_creature: None,
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
         };
         self.insert_task(new_task);
         if let Some(mut creature) = self.db.creatures.get(&creature_id) {
@@ -1049,6 +1068,8 @@ impl SimState {
                 required_species: None,
                 origin: task::TaskOrigin::Autonomous,
                 target_creature: None,
+                restrict_to_creature_id: None,
+                prerequisite_task_id: None,
             };
             self.insert_task(new_task);
             if let Some(mut creature) = self.db.creatures.get(&creature_id) {
@@ -1275,6 +1296,8 @@ impl SimState {
                 required_species: None,
                 origin: task::TaskOrigin::Autonomous,
                 target_creature: None,
+                restrict_to_creature_id: None,
+                prerequisite_task_id: None,
             };
             self.insert_task(new_task);
             if let Some(mut creature) = self.db.creatures.get(&creature_id) {

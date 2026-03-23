@@ -1711,6 +1711,8 @@ fn insert_goto_task(sim: &mut SimState, location: NavNodeId) -> TaskId {
         required_species: Some(Species::Elf),
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(task);
     task_id
@@ -2206,6 +2208,8 @@ fn harvest_fruit_carries_species_material() {
         required_species: None,
         origin: task::TaskOrigin::Automated,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(task);
     sim.resolve_harvest_action(elf_id, task_id, fruit_pos);
@@ -3104,6 +3108,8 @@ fn busy_tired_elf_does_not_create_sleep_task() {
         required_species: None,
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(goto_task);
     let mut c = sim.db.creatures.get(&elf_id).unwrap();
@@ -5883,6 +5889,8 @@ fn eat_fruit_task_restores_food_on_arrival() {
         required_species: None,
         origin: TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(eat_task);
     {
@@ -6042,6 +6050,8 @@ fn busy_hungry_elf_does_not_create_eat_fruit_task() {
         required_species: None,
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(goto_task);
     {
@@ -6252,6 +6262,8 @@ fn eat_bread_restores_food_and_removes_bread() {
         required_species: None,
         origin: TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(eat_task);
     {
@@ -6454,6 +6466,8 @@ fn eat_bread_generates_thought() {
         required_species: None,
         origin: TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(eat_task);
     {
@@ -6843,6 +6857,8 @@ fn walk_toward_dead_task_node_does_not_panic() {
         required_species: None,
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     });
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
@@ -10980,6 +10996,8 @@ fn logistics_counts_in_transit() {
         required_species: Some(Species::Elf),
         origin: TaskOrigin::Automated,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(existing_haul);
 
@@ -11196,6 +11214,8 @@ fn harvest_task_creates_ground_pile() {
         required_species: Some(Species::Elf),
         origin: TaskOrigin::Automated,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(harvest_task);
     {
@@ -11341,6 +11361,8 @@ fn haul_source_empty_cancels() {
         required_species: Some(Species::Elf),
         origin: TaskOrigin::Automated,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(haul_task);
 
@@ -11679,6 +11701,8 @@ fn acquire_item_picks_up_and_owns() {
         required_species: Some(Species::Elf),
         origin: TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(acquire_task);
     {
@@ -12081,6 +12105,8 @@ fn devastated_elf_interrupts_task_to_mope() {
         required_species: None,
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(goto_task);
     {
@@ -12201,6 +12227,8 @@ fn mope_does_not_interrupt_autonomous_sleep() {
         required_species: None,
         origin: TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(sleep_task);
     {
@@ -12307,6 +12335,8 @@ fn mope_always_preempts_player_directed_build() {
         required_species: None,
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(build_task);
     {
@@ -13248,6 +13278,8 @@ fn craft_task_serde_roundtrip() {
         required_species: Some(Species::Elf),
         origin: task::TaskOrigin::Automated,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
 
     let json = serde_json::to_string(&task).unwrap();
@@ -15266,6 +15298,8 @@ fn sleep_adaptive_completion_rest_full_exits_early() {
         required_species: None,
         origin: task::TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(sleep_task);
     {
@@ -15526,6 +15560,8 @@ fn eat_action_ticks_controls_timing() {
         required_species: None,
         origin: task::TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(eat_task);
 
@@ -16144,6 +16180,8 @@ fn insert_pursuit_task(
         required_species: Some(Species::Elf),
         origin: TaskOrigin::PlayerDirected,
         target_creature: Some(target_id),
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(task);
     // Directly assign the pursuer to this task.
@@ -16232,6 +16270,8 @@ fn pursuit_task_completes_when_adjacent() {
         required_species: Some(Species::Elf),
         origin: TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(sleep_task);
     let mut target = sim.db.creatures.get(&target_id).unwrap();
@@ -16832,6 +16872,8 @@ fn interrupt_goto_completes_task_and_clears_creature() {
         required_species: None,
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(goto_task);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
@@ -17016,6 +17058,8 @@ fn interrupt_sleep_completes_task() {
         required_species: None,
         origin: TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(sleep_task);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
@@ -17084,6 +17128,8 @@ fn interrupt_clears_move_action() {
         required_species: None,
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(goto_task);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
@@ -21665,6 +21711,7 @@ fn attack_creature_command_creates_task_and_assigns() {
         action: SimAction::AttackCreature {
             attacker_id: elf,
             target_id: goblin,
+            queue: false,
         },
     };
     sim.step(&[cmd], tick + 2);
@@ -21708,6 +21755,7 @@ fn attack_target_task_pursues_and_strikes() {
         action: SimAction::AttackCreature {
             attacker_id: elf,
             target_id: goblin,
+            queue: false,
         },
     };
     // Run for 10 seconds — enough time to walk there and attack.
@@ -21748,6 +21796,7 @@ fn attack_target_completes_when_target_dies() {
         action: SimAction::AttackCreature {
             attacker_id: elf,
             target_id: goblin,
+            queue: false,
         },
     };
     sim.step(&[attack_cmd], tick + 2);
@@ -21798,6 +21847,7 @@ fn attack_target_preempts_lower_priority_task() {
         action: SimAction::AttackCreature {
             attacker_id: elf,
             target_id: goblin,
+            queue: false,
         },
     };
     sim.step(&[cmd], tick + 2);
@@ -21834,6 +21884,7 @@ fn attack_target_cannot_attack_self() {
         action: SimAction::AttackCreature {
             attacker_id: elf,
             target_id: elf,
+            queue: false,
         },
     };
     sim.step(&[cmd], tick + 2);
@@ -21871,6 +21922,7 @@ fn attack_target_cannot_attack_dead_creature() {
         action: SimAction::AttackCreature {
             attacker_id: elf,
             target_id: goblin,
+            queue: false,
         },
     };
     sim.step(&[attack_cmd], tick + 4);
@@ -21899,6 +21951,8 @@ fn attack_target_task_serde_roundtrip() {
         required_species: Some(Species::Elf),
         origin: TaskOrigin::PlayerDirected,
         target_creature: Some(target),
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
 
     let json = serde_json::to_string(&task).unwrap();
@@ -21934,6 +21988,7 @@ fn test_attack_move_creates_task() {
         action: SimAction::AttackMove {
             creature_id: elf,
             destination: dest,
+            queue: false,
         },
     };
     sim.step(&[cmd], tick + 2);
@@ -21968,6 +22023,7 @@ fn test_attack_move_walks_to_destination() {
         action: SimAction::AttackMove {
             creature_id: elf,
             destination: dest,
+            queue: false,
         },
     };
     sim.step(&[cmd], tick + 2);
@@ -22013,6 +22069,7 @@ fn test_attack_move_engages_hostile() {
         action: SimAction::AttackMove {
             creature_id: elf,
             destination: dest,
+            queue: false,
         },
     };
     // Run long enough for detection and engagement.
@@ -22049,6 +22106,7 @@ fn test_attack_move_resumes_after_kill() {
         action: SimAction::AttackMove {
             creature_id: elf,
             destination: dest,
+            queue: false,
         },
     };
     sim.step(&[cmd], tick + 2);
@@ -22099,6 +22157,7 @@ fn test_attack_move_nearest_target() {
         action: SimAction::AttackMove {
             creature_id: elf,
             destination: dest,
+            queue: false,
         },
     };
     // Run a few ticks for detection.
@@ -22139,6 +22198,7 @@ fn test_attack_move_preempts_lower_priority() {
         action: SimAction::AttackMove {
             creature_id: elf,
             destination: dest,
+            queue: false,
         },
     };
     sim.step(&[cmd], tick + 2);
@@ -22180,6 +22240,7 @@ fn test_attack_move_flee_exempt() {
         action: SimAction::AttackMove {
             creature_id: elf_id,
             destination: dest,
+            queue: false,
         },
     };
     sim.step(&[cmd], 1);
@@ -22207,6 +22268,8 @@ fn test_attack_move_serde_roundtrip() {
         required_species: Some(Species::Elf),
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
 
     let json = serde_json::to_string(&task).unwrap();
@@ -22240,6 +22303,7 @@ fn directed_goto_creates_task_for_specific_creature() {
         action: SimAction::DirectedGoTo {
             creature_id: elf,
             position: target_pos,
+            queue: false,
         },
     };
     sim.step(&[cmd], tick + 2);
@@ -22273,6 +22337,8 @@ fn directed_goto_replaces_player_directed_task() {
         required_species: Some(Species::Elf),
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(task);
     sim.claim_task(elf, task_id);
@@ -22287,6 +22353,7 @@ fn directed_goto_replaces_player_directed_task() {
         action: SimAction::DirectedGoTo {
             creature_id: elf,
             position: target_pos,
+            queue: false,
         },
     };
     sim.step(&[cmd], tick + 2);
@@ -22322,6 +22389,8 @@ fn directed_goto_preempts_autonomous_task() {
         required_species: Some(Species::Elf),
         origin: TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(task);
     sim.claim_task(elf, task_id);
@@ -22336,6 +22405,7 @@ fn directed_goto_preempts_autonomous_task() {
         action: SimAction::DirectedGoTo {
             creature_id: elf,
             position: target_pos,
+            queue: false,
         },
     };
     sim.step(&[cmd], tick + 2);
@@ -22371,6 +22441,7 @@ fn directed_goto_does_not_abort_mid_walk_action() {
         action: SimAction::DirectedGoTo {
             creature_id: elf,
             position: target_a,
+            queue: false,
         },
     };
     sim.step(&[cmd_a], tick + 2);
@@ -22401,6 +22472,7 @@ fn directed_goto_does_not_abort_mid_walk_action() {
         action: SimAction::DirectedGoTo {
             creature_id: elf,
             position: target_b,
+            queue: false,
         },
     };
     sim.step(&[cmd_b], tick2 + 2);
@@ -22465,6 +22537,7 @@ fn directed_goto_mid_action_command_does_not_schedule_extra_activation() {
             action: SimAction::DirectedGoTo {
                 creature_id: elf,
                 position: target_a,
+                queue: false,
             },
         }],
         tick + 2,
@@ -22508,6 +22581,7 @@ fn directed_goto_mid_action_command_does_not_schedule_extra_activation() {
             action: SimAction::DirectedGoTo {
                 creature_id: elf,
                 position: target_b,
+                queue: false,
             },
         }],
         tick2 + 1,
@@ -22543,6 +22617,7 @@ fn group_goto_spreads_creatures_to_different_nodes() {
             action: SimAction::GroupGoTo {
                 creature_ids: vec![elf_a, elf_b, elf_c],
                 position: dest,
+                queue: false,
             },
         }],
         tick + 2,
@@ -22584,6 +22659,7 @@ fn group_goto_single_creature_delegates_to_normal() {
             action: SimAction::GroupGoTo {
                 creature_ids: vec![elf],
                 position: dest,
+                queue: false,
             },
         }],
         tick + 2,
@@ -22614,6 +22690,7 @@ fn group_attack_move_spreads_creatures() {
             action: SimAction::GroupAttackMove {
                 creature_ids: vec![elf_a, elf_b],
                 destination: dest,
+                queue: false,
             },
         }],
         tick + 2,
@@ -22655,6 +22732,7 @@ fn group_goto_empty_list_is_noop() {
             action: SimAction::GroupGoTo {
                 creature_ids: vec![],
                 position: dest,
+                queue: false,
             },
         }],
         tick + 2,
@@ -22694,6 +22772,7 @@ fn group_goto_skips_dead_creatures() {
             action: SimAction::GroupGoTo {
                 creature_ids: vec![elf_alive, elf_dead],
                 position: dest,
+                queue: false,
             },
         }],
         tick2 + 2,
@@ -22719,6 +22798,7 @@ fn group_goto_serialization_roundtrip() {
         action: SimAction::GroupGoTo {
             creature_ids: vec![CreatureId::new(&mut rng), CreatureId::new(&mut rng)],
             position: VoxelCoord::new(10, 1, 5),
+            queue: false,
         },
     };
 
@@ -22736,6 +22816,7 @@ fn group_attack_move_serialization_roundtrip() {
         action: SimAction::GroupAttackMove {
             creature_ids: vec![CreatureId::new(&mut rng), CreatureId::new(&mut rng)],
             destination: VoxelCoord::new(10, 1, 5),
+            queue: false,
         },
     };
 
@@ -22763,6 +22844,7 @@ fn abort_current_action_cancels_orphaned_activation_events() {
         action: SimAction::DirectedGoTo {
             creature_id: elf,
             position: target,
+            queue: false,
         },
     };
     sim.step(&[cmd], tick + 2);
@@ -23957,6 +24039,8 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
         required_species: None,
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     let near_task = crate::db::Task {
         id: near_task_id,
@@ -23968,6 +24052,8 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
         required_species: None,
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
 
     sim.db.tasks.insert_no_fk(far_task).unwrap();
@@ -24027,6 +24113,8 @@ fn find_available_task_single_candidate_skips_dijkstra() {
         required_species: None,
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.db.tasks.insert_no_fk(task).unwrap();
 
@@ -24083,6 +24171,8 @@ fn find_available_task_respects_species_filter_with_proximity() {
         required_species: Some(Species::Elf),
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.db.tasks.insert_no_fk(elf_task).unwrap();
 
@@ -24403,6 +24493,7 @@ fn should_flee_player_combat_override() {
         action: SimAction::AttackCreature {
             attacker_id: elf_id,
             target_id: goblin_id,
+            queue: false,
         },
     };
     sim.step(&[cmd], 1);
@@ -25060,6 +25151,7 @@ fn player_combat_task_overrides_flee() {
         action: SimAction::AttackCreature {
             attacker_id: elf_id,
             target_id: goblin_id,
+            queue: false,
         },
     };
     sim.step(&[cmd], sim.tick + 1);
@@ -25560,6 +25652,8 @@ fn aggressive_soldier_interrupts_low_priority_task_to_fight() {
         required_species: Some(Species::Elf),
         origin: task::TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(acquire_task);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
@@ -25643,6 +25737,8 @@ fn creature_does_not_freeze_after_combat_preempts_task() {
         required_species: Some(Species::Elf),
         origin: task::TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(acquire_task);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
@@ -25745,6 +25841,8 @@ fn defensive_elf_fights_instead_of_claiming_non_preemptable_task() {
         required_species: Some(Species::Elf),
         origin: task::TaskOrigin::PlayerDirected,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(goto_task);
 
@@ -26250,6 +26348,8 @@ fn defensive_elf_with_task_interrupts_to_shoot_troll_at_10_voxels() {
         required_species: Some(Species::Elf),
         origin: task::TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(acquire_task);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
@@ -28392,6 +28492,8 @@ fn acquire_item_auto_equips_one_from_multi_qty() {
         required_species: Some(Species::Elf),
         origin: TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(acquire_task);
     {
@@ -28575,6 +28677,8 @@ fn acquire_item_preserves_material() {
         required_species: Some(Species::Elf),
         origin: TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(acquire_task);
     {
@@ -28653,6 +28757,8 @@ fn acquire_item_auto_equips_clothing() {
         required_species: Some(Species::Elf),
         origin: TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(acquire_task);
     {
@@ -28738,6 +28844,8 @@ fn acquire_item_does_not_equip_if_slot_occupied() {
         required_species: Some(Species::Elf),
         origin: TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(acquire_task);
     {
@@ -29767,6 +29875,8 @@ fn position_blocks_friendly_archer_on_line() {
             required_species: Some(Species::Elf),
             origin: TaskOrigin::PlayerDirected,
             target_creature: Some(goblin),
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
         };
         sim.insert_task(task);
         if let Some(mut c) = sim.db.creatures.get(&archer) {
@@ -29882,6 +29992,7 @@ fn directed_goto_on_wandering_creature_does_not_schedule_extra_activation() {
             action: SimAction::DirectedGoTo {
                 creature_id: elf,
                 position: target,
+                queue: false,
             },
         }],
         tick + 1,
@@ -29931,6 +30042,7 @@ fn directed_goto_on_wandering_creature_preserves_move_action() {
             action: SimAction::DirectedGoTo {
                 creature_id: elf,
                 position: target,
+                queue: false,
             },
         }],
         tick + 1,
@@ -29990,6 +30102,7 @@ fn directed_goto_spam_does_not_accumulate_activations() {
             action: SimAction::DirectedGoTo {
                 creature_id: elf,
                 position: target_a,
+                queue: false,
             },
         }],
         tick + 2,
@@ -30027,6 +30140,7 @@ fn directed_goto_spam_does_not_accumulate_activations() {
                 action: SimAction::DirectedGoTo {
                     creature_id: elf,
                     position: target,
+                    queue: false,
                 },
             }],
             t + 1,
@@ -30082,6 +30196,7 @@ fn attack_move_on_wandering_creature_does_not_schedule_extra_activation() {
             action: SimAction::AttackMove {
                 creature_id: elf,
                 destination: target,
+                queue: false,
             },
         }],
         tick + 1,
@@ -30121,6 +30236,7 @@ fn attack_move_creature_reactivates_after_arriving_at_destination() {
         action: SimAction::AttackMove {
             creature_id: elf,
             destination: dest,
+            queue: false,
         },
     };
     // Run long enough for the elf to arrive.
@@ -30160,6 +30276,7 @@ fn attack_move_creature_wanders_after_arriving_at_destination() {
         action: SimAction::AttackMove {
             creature_id: elf,
             destination: dest,
+            queue: false,
         },
     };
     // Run long enough for the elf to arrive and complete.
@@ -30197,6 +30314,7 @@ fn attack_target_creature_reactivates_after_target_dies() {
         action: SimAction::AttackCreature {
             attacker_id: elf,
             target_id: goblin,
+            queue: false,
         },
     };
     sim.step(&[attack_cmd], tick + 2);
@@ -30249,6 +30367,7 @@ fn attack_target_creature_wanders_after_target_dies() {
         action: SimAction::AttackCreature {
             attacker_id: elf,
             target_id: goblin,
+            queue: false,
         },
     };
     sim.step(&[attack_cmd], tick + 2);
@@ -31262,6 +31381,7 @@ fn voxel_exclusion_attack_target_task_blocked_by_hostile() {
         action: SimAction::AttackCreature {
             attacker_id: elf,
             target_id: target_goblin,
+            queue: false,
         },
     };
     sim.step(&[cmd], tick + 2);
@@ -31309,6 +31429,7 @@ fn voxel_exclusion_attack_move_task_blocked_by_hostile() {
         action: SimAction::AttackMove {
             creature_id: elf,
             destination: dest_pos,
+            queue: false,
         },
     };
     sim.step(&[cmd], tick + 2);
@@ -32540,6 +32661,8 @@ fn soldier_acquires_military_equipment_no_ownership_change() {
         required_species: None,
         origin: TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(acquire_task);
     {
@@ -33315,6 +33438,8 @@ fn cleanup_acquire_military_equipment_clears_reservations() {
         required_species: None,
         origin: TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(task);
 
@@ -33369,6 +33494,8 @@ fn acquire_military_equipment_task_serde_roundtrip() {
         required_species: None,
         origin: TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
 
     let json = serde_json::to_string(&task).unwrap();
@@ -34377,6 +34504,8 @@ fn military_equipment_auto_equips_wearable_on_pickup() {
         required_species: None,
         origin: TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(acquire_task);
     {
@@ -34488,6 +34617,8 @@ fn military_equipment_auto_equip_displaces_existing_clothing() {
         required_species: None,
         origin: TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(acquire_task);
     {
@@ -34581,6 +34712,8 @@ fn military_equipment_non_wearable_not_equipped() {
         required_species: None,
         origin: TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(acquire_task);
     {
@@ -35653,6 +35786,8 @@ fn nonmagical_creature_cannot_claim_build_task() {
         required_species: None,
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(task);
 
@@ -35692,6 +35827,8 @@ fn elf_with_no_mana_skips_build_task() {
         required_species: Some(Species::Elf),
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(task);
 
@@ -35814,6 +35951,8 @@ fn try_drain_mana_exact_boundary() {
         required_species: Some(Species::Elf),
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(task);
     let mut elf = sim.db.creatures.get(&elf_id).unwrap();
@@ -35847,6 +35986,8 @@ fn nonmagical_creature_cannot_claim_furnish_task() {
         required_species: None,
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(task);
 
@@ -35943,6 +36084,8 @@ fn cleanup_early_exit_resets_wasted_action_count() {
         required_species: Some(Species::Elf),
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(task);
     let mut elf = sim.db.creatures.get(&elf_id).unwrap();
@@ -36031,6 +36174,8 @@ fn mana_wasted_position_recorded_on_failed_drain() {
         required_species: Some(Species::Elf),
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(task);
     let mut elf = sim.db.creatures.get(&elf_id).unwrap();
@@ -36080,6 +36225,8 @@ fn successful_drain_does_not_record_position() {
         required_species: Some(Species::Elf),
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(task);
     let mut elf = sim.db.creatures.get(&elf_id).unwrap();
@@ -38356,6 +38503,7 @@ fn attack_target_spear_stops_at_extended_range() {
         action: SimAction::AttackCreature {
             attacker_id: elf,
             target_id: goblin,
+            queue: false,
         },
     };
     sim.step(&[cmd], tick + 2);
@@ -39050,6 +39198,7 @@ fn ordered_elf_vs_hornet_at_heights() {
             action: SimAction::AttackCreature {
                 attacker_id: elf_id,
                 target_id: hornet_id,
+                queue: false,
             },
         };
         sim.step(&[cmd], tick + 8000);
@@ -39498,6 +39647,8 @@ fn creature_gravity_clears_task_and_path() {
         required_species: None,
         origin: TaskOrigin::PlayerDirected,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(fake_task);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
@@ -40117,6 +40268,8 @@ fn incapacitated_creature_not_assigned_available_tasks() {
         required_species: Some(Species::Elf),
         origin: task::TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(go_task);
 
@@ -40495,6 +40648,7 @@ fn attack_target_continues_through_incapacitation_to_death() {
             action: SimAction::AttackCreature {
                 attacker_id: goblin,
                 target_id: elf,
+                queue: false,
             },
         }],
         tick + 1,
@@ -40662,7 +40816,7 @@ fn arrow_chase_does_not_preempt_player_combat() {
     // Give the goblin a player-directed AttackMove.
     let player_dest = VoxelCoord::new(goblin_pos.x + 5, goblin_pos.y, goblin_pos.z);
     let mut events = Vec::new();
-    sim.command_attack_move(goblin, player_dest, &mut events);
+    sim.command_attack_move(goblin, player_dest, false, &mut events);
 
     let task_before = sim.db.creatures.get(&goblin).unwrap().current_task.unwrap();
 
@@ -40794,6 +40948,8 @@ fn arrow_chase_preempts_autonomous_task() {
         required_species: Some(Species::Goblin),
         origin: crate::task::TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(goto_task);
     if let Some(mut c) = sim.db.creatures.get(&goblin) {
@@ -40872,6 +41028,7 @@ fn flying_creature_directed_goto_creates_task() {
         action: SimAction::DirectedGoTo {
             creature_id: hornet,
             position: target,
+            queue: false,
         },
     };
     sim.step(&[cmd], tick + 2);
@@ -40911,6 +41068,7 @@ fn flying_creature_goto_reaches_destination() {
         action: SimAction::DirectedGoTo {
             creature_id: hornet,
             position: target,
+            queue: false,
         },
     };
     sim.step(&[cmd], tick + 2);
@@ -40953,6 +41111,7 @@ fn flying_creature_attack_move_creates_task() {
         action: SimAction::AttackMove {
             creature_id: hornet,
             destination: dest,
+            queue: false,
         },
     };
     sim.step(&[cmd], tick + 2);
@@ -40991,6 +41150,7 @@ fn flying_creature_attack_move_reaches_destination() {
         action: SimAction::AttackMove {
             creature_id: hornet,
             destination: dest,
+            queue: false,
         },
     };
     sim.step(&[cmd], tick + 2);
@@ -41055,6 +41215,7 @@ fn flying_creature_autonomous_combat_preempts_task() {
         action: SimAction::DirectedGoTo {
             creature_id: hornet,
             position: dest,
+            queue: false,
         },
     };
     sim.step(&[cmd], tick + 2);
@@ -41102,6 +41263,8 @@ fn find_available_task_works_for_flying_creature() {
         required_species: Some(Species::Hornet),
         origin: task::TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(task);
 
@@ -41172,6 +41335,8 @@ fn flying_creature_walk_toward_task_unreachable_unassigns() {
         required_species: Some(Species::Hornet),
         origin: task::TaskOrigin::PlayerDirected,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(task);
     sim.claim_task(hornet, task_id);
@@ -41211,6 +41376,7 @@ fn flying_creature_attack_move_engages_hostile_en_route() {
         action: SimAction::AttackMove {
             creature_id: hornet,
             destination: dest,
+            queue: false,
         },
     };
     sim.step(&[cmd], tick + 2);
@@ -41254,6 +41420,8 @@ fn flying_creature_find_available_task_nearest_by_euclidean() {
         required_species: Some(Species::Hornet),
         origin: task::TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(near_task);
 
@@ -41268,6 +41436,8 @@ fn flying_creature_find_available_task_nearest_by_euclidean() {
         required_species: Some(Species::Hornet),
         origin: task::TaskOrigin::Autonomous,
         target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
     };
     sim.insert_task(far_task);
 
@@ -41348,6 +41518,7 @@ fn flying_creature_directed_goto_mid_move_defers() {
         action: SimAction::DirectedGoTo {
             creature_id: hornet,
             position: target,
+            queue: false,
         },
     };
     sim.step(&[cmd], tick + 2);
@@ -41403,5 +41574,1086 @@ fn flying_creature_pursue_closest_target() {
     assert_ne!(
         new_pos, hornet_pos,
         "Hornet should have moved toward target"
+    );
+}
+
+// ---- Command queue (F-command-queue) ----
+
+#[test]
+fn find_available_task_skips_task_restricted_to_other_creature() {
+    let mut sim = test_sim(42);
+    let elf_a = spawn_elf(&mut sim);
+    let elf_b = spawn_elf(&mut sim);
+
+    // Create a task restricted to elf_a at a reachable location.
+    let task_id = TaskId::new(&mut sim.rng);
+    let task_pos = VoxelCoord::new(10, 1, 10);
+    let task = Task {
+        id: task_id,
+        kind: TaskKind::GoTo,
+        state: TaskState::Available,
+        location: task_pos,
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+        restrict_to_creature_id: Some(elf_a),
+        prerequisite_task_id: None,
+    };
+    sim.insert_task(task);
+
+    // elf_b should NOT find this task.
+    assert!(
+        sim.find_available_task(elf_b).is_none(),
+        "Task restricted to elf_a should not be found by elf_b"
+    );
+    // elf_a SHOULD find it.
+    assert_eq!(
+        sim.find_available_task(elf_a),
+        Some(task_id),
+        "Task restricted to elf_a should be found by elf_a"
+    );
+}
+
+#[test]
+fn find_available_task_skips_incomplete_prerequisite() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+
+    // Create prerequisite task A (Available, not Complete).
+    let task_a_id = TaskId::new(&mut sim.rng);
+    let task_pos = VoxelCoord::new(10, 1, 10);
+    let task_a = Task {
+        id: task_a_id,
+        kind: TaskKind::GoTo,
+        state: TaskState::Available,
+        location: task_pos,
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+        restrict_to_creature_id: Some(elf_id),
+        prerequisite_task_id: None,
+    };
+    sim.insert_task(task_a);
+
+    // Create dependent task B with prerequisite = A.
+    let task_b_id = TaskId::new(&mut sim.rng);
+    let task_b_pos = VoxelCoord::new(20, 1, 20);
+    let task_b = Task {
+        id: task_b_id,
+        kind: TaskKind::GoTo,
+        state: TaskState::Available,
+        location: task_b_pos,
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+        restrict_to_creature_id: Some(elf_id),
+        prerequisite_task_id: Some(task_a_id),
+    };
+    sim.insert_task(task_b);
+
+    // Only task A should be found (B's prerequisite is not complete).
+    assert_eq!(
+        sim.find_available_task(elf_id),
+        Some(task_a_id),
+        "Should find task A (no prerequisite), not B (prerequisite incomplete)"
+    );
+
+    // Complete task A.
+    if let Some(mut t) = sim.db.tasks.get(&task_a_id) {
+        t.state = TaskState::Complete;
+        let _ = sim.db.tasks.update_no_fk(t);
+    }
+
+    // Now task B should be found.
+    assert_eq!(
+        sim.find_available_task(elf_id),
+        Some(task_b_id),
+        "After prerequisite completes, task B should be available"
+    );
+}
+
+#[test]
+fn cancel_creature_queue_cancels_entire_chain() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+
+    // Create a chain: A -> B -> C (B depends on A, C depends on B).
+    let task_a_id = TaskId::new(&mut sim.rng);
+    let pos = VoxelCoord::new(10, 1, 10);
+    sim.insert_task(Task {
+        id: task_a_id,
+        kind: TaskKind::GoTo,
+        state: TaskState::InProgress,
+        location: pos,
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+        restrict_to_creature_id: Some(elf_id),
+        prerequisite_task_id: None,
+    });
+    // Assign A to the elf.
+    if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+        c.current_task = Some(task_a_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let task_b_id = TaskId::new(&mut sim.rng);
+    sim.insert_task(Task {
+        id: task_b_id,
+        kind: TaskKind::GoTo,
+        state: TaskState::Available,
+        location: VoxelCoord::new(20, 1, 20),
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+        restrict_to_creature_id: Some(elf_id),
+        prerequisite_task_id: Some(task_a_id),
+    });
+
+    let task_c_id = TaskId::new(&mut sim.rng);
+    sim.insert_task(Task {
+        id: task_c_id,
+        kind: TaskKind::GoTo,
+        state: TaskState::Available,
+        location: VoxelCoord::new(30, 1, 30),
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+        restrict_to_creature_id: Some(elf_id),
+        prerequisite_task_id: Some(task_b_id),
+    });
+
+    // Cancel the queue via cancel_creature_queue (simulates unshifted player
+    // command replacing the queue).
+    sim.cancel_creature_queue(elf_id);
+
+    // B and C should both be Complete (queue cancellation).
+    let task_b = sim.db.tasks.get(&task_b_id).unwrap();
+    assert_eq!(
+        task_b.state,
+        TaskState::Complete,
+        "Dependent task B should be cancelled (Complete)"
+    );
+    let task_c = sim.db.tasks.get(&task_c_id).unwrap();
+    assert_eq!(
+        task_c.state,
+        TaskState::Complete,
+        "Transitive dependent task C should be cancelled (Complete)"
+    );
+}
+
+#[test]
+fn cancel_creature_queue_only_cancels_player_directed() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+
+    // Create a player-directed queued task.
+    let pd_task_id = TaskId::new(&mut sim.rng);
+    let pos = VoxelCoord::new(10, 1, 10);
+    sim.insert_task(Task {
+        id: pd_task_id,
+        kind: TaskKind::GoTo,
+        state: TaskState::Available,
+        location: pos,
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+        restrict_to_creature_id: Some(elf_id),
+        prerequisite_task_id: None,
+    });
+
+    // Create an autonomous restricted task (should survive cancellation).
+    let auto_task_id = TaskId::new(&mut sim.rng);
+    sim.insert_task(Task {
+        id: auto_task_id,
+        kind: TaskKind::GoTo,
+        state: TaskState::Available,
+        location: VoxelCoord::new(20, 1, 20),
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::Autonomous,
+        target_creature: None,
+        restrict_to_creature_id: Some(elf_id),
+        prerequisite_task_id: None,
+    });
+
+    // Cancel the creature's player-directed queue.
+    sim.cancel_creature_queue(elf_id);
+
+    let pd_task = sim.db.tasks.get(&pd_task_id).unwrap();
+    assert_eq!(
+        pd_task.state,
+        TaskState::Complete,
+        "Player-directed queued task should be cancelled"
+    );
+    let auto_task = sim.db.tasks.get(&auto_task_id).unwrap();
+    assert_eq!(
+        auto_task.state,
+        TaskState::Available,
+        "Autonomous restricted task should NOT be cancelled"
+    );
+}
+
+#[test]
+fn queue_directed_goto_creates_linked_task() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+
+    // Issue a non-queued DirectedGoTo first to give the elf a current task.
+    let pos_a = VoxelCoord::new(10, 1, 10);
+    let cmd_a = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: pos_a,
+            queue: false,
+        },
+    };
+    sim.step(&[cmd_a], sim.tick + 2);
+    let task_a = sim.db.creatures.get(&elf).unwrap().current_task.unwrap();
+
+    // Now issue a queued DirectedGoTo.
+    let pos_b = VoxelCoord::new(20, 1, 20);
+    let cmd_b = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: pos_b,
+            queue: true,
+        },
+    };
+    sim.step(&[cmd_b], sim.tick + 2);
+
+    // The elf's current task should still be task_a.
+    let creature = sim.db.creatures.get(&elf).unwrap();
+    assert_eq!(
+        creature.current_task,
+        Some(task_a),
+        "Current task should remain A"
+    );
+
+    // There should be a new queued task with restrict_to_creature_id and prerequisite.
+    let queued: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.restrict_to_creature_id == Some(elf) && t.prerequisite_task_id.is_some())
+        .collect();
+    assert_eq!(queued.len(), 1, "Should have exactly one queued task");
+    let task_b = &queued[0];
+    assert_eq!(task_b.prerequisite_task_id, Some(task_a));
+    assert_eq!(task_b.state, TaskState::Available);
+    assert_eq!(task_b.location, pos_b);
+}
+
+#[test]
+fn unshifted_command_cancels_queue() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+
+    // Issue a non-queued GoTo to give the elf a task.
+    let pos_a = VoxelCoord::new(10, 1, 10);
+    let cmd_a = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: pos_a,
+            queue: false,
+        },
+    };
+    sim.step(&[cmd_a], sim.tick + 2);
+
+    // Queue two more commands.
+    let pos_b = VoxelCoord::new(20, 1, 20);
+    let pos_c = VoxelCoord::new(30, 1, 30);
+    let cmd_b = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: pos_b,
+            queue: true,
+        },
+    };
+    let cmd_c = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 2,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: pos_c,
+            queue: true,
+        },
+    };
+    sim.step(&[cmd_b, cmd_c], sim.tick + 3);
+
+    // Verify we have queued tasks.
+    let queued_count = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.restrict_to_creature_id == Some(elf) && t.state != TaskState::Complete)
+        .count();
+    assert!(queued_count >= 2, "Should have at least 2 queued tasks");
+
+    // Now issue an unshifted command — should cancel the queue.
+    let pos_d = VoxelCoord::new(40, 1, 40);
+    let cmd_d = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: pos_d,
+            queue: false,
+        },
+    };
+    sim.step(&[cmd_d], sim.tick + 2);
+
+    // All previously queued tasks should be Complete.
+    let remaining = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.restrict_to_creature_id == Some(elf) && t.state != TaskState::Complete)
+        .count();
+    assert_eq!(
+        remaining, 0,
+        "All queued tasks should be cancelled after unshifted command"
+    );
+}
+
+#[test]
+fn find_queue_tail_follows_chain() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+
+    // Issue initial command + two queued commands.
+    let pos_a = VoxelCoord::new(10, 1, 10);
+    let cmd_a = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: pos_a,
+            queue: false,
+        },
+    };
+    sim.step(&[cmd_a], sim.tick + 2);
+
+    let pos_b = VoxelCoord::new(20, 1, 20);
+    let cmd_b = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: pos_b,
+            queue: true,
+        },
+    };
+    sim.step(&[cmd_b], sim.tick + 2);
+
+    let pos_c = VoxelCoord::new(30, 1, 30);
+    let cmd_c = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: pos_c,
+            queue: true,
+        },
+    };
+    sim.step(&[cmd_c], sim.tick + 2);
+
+    // find_queue_tail should return the last task (at pos_c).
+    let tail_id = sim.find_queue_tail(elf).unwrap();
+    let tail_task = sim.db.tasks.get(&tail_id).unwrap();
+    assert_eq!(
+        tail_task.location, pos_c,
+        "Tail should be the last queued task"
+    );
+}
+
+#[test]
+fn queue_completion_flows_to_next_task() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+
+    // Get the elf's position for nearby GoTo commands.
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+
+    // Issue a GoTo to a nearby position.
+    let pos_a = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    let cmd_a = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: pos_a,
+            queue: false,
+        },
+    };
+    sim.step(&[cmd_a], sim.tick + 2);
+
+    let task_a = sim.db.creatures.get(&elf).unwrap().current_task.unwrap();
+
+    // Queue a second GoTo.
+    let pos_b = VoxelCoord::new(elf_pos.x + 2, elf_pos.y, elf_pos.z);
+    let cmd_b = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: pos_b,
+            queue: true,
+        },
+    };
+    sim.step(&[cmd_b], sim.tick + 2);
+
+    // Find the queued task B.
+    let task_b_id = sim
+        .db
+        .tasks
+        .iter_all()
+        .find(|t| t.prerequisite_task_id == Some(task_a))
+        .unwrap()
+        .id;
+
+    // Run the sim long enough for task A to complete and B to be picked up.
+    sim.step(&[], sim.tick + 50_000);
+
+    // Task A should be complete.
+    let task_a_state = sim.db.tasks.get(&task_a).unwrap().state;
+    assert_eq!(
+        task_a_state,
+        TaskState::Complete,
+        "Task A should be complete"
+    );
+
+    // Task B should have been picked up (InProgress or Complete).
+    let task_b = sim.db.tasks.get(&task_b_id).unwrap();
+    assert!(
+        task_b.state == TaskState::InProgress || task_b.state == TaskState::Complete,
+        "Task B should have been claimed after A completed, but state is {:?}",
+        task_b.state
+    );
+}
+
+#[test]
+fn creature_death_cancels_queued_tasks() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+
+    // Issue a GoTo and queue a second one.
+    let pos_a = VoxelCoord::new(10, 1, 10);
+    let cmd_a = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: pos_a,
+            queue: false,
+        },
+    };
+    sim.step(&[cmd_a], sim.tick + 2);
+
+    let pos_b = VoxelCoord::new(20, 1, 20);
+    let cmd_b = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: pos_b,
+            queue: true,
+        },
+    };
+    sim.step(&[cmd_b], sim.tick + 2);
+
+    // Verify we have a queued task.
+    let queued_before = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.restrict_to_creature_id == Some(elf) && t.state != TaskState::Complete)
+        .count();
+    assert!(queued_before >= 1, "Should have queued tasks before death");
+
+    // Kill the elf.
+    let mut events = Vec::new();
+    sim.handle_creature_death(elf, crate::types::DeathCause::Debug, &mut events);
+
+    // All tasks restricted to this creature should be Complete.
+    let queued_after = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.restrict_to_creature_id == Some(elf) && t.state != TaskState::Complete)
+        .count();
+    assert_eq!(
+        queued_after, 0,
+        "All queued tasks should be cancelled after creature death"
+    );
+}
+
+#[test]
+fn queue_on_idle_creature_falls_through_to_immediate() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+
+    // Ensure elf has no current task.
+    assert!(sim.db.creatures.get(&elf).unwrap().current_task.is_none());
+
+    // Send queue=true GoTo to the idle elf.
+    let pos = VoxelCoord::new(10, 1, 10);
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: pos,
+            queue: true,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+
+    // The elf should have a task immediately assigned (InProgress, not Available).
+    let creature = sim.db.creatures.get(&elf).unwrap();
+    assert!(
+        creature.current_task.is_some(),
+        "Queue on idle creature should assign task immediately"
+    );
+    let task = sim.db.tasks.get(&creature.current_task.unwrap()).unwrap();
+    assert_eq!(
+        task.state,
+        TaskState::InProgress,
+        "Task should be InProgress (immediate assignment), not Available"
+    );
+}
+
+#[test]
+fn queue_attack_move_creates_linked_task_with_extension_data() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+
+    // Issue a non-queued GoTo first.
+    let pos_a = VoxelCoord::new(10, 1, 10);
+    let cmd_a = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: pos_a,
+            queue: false,
+        },
+    };
+    sim.step(&[cmd_a], sim.tick + 2);
+    let task_a = sim.db.creatures.get(&elf).unwrap().current_task.unwrap();
+
+    // Queue an AttackMove.
+    let dest = VoxelCoord::new(20, 1, 20);
+    let cmd_b = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::AttackMove {
+            creature_id: elf,
+            destination: dest,
+            queue: true,
+        },
+    };
+    sim.step(&[cmd_b], sim.tick + 2);
+
+    // Find the queued AttackMove task.
+    let queued: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| {
+            t.restrict_to_creature_id == Some(elf)
+                && t.prerequisite_task_id == Some(task_a)
+                && t.kind_tag == crate::db::TaskKindTag::AttackMove
+        })
+        .collect();
+    assert_eq!(queued.len(), 1, "Should have one queued AttackMove task");
+    let queued_task = &queued[0];
+    assert_eq!(queued_task.state, TaskState::Available);
+
+    // Verify extension data exists.
+    let ext = sim.db.task_attack_move_data.get(&queued_task.id);
+    assert!(
+        ext.is_some(),
+        "Queued AttackMove should have TaskAttackMoveData extension row"
+    );
+    assert_eq!(ext.unwrap().destination, dest);
+}
+
+#[test]
+fn deleted_prerequisite_unblocks_dependent_task() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+
+    // Create prerequisite task A.
+    let task_a_id = TaskId::new(&mut sim.rng);
+    let pos = VoxelCoord::new(10, 1, 10);
+    sim.insert_task(Task {
+        id: task_a_id,
+        kind: TaskKind::GoTo,
+        state: TaskState::Available,
+        location: pos,
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+        restrict_to_creature_id: Some(elf),
+        prerequisite_task_id: None,
+    });
+
+    // Create dependent task B.
+    let task_b_id = TaskId::new(&mut sim.rng);
+    sim.insert_task(Task {
+        id: task_b_id,
+        kind: TaskKind::GoTo,
+        state: TaskState::Available,
+        location: VoxelCoord::new(20, 1, 20),
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+        restrict_to_creature_id: Some(elf),
+        prerequisite_task_id: Some(task_a_id),
+    });
+
+    // Delete the prerequisite task entirely (simulates DB compaction/pruning).
+    let _ = sim.db.tasks.remove_no_fk(&task_a_id);
+
+    // Task B should now be available (missing prerequisite treated as complete).
+    assert_eq!(
+        sim.find_available_task(elf),
+        Some(task_b_id),
+        "Dependent task should become available when prerequisite is deleted"
+    );
+}
+
+#[test]
+fn queue_attack_creature_creates_linked_task() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+
+    // Issue a GoTo to give the elf a current task.
+    let pos_a = VoxelCoord::new(10, 1, 10);
+    let cmd_a = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: pos_a,
+            queue: false,
+        },
+    };
+    sim.step(&[cmd_a], sim.tick + 2);
+    let task_a = sim.db.creatures.get(&elf).unwrap().current_task.unwrap();
+
+    // Spawn a goblin target via debug raid (simplest way to get a hostile).
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let goblin_pos = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+    let goblin_cmd = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Goblin,
+            position: goblin_pos,
+        },
+    };
+    sim.step(&[goblin_cmd], sim.tick + 2);
+    let goblin = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Goblin)
+        .unwrap()
+        .id;
+
+    // Queue an AttackCreature command.
+    let cmd_b = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::AttackCreature {
+            attacker_id: elf,
+            target_id: goblin,
+            queue: true,
+        },
+    };
+    sim.step(&[cmd_b], sim.tick + 2);
+
+    // Elf's current task should still be task_a.
+    assert_eq!(
+        sim.db.creatures.get(&elf).unwrap().current_task,
+        Some(task_a),
+        "Current task should remain the GoTo"
+    );
+
+    // Find the queued AttackTarget task.
+    let queued: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| {
+            t.restrict_to_creature_id == Some(elf)
+                && t.prerequisite_task_id == Some(task_a)
+                && t.kind_tag == crate::db::TaskKindTag::AttackTarget
+        })
+        .collect();
+    assert_eq!(queued.len(), 1, "Should have one queued AttackTarget task");
+    assert_eq!(queued[0].state, TaskState::Available);
+    assert_eq!(queued[0].target_creature, Some(goblin));
+}
+
+#[test]
+fn sim_action_queue_serde_roundtrip() {
+    let mut rng = crate::prng::GameRng::new(42);
+
+    // DirectedGoTo with queue: true
+    let cmd = SimCommand {
+        player_name: "p".to_string(),
+        tick: 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: CreatureId::new(&mut rng),
+            position: VoxelCoord::new(5, 1, 5),
+            queue: true,
+        },
+    };
+    let json = serde_json::to_string(&cmd).unwrap();
+    let restored: SimCommand = serde_json::from_str(&json).unwrap();
+    assert_eq!(json, serde_json::to_string(&restored).unwrap());
+
+    // AttackMove with queue: true
+    let cmd2 = SimCommand {
+        player_name: "p".to_string(),
+        tick: 2,
+        action: SimAction::AttackMove {
+            creature_id: CreatureId::new(&mut rng),
+            destination: VoxelCoord::new(10, 1, 10),
+            queue: true,
+        },
+    };
+    let json2 = serde_json::to_string(&cmd2).unwrap();
+    let restored2: SimCommand = serde_json::from_str(&json2).unwrap();
+    assert_eq!(json2, serde_json::to_string(&restored2).unwrap());
+
+    // AttackCreature with queue: true
+    let cmd3 = SimCommand {
+        player_name: "p".to_string(),
+        tick: 3,
+        action: SimAction::AttackCreature {
+            attacker_id: CreatureId::new(&mut rng),
+            target_id: CreatureId::new(&mut rng),
+            queue: true,
+        },
+    };
+    let json3 = serde_json::to_string(&cmd3).unwrap();
+    let restored3: SimCommand = serde_json::from_str(&json3).unwrap();
+    assert_eq!(json3, serde_json::to_string(&restored3).unwrap());
+}
+
+#[test]
+fn sim_action_queue_backward_compat() {
+    // Old-format JSON without queue field should deserialize with queue: false.
+    let json = r#"{"player_name":"p","tick":1,"action":{"DirectedGoTo":{"creature_id":"00000000-0000-0000-0000-000000000001","position":[5,1,5]}}}"#;
+    let cmd: SimCommand = serde_json::from_str(json).unwrap();
+    match &cmd.action {
+        SimAction::DirectedGoTo { queue, .. } => assert!(!queue, "queue should default to false"),
+        other => panic!("Expected DirectedGoTo, got {:?}", other),
+    }
+}
+
+#[test]
+fn two_queue_commands_same_tick_form_linear_chain() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+
+    // Give elf a current task.
+    let pos_a = VoxelCoord::new(10, 1, 10);
+    let cmd_a = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: pos_a,
+            queue: false,
+        },
+    };
+    sim.step(&[cmd_a], sim.tick + 2);
+    let task_a = sim.db.creatures.get(&elf).unwrap().current_task.unwrap();
+
+    // Issue two queue commands in the same tick.
+    let pos_b = VoxelCoord::new(20, 1, 20);
+    let pos_c = VoxelCoord::new(30, 1, 30);
+    let cmd_b = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: pos_b,
+            queue: true,
+        },
+    };
+    let cmd_c = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1, // same tick as cmd_b
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: pos_c,
+            queue: true,
+        },
+    };
+    sim.step(&[cmd_b, cmd_c], sim.tick + 2);
+
+    // Verify the chain is linear: A -> B -> C (no forks).
+    // Each task should have at most one non-Complete dependent.
+    let queued: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.restrict_to_creature_id == Some(elf))
+        .collect();
+    assert_eq!(queued.len(), 2, "Should have exactly 2 queued tasks");
+
+    // One should have prerequisite = task_a, the other should chain off it.
+    let task_b = queued
+        .iter()
+        .find(|t| t.prerequisite_task_id == Some(task_a));
+    assert!(task_b.is_some(), "One queued task should depend on task A");
+    let task_b_id = task_b.unwrap().id;
+
+    let task_c = queued
+        .iter()
+        .find(|t| t.prerequisite_task_id == Some(task_b_id));
+    assert!(
+        task_c.is_some(),
+        "Second queued task should depend on first queued task (linear chain)"
+    );
+}
+
+#[test]
+fn find_queue_tail_terminates_on_cycle() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+
+    // Create two tasks that form a prerequisite cycle (corrupted data).
+    let task_a_id = TaskId::new(&mut sim.rng);
+    let task_b_id = TaskId::new(&mut sim.rng);
+    let pos = VoxelCoord::new(10, 1, 10);
+
+    sim.insert_task(Task {
+        id: task_a_id,
+        kind: TaskKind::GoTo,
+        state: TaskState::Available,
+        location: pos,
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+        restrict_to_creature_id: Some(elf),
+        prerequisite_task_id: Some(task_b_id),
+    });
+    sim.insert_task(Task {
+        id: task_b_id,
+        kind: TaskKind::GoTo,
+        state: TaskState::Available,
+        location: pos,
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+        restrict_to_creature_id: Some(elf),
+        prerequisite_task_id: Some(task_a_id),
+    });
+
+    // Set the elf's current_task to task_a to start the chain.
+    if let Some(mut c) = sim.db.creatures.get(&elf) {
+        c.current_task = Some(task_a_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // find_queue_tail should terminate (return None due to cycle guard),
+    // not loop forever.
+    let result = sim.find_queue_tail(elf);
+    assert_eq!(
+        result, None,
+        "find_queue_tail should return None on a cyclic chain"
+    );
+}
+
+#[test]
+fn flee_interrupt_preserves_command_queue() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+
+    // Issue a GoTo and queue a second one.
+    let pos_a = VoxelCoord::new(10, 1, 10);
+    let cmd_a = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: pos_a,
+            queue: false,
+        },
+    };
+    sim.step(&[cmd_a], sim.tick + 2);
+    let task_a = sim.db.creatures.get(&elf).unwrap().current_task.unwrap();
+
+    let pos_b = VoxelCoord::new(20, 1, 20);
+    let cmd_b = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: pos_b,
+            queue: true,
+        },
+    };
+    sim.step(&[cmd_b], sim.tick + 2);
+
+    // Find the queued task B.
+    let task_b_id = sim
+        .db
+        .tasks
+        .iter_all()
+        .find(|t| t.prerequisite_task_id == Some(task_a))
+        .unwrap()
+        .id;
+
+    // Simulate flee interruption: interrupt the current task as flee does.
+    sim.interrupt_task(elf, task_a);
+
+    // The queued task B should survive (Available, not Complete).
+    let task_b = sim.db.tasks.get(&task_b_id).unwrap();
+    assert_eq!(
+        task_b.state,
+        TaskState::Available,
+        "Queued task should survive autonomous interruption (flee)"
+    );
+
+    // The interrupted task A should be Complete (GoTo is non-resumable).
+    let task_a_state = sim.db.tasks.get(&task_a).unwrap().state;
+    assert_eq!(task_a_state, TaskState::Complete);
+
+    // Since task A is Complete (the prerequisite), task B's prerequisite is
+    // satisfied. The creature should be able to pick it up.
+    let found = sim.find_available_task(elf);
+    assert_eq!(
+        found,
+        Some(task_b_id),
+        "After flee interrupt, queued task B should be available (prerequisite A is Complete)"
+    );
+}
+
+#[test]
+fn shift_click_during_flee_preserves_and_extends_queue() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+
+    // Issue GoTo A + queue GoTo B.
+    let pos_a = VoxelCoord::new(10, 1, 10);
+    let cmd_a = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: pos_a,
+            queue: false,
+        },
+    };
+    sim.step(&[cmd_a], sim.tick + 2);
+    let task_a = sim.db.creatures.get(&elf).unwrap().current_task.unwrap();
+
+    let pos_b = VoxelCoord::new(20, 1, 20);
+    let cmd_b = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: pos_b,
+            queue: true,
+        },
+    };
+    sim.step(&[cmd_b], sim.tick + 2);
+
+    let task_b_id = sim
+        .db
+        .tasks
+        .iter_all()
+        .find(|t| t.prerequisite_task_id == Some(task_a))
+        .unwrap()
+        .id;
+
+    // Simulate flee: interrupt the current task (sets current_task = None).
+    sim.interrupt_task(elf, task_a);
+    assert!(
+        sim.db.creatures.get(&elf).unwrap().current_task.is_none(),
+        "After flee interrupt, creature should have no current task"
+    );
+
+    // Now shift-click GoTo C while the creature is "fleeing" (no current_task).
+    let pos_c = VoxelCoord::new(30, 1, 30);
+    let cmd_c = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: pos_c,
+            queue: true,
+        },
+    };
+    sim.step(&[cmd_c], sim.tick + 2);
+
+    // Task B should still be Available (NOT wiped by cancel_creature_queue).
+    let task_b = sim.db.tasks.get(&task_b_id).unwrap();
+    assert_eq!(
+        task_b.state,
+        TaskState::Available,
+        "Surviving queued task B should not be wiped by shift-click during flee"
+    );
+
+    // There should be a new task C appended after B in the chain.
+    let queued: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.restrict_to_creature_id == Some(elf) && t.state != TaskState::Complete)
+        .collect();
+    assert!(
+        queued.len() >= 2,
+        "Should have at least 2 queued tasks (B and C), got {}",
+        queued.len()
+    );
+
+    // C should chain off B (not off the interrupted task A).
+    let task_c = queued
+        .iter()
+        .find(|t| t.prerequisite_task_id == Some(task_b_id));
+    assert!(
+        task_c.is_some(),
+        "New shift-click task C should chain off surviving task B"
     );
 }

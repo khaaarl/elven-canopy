@@ -373,6 +373,8 @@ impl SimState {
                 required_species: recipe.required_species(),
                 origin: task::TaskOrigin::Automated,
                 target_creature: None,
+                restrict_to_creature_id: None,
+                prerequisite_task_id: None,
             };
             self.insert_task(new_task);
 

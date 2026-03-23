@@ -1176,13 +1176,14 @@ impl SimBridge {
     /// Send a specific creature to a location. Creates a GoTo task and
     /// immediately assigns it, preempting lower-priority tasks.
     #[func]
-    fn directed_goto(&mut self, creature_uuid: GString, x: i32, y: i32, z: i32) {
+    fn directed_goto(&mut self, creature_uuid: GString, x: i32, y: i32, z: i32, queue: bool) {
         let Some(creature_id) = parse_creature_id(&creature_uuid.to_string()) else {
             return;
         };
         self.apply_or_send(SimAction::DirectedGoTo {
             creature_id,
             position: VoxelCoord::new(x, y, z),
+            queue,
         });
     }
 
@@ -1190,13 +1191,14 @@ impl SimBridge {
     /// toward the destination, engaging any hostiles detected en route.
     /// Creates an AttackMove task with PlayerCombat preemption.
     #[func]
-    fn attack_move(&mut self, creature_uuid: GString, x: i32, y: i32, z: i32) {
+    fn attack_move(&mut self, creature_uuid: GString, x: i32, y: i32, z: i32, queue: bool) {
         let Some(creature_id) = parse_creature_id(&creature_uuid.to_string()) else {
             return;
         };
         self.apply_or_send(SimAction::AttackMove {
             creature_id,
             destination: VoxelCoord::new(x, y, z),
+            queue,
         });
     }
 
@@ -1205,7 +1207,14 @@ impl SimBridge {
     /// UUID strings (GDScript arrays are untyped by default, so we must accept
     /// `VarArray` and convert each element).
     #[func]
-    fn group_directed_goto(&mut self, creature_uuids: VarArray, x: i32, y: i32, z: i32) {
+    fn group_directed_goto(
+        &mut self,
+        creature_uuids: VarArray,
+        x: i32,
+        y: i32,
+        z: i32,
+        queue: bool,
+    ) {
         let creature_ids: Vec<CreatureId> = creature_uuids
             .iter_shared()
             .filter_map(|v| parse_creature_id(&v.to_string()))
@@ -1216,6 +1225,7 @@ impl SimBridge {
         self.apply_or_send(SimAction::GroupGoTo {
             creature_ids,
             position: VoxelCoord::new(x, y, z),
+            queue,
         });
     }
 
@@ -1223,7 +1233,7 @@ impl SimBridge {
     /// around the destination. `creature_uuids` is an untyped GDScript `Array`
     /// of UUID strings.
     #[func]
-    fn group_attack_move(&mut self, creature_uuids: VarArray, x: i32, y: i32, z: i32) {
+    fn group_attack_move(&mut self, creature_uuids: VarArray, x: i32, y: i32, z: i32, queue: bool) {
         let creature_ids: Vec<CreatureId> = creature_uuids
             .iter_shared()
             .filter_map(|v| parse_creature_id(&v.to_string()))
@@ -1234,13 +1244,14 @@ impl SimBridge {
         self.apply_or_send(SimAction::GroupAttackMove {
             creature_ids,
             destination: VoxelCoord::new(x, y, z),
+            queue,
         });
     }
 
     /// Order a creature to attack a target creature. Creates an AttackTarget
     /// task with PlayerCombat preemption.
     #[func]
-    fn attack_creature(&mut self, attacker_uuid: GString, target_uuid: GString) {
+    fn attack_creature(&mut self, attacker_uuid: GString, target_uuid: GString, queue: bool) {
         let Some(attacker_id) = parse_creature_id(&attacker_uuid.to_string()) else {
             return;
         };
@@ -1250,6 +1261,7 @@ impl SimBridge {
         self.apply_or_send(SimAction::AttackCreature {
             attacker_id,
             target_id,
+            queue,
         });
     }
 

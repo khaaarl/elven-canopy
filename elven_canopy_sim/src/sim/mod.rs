@@ -1041,14 +1041,16 @@ impl SimState {
             SimAction::AttackCreature {
                 attacker_id,
                 target_id,
+                queue,
             } => {
-                self.command_attack_creature(*attacker_id, *target_id, events);
+                self.command_attack_creature(*attacker_id, *target_id, *queue, events);
             }
             SimAction::DirectedGoTo {
                 creature_id,
                 position,
+                queue,
             } => {
-                self.command_directed_goto(*creature_id, *position, events);
+                self.command_directed_goto(*creature_id, *position, *queue, events);
             }
             SimAction::DebugMeleeAttack {
                 attacker_id,
@@ -1099,20 +1101,23 @@ impl SimState {
             SimAction::AttackMove {
                 creature_id,
                 destination,
+                queue,
             } => {
-                self.command_attack_move(*creature_id, *destination, events);
+                self.command_attack_move(*creature_id, *destination, *queue, events);
             }
             SimAction::GroupGoTo {
                 creature_ids,
                 position,
+                queue,
             } => {
-                self.command_group_goto(creature_ids, *position, events);
+                self.command_group_goto(creature_ids, *position, *queue, events);
             }
             SimAction::GroupAttackMove {
                 creature_ids,
                 destination,
+                queue,
             } => {
-                self.command_group_attack_move(creature_ids, *destination, events);
+                self.command_group_attack_move(creature_ids, *destination, *queue, events);
             }
             SimAction::SetSelectionGroup {
                 group_number,
@@ -1302,6 +1307,8 @@ impl SimState {
                             required_species: None,
                             origin: task::TaskOrigin::Autonomous,
                             target_creature: None,
+                            restrict_to_creature_id: None,
+                            prerequisite_task_id: None,
                         };
                         self.insert_task(new_task);
                         if let Some(mut creature) = self.db.creatures.get(&creature_id) {
@@ -1328,6 +1335,8 @@ impl SimState {
                         required_species: None,
                         origin: task::TaskOrigin::Autonomous,
                         target_creature: None,
+                        restrict_to_creature_id: None,
+                        prerequisite_task_id: None,
                     };
                     self.insert_task(new_task);
                     if let Some(mut creature) = self.db.creatures.get(&creature_id) {
@@ -1385,6 +1394,8 @@ impl SimState {
                         required_species: None,
                         origin: task::TaskOrigin::Autonomous,
                         target_creature: None,
+                        restrict_to_creature_id: None,
+                        prerequisite_task_id: None,
                     };
                     self.insert_task(new_task);
                     if let Some(mut creature) = self.db.creatures.get(&creature_id) {

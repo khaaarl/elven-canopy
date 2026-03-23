@@ -261,7 +261,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		if mb.button_index == MOUSE_BUTTON_LEFT:
 			if mb.pressed:
 				if _attack_move_mode:
-					_execute_attack_move(mb.position)
+					_execute_attack_move(mb.position, mb.shift_pressed)
 					_attack_move_mode = false
 					_ignore_next_release = true
 					get_viewport().set_input_as_handled()
@@ -287,11 +287,11 @@ func _unhandled_input(event: InputEvent) -> void:
 					_try_select(mb.position, mb.shift_pressed, mb.alt_pressed)
 		elif mb.pressed and mb.button_index == MOUSE_BUTTON_RIGHT:
 			if _attack_move_mode:
-				_execute_attack_move(mb.position)
+				_execute_attack_move(mb.position, mb.shift_pressed)
 				_attack_move_mode = false
 				get_viewport().set_input_as_handled()
 			else:
-				_try_right_click_command(mb.position)
+				_try_right_click_command(mb.position, mb.shift_pressed)
 
 	if event is InputEventMouseMotion and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
 		var mm := event as InputEventMouseMotion
@@ -614,7 +614,7 @@ func _point_to_ray_dist_sq(point: Vector3, ray_origin: Vector3, ray_dir: Vector3
 ## issues a context-sensitive command (attack hostile, move to ground). Uses
 ## UUID-based creature IDs from the stable selection system. When multiple
 ## creatures are selected, commands are issued to all of them.
-func _try_right_click_command(mouse_pos: Vector2) -> void:
+func _try_right_click_command(mouse_pos: Vector2, queue: bool) -> void:
 	# Only works when creatures are selected.
 	if _selected_creature_ids.is_empty():
 		return
@@ -648,13 +648,13 @@ func _try_right_click_command(mouse_pos: Vector2) -> void:
 			if attacker_uuid == target_id:
 				continue
 			if _bridge.is_hostile_by_id(attacker_uuid, target_id):
-				_bridge.attack_creature(attacker_uuid, target_id)
+				_bridge.attack_creature(attacker_uuid, target_id, queue)
 			else:
 				# Friendly creature — collect for group move.
 				move_ids.append(attacker_uuid)
 		if not move_ids.is_empty():
 			_bridge.group_directed_goto(
-				move_ids, int(target_pos.x), int(target_pos.y), int(target_pos.z)
+				move_ids, int(target_pos.x), int(target_pos.y), int(target_pos.z), queue
 			)
 		get_viewport().set_input_as_handled()
 		return
@@ -664,14 +664,14 @@ func _try_right_click_command(mouse_pos: Vector2) -> void:
 	if result.get("hit", false):
 		var nav_pos: Vector3 = result["position"]
 		_bridge.group_directed_goto(
-			_selected_creature_ids, int(nav_pos.x), int(nav_pos.y), int(nav_pos.z)
+			_selected_creature_ids, int(nav_pos.x), int(nav_pos.y), int(nav_pos.z), queue
 		)
 		get_viewport().set_input_as_handled()
 
 
 ## Execute attack-move: dispatch a GroupAttackMove command for all selected
 ## creatures to the clicked location (ground or creature position).
-func _execute_attack_move(mouse_pos: Vector2) -> void:
+func _execute_attack_move(mouse_pos: Vector2, queue: bool = false) -> void:
 	if _selected_creature_ids.is_empty():
 		return
 
@@ -698,7 +698,7 @@ func _execute_attack_move(mouse_pos: Vector2) -> void:
 
 	if found_creature:
 		_bridge.group_attack_move(
-			_selected_creature_ids, int(target_pos.x), int(target_pos.y), int(target_pos.z)
+			_selected_creature_ids, int(target_pos.x), int(target_pos.y), int(target_pos.z), queue
 		)
 		return
 
@@ -707,7 +707,7 @@ func _execute_attack_move(mouse_pos: Vector2) -> void:
 	if result.get("hit", false):
 		var nav_pos: Vector3 = result["position"]
 		_bridge.group_attack_move(
-			_selected_creature_ids, int(nav_pos.x), int(nav_pos.y), int(nav_pos.z)
+			_selected_creature_ids, int(nav_pos.x), int(nav_pos.y), int(nav_pos.z), queue
 		)
 
 

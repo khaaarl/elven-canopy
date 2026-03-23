@@ -490,6 +490,17 @@ pub struct Task {
     #[indexed]
     #[serde(default)]
     pub target_creature: Option<CreatureId>,
+    /// If set, only this creature may claim this task (command queue).
+    /// No FK — application code handles cleanup on creature death.
+    #[indexed]
+    #[serde(default)]
+    pub restrict_to_creature_id: Option<CreatureId>,
+    /// If set, this task stays unavailable until the prerequisite reaches
+    /// Complete. Forms a linked list for sequential command queues.
+    /// No FK — application code handles cascade cancellation.
+    #[indexed]
+    #[serde(default)]
+    pub prerequisite_task_id: Option<TaskId>,
 }
 
 /// Task-to-blueprint reference (Build tasks only).

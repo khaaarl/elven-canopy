@@ -237,6 +237,8 @@ impl SimState {
             required_species: Some(Species::Elf),
             origin: task::TaskOrigin::PlayerDirected,
             target_creature: None,
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
         };
         self.insert_task(build_task);
 
@@ -391,6 +393,8 @@ impl SimState {
             required_species: Some(Species::Elf),
             origin: task::TaskOrigin::PlayerDirected,
             target_creature: None,
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
         };
         self.insert_task(build_task);
 
@@ -546,6 +550,8 @@ impl SimState {
             required_species: Some(Species::Elf),
             origin: task::TaskOrigin::PlayerDirected,
             target_creature: None,
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
         };
         self.insert_task(build_task);
 
@@ -668,6 +674,8 @@ impl SimState {
             required_species: Some(Species::Elf),
             origin: task::TaskOrigin::PlayerDirected,
             target_creature: None,
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
         };
         self.insert_task(build_task);
 
@@ -831,6 +839,8 @@ impl SimState {
             required_species,
             origin: task::TaskOrigin::PlayerDirected,
             target_creature: None,
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
         };
         self.insert_task(new_task);
     }
@@ -1398,6 +1408,8 @@ impl SimState {
             required_species: Some(Species::Elf),
             origin: task::TaskOrigin::PlayerDirected,
             target_creature: None,
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
         };
         self.insert_task(new_task);
     }

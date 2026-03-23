@@ -387,6 +387,8 @@ impl SimState {
                 required_species: Some(Species::Elf),
                 origin: task::TaskOrigin::Automated,
                 target_creature: None,
+                restrict_to_creature_id: None,
+                prerequisite_task_id: None,
             };
             self.insert_task(new_task);
         }
@@ -481,6 +483,8 @@ impl SimState {
                         required_species: Some(Species::Elf),
                         origin: task::TaskOrigin::Automated,
                         target_creature: None,
+                        restrict_to_creature_id: None,
+                        prerequisite_task_id: None,
                     };
                     // Store material filter and hauled material on the haul data extension.
                     // These are set after insert_task creates the base TaskHaulData row.
