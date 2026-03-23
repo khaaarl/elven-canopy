@@ -34,10 +34,42 @@ const STAT_MAX: i64 = 700;
 const TABLE_SIZE: usize = (STAT_MAX - STAT_MIN + 1) as usize; // 1301
 
 /// Precomputed multiplier table. Entry `i` corresponds to stat value
-/// `i as i64 + STAT_MIN`. Values at multiples of 100 are exact powers of 2;
-/// intermediate values are linearly interpolated within each octave.
-/// Maximum error vs true `2^(s/100)` is ~6% at octave midpoints.
+/// `i as i64 + STAT_MIN`. True exponential: `2^(s/100)` in 2^20 fixed-point.
+/// Sub-octave values computed via Taylor series of `exp(r·ln2/100)`.
 const STAT_TABLE: [i64; TABLE_SIZE] = generate_stat_table();
+
+/// Sub-octave multipliers: `2^(r/100)` in STAT_ONE fixed-point for r = 0..=100.
+/// Computed via 16-term Taylor series of `exp(r·ln2/100)` using i128 arithmetic
+/// for precision. Entry 0 = STAT_ONE (1×), entry 100 = 2×STAT_ONE (2×).
+const SUB_OCTAVE: [i64; 101] = generate_sub_octave();
+
+const fn generate_sub_octave() -> [i64; 101] {
+    // ln(2) in 2^48 fixed-point: round(0.6931471805599453 × 2^48).
+    const LN2_FP48: i128 = 195_103_586_505_216;
+    const ONE_FP48: i128 = 1i128 << 48;
+
+    let mut table = [0i64; 101];
+    let mut r: i128 = 0;
+    while r <= 100 {
+        // x = r × ln2 / 100 in 2^48 fixed-point.
+        let x: i128 = r * LN2_FP48 / 100;
+
+        // Taylor series: e^x = Σ x^n / n!, 16 terms for sub-LSB accuracy at 2^20.
+        let mut sum: i128 = ONE_FP48;
+        let mut term: i128 = ONE_FP48;
+        let mut n: i128 = 1;
+        while n <= 16 {
+            term = term * x / (n * ONE_FP48);
+            sum += term;
+            n += 1;
+        }
+
+        // Convert from 2^48 to 2^20 (STAT_SHIFT) fixed-point.
+        table[r as usize] = (sum >> 28) as i64;
+        r += 1;
+    }
+    table
+}
 
 /// Generate the lookup table at compile time.
 const fn generate_stat_table() -> [i64; TABLE_SIZE] {
@@ -45,16 +77,18 @@ const fn generate_stat_table() -> [i64; TABLE_SIZE] {
     let mut i = 0;
     while i < TABLE_SIZE {
         let s = i as i64 + STAT_MIN;
-        // Euclidean division: floor toward negative infinity.
+        // Split into octave (century) and sub-octave fraction.
         let century = s.div_euclid(100);
-        let frac = s.rem_euclid(100); // always 0..99
-        let lo = if century >= 0 {
+        let frac = s.rem_euclid(100) as usize;
+        // 2^century in STAT_ONE fixed-point (exact power of 2).
+        let octave = if century >= 0 {
             STAT_ONE << century
         } else {
             STAT_ONE >> (-century)
         };
-        let hi = lo * 2;
-        table[i] = lo + (hi - lo) * frac / 100;
+        // 2^(s/100) = 2^century × 2^(frac/100). Both factors are in 2^20 fp,
+        // so multiply and shift back down by 20.
+        table[i] = ((octave as i128 * SUB_OCTAVE[frac] as i128) >> STAT_SHIFT) as i64;
         i += 1;
     }
     table
@@ -294,6 +328,86 @@ mod tests {
     fn apply_stat_multiplier_negative_base() {
         // Negative base values (shouldn't happen in practice but shouldn't panic).
         assert_eq!(apply_stat_multiplier(-10, 100), -20);
+    }
+
+    #[test]
+    fn stat_table_midpoint_is_exponential_not_linear() {
+        // 2^(50/100) = sqrt(2) ≈ 1.41421356, NOT 1.5 (linear interp).
+        // In 2^20 fp: 1.41421356 × 1048576 ≈ 1482911. Allow ±1.
+        let m = stat_multiplier(50);
+        assert!(
+            (1482910..=1482912).contains(&m),
+            "stat_multiplier(50) should be ~1482911 (sqrt(2) × 2^20), got {m}"
+        );
+    }
+
+    #[test]
+    fn stat_table_quarter_is_exponential() {
+        // 2^0.25 ≈ 1.18920712. In 2^20 fp: 1.18920712 × 1048576 ≈ 1246974.
+        let m = stat_multiplier(25);
+        assert!(
+            (1246973..=1246975).contains(&m),
+            "stat_multiplier(25) should be ~1246974 (2^0.25 × 2^20), got {m}"
+        );
+    }
+
+    #[test]
+    fn stat_table_75_is_exponential() {
+        // 2^0.75 ≈ 1.68179283. In 2^20 fp: 1.68179283 × 1048576 ≈ 1763487.
+        let m = stat_multiplier(75);
+        assert!(
+            (1763486..=1763488).contains(&m),
+            "stat_multiplier(75) should be ~1763487 (2^0.75 × 2^20), got {m}"
+        );
+    }
+
+    #[test]
+    fn sub_octave_endpoints() {
+        assert_eq!(SUB_OCTAVE[0], STAT_ONE, "SUB_OCTAVE[0] must be exactly 1×");
+        assert_eq!(
+            SUB_OCTAVE[100],
+            2 * STAT_ONE,
+            "SUB_OCTAVE[100] must be exactly 2×"
+        );
+    }
+
+    #[test]
+    fn stat_table_octave_boundary_continuity() {
+        // Verify no step discontinuity at century boundaries: the step into
+        // a boundary should be similar magnitude to the step out.
+        for century in -5..=6i64 {
+            let s = century * 100;
+            let before = stat_multiplier(s - 1);
+            let at = stat_multiplier(s);
+            let after = stat_multiplier(s + 1);
+            let step_in = at - before;
+            let step_out = after - at;
+            assert!(
+                step_in > 0 && step_out > 0,
+                "steps must be positive at century {century}"
+            );
+            // Steps should be within 10% of each other (smooth curve).
+            assert!(
+                step_out * 100 > step_in * 90 && step_out * 100 < step_in * 110,
+                "discontinuity at century {century}: step_in={step_in}, step_out={step_out}"
+            );
+        }
+    }
+
+    #[test]
+    fn stat_table_negative_exponential_accuracy() {
+        // 2^(-0.5) = 1/sqrt(2) ≈ 0.70710678. In fp20: 741455.
+        let m = stat_multiplier(-50);
+        assert!(
+            (741454..=741456).contains(&m),
+            "stat_multiplier(-50) should be ~741455, got {m}"
+        );
+        // 2^(-0.25) ≈ 0.84089642. In fp20: 881743.
+        let m = stat_multiplier(-25);
+        assert!(
+            (881742..=881744).contains(&m),
+            "stat_multiplier(-25) should be ~881743, got {m}"
+        );
     }
 
     #[test]

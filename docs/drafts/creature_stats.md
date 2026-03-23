@@ -86,39 +86,22 @@ stat  | multiplier (x 2^20) | effective ratio
   +70 |      134217728     | 128x
 ```
 
-Between multiples of 10, entries are linearly interpolated within each octave.
-The generation formula uses Euclidean division (floor toward negative infinity)
-to handle negative stats correctly:
+Between multiples of 100, entries are computed via a sub-octave lookup table
+that stores true `2^(r/100)` values (r = 0..100) computed at compile time using
+a 16-term Taylor series of `exp(r·ln2/100)` in i128 fixed-point arithmetic.
+The generation splits each stat value into an octave (exact power of 2 via bit
+shift) and a sub-octave fraction (lookup), then combines them:
 
 ```rust
-// Generate the table at compile time (build script or const fn).
-fn generate_table() -> [i64; 131] {
-    let mut table = [0i64; 131];
-    for i in 0..131 {
-        let s = i as i64 - 60;  // stat value: -60 to +70
-        let decade = s.div_euclid(10);
-        let frac = s.rem_euclid(10);   // always 0..9
-        let lo = if decade >= 0 {
-            (1i64 << 20) << decade
-        } else {
-            (1i64 << 20) >> (-decade)
-        };
-        let hi = lo * 2;
-        table[i] = lo + (hi - lo) * frac / 10;
-    }
-    table
-}
+let century = s.div_euclid(100);
+let frac = s.rem_euclid(100) as usize;
+let octave = STAT_ONE << century;  // (or >> for negative)
+table[i] = ((octave as i128 * SUB_OCTAVE[frac] as i128) >> STAT_SHIFT) as i64;
 ```
 
 **Critical:** Rust's `/` and `%` operators truncate toward zero, which gives
-wrong results for negative stats (e.g., `-3 / 10 = 0` in Rust but should be
+wrong results for negative stats (e.g., `-3 / 100 = 0` in Rust but should be
 `-1` for this formula). Always use `div_euclid` and `rem_euclid`.
-
-The linear interpolation introduces up to ~6% error at octave midpoints
-compared to the exact `2^(s/10)` curve. This is acceptable — the stat system
-is tunable via species distributions and the error is consistent across
-platforms. If higher accuracy is ever needed, the table entries can be replaced
-with precomputed exact values from a build script.
 
 Values outside the -60 to +70 range clamp to the endpoints.
 
