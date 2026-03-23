@@ -1185,6 +1185,20 @@ def _cmd_edit_description_locked(args, lock_fd):
     with open(args.file, "r", encoding="utf-8") as f:
         new_text = f.read()
 
+    # Reject lines starting with '#' — they break markdown heading parsing
+    # in tracker.md (the tracker uses headings to delimit items).
+    for i, line in enumerate(new_text.split("\n"), 1):
+        if line.startswith("#"):
+            print(
+                f"Error: description line {i} starts with '#':\n"
+                f"  {line}\n"
+                f"Lines starting with '#' are not allowed in descriptions "
+                f"because they are parsed as markdown headings, which would "
+                f"break the tracker's section structure.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
     # Build replacement: blank separator line, then prose lines
     new_text = new_text.rstrip("\n")
     new_prose_lines = ["\n"]
