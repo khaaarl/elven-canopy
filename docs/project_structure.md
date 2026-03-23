@@ -138,6 +138,21 @@ elven-canopy/
 │   │   ├── main.tscn           # Game scene (3D world, camera, renderers)
 │   │   ├── main_menu.tscn      # Main menu (New Game / Load / Quit)
 │   │   └── new_game.tscn       # New game config (seed, tree presets)
+│   ├── test/
+│   │   ├── gut_runner.gd          # GUT test runner configuration
+│   │   ├── test_escape_menu.gd    # Escape menu tests
+│   │   ├── test_focus_guard.gd    # Focus guard tests
+│   │   ├── test_geometry_utils.gd # Geometry utility tests
+│   │   ├── test_harness_integration.gd # Harness integration tests
+│   │   ├── test_item_utils.gd     # Item utility tests
+│   │   ├── test_mana_vfx.gd       # Mana VFX tests
+│   │   ├── test_minimap.gd        # Minimap tests
+│   │   ├── test_orbital_camera.gd # Orbital camera tests
+│   │   ├── test_selection_controller.gd # Selection controller tests
+│   │   ├── test_selection_utils.gd # Selection utility tests
+│   │   ├── test_status_bar.gd     # Status bar tests
+│   │   ├── test_view_toggle_icons.gd # View toggle icon tests
+│   │   └── test_wants_editor.gd   # Wants editor tests
 │   └── scripts/
 │       ├── main.gd             # Game scene controller, wires all subsystems
 │       ├── game_session.gd     # Autoload: persists seed/config across scenes
