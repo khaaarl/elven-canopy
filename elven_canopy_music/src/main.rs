@@ -25,7 +25,7 @@ use elven_canopy_music::grid::{Grid, Voice};
 use elven_canopy_music::lilypond::write_lilypond;
 use elven_canopy_music::markov::{MarkovModels, MotifLibrary};
 use elven_canopy_music::midi::{write_midi, write_midi_with_text};
-use elven_canopy_music::mode::{Mode, ModeInstance};
+use elven_canopy_music::mode::{Mode, ModeInstance, Score};
 use elven_canopy_music::sa::{SAConfig, anneal_with_text};
 use elven_canopy_music::scoring::{
     ScoringWeights, score_breakdown, score_grid, score_tonal_contour, tonal_contour_stats,
@@ -208,8 +208,12 @@ fn main() {
         "  Generating Vaelith text (brightness {:.1})...",
         brightness
     );
-    let phrase_candidates =
-        generate_phrases_with_brightness(&lexicon, num_sections, brightness, &mut rng);
+    let phrase_candidates = generate_phrases_with_brightness(
+        &lexicon,
+        num_sections,
+        (brightness.clamp(0.0, 1.0) * 1000.0) as u32,
+        &mut rng,
+    );
     let mut mapping = apply_text_mapping(&mut grid, &plan, &phrase_candidates);
     println!(
         "  {} syllable spans mapped across {} section phrases.",
@@ -237,7 +241,7 @@ fn main() {
     // SA refinement with text awareness
     println!("[4/5] Refining with text-aware simulated annealing...");
     let config = SAConfig {
-        cooling_rate: 1.0 - (1.0 / sa_iters as f64),
+        cooling_rate: Score::from_ratio(sa_iters as i64 - 1, sa_iters as i64),
         ..Default::default()
     };
     let result = anneal_with_text(
@@ -483,7 +487,7 @@ fn run_batch(args: &[String]) {
     };
 
     let config = SAConfig {
-        cooling_rate: 1.0 - (1.0 / sa_iters as f64),
+        cooling_rate: Score::from_ratio(sa_iters as i64 - 1, sa_iters as i64),
         ..Default::default()
     };
 
@@ -511,8 +515,12 @@ fn run_batch(args: &[String]) {
         fill_draft(&mut grid, &models, &structural, &mode, &mut rng);
         generate_final_cadence(&mut grid, &mode, &mut structural);
 
-        let phrase_candidates =
-            generate_phrases_with_brightness(&lexicon, num_sections, brightness, &mut rng);
+        let phrase_candidates = generate_phrases_with_brightness(
+            &lexicon,
+            num_sections,
+            (brightness.clamp(0.0, 1.0) * 1000.0) as u32,
+            &mut rng,
+        );
         let mut mapping = apply_text_mapping(&mut grid, &plan, &phrase_candidates);
 
         let draft_score =
@@ -603,7 +611,7 @@ fn run_mode_scan(args: &[String]) {
     };
 
     let config = SAConfig {
-        cooling_rate: 1.0 - (1.0 / sa_iters as f64),
+        cooling_rate: Score::from_ratio(sa_iters as i64 - 1, sa_iters as i64),
         ..Default::default()
     };
 
@@ -640,8 +648,12 @@ fn run_mode_scan(args: &[String]) {
         fill_draft(&mut grid, &models, &structural, &mode, &mut rng);
         generate_final_cadence(&mut grid, &mode, &mut structural);
 
-        let phrase_candidates =
-            generate_phrases_with_brightness(&lexicon, num_sections, brightness, &mut rng);
+        let phrase_candidates = generate_phrases_with_brightness(
+            &lexicon,
+            num_sections,
+            (brightness.clamp(0.0, 1.0) * 1000.0) as u32,
+            &mut rng,
+        );
         let mut mapping = apply_text_mapping(&mut grid, &plan, &phrase_candidates);
 
         let draft_score =

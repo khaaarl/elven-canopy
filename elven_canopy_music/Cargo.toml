@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 elven_canopy_prng = { path = "../elven_canopy_prng" }
 elven_canopy_lang = { path = "../elven_canopy_lang" }
+elven_canopy_utils = { path = "../elven_canopy_utils" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 midly = "0.5"

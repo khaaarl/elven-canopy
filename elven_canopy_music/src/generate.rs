@@ -11,6 +11,7 @@
 use crate::draft::{fill_draft, generate_final_cadence};
 use crate::grid::{Grid, Voice};
 use crate::markov::{MarkovModels, MotifLibrary};
+use crate::mode::Score;
 use crate::mode::{Mode, ModeInstance};
 use crate::sa::{SAConfig, anneal_with_text};
 use crate::scoring::ScoringWeights;
@@ -84,16 +85,17 @@ pub fn generate_piece(params: &GenerateParams) -> Grid {
     fill_draft(&mut grid, &models, &structural, &mode_inst, &mut rng);
     generate_final_cadence(&mut grid, &mode_inst, &mut structural);
 
-    let phrase_candidates = generate_phrases_with_brightness(
-        &lexicon,
-        params.sections,
-        params.brightness as f64,
-        &mut rng,
-    );
+    // Convert f32 brightness (0.0–1.0) to integer (0–1000) at the API boundary.
+    let brightness_int = (params.brightness.clamp(0.0, 1.0) * 1000.0) as u32;
+    let phrase_candidates =
+        generate_phrases_with_brightness(&lexicon, params.sections, brightness_int, &mut rng);
     let mut mapping = apply_text_mapping(&mut grid, &plan, &phrase_candidates);
 
+    // cooling_rate = 1 - 1/sa_iterations, as fixed-point.
+    // from_ratio(sa_iterations - 1, sa_iterations)
+    let sa_iters = params.sa_iterations.max(2) as i64;
     let sa_config = SAConfig {
-        cooling_rate: 1.0 - (1.0 / params.sa_iterations as f64),
+        cooling_rate: Score::from_ratio(sa_iters - 1, sa_iters),
         ..Default::default()
     };
     anneal_with_text(
@@ -304,6 +306,26 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn generate_piece_brightness_boundaries() {
+        // Verify the f32→u32 boundary conversion works at extremes.
+        for brightness in [0.0f32, 1.0, 0.5] {
+            let params = GenerateParams {
+                seed: 42,
+                sections: 2,
+                mode_index: 0,
+                brightness,
+                sa_iterations: 200,
+                tempo_bpm: 72,
+                max_beats: Some(20),
+                voices: Vec::new(),
+            };
+            let grid = generate_piece(&params);
+            assert!(grid.num_beats > 0);
+            assert!(grid.stats().total_attacks > 0);
         }
     }
 }

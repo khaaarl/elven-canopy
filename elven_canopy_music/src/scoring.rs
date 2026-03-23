@@ -2,7 +2,9 @@
 //
 // Evaluates a complete or partial grid against counterpoint rules and
 // aesthetic preferences. The score is a weighted sum of penalties/rewards
-// across several layers:
+// across several layers. All arithmetic uses `Score` (Fixed64 with 2^30
+// fractional bits) for cross-platform determinism — no floating-point
+// operations in any scoring path.
 //
 // Layer 1 (Hard rules, high weight): Parallel 5ths/8ves, hidden 5ths/8ves,
 //   strong-beat dissonance (with suspension exemption), voice crossing,
@@ -38,155 +40,156 @@
 // Consumed by sa.rs for simulated annealing refinement.
 
 use crate::grid::{Grid, Voice, interval};
-use crate::mode::ModeInstance;
+use crate::mode::{ModeInstance, Score};
 use crate::text_mapping::TextMapping;
 use crate::vaelith::Tone;
 
 /// Weights for scoring layers. Tunable parameters.
+/// All weights are `Score` (Fixed64) for deterministic arithmetic.
 #[derive(Debug, Clone)]
 pub struct ScoringWeights {
     // Layer 1: Hard rules (heavy penalties)
-    pub parallel_fifths: f64,
-    pub parallel_octaves: f64,
-    pub strong_beat_dissonance: f64,
-    pub voice_crossing: f64,
-    pub range_violation: f64,
+    pub parallel_fifths: Score,
+    pub parallel_octaves: Score,
+    pub strong_beat_dissonance: Score,
+    pub voice_crossing: Score,
+    pub range_violation: Score,
 
     // Layer 2: Melodic preferences
-    pub stepwise_reward: f64,
-    pub leap_penalty: f64,
-    pub large_leap_penalty: f64,
-    pub leap_recovery_penalty: f64,
-    pub repeated_note_penalty: f64,
-    pub direction_run_penalty: f64,
+    pub stepwise_reward: Score,
+    pub leap_penalty: Score,
+    pub large_leap_penalty: Score,
+    pub leap_recovery_penalty: Score,
+    pub repeated_note_penalty: Score,
+    pub direction_run_penalty: Score,
 
     // Layer 3: Harmonic preferences
-    pub consonance_reward: f64,
-    pub voice_spacing_penalty: f64,
+    pub consonance_reward: Score,
+    pub voice_spacing_penalty: Score,
 
     // Layer 4: Global
-    pub opening_consonance_reward: f64,
-    pub closing_consonance_reward: f64,
+    pub opening_consonance_reward: Score,
+    pub closing_consonance_reward: Score,
 
     // Layer 5: Modal compliance
-    pub out_of_mode_penalty: f64,
-    pub mode_degree_reward: f64,
+    pub out_of_mode_penalty: Score,
+    pub mode_degree_reward: Score,
 
     // Suspension reward (a properly prepared suspension is idiomatic, reward it)
-    pub suspension_reward: f64,
+    pub suspension_reward: Score,
 
     // Rhythmic independence
-    pub homorhythm_penalty: f64,
+    pub homorhythm_penalty: Score,
 
     // Hidden 5ths/octaves (lighter than parallel)
-    pub hidden_fifths: f64,
-    pub hidden_octaves: f64,
+    pub hidden_fifths: Score,
+    pub hidden_octaves: Score,
 
     // Contour: reward arch shapes, penalize repeated climax
-    pub climax_repeat_penalty: f64,
-    pub arch_contour_reward: f64,
+    pub climax_repeat_penalty: Score,
+    pub arch_contour_reward: Score,
 
     // Interval variety: penalize monotonous voice-pair intervals
-    pub interval_monotony_penalty: f64,
+    pub interval_monotony_penalty: Score,
 
     // Layer 6: Tonal contour constraints (Vaelith text)
-    pub tonal_contour_violation: f64,
-    pub tonal_contour_reward: f64,
+    pub tonal_contour_violation: Score,
+    pub tonal_contour_reward: Score,
 
     // Stressed syllable metric placement
-    pub stressed_on_strong_beat: f64,
-    pub stressed_on_weak_beat: f64,
+    pub stressed_on_strong_beat: Score,
+    pub stressed_on_weak_beat: Score,
 
     // Ensemble texture
-    pub texture_variety_reward: f64,
-    pub thin_texture_penalty: f64,
+    pub texture_variety_reward: Score,
+    pub thin_texture_penalty: Score,
 
     // Tension curve
-    pub tension_curve_reward: f64,
+    pub tension_curve_reward: Score,
 
     // Interval distribution: penalty for deviating from Palestrina norms
-    pub interval_distribution_penalty: f64,
+    pub interval_distribution_penalty: Score,
 
     // Melodic entropy: reward moderate information content, penalize extremes
-    pub entropy_reward: f64,
-    pub entropy_penalty: f64,
+    pub entropy_reward: Score,
+    pub entropy_penalty: Score,
 }
 
 impl Default for ScoringWeights {
     fn default() -> Self {
         ScoringWeights {
             // Hard rules: 10-100x penalties
-            parallel_fifths: -50.0,
-            parallel_octaves: -50.0,
-            strong_beat_dissonance: -30.0,
-            voice_crossing: -20.0,
-            range_violation: -15.0,
+            parallel_fifths: Score::from_int(-50),
+            parallel_octaves: Score::from_int(-50),
+            strong_beat_dissonance: Score::from_int(-30),
+            voice_crossing: Score::from_int(-20),
+            range_violation: Score::from_int(-15),
 
             // Melodic: moderate
-            stepwise_reward: 2.0,
-            leap_penalty: -3.0,
-            large_leap_penalty: -8.0,
-            leap_recovery_penalty: -5.0,
-            repeated_note_penalty: -1.0,
-            direction_run_penalty: -2.0,
+            stepwise_reward: Score::from_int(2),
+            leap_penalty: Score::from_int(-3),
+            large_leap_penalty: Score::from_int(-8),
+            leap_recovery_penalty: Score::from_int(-5),
+            repeated_note_penalty: Score::from_int(-1),
+            direction_run_penalty: Score::from_int(-2),
 
             // Harmonic: moderate
-            consonance_reward: 1.5,
-            voice_spacing_penalty: -3.0,
+            consonance_reward: Score::from_ratio(3, 2), // 1.5
+            voice_spacing_penalty: Score::from_int(-3),
 
             // Global
-            opening_consonance_reward: 5.0,
-            closing_consonance_reward: 8.0,
+            opening_consonance_reward: Score::from_int(5),
+            closing_consonance_reward: Score::from_int(8),
 
             // Modal compliance
-            out_of_mode_penalty: -8.0,
-            mode_degree_reward: 1.0,
+            out_of_mode_penalty: Score::from_int(-8),
+            mode_degree_reward: Score::ONE,
 
             // Suspensions
-            suspension_reward: 5.0,
+            suspension_reward: Score::from_int(5),
 
             // Rhythmic independence
-            homorhythm_penalty: -4.0,
+            homorhythm_penalty: Score::from_int(-4),
 
             // Hidden 5ths/octaves (lighter than parallel motion)
-            hidden_fifths: -15.0,
-            hidden_octaves: -15.0,
+            hidden_fifths: Score::from_int(-15),
+            hidden_octaves: Score::from_int(-15),
 
             // Contour
-            climax_repeat_penalty: -3.0,
-            arch_contour_reward: 5.0,
+            climax_repeat_penalty: Score::from_int(-3),
+            arch_contour_reward: Score::from_int(5),
 
             // Interval variety
-            interval_monotony_penalty: -2.0,
+            interval_monotony_penalty: Score::from_int(-2),
 
             // Tonal contour (high weight — Vaelith tone system)
-            tonal_contour_violation: -20.0,
-            tonal_contour_reward: 3.0,
+            tonal_contour_violation: Score::from_int(-20),
+            tonal_contour_reward: Score::from_int(3),
 
             // Stressed syllable metric placement
-            stressed_on_strong_beat: 4.0,
-            stressed_on_weak_beat: -3.0,
+            stressed_on_strong_beat: Score::from_int(4),
+            stressed_on_weak_beat: Score::from_int(-3),
 
             // Ensemble texture: reward varied voice count, penalize too thin
-            texture_variety_reward: 8.0,
-            thin_texture_penalty: -2.0,
+            texture_variety_reward: Score::from_int(8),
+            thin_texture_penalty: Score::from_int(-2),
 
             // Tension curve: reward proper arc shape
-            tension_curve_reward: 15.0,
+            tension_curve_reward: Score::from_int(15),
 
             // Interval distribution
-            interval_distribution_penalty: -0.5,
+            interval_distribution_penalty: Score::from_ratio(-1, 2), // -0.5
 
             // Melodic entropy (information content)
-            entropy_reward: 6.0,
-            entropy_penalty: -4.0,
+            entropy_reward: Score::from_int(6),
+            entropy_penalty: Score::from_int(-4),
         }
     }
 }
 
 /// Full score for a grid.
-pub fn score_grid(grid: &Grid, weights: &ScoringWeights, mode: &ModeInstance) -> f64 {
-    let mut total = 0.0;
+pub fn score_grid(grid: &Grid, weights: &ScoringWeights, mode: &ModeInstance) -> Score {
+    let mut total = Score::ZERO;
 
     total += score_hard_rules(grid, weights);
     total += score_melodic(grid, weights);
@@ -203,17 +206,17 @@ pub fn score_grid(grid: &Grid, weights: &ScoringWeights, mode: &ModeInstance) ->
 
 /// Per-layer scoring breakdown for diagnostic output.
 pub struct ScoreBreakdown {
-    pub hard_rules: f64,
-    pub melodic: f64,
-    pub harmonic: f64,
-    pub global: f64,
-    pub modal: f64,
-    pub texture: f64,
-    pub tension_curve: f64,
-    pub interval_dist: f64,
-    pub entropy: f64,
-    pub tonal_contour: f64,
-    pub total: f64,
+    pub hard_rules: Score,
+    pub melodic: Score,
+    pub harmonic: Score,
+    pub global: Score,
+    pub modal: Score,
+    pub texture: Score,
+    pub tension_curve: Score,
+    pub interval_dist: Score,
+    pub entropy: Score,
+    pub tonal_contour: Score,
+    pub total: Score,
 }
 
 /// Compute a per-layer scoring breakdown for display.
@@ -262,11 +265,16 @@ pub fn score_breakdown(
 
 /// Score contribution from a local window around a specific beat.
 /// Used for incremental scoring after a mutation.
-pub fn score_local(grid: &Grid, weights: &ScoringWeights, mode: &ModeInstance, beat: usize) -> f64 {
+pub fn score_local(
+    grid: &Grid,
+    weights: &ScoringWeights,
+    mode: &ModeInstance,
+    beat: usize,
+) -> Score {
     let window_start = beat.saturating_sub(2);
     let window_end = (beat + 3).min(grid.num_beats);
 
-    let mut total = 0.0;
+    let mut total = Score::ZERO;
 
     for b in window_start..window_end {
         total += score_beat_hard_rules(grid, weights, b);
@@ -284,16 +292,16 @@ pub fn score_local(grid: &Grid, weights: &ScoringWeights, mode: &ModeInstance, b
 
 // ── Layer 1: Hard counterpoint rules ──
 
-fn score_hard_rules(grid: &Grid, weights: &ScoringWeights) -> f64 {
-    let mut score = 0.0;
+fn score_hard_rules(grid: &Grid, weights: &ScoringWeights) -> Score {
+    let mut score = Score::ZERO;
     for beat in 0..grid.num_beats {
         score += score_beat_hard_rules(grid, weights, beat);
     }
     score
 }
 
-fn score_beat_hard_rules(grid: &Grid, weights: &ScoringWeights, beat: usize) -> f64 {
-    let mut score = 0.0;
+fn score_beat_hard_rules(grid: &Grid, weights: &ScoringWeights, beat: usize) -> Score {
+    let mut score = Score::ZERO;
     let is_strong = beat.is_multiple_of(4); // strong beats every half-bar (2 quarter notes)
 
     // Check all active voice pairs
@@ -457,8 +465,8 @@ fn check_suspension_voice(grid: &Grid, suspended: Voice, moving: Voice, beat: us
 
 // ── Layer 2: Melodic preferences ──
 
-fn score_melodic(grid: &Grid, weights: &ScoringWeights) -> f64 {
-    let mut score = 0.0;
+fn score_melodic(grid: &Grid, weights: &ScoringWeights) -> Score {
+    let mut score = Score::ZERO;
     for &voice in grid.active_voices() {
         score += score_melodic_window(grid, weights, voice, 0, grid.num_beats);
     }
@@ -471,8 +479,8 @@ fn score_melodic_window(
     voice: Voice,
     start: usize,
     end: usize,
-) -> f64 {
-    let mut score = 0.0;
+) -> Score {
+    let mut score = Score::ZERO;
     let mut prev_pitch: Option<u8> = None;
     let mut prev_interval_abs: u16 = 0; // absolute size of previous interval
     let mut prev_direction: Option<i8> = None; // 1=up, -1=down, 0=same
@@ -504,8 +512,8 @@ fn score_melodic_window(
             if abs_iv <= 2 {
                 score += weights.stepwise_reward;
             } else if abs_iv <= 4 {
-                // 3rds: mild
-                score += weights.leap_penalty * 0.3;
+                // 3rds: mild — leap_penalty * 3 / 10
+                score += weights.leap_penalty.mul_int(3).div_int(10);
             } else if abs_iv <= 7 {
                 // 4ths-5ths
                 score += weights.leap_penalty;
@@ -545,8 +553,6 @@ fn score_melodic_window(
 
                 // Leap recovery: after a leap (>4 semitones), the next move
                 // should be in the opposite direction by step.
-                // If the previous interval was a leap and this interval
-                // doesn't move in the opposite direction by step, penalize.
                 if prev_interval_abs > 4 {
                     let recovered = direction != 0 && direction != prev_dir && abs_iv <= 2;
                     if !recovered {
@@ -567,8 +573,8 @@ fn score_melodic_window(
 
 // ── Layer 3: Harmonic preferences ──
 
-fn score_harmonic(grid: &Grid, weights: &ScoringWeights) -> f64 {
-    let mut score = 0.0;
+fn score_harmonic(grid: &Grid, weights: &ScoringWeights) -> Score {
+    let mut score = Score::ZERO;
     for beat in 0..grid.num_beats {
         score += score_beat_harmonic(grid, weights, beat);
     }
@@ -582,8 +588,8 @@ fn score_harmonic(grid: &Grid, weights: &ScoringWeights) -> f64 {
 
 /// Penalize monotonous intervals between voice pairs.
 /// If the same interval class persists for 8+ beats, it sounds static.
-fn score_interval_variety(grid: &Grid, weights: &ScoringWeights) -> f64 {
-    let mut score = 0.0;
+fn score_interval_variety(grid: &Grid, weights: &ScoringWeights) -> Score {
+    let mut score = Score::ZERO;
 
     let active = grid.active_voices();
     for (idx_i, &vi) in active.iter().enumerate() {
@@ -617,13 +623,13 @@ fn score_interval_variety(grid: &Grid, weights: &ScoringWeights) -> f64 {
     score
 }
 
-fn score_beat_harmonic(grid: &Grid, weights: &ScoringWeights, beat: usize) -> f64 {
-    let mut score = 0.0;
+fn score_beat_harmonic(grid: &Grid, weights: &ScoringWeights, beat: usize) -> Score {
+    let mut score = Score::ZERO;
     let slice = grid.vertical_slice(beat);
 
     let pitches: Vec<u8> = slice.iter().filter_map(|&(_, p)| p).collect();
     if pitches.len() < 2 {
-        return 0.0;
+        return Score::ZERO;
     }
 
     // Consonance reward for each pair
@@ -649,8 +655,8 @@ fn score_beat_harmonic(grid: &Grid, weights: &ScoringWeights, beat: usize) -> f6
 
 // ── Layer 4: Global & Cadence ──
 
-fn score_global(grid: &Grid, weights: &ScoringWeights) -> f64 {
-    let mut score = 0.0;
+fn score_global(grid: &Grid, weights: &ScoringWeights) -> Score {
+    let mut score = Score::ZERO;
 
     // Opening: reward perfect consonance on first sounding beat
     for beat in 0..grid.num_beats.min(8) {
@@ -695,8 +701,8 @@ fn score_global(grid: &Grid, weights: &ScoringWeights) -> f64 {
 }
 
 /// Detect phrase boundaries and score cadential motion there.
-fn score_cadences(grid: &Grid, _weights: &ScoringWeights) -> f64 {
-    let mut score = 0.0;
+fn score_cadences(grid: &Grid, _weights: &ScoringWeights) -> Score {
+    let mut score = Score::ZERO;
 
     // Find beats where a rest follows sounding notes (phrase endings)
     for beat in 2..grid.num_beats.saturating_sub(1) {
@@ -745,24 +751,24 @@ fn score_cadences(grid: &Grid, _weights: &ScoringWeights) -> f64 {
 
             // Contrary motion between soprano and bass
             if (sop_motion > 0 && bass_motion < 0) || (sop_motion < 0 && bass_motion > 0) {
-                score += 3.0;
+                score += Score::from_int(3);
             }
 
             // Soprano moving by step (1-2 semitones)
             if sop_motion.unsigned_abs() <= 2 && sop_motion != 0 {
-                score += 2.0;
+                score += Score::from_int(2);
             }
 
             // Bass moving by 4th or 5th (5 or 7 semitones)
             let bass_abs = bass_motion.unsigned_abs();
             if bass_abs == 5 || bass_abs == 7 {
-                score += 4.0;
+                score += Score::from_int(4);
             }
 
             // Final beat of cadence lands on perfect consonance
             let iv = interval::semitones(bn, sn);
             if interval::is_perfect_consonance(iv) {
-                score += 3.0;
+                score += Score::from_int(3);
             }
         }
     }
@@ -773,8 +779,8 @@ fn score_cadences(grid: &Grid, _weights: &ScoringWeights) -> f64 {
 /// Score melodic contour for each voice.
 /// Rewards arch-shaped contours (rise to climax, then descent) and penalizes
 /// the highest note occurring too many times (climax should be special).
-fn score_contour(grid: &Grid, weights: &ScoringWeights) -> f64 {
-    let mut score = 0.0;
+fn score_contour(grid: &Grid, weights: &ScoringWeights) -> Score {
+    let mut score = Score::ZERO;
 
     for &voice in grid.active_voices() {
         // Collect all attack pitches with their beat positions
@@ -794,11 +800,12 @@ fn score_contour(grid: &Grid, weights: &ScoringWeights) -> f64 {
         let max_pitch = notes.iter().map(|&(_, p)| p).max().unwrap();
         let climax_count = notes.iter().filter(|&&(_, p)| p == max_pitch).count();
         if climax_count > 3 {
-            score += weights.climax_repeat_penalty * (climax_count as f64 - 3.0);
+            score += weights
+                .climax_repeat_penalty
+                .mul_int(climax_count as i64 - 3);
         }
 
-        // Arch contour: the climax should be roughly in the middle 40-80% of the piece.
-        // Find where the climax occurs as a fraction of the total.
+        // Arch contour: the climax should be roughly in the middle 30-70% of the piece.
         let first_climax_beat = notes
             .iter()
             .find(|&&(_, p)| p == max_pitch)
@@ -806,10 +813,11 @@ fn score_contour(grid: &Grid, weights: &ScoringWeights) -> f64 {
             .unwrap();
         let total_span = notes.last().unwrap().0 - notes.first().unwrap().0;
         if total_span > 0 {
-            let climax_pos =
-                (first_climax_beat - notes.first().unwrap().0) as f64 / total_span as f64;
+            // Use integer arithmetic: climax_pos_pct = (offset * 100) / total_span
+            let offset = first_climax_beat - notes.first().unwrap().0;
+            let climax_pct = offset * 100 / total_span;
             // Ideal: climax between 30% and 70% through the phrase
-            if climax_pos > 0.3 && climax_pos < 0.7 {
+            if climax_pct > 30 && climax_pct < 70 {
                 score += weights.arch_contour_reward;
             }
         }
@@ -820,8 +828,8 @@ fn score_contour(grid: &Grid, weights: &ScoringWeights) -> f64 {
 
 /// Score rhythmic independence between voices.
 /// Penalizes when 3+ voices attack on the same beat for many consecutive beats.
-fn score_rhythmic_independence(grid: &Grid, weights: &ScoringWeights) -> f64 {
-    let mut score = 0.0;
+fn score_rhythmic_independence(grid: &Grid, weights: &ScoringWeights) -> Score {
+    let mut score = Score::ZERO;
     let mut consecutive_homorhythm = 0;
 
     for beat in 0..grid.num_beats {
@@ -835,12 +843,7 @@ fn score_rhythmic_independence(grid: &Grid, weights: &ScoringWeights) -> f64 {
             .count();
 
         // NOTE: This threshold is hardcoded at 3, which means duets (max 2
-        // voices) never trigger homorhythm penalties. The SA optimizer has no
-        // signal to avoid lockstep rhythm in 2-voice pieces. To fix, this
-        // should scale with voice count (e.g. `attacks >= active_voices.len()`),
-        // but that requires threading the active count through here. The draft
-        // generator's variable note durations provide some baseline rhythmic
-        // independence, so duet quality is acceptable for now.
+        // voices) never trigger homorhythm penalties.
         if attacks >= 3 {
             consecutive_homorhythm += 1;
             // Start penalizing after 4 consecutive homorhythmic beats
@@ -857,8 +860,8 @@ fn score_rhythmic_independence(grid: &Grid, weights: &ScoringWeights) -> f64 {
 
 // ── Layer 5: Modal compliance ──
 
-fn score_modal(grid: &Grid, weights: &ScoringWeights, mode: &ModeInstance) -> f64 {
-    let mut score = 0.0;
+fn score_modal(grid: &Grid, weights: &ScoringWeights, mode: &ModeInstance) -> Score {
+    let mut score = Score::ZERO;
     for beat in 0..grid.num_beats {
         score += score_beat_modal(grid, weights, mode, beat);
     }
@@ -870,14 +873,16 @@ fn score_beat_modal(
     weights: &ScoringWeights,
     mode: &ModeInstance,
     beat: usize,
-) -> f64 {
-    let mut score = 0.0;
+) -> Score {
+    let mut score = Score::ZERO;
 
     for &voice in grid.active_voices() {
         if let Some(pitch) = grid.sounding_pitch(voice, beat) {
             if mode.is_in_mode(pitch) {
                 // Reward structurally important degrees more
-                score += mode.pitch_fitness(pitch) * weights.mode_degree_reward;
+                score += mode
+                    .pitch_fitness(pitch)
+                    .mul_fixed(weights.mode_degree_reward);
             } else {
                 score += weights.out_of_mode_penalty;
             }
@@ -892,8 +897,8 @@ fn score_beat_modal(
 /// Score texture variety: reward pieces that vary the number of active voices
 /// across the piece. Penalize extremely thin textures (1 voice for too long).
 /// Reward variety in voice density (a mix of 2, 3, and 4 voices).
-fn score_texture(grid: &Grid, weights: &ScoringWeights) -> f64 {
-    let mut score = 0.0;
+fn score_texture(grid: &Grid, weights: &ScoringWeights) -> Score {
+    let mut score = Score::ZERO;
     let mut density_counts = [0u32; 5]; // index = number of active voices (0-4)
     let mut consecutive_thin = 0u32;
 
@@ -920,7 +925,7 @@ fn score_texture(grid: &Grid, weights: &ScoringWeights) -> f64 {
     if distinct_densities >= 3 {
         score += weights.texture_variety_reward;
     } else if distinct_densities >= 2 {
-        score += weights.texture_variety_reward * 0.5;
+        score += weights.texture_variety_reward.div_int(2);
     }
 
     score
@@ -934,18 +939,22 @@ fn score_texture(grid: &Grid, weights: &ScoringWeights) -> f64 {
 /// release toward the end. Tension is measured by: average pitch height,
 /// dissonance density, and voice density. The ideal curve peaks around
 /// 55-75% through the piece.
-fn score_tension_curve(grid: &Grid, weights: &ScoringWeights) -> f64 {
+///
+/// Uses integer arithmetic throughout. Tension values are scaled by 1000
+/// for precision without floating-point.
+fn score_tension_curve(grid: &Grid, weights: &ScoringWeights) -> Score {
     if grid.num_beats < 16 {
-        return 0.0;
+        return Score::ZERO;
     }
 
     // Divide the piece into 8 segments
     let seg_len = grid.num_beats / 8;
     if seg_len == 0 {
-        return 0.0;
+        return Score::ZERO;
     }
 
-    let mut segment_tension: Vec<f64> = Vec::new();
+    // Tension per segment, scaled by 1000 for integer precision.
+    let mut segment_tension: Vec<i64> = Vec::new();
 
     for seg in 0..8 {
         let start = seg * seg_len;
@@ -982,38 +991,40 @@ fn score_tension_curve(grid: &Grid, weights: &ScoringWeights) -> f64 {
         }
 
         if pitch_count == 0 {
-            segment_tension.push(0.0);
+            segment_tension.push(0);
             continue;
         }
 
-        // Tension = normalized pitch height + dissonance ratio
-        let avg_pitch = total_pitch as f64 / pitch_count as f64;
-        let pitch_tension = (avg_pitch - 48.0) / 36.0; // normalize ~C3-C6 range
-        let diss_ratio = if pair_count > 0 {
-            dissonance_count as f64 / pair_count as f64
+        // Tension = normalized pitch height + dissonance ratio (both scaled by 1000)
+        // pitch_tension = (avg_pitch - 48) * 1000 / 36
+        let avg_pitch_1000 = total_pitch as i64 * 1000 / pitch_count as i64;
+        let pitch_tension = (avg_pitch_1000 - 48_000) * 1000 / 36_000;
+        let diss_ratio_1000 = if pair_count > 0 {
+            dissonance_count as i64 * 1000 / pair_count as i64
         } else {
-            0.0
+            0
         };
 
-        segment_tension.push(pitch_tension + diss_ratio * 2.0);
+        segment_tension.push(pitch_tension + diss_ratio_1000 * 2);
     }
 
     // Find the peak segment
     let peak_seg = segment_tension
         .iter()
         .enumerate()
-        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .max_by_key(|(_, v)| *v)
         .map(|(i, _)| i)
         .unwrap_or(0);
 
     // Ideal peak: segments 4-5 (55-75% through the piece)
-    let peak_pos = peak_seg as f64 / 7.0;
-    let mut score = 0.0;
+    // peak_pos_pct = peak_seg * 100 / 7
+    let peak_pct = peak_seg * 100 / 7;
+    let mut score = Score::ZERO;
 
-    if (0.4..=0.8).contains(&peak_pos) {
+    if (40..=80).contains(&peak_pct) {
         score += weights.tension_curve_reward;
-    } else if (0.3..=0.9).contains(&peak_pos) {
-        score += weights.tension_curve_reward * 0.5;
+    } else if (30..=90).contains(&peak_pct) {
+        score += weights.tension_curve_reward.div_int(2);
     }
 
     // Bonus: tension should generally increase before the peak and decrease after
@@ -1027,13 +1038,17 @@ fn score_tension_curve(grid: &Grid, weights: &ScoringWeights) -> f64 {
     let total_before = peak_seg.max(1);
     let total_after = (segment_tension.len() - peak_seg - 1).max(1);
 
-    let arc_quality = (rising_before as f64 / total_before as f64
-        + falling_after as f64 / total_after as f64)
-        / 2.0;
+    // arc_quality as percentage (0-100): (rising/total + falling/total) * 50
+    let arc_quality_pct = rising_before * 50 / total_before + falling_after * 50 / total_after;
 
-    // Reward good arc shape (0.5 = random, 1.0 = perfect arc)
-    if arc_quality > 0.6 {
-        score += weights.tension_curve_reward * 0.5 * (arc_quality - 0.5);
+    // Reward good arc shape (50 = random, 100 = perfect arc)
+    // Original: if arc_quality > 0.6 → score += reward * 0.5 * (arc_quality - 0.5)
+    // Translated: if arc_quality_pct > 60 → score += reward * (arc_quality_pct - 50) / 200
+    if arc_quality_pct > 60 {
+        score += weights
+            .tension_curve_reward
+            .mul_int(arc_quality_pct as i64 - 50)
+            .div_int(200);
     }
 
     score
@@ -1043,21 +1058,17 @@ fn score_tension_curve(grid: &Grid, weights: &ScoringWeights) -> f64 {
 
 /// Score how well melodic intervals match Palestrina's empirical distribution.
 ///
-/// Palestrina's music is dominated by stepwise motion (2nds ~60%), with
-/// some 3rds (~20%), occasional 4ths/5ths (~12%), and rare larger leaps (~8%).
-/// This function penalizes distributions that deviate significantly.
-fn score_interval_distribution(grid: &Grid, weights: &ScoringWeights) -> f64 {
-    // Target distribution (proportion of intervals in each category)
-    // Based on empirical analysis of Palestrina masses
-    const TARGET_STEP: f64 = 0.55; // unison + 2nds (0-2 semitones)
-    const TARGET_THIRD: f64 = 0.22; // 3rds (3-4 semitones)
-    const TARGET_FOURTH_FIFTH: f64 = 0.15; // 4ths-5ths (5-7 semitones)
-    // remainder = larger leaps (~8%)
+/// Uses integer percentage arithmetic (0-100 scale) for determinism.
+fn score_interval_distribution(grid: &Grid, weights: &ScoringWeights) -> Score {
+    // Target distribution percentages (out of 100)
+    const TARGET_STEP_PCT: i64 = 55; // unison + 2nds (0-2 semitones)
+    const TARGET_THIRD_PCT: i64 = 22; // 3rds (3-4 semitones)
+    const TARGET_FOURTH_FIFTH_PCT: i64 = 15; // 4ths-5ths (5-7 semitones)
 
-    let mut step_count = 0u32;
-    let mut third_count = 0u32;
-    let mut fourth_fifth_count = 0u32;
-    let mut total = 0u32;
+    let mut step_count = 0i64;
+    let mut third_count = 0i64;
+    let mut fourth_fifth_count = 0i64;
+    let mut total = 0i64;
 
     for &voice in grid.active_voices() {
         let mut prev_pitch: Option<u8> = None;
@@ -1080,27 +1091,31 @@ fn score_interval_distribution(grid: &Grid, weights: &ScoringWeights) -> f64 {
     }
 
     if total < 20 {
-        return 0.0; // Not enough data for meaningful comparison
+        return Score::ZERO; // Not enough data for meaningful comparison
     }
 
-    let total_f = total as f64;
-    let step_ratio = step_count as f64 / total_f;
-    let third_ratio = third_count as f64 / total_f;
-    let fourth_fifth_ratio = fourth_fifth_count as f64 / total_f;
+    // Compute deviations in percentage points (0-100 scale)
+    let step_pct = step_count * 100 / total;
+    let third_pct = third_count * 100 / total;
+    let fourth_pct = fourth_fifth_count * 100 / total;
 
-    // Penalize deviation from target proportions
-    let step_dev = (step_ratio - TARGET_STEP).abs();
-    let third_dev = (third_ratio - TARGET_THIRD).abs();
-    let fourth_dev = (fourth_fifth_ratio - TARGET_FOURTH_FIFTH).abs();
+    let step_dev = (step_pct - TARGET_STEP_PCT).abs();
+    let third_dev = (third_pct - TARGET_THIRD_PCT).abs();
+    let fourth_dev = (fourth_pct - TARGET_FOURTH_FIFTH_PCT).abs();
 
     // Weight step motion deviation more heavily (it's most important)
-    let total_deviation = step_dev * 2.0 + third_dev + fourth_dev;
+    // Total deviation in percentage points
+    let total_deviation = step_dev * 2 + third_dev + fourth_dev;
 
-    // Only penalize if deviation is substantial (> 0.15)
-    if total_deviation > 0.15 {
-        weights.interval_distribution_penalty * (total_deviation - 0.15) * total_f
+    // Only penalize if deviation is substantial (> 15 percentage points)
+    if total_deviation > 15 {
+        // penalty * (deviation - 15) * total / 100
+        weights
+            .interval_distribution_penalty
+            .mul_int((total_deviation - 15) * total)
+            .div_int(100)
     } else {
-        0.0
+        Score::ZERO
     }
 }
 
@@ -1108,12 +1123,11 @@ fn score_interval_distribution(grid: &Grid, weights: &ScoringWeights) -> f64 {
 
 /// Score melodic entropy (information content) per voice.
 ///
-/// Moderate entropy is ideal for Palestrina: too low means the melody is
-/// monotonous (stuck on few pitches), too high means it's erratic and
-/// incoherent. The target Shannon entropy for melodic intervals is
-/// approximately 2.0-3.5 bits.
-fn score_entropy(grid: &Grid, weights: &ScoringWeights) -> f64 {
-    let mut score = 0.0;
+/// Uses integer approximation of Shannon entropy via a lookup table for
+/// -p*log2(p) scaled by 1000. The target entropy range is 2.0-3.5 bits,
+/// mapped to 2000-3500 in our millibits scale.
+fn score_entropy(grid: &Grid, weights: &ScoringWeights) -> Score {
+    let mut score = Score::ZERO;
 
     for &voice in grid.active_voices() {
         // Count interval occurrences
@@ -1138,27 +1152,46 @@ fn score_entropy(grid: &Grid, weights: &ScoringWeights) -> f64 {
             continue; // Not enough data
         }
 
-        // Compute Shannon entropy: H = -Σ p(x) * log2(p(x))
-        let total_f = total as f64;
-        let entropy: f64 = interval_counts
-            .values()
-            .map(|&c| {
-                let p = c as f64 / total_f;
-                if p > 0.0 { -p * p.log2() } else { 0.0 }
-            })
-            .sum();
+        // Compute Shannon entropy in millibits: H = -Σ p(x) * log2(p(x)) * 1000
+        // = Σ count(x) * log2(total/count(x)) * 1000 / total
+        // = (log2(total) * 1000 * total - Σ count(x) * log2(count(x)) * 1000) / total
+        //
+        // Using integer log2 approximation: ilog2_millis(n) ≈ log2(n) * 1000
+        let total_log = ilog2_millis(total);
+        let mut sum_c_log_c: i64 = 0;
+        for &c in interval_counts.values() {
+            sum_c_log_c += c as i64 * ilog2_millis(c);
+        }
+        let entropy_millibits = total_log * total as i64 - sum_c_log_c;
+        // Normalize: divide by total to get per-symbol entropy in millibits
+        let entropy_mb = entropy_millibits / total as i64;
 
-        // Target range: 2.0-3.5 bits
-        if (2.0..=3.5).contains(&entropy) {
+        // Target range: 2000-3500 millibits (= 2.0-3.5 bits)
+        if (2000..=3500).contains(&entropy_mb) {
             score += weights.entropy_reward;
-        } else if !(1.5..=4.5).contains(&entropy) {
+        } else if !(1500..=4500).contains(&entropy_mb) {
             // Way outside the sweet spot
             score += weights.entropy_penalty;
         }
-        // Between 1.5-2.0 or 3.5-4.5: no bonus, no penalty
+        // Between 1500-2000 or 3500-4500: no bonus, no penalty
     }
 
     score
+}
+
+/// Integer approximation of log2(n) * 1000 (millibits).
+/// Uses the integer part from bit position plus a small linear interpolation
+/// for the fractional part. Accurate to within ~3% for n >= 1.
+fn ilog2_millis(n: u32) -> i64 {
+    if n <= 1 {
+        return 0;
+    }
+    // Integer part: floor(log2(n))
+    let int_part = 31 - n.leading_zeros(); // = floor(log2(n))
+    // Fractional approximation: (n - 2^int_part) * 1000 / 2^int_part
+    let power = 1u32 << int_part;
+    let frac_millis = (n - power) as i64 * 1000 / power as i64;
+    int_part as i64 * 1000 + frac_millis
 }
 
 // ── Layer 6: Tonal contour constraints (Vaelith text) ──
@@ -1171,8 +1204,8 @@ fn score_entropy(grid: &Grid, weights: &ScoringWeights) -> f64 {
 ///
 /// This is separate from score_grid() because it requires the TextMapping.
 /// Call it alongside score_grid() in the main scoring pipeline.
-pub fn score_tonal_contour(grid: &Grid, mapping: &TextMapping, weights: &ScoringWeights) -> f64 {
-    let mut score = 0.0;
+pub fn score_tonal_contour(grid: &Grid, mapping: &TextMapping, weights: &ScoringWeights) -> Score {
+    let mut score = Score::ZERO;
     for span in &mapping.spans {
         score += score_span_contour(grid, span, weights);
 
@@ -1196,8 +1229,8 @@ pub fn score_tonal_contour_local(
     mapping: &TextMapping,
     weights: &ScoringWeights,
     beat: usize,
-) -> f64 {
-    let mut score = 0.0;
+) -> Score {
+    let mut score = Score::ZERO;
     for span in &mapping.spans {
         if beat >= span.start_beat && beat <= span.end_beat {
             score += score_span_contour(grid, span, weights);
@@ -1232,7 +1265,7 @@ pub fn tonal_contour_stats(grid: &Grid, mapping: &TextMapping) -> TonalContourSt
 
     for span in &mapping.spans {
         let contour_score = score_span_contour(grid, span, &weights);
-        if contour_score > 0.0 {
+        if contour_score > Score::ZERO {
             stats.compliant += 1;
         } else {
             stats.violated += 1;
@@ -1256,7 +1289,7 @@ fn score_span_contour(
     grid: &Grid,
     span: &crate::text_mapping::SyllableSpan,
     weights: &ScoringWeights,
-) -> f64 {
+) -> Score {
     // Collect pitches within the span
     let mut pitches: Vec<u8> = Vec::new();
     for beat in span.start_beat..=span.end_beat {
@@ -1270,13 +1303,13 @@ fn score_span_contour(
     }
 
     if pitches.is_empty() {
-        return 0.0;
+        return Score::ZERO;
     }
 
     // Check if the span has enough notes for the tone's minimum
     if pitches.len() < span.tone.min_notes() {
         // Not enough notes to realize the contour — mild penalty
-        return weights.tonal_contour_violation * 0.5;
+        return weights.tonal_contour_violation.div_int(2);
     }
 
     let first = pitches[0];
@@ -1322,7 +1355,7 @@ fn score_span_contour(
                 }
             } else {
                 // Only 2 notes but need 3 for dipping
-                weights.tonal_contour_violation * 0.5
+                weights.tonal_contour_violation.div_int(2)
             }
         }
         Tone::Peaking => {
@@ -1339,7 +1372,7 @@ fn score_span_contour(
                     weights.tonal_contour_violation
                 }
             } else {
-                weights.tonal_contour_violation * 0.5
+                weights.tonal_contour_violation.div_int(2)
             }
         }
     }
@@ -1370,7 +1403,7 @@ mod tests {
         let score = score_grid(&grid, &weights, &mode);
         // The parallel fifths penalty (-50) should dominate
         assert!(
-            score < 0.0,
+            score < Score::ZERO,
             "Parallel fifths should produce negative score, got {}",
             score
         );
@@ -1396,9 +1429,7 @@ mod tests {
         grid.set_note(Voice::Alto, 2, 59);
         grid.set_note(Voice::Soprano, 2, 62); // Soprano holds or continues
 
-        // Beat 1 is not a strong beat (strong = beat % 4 == 0), so let's adjust:
-        // Use beat 0 for preparation, beat 4... but we only have 4 beats.
-        // Instead, test the is_prepared_suspension function directly.
+        // Test the is_prepared_suspension function directly.
         let is_sus = is_prepared_suspension(&grid, Voice::Soprano, Voice::Alto, 1);
         assert!(
             is_sus,
@@ -1420,7 +1451,7 @@ mod tests {
         let score = score_grid(&grid, &weights, &mode);
         // Should include the strong-beat dissonance penalty
         assert!(
-            score < 0.0,
+            score < Score::ZERO,
             "Unprepared dissonance on strong beat should penalize, got {}",
             score
         );
@@ -1436,7 +1467,10 @@ mod tests {
         grid.set_note(Voice::Alto, 0, 52);
 
         let beat_score = score_beat_harmonic(&grid, &weights, 0);
-        assert!(beat_score > 0.0, "Consonant intervals should be rewarded");
+        assert!(
+            beat_score > Score::ZERO,
+            "Consonant intervals should be rewarded"
+        );
     }
 
     #[test]
@@ -1462,7 +1496,7 @@ mod tests {
 
         assert!(
             with_recovery > no_recovery,
-            "Leap with recovery ({:.1}) should score better than without ({:.1})",
+            "Leap with recovery ({}) should score better than without ({})",
             with_recovery,
             no_recovery
         );
@@ -1495,7 +1529,7 @@ mod tests {
 
         let score = score_tonal_contour(&grid, &mapping, &weights);
         assert!(
-            score > 0.0,
+            score > Score::ZERO,
             "Level tone with held pitch should be rewarded, got {}",
             score
         );
@@ -1527,7 +1561,7 @@ mod tests {
 
         let score = score_tonal_contour(&grid, &mapping, &weights);
         assert!(
-            score < 0.0,
+            score < Score::ZERO,
             "Rising tone with falling pitch should be penalized, got {}",
             score
         );
@@ -1545,7 +1579,7 @@ mod tests {
 
         let score = score_melodic_window(&grid, &weights, Voice::Soprano, 0, 6);
         assert!(
-            score > 0.0,
+            score > Score::ZERO,
             "Stepwise motion should be rewarded, got {}",
             score
         );
@@ -1575,7 +1609,7 @@ mod tests {
 
         let score = score_texture(&grid, &weights);
         assert!(
-            score > 0.0,
+            score > Score::ZERO,
             "Varied texture (2/3/4 voices) should be rewarded, got {}",
             score
         );
@@ -1597,9 +1631,44 @@ mod tests {
         let score = score_interval_distribution(&grid, &weights);
         // Mostly steps = close to target, should have low or no penalty
         assert!(
-            score >= -5.0,
+            score >= Score::from_int(-5),
             "Stepwise-dominated line should have mild distribution penalty, got {}",
             score
         );
+    }
+
+    #[test]
+    fn test_ilog2_millis_basic() {
+        assert_eq!(ilog2_millis(1), 0);
+        assert_eq!(ilog2_millis(2), 1000);
+        assert_eq!(ilog2_millis(4), 2000);
+        assert_eq!(ilog2_millis(8), 3000);
+        // log2(3) ≈ 1.585, our approx: 1000 + 500 = 1500
+        let l3 = ilog2_millis(3);
+        assert!(l3 >= 1400 && l3 <= 1600, "log2(3) approx: {l3}");
+    }
+
+    #[test]
+    fn test_ilog2_millis_accuracy() {
+        // Verify accuracy within 5% for representative values.
+        // Reference: log2(n) * 1000 (computed here as f64 for comparison only).
+        let cases: &[(u32, i64)] = &[
+            (10, 3321),   // log2(10) = 3.321928
+            (100, 6643),  // log2(100) = 6.643856
+            (1000, 9965), // log2(1000) = 9.96578
+        ];
+        for &(n, expected_millis) in cases {
+            let actual = ilog2_millis(n);
+            let error_pct = ((actual - expected_millis).abs() * 100) / expected_millis.max(1);
+            assert!(
+                error_pct <= 5,
+                "ilog2_millis({n}) = {actual}, expected ~{expected_millis} (error {error_pct}%)"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ilog2_millis_zero() {
+        assert_eq!(ilog2_millis(0), 0);
     }
 }

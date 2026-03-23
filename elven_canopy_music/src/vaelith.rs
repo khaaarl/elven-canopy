@@ -100,14 +100,14 @@ pub fn generate_phrases(
     num_sections: usize,
     rng: &mut GameRng,
 ) -> Vec<Vec<VaelithPhrase>> {
-    generate_phrases_with_brightness(lexicon, num_sections, 0.5, rng)
+    generate_phrases_with_brightness(lexicon, num_sections, 500, rng)
 }
 
-/// Generate phrases with brightness bias (0.0 = dark, 1.0 = bright).
+/// Generate phrases with brightness bias (0 = dark, 1000 = bright, 500 = neutral).
 pub fn generate_phrases_with_brightness(
     lexicon: &Lexicon,
     num_sections: usize,
-    brightness: f64,
+    brightness: u32,
     rng: &mut GameRng,
 ) -> Vec<Vec<VaelithPhrase>> {
     let nouns = lexicon.by_pos(PartOfSpeech::Noun);
@@ -162,24 +162,27 @@ pub fn generate_phrases_with_brightness(
 }
 
 /// Pick a lexical entry with brightness bias.
-/// Higher brightness favors front-class vowels, lower favors back-class.
-fn pick_biased<'a>(entries: &[&'a LexEntry], brightness: f64, rng: &mut GameRng) -> &'a LexEntry {
+/// Higher brightness (0-1000) favors front-class vowels, lower favors back-class.
+/// Uses integer weighted sampling for determinism.
+fn pick_biased<'a>(entries: &[&'a LexEntry], brightness: u32, rng: &mut GameRng) -> &'a LexEntry {
     if entries.is_empty() {
         panic!("Empty lexicon");
     }
 
-    // Calculate weights: front-class words get more weight when brightness > 0.5
-    let weights: Vec<f64> = entries
+    // Calculate integer weights (300-1000 range):
+    // Front: 300 + brightness * 700 / 1000
+    // Back:  300 + (1000 - brightness) * 700 / 1000
+    let weights: Vec<u64> = entries
         .iter()
         .map(|e| match e.vowel_class {
-            VowelClass::Front => 0.3 + brightness * 0.7, // 0.3–1.0
-            VowelClass::Back => 0.3 + (1.0 - brightness) * 0.7, // 1.0–0.3
+            VowelClass::Front => 300 + brightness as u64 * 700 / 1000,
+            VowelClass::Back => 300 + (1000 - brightness) as u64 * 700 / 1000,
         })
         .collect();
 
-    let total: f64 = weights.iter().sum();
-    let r: f64 = rng.next_f64() * total;
-    let mut cum = 0.0;
+    let total: u64 = weights.iter().sum();
+    let r: u64 = rng.next_u64() % total;
+    let mut cum: u64 = 0;
     for (i, &w) in weights.iter().enumerate() {
         cum += w;
         if cum > r {
@@ -193,7 +196,7 @@ fn pick_biased<'a>(entries: &[&'a LexEntry], brightness: f64, rng: &mut GameRng)
 #[allow(clippy::too_many_arguments)]
 fn generate_phrase(
     template: PhraseTemplate,
-    brightness: f64,
+    brightness: u32,
     nouns: &[&LexEntry],
     verbs: &[&LexEntry],
     adjectives: &[&LexEntry],
@@ -331,7 +334,7 @@ pub fn generate_single_phrase(lexicon: &Lexicon, rng: &mut GameRng) -> VaelithPh
         PhraseTemplate::PossessiveNoun,
     ];
     let template = templates[rng.range_usize(0, templates.len())];
-    generate_phrase(template, 0.5, &nouns, &verbs, &adjectives, &particles, rng).unwrap()
+    generate_phrase(template, 500, &nouns, &verbs, &adjectives, &particles, rng).unwrap()
 }
 
 #[cfg(test)]
@@ -376,11 +379,10 @@ mod tests {
         }
 
         // Vaelith should have >50% level tones (roots ~40% + suffixes ~95%)
-        let pct = level_count as f64 / total_count as f64;
+        let pct = level_count * 100 / total_count;
         assert!(
-            pct > 0.40,
-            "Level tones should dominate ({:.0}% found, expected >40%)",
-            pct * 100.0
+            pct > 40,
+            "Level tones should dominate ({pct}% found, expected >40%)",
         );
     }
 

@@ -181,7 +181,7 @@ pub fn generate_structure_for_voices(
             }
 
             // Skip voices randomly (except the lead voice)
-            if i > 0 && voices_added >= min_voices && rng.random_bool(0.25) {
+            if i > 0 && voices_added >= min_voices && rng.range_usize(0, 4) == 0 {
                 continue;
             }
 
@@ -219,7 +219,7 @@ pub fn generate_structure_for_voices(
                     beat: current_beat,
                 });
                 current_beat += rng.range_usize(6, 10); // thol lasts 6-9 beats
-            } else if rng.random_bool(0.5) {
+            } else if rng.range_usize(0, 2) == 0 {
                 // Dai (homophonic affirmation) at ~50% of other section boundaries
                 response_points.push(ResponsePoint {
                     marker: ResponseMarker::Dai,

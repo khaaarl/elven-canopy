@@ -29385,8 +29385,8 @@ fn flight_path_clear_no_creatures() {
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
     let target_voxel = VoxelCoord::new(elf_pos.x + 10, elf_pos.y, elf_pos.z);
 
-    use crate::projectile::{SubVoxelCoord, compute_aim_velocity};
-    let origin_sub = SubVoxelCoord::from_voxel_center(elf_pos);
+    use crate::projectile::{compute_aim_velocity, sub_voxel_from_voxel_center};
+    let origin_sub = sub_voxel_from_voxel_center(elf_pos);
     let speed = sim.config.arrow_base_speed;
     let gravity = sim.config.arrow_gravity;
     let aim = compute_aim_velocity(origin_sub, target_voxel, speed, gravity, 5, 5000);
@@ -29415,8 +29415,8 @@ fn flight_path_blocked_by_friendly_creature() {
     // Target 10 voxels away (past the blocker).
     let target_voxel = VoxelCoord::new(shooter_pos.x + 10, shooter_pos.y, shooter_pos.z);
 
-    use crate::projectile::{SubVoxelCoord, compute_aim_velocity};
-    let origin_sub = SubVoxelCoord::from_voxel_center(shooter_pos);
+    use crate::projectile::{compute_aim_velocity, sub_voxel_from_voxel_center};
+    let origin_sub = sub_voxel_from_voxel_center(shooter_pos);
     let speed = sim.config.arrow_base_speed;
     let gravity = sim.config.arrow_gravity;
     let aim = compute_aim_velocity(origin_sub, target_voxel, speed, gravity, 5, 5000);
@@ -29444,8 +29444,8 @@ fn flight_path_origin_area_excluded_for_friendlies() {
     // Target far away.
     let target_voxel = VoxelCoord::new(shooter_pos.x + 10, shooter_pos.y, shooter_pos.z);
 
-    use crate::projectile::{SubVoxelCoord, compute_aim_velocity};
-    let origin_sub = SubVoxelCoord::from_voxel_center(shooter_pos);
+    use crate::projectile::{compute_aim_velocity, sub_voxel_from_voxel_center};
+    let origin_sub = sub_voxel_from_voxel_center(shooter_pos);
     let speed = sim.config.arrow_base_speed;
     let gravity = sim.config.arrow_gravity;
     let aim = compute_aim_velocity(origin_sub, target_voxel, speed, gravity, 5, 5000);

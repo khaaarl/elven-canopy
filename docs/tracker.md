@@ -59,7 +59,6 @@ This reduces merge conflicts when parallel work streams add items.
 ```
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
-[ ] B-music-floats         Excise f32/f64 from music composition for determinism
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
 [ ] F-adventure-mode       Control individual elf (RPG-like)
@@ -262,6 +261,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-flying-tasks         Flying creatures skip task system entirely
 [x] B-hostile-detect-nav   detect_hostile_targets panics on flying targets (NavNodeId u32::MAX hack)
 [x] B-modifier-hotkeys     Hotkeys should not fire when modifier keys (Ctrl/Shift/Alt) are held
+[x] B-music-floats         Excise f32/f64 from music composition for determinism
 [x] B-preview-blueprints   Preview treats blueprints as complete
 [x] B-raid-spawn           Raiders sometimes spawn inside map instead of at perimeter
 [x] B-sim-floats           Remaining f32/f64 in sim logic threaten determinism
@@ -2537,7 +2537,7 @@ panel. Later feeds into emotional dimensions when `F-emotions` lands.
 ### Culture, Language & Music
 
 #### B-music-floats — Excise f32/f64 from music composition for determinism
-**Status:** Todo
+**Status:** Done
 
 The music composition system (create_composition in elven_canopy_music,
 called from elven_canopy_sim) uses f32 arithmetic internally. This

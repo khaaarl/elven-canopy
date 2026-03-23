@@ -1861,7 +1861,7 @@ impl SimState {
         events: &mut Vec<SimEvent>,
     ) -> bool {
         use crate::inventory::ItemKind;
-        use crate::projectile::{SubVoxelCoord, compute_aim_velocity};
+        use crate::projectile::{compute_aim_velocity, sub_voxel_from_voxel_center};
 
         // 1. Both creatures must exist and be alive.
         let attacker = match self.db.creatures.get(&attacker_id) {
@@ -1925,7 +1925,7 @@ impl SimState {
 
         // 5. Aim feasibility — use the aim solver to check if a trajectory exists.
         // Strength modifies arrow speed (stronger draw → faster arrow).
-        let origin_sub = SubVoxelCoord::from_voxel_center(attacker_pos);
+        let origin_sub = sub_voxel_from_voxel_center(attacker_pos);
         let attacker_str = self.trait_int(attacker_id, TraitKind::Strength, 0);
         let speed = crate::stats::apply_stat_multiplier(self.config.arrow_base_speed, attacker_str);
         let gravity = self.config.arrow_gravity;
@@ -2017,7 +2017,7 @@ impl SimState {
         target: VoxelCoord,
         shooter_id: Option<CreatureId>,
     ) {
-        use crate::projectile::{SubVoxelCoord, compute_aim_velocity};
+        use crate::projectile::{compute_aim_velocity, sub_voxel_from_voxel_center};
 
         let was_empty = self.db.projectiles.is_empty();
 
@@ -2026,7 +2026,7 @@ impl SimState {
         self.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 1, None, None);
 
         // Compute aim velocity (apply shooter's STR to arrow speed if present).
-        let origin_sub = SubVoxelCoord::from_voxel_center(origin);
+        let origin_sub = sub_voxel_from_voxel_center(origin);
         let base_speed = self.config.arrow_base_speed;
         let speed = if let Some(sid) = shooter_id {
             let str_stat = self.trait_int(sid, TraitKind::Strength, 0);
@@ -2064,7 +2064,7 @@ impl SimState {
     /// creature collision. Resolved projectiles are removed from the table.
     /// Reschedules itself for tick+1 if projectiles remain.
     pub(crate) fn process_projectile_tick(&mut self, events: &mut Vec<SimEvent>) {
-        use crate::projectile::ballistic_step;
+        use crate::projectile::{ballistic_step, sub_voxel_to_voxel};
 
         let gravity = self.config.arrow_gravity;
         let (world_sx, world_sy, world_sz) = self.config.world_size;
@@ -2080,7 +2080,7 @@ impl SimState {
             };
 
             // Step 1: save current voxel as prev_voxel.
-            let current_voxel = proj.position.to_voxel();
+            let current_voxel = sub_voxel_to_voxel(proj.position);
 
             // Step 2-3: symplectic Euler (gravity, then velocity).
             let (new_pos, new_vel) = ballistic_step(proj.position, proj.velocity, gravity);
@@ -2103,7 +2103,7 @@ impl SimState {
             }
 
             // Step 4: determine containing voxel (safe to cast now).
-            let new_voxel = new_pos.to_voxel();
+            let new_voxel = sub_voxel_to_voxel(new_pos);
 
             // Step 5: solid voxel check.
             if self.world.in_bounds(new_voxel) && self.world.get(new_voxel).is_solid() {
@@ -2244,7 +2244,7 @@ impl SimState {
         // Compute damage from impact speed (momentum-based: linear in speed).
         // REFERENCE_SPEED is arrow_base_speed (the "normal" launch speed).
         let impact_speed_sq = impact_velocity.magnitude_sq();
-        let impact_speed = crate::projectile::isqrt_i128(impact_speed_sq);
+        let impact_speed = elven_canopy_utils::fixed::isqrt_i128(impact_speed_sq);
         let reference_speed = self.config.arrow_base_speed as i128;
         let multiplier = self.config.arrow_damage_multiplier.max(1) as i128;
         let base_damage = if reference_speed > 0 {
@@ -3683,13 +3683,13 @@ impl SimState {
         target_voxel: VoxelCoord,
         velocity: crate::projectile::SubVoxelVec,
     ) -> Option<CreatureId> {
-        use crate::projectile::{SubVoxelCoord, ballistic_step};
+        use crate::projectile::{ballistic_step, sub_voxel_from_voxel_center, sub_voxel_to_voxel};
 
         let gravity = self.config.arrow_gravity;
         let (world_sx, world_sy, world_sz) = self.config.world_size;
         let max_ticks: u32 = 5000;
 
-        let origin_sub = SubVoxelCoord::from_voxel_center(origin_voxel);
+        let origin_sub = sub_voxel_from_voxel_center(origin_voxel);
         let mut pos = origin_sub;
         let mut vel = velocity;
         let mut prev_voxel = origin_voxel;
@@ -3711,7 +3711,7 @@ impl SimState {
                 return None; // Out of bounds — no friendly hit.
             }
 
-            let current_voxel = pos.to_voxel();
+            let current_voxel = sub_voxel_to_voxel(pos);
 
             // Solid voxel — stop (arrow would hit surface).
             if self.world.in_bounds(current_voxel) && self.world.get(current_voxel).is_solid() {
@@ -3937,7 +3937,7 @@ impl SimState {
         creature_id: CreatureId,
         target_id: CreatureId,
     ) -> Option<NavEdgeId> {
-        use crate::projectile::{SubVoxelCoord, compute_aim_velocity};
+        use crate::projectile::{compute_aim_velocity, sub_voxel_from_voxel_center};
 
         let creature = self.db.creatures.get(&creature_id)?;
         let species = creature.species;
@@ -4004,7 +4004,7 @@ impl SimState {
 
             if has_los {
                 // Check aim feasibility from the neighbor position.
-                let origin_sub = SubVoxelCoord::from_voxel_center(neighbor_pos);
+                let origin_sub = sub_voxel_from_voxel_center(neighbor_pos);
                 let aim = compute_aim_velocity(origin_sub, los_target, speed, gravity, 5, 5000);
                 if aim.hit_tick.is_some() {
                     // Check flight path for friendly-fire.

@@ -17,7 +17,7 @@
 
 use crate::grid::{Grid, Voice, interval};
 use crate::markov::MarkovModels;
-use crate::mode::ModeInstance;
+use crate::mode::{ModeInstance, Score};
 use elven_canopy_prng::GameRng;
 
 /// Fill all rest cells in the grid with Markov-sampled pitches.
@@ -131,10 +131,11 @@ fn fill_voice(
             // Rest just before a new structural section for clean transitions
             true
         } else if beats_since_rest > 24 && beat_in_bar == 0 {
-            // After ~3 bars, take a breath on a downbeat
-            rng.random_bool(0.4)
+            // After ~3 bars, take a breath on a downbeat (~40%)
+            rng.range_usize(0, 5) < 2
         } else {
-            rng.random_bool(0.03)
+            // Rare random rest (~3%)
+            rng.range_usize(0, 100) < 3
         };
 
         if should_rest {
@@ -144,7 +145,7 @@ fn fill_voice(
 
         // Sample a pitch
         let pitch = if let Some(prev) = last_pitch {
-            let rng_val: f64 = rng.next_f64();
+            let rng_val: u64 = rng.next_u64();
             let proposed_interval = models.melodic.sample(&recent_intervals, rng_val);
             let raw_pitch = (prev as i16 + proposed_interval as i16)
                 .clamp(range_low as i16, range_high as i16) as u8;
@@ -155,7 +156,7 @@ fn fill_voice(
             let mut best_score = pitch_score(grid, voice, beat, proposed_pitch, models, mode);
 
             for _ in 0..4 {
-                let alt_rng: f64 = rng.next_f64();
+                let alt_rng: u64 = rng.next_u64();
                 let alt_interval = models.melodic.sample(&recent_intervals, alt_rng);
                 let raw = (prev as i16 + alt_interval as i16)
                     .clamp(range_low as i16, range_high as i16) as u8;
@@ -176,20 +177,27 @@ fn fill_voice(
             if candidates.is_empty() {
                 mode.snap_to_mode(mid)
             } else {
-                // Weight toward final and 5th
-                let weights: Vec<f64> = candidates.iter().map(|&p| mode.pitch_fitness(p)).collect();
-                let total: f64 = weights.iter().sum();
-                let r: f64 = rng.next_f64() * total;
-                let mut cum = 0.0;
-                let mut chosen = candidates[0];
-                for (i, &w) in weights.iter().enumerate() {
-                    cum += w;
-                    if cum > r {
-                        chosen = candidates[i];
-                        break;
+                // Weight toward final and 5th (using Score for determinism)
+                let weights: Vec<i64> = candidates
+                    .iter()
+                    .map(|&p| mode.pitch_fitness(p).raw())
+                    .collect();
+                let total: u64 = weights.iter().map(|&w| w.max(0) as u64).sum();
+                if total == 0 {
+                    candidates[0]
+                } else {
+                    let r: u64 = rng.next_u64() % total;
+                    let mut cum: u64 = 0;
+                    let mut chosen = candidates[0];
+                    for (i, &w) in weights.iter().enumerate() {
+                        cum += w.max(0) as u64;
+                        if cum > r {
+                            chosen = candidates[i];
+                            break;
+                        }
                     }
+                    chosen
                 }
-                chosen
             }
         };
 
@@ -201,8 +209,8 @@ fn fill_voice(
             4 => rng.range_usize_inclusive(1, 3), // beat 3: quarter to dotted quarter
             2 | 6 => rng.range_usize_inclusive(1, 2), // weak beats: eighth to quarter
             _ => {
-                if rng.random_bool(0.6) {
-                    1
+                if rng.range_usize(0, 5) < 3 {
+                    1 // ~60%
                 } else {
                     0
                 }
@@ -242,11 +250,11 @@ fn pitch_score(
     proposed_pitch: u8,
     models: &MarkovModels,
     mode: &ModeInstance,
-) -> f64 {
-    let mut score = 0.0;
+) -> Score {
+    let mut score = Score::ZERO;
 
     // Modal fitness
-    score += mode.pitch_fitness(proposed_pitch) * 2.0;
+    score += mode.pitch_fitness(proposed_pitch).mul_int(2);
 
     // Harmonic compatibility with other active voices
     for &other_voice in grid.active_voices() {
@@ -259,23 +267,23 @@ fn pitch_score(
 
             // Basic consonance/dissonance
             if interval::is_consonant(iv) {
-                score += 2.0;
+                score += Score::from_int(2);
             } else {
-                score -= 1.5;
+                score -= Score::from_ratio(3, 2); // 1.5
             }
 
             let is_strong = beat.is_multiple_of(4);
             if is_strong && interval::is_perfect_consonance(iv) {
-                score += 1.0;
+                score += Score::ONE;
             }
 
             // Use trained harmonic model for finer preference
             let iv_clamped = iv.clamp(-24, 24) as i8;
             if let Some(&weight) = models.harmonic.unigram.get(&iv_clamped) {
-                let total: f64 = models.harmonic.unigram.values().sum();
-                if total > 0.0 {
-                    // Normalize to [0, 1] and scale
-                    score += (weight / total) * 3.0;
+                let total: u64 = models.harmonic.unigram.values().map(|&w| w as u64).sum();
+                if total > 0 {
+                    // Normalize and scale by 3: weight * 3 / total
+                    score += Score::from_ratio(weight as i64 * 3, total as i64);
                 }
             }
 
@@ -290,9 +298,9 @@ fn pitch_score(
                     if let Some(table) = models.harmonic.transitions.get(&key)
                         && let Some(&weight) = table.get(&iv_clamped)
                     {
-                        let total: f64 = table.values().sum();
-                        if total > 0.0 {
-                            score += (weight / total) * 2.0;
+                        let total: u64 = table.values().map(|&w| w as u64).sum();
+                        if total > 0 {
+                            score += Score::from_ratio(weight as i64 * 2, total as i64);
                         }
                     }
                 }
@@ -300,7 +308,7 @@ fn pitch_score(
 
             let abs_iv = iv.unsigned_abs();
             if abs_iv > 24 {
-                score -= 1.0;
+                score -= Score::ONE;
             }
 
             // Penalize parallel 5ths/octaves with previous beat
@@ -320,11 +328,11 @@ fn pitch_score(
                     if same_direction {
                         // Parallel 5ths or octaves — heavy penalty
                         if (curr_ic == 7 && prev_ic == 7) || (curr_ic == 0 && prev_ic == 0) {
-                            score -= 10.0;
+                            score -= Score::from_int(10);
                         }
                         // Hidden (direct) 5ths/octaves — lighter penalty
                         if (curr_ic == 7 && prev_ic != 7) || (curr_ic == 0 && prev_ic != 0) {
-                            score -= 3.0;
+                            score -= Score::from_int(3);
                         }
                     }
                 }
@@ -340,10 +348,10 @@ fn pitch_score(
         if let Some(other_pitch) = grid.sounding_pitch(other_voice, beat) {
             // Higher-numbered voice should have lower pitch
             if voice.index() < other_voice.index() && proposed_pitch < other_pitch {
-                score -= 5.0;
+                score -= Score::from_int(5);
             }
             if voice.index() > other_voice.index() && proposed_pitch > other_pitch {
-                score -= 5.0;
+                score -= Score::from_int(5);
             }
         }
     }
@@ -560,15 +568,10 @@ mod tests {
                 }
             }
         }
-        let pct = if total > 0 {
-            in_mode as f64 / total as f64
-        } else {
-            0.0
-        };
+        let pct = if total > 0 { in_mode * 100 / total } else { 0 };
         assert!(
-            pct > 0.85,
-            "At least 85% of draft notes should be in mode, got {:.0}%",
-            pct * 100.0
+            pct > 85,
+            "At least 85% of draft notes should be in mode, got {pct}%",
         );
     }
 

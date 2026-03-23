@@ -3,7 +3,8 @@
 // Takes a draft-filled grid and iteratively improves it by proposing
 // mutations, scoring the result, and accepting/rejecting based on the
 // Metropolis criterion. Uses a cooling schedule with periodic reheating
-// and optional adaptive cooling.
+// and optional adaptive cooling. All arithmetic uses `Score` (Fixed64)
+// for cross-platform determinism — no floating-point operations.
 //
 // Three types of mutations:
 // - Pitch mutation (~75%): change a note's pitch using Markov-guided proposal,
@@ -26,7 +27,7 @@
 
 use crate::grid::{Grid, Voice};
 use crate::markov::MarkovModels;
-use crate::mode::ModeInstance;
+use crate::mode::{ModeInstance, Score};
 use crate::scoring::{
     ScoringWeights, score_grid, score_local, score_tonal_contour, score_tonal_contour_local,
 };
@@ -36,20 +37,22 @@ use crate::vaelith::VaelithPhrase;
 use elven_canopy_prng::GameRng;
 
 /// SA configuration parameters.
+/// Temperature and cooling use `Score` (Fixed64) for determinism.
 #[derive(Debug, Clone)]
 pub struct SAConfig {
     /// Initial temperature.
-    pub initial_temp: f64,
+    pub initial_temp: Score,
     /// Final temperature (stop condition).
-    pub final_temp: f64,
-    /// Cooling rate per step (multiplicative).
-    pub cooling_rate: f64,
+    pub final_temp: Score,
+    /// Cooling rate per step (multiplicative), as a fraction < 1.
+    /// Stored as Score where 1.0 = Score::ONE.
+    pub cooling_rate: Score,
     /// Number of mutations to try per temperature step.
     pub mutations_per_step: usize,
     /// Temperature at which to reheat.
-    pub reheat_temp: f64,
+    pub reheat_temp: Score,
     /// Temperature to reheat to.
-    pub reheat_target: f64,
+    pub reheat_target: Score,
     /// Number of reheats allowed.
     pub max_reheats: usize,
     /// Enable adaptive cooling (adjust cooling rate based on acceptance ratio).
@@ -59,12 +62,12 @@ pub struct SAConfig {
 impl Default for SAConfig {
     fn default() -> Self {
         SAConfig {
-            initial_temp: 10.0,
-            final_temp: 0.01,
-            cooling_rate: 0.9995,
+            initial_temp: Score::from_int(10),
+            final_temp: Score::from_ratio(1, 100), // 0.01
+            cooling_rate: Score::from_ratio(9995, 10000), // 0.9995
             mutations_per_step: 1,
-            reheat_temp: 0.1,
-            reheat_target: 3.0,
+            reheat_temp: Score::from_ratio(1, 10), // 0.1
+            reheat_target: Score::from_int(3),
             max_reheats: 3,
             adaptive: true,
         }
@@ -74,14 +77,14 @@ impl Default for SAConfig {
 /// Adaptive cooling state: tracks acceptance rate over a sliding window
 /// and adjusts the cooling rate accordingly.
 struct AdaptiveCooler {
-    base_rate: f64,
+    base_rate: Score,
     window_accepted: u32,
     window_total: u32,
     window_size: u32,
 }
 
 impl AdaptiveCooler {
-    fn new(base_rate: f64) -> Self {
+    fn new(base_rate: Score) -> Self {
         AdaptiveCooler {
             base_rate,
             window_accepted: 0,
@@ -100,27 +103,33 @@ impl AdaptiveCooler {
     /// Return the current effective cooling rate, adapting based on acceptance.
     /// Target acceptance rate: 15-40%. If too low, slow cooling (rate closer
     /// to 1.0). If too high, speed up cooling (rate closer to base).
-    fn effective_rate(&mut self) -> f64 {
+    fn effective_rate(&mut self) -> Score {
         if self.window_total < self.window_size {
             return self.base_rate;
         }
 
-        let accept_ratio = self.window_accepted as f64 / self.window_total as f64;
+        // accept_ratio as percentage (0-100)
+        let accept_pct = self.window_accepted * 100 / self.window_total;
 
         // Reset window for next measurement
         self.window_accepted = 0;
         self.window_total = 0;
 
-        if accept_ratio < 0.05 {
+        // Compute adjustment toward Score::ONE (slower cooling)
+        let gap = Score::ONE - self.base_rate;
+
+        if accept_pct < 5 {
             // Almost nothing accepted — slow cooling dramatically
-            // Move rate toward 1.0 (slow)
-            self.base_rate + (1.0 - self.base_rate) * 0.5
-        } else if accept_ratio < 0.15 {
+            // base_rate + gap * 0.5
+            self.base_rate + gap.div_int(2)
+        } else if accept_pct < 15 {
             // Below target — slow cooling a bit
-            self.base_rate + (1.0 - self.base_rate) * 0.2
-        } else if accept_ratio > 0.50 {
+            // base_rate + gap * 0.2
+            self.base_rate + gap.mul_int(2).div_int(10)
+        } else if accept_pct > 50 {
             // Too many accepted — speed up cooling
-            self.base_rate * 0.95
+            // base_rate * 0.95
+            self.base_rate.mul_int(95).div_int(100)
         } else {
             // In the sweet spot — use base rate
             self.base_rate
@@ -131,7 +140,7 @@ impl AdaptiveCooler {
 /// Result of an SA run.
 #[derive(Debug)]
 pub struct SAResult {
-    pub final_score: f64,
+    pub final_score: Score,
     pub iterations: usize,
     pub accepted: usize,
     pub reheats: usize,
@@ -185,7 +194,8 @@ pub fn anneal(
     while temp > config.final_temp {
         for _ in 0..config.mutations_per_step {
             // 20% duration mutations, 80% pitch mutations
-            let do_duration_mutation = rng.next_f64() < 0.2;
+            let roll = rng.range_usize(0, 5);
+            let do_duration_mutation = roll == 0; // 1 in 5 = 20%
 
             if do_duration_mutation {
                 // Duration mutation: extend or shorten a note
@@ -219,8 +229,8 @@ pub fn anneal(
             iterations += 1;
         }
 
-        // Cool
-        temp *= config.cooling_rate;
+        // Cool: temp = temp * cooling_rate
+        temp = temp.mul_fixed(config.cooling_rate);
 
         // Reheat if needed
         if temp < config.reheat_temp && reheats < config.max_reheats {
@@ -295,10 +305,11 @@ pub fn anneal_with_text(
 
     while temp > config.final_temp {
         for _ in 0..config.mutations_per_step {
-            let roll: f64 = rng.next_f64();
+            // Use integer roll: 0-19 range
+            let roll = rng.range_usize(0, 20);
             let mut step_accepted = false;
 
-            if roll < 0.05 && num_sections > 0 && !phrase_candidates.is_empty() {
+            if roll == 0 && num_sections > 0 && !phrase_candidates.is_empty() {
                 // Text-swap macro mutation (~5%)
                 let delta = try_text_swap_mutation(
                     grid,
@@ -315,8 +326,8 @@ pub fn anneal_with_text(
                     accepted += 1;
                     step_accepted = true;
                 }
-            } else if roll < 0.25 {
-                // Duration mutation (~20%)
+            } else if roll < 4 {
+                // Duration mutation (~15-20%)
                 let idx = rng.range_usize(0, mutable_cells.len());
                 let (voice, beat) = mutable_cells[idx];
                 let delta = try_duration_mutation(
@@ -335,7 +346,7 @@ pub fn anneal_with_text(
                     step_accepted = true;
                 }
             } else {
-                // Pitch mutation with tonal contour awareness (~75%)
+                // Pitch mutation with tonal contour awareness (~75-80%)
                 let idx = rng.range_usize(0, mutable_cells.len());
                 let (voice, beat) = mutable_cells[idx];
                 let delta = try_pitch_mutation_with_text(
@@ -359,7 +370,7 @@ pub fn anneal_with_text(
         } else {
             config.cooling_rate
         };
-        temp *= rate;
+        temp = temp.mul_fixed(rate);
 
         if temp < config.reheat_temp && reheats < config.max_reheats {
             temp = config.reheat_target;
@@ -387,9 +398,9 @@ fn try_pitch_mutation_with_text(
     mapping: &TextMapping,
     voice: Voice,
     beat: usize,
-    temp: f64,
+    temp: Score,
     rng: &mut GameRng,
-) -> Option<f64> {
+) -> Option<Score> {
     let old_pitch = grid.cell(voice, beat).pitch;
     let (range_low, range_high) = voice.range();
 
@@ -425,7 +436,7 @@ fn try_pitch_mutation_with_text(
         p.unwrap_or(old_pitch)
     };
 
-    let rng_val: f64 = rng.next_f64();
+    let rng_val: u64 = rng.next_u64();
     let proposed_interval = models.melodic.sample(&context, rng_val);
     let raw_pitch = (pitch_before as i16 + proposed_interval as i16)
         .clamp(range_low as i16, range_high as i16) as u8;
@@ -475,9 +486,9 @@ fn try_text_swap_mutation(
     plan: &StructurePlan,
     mapping: &mut TextMapping,
     phrase_candidates: &[Vec<VaelithPhrase>],
-    temp: f64,
+    temp: Score,
     rng: &mut GameRng,
-) -> Option<f64> {
+) -> Option<Score> {
     let num_sections = plan.imitation_points.len().min(phrase_candidates.len());
     if num_sections == 0 {
         return None;
@@ -541,9 +552,9 @@ fn try_pitch_mutation(
     mode: &ModeInstance,
     voice: Voice,
     beat: usize,
-    temp: f64,
+    temp: Score,
     rng: &mut GameRng,
-) -> Option<f64> {
+) -> Option<Score> {
     let old_pitch = grid.cell(voice, beat).pitch;
     let (range_low, range_high) = voice.range();
 
@@ -578,7 +589,7 @@ fn try_pitch_mutation(
         p.unwrap_or(old_pitch)
     };
 
-    let rng_val: f64 = rng.next_f64();
+    let rng_val: u64 = rng.next_u64();
     let proposed_interval = models.melodic.sample(&context, rng_val);
     let raw_pitch = (pitch_before as i16 + proposed_interval as i16)
         .clamp(range_low as i16, range_high as i16) as u8;
@@ -627,9 +638,9 @@ fn try_duration_mutation(
     voice: Voice,
     beat: usize,
     structural: &std::collections::HashSet<(usize, usize)>,
-    temp: f64,
+    temp: Score,
     rng: &mut GameRng,
-) -> Option<f64> {
+) -> Option<Score> {
     let cell = grid.cell(voice, beat);
     if cell.is_rest || !cell.attack {
         return None;
@@ -648,7 +659,7 @@ fn try_duration_mutation(
     let current_dur = note_end - beat + 1;
 
     // Decide: extend (+1) or shorten (-1)
-    let extend = rng.random_bool(0.5);
+    let extend = rng.range_usize(0, 2) == 0;
 
     if extend {
         // Try to extend by 1 beat
@@ -719,14 +730,79 @@ fn try_duration_mutation(
     }
 }
 
-/// Metropolis acceptance criterion.
-fn metropolis_accept(delta: f64, temp: f64, rng: &mut GameRng) -> bool {
-    if delta >= 0.0 {
-        true
-    } else {
-        let probability = (delta / temp).exp();
-        rng.next_f64() < probability
+/// Metropolis acceptance criterion using integer arithmetic.
+///
+/// For delta >= 0: always accept (improvement).
+/// For delta < 0: accept with probability exp(delta / temp).
+///
+/// Uses a precomputed lookup table for deterministic exp approximation.
+/// The table maps integer x values (where x = delta * 1024 / temp, clamped
+/// to [-10240, 0]) to acceptance thresholds in [0, u64::MAX].
+fn metropolis_accept(delta: Score, temp: Score, rng: &mut GameRng) -> bool {
+    if delta.raw() >= 0 {
+        return true;
     }
+    if temp.raw() <= 0 {
+        return false;
+    }
+
+    // Compute x = delta / temp, scaled by 1024 for table lookup.
+    // Using i128 to avoid overflow: (delta.raw() * 1024) / temp.raw()
+    let x_scaled = (delta.raw() as i128 * 1024) / temp.raw() as i128;
+
+    // Clamp to table range [-10240, 0]
+    let x_clamped = x_scaled.clamp(-10240, 0) as i64;
+
+    // Lookup: exp(x_clamped / 1024) * u64::MAX
+    let threshold = exp_threshold(x_clamped);
+
+    rng.next_u64() < threshold
+}
+
+/// Precomputed exp(x/1024) * u64::MAX for x in [-10240, 0].
+///
+/// Uses a piecewise linear approximation between anchor points computed
+/// at compile time. For x < -10240, exp ≈ 0 (always reject). For x = 0,
+/// exp = 1.0 (always accept, handled before this is called).
+///
+/// The anchor points are spaced 1024 apart (corresponding to integer
+/// exp arguments -10, -9, ..., -1, 0), with linear interpolation between.
+fn exp_threshold(x_scaled: i64) -> u64 {
+    // Anchor points: exp(-k) * u64::MAX for k = 0, 1, ..., 10
+    // Computed as: (e^(-k) * 2^64) rounded to nearest u64.
+    const ANCHORS: [u64; 11] = [
+        u64::MAX,            // exp(0) = 1.0
+        6786177901268085487, // exp(-1) ≈ 0.3679
+        2496495334008789231, // exp(-2) ≈ 0.1353
+        918327078262498632,  // exp(-3) ≈ 0.0498
+        337794023071187612,  // exp(-4) ≈ 0.0183
+        124266580753498688,  // exp(-5) ≈ 0.00674
+        45716512014715680,   // exp(-6) ≈ 0.00248
+        16820555515377696,   // exp(-7) ≈ 0.000912
+        6188154691388704,    // exp(-8) ≈ 0.000335
+        2276172972498720,    // exp(-9) ≈ 0.000123
+        837677599463360,     // exp(-10) ≈ 0.0000454
+    ];
+
+    if x_scaled >= 0 {
+        return u64::MAX;
+    }
+    if x_scaled <= -10240 {
+        return 0; // exp(-10) is already tiny; below that, reject
+    }
+
+    // Find which segment we're in: segment k corresponds to x in [-(k+1)*1024, -k*1024]
+    let abs_x = (-x_scaled) as u64;
+    let segment = (abs_x / 1024) as usize; // 0..=9
+    let frac = abs_x % 1024; // 0..1023
+
+    let high = ANCHORS[segment]; // exp(-segment)
+    let low = ANCHORS[segment + 1]; // exp(-(segment+1))
+
+    // Linear interpolation: high - (high - low) * frac / 1024
+    // Using u128 to avoid overflow in the multiplication
+    let range = high - low;
+    high - ((range as u128 * frac as u128) / 1024) as u64
 }
 
 #[cfg(test)]
@@ -752,9 +828,9 @@ mod tests {
         let _score_before = score_grid(&grid, &weights, &mode);
 
         let config = SAConfig {
-            initial_temp: 5.0,
-            final_temp: 0.1,
-            cooling_rate: 0.99,
+            initial_temp: Score::from_int(5),
+            final_temp: Score::from_ratio(1, 10),     // 0.1
+            cooling_rate: Score::from_ratio(99, 100), // 0.99
             mutations_per_step: 5,
             max_reheats: 1,
             ..Default::default()
@@ -799,9 +875,9 @@ mod tests {
         let mut mapping = apply_text_mapping(&mut grid, &plan, &phrases);
 
         let config = SAConfig {
-            initial_temp: 5.0,
-            final_temp: 0.1,
-            cooling_rate: 0.99,
+            initial_temp: Score::from_int(5),
+            final_temp: Score::from_ratio(1, 10),
+            cooling_rate: Score::from_ratio(99, 100),
             mutations_per_step: 5,
             max_reheats: 1,
             ..Default::default()
@@ -823,5 +899,133 @@ mod tests {
         assert!(result.iterations > 0, "Text-aware SA should have run");
         assert!(result.accepted > 0, "Text-aware SA should accept mutations");
         assert!(!mapping.spans.is_empty(), "Mapping should still have spans");
+    }
+
+    #[test]
+    fn test_metropolis_always_accepts_improvement() {
+        let mut rng = GameRng::new(42);
+        let delta = Score::from_int(5); // positive = improvement
+        let temp = Score::from_int(1);
+        assert!(metropolis_accept(delta, temp, &mut rng));
+    }
+
+    #[test]
+    fn test_metropolis_rejects_at_zero_temp() {
+        let mut rng = GameRng::new(42);
+        let delta = Score::from_int(-5); // negative = worsening
+        let temp = Score::ZERO;
+        assert!(!metropolis_accept(delta, temp, &mut rng));
+    }
+
+    #[test]
+    fn test_exp_threshold_boundary_values() {
+        // exp(0) = 1.0 → u64::MAX
+        assert_eq!(exp_threshold(0), u64::MAX);
+        // exp(-10240) → very close to 0
+        assert_eq!(exp_threshold(-10240), 0);
+        // exp(-1024) should be near exp(-1) ≈ 0.3679 * u64::MAX
+        let t = exp_threshold(-1024);
+        // Should be roughly 0.3679 * u64::MAX ≈ 6.786e18
+        assert!(t > 6_000_000_000_000_000_000);
+        assert!(t < 7_500_000_000_000_000_000);
+    }
+
+    #[test]
+    fn test_exp_threshold_monotonic() {
+        // exp(x) is monotonically increasing, so exp_threshold should be too.
+        let mut prev = 0u64;
+        for x in -10239..=0i64 {
+            let t = exp_threshold(x);
+            assert!(
+                t >= prev,
+                "exp_threshold not monotonic: exp_threshold({}) = {} < exp_threshold({}) = {}",
+                x,
+                t,
+                x - 1,
+                prev
+            );
+            prev = t;
+        }
+    }
+
+    #[test]
+    fn test_exp_threshold_anchor_ratios() {
+        // Adjacent anchors should have ratio ≈ e ≈ 2.718.
+        // Check ANCHORS[k] / ANCHORS[k+1] ≈ e for k = 0..9.
+        // Use integer ratio: ANCHORS[k] * 1000 / ANCHORS[k+1] should be ~2718.
+        // Allow 1% tolerance (2691-2745).
+        for k in 0..10 {
+            let high = exp_threshold(-(k as i64) * 1024);
+            let low = exp_threshold(-((k + 1) as i64) * 1024);
+            if low == 0 {
+                continue;
+            }
+            let ratio_millis = (high as u128 * 1000 / low as u128) as u64;
+            assert!(
+                (2690..=2750).contains(&ratio_millis),
+                "Anchor ratio at k={k}: {ratio_millis}/1000 (expected ~2.718)"
+            );
+        }
+    }
+
+    #[test]
+    fn test_adaptive_cooler_low_acceptance() {
+        let base = Score::from_ratio(9995, 10000); // 0.9995
+        let mut cooler = AdaptiveCooler::new(base);
+        // Feed 200 rejections
+        for _ in 0..200 {
+            cooler.record(false);
+        }
+        let rate = cooler.effective_rate();
+        // With 0% acceptance (< 5%), rate should be base + (1 - base) * 0.5
+        // which is closer to 1.0 than base
+        assert!(
+            rate > base,
+            "Low acceptance should slow cooling: rate {} should > base {}",
+            rate,
+            base
+        );
+    }
+
+    #[test]
+    fn test_adaptive_cooler_high_acceptance() {
+        let base = Score::from_ratio(9995, 10000);
+        let mut cooler = AdaptiveCooler::new(base);
+        // Feed 200 acceptances
+        for _ in 0..200 {
+            cooler.record(true);
+        }
+        let rate = cooler.effective_rate();
+        // With 100% acceptance (> 50%), rate should be base * 0.95
+        assert!(
+            rate < base,
+            "High acceptance should speed cooling: rate {} should < base {}",
+            rate,
+            base
+        );
+    }
+
+    #[test]
+    fn test_adaptive_cooler_window_reset() {
+        let base = Score::from_ratio(9995, 10000);
+        let mut cooler = AdaptiveCooler::new(base);
+        // Feed 200 rejections to trigger adaptation
+        for _ in 0..200 {
+            cooler.record(false);
+        }
+        let _first = cooler.effective_rate();
+        // Window should have reset. Within new window, return base unchanged.
+        let second = cooler.effective_rate();
+        assert_eq!(second, base, "Within new window, should return base rate");
+    }
+
+    #[test]
+    fn test_metropolis_large_negative_delta() {
+        let mut rng = GameRng::new(42);
+        let delta = Score::from_int(-10000);
+        let temp = Score::ONE;
+        // x_scaled = -10000 * 2^30 * 1024 / 2^30 = -10240000, clamped to -10240
+        // exp_threshold(-10240) = 0, so should always reject
+        assert!(!metropolis_accept(delta, temp, &mut rng));
     }
 }

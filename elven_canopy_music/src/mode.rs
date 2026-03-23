@@ -13,7 +13,12 @@
 // Used by draft.rs for initial pitch selection and scoring.rs for
 // modal compliance scoring.
 
+use elven_canopy_utils::fixed::Fixed64;
 use serde::{Deserialize, Serialize};
+
+/// Fixed-point score type used throughout the music composition pipeline.
+/// Aliased here so all music modules use a consistent type.
+pub type Score = Fixed64;
 
 /// The seven church modes, each defined by their interval pattern from the final.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,18 +139,18 @@ impl ModeInstance {
         octave * 12 + pc + extra_octave * 12
     }
 
-    /// Score how well a pitch fits the mode (0.0 = out of mode, 1.0 = in mode,
+    /// Score how well a pitch fits the mode (ZERO = out of mode, ONE = in mode,
     /// higher for structurally important degrees like final and 5th).
-    pub fn pitch_fitness(&self, pitch: u8) -> f64 {
+    pub fn pitch_fitness(&self, pitch: u8) -> Score {
         if let Some(degree) = self.scale_degree(pitch) {
             match degree {
-                0 => 1.5, // Final — most important
-                4 => 1.3, // 5th above final — second most important
-                2 => 1.1, // 3rd — defines mode quality (major/minor)
-                _ => 1.0, // Other in-mode pitches
+                0 => Score::from_ratio(3, 2),   // 1.5 — Final, most important
+                4 => Score::from_ratio(13, 10), // 1.3 — 5th above final
+                2 => Score::from_ratio(11, 10), // 1.1 — 3rd, defines mode quality
+                _ => Score::ONE,                // Other in-mode pitches
             }
         } else {
-            0.0 // Out of mode
+            Score::ZERO // Out of mode
         }
     }
 }
@@ -195,5 +200,22 @@ mod tests {
         assert!(mode.is_in_mode(65)); // F
         assert_eq!(mode.scale_degree(64), Some(0)); // E = final
         assert_eq!(mode.scale_degree(65), Some(1)); // F = 2nd degree
+    }
+
+    #[test]
+    fn test_pitch_fitness_ordering() {
+        let mode = ModeInstance::d_dorian();
+        // D4=62 (final), A4=69 (5th), F4=65 (3rd), E4=64 (2nd, in-mode), Eb4=63 (out)
+        let final_fit = mode.pitch_fitness(62);
+        let fifth_fit = mode.pitch_fitness(69);
+        let third_fit = mode.pitch_fitness(65);
+        let other_fit = mode.pitch_fitness(64);
+        let out_fit = mode.pitch_fitness(63);
+
+        assert!(final_fit > fifth_fit, "Final should outrank 5th");
+        assert!(fifth_fit > third_fit, "5th should outrank 3rd");
+        assert!(third_fit > other_fit, "3rd should outrank other in-mode");
+        assert!(other_fit > out_fit, "In-mode should outrank out-of-mode");
+        assert_eq!(out_fit, Score::ZERO, "Out-of-mode should be zero");
     }
 }

@@ -1,14 +1,13 @@
 //! Shared utility algorithms for Elven Canopy crates.
 //!
-//! Currently provides `parallel_dedup`, a radix-partitioned parallel
-//! deduplication algorithm built on rayon and hashbrown. The approach:
-//! partition items by hash into buckets (parallel scatter), then dedup
-//! each bucket independently (parallel gather). This avoids all
-//! cross-thread contention — each phase touches only thread-local data.
-//!
-//! Used by `elven_canopy_sim` and `tabulosity` for bulk dedup on the
-//! rayon worker pool.
+//! Provides:
+//! - `parallel_dedup`: radix-partitioned parallel deduplication (rayon +
+//!   hashbrown). Used by `elven_canopy_sim` and `tabulosity`.
+//! - `fixed`: deterministic fixed-point arithmetic types (`Fixed64` scalar,
+//!   `FixedVec3` 3D vector, `isqrt_i128`). Used by `elven_canopy_sim`
+//!   (projectile ballistics) and `elven_canopy_music` (composition scoring).
 
+pub mod fixed;
 mod parallel_dedup;
 
 pub use parallel_dedup::{parallel_dedup, parallel_dedup_with, sequential_dedup};

@@ -52,6 +52,12 @@ elven-canopy/
 │   ├── src/
 │   │   └── lib.rs              # GameRng: xoshiro256++ with SplitMix64 seeding
 │   └── Cargo.toml
+├── elven_canopy_utils/         # Shared utilities (fixed-point math, parallel dedup)
+│   ├── src/
+│   │   ├── lib.rs              # Crate root: re-exports
+│   │   ├── fixed.rs            # Fixed64 scalar, FixedVec3 3D vector, isqrt_i128
+│   │   └── parallel_dedup.rs   # Radix-partitioned parallel dedup (rayon + hashbrown)
+│   └── Cargo.toml
 ├── tabulosity/                 # Typed in-memory relational store (derive macros)
 │   ├── src/
 │   │   ├── lib.rs              # Re-exports, module declarations

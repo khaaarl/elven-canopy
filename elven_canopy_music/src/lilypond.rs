@@ -601,7 +601,7 @@ mod tests {
         fill_draft(&mut grid, &models, &structural, &mode, &mut rng);
         generate_final_cadence(&mut grid, &mode, &mut structural);
 
-        let phrases = generate_phrases_with_brightness(&lexicon, 2, 0.5, &mut rng);
+        let phrases = generate_phrases_with_brightness(&lexicon, 2, 500, &mut rng);
         let mapping = apply_text_mapping(&mut grid, &plan, &phrases);
 
         let ly = grid_to_lilypond(&grid, &mode, &mapping, None);

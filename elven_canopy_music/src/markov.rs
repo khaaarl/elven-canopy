@@ -17,9 +17,9 @@ use std::path::Path;
 
 /// An interval-based Markov state for melodic models.
 /// Context is a sequence of recent intervals (semitones).
-/// Transition probabilities from a melodic context to next intervals.
-/// Key: next interval (semitones). Value: probability (unnormalized count).
-type TransitionTable = BTreeMap<i8, f64>;
+/// Transition weights from a melodic context to next intervals.
+/// Key: next interval (semitones). Value: unnormalized integer weight.
+type TransitionTable = BTreeMap<i8, u32>;
 
 /// Per-voice melodic Markov model with Katz backoff.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,19 +39,19 @@ impl MelodicModel {
     pub fn default_model() -> Self {
         let mut order0 = TransitionTable::new();
         // Stepwise motion dominates (~60%), then thirds (~20%), then rest
-        order0.insert(0, 5.0); // repeated note
-        order0.insert(1, 15.0); // minor 2nd up
-        order0.insert(-1, 15.0); // minor 2nd down
-        order0.insert(2, 15.0); // major 2nd up
-        order0.insert(-2, 15.0); // major 2nd down
-        order0.insert(3, 5.0); // minor 3rd up
-        order0.insert(-3, 5.0); // minor 3rd down
-        order0.insert(4, 5.0); // major 3rd up
-        order0.insert(-4, 5.0); // major 3rd down
-        order0.insert(5, 3.0); // perfect 4th up
-        order0.insert(-5, 3.0); // perfect 4th down
-        order0.insert(7, 2.0); // perfect 5th up
-        order0.insert(-7, 2.0); // perfect 5th down
+        order0.insert(0, 5); // repeated note
+        order0.insert(1, 15); // minor 2nd up
+        order0.insert(-1, 15); // minor 2nd down
+        order0.insert(2, 15); // major 2nd up
+        order0.insert(-2, 15); // major 2nd down
+        order0.insert(3, 5); // minor 3rd up
+        order0.insert(-3, 5); // minor 3rd down
+        order0.insert(4, 5); // major 3rd up
+        order0.insert(-4, 5); // major 3rd down
+        order0.insert(5, 3); // perfect 4th up
+        order0.insert(-5, 3); // perfect 4th down
+        order0.insert(7, 2); // perfect 5th up
+        order0.insert(-7, 2); // perfect 5th down
 
         MelodicModel {
             order3: BTreeMap::new(),
@@ -62,8 +62,8 @@ impl MelodicModel {
     }
 
     /// Sample a next interval given context, using Katz backoff.
-    /// Returns (interval, probability).
-    pub fn sample(&self, context: &[i8], rng_val: f64) -> i8 {
+    /// `rng_val` is a raw u64 from the PRNG.
+    pub fn sample(&self, context: &[i8], rng_val: u64) -> i8 {
         // Try order-3 first
         if context.len() >= 3 {
             let key = context_key(&context[context.len() - 3..]);
@@ -97,59 +97,14 @@ impl MelodicModel {
         // Fallback to order-0
         sample_from_table(&self.order0, rng_val).unwrap_or(0)
     }
-
-    /// Get the probability of a next interval given context.
-    pub fn probability(&self, context: &[i8], next_interval: i8) -> f64 {
-        // Try highest order first, back off
-        if context.len() >= 3 {
-            let key = context_key(&context[context.len() - 3..]);
-            if let Some(table) = self.order3.get(&key)
-                && let Some(&p) = table.get(&next_interval)
-            {
-                let total: f64 = table.values().sum();
-                if total > 0.0 {
-                    return p / total;
-                }
-            }
-        }
-
-        if context.len() >= 2 {
-            let key = context_key(&context[context.len() - 2..]);
-            if let Some(table) = self.order2.get(&key)
-                && let Some(&p) = table.get(&next_interval)
-            {
-                let total: f64 = table.values().sum();
-                if total > 0.0 {
-                    return p / total;
-                }
-            }
-        }
-
-        if !context.is_empty() {
-            let key = context_key(&context[context.len() - 1..]);
-            if let Some(table) = self.order1.get(&key)
-                && let Some(&p) = table.get(&next_interval)
-            {
-                let total: f64 = table.values().sum();
-                if total > 0.0 {
-                    return p / total;
-                }
-            }
-        }
-
-        // Order-0
-        let total: f64 = self.order0.values().sum();
-        let p = self.order0.get(&next_interval).copied().unwrap_or(0.01);
-        p / total
-    }
 }
 
 /// Per-voice-pair harmonic model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HarmonicModel {
-    /// Transition: previous interval between voices -> next interval probabilities
+    /// Transition: previous interval between voices -> next interval weights
     pub transitions: BTreeMap<String, TransitionTable>,
-    /// Unigram: overall interval distribution between this voice pair
+    /// Unigram: overall interval weight distribution between this voice pair
     pub unigram: TransitionTable,
 }
 
@@ -161,14 +116,14 @@ impl HarmonicModel {
         for interval in -24i8..=24 {
             let ic = (interval.unsigned_abs()) % 12;
             let weight = match ic {
-                0 => 8.0,  // unison/octave
-                3 => 10.0, // minor 3rd
-                4 => 10.0, // major 3rd
-                5 => 6.0,  // perfect 4th
-                7 => 12.0, // perfect 5th
-                8 => 8.0,  // minor 6th
-                9 => 8.0,  // major 6th
-                _ => 1.0,  // dissonances
+                0 => 8,  // unison/octave
+                3 => 10, // minor 3rd
+                4 => 10, // major 3rd
+                5 => 6,  // perfect 4th
+                7 => 12, // perfect 5th
+                8 => 8,  // minor 6th
+                9 => 8,  // major 6th
+                _ => 1,  // dissonances
             };
             unigram.insert(interval, weight);
         }
@@ -293,20 +248,21 @@ fn context_key(context: &[i8]) -> String {
         .join(",")
 }
 
-/// Sample an interval from a transition table using a random value in [0, 1).
-fn sample_from_table(table: &TransitionTable, rng_val: f64) -> Option<i8> {
+/// Sample an interval from a transition table using a raw u64 random value.
+/// Uses integer weighted sampling: `rng_val % total_weight` selects the bucket.
+fn sample_from_table(table: &TransitionTable, rng_val: u64) -> Option<i8> {
     if table.is_empty() {
         return None;
     }
-    let total: f64 = table.values().sum();
-    if total <= 0.0 {
+    let total: u64 = table.values().map(|&w| w as u64).sum();
+    if total == 0 {
         return None;
     }
 
-    let target = rng_val * total;
-    let mut cumulative = 0.0;
+    let target = rng_val % total;
+    let mut cumulative: u64 = 0;
     for (&interval, &weight) in table {
-        cumulative += weight;
+        cumulative += weight as u64;
         if cumulative > target {
             return Some(interval);
         }
@@ -323,18 +279,18 @@ mod tests {
     fn test_default_melodic_model() {
         let model = MelodicModel::default_model();
         // Should produce a reasonable interval
-        let interval = model.sample(&[], 0.5);
+        let interval = model.sample(&[], 50);
         assert!((-12..=12).contains(&interval));
     }
 
     #[test]
     fn test_sample_from_table() {
         let mut table = TransitionTable::new();
-        table.insert(2, 1.0);
-        table.insert(-2, 1.0);
+        table.insert(2, 1);
+        table.insert(-2, 1);
 
-        // With rng_val=0.0, should get first entry
-        let result = sample_from_table(&table, 0.0);
+        // With rng_val=0, should get first entry
+        let result = sample_from_table(&table, 0);
         assert!(result.is_some());
     }
 
@@ -342,5 +298,28 @@ mod tests {
     fn test_context_key() {
         assert_eq!(context_key(&[2, -1, 3]), "2,-1,3");
         assert_eq!(context_key(&[]), "");
+    }
+
+    #[test]
+    fn test_sample_from_table_empty() {
+        let table = TransitionTable::new();
+        assert_eq!(sample_from_table(&table, 42), None);
+    }
+
+    #[test]
+    fn test_sample_from_table_all_zero_weights() {
+        let mut table = TransitionTable::new();
+        table.insert(1, 0);
+        table.insert(2, 0);
+        assert_eq!(sample_from_table(&table, 42), None);
+    }
+
+    #[test]
+    fn test_sample_deterministic() {
+        let model = MelodicModel::default_model();
+        // Same input must always produce the same output.
+        let a = model.sample(&[2, -1], 123456789);
+        let b = model.sample(&[2, -1], 123456789);
+        assert_eq!(a, b);
     }
 }

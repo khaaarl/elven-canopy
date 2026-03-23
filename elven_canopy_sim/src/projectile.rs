@@ -7,11 +7,12 @@
 //
 // ## Sub-voxel coordinate system
 //
-// Projectile positions use `SubVoxelCoord` with 2^30 sub-units per voxel
-// (~1.07 billion), stored as `i64` per axis. This precision ensures that
-// gravity and velocity accumulation over long flight times does not lose
-// significant bits. Velocity and acceleration use the same scale (sub-units
-// per tick and sub-units per tick², respectively).
+// Projectile positions use `SubVoxelCoord` (an alias for `FixedVec3` from
+// `elven_canopy_utils::fixed`) with 2^30 sub-units per voxel (~1.07 billion),
+// stored as `i64` per axis. This precision ensures that gravity and velocity
+// accumulation over long flight times does not lose significant bits.
+// Velocity and acceleration use the same scale (sub-units per tick and
+// sub-units per tick², respectively).
 //
 // ## Physical scale
 //
@@ -45,17 +46,18 @@
 // `VoxelCoord`, `config.rs` for `GameConfig` (arrow_gravity, arrow_base_speed).
 
 use crate::types::VoxelCoord;
-use serde::{Deserialize, Serialize};
+use elven_canopy_utils::fixed::{FRAC_ONE, FRAC_SHIFT, FixedVec3, isqrt_i128};
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 /// Number of sub-voxel units per voxel (2^30 ≈ 1.07 billion).
-pub const SUB_VOXEL_SHIFT: u32 = 30;
+/// Re-exported from the shared fixed-point library for domain clarity.
+pub const SUB_VOXEL_SHIFT: u32 = FRAC_SHIFT;
 
 /// Convenience: 1 voxel in sub-voxel units.
-pub const SUB_VOXEL_ONE: i64 = 1i64 << SUB_VOXEL_SHIFT;
+pub const SUB_VOXEL_ONE: i64 = FRAC_ONE;
 
 /// Earth gravity in sub-voxel units per tick².
 ///
@@ -73,141 +75,77 @@ pub const EARTH_GRAVITY_SUB_VOXEL: i64 = 5267;
 /// High-precision integer position for projectiles. Each axis stores
 /// position in sub-voxel units (2^30 per voxel).
 ///
-/// Range: ±2^63 sub-units = ±2^33 voxels = ±8.6 billion voxels per axis,
-/// far beyond any plausible world size.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SubVoxelCoord {
-    pub x: i64,
-    pub y: i64,
-    pub z: i64,
-}
+/// This is an alias for `FixedVec3` from `elven_canopy_utils::fixed`.
+/// Arithmetic operators (Add, AddAssign, Sub), magnitude, and serde are
+/// provided by the library type. Voxel-specific conversions (to/from
+/// `VoxelCoord`) are free functions below.
+pub type SubVoxelCoord = FixedVec3;
 
 /// Velocity or acceleration vector in sub-voxel units per tick (or per tick²).
 /// Same representation as `SubVoxelCoord`, different semantics.
-pub type SubVoxelVec = SubVoxelCoord;
+pub type SubVoxelVec = FixedVec3;
 
-impl SubVoxelCoord {
-    pub const fn new(x: i64, y: i64, z: i64) -> Self {
-        Self { x, y, z }
-    }
+// ---------------------------------------------------------------------------
+// VoxelCoord conversions (sim-specific, depend on crate::types::VoxelCoord)
+// ---------------------------------------------------------------------------
 
-    /// Create from a voxel coordinate, placing the point at the center of
-    /// the voxel (offset by half a voxel in each axis).
-    pub const fn from_voxel_center(v: VoxelCoord) -> Self {
-        Self {
-            x: (v.x as i64) * SUB_VOXEL_ONE + SUB_VOXEL_ONE / 2,
-            y: (v.y as i64) * SUB_VOXEL_ONE + SUB_VOXEL_ONE / 2,
-            z: (v.z as i64) * SUB_VOXEL_ONE + SUB_VOXEL_ONE / 2,
-        }
-    }
-
-    /// Extract the containing voxel coordinate via arithmetic right-shift.
-    ///
-    /// Rust guarantees arithmetic right-shift for signed integers (rounds
-    /// toward negative infinity), so this correctly maps negative sub-voxel
-    /// coordinates to the containing voxel.
-    ///
-    /// **SAFETY PRECONDITION:** The caller must ensure the sub-voxel
-    /// coordinates, when right-shifted by `SUB_VOXEL_SHIFT`, fit in `i32`.
-    /// For projectiles, this means bounds-checking the raw `i64` sub-voxel
-    /// position against world extents *before* calling this method. Use
-    /// `to_voxel_checked()` if you need a fallible version. Violating this
-    /// precondition causes silent `i64 → i32` truncation, which can map
-    /// far-out-of-bounds positions to apparently-valid coordinates.
-    pub const fn to_voxel(self) -> VoxelCoord {
-        VoxelCoord {
-            x: (self.x >> SUB_VOXEL_SHIFT) as i32,
-            y: (self.y >> SUB_VOXEL_SHIFT) as i32,
-            z: (self.z >> SUB_VOXEL_SHIFT) as i32,
-        }
-    }
-
-    /// Checked version of `to_voxel()`. Returns `None` if any axis, after
-    /// right-shifting, would overflow `i32`.
-    pub fn to_voxel_checked(self) -> Option<VoxelCoord> {
-        let x = self.x >> SUB_VOXEL_SHIFT;
-        let y = self.y >> SUB_VOXEL_SHIFT;
-        let z = self.z >> SUB_VOXEL_SHIFT;
-        if x < i32::MIN as i64
-            || x > i32::MAX as i64
-            || y < i32::MIN as i64
-            || y > i32::MAX as i64
-            || z < i32::MIN as i64
-            || z > i32::MAX as i64
-        {
-            return None;
-        }
-        Some(VoxelCoord {
-            x: x as i32,
-            y: y as i32,
-            z: z as i32,
-        })
-    }
-
-    /// Convert to floating-point for rendering. NOT for sim logic.
-    pub fn to_render_floats(self) -> (f32, f32, f32) {
-        let scale = SUB_VOXEL_ONE as f64;
-        (
-            (self.x as f64 / scale) as f32,
-            (self.y as f64 / scale) as f32,
-            (self.z as f64 / scale) as f32,
-        )
-    }
-
-    /// Squared magnitude using i128 to avoid overflow.
-    /// Velocity components are i64; squaring produces up to ~2^60 per axis,
-    /// and summing three gives up to ~3×2^60 — fits in i128.
-    pub fn magnitude_sq(self) -> i128 {
-        let x = self.x as i128;
-        let y = self.y as i128;
-        let z = self.z as i128;
-        x * x + y * y + z * z
-    }
-
-    /// Squared magnitude as `i64`. The max value ~3×2^60 fits within
-    /// `i64::MAX` (~9.2×10^18). Panics in debug builds if the value
-    /// would overflow `i64` (indicates a misconfigured velocity).
-    pub fn magnitude_sq_i64(self) -> i64 {
-        let sq = self.magnitude_sq();
-        debug_assert!(
-            sq <= i64::MAX as i128,
-            "magnitude_sq overflows i64: {sq} (components: {}, {}, {})",
-            self.x,
-            self.y,
-            self.z
-        );
-        sq as i64
+/// Create a sub-voxel coordinate from a voxel coordinate, placing the point
+/// at the center of the voxel (offset by half a voxel in each axis).
+pub const fn sub_voxel_from_voxel_center(v: VoxelCoord) -> SubVoxelCoord {
+    SubVoxelCoord {
+        x: (v.x as i64) * SUB_VOXEL_ONE + SUB_VOXEL_ONE / 2,
+        y: (v.y as i64) * SUB_VOXEL_ONE + SUB_VOXEL_ONE / 2,
+        z: (v.z as i64) * SUB_VOXEL_ONE + SUB_VOXEL_ONE / 2,
     }
 }
 
-impl std::ops::Add for SubVoxelCoord {
-    type Output = Self;
-    fn add(self, rhs: Self) -> Self {
-        Self {
-            x: self.x + rhs.x,
-            y: self.y + rhs.y,
-            z: self.z + rhs.z,
-        }
+/// Extract the containing voxel coordinate via arithmetic right-shift.
+///
+/// Rust guarantees arithmetic right-shift for signed integers (rounds
+/// toward negative infinity), so this correctly maps negative sub-voxel
+/// coordinates to the containing voxel.
+///
+/// **SAFETY PRECONDITION:** The caller must ensure the sub-voxel
+/// coordinates, when right-shifted by `SUB_VOXEL_SHIFT`, fit in `i32`.
+/// For projectiles, this means bounds-checking the raw `i64` sub-voxel
+/// position against world extents *before* calling this function. Use
+/// `sub_voxel_to_voxel_checked()` if you need a fallible version.
+/// Violating this precondition causes silent `i64 → i32` truncation,
+/// which can map far-out-of-bounds positions to apparently-valid coordinates.
+pub const fn sub_voxel_to_voxel(sv: SubVoxelCoord) -> VoxelCoord {
+    VoxelCoord {
+        x: (sv.x >> SUB_VOXEL_SHIFT) as i32,
+        y: (sv.y >> SUB_VOXEL_SHIFT) as i32,
+        z: (sv.z >> SUB_VOXEL_SHIFT) as i32,
     }
 }
 
-impl std::ops::AddAssign for SubVoxelCoord {
-    fn add_assign(&mut self, rhs: Self) {
-        self.x += rhs.x;
-        self.y += rhs.y;
-        self.z += rhs.z;
+/// Checked version of `sub_voxel_to_voxel()`. Returns `None` if any axis,
+/// after right-shifting, would overflow `i32`.
+pub fn sub_voxel_to_voxel_checked(sv: SubVoxelCoord) -> Option<VoxelCoord> {
+    let x = sv.x >> SUB_VOXEL_SHIFT;
+    let y = sv.y >> SUB_VOXEL_SHIFT;
+    let z = sv.z >> SUB_VOXEL_SHIFT;
+    if x < i32::MIN as i64
+        || x > i32::MAX as i64
+        || y < i32::MIN as i64
+        || y > i32::MAX as i64
+        || z < i32::MIN as i64
+        || z > i32::MAX as i64
+    {
+        return None;
     }
+    Some(VoxelCoord {
+        x: x as i32,
+        y: y as i32,
+        z: z as i32,
+    })
 }
 
-impl std::ops::Sub for SubVoxelCoord {
-    type Output = Self;
-    fn sub(self, rhs: Self) -> Self {
-        Self {
-            x: self.x - rhs.x,
-            y: self.y - rhs.y,
-            z: self.z - rhs.z,
-        }
-    }
+/// Convert sub-voxel coordinates to floating-point for rendering.
+/// NOT for sim logic — uses the `to_render_floats()` method on `FixedVec3`.
+pub fn sub_voxel_to_render_floats(sv: SubVoxelCoord) -> (f32, f32, f32) {
+    sv.to_render_floats()
 }
 
 // ---------------------------------------------------------------------------
@@ -259,7 +197,7 @@ pub fn simulate_trajectory(
 
     for tick in 1..=max_ticks {
         (pos, vel) = ballistic_step(pos, vel, gravity);
-        let voxel = pos.to_voxel();
+        let voxel = sub_voxel_to_voxel(pos);
 
         if (voxel.x - target.x).abs() <= tolerance_voxels
             && (voxel.y - target.y).abs() <= tolerance_voxels
@@ -322,7 +260,7 @@ pub fn compute_aim_velocity(
     max_iterations: u32,
     max_flight_ticks: u32,
 ) -> AimResult {
-    let target_center = SubVoxelCoord::from_voxel_center(target_voxel);
+    let target_center = sub_voxel_from_voxel_center(target_voxel);
     let dx = target_center.x - origin.x;
     let dy = target_center.y - origin.y;
     let dz = target_center.z - origin.z;
@@ -459,32 +397,6 @@ pub fn compute_aim_velocity(
     })
 }
 
-/// Integer square root of a non-negative i128 using Newton's method.
-/// Returns floor(sqrt(n)). Deterministic, no floating-point.
-pub fn isqrt_i128(n: i128) -> i128 {
-    if n <= 0 {
-        return 0;
-    }
-    if n == 1 {
-        return 1;
-    }
-
-    // Initial guess: use bit length to get in the right ballpark.
-    // sqrt(n) has roughly half the bits of n.
-    let bits = 128 - n.leading_zeros();
-    let mut x = 1i128 << (bits.div_ceil(2));
-
-    // Newton iterations: x_{n+1} = (x_n + n / x_n) / 2
-    loop {
-        let next = (x + n / x) / 2;
-        if next >= x {
-            break;
-        }
-        x = next;
-    }
-    x
-}
-
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -500,8 +412,8 @@ mod tests {
     #[test]
     fn test_sub_voxel_to_voxel_positive() {
         // Point at sub-voxel (1.5, 2.5, 3.5) in voxel units
-        let pos = SubVoxelCoord::from_voxel_center(VoxelCoord::new(1, 2, 3));
-        let voxel = pos.to_voxel();
+        let pos = sub_voxel_from_voxel_center(VoxelCoord::new(1, 2, 3));
+        let voxel = sub_voxel_to_voxel(pos);
         assert_eq!(voxel, VoxelCoord::new(1, 2, 3));
     }
 
@@ -510,7 +422,7 @@ mod tests {
         // Arithmetic right-shift should map negative coords correctly.
         // A point just below voxel 0 should be in voxel -1.
         let pos = SubVoxelCoord::new(-1, -1, -1);
-        let voxel = pos.to_voxel();
+        let voxel = sub_voxel_to_voxel(pos);
         assert_eq!(voxel, VoxelCoord::new(-1, -1, -1));
     }
 
@@ -518,22 +430,22 @@ mod tests {
     fn test_sub_voxel_to_voxel_boundary() {
         // Exactly at the boundary between voxel 0 and voxel 1
         let pos = SubVoxelCoord::new(SUB_VOXEL_ONE, 0, 0);
-        assert_eq!(pos.to_voxel(), VoxelCoord::new(1, 0, 0));
+        assert_eq!(sub_voxel_to_voxel(pos), VoxelCoord::new(1, 0, 0));
 
         // One sub-unit below the boundary
         let pos = SubVoxelCoord::new(SUB_VOXEL_ONE - 1, 0, 0);
-        assert_eq!(pos.to_voxel(), VoxelCoord::new(0, 0, 0));
+        assert_eq!(sub_voxel_to_voxel(pos), VoxelCoord::new(0, 0, 0));
     }
 
     #[test]
     fn test_from_voxel_center() {
-        let coord = SubVoxelCoord::from_voxel_center(VoxelCoord::new(5, 10, 3));
+        let coord = sub_voxel_from_voxel_center(VoxelCoord::new(5, 10, 3));
         // Should be at (5.5, 10.5, 3.5) in voxel units
         assert_eq!(coord.x, 5 * SUB_VOXEL_ONE + SUB_VOXEL_ONE / 2);
         assert_eq!(coord.y, 10 * SUB_VOXEL_ONE + SUB_VOXEL_ONE / 2);
         assert_eq!(coord.z, 3 * SUB_VOXEL_ONE + SUB_VOXEL_ONE / 2);
         // Round-trip
-        assert_eq!(coord.to_voxel(), VoxelCoord::new(5, 10, 3));
+        assert_eq!(sub_voxel_to_voxel(coord), VoxelCoord::new(5, 10, 3));
     }
 
     #[test]
@@ -565,14 +477,20 @@ mod tests {
 
     #[test]
     fn test_to_voxel_checked_valid() {
-        let pos = SubVoxelCoord::from_voxel_center(VoxelCoord::new(10, 20, 30));
-        assert_eq!(pos.to_voxel_checked(), Some(VoxelCoord::new(10, 20, 30)));
+        let pos = sub_voxel_from_voxel_center(VoxelCoord::new(10, 20, 30));
+        assert_eq!(
+            sub_voxel_to_voxel_checked(pos),
+            Some(VoxelCoord::new(10, 20, 30))
+        );
     }
 
     #[test]
     fn test_to_voxel_checked_negative() {
         let pos = SubVoxelCoord::new(-SUB_VOXEL_ONE, -SUB_VOXEL_ONE, -SUB_VOXEL_ONE);
-        assert_eq!(pos.to_voxel_checked(), Some(VoxelCoord::new(-1, -1, -1)));
+        assert_eq!(
+            sub_voxel_to_voxel_checked(pos),
+            Some(VoxelCoord::new(-1, -1, -1))
+        );
     }
 
     #[test]
@@ -580,14 +498,14 @@ mod tests {
         // Position so far out that the shifted value overflows i32
         let huge = (i32::MAX as i64 + 1) << SUB_VOXEL_SHIFT;
         let pos = SubVoxelCoord::new(huge, 0, 0);
-        assert_eq!(pos.to_voxel_checked(), None);
+        assert_eq!(sub_voxel_to_voxel_checked(pos), None);
     }
 
     #[test]
     fn test_to_voxel_checked_negative_overflow() {
         let huge_neg = ((i32::MIN as i64) - 1) << SUB_VOXEL_SHIFT;
         let pos = SubVoxelCoord::new(0, huge_neg, 0);
-        assert_eq!(pos.to_voxel_checked(), None);
+        assert_eq!(sub_voxel_to_voxel_checked(pos), None);
     }
 
     // -----------------------------------------------------------------------
@@ -645,7 +563,7 @@ mod tests {
     #[test]
     fn test_flat_trajectory_hits_target() {
         // Shoot horizontally at a nearby target with no gravity.
-        let origin = SubVoxelCoord::from_voxel_center(VoxelCoord::new(0, 10, 0));
+        let origin = sub_voxel_from_voxel_center(VoxelCoord::new(0, 10, 0));
         let speed_per_tick = SUB_VOXEL_ONE / 20; // 0.05 voxels per tick
         let vel = SubVoxelVec::new(speed_per_tick, 0, 0);
 
@@ -664,7 +582,7 @@ mod tests {
     fn test_trajectory_falls_to_ground() {
         // Launch horizontally with gravity — should eventually fall below
         // the target at the same height, and the simulation exits early.
-        let origin = SubVoxelCoord::from_voxel_center(VoxelCoord::new(0, 50, 0));
+        let origin = sub_voxel_from_voxel_center(VoxelCoord::new(0, 50, 0));
         let speed = SUB_VOXEL_ONE / 20;
         let vel = SubVoxelVec::new(speed, 0, 0);
 
@@ -681,7 +599,7 @@ mod tests {
     fn test_arcing_trajectory_rises_then_falls() {
         // Launch upward at 45 degrees with enough speed to visibly arc.
         // Use a higher speed than typical arrows so the arc is pronounced.
-        let origin = SubVoxelCoord::from_voxel_center(VoxelCoord::new(0, 10, 0));
+        let origin = sub_voxel_from_voxel_center(VoxelCoord::new(0, 10, 0));
         let speed = SUB_VOXEL_ONE / 5; // 200 voxels/sec (fast projectile)
         let vel = SubVoxelVec::new(speed, speed, 0); // 45 degrees
 
@@ -712,7 +630,7 @@ mod tests {
         // At 1000 ticks/sec: 50/1000 = 0.05 voxels/tick.
         let speed_sub = SUB_VOXEL_ONE / 20; // 0.05 voxels/tick in sub-voxel units
 
-        let origin = SubVoxelCoord::from_voxel_center(VoxelCoord::new(0, 20, 0));
+        let origin = sub_voxel_from_voxel_center(VoxelCoord::new(0, 20, 0));
         // Aim slightly upward to compensate for gravity
         // At 45 degrees: vx = vy = speed / sqrt(2) ≈ speed * 7071 / 10000
         let component = speed_sub * 7071 / 10000;
@@ -729,7 +647,7 @@ mod tests {
             if pos.y > max_y {
                 max_y = pos.y;
             }
-            if pos.to_voxel().y < 0 {
+            if sub_voxel_to_voxel(pos).y < 0 {
                 final_tick = tick;
                 break;
             }
@@ -739,61 +657,11 @@ mod tests {
         assert!(max_y > origin.y, "Arrow should rise above origin");
 
         // Check the arrow traveled some horizontal distance
-        let final_x_voxels = pos.to_voxel().x;
+        let final_x_voxels = sub_voxel_to_voxel(pos).x;
         assert!(
             final_x_voxels > 0,
             "Arrow should travel horizontally, got {final_x_voxels}"
         );
-    }
-
-    // -----------------------------------------------------------------------
-    // isqrt
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_isqrt_exact() {
-        assert_eq!(isqrt_i128(0), 0);
-        assert_eq!(isqrt_i128(1), 1);
-        assert_eq!(isqrt_i128(4), 2);
-        assert_eq!(isqrt_i128(9), 3);
-        assert_eq!(isqrt_i128(100), 10);
-        assert_eq!(isqrt_i128(1_000_000), 1000);
-    }
-
-    #[test]
-    fn test_isqrt_non_exact() {
-        // floor(sqrt(2)) = 1
-        assert_eq!(isqrt_i128(2), 1);
-        // floor(sqrt(8)) = 2
-        assert_eq!(isqrt_i128(8), 2);
-        // floor(sqrt(99)) = 9
-        assert_eq!(isqrt_i128(99), 9);
-    }
-
-    #[test]
-    fn test_isqrt_large() {
-        // sqrt(2^60) = 2^30
-        let n = 1i128 << 60;
-        assert_eq!(isqrt_i128(n), 1i128 << 30);
-
-        // Verify floor property for a large non-perfect-square
-        let n = (1i128 << 60) + 1;
-        let s = isqrt_i128(n);
-        assert!(s * s <= n);
-        assert!((s + 1) * (s + 1) > n);
-    }
-
-    #[test]
-    fn test_isqrt_very_large() {
-        // sqrt(2^120) = 2^60 — exercises wide bit-width initial guess
-        let n = 1i128 << 120;
-        assert_eq!(isqrt_i128(n), 1i128 << 60);
-
-        // Non-perfect-square near 2^120
-        let n = (1i128 << 120) + 42;
-        let s = isqrt_i128(n);
-        assert!(s * s <= n);
-        assert!((s + 1) * (s + 1) > n);
     }
 
     // -----------------------------------------------------------------------
@@ -803,7 +671,7 @@ mod tests {
     #[test]
     fn test_aim_flat_short_range() {
         // Aim at a target 10 voxels away, same height, no gravity.
-        let origin = SubVoxelCoord::from_voxel_center(VoxelCoord::new(0, 20, 0));
+        let origin = sub_voxel_from_voxel_center(VoxelCoord::new(0, 20, 0));
         let target = VoxelCoord::new(10, 20, 0);
         let speed = SUB_VOXEL_ONE / 20; // 0.05 voxels/tick = 50 voxels/sec
 
@@ -819,7 +687,7 @@ mod tests {
     #[test]
     fn test_aim_with_gravity() {
         // Aim at a target 10 voxels away, same height, with gravity.
-        let origin = SubVoxelCoord::from_voxel_center(VoxelCoord::new(0, 20, 0));
+        let origin = sub_voxel_from_voxel_center(VoxelCoord::new(0, 20, 0));
         let target = VoxelCoord::new(10, 20, 0);
         let speed = SUB_VOXEL_ONE / 20;
 
@@ -835,7 +703,7 @@ mod tests {
     #[test]
     fn test_aim_downward() {
         // Aim at a target below — should need less/no upward compensation.
-        let origin = SubVoxelCoord::from_voxel_center(VoxelCoord::new(0, 50, 0));
+        let origin = sub_voxel_from_voxel_center(VoxelCoord::new(0, 50, 0));
         let target = VoxelCoord::new(10, 30, 0);
         let speed = SUB_VOXEL_ONE / 20;
 
@@ -847,7 +715,7 @@ mod tests {
     #[test]
     fn test_aim_unreachable_target() {
         // Target extremely far away — arrow can't reach it.
-        let origin = SubVoxelCoord::from_voxel_center(VoxelCoord::new(0, 20, 0));
+        let origin = sub_voxel_from_voxel_center(VoxelCoord::new(0, 20, 0));
         let target = VoxelCoord::new(10000, 20, 0);
         let speed = SUB_VOXEL_ONE / 20;
 
@@ -861,7 +729,7 @@ mod tests {
     #[test]
     fn test_aim_3d_target() {
         // Target offset in all three axes.
-        let origin = SubVoxelCoord::from_voxel_center(VoxelCoord::new(0, 20, 0));
+        let origin = sub_voxel_from_voxel_center(VoxelCoord::new(0, 20, 0));
         let target = VoxelCoord::new(7, 22, 5);
         let speed = SUB_VOXEL_ONE / 20;
 
@@ -873,7 +741,7 @@ mod tests {
     #[test]
     fn test_aim_deterministic() {
         // Same inputs must produce identical outputs (determinism).
-        let origin = SubVoxelCoord::from_voxel_center(VoxelCoord::new(0, 20, 0));
+        let origin = sub_voxel_from_voxel_center(VoxelCoord::new(0, 20, 0));
         let target = VoxelCoord::new(10, 20, 0);
         let speed = SUB_VOXEL_ONE / 20;
 
@@ -899,7 +767,7 @@ mod tests {
         let speed = SUB_VOXEL_ONE / 20; // 50 voxels/sec
 
         for (orig_v, tgt) in &cases {
-            let origin = SubVoxelCoord::from_voxel_center(*orig_v);
+            let origin = sub_voxel_from_voxel_center(*orig_v);
             let aim = compute_aim_velocity(origin, *tgt, speed, EARTH_GRAVITY_SUB_VOXEL, 5, 5000);
 
             // Simulate with the computed velocity
@@ -934,7 +802,7 @@ mod tests {
     #[test]
     fn test_to_render_floats() {
         let pos = SubVoxelCoord::new(SUB_VOXEL_ONE * 3 / 2, SUB_VOXEL_ONE * 5, 0);
-        let (rx, ry, rz) = pos.to_render_floats();
+        let (rx, ry, rz) = sub_voxel_to_render_floats(pos);
         assert!((rx - 1.5).abs() < 0.001);
         assert!((ry - 5.0).abs() < 0.001);
         assert!(rz.abs() < 0.001);
@@ -943,7 +811,7 @@ mod tests {
     #[test]
     fn test_aim_zero_speed() {
         // Zero speed should return zero velocity without panicking.
-        let origin = SubVoxelCoord::from_voxel_center(VoxelCoord::new(0, 20, 0));
+        let origin = sub_voxel_from_voxel_center(VoxelCoord::new(0, 20, 0));
         let target = VoxelCoord::new(10, 20, 0);
         let result = compute_aim_velocity(origin, target, 0, EARTH_GRAVITY_SUB_VOXEL, 5, 5000);
         assert_eq!(result.velocity, SubVoxelVec::new(0, 0, 0));
