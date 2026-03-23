@@ -66,11 +66,12 @@ fn grid_to_smf(grid: &Grid, text: Option<&TextMapping>) -> Smf<'static> {
     });
     smf.tracks.push(tempo_track);
 
-    // One track per voice
+    // One track per active voice
     let voice_names = ["Soprano", "Alto", "Tenor", "Bass"];
     let channels = [u4::new(0), u4::new(1), u4::new(2), u4::new(3)];
 
-    for (vi, voice) in Voice::ALL.iter().enumerate() {
+    for voice in grid.active_voices() {
+        let vi = voice.index();
         let mut track: Track<'static> = Vec::new();
 
         // Track name
@@ -147,8 +148,8 @@ fn grid_to_smf(grid: &Grid, text: Option<&TextMapping>) -> Smf<'static> {
             }
             // If not attack and not rest, it's a continuation — do nothing
 
-            // Add lyric events at syllable onsets (soprano track only)
-            if vi == 0
+            // Add lyric events at syllable onsets (first active voice only)
+            if *voice == grid.active_voices()[0]
                 && cell.syllable_onset
                 && let Some(mapping) = text
             {
@@ -216,7 +217,17 @@ mod tests {
         grid.set_note(Voice::Soprano, 2, 64);
 
         let smf = grid_to_smf(&grid, None);
-        // 1 tempo track + 4 voice tracks
+        // 1 tempo track + 4 active voice tracks
         assert_eq!(smf.tracks.len(), 5);
+    }
+
+    #[test]
+    fn test_grid_to_smf_subset() {
+        let mut grid = Grid::new_with_voices(8, &[Voice::Soprano]);
+        grid.set_note(Voice::Soprano, 0, 60);
+
+        let smf = grid_to_smf(&grid, None);
+        // 1 tempo track + 1 voice track
+        assert_eq!(smf.tracks.len(), 2);
     }
 }

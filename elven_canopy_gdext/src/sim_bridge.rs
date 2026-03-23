@@ -3654,6 +3654,7 @@ impl SimBridge {
                 sa_iterations: comp.sa_iterations as usize,
                 tempo_bpm: 72, // Placeholder; overridden below.
                 max_beats: None,
+                voices: Vec::new(), // All four SATB voices by default
             };
             let target_duration_ms = comp.target_duration_ms;
 

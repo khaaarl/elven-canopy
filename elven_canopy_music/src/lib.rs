@@ -1,6 +1,6 @@
 // Elven Canopy Music Generator
 //
-// A Palestrina-style polyphonic music generator that produces four-voice
+// A Palestrina-style polyphonic music generator that produces 1–4 voice
 // choral music with procedurally generated Vaelith elvish lyrics. The system
 // uses a hybrid approach: Markov models trained on Palestrina's corpus provide
 // stylistic guidance, while simulated annealing with rule-based scoring

@@ -1,13 +1,13 @@
 // Elven Canopy Music Generator — CLI entry point.
 //
-// Generates a Palestrina-style four-voice choral piece and writes it to MIDI,
+// Generates a Palestrina-style 1–4 voice choral piece and writes it to MIDI,
 // with optional LilyPond sheet music output.
 // The pipeline: structure planning → draft generation → SA refinement → output.
 //
 // Usage:
 //   cargo run -p elven_canopy_music -- [output.mid] [--sections N] [--sa-iterations N]
-//     [--seed N] [--mode MODE] [--tempo BPM] [--brightness 0.0-1.0] [--ly]
-//     [-v|--verbose]
+//     [--seed N] [--mode MODE] [--tempo BPM] [--brightness 0.0-1.0] [--voices SATB]
+//     [--ly] [-v|--verbose]
 //
 //   Batch mode:
 //   cargo run -p elven_canopy_music -- --batch N [--output-dir DIR] [--ly] [other flags]
@@ -21,7 +21,7 @@
 
 use elven_canopy_lang::default_lexicon;
 use elven_canopy_music::draft::{fill_draft, generate_final_cadence};
-use elven_canopy_music::grid::Grid;
+use elven_canopy_music::grid::{Grid, Voice};
 use elven_canopy_music::lilypond::write_lilypond;
 use elven_canopy_music::markov::{MarkovModels, MotifLibrary};
 use elven_canopy_music::midi::{write_midi, write_midi_with_text};
@@ -30,7 +30,9 @@ use elven_canopy_music::sa::{SAConfig, anneal_with_text};
 use elven_canopy_music::scoring::{
     ScoringWeights, score_breakdown, score_grid, score_tonal_contour, tonal_contour_stats,
 };
-use elven_canopy_music::structure::{apply_responses, apply_structure, generate_structure};
+use elven_canopy_music::structure::{
+    apply_responses, apply_structure, generate_structure_for_voices,
+};
 use elven_canopy_music::text_mapping::apply_text_mapping;
 use elven_canopy_music::vaelith::generate_phrases_with_brightness;
 use elven_canopy_prng::GameRng;
@@ -64,6 +66,7 @@ fn main() {
     let mode_name: String = parse_flag(&args, "--mode").unwrap_or_else(|| "dorian".to_string());
     let brightness: f64 = parse_flag(&args, "--brightness").unwrap_or(0.5);
     let write_ly = args.iter().any(|a| a == "--ly");
+    let active_voices = parse_voices(&args);
 
     // Parse mode
     let mode = parse_mode(&mode_name);
@@ -86,6 +89,15 @@ fn main() {
         } else {
             "neutral"
         }
+    );
+    println!(
+        "Voices: {} ({})",
+        active_voices.len(),
+        active_voices
+            .iter()
+            .map(|v| format!("{:?}", v))
+            .collect::<Vec<_>>()
+            .join(", ")
     );
     println!("Sections: {}", num_sections);
     println!("SA iterations target: ~{}", sa_iters);
@@ -152,7 +164,8 @@ fn main() {
 
     // Generate structure
     println!("[2/5] Planning structure ({} sections)...", num_sections);
-    let plan = generate_structure(&motif_library, num_sections, None, &mut rng);
+    let plan =
+        generate_structure_for_voices(&motif_library, num_sections, None, &active_voices, &mut rng);
     println!(
         "  Total beats: {} ({:.1} bars of 4/4)",
         plan.total_beats,
@@ -169,7 +182,7 @@ fn main() {
 
     // Create grid and apply structure
     println!("[3/5] Generating draft...");
-    let mut grid = Grid::new(plan.total_beats);
+    let mut grid = Grid::new_with_voices(plan.total_beats, &active_voices);
     grid.tempo_bpm = tempo;
     let mut structural = apply_structure(&mut grid, &plan);
     println!("  {} structural cells placed.", structural.len());
@@ -388,6 +401,36 @@ fn pitch_name(pc: u8) -> &'static str {
     }
 }
 
+/// Parse --voices flag: e.g. "--voices SA" → [Soprano, Alto], "--voices S" → [Soprano].
+/// Letters: S=Soprano, A=Alto, T=Tenor, B=Bass. Case-insensitive.
+/// Defaults to all four voices if flag is absent.
+fn parse_voices(args: &[String]) -> Vec<Voice> {
+    let spec: Option<String> = parse_flag(args, "--voices");
+    match spec {
+        None => Voice::ALL.to_vec(),
+        Some(s) => {
+            let mut voices = Vec::new();
+            for ch in s.to_uppercase().chars() {
+                match ch {
+                    'S' => voices.push(Voice::Soprano),
+                    'A' => voices.push(Voice::Alto),
+                    'T' => voices.push(Voice::Tenor),
+                    'B' => voices.push(Voice::Bass),
+                    _ => eprintln!("Unknown voice letter '{}', ignoring", ch),
+                }
+            }
+            voices.sort();
+            voices.dedup();
+            if voices.is_empty() {
+                eprintln!("No valid voices specified, using all four.");
+                Voice::ALL.to_vec()
+            } else {
+                voices
+            }
+        }
+    }
+}
+
 fn parse_flag<T: std::str::FromStr>(args: &[String], flag: &str) -> Option<T> {
     args.iter()
         .position(|a| a == flag)
@@ -407,6 +450,7 @@ fn run_batch(args: &[String]) {
         parse_flag(args, "--output-dir").unwrap_or_else(|| ".tmp/batch".to_string());
     let brightness: f64 = parse_flag(args, "--brightness").unwrap_or(0.5);
     let write_ly = args.iter().any(|a| a == "--ly");
+    let active_voices = parse_voices(args);
 
     let mode = parse_mode(&mode_name);
     let weights = ScoringWeights::default();
@@ -453,8 +497,14 @@ fn run_batch(args: &[String]) {
         let seed = base_seed + i as u64;
         let mut rng = GameRng::new(seed);
 
-        let plan = generate_structure(&motif_library, num_sections, None, &mut rng);
-        let mut grid = Grid::new(plan.total_beats);
+        let plan = generate_structure_for_voices(
+            &motif_library,
+            num_sections,
+            None,
+            &active_voices,
+            &mut rng,
+        );
+        let mut grid = Grid::new_with_voices(plan.total_beats, &active_voices);
         grid.tempo_bpm = tempo;
         let mut structural = apply_structure(&mut grid, &plan);
         apply_responses(&mut grid, &plan, &mode, &mut structural);
@@ -523,6 +573,7 @@ fn run_mode_scan(args: &[String]) {
         parse_flag(args, "--output-dir").unwrap_or_else(|| ".tmp/mode_scan".to_string());
     let brightness: f64 = parse_flag(args, "--brightness").unwrap_or(0.5);
     let write_ly = args.iter().any(|a| a == "--ly");
+    let active_voices = parse_voices(args);
 
     let weights = ScoringWeights::default();
 
@@ -575,8 +626,14 @@ fn run_mode_scan(args: &[String]) {
         let mode = ModeInstance::new(*mode_enum, *final_pc);
         let mut rng = GameRng::new(seed);
 
-        let plan = generate_structure(&motif_library, num_sections, None, &mut rng);
-        let mut grid = Grid::new(plan.total_beats);
+        let plan = generate_structure_for_voices(
+            &motif_library,
+            num_sections,
+            None,
+            &active_voices,
+            &mut rng,
+        );
+        let mut grid = Grid::new_with_voices(plan.total_beats, &active_voices);
         grid.tempo_bpm = tempo;
         let mut structural = apply_structure(&mut grid, &plan);
         apply_responses(&mut grid, &plan, &mode, &mut structural);

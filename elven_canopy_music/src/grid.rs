@@ -1,8 +1,13 @@
 // The score grid: the central representation for music generation.
 //
-// The score is a 2D grid where rows are voices (SATB) and columns are beats
-// at eighth-note granularity. Each cell holds a pitch (MIDI number) or rest,
-// plus flags for note attacks, syllable onsets, and syllable IDs.
+// The score is a 2D grid where rows are voices (SATB subset) and columns are
+// beats at eighth-note granularity. Each cell holds a pitch (MIDI number) or
+// rest, plus flags for note attacks, syllable onsets, and syllable IDs.
+//
+// Grids support 1–4 voice subsets: a solo soprano, a soprano+alto duet, etc.
+// Only active voices have populated rows; inactive voice rows are empty.
+// All pipeline stages (structure.rs, draft.rs, scoring.rs, sa.rs, midi.rs,
+// lilypond.rs) iterate `grid.active_voices()` instead of hardcoded Voice::ALL.
 //
 // This representation makes it easy to:
 // - Evaluate counterpoint rules at any beat (vertical slice)
@@ -15,7 +20,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Voice index in SATB order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Voice {
     Soprano = 0,
     Alto = 1,
@@ -84,26 +89,51 @@ impl Cell {
 /// The complete score grid.
 ///
 /// Indexed as `voices[voice_index][beat_index]`.
-/// Beat granularity is eighth notes.
+/// Beat granularity is eighth notes. Only active voices have populated
+/// rows (length `num_beats`); inactive voice rows are empty.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Grid {
     /// Number of eighth-note beats in the piece.
     pub num_beats: usize,
     /// Tempo in BPM (quarter notes per minute). Default 60.
     pub tempo_bpm: u16,
-    /// The four voice rows. Each is a Vec<Cell> of length num_beats.
+    /// The four voice rows. Active voices have Vec<Cell> of length num_beats;
+    /// inactive voices have empty vecs.
     pub voices: [Vec<Cell>; 4],
+    /// Which voices are active in this grid, sorted in SATB order.
+    active_voices: Vec<Voice>,
 }
 
 impl Grid {
-    /// Create a new empty grid (all rests) with the given number of eighth-note beats.
+    /// Create a new empty grid (all rests) with all four SATB voices.
     pub fn new(num_beats: usize) -> Self {
-        let make_voice = || vec![Cell::rest(); num_beats];
+        Self::new_with_voices(num_beats, &Voice::ALL)
+    }
+
+    /// Create a new empty grid with only the specified voices active.
+    ///
+    /// Inactive voices get empty rows. Panics if `voices` is empty.
+    pub fn new_with_voices(num_beats: usize, voices: &[Voice]) -> Self {
+        assert!(!voices.is_empty(), "At least one voice must be active");
+        let mut sorted_voices: Vec<Voice> = voices.to_vec();
+        sorted_voices.sort();
+        sorted_voices.dedup();
+
+        let mut rows = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+        for &v in &sorted_voices {
+            rows[v.index()] = vec![Cell::rest(); num_beats];
+        }
         Grid {
             num_beats,
             tempo_bpm: 60,
-            voices: [make_voice(), make_voice(), make_voice(), make_voice()],
+            voices: rows,
+            active_voices: sorted_voices,
         }
+    }
+
+    /// The voices active in this grid, in SATB order.
+    pub fn active_voices(&self) -> &[Voice] {
+        &self.active_voices
     }
 
     /// Get the cell at (voice, beat).
@@ -148,20 +178,25 @@ impl Grid {
         if cell.is_rest { None } else { Some(cell.pitch) }
     }
 
-    /// Get all sounding pitches at a beat (vertical slice).
-    pub fn vertical_slice(&self, beat: usize) -> [Option<u8>; 4] {
-        Voice::ALL.map(|v| self.sounding_pitch(v, beat))
+    /// Get all sounding pitches at a beat (vertical slice) for active voices.
+    ///
+    /// Returns a vec of `(Voice, Option<u8>)` pairs for each active voice.
+    pub fn vertical_slice(&self, beat: usize) -> Vec<(Voice, Option<u8>)> {
+        self.active_voices
+            .iter()
+            .map(|&v| (v, self.sounding_pitch(v, beat)))
+            .collect()
     }
 }
 
 impl Grid {
     /// Print a compact text summary of the grid for debugging.
-    /// Shows each voice as a row with note names and durations.
+    /// Shows each active voice as a row with note names and durations.
     pub fn summary(&self) -> String {
         let mut out = String::new();
         let bar_beats = 8; // 4/4 time in eighth notes
 
-        for voice in Voice::ALL {
+        for &voice in &self.active_voices {
             out.push_str(&format!("{:>8}: ", format!("{:?}", voice)));
             let mut beat = 0;
             while beat < self.num_beats {
@@ -208,7 +243,7 @@ impl Grid {
         let mut total_sounding = 0;
         let mut rests = 0;
 
-        for voice in Voice::ALL {
+        for &voice in &self.active_voices {
             for beat in 0..self.num_beats {
                 let cell = self.cell(voice, beat);
                 if cell.is_rest {
@@ -345,6 +380,73 @@ mod tests {
         grid.set_note(Voice::Bass, 0, 48);
 
         let slice = grid.vertical_slice(0);
-        assert_eq!(slice, [Some(72), Some(67), None, Some(48)]);
+        assert_eq!(
+            slice,
+            vec![
+                (Voice::Soprano, Some(72)),
+                (Voice::Alto, Some(67)),
+                (Voice::Tenor, None),
+                (Voice::Bass, Some(48)),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_new_with_voices_subset() {
+        let grid = Grid::new_with_voices(16, &[Voice::Soprano, Voice::Alto]);
+        assert_eq!(grid.active_voices(), &[Voice::Soprano, Voice::Alto]);
+        assert_eq!(grid.voices[Voice::Soprano.index()].len(), 16);
+        assert_eq!(grid.voices[Voice::Alto.index()].len(), 16);
+        assert_eq!(grid.voices[Voice::Tenor.index()].len(), 0);
+        assert_eq!(grid.voices[Voice::Bass.index()].len(), 0);
+    }
+
+    #[test]
+    fn test_new_with_voices_solo() {
+        let grid = Grid::new_with_voices(8, &[Voice::Soprano]);
+        assert_eq!(grid.active_voices(), &[Voice::Soprano]);
+        // Only soprano has beats
+        assert_eq!(grid.voices[0].len(), 8);
+        for i in 1..4 {
+            assert_eq!(grid.voices[i].len(), 0);
+        }
+    }
+
+    #[test]
+    fn test_vertical_slice_subset() {
+        let mut grid = Grid::new_with_voices(4, &[Voice::Soprano, Voice::Alto]);
+        grid.set_note(Voice::Soprano, 0, 72);
+        grid.set_note(Voice::Alto, 0, 67);
+
+        let slice = grid.vertical_slice(0);
+        assert_eq!(
+            slice,
+            vec![(Voice::Soprano, Some(72)), (Voice::Alto, Some(67)),]
+        );
+    }
+
+    #[test]
+    fn test_stats_subset() {
+        let mut grid = Grid::new_with_voices(8, &[Voice::Soprano]);
+        grid.set_note(Voice::Soprano, 0, 60);
+        grid.extend_note(Voice::Soprano, 1);
+
+        let stats = grid.stats();
+        assert_eq!(stats.total_attacks, 1);
+        assert_eq!(stats.total_sounding, 2);
+        assert_eq!(stats.rests, 6);
+    }
+
+    #[test]
+    #[should_panic(expected = "At least one voice")]
+    fn test_new_with_voices_empty_panics() {
+        Grid::new_with_voices(8, &[]);
+    }
+
+    #[test]
+    fn test_new_with_voices_dedup_and_sort() {
+        // Out of order + duplicate should be normalized
+        let grid = Grid::new_with_voices(8, &[Voice::Alto, Voice::Soprano, Voice::Alto]);
+        assert_eq!(grid.active_voices(), &[Voice::Soprano, Voice::Alto]);
     }
 }

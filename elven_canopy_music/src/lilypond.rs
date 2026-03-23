@@ -1,9 +1,9 @@
 // LilyPond sheet music output from score grids.
 //
 // Converts a Grid into a LilyPond (.ly) text file that can be engraved into
-// PDF/SVG sheet music using the LilyPond typesetter. Each of the four SATB
-// voices gets its own staff in a ChoirStaff, with Vaelith lyrics attached
-// via \addlyrics blocks.
+// PDF/SVG sheet music using the LilyPond typesetter. Each active voice gets
+// its own staff in a ChoirStaff, with Vaelith lyrics attached via \addlyrics
+// blocks. Inactive voices are omitted from the output.
 //
 // The approach mirrors midi.rs: walk each voice's grid cells, collect note/rest
 // events with durations, then serialize. The extra complexity here is duration
@@ -318,10 +318,11 @@ pub fn grid_to_lilypond(
         key_str, grid.tempo_bpm
     );
 
-    // Voice music variables
+    // Voice music variables (only active voices)
     let voice_names = ["soprano", "alto", "tenor", "bass"];
-    for (vi, voice) in Voice::ALL.iter().enumerate() {
-        let music = render_voice_music(grid, *voice);
+    for &voice in grid.active_voices() {
+        let vi = voice.index();
+        let music = render_voice_music(grid, voice);
         let _ = write!(
             ly,
             "{} = \\absolute {{\n  \\global\n  {}\n}}\n\n",
@@ -335,7 +336,8 @@ pub fn grid_to_lilypond(
     let clefs = ["treble", "treble", "\"treble_8\"", "bass"];
     let display_names = ["Soprano", "Alto", "Tenor", "Bass"];
 
-    for (vi, _voice) in Voice::ALL.iter().enumerate() {
+    for &voice in grid.active_voices() {
+        let vi = voice.index();
         let _ = write!(
             ly,
             "    \\new Staff = \"{}\" \\with {{ instrumentName = \"{}\" }} {{\n      \\clef {}\n      \\{}\n    }}\n",
@@ -343,7 +345,7 @@ pub fn grid_to_lilypond(
         );
 
         // Add lyrics if there are any for this voice
-        let lyrics = render_voice_lyrics(grid, Voice::ALL[vi], mapping);
+        let lyrics = render_voice_lyrics(grid, voice, mapping);
         if !lyrics.is_empty() {
             let _ = writeln!(ly, "    \\addlyrics {{ {} }}", lyrics);
         }

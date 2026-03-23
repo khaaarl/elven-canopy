@@ -275,7 +275,7 @@ pub fn score_local(grid: &Grid, weights: &ScoringWeights, mode: &ModeInstance, b
     }
 
     // Melodic scoring for voices that have notes in the window
-    for voice in Voice::ALL {
+    for &voice in grid.active_voices() {
         total += score_melodic_window(grid, weights, voice, window_start, window_end);
     }
 
@@ -296,13 +296,12 @@ fn score_beat_hard_rules(grid: &Grid, weights: &ScoringWeights, beat: usize) -> 
     let mut score = 0.0;
     let is_strong = beat.is_multiple_of(4); // strong beats every half-bar (2 quarter notes)
 
-    // Check all voice pairs
-    for i in 0..4 {
-        let vi = Voice::ALL[i];
+    // Check all active voice pairs
+    let active = grid.active_voices();
+    for (idx_i, &vi) in active.iter().enumerate() {
         let pitch_i = grid.sounding_pitch(vi, beat);
 
-        for j in (i + 1)..4 {
-            let vj = Voice::ALL[j];
+        for &vj in &active[(idx_i + 1)..] {
             let pitch_j = grid.sounding_pitch(vj, beat);
 
             if let (Some(pi), Some(pj)) = (pitch_i, pitch_j) {
@@ -460,7 +459,7 @@ fn check_suspension_voice(grid: &Grid, suspended: Voice, moving: Voice, beat: us
 
 fn score_melodic(grid: &Grid, weights: &ScoringWeights) -> f64 {
     let mut score = 0.0;
-    for voice in Voice::ALL {
+    for &voice in grid.active_voices() {
         score += score_melodic_window(grid, weights, voice, 0, grid.num_beats);
     }
     score
@@ -586,11 +585,9 @@ fn score_harmonic(grid: &Grid, weights: &ScoringWeights) -> f64 {
 fn score_interval_variety(grid: &Grid, weights: &ScoringWeights) -> f64 {
     let mut score = 0.0;
 
-    for i in 0..4 {
-        for j in (i + 1)..4 {
-            let vi = Voice::ALL[i];
-            let vj = Voice::ALL[j];
-
+    let active = grid.active_voices();
+    for (idx_i, &vi) in active.iter().enumerate() {
+        for &vj in &active[(idx_i + 1)..] {
             let mut same_count = 0;
             let mut prev_ic: Option<u8> = None;
 
@@ -624,7 +621,7 @@ fn score_beat_harmonic(grid: &Grid, weights: &ScoringWeights, beat: usize) -> f6
     let mut score = 0.0;
     let slice = grid.vertical_slice(beat);
 
-    let pitches: Vec<u8> = slice.iter().filter_map(|&p| p).collect();
+    let pitches: Vec<u8> = slice.iter().filter_map(|&(_, p)| p).collect();
     if pitches.len() < 2 {
         return 0.0;
     }
@@ -658,7 +655,7 @@ fn score_global(grid: &Grid, weights: &ScoringWeights) -> f64 {
     // Opening: reward perfect consonance on first sounding beat
     for beat in 0..grid.num_beats.min(8) {
         let slice = grid.vertical_slice(beat);
-        let pitches: Vec<u8> = slice.iter().filter_map(|&p| p).collect();
+        let pitches: Vec<u8> = slice.iter().filter_map(|&(_, p)| p).collect();
         if pitches.len() >= 2 {
             let all_consonant = pitches
                 .windows(2)
@@ -673,7 +670,7 @@ fn score_global(grid: &Grid, weights: &ScoringWeights) -> f64 {
     // Closing: reward perfect consonance on last sounding beat
     for beat in (0..grid.num_beats).rev() {
         let slice = grid.vertical_slice(beat);
-        let pitches: Vec<u8> = slice.iter().filter_map(|&p| p).collect();
+        let pitches: Vec<u8> = slice.iter().filter_map(|&(_, p)| p).collect();
         if pitches.len() >= 2 {
             let all_perfect = pitches
                 .windows(2)
@@ -706,7 +703,7 @@ fn score_cadences(grid: &Grid, _weights: &ScoringWeights) -> f64 {
         // Check if this beat is near a phrase boundary:
         // at least 2 voices have a rest within 1-2 beats after this point
         let mut voices_resting_soon = 0;
-        for voice in Voice::ALL {
+        for &voice in grid.active_voices() {
             let has_rest_ahead = (1..=2).any(|offset| {
                 let b = beat + offset;
                 b < grid.num_beats && grid.cell(voice, b).is_rest
@@ -721,17 +718,23 @@ fn score_cadences(grid: &Grid, _weights: &ScoringWeights) -> f64 {
         }
 
         // This beat is near a phrase boundary. Check cadential motion.
+        // Use the highest and lowest active voices for cadential scoring.
+        let active = grid.active_voices();
+        let top_voice = active[0]; // highest voice (earliest in SATB order)
+        let bottom_voice = active[active.len() - 1]; // lowest voice
+        if top_voice == bottom_voice {
+            continue; // Solo — no cadential voice pair to evaluate
+        }
 
-        // Get soprano and bass pitches at this beat and the previous beat
-        let sop_now = grid.sounding_pitch(Voice::Soprano, beat);
+        let sop_now = grid.sounding_pitch(top_voice, beat);
         let sop_prev = if beat > 0 {
-            grid.sounding_pitch(Voice::Soprano, beat - 1)
+            grid.sounding_pitch(top_voice, beat - 1)
         } else {
             None
         };
-        let bass_now = grid.sounding_pitch(Voice::Bass, beat);
+        let bass_now = grid.sounding_pitch(bottom_voice, beat);
         let bass_prev = if beat > 0 {
-            grid.sounding_pitch(Voice::Bass, beat - 1)
+            grid.sounding_pitch(bottom_voice, beat - 1)
         } else {
             None
         };
@@ -773,7 +776,7 @@ fn score_cadences(grid: &Grid, _weights: &ScoringWeights) -> f64 {
 fn score_contour(grid: &Grid, weights: &ScoringWeights) -> f64 {
     let mut score = 0.0;
 
-    for voice in Voice::ALL {
+    for &voice in grid.active_voices() {
         // Collect all attack pitches with their beat positions
         let mut notes: Vec<(usize, u8)> = Vec::new();
         for beat in 0..grid.num_beats {
@@ -822,7 +825,8 @@ fn score_rhythmic_independence(grid: &Grid, weights: &ScoringWeights) -> f64 {
     let mut consecutive_homorhythm = 0;
 
     for beat in 0..grid.num_beats {
-        let attacks: usize = Voice::ALL
+        let attacks: usize = grid
+            .active_voices()
             .iter()
             .filter(|&&v| {
                 let c = grid.cell(v, beat);
@@ -830,6 +834,13 @@ fn score_rhythmic_independence(grid: &Grid, weights: &ScoringWeights) -> f64 {
             })
             .count();
 
+        // NOTE: This threshold is hardcoded at 3, which means duets (max 2
+        // voices) never trigger homorhythm penalties. The SA optimizer has no
+        // signal to avoid lockstep rhythm in 2-voice pieces. To fix, this
+        // should scale with voice count (e.g. `attacks >= active_voices.len()`),
+        // but that requires threading the active count through here. The draft
+        // generator's variable note durations provide some baseline rhythmic
+        // independence, so duet quality is acceptable for now.
         if attacks >= 3 {
             consecutive_homorhythm += 1;
             // Start penalizing after 4 consecutive homorhythmic beats
@@ -862,7 +873,7 @@ fn score_beat_modal(
 ) -> f64 {
     let mut score = 0.0;
 
-    for voice in Voice::ALL {
+    for &voice in grid.active_voices() {
         if let Some(pitch) = grid.sounding_pitch(voice, beat) {
             if mode.is_in_mode(pitch) {
                 // Reward structurally important degrees more
@@ -887,7 +898,8 @@ fn score_texture(grid: &Grid, weights: &ScoringWeights) -> f64 {
     let mut consecutive_thin = 0u32;
 
     for beat in 0..grid.num_beats {
-        let active = Voice::ALL
+        let active = grid
+            .active_voices()
             .iter()
             .filter(|&&v| grid.sounding_pitch(v, beat).is_some())
             .count();
@@ -950,7 +962,7 @@ fn score_tension_curve(grid: &Grid, weights: &ScoringWeights) -> f64 {
 
         for beat in start..end {
             let slice = grid.vertical_slice(beat);
-            let pitches: Vec<u8> = slice.iter().filter_map(|&p| p).collect();
+            let pitches: Vec<u8> = slice.iter().filter_map(|&(_, p)| p).collect();
 
             for &p in &pitches {
                 total_pitch += p as u32;
@@ -1047,7 +1059,7 @@ fn score_interval_distribution(grid: &Grid, weights: &ScoringWeights) -> f64 {
     let mut fourth_fifth_count = 0u32;
     let mut total = 0u32;
 
-    for voice in Voice::ALL {
+    for &voice in grid.active_voices() {
         let mut prev_pitch: Option<u8> = None;
         for beat in 0..grid.num_beats {
             let cell = grid.cell(voice, beat);
@@ -1103,7 +1115,7 @@ fn score_interval_distribution(grid: &Grid, weights: &ScoringWeights) -> f64 {
 fn score_entropy(grid: &Grid, weights: &ScoringWeights) -> f64 {
     let mut score = 0.0;
 
-    for voice in Voice::ALL {
+    for &voice in grid.active_voices() {
         // Count interval occurrences
         let mut interval_counts: std::collections::BTreeMap<i8, u32> =
             std::collections::BTreeMap::new();

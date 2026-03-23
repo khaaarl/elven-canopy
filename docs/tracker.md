@@ -446,6 +446,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-tree-overlap         Construction overlap with tree geometry
 [x] F-troll-regen          Troll health regeneration over time
 [x] F-unified-craft-ui     Unified data-driven building crafting UI
+[x] F-voice-subsets        Variable voice count (SATB subsets)
 [x] F-voxel-exclusion      Creatures cannot enter voxels occupied by hostile creatures
 [x] F-voxel-fem            Voxel FEM structural analysis
 [x] F-voxel-textures       Per-face Perlin noise voxel textures
@@ -2681,6 +2682,9 @@ infrastructure.
 
 **Blocks:** F-audio-sampled, F-proc-poetry
 **Related:** F-elf-names, F-poetry-reading
+
+#### F-voice-subsets — Variable voice count (SATB subsets)
+**Status:** Done
 
 ### Combat & Defense
 

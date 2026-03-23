@@ -155,7 +155,7 @@ pub fn anneal(
     // Collect mutable cells (non-structural, non-rest attack cells)
     let num_beats = grid.num_beats;
     let mut mutable_cells: Vec<(Voice, usize)> = Vec::new();
-    for &voice in &Voice::ALL {
+    for &voice in grid.active_voices() {
         for beat in 0..num_beats {
             if structural_set.contains(&(voice.index(), beat)) {
                 continue;
@@ -259,7 +259,7 @@ pub fn anneal_with_text(
 
     let num_beats = grid.num_beats;
     let mut mutable_cells: Vec<(Voice, usize)> = Vec::new();
-    for &voice in &Voice::ALL {
+    for &voice in grid.active_voices() {
         for beat in 0..num_beats {
             if structural_set.contains(&(voice.index(), beat)) {
                 continue;

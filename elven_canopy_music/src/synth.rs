@@ -1,7 +1,7 @@
 // Phase 1 waveform synthesizer: renders a Grid to mono PCM audio.
 //
-// Converts the SATB score grid into audible audio by generating simple
-// triangle waves for each voice and mixing them together. This is the
+// Converts the score grid into audible audio by generating simple
+// triangle waves for each active voice and mixing them together. This is the
 // "mediocre MIDI quality" renderer described in the design doc §21 —
 // harmonies are clearly audible but the sound is electronic.
 //
@@ -58,7 +58,7 @@ pub fn render_grid_to_pcm(grid: &Grid) -> Vec<f32> {
 
     let mut output = vec![0.0_f32; total_samples];
 
-    for voice in Voice::ALL {
+    for &voice in grid.active_voices() {
         render_voice(grid, voice, samples_per_beat, envelope_samples, &mut output);
     }
 

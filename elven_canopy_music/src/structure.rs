@@ -108,6 +108,19 @@ pub fn generate_structure(
     max_beats: Option<usize>,
     rng: &mut GameRng,
 ) -> StructurePlan {
+    generate_structure_for_voices(motif_library, num_sections, max_beats, &Voice::ALL, rng)
+}
+
+/// Generate a structure plan for a piece using only the specified voices.
+///
+/// Same as `generate_structure` but limits entries to the given voice subset.
+pub fn generate_structure_for_voices(
+    motif_library: &MotifLibrary,
+    num_sections: usize,
+    max_beats: Option<usize>,
+    active_voices: &[Voice],
+    rng: &mut GameRng,
+) -> StructurePlan {
     let mut imitation_points = Vec::new();
     let mut response_points = Vec::new();
     let mut current_beat: usize = 0;
@@ -141,17 +154,23 @@ pub fn generate_structure(
         let base_offset = motif.typical_entry_offset as usize;
         let entry_offset = base_offset + rng.range_usize(0, 3); // 8-10 beats typical
 
-        // Pick entry order and transposition scheme
-        let voice_order = ENTRY_ORDERS[rng.range_usize(0, ENTRY_ORDERS.len())];
+        // Pick entry order and transposition scheme, filtering to active voices
+        let full_order = ENTRY_ORDERS[rng.range_usize(0, ENTRY_ORDERS.len())];
         let transpositions = TRANSPOSITION_SCHEMES[rng.range_usize(0, TRANSPOSITION_SCHEMES.len())];
+        let voice_order: Vec<Voice> = full_order
+            .iter()
+            .copied()
+            .filter(|v| active_voices.contains(v))
+            .collect();
 
-        // Decide how many voices participate (2-4)
+        // Decide how many voices participate (clamped to available voices)
+        let max_voices = voice_order.len();
         let min_voices = if section_idx == 0 || section_idx == num_sections - 1 {
-            3 // First and last sections should be fuller
+            3.min(max_voices) // First and last sections should be fuller
         } else {
-            2
+            2.min(max_voices)
         };
-        let num_voices = rng.range_usize_inclusive(min_voices, 4);
+        let num_voices = rng.range_usize_inclusive(min_voices, max_voices);
 
         let mut entries = Vec::new();
         let mut voices_added = 0;
@@ -366,21 +385,18 @@ fn apply_dai(
     let final_pc = mode.final_pc;
     let fifth_pc = (final_pc + 7) % 12;
 
-    // Build a chord: each voice gets a note from the final triad in its range
-    let chord_pitches: [u8; 4] = Voice::ALL.map(|v| {
-        let (low, high) = v.range();
+    // Build a chord: each active voice gets a note from the final triad in its range
+    // Place the homophonic chord (all active voices attack together, hold 2 beats)
+    let active = grid.active_voices().to_vec();
+    for &voice in &active {
+        let (low, high) = voice.range();
         let mid = (low + high) / 2;
         // Soprano/tenor on final, alto/bass on 5th for open sound
-        let target_pc = match v {
+        let target_pc = match voice {
             Voice::Soprano | Voice::Tenor => final_pc,
             Voice::Alto | Voice::Bass => fifth_pc,
         };
-        nearest_pc(target_pc, mid, low, high)
-    });
-
-    // Place the homophonic chord (all voices attack together, hold 2 beats)
-    for (i, &voice) in Voice::ALL.iter().enumerate() {
-        let pitch = chord_pitches[i];
+        let pitch = nearest_pc(target_pc, mid, low, high);
         if beat < grid.num_beats {
             grid.set_note(voice, beat, pitch);
             structural.push((voice.index(), beat));
@@ -409,28 +425,31 @@ fn apply_thol(
     let final_pc = mode.final_pc;
     let fifth_pc = (final_pc + 7) % 12;
 
-    // Staggered entries: bass first, then tenor, alto, soprano
-    let entry_order = [Voice::Bass, Voice::Tenor, Voice::Alto, Voice::Soprano];
-    let entry_offsets = [0, 2, 3, 4]; // beats after start
+    // Staggered entries: bass first, then tenor, alto, soprano (filtered to active)
+    let full_entry_order = [Voice::Bass, Voice::Tenor, Voice::Alto, Voice::Soprano];
+    let active = grid.active_voices().to_vec();
+    let entry_order: Vec<Voice> = full_entry_order
+        .iter()
+        .copied()
+        .filter(|v| active.contains(v))
+        .collect();
     let total_hold = 6; // total beats the thol section occupies
 
-    let chord_pitches: [u8; 4] = Voice::ALL.map(|v| {
-        let (low, high) = v.range();
-        let mid = (low + high) / 2;
-        let target_pc = match v {
-            Voice::Soprano | Voice::Tenor => final_pc,
-            Voice::Alto | Voice::Bass => fifth_pc,
-        };
-        nearest_pc(target_pc, mid, low, high)
-    });
-
     for (i, &voice) in entry_order.iter().enumerate() {
-        let entry_beat = beat + entry_offsets[i];
+        // Stagger entries: 0, 2, 3, 4... beats after start
+        let offset = if i == 0 { 0 } else { i + 1 };
+        let entry_beat = beat + offset;
         if entry_beat >= grid.num_beats {
             continue;
         }
 
-        let pitch = chord_pitches[voice.index()];
+        let (low, high) = voice.range();
+        let mid = (low + high) / 2;
+        let target_pc = match voice {
+            Voice::Soprano | Voice::Tenor => final_pc,
+            Voice::Alto | Voice::Bass => fifth_pc,
+        };
+        let pitch = nearest_pc(target_pc, mid, low, high);
         grid.set_note(voice, entry_beat, pitch);
         structural.push((voice.index(), entry_beat));
 
@@ -529,6 +548,70 @@ mod tests {
                     vi, beat
                 );
             }
+        }
+    }
+
+    #[test]
+    fn test_generate_structure_solo() {
+        let library = MotifLibrary::default_library();
+        let mut rng = GameRng::new(42);
+        let plan = generate_structure_for_voices(&library, 2, None, &[Voice::Soprano], &mut rng);
+
+        assert_eq!(plan.imitation_points.len(), 2);
+        for point in &plan.imitation_points {
+            assert_eq!(point.entries.len(), 1);
+            assert_eq!(point.entries[0].voice, Voice::Soprano);
+        }
+    }
+
+    #[test]
+    fn test_generate_structure_duet() {
+        let library = MotifLibrary::default_library();
+        let mut rng = GameRng::new(42);
+        let plan = generate_structure_for_voices(
+            &library,
+            2,
+            None,
+            &[Voice::Soprano, Voice::Alto],
+            &mut rng,
+        );
+
+        for point in &plan.imitation_points {
+            assert!(point.entries.len() <= 2);
+            for entry in &point.entries {
+                assert!(
+                    entry.voice == Voice::Soprano || entry.voice == Voice::Alto,
+                    "Unexpected voice {:?} in duet",
+                    entry.voice
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_apply_dai_subset() {
+        let library = MotifLibrary::default_library();
+        let mode = ModeInstance::d_dorian();
+        let mut rng = GameRng::new(42);
+        let plan = generate_structure_for_voices(
+            &library,
+            4,
+            None,
+            &[Voice::Soprano, Voice::Alto],
+            &mut rng,
+        );
+
+        let mut grid = Grid::new_with_voices(plan.total_beats, &[Voice::Soprano, Voice::Alto]);
+        let mut structural = apply_structure(&mut grid, &plan);
+        apply_responses(&mut grid, &plan, &mode, &mut structural);
+
+        // Structural cells should only touch soprano and alto
+        for &(vi, _) in &structural {
+            assert!(
+                vi == Voice::Soprano.index() || vi == Voice::Alto.index(),
+                "Structural cell on inactive voice index {}",
+                vi
+            );
         }
     }
 }

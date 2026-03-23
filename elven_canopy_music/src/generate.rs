@@ -9,12 +9,12 @@
 // an identical Grid every time.
 
 use crate::draft::{fill_draft, generate_final_cadence};
-use crate::grid::Grid;
+use crate::grid::{Grid, Voice};
 use crate::markov::{MarkovModels, MotifLibrary};
 use crate::mode::{Mode, ModeInstance};
 use crate::sa::{SAConfig, anneal_with_text};
 use crate::scoring::ScoringWeights;
-use crate::structure::{apply_responses, apply_structure, generate_structure};
+use crate::structure::{apply_responses, apply_structure, generate_structure_for_voices};
 use crate::text_mapping::apply_text_mapping;
 use crate::vaelith::generate_phrases_with_brightness;
 use elven_canopy_lang::default_lexicon;
@@ -42,6 +42,10 @@ pub struct GenerateParams {
     /// The final cadence (8 beats) is always appended, so the actual grid
     /// may be up to `max_beats + 8` beats long.
     pub max_beats: Option<usize>,
+    /// Which SATB voices to include. Defaults to all four if empty or None.
+    /// Pass e.g. `vec![Voice::Soprano]` for a solo, or
+    /// `vec![Voice::Soprano, Voice::Alto]` for a duet.
+    pub voices: Vec<Voice>,
 }
 
 /// Run the full composition pipeline and return the resulting Grid.
@@ -59,9 +63,21 @@ pub fn generate_piece(params: &GenerateParams) -> Grid {
     let (mode, final_pc) = ALL_MODES[params.mode_index % ALL_MODES.len()];
     let mode_inst = ModeInstance::new(mode, final_pc);
 
-    let plan = generate_structure(&motif_library, params.sections, params.max_beats, &mut rng);
+    let active_voices = if params.voices.is_empty() {
+        Voice::ALL.to_vec()
+    } else {
+        params.voices.clone()
+    };
 
-    let mut grid = Grid::new(plan.total_beats);
+    let plan = generate_structure_for_voices(
+        &motif_library,
+        params.sections,
+        params.max_beats,
+        &active_voices,
+        &mut rng,
+    );
+
+    let mut grid = Grid::new_with_voices(plan.total_beats, &active_voices);
     grid.tempo_bpm = params.tempo_bpm;
     let mut structural = apply_structure(&mut grid, &plan);
     apply_responses(&mut grid, &plan, &mode_inst, &mut structural);
@@ -110,6 +126,7 @@ mod tests {
             sa_iterations: 500, // Low for test speed
             tempo_bpm: 72,
             max_beats: None,
+            voices: Vec::new(),
         };
         let grid = generate_piece(&params);
         assert!(grid.num_beats > 0);
@@ -128,12 +145,14 @@ mod tests {
             sa_iterations: 500,
             tempo_bpm: 80,
             max_beats: None,
+            voices: Vec::new(),
         };
         let grid1 = generate_piece(&params);
         let grid2 = generate_piece(&params);
         // Same seed → identical grids
         assert_eq!(grid1.num_beats, grid2.num_beats);
-        for v in 0..4 {
+        for &voice in grid1.active_voices() {
+            let v = voice.index();
             for b in 0..grid1.num_beats {
                 assert_eq!(
                     grid1.voices[v][b], grid2.voices[v][b],
@@ -153,6 +172,7 @@ mod tests {
             sa_iterations: 500,
             tempo_bpm: 80,
             max_beats: None,
+            voices: Vec::new(),
         };
         let capped = GenerateParams {
             seed: 77,
@@ -162,6 +182,7 @@ mod tests {
             sa_iterations: 500,
             tempo_bpm: 80,
             max_beats: Some(20),
+            voices: Vec::new(),
         };
         let grid_full = generate_piece(&uncapped);
         let grid_short = generate_piece(&capped);
@@ -175,5 +196,114 @@ mod tests {
         // Should still have musical content.
         let stats = grid_short.stats();
         assert!(stats.total_attacks > 0);
+    }
+
+    #[test]
+    fn generate_piece_solo_soprano() {
+        let params = GenerateParams {
+            seed: 42,
+            sections: 2,
+            mode_index: 0,
+            brightness: 0.5,
+            sa_iterations: 500,
+            tempo_bpm: 72,
+            max_beats: None,
+            voices: vec![Voice::Soprano],
+        };
+        let grid = generate_piece(&params);
+        assert_eq!(grid.active_voices(), &[Voice::Soprano]);
+        assert!(grid.num_beats > 0);
+        let stats = grid.stats();
+        assert!(stats.total_attacks > 0, "Solo should have notes");
+        // Other voice rows should be empty
+        assert!(grid.voices[Voice::Alto.index()].is_empty());
+        assert!(grid.voices[Voice::Tenor.index()].is_empty());
+        assert!(grid.voices[Voice::Bass.index()].is_empty());
+    }
+
+    #[test]
+    fn generate_piece_duet() {
+        let params = GenerateParams {
+            seed: 42,
+            sections: 2,
+            mode_index: 0,
+            brightness: 0.5,
+            sa_iterations: 500,
+            tempo_bpm: 72,
+            max_beats: None,
+            voices: vec![Voice::Soprano, Voice::Alto],
+        };
+        let grid = generate_piece(&params);
+        assert_eq!(grid.active_voices(), &[Voice::Soprano, Voice::Alto]);
+        let stats = grid.stats();
+        assert!(stats.total_attacks > 0);
+        // Inactive voices should be empty
+        assert!(grid.voices[Voice::Tenor.index()].is_empty());
+        assert!(grid.voices[Voice::Bass.index()].is_empty());
+    }
+
+    #[test]
+    fn generate_piece_solo_is_deterministic() {
+        let params = GenerateParams {
+            seed: 99,
+            sections: 2,
+            mode_index: 0,
+            brightness: 0.5,
+            sa_iterations: 500,
+            tempo_bpm: 72,
+            max_beats: None,
+            voices: vec![Voice::Soprano],
+        };
+        let grid1 = generate_piece(&params);
+        let grid2 = generate_piece(&params);
+        assert_eq!(grid1.num_beats, grid2.num_beats);
+        for b in 0..grid1.num_beats {
+            assert_eq!(
+                grid1.voices[0][b], grid2.voices[0][b],
+                "Mismatch at beat {b}"
+            );
+        }
+    }
+
+    /// Smoke test: run generate_piece for every non-empty subset of SATB.
+    /// Ensures no panics for any voice combination.
+    #[test]
+    fn generate_piece_all_voice_combinations() {
+        let all = [Voice::Soprano, Voice::Alto, Voice::Tenor, Voice::Bass];
+        // Iterate all 15 non-empty subsets (bitmask 1..=15)
+        for mask in 1u8..=15 {
+            let voices: Vec<Voice> = all
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| mask & (1 << i) != 0)
+                .map(|(_, v)| *v)
+                .collect();
+
+            let params = GenerateParams {
+                seed: 42,
+                sections: 2,
+                mode_index: 0,
+                brightness: 0.5,
+                sa_iterations: 200,
+                tempo_bpm: 72,
+                max_beats: Some(30),
+                voices: voices.clone(),
+            };
+            let grid = generate_piece(&params);
+            assert!(grid.num_beats > 0, "mask {mask}: no beats");
+            let stats = grid.stats();
+            assert!(stats.total_attacks > 0, "mask {mask}: no notes");
+
+            // Inactive voices must have empty rows
+            for &v in &all {
+                if !voices.contains(&v) {
+                    assert!(
+                        grid.voices[v.index()].is_empty(),
+                        "mask {mask}: voice {:?} should be inactive",
+                        v
+                    );
+                }
+            }
+        }
     }
 }
