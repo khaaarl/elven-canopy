@@ -143,7 +143,10 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	# Home key: center camera on the home tree.
 	if event is InputEventKey and event.pressed and not event.echo:
-		if event.keycode == KEY_HOME:
+		var key := event as InputEventKey
+		if key.ctrl_pressed or key.shift_pressed or key.alt_pressed:
+			return
+		if key.keycode == KEY_HOME:
 			home_requested.emit()
 			get_viewport().set_input_as_handled()
 

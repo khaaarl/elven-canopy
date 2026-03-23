@@ -314,7 +314,13 @@ func _unhandled_input(event: InputEvent) -> void:
 					_recall_selection_group(group_num)
 				get_viewport().set_input_as_handled()
 				return
-		if key.pressed and key.keycode == KEY_F and has_creature_selection():
+		if (
+			key.pressed
+			and key.keycode == KEY_F
+			and not key.ctrl_pressed
+			and not key.alt_pressed
+			and has_creature_selection()
+		):
 			_attack_move_mode = not _attack_move_mode
 			get_viewport().set_input_as_handled()
 		elif key.pressed and key.keycode == KEY_ESCAPE and _attack_move_mode:

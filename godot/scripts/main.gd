@@ -1095,6 +1095,8 @@ func _process(delta: float) -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		var key := event as InputEventKey
+		if key.ctrl_pressed or key.shift_pressed or key.alt_pressed:
+			return
 		if key.keycode == KEY_Y:
 			_height_btn.active = not _height_btn.active
 			_height_btn.queue_redraw()

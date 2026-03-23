@@ -998,6 +998,8 @@ func _handle_key(key: InputEventKey) -> void:
 
 ## Try to handle P/G/L/C mode keys. Returns true if consumed.
 func _try_mode_key(key: InputEventKey) -> bool:
+	if key.ctrl_pressed or key.shift_pressed or key.alt_pressed:
+		return false
 	var mode := ""
 	if key.keycode == KEY_P:
 		mode = "platform"
