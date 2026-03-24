@@ -2067,14 +2067,16 @@ Both thresholds are configurable in GameConfig. A GDScript mirror
 #### F-item-quality — Item and output quality system
 **Status:** Todo · **Phase:** 4
 
-Item and output quality system. Needs design: quality metric (continuous
-integer scale vs discrete tiers), how quality is determined (skill-based
-roll at craft time, stat+skill combination), what quality affects (food
-mood bonus, equipment durability, construction aesthetics, trade value),
-how quality interacts with item stacking, and how quality is displayed
-in the UI. Referenced as a deferred effect channel in F-creature-skills
-and as a factor in choir construction (F-choir-build) and sung furniture
-(F-sung-furniture).
+Coarse-grained item quality (-1 to +3). At craft completion, roll
+quasi_normal(stddev=50) + stats + skill against thresholds: <50 Crude,
+50-249 Fine, 250+ Superior. Masterwork (+2) and Legendary (+3) locked
+behind future path/recipe/material systems. Input quality drags down
+output quality but cannot boost it. Elf starting gear is Crude for
+early progression. All tiers displayed as prefix ("Crude Oak Bow",
+"Fine Bread"). Items stack only when quality matches. Effects on food
+mood, equipment stats, construction aesthetics TBD per tier.
+
+**Draft:** docs/drafts/F-item-quality.md
 
 **Related:** F-choir-build, F-creature-skills, F-manufacturing, F-sung-furniture
 
