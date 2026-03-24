@@ -1381,13 +1381,21 @@ meaningful tactical tool. Also improves general simulation fidelity.
 Beastcraft, Cuisine, Tailoring, Woodcraft, Alchemy, Singing, Channeling,
 Literature, Art, Influence, Culture, Counsel) with exponential 2^(s/100)
 scaling reusing the stat multiplier pipeline. All skills universally
-available to all elves. Probabilistic advancement (no XP) — each relevant
-action rolls for +1 skill; momentous actions can grant multiple rolls or
-larger increments. Skills combine for composite applications (e.g.,
-Singing + Channeling + Art for construction woodsinging). Some applications
-gated by path (e.g., construction woodsinging requires Woodsinger path).
-No skill decay. Initial effect channels: speed and quality; efficiency,
-unlocks, and failure rate deferred.
+available to all elves.
+
+Done: TraitKind variants, info panel Skills tab, SKILL_TRAIT_KINDS array,
+SkillConfig (default_skill_cap=100, advancement_decay_base=100),
+probabilistic advancement with INT scaling (try_advance_skill), triggers
+wired to melee/ranged/harvest/construction/crafting, speed effect via
+additive stat+skill through apply_stat_divisor (melee AGI+Striking,
+ranged DEX+Archery, harvest DEX+Herbalism, construction CHA+Singing,
+crafting DEX+verb skill, furnishing DEX+Woodcraft). Skill cap only
+limits learning, not speed benefit.
+
+Remaining: quality effect channel, composite skill applications (e.g.
+Singing+Channeling+Art for woodsinging), path-gated caps and advancement
+focusing (depends on F-path-core), efficiency/unlocks/failure-rate
+channels.
 
 **Draft:** docs/drafts/F-creature-skills.md
 
