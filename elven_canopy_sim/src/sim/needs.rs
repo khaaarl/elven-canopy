@@ -149,6 +149,10 @@ impl SimState {
         }
 
         self.complete_task(task_id);
+
+        // Skill advancement: Herbalism (plant lifecycle proficiency).
+        self.try_advance_skill(creature_id, crate::types::TraitKind::Herbalism, 800);
+
         true
     }
 

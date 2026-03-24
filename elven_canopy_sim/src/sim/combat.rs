@@ -1840,6 +1840,9 @@ impl SimState {
             },
         });
 
+        // Skill advancement: Striking (melee combat proficiency).
+        self.try_advance_skill(attacker_id, crate::types::TraitKind::Striking, 500);
+
         true
     }
 
@@ -2003,6 +2006,9 @@ impl SimState {
                 target_id,
             },
         });
+
+        // Skill advancement: Archery (ranged combat proficiency).
+        self.try_advance_skill(attacker_id, crate::types::TraitKind::Archery, 500);
 
         true
     }

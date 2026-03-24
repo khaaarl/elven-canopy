@@ -2269,6 +2269,42 @@ pub struct GameConfig {
     /// Set to 0 to disable fall damage. Default 10.
     #[serde(default = "default_fall_damage_per_voxel")]
     pub fall_damage_per_voxel: i64,
+
+    // -- Creature skills (F-creature-skills) --
+    /// Skill advancement configuration. Backward-compatible: older configs
+    /// without this field use defaults.
+    #[serde(default)]
+    pub skills: SkillConfig,
+}
+
+/// Configuration for the creature skill advancement system (F-creature-skills).
+///
+/// Controls the skill cap (maximum skill level without path gating) and the
+/// probability decay curve for advancement rolls. Per-trigger base
+/// probabilities are currently hardcoded at call sites; this struct holds
+/// the system-wide parameters.
+///
+/// See also: `stats.rs` for `SKILL_TRAIT_KINDS`, `sim/skills.rs` for
+/// `try_advance_skill()`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SkillConfig {
+    /// Maximum skill level when no path system is active. Default 100.
+    pub default_skill_cap: i64,
+
+    /// Denominator offset in the advancement decay formula:
+    /// `adjusted_prob = base_prob * decay_base / (decay_base + current_skill)`.
+    /// Higher values make the curve gentler (slower falloff). Default 100,
+    /// which gives 50% of base probability at skill 100.
+    pub advancement_decay_base: i64,
+}
+
+impl Default for SkillConfig {
+    fn default() -> Self {
+        Self {
+            default_skill_cap: 100,
+            advancement_decay_base: 100,
+        }
+    }
 }
 
 fn default_platform_mana_cost_per_mille() -> u32 {
@@ -3269,6 +3305,7 @@ impl Default for GameConfig {
             melee_weapon_impact_damage_min: default_melee_weapon_impact_damage_min(),
             melee_weapon_impact_damage_max: default_melee_weapon_impact_damage_max(),
             fall_damage_per_voxel: default_fall_damage_per_voxel(),
+            skills: SkillConfig::default(),
         }
     }
 }
@@ -3314,6 +3351,15 @@ mod tests {
         assert_eq!(
             config.structural.face_properties.len(),
             restored.structural.face_properties.len()
+        );
+        // Verify SkillConfig survived.
+        assert_eq!(
+            config.skills.default_skill_cap,
+            restored.skills.default_skill_cap
+        );
+        assert_eq!(
+            config.skills.advancement_decay_base,
+            restored.skills.advancement_decay_base
         );
     }
 

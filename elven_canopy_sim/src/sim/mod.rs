@@ -548,6 +548,7 @@ mod logistics;
 mod movement;
 mod needs;
 mod raid;
+mod skills;
 mod task_helpers;
 
 impl SimState {

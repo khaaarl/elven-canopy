@@ -31,6 +31,7 @@ elven-canopy/
 │       │   ├── movement.rs     #   GoTo commands, unit spreading, step execution, wandering, command queue
 │       │   ├── needs.rs        #   Eating, sleeping, moping, personal item acquisition
 │       │   ├── raid.rs         #   Raid triggering (hostile civ raiding parties)
+│       │   ├── skills.rs      #   Probabilistic skill advancement (try_advance_skill)
 │       │   └── task_helpers.rs #   Task extension table accessors, insert_task
 │       ├── db.rs               # SimDb — tabulosity relational store (38 tables, all entities)
 │       ├── mesh_gen.rs         # Chunk-based voxel mesh generation with smooth surface rendering

@@ -91,7 +91,8 @@ impl SimState {
             }
         };
 
-        let is_grow = craft_data.recipe.verb() == crate::recipe::RecipeVerb::Grow;
+        let verb = craft_data.recipe.verb();
+        let is_grow = verb == crate::recipe::RecipeVerb::Grow;
 
         // --- Grow-verb mana drain ---
         if is_grow {
@@ -111,6 +112,13 @@ impl SimState {
             let _ = self.db.tasks.modify_unchecked(&task_id, |t| {
                 t.progress += 1;
             });
+
+            // Skill advancement per grow action (not just on completion).
+            // Growing equipment is primarily woodcraft with some
+            // singing/channeling.
+            self.try_advance_skill(creature_id, crate::types::TraitKind::Woodcraft, 1000);
+            self.try_advance_skill(creature_id, crate::types::TraitKind::Singing, 500);
+            self.try_advance_skill(creature_id, crate::types::TraitKind::Channeling, 500);
 
             // Check if all actions are done.
             let task = match self.db.tasks.get(&task_id) {
@@ -155,6 +163,31 @@ impl SimState {
         }
 
         self.complete_task(task_id);
+
+        // Skill advancement per recipe verb (F-creature-skills).
+        {
+            use crate::recipe::RecipeVerb;
+            use crate::types::TraitKind;
+            match verb {
+                RecipeVerb::Extract | RecipeVerb::Mill | RecipeVerb::Press => {
+                    self.try_advance_skill(creature_id, TraitKind::Herbalism, 800);
+                }
+                RecipeVerb::Spin | RecipeVerb::Twist | RecipeVerb::Weave | RecipeVerb::Sew => {
+                    self.try_advance_skill(creature_id, TraitKind::Tailoring, 800);
+                }
+                RecipeVerb::Bake => {
+                    self.try_advance_skill(creature_id, TraitKind::Cuisine, 800);
+                }
+                RecipeVerb::Assemble => {
+                    self.try_advance_skill(creature_id, TraitKind::Woodcraft, 800);
+                }
+                RecipeVerb::Grow => {
+                    // Grow skills are advanced per-action in the mana drain
+                    // loop above, not here at completion.
+                }
+            }
+        }
+
         true
     }
 

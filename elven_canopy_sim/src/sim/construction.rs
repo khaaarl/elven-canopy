@@ -935,6 +935,12 @@ impl SimState {
             t.progress += 1;
         });
 
+        // Skill advancement: construction is woodsinging (Singing + Channeling
+        // primary, Woodcraft secondary).
+        self.try_advance_skill(creature_id, crate::types::TraitKind::Singing, 1000);
+        self.try_advance_skill(creature_id, crate::types::TraitKind::Channeling, 1000);
+        self.try_advance_skill(creature_id, crate::types::TraitKind::Woodcraft, 500);
+
         // Check if the build is complete.
         let task = match self.db.tasks.get(&task_id) {
             Some(t) => t,
