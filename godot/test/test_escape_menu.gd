@@ -80,9 +80,11 @@ func test_f1_consumed_when_visible() -> void:
 	assert_true(_menu.visible, "Menu should remain open after F1 key")
 
 
+## Note: KEY_M and KEY_C are now functional hotkeys (Main Menu and Configure
+## Settings) so they are tested separately, not in this passthrough test.
 func test_arbitrary_key_consumed_when_visible() -> void:
 	_menu.open()
-	for key in [KEY_T, KEY_U, KEY_M, KEY_I, KEY_F2, KEY_F3, KEY_F12]:
+	for key in [KEY_T, KEY_U, KEY_I, KEY_F2, KEY_F3, KEY_F12]:
 		var ev := _make_key_event(key)
 		_menu._unhandled_input(ev)
 	assert_true(_menu.visible, "Menu should remain open after toolbar hotkeys")
@@ -120,6 +122,22 @@ func test_save_dialog_open_suppresses_s() -> void:
 	var ev := _make_key_event(KEY_S)
 	_menu._unhandled_input(ev)
 	assert_true(_menu.visible, "S should not open save while save dialog is open")
+
+
+func test_settings_open_suppresses_m() -> void:
+	_menu.open()
+	_menu._settings_open = true
+	var ev := _make_key_event(KEY_M)
+	_menu._unhandled_input(ev)
+	assert_true(_menu.visible, "M should not navigate while settings panel is open")
+
+
+func test_settings_open_suppresses_c() -> void:
+	_menu.open()
+	_menu._settings_open = true
+	var ev := _make_key_event(KEY_C)
+	_menu._unhandled_input(ev)
+	assert_true(_menu.visible, "C should not open settings while settings panel is open")
 
 
 func test_s_key_does_nothing_when_save_disabled() -> void:

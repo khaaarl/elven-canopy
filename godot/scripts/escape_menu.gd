@@ -13,10 +13,10 @@
 ## placement_controller.gd, construction_controller.gd, and
 ## selection_controller.gd consume ESC first (via
 ## set_input_as_handled), so the escape menu only opens when nothing
-## else claims ESC. While visible: Q = Quit, S = Save (if enabled). All
-## other key input is consumed to prevent toolbar hotkeys from firing
-## behind the overlay. These hotkeys are suppressed while the save
-## dialog is open (_save_dialog_open).
+## else claims ESC. While visible: Q = Quit, S = Save (if enabled),
+## C = Configure Settings, M = Main Menu. All other key input is consumed
+## to prevent toolbar hotkeys from firing behind the overlay. These hotkeys
+## are suppressed while the save dialog or settings panel is open.
 ##
 ## Call `setup(bridge)` after construction to enable saving. Without it,
 ## the Save button remains disabled.
@@ -24,7 +24,8 @@
 ## Exposes toggle(), open(), close() so main.gd can wire a menu button.
 ##
 ## See also: main.gd (creates and wires this menu), main_menu.gd (target
-## of the "Main Menu" button), save_dialog.gd (modal save name input).
+## of the "Main Menu" button), save_dialog.gd (modal save name input),
+## settings_panel.gd (settings overlay).
 
 extends ColorRect
 
@@ -32,6 +33,7 @@ var _bridge: SimBridge
 var _save_btn: Button
 var _main_menu_btn: Button
 var _save_dialog_open: bool = false
+var _settings_open: bool = false
 var _is_multiplayer: bool = false
 
 
@@ -74,6 +76,13 @@ func _ready() -> void:
 	_save_btn.pressed.connect(_on_save_pressed)
 	vbox.add_child(_save_btn)
 
+	# Configure Settings button.
+	var settings_btn := Button.new()
+	settings_btn.text = "Configure Settings"
+	settings_btn.custom_minimum_size = Vector2(200, 50)
+	settings_btn.pressed.connect(_on_settings_pressed)
+	vbox.add_child(settings_btn)
+
 	# Main Menu / Disconnect button.
 	_main_menu_btn = Button.new()
 	_main_menu_btn.text = "Main Menu"
@@ -111,11 +120,15 @@ func _unhandled_input(event: InputEvent) -> void:
 	# Menu is open — consume ALL key input so toolbar hotkeys (Space, B, T,
 	# U, M, I, F1–F3, etc.) cannot fire behind the overlay.
 	if event is InputEventKey and event.pressed and not event.echo:
-		if not _save_dialog_open:
+		if not _save_dialog_open and not _settings_open:
 			if event.keycode == KEY_Q:
 				_quit_game()
 			elif event.keycode == KEY_S and not _save_btn.disabled:
 				_on_save_pressed()
+			elif event.keycode == KEY_C:
+				_on_settings_pressed()
+			elif event.keycode == KEY_M:
+				_on_main_menu_pressed()
 		get_viewport().set_input_as_handled()
 
 
@@ -136,6 +149,18 @@ func close() -> void:
 	visible = false
 	if not _is_multiplayer:
 		get_tree().paused = false
+
+
+func _on_settings_pressed() -> void:
+	if _settings_open:
+		return
+	var panel_script = load("res://scripts/settings_panel.gd")
+	var panel := ColorRect.new()
+	panel.set_script(panel_script)
+	add_child(panel)
+	panel.open(GameConfig)
+	_settings_open = true
+	panel.closed.connect(func() -> void: _settings_open = false)
 
 
 func _on_save_pressed() -> void:

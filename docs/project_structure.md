@@ -151,6 +151,7 @@ elven-canopy/
 │   │   ├── test_orbital_camera.gd # Orbital camera tests
 │   │   ├── test_selection_controller.gd # Selection controller tests
 │   │   ├── test_selection_utils.gd # Selection utility tests
+│   │   ├── test_settings_panel.gd # Settings panel tests
 │   │   ├── test_status_bar.gd     # Status bar tests
 │   │   ├── test_view_toggle_icons.gd # View toggle icon tests
 │   │   └── test_wants_editor.gd   # Wants editor tests
@@ -162,6 +163,7 @@ elven-canopy/
 │       ├── main_menu.gd        # Main menu UI
 │       ├── new_game_menu.gd    # New game screen with tree parameter sliders
 │       ├── escape_menu.gd      # In-game escape menu overlay (ESC)
+│       ├── settings_panel.gd    # Modal settings overlay (player name, paused-on-load)
 │       ├── save_dialog.gd      # Modal save-game dialog (name input)
 │       ├── load_dialog.gd      # Modal load-game dialog (file list)
 │       ├── orbital_camera.gd   # Camera controls (orbit, follow, vertical snap)

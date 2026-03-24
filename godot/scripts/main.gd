@@ -196,6 +196,10 @@ func _ready() -> void:
 			get_tree().change_scene_to_file("res://scenes/main_menu.tscn")
 			return
 
+	# If loading a save with start_paused_on_load enabled, pause immediately.
+	if is_loaded_game and GameConfig.get_setting("start_paused_on_load"):
+		bridge.set_sim_speed("Paused")
+
 	if not is_loaded_game:
 		# Normal new-game flow.
 		if GameSession.sim_seed >= 0:

@@ -60,6 +60,7 @@ This reduces merge conflicts when parallel work streams add items.
 ```
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
+[ ] B-start-paused-ui      start_paused_on_load UI desync and missing new-game support
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
 [ ] F-adventure-mode       Control individual elf (RPG-like)
@@ -92,7 +93,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-cloak-slot           Cloak/cape equipment slot
 [ ] F-combat               Combat and invader threat system
 [ ] F-combat-singing       Combat singing buffs and musical instrument bands
-[ ] F-config-ui            Settings UI panel (main menu + pause menu)
 [ ] F-conjured-creatures   Temporary creature spawning with lifetime and auto-despawn
 [ ] F-controls-config      Centralized controls config with rebinding and persistence
 [ ] F-controls-config-A    ControlsConfig autoload and handler migration
@@ -293,6 +293,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-component-recipes    Component-based crafting recipes (bread, thread, bowstring)
 [x] F-compound-pk          Compound (multi-column) primary keys
 [x] F-config-file          Game config file (user://config.json)
+[x] F-config-ui            Settings UI panel (main menu + pause menu)
 [x] F-construction         Platform construction (designate/build/cancel)
 [x] F-core-types           VoxelCoord, IDs, SimCommand, GameConfig
 [x] F-crafting             Non-construction jobs and crafting
@@ -3994,6 +3995,20 @@ Two related fixes for the ESC menu:
 
 Most gameplay hotkeys (B, T, U, M, I, Y, Space, F1–F3, F12, ?) fire even when Ctrl/Shift/Alt are held. They should generally be suppressed when modifiers are active, but some cases may need individual consideration (e.g., Ctrl+1–9 for selection groups already uses modifiers intentionally). Go through each hotkey handler in action_toolbar.gd, main.gd, construction_controller.gd, and selection_controller.gd on a case-by-case basis.
 
+#### B-start-paused-ui — start_paused_on_load UI desync and missing new-game support
+**Status:** Todo
+
+start_paused_on_load pauses the sim on load but has two issues:
+
+1. UI desync: the toolbar shows speed as x1 and unpaused even though the
+   sim is paused. The speed controls and status bar do not reflect the
+   paused state set by the config.
+
+2. Missing new-game support: the setting only triggers on save loads, but
+   should also pause on new game start.
+
+**Related:** F-config-ui
+
 #### F-ability-hotkeys — RTS-style bindable ability hotkeys on creatures
 **Status:** Todo
 
@@ -4230,7 +4245,7 @@ Null values for known keys are treated as missing (default used instead).
 **Related:** F-bridge-integ-tests, F-player-identity
 
 #### F-config-ui — Settings UI panel (main menu + pause menu)
-**Status:** Todo · **Phase:** 2
+**Status:** Done · **Phase:** 2
 
 Settings panel accessible from both the main menu and the pause menu.
 Displays and edits values from F-config-file's GameConfig autoload.
@@ -4246,9 +4261,9 @@ sections to. F-controls-config-C adds the keybinding section here.
 Main menu gets a "Settings" button. Pause menu gets a "Settings" button
 alongside the existing Save/Load/Resume/Quit buttons.
 
-**Blocks:** F-controls-config-C
 **Unblocked by:** F-config-file
-**Related:** F-controls-config
+**Unblocked:** F-controls-config-C
+**Related:** B-start-paused-ui, F-controls-config
 
 #### F-controls-config — Centralized controls config with rebinding and persistence
 **Status:** Todo · **Phase:** 2
@@ -4337,8 +4352,9 @@ keybind_help.gd, replace "? Help" toolbar button with "Controls".
 
 **Draft:** docs/drafts/controls_config.md (Phase C)
 
-**Blocked by:** F-config-ui, F-controls-config-B
+**Blocked by:** F-controls-config-B
 **Blocks:** F-modifier-keybinds
+**Unblocked by:** F-config-ui
 **Related:** F-controls-config, F-keybind-help
 
 #### F-creature-info — Creature info panel with follow button

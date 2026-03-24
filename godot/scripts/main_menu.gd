@@ -8,8 +8,10 @@
 ## overlay before enabling the menu buttons. The chosen name is saved to
 ## user://config.json via GameConfig and reused across sessions.
 ##
-## Keyboard hotkeys: N = New Game, L = Load Game (if saves exist), Q = Quit.
-## Hotkeys are suppressed while the load dialog or name prompt is open.
+## Keyboard hotkeys: N = New Game, L = Load Game (if saves exist),
+## C = Configure Settings, M = Multiplayer, Q = Quit.
+## Hotkeys are suppressed while the load dialog, name prompt, or settings
+## panel is open.
 ##
 ## On startup, _preload_all_scripts() eagerly loads every .gd file in
 ## res://scripts/ to surface parse errors immediately (e.g. duplicate variable
@@ -20,13 +22,14 @@
 ##
 ## See also: new_game_menu.gd (next screen in flow), game_session.gd (autoload
 ## singleton for passing seed/load path to the game scene), load_dialog.gd
-## (modal save browser).
+## (modal save browser), settings_panel.gd (settings overlay).
 
 extends Control
 
 var _load_btn: Button
 var _dialog_open: bool = false
 var _name_prompt_open: bool = false
+var _settings_open: bool = false
 
 
 func _ready() -> void:
@@ -81,6 +84,13 @@ func _ready() -> void:
 	mp_btn.pressed.connect(_on_multiplayer_pressed)
 	vbox.add_child(mp_btn)
 
+	# Configure Settings button.
+	var settings_btn := Button.new()
+	settings_btn.text = "Configure Settings"
+	settings_btn.custom_minimum_size = Vector2(200, 50)
+	settings_btn.pressed.connect(_on_settings_pressed)
+	vbox.add_child(settings_btn)
+
 	# Quit Game button.
 	var quit_btn := Button.new()
 	quit_btn.text = "Quit Game"
@@ -127,7 +137,7 @@ func _has_save_files() -> bool:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if _dialog_open or _name_prompt_open:
+	if _dialog_open or _name_prompt_open or _settings_open:
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_N:
@@ -139,6 +149,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif event.keycode == KEY_M:
 			get_viewport().set_input_as_handled()
 			_on_multiplayer_pressed()
+		elif event.keycode == KEY_C:
+			get_viewport().set_input_as_handled()
+			_on_settings_pressed()
 		elif event.keycode == KEY_Q:
 			_quit_game()
 
@@ -156,6 +169,18 @@ func _on_new_game_pressed() -> void:
 
 func _on_multiplayer_pressed() -> void:
 	get_tree().change_scene_to_file("res://scenes/multiplayer_menu.tscn")
+
+
+func _on_settings_pressed() -> void:
+	if _settings_open:
+		return
+	var panel_script = load("res://scripts/settings_panel.gd")
+	var panel := ColorRect.new()
+	panel.set_script(panel_script)
+	add_child(panel)
+	panel.open(GameConfig)
+	_settings_open = true
+	panel.closed.connect(func() -> void: _settings_open = false)
 
 
 func _on_load_game_pressed() -> void:
