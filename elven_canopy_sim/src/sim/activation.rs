@@ -826,11 +826,13 @@ impl SimState {
                 return;
             }
             crate::db::TaskKindTag::Harvest => {
-                self.start_simple_action(
+                let duration = self.skill_modified_duration(
                     creature_id,
-                    ActionKind::Harvest,
                     self.config.harvest_action_ticks,
+                    crate::types::TraitKind::Dexterity,
+                    crate::types::TraitKind::Herbalism,
                 );
+                self.start_simple_action(creature_id, ActionKind::Harvest, duration);
                 return;
             }
             crate::db::TaskKindTag::AcquireItem => {

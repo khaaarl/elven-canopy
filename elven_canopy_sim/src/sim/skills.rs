@@ -1,4 +1,6 @@
-// Creature skill advancement (F-creature-skills).
+// Creature skill advancement and speed effects (F-creature-skills).
+//
+// ## Advancement
 //
 // Implements probabilistic skill advancement: each relevant action rolls
 // against a base probability, modulated by current skill level (higher skill
@@ -8,6 +10,16 @@
 //   adjusted = base_prob * decay_base / (decay_base + current_skill)
 //   adjusted = apply_stat_multiplier(adjusted, intelligence)
 //   adjusted = min(adjusted, 1000)
+//
+// ## Speed effect
+//
+// Higher skill reduces task duration via additive stat+skill combination:
+//
+//   effective_ticks = apply_stat_divisor(base_ticks, stat + skill)
+//
+// Each action type pairs a relevant stat (e.g., Agility for melee, Dexterity
+// for crafting) with its corresponding skill. The `skill_modified_duration()`
+// helper computes the reduced duration.
 //
 // Skills are stored as `TraitKind` variants in the `creature_traits` table
 // with `TraitValue::Int` values. Missing rows imply skill 0.
@@ -20,9 +32,11 @@ use crate::db::CreatureTrait;
 use crate::types::{CreatureId, TraitKind, TraitValue};
 
 impl super::SimState {
-    /// Roll for skill advancement after a relevant action. Always consumes
-    /// exactly 1 PRNG call regardless of outcome (cap, failed roll, or
-    /// success) to keep the PRNG stream position-stable.
+    /// Roll for skill advancement (learning) after a relevant action. The
+    /// skill cap limits how high a creature can *learn* — it does not affect
+    /// the benefit of skill already acquired. Always consumes exactly 1 PRNG
+    /// call regardless of outcome (cap, failed roll, or success) to keep the
+    /// PRNG stream position-stable.
     pub(crate) fn try_advance_skill(
         &mut self,
         creature_id: CreatureId,
@@ -64,5 +78,24 @@ impl super::SimState {
                 });
             }
         }
+    }
+
+    /// Compute a skill-modified task duration. The relevant stat and skill are
+    /// added (additive combination) and fed into `apply_stat_divisor`, so
+    /// higher stat+skill = fewer ticks. The raw skill value is used without
+    /// capping — the skill cap only limits *learning* (advancement), not the
+    /// benefit of skill already acquired. Returns at least 1 to prevent
+    /// zero-duration actions.
+    pub(crate) fn skill_modified_duration(
+        &self,
+        creature_id: CreatureId,
+        base_ticks: u64,
+        stat: TraitKind,
+        skill: TraitKind,
+    ) -> u64 {
+        let stat_val = self.trait_int(creature_id, stat, 0);
+        let skill_val = self.trait_int(creature_id, skill, 0);
+        let combined = stat_val + skill_val;
+        crate::stats::apply_stat_divisor(base_ticks as i64, combined).max(1) as u64
     }
 }

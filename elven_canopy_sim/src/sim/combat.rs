@@ -1812,7 +1812,12 @@ impl SimState {
 
         let strength = self.trait_int(attacker_id, TraitKind::Strength, 0);
         let raw_damage = crate::stats::apply_stat_multiplier(base_damage, strength);
-        let duration = species_data.melee_interval_ticks;
+        let duration = self.skill_modified_duration(
+            attacker_id,
+            species_data.melee_interval_ticks,
+            TraitKind::Agility,
+            TraitKind::Striking,
+        );
 
         // Start the action (sets action_kind + next_available_tick, schedules activation).
         self.start_simple_action(attacker_id, ActionKind::MeleeStrike, duration);
@@ -1995,7 +2000,12 @@ impl SimState {
         }
 
         // 7. Start the Shoot action (cooldown).
-        let duration = self.config.shoot_cooldown_ticks;
+        let duration = self.skill_modified_duration(
+            attacker_id,
+            self.config.shoot_cooldown_ticks,
+            TraitKind::Dexterity,
+            TraitKind::Archery,
+        );
         self.start_simple_action(attacker_id, ActionKind::Shoot, duration);
 
         // 8. Emit ProjectileLaunched event.

@@ -859,11 +859,17 @@ impl SimState {
             .get(&project_id)
             .is_some_and(|bp| bp.build_type.is_carve());
 
-        let duration = if is_carve {
+        let base_duration = if is_carve {
             self.config.carve_work_ticks_per_voxel
         } else {
             self.config.build_work_ticks_per_voxel
         };
+        let duration = self.skill_modified_duration(
+            creature_id,
+            base_duration,
+            crate::types::TraitKind::Charisma,
+            crate::types::TraitKind::Singing,
+        );
 
         // Mark composition as build_started on the first Build action.
         let progress = self.db.tasks.get(&task_id).map(|t| t.progress).unwrap_or(0);
@@ -1475,10 +1481,15 @@ impl SimState {
         }
     }
 
-    /// Start a Furnish action: set action kind and schedule next activation
-    /// after `furnish_work_ticks_per_item` ticks.
+    /// Start a Furnish action: set action kind and schedule next activation.
+    /// Base duration is `furnish_work_ticks_per_item`, modified by DEX+Woodcraft.
     pub(crate) fn start_furnish_action(&mut self, creature_id: CreatureId) {
-        let duration = self.config.furnish_work_ticks_per_item;
+        let duration = self.skill_modified_duration(
+            creature_id,
+            self.config.furnish_work_ticks_per_item,
+            crate::types::TraitKind::Dexterity,
+            crate::types::TraitKind::Woodcraft,
+        );
         let tick = self.tick;
         let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
             c.action_kind = ActionKind::Furnish;

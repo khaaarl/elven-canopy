@@ -29,10 +29,9 @@ impl SimState {
     pub(crate) fn start_craft_action(&mut self, creature_id: CreatureId, task_id: TaskId) {
         let craft_data = self.task_craft_data(task_id);
         let fruit_species: Vec<_> = self.db.fruit_species.iter_all().cloned().collect();
-        let is_grow = craft_data
-            .as_ref()
-            .is_some_and(|d| d.recipe.verb() == crate::recipe::RecipeVerb::Grow);
-        let duration = if is_grow {
+        let verb = craft_data.as_ref().map(|d| d.recipe.verb());
+        let is_grow = verb == Some(crate::recipe::RecipeVerb::Grow);
+        let base_duration = if is_grow {
             self.config.grow_recipes.grow_work_ticks_per_action.max(1)
         } else {
             craft_data
@@ -47,6 +46,27 @@ impl SimState {
                 })
                 .unwrap_or(5000)
         };
+
+        // Determine the skill for this verb's speed modifier.
+        let skill = match verb {
+            Some(crate::recipe::RecipeVerb::Extract)
+            | Some(crate::recipe::RecipeVerb::Mill)
+            | Some(crate::recipe::RecipeVerb::Press) => crate::types::TraitKind::Herbalism,
+            Some(crate::recipe::RecipeVerb::Spin)
+            | Some(crate::recipe::RecipeVerb::Twist)
+            | Some(crate::recipe::RecipeVerb::Weave)
+            | Some(crate::recipe::RecipeVerb::Sew) => crate::types::TraitKind::Tailoring,
+            Some(crate::recipe::RecipeVerb::Bake) => crate::types::TraitKind::Cuisine,
+            Some(crate::recipe::RecipeVerb::Assemble) => crate::types::TraitKind::Woodcraft,
+            Some(crate::recipe::RecipeVerb::Grow) => crate::types::TraitKind::Woodcraft,
+            None => crate::types::TraitKind::Woodcraft, // fallback
+        };
+        let duration = self.skill_modified_duration(
+            creature_id,
+            base_duration,
+            crate::types::TraitKind::Dexterity,
+            skill,
+        );
 
         let tick = self.tick;
         let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {

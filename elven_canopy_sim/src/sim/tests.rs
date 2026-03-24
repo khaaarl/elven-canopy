@@ -1046,6 +1046,79 @@ fn try_advance_skill_zero_decay_base_no_panic() {
     sim.try_advance_skill(elf_id, TraitKind::Striking, 1000);
 }
 
+#[test]
+fn skill_modified_duration_no_skill_is_identity() {
+    // With stat 0 and skill 0, duration should be unchanged (1x multiplier).
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    set_trait(&mut sim, elf_id, TraitKind::Dexterity, 0);
+
+    let result =
+        sim.skill_modified_duration(elf_id, 1000, TraitKind::Dexterity, TraitKind::Cuisine);
+    assert_eq!(result, 1000);
+}
+
+#[test]
+fn skill_modified_duration_skill_100_halves() {
+    // Skill 100 with stat 0: apply_stat_divisor(1000, 100) = 500 (2x speed).
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    set_trait(&mut sim, elf_id, TraitKind::Dexterity, 0);
+    set_trait(&mut sim, elf_id, TraitKind::Cuisine, 100);
+
+    let result =
+        sim.skill_modified_duration(elf_id, 1000, TraitKind::Dexterity, TraitKind::Cuisine);
+    assert_eq!(result, 500, "skill 100 should halve duration");
+}
+
+#[test]
+fn skill_modified_duration_stat_plus_skill_additive() {
+    // DEX +100, Cuisine +100 → combined 200 → 4x speed → 250 ticks.
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    set_trait(&mut sim, elf_id, TraitKind::Dexterity, 100);
+    set_trait(&mut sim, elf_id, TraitKind::Cuisine, 100);
+
+    let result =
+        sim.skill_modified_duration(elf_id, 1000, TraitKind::Dexterity, TraitKind::Cuisine);
+    assert_eq!(
+        result, 250,
+        "DEX +100 + Cuisine +100 should quarter duration"
+    );
+}
+
+#[test]
+fn skill_modified_duration_minimum_is_one() {
+    // Extremely high stat+skill should not produce zero duration.
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    set_trait(&mut sim, elf_id, TraitKind::Dexterity, 600);
+    set_trait(&mut sim, elf_id, TraitKind::Cuisine, 600);
+
+    let result = sim.skill_modified_duration(elf_id, 100, TraitKind::Dexterity, TraitKind::Cuisine);
+    assert_eq!(result, 1, "extreme stat+skill should clamp to minimum 1");
+}
+
+#[test]
+fn skill_modified_duration_ignores_cap() {
+    // The skill cap only limits learning (advancement), not the speed benefit.
+    // A creature with skill 200 and cap 100 should get the full 200 benefit.
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    set_trait(&mut sim, elf_id, TraitKind::Dexterity, 0);
+    set_trait(&mut sim, elf_id, TraitKind::Cuisine, 200);
+    assert_eq!(sim.config.skills.default_skill_cap, 100);
+
+    // Skill 200 → 4x speed → 1000/4 = 250 ticks.
+    // If the cap were applied, skill would clamp to 100 → 2x → 500 ticks.
+    let result =
+        sim.skill_modified_duration(elf_id, 1000, TraitKind::Dexterity, TraitKind::Cuisine);
+    assert_eq!(
+        result, 250,
+        "speed should use raw skill (200), not capped (100)"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Creature stats (F-creature-stats)
 // ---------------------------------------------------------------------------
@@ -18895,6 +18968,27 @@ fn force_position(sim: &mut SimState, creature_id: CreatureId, new_pos: VoxelCoo
     SimState::register_creature_in_index(&mut sim.spatial_index, creature_id, new_pos, footprint);
 }
 
+/// Set a creature's trait to a specific value (insert or modify).
+fn set_trait(sim: &mut SimState, creature_id: CreatureId, kind: TraitKind, value: i64) {
+    if sim.db.creature_traits.get(&(creature_id, kind)).is_some() {
+        let _ = sim
+            .db
+            .creature_traits
+            .modify_unchecked(&(creature_id, kind), |row| {
+                row.value = TraitValue::Int(value)
+            });
+    } else {
+        let _ = sim
+            .db
+            .creature_traits
+            .insert_no_fk(crate::db::CreatureTrait {
+                creature_id,
+                trait_kind: kind,
+                value: TraitValue::Int(value),
+            });
+    }
+}
+
 /// Make a creature idle (NoAction, no next_available_tick, no task).
 fn force_idle(sim: &mut SimState, creature_id: CreatureId) {
     let _ = sim.db.creatures.modify_unchecked(&creature_id, |c| {
@@ -26176,9 +26270,9 @@ fn creature_does_not_freeze_after_combat_preempts_task() {
     force_idle(&mut sim, orc_id);
 
     // Run for enough time for the elf to fire MULTIPLE shots.
-    // shoot_cooldown is 3000 ticks; run 15000 ticks for ~5 shot windows.
+    // shoot_cooldown is 3000 ticks; run 30000 ticks for ~10 shot windows.
     let tick = sim.tick;
-    sim.step(&[], tick + 15000);
+    sim.step(&[], tick + 30000);
 
     let inv_id = sim.db.creatures.get(&elf_id).unwrap().inventory_id;
     let arrows_remaining = sim.inv_item_count(
@@ -26334,6 +26428,9 @@ fn aggressive_soldier_shoots_repeatedly_over_time() {
 
     // Give elf bow + 20 arrows.
     arm_with_bow_and_arrows(&mut sim, elf_id, 20);
+
+    // Zero stats so skill-modified cooldowns match base config values.
+    zero_creature_stats(&mut sim, elf_id);
 
     // Position elf and orc with clear LOS, within detection range.
     let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;

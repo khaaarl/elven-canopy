@@ -2279,16 +2279,19 @@ pub struct GameConfig {
 
 /// Configuration for the creature skill advancement system (F-creature-skills).
 ///
-/// Controls the skill cap (maximum skill level without path gating) and the
-/// probability decay curve for advancement rolls. Per-trigger base
-/// probabilities are currently hardcoded at call sites; this struct holds
-/// the system-wide parameters.
+/// Controls the skill advancement cap (maximum level a creature can *learn*
+/// to) and the probability decay curve for advancement rolls. The cap only
+/// limits learning — a creature's existing skill level always applies in
+/// full to speed and other effects, even if the cap is later lowered.
+/// Per-trigger base probabilities are currently hardcoded at call sites;
+/// this struct holds the system-wide parameters.
 ///
 /// See also: `stats.rs` for `SKILL_TRAIT_KINDS`, `sim/skills.rs` for
 /// `try_advance_skill()`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SkillConfig {
-    /// Maximum skill level when no path system is active. Default 100.
+    /// Maximum skill level a creature can *advance to* (learn). Does not
+    /// limit the benefit of skill already acquired. Default 100.
     pub default_skill_cap: i64,
 
     /// Denominator offset in the advancement decay formula:
