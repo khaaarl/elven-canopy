@@ -49,6 +49,10 @@ Individual crate tests: `cargo test -p elven_canopy_sim`, `cargo test -p elven_c
 
 **Targeted clean:** If stale build artifacts cause errors (e.g., after force-pushes or branch switches), clean only the project crates — not the entire target directory: `cargo clean -p elven_canopy_sim -p elven_canopy_gdext`. This preserves the cached `godot` crate build, which is very slow to recompile.
 
+### Puppet (AI Test Harness)
+
+`scripts/puppet.py` launches headless game instances and controls them over TCP — press buttons, read UI text, step the sim. See `docs/puppet_guide.md` for the full guide. **Always `python3 scripts/puppet.py kill --all` when done.**
+
 ### Python Tools
 
 The `python/` directory contains offline training tools for the music generator — they are **not** part of the game runtime. **Never use `source .venv/bin/activate`** — always invoke tools via their full venv path (e.g., `python/.venv/bin/python`).

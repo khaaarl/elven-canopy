@@ -23,13 +23,16 @@
 ## build.sh target or sharing a single loaded scene across test methods via
 ## before_all (see the design doc's "Timeout consideration" section).
 ##
-## Helper functions (_generate_save, _load_game_scene, _wait_for, _step_ticks,
-## _step_until, _click_at_world_pos, etc.) form the reusable test harness
-## toolkit described in docs/drafts/F-bridge-integ-tests-and-ai-test-harness.md.
+## Test-local helpers (_generate_save, _load_game_scene, _wait_for, _step_ticks,
+## _step_until, etc.) live here.  Shared UI helpers (click_at_world_pos,
+## find_button, press_key, etc.) live in puppet_helpers.gd and are accessed
+## via the _helpers field.
 ##
 ## See also: main.gd for the scene controller, sim_bridge.rs for the Rust
 ## bridge, sprite_bridge.rs for SpriteGenerator.
 extends GutTest
+
+const PuppetHelpersScript := preload("res://scripts/puppet_helpers.gd")
 
 # ---------------------------------------------------------------------------
 # State
@@ -37,6 +40,9 @@ extends GutTest
 
 ## The instantiated main scene (child of this test node).
 var _main_scene: Node
+
+## Shared UI interaction helpers (initialized when scene loads).
+var _helpers  # PuppetHelpers instance (preloaded to avoid class load-order issues)
 
 ## Recorded fixture data (set during _generate_save, read during test body).
 var _fixture: Dictionary = {}
@@ -63,6 +69,7 @@ func after_each() -> void:
 			bridge.shutdown()
 		_main_scene.queue_free()
 		_main_scene = null
+		_helpers = null
 		# Yield a frame so Godot processes the deferred free and cleans up
 		# child nodes (CanvasLayers, panels, renderers) before GUT moves on.
 		await get_tree().process_frame
@@ -120,6 +127,7 @@ func _load_game_scene(save_json: String) -> void:
 	var packed := load("res://scenes/main.tscn") as PackedScene
 	_main_scene = packed.instantiate()
 	add_child(_main_scene)
+	_helpers = PuppetHelpersScript.new(_main_scene)
 	# Wait for the bridge to finish initializing.
 	var ready := await _wait_for(
 		func(): return _get_bridge() != null and _get_bridge().is_initialized(), 60
@@ -143,64 +151,8 @@ func _get_bridge() -> SimBridge:
 
 
 # ---------------------------------------------------------------------------
-# Helper: camera and clicking
+# Helper: UI reading (not extracted — test-specific)
 # ---------------------------------------------------------------------------
-
-
-## Position the camera to look at a world position.
-func _move_camera_to(world_pos: Vector3) -> void:
-	var pivot := _main_scene.get_node("CameraPivot")
-	pivot.position = world_pos
-
-
-## Send a key press+release event through the full input pipeline.
-func _press_key(keycode: int) -> void:
-	var press := InputEventKey.new()
-	press.keycode = keycode
-	press.pressed = true
-	Input.parse_input_event(press)
-	var release := InputEventKey.new()
-	release.keycode = keycode
-	release.pressed = false
-	Input.parse_input_event(release)
-
-
-## Click at a world position by projecting to screen coords.
-## Sends motion -> press -> release so controls register hover + click.
-func _click_at_world_pos(world_pos: Vector3) -> void:
-	var camera: Camera3D = _main_scene.get_node("CameraPivot/Camera3D")
-	var screen_pos := camera.unproject_position(world_pos)
-	# Move cursor to position first.
-	var motion := InputEventMouseMotion.new()
-	motion.position = screen_pos
-	Input.parse_input_event(motion)
-	# Press.
-	var click := InputEventMouseButton.new()
-	click.button_index = MOUSE_BUTTON_LEFT
-	click.pressed = true
-	click.position = screen_pos
-	Input.parse_input_event(click)
-	# Release.
-	var release := InputEventMouseButton.new()
-	release.button_index = MOUSE_BUTTON_LEFT
-	release.pressed = false
-	release.position = screen_pos
-	Input.parse_input_event(release)
-
-
-# ---------------------------------------------------------------------------
-# Helper: UI reading
-# ---------------------------------------------------------------------------
-
-
-## Read text from a Label or RichTextLabel by name (recursive search).
-func _read_panel_text(node_name: String) -> String:
-	var node := _main_scene.find_child(node_name, true, false)
-	if node is RichTextLabel:
-		return node.get_parsed_text()
-	if node is Label:
-		return node.text
-	return ""
 
 
 ## Check if the camera pivot is near the home tree position.
@@ -214,29 +166,6 @@ func _is_construction_active() -> bool:
 	var cc := _main_scene.find_child("ConstructionController", true, false)
 	if cc and cc.has_method("is_active"):
 		return cc.is_active()
-	return false
-
-
-## Check if a named Control node is visible (recursive search).
-func _is_panel_visible(node_name: String) -> bool:
-	var node := _main_scene.find_child(node_name, true, false)
-	return node != null and node.visible
-
-
-## Recursively search a node's descendants for a Label or Button whose text
-## contains the given substring.  Returns true if found.
-func _find_text_in_descendants(root: Node, substring: String) -> bool:
-	if root == null:
-		return false
-	if root is Label and substring in root.text:
-		return true
-	if root is Button and substring in root.text:
-		return true
-	if root is RichTextLabel and substring in root.get_parsed_text():
-		return true
-	for child in root.get_children():
-		if _find_text_in_descendants(child, substring):
-			return true
 	return false
 
 
@@ -324,11 +253,11 @@ func test_startup_scene_loads_and_initializes() -> void:
 	assert_eq(_get_bridge().elf_count(), _fixture.elf_count, "Elf count should match fixture")
 
 	# -- Verify status bar is visible --
-	var status_bar_visible := await _wait_for(func(): return _is_panel_visible("StatusBar"))
+	var status_bar_visible := await _wait_for(func(): return _helpers.is_panel_visible("StatusBar"))
 	assert_true(status_bar_visible, "Status bar should be visible")
 
 	# -- Verify escape menu is hidden --
-	assert_false(_is_panel_visible("EscapeMenu"), "Escape menu should be hidden on startup")
+	assert_false(_helpers.is_panel_visible("EscapeMenu"), "Escape menu should be hidden on startup")
 
 	# -- Verify status bar shows correct population count --
 	# Status bar updates in _process, so wait for it to refresh.
@@ -338,7 +267,7 @@ func test_startup_scene_loads_and_initializes() -> void:
 	var found_pop := await _wait_for(
 		func():
 			var sb := _main_scene.find_child("StatusBar", true, false)
-			return _find_text_in_descendants(sb, pop_str),
+			return _helpers.find_text_in_descendants(sb, pop_str),
 		30
 	)
 	assert_true(found_pop, "Status bar should show '%s'" % pop_str)
@@ -353,7 +282,7 @@ func test_startup_scene_loads_and_initializes() -> void:
 	var tree_info := _get_bridge().get_home_tree_info()
 	var tree_x: float = tree_info.get("position_x", 0.0)
 	var tree_z: float = tree_info.get("position_z", 0.0)
-	_press_key(KEY_HOME)
+	_helpers.press_key(KEY_HOME)
 	var home_moved := await _wait_for(_check_camera_at_home.bind(tree_x, tree_z), 30)
 	assert_true(home_moved, "Camera should move to home tree on Home key press")
 
@@ -363,26 +292,28 @@ func test_startup_scene_loads_and_initializes() -> void:
 	)
 
 	# -- Verify tree info panel shows mana via UI --
-	_press_key(KEY_I)
-	var tree_panel_visible := await _wait_for(func(): return _is_panel_visible("TreeInfoPanel"), 30)
+	_helpers.press_key(KEY_I)
+	var tree_panel_visible := await _wait_for(
+		func(): return _helpers.is_panel_visible("TreeInfoPanel"), 30
+	)
 	assert_true(tree_panel_visible, "TreeInfoPanel should open on I key press")
 	for _fi in 3:
 		await get_tree().process_frame
 	var tree_panel := _main_scene.find_child("TreeInfoPanel", true, false)
 	# The mana label shows "N / M" format; verify "Mana:" title is present.
 	assert_true(
-		_find_text_in_descendants(tree_panel, "Mana:"),
+		_helpers.find_text_in_descendants(tree_panel, "Mana:"),
 		"TreeInfoPanel should show 'Mana:' label",
 	)
 	# Verify the mana value label contains " / " (the "stored / capacity" format).
 	assert_true(
-		_find_text_in_descendants(tree_panel, " / "),
+		_helpers.find_text_in_descendants(tree_panel, " / "),
 		"TreeInfoPanel should show mana in 'N / M' format",
 	)
 	# Close tree info panel and verify it hides.
-	_press_key(KEY_I)
+	_helpers.press_key(KEY_I)
 	var tree_panel_hidden := await _wait_for(
-		func(): return not _is_panel_visible("TreeInfoPanel"), 30
+		func(): return not _helpers.is_panel_visible("TreeInfoPanel"), 30
 	)
 	assert_true(tree_panel_hidden, "TreeInfoPanel should hide on second I key press")
 
@@ -394,7 +325,7 @@ func test_startup_scene_loads_and_initializes() -> void:
 	var found_speed := await _wait_for(
 		func():
 			var sbar := _main_scene.find_child("StatusBar", true, false)
-			return _find_text_in_descendants(sbar, "Speed:"),
+			return _helpers.find_text_in_descendants(sbar, "Speed:"),
 		30
 	)
 	assert_true(found_speed, "Status bar should show 'Speed:' label")
@@ -435,7 +366,7 @@ func test_creature_selection_shows_info_panel() -> void:
 
 	# -- Position camera near the elf --
 	var elf_world_pos := Vector3(_fixture.x + 0.5, _fixture.y + 0.48, _fixture.z + 0.5)
-	_move_camera_to(Vector3(_fixture.x + 0.5, _fixture.y + 5.0, _fixture.z + 0.5))
+	_helpers.move_camera_to(Vector3(_fixture.x + 0.5, _fixture.y + 5.0, _fixture.z + 0.5))
 	# Set zoom close enough to see the elf.
 	var pivot := _main_scene.get_node("CameraPivot")
 	pivot._zoom = 15.0
@@ -445,10 +376,12 @@ func test_creature_selection_shows_info_panel() -> void:
 	# Note: unproject_position may not produce valid coords under headless xvfb.
 	# If this test fails, the design doc acknowledges this risk and suggests
 	# falling back to the selection controller API directly.
-	_click_at_world_pos(elf_world_pos)
+	_helpers.click_at_world_pos(elf_world_pos)
 
 	# -- Wait for the creature info panel to appear --
-	var panel_visible := await _wait_for(func(): return _is_panel_visible("CreatureInfoPanel"), 30)
+	var panel_visible := await _wait_for(
+		func(): return _helpers.is_panel_visible("CreatureInfoPanel"), 30
+	)
 	if not panel_visible:
 		# ACCEPTED EXCEPTION: Fallback to the selection controller API when
 		# click-to-select fails under headless xvfb.  The controller call
@@ -457,7 +390,7 @@ func test_creature_selection_shows_info_panel() -> void:
 		if selector:
 			selector.select_creature_by_id(_fixture.uuid)
 			panel_visible = await _wait_for(
-				func(): return _is_panel_visible("CreatureInfoPanel"), 30
+				func(): return _helpers.is_panel_visible("CreatureInfoPanel"), 30
 			)
 	assert_true(panel_visible, "CreatureInfoPanel should be visible after selection")
 
@@ -465,41 +398,41 @@ func test_creature_selection_shows_info_panel() -> void:
 	# The species label shows "Species: Elf" — use specific text to avoid
 	# false positives on other labels containing "Elf".
 	var panel := _main_scene.find_child("CreatureInfoPanel", true, false)
-	var found_species := _find_text_in_descendants(panel, "Species: Elf")
+	var found_species: bool = _helpers.find_text_in_descendants(panel, "Species: Elf")
 	assert_true(found_species, "Panel should show 'Species: Elf'")
 
 	# -- Verify panel shows creature name --
 	# The name label shows "Name: <name>" or "Name: <name> (<meaning>)".
 	assert_ne(_fixture.name, "", "Fixture name should be non-empty")
-	var found_name := _find_text_in_descendants(panel, _fixture.name)
+	var found_name: bool = _helpers.find_text_in_descendants(panel, _fixture.name)
 	assert_true(found_name, "Panel should show creature name '%s'" % _fixture.name)
 
 	# -- Verify panel shows HP --
 	# The HP label shows "<current> / <max>".  We can't predict the exact
 	# numbers, but the format "N / M" should be present.
-	var found_hp := _find_text_in_descendants(panel, " / ")
+	var found_hp: bool = _helpers.find_text_in_descendants(panel, " / ")
 	assert_true(found_hp, "Panel should show HP in 'N / M' format")
 
 	# -- Verify panel shows position --
 	# The position label shows "Position: (x, y, z)".
 	var pos_str := "Position: (%d, %d, %d)" % [int(_fixture.x), int(_fixture.y), int(_fixture.z)]
-	var found_pos := _find_text_in_descendants(panel, pos_str)
+	var found_pos: bool = _helpers.find_text_in_descendants(panel, pos_str)
 	assert_true(found_pos, "Panel should show '%s'" % pos_str)
 
 	# -- Verify panel shows task --
 	# The task label shows "Task: <kind>" or "Task: none".
-	var found_task := _find_text_in_descendants(panel, "Task:")
+	var found_task: bool = _helpers.find_text_in_descendants(panel, "Task:")
 	assert_true(found_task, "Panel should show a 'Task:' label")
 
 	# -- Verify panel shows mood --
 	# The mood label shows "Mood: <tier> (+/-N)".
-	var found_mood := _find_text_in_descendants(panel, "Mood:")
+	var found_mood: bool = _helpers.find_text_in_descendants(panel, "Mood:")
 	assert_true(found_mood, "Panel should show a 'Mood:' label")
 
 	# -- Close the panel via ESC and verify it hides --
-	_press_key(KEY_ESCAPE)
+	_helpers.press_key(KEY_ESCAPE)
 	var panel_hidden := await _wait_for(
-		func(): return not _is_panel_visible("CreatureInfoPanel"), 30
+		func(): return not _helpers.is_panel_visible("CreatureInfoPanel"), 30
 	)
 	assert_true(panel_hidden, "CreatureInfoPanel should hide after ESC")
 
@@ -556,8 +489,10 @@ func test_military_panel_shows_group() -> void:
 	assert_true(found_group, "Alpha Squad should exist in loaded game")
 
 	# -- Open military panel via M key --
-	_press_key(KEY_M)
-	var panel_visible := await _wait_for(func(): return _is_panel_visible("MilitaryPanel"), 30)
+	_helpers.press_key(KEY_M)
+	var panel_visible := await _wait_for(
+		func(): return _helpers.is_panel_visible("MilitaryPanel"), 30
+	)
 	assert_true(panel_visible, "MilitaryPanel should open on M key press")
 
 	# -- Verify panel contains "Alpha Squad" text and member count --
@@ -565,7 +500,7 @@ func test_military_panel_shows_group() -> void:
 	for _fi in 3:
 		await get_tree().process_frame
 	var panel := _main_scene.find_child("MilitaryPanel", true, false)
-	var found_text := _find_text_in_descendants(panel, "Alpha Squad")
+	var found_text: bool = _helpers.find_text_in_descendants(panel, "Alpha Squad")
 	assert_true(found_text, "Panel should contain 'Alpha Squad' text")
 
 	# The summary row is [Button("Alpha Squad [Passive]"), Label("1")].
@@ -575,18 +510,20 @@ func test_military_panel_shows_group() -> void:
 	assert_eq(members.size(), 1, "Alpha Squad should have 1 member via bridge query")
 	# Verify the panel shows the initiative tag alongside the group name.
 	assert_true(
-		_find_text_in_descendants(panel, "Alpha Squad ["),
+		_helpers.find_text_in_descendants(panel, "Alpha Squad ["),
 		"Summary row button should show 'Alpha Squad [<initiative>]'",
 	)
 
 	# -- Close military panel via M key --
-	_press_key(KEY_M)
-	var panel_hidden := await _wait_for(func(): return not _is_panel_visible("MilitaryPanel"), 30)
+	_helpers.press_key(KEY_M)
+	var panel_hidden := await _wait_for(
+		func(): return not _helpers.is_panel_visible("MilitaryPanel"), 30
+	)
 	assert_true(panel_hidden, "MilitaryPanel should close on second M key press")
 
 	# -- Reopen and verify consistency in both bridge and UI --
-	_press_key(KEY_M)
-	var reopened := await _wait_for(func(): return _is_panel_visible("MilitaryPanel"), 30)
+	_helpers.press_key(KEY_M)
+	var reopened := await _wait_for(func(): return _helpers.is_panel_visible("MilitaryPanel"), 30)
 	assert_true(reopened, "MilitaryPanel should reopen on third M key press")
 	for _fi in 3:
 		await get_tree().process_frame
@@ -596,7 +533,7 @@ func test_military_panel_shows_group() -> void:
 	# Re-verify UI shows "Alpha Squad" after reopen.
 	var panel_after := _main_scene.find_child("MilitaryPanel", true, false)
 	assert_true(
-		_find_text_in_descendants(panel_after, "Alpha Squad"),
+		_helpers.find_text_in_descendants(panel_after, "Alpha Squad"),
 		"Panel should still show 'Alpha Squad' after close+reopen",
 	)
 
@@ -691,23 +628,23 @@ func test_construction_blueprint_placement() -> void:
 			# test step 1 comment for xvfb rationale).
 			selector.select_structure(first_sid)
 			var panel_visible := await _wait_for(
-				func(): return _is_panel_visible("StructureInfoPanel"), 30
+				func(): return _helpers.is_panel_visible("StructureInfoPanel"), 30
 			)
 			assert_true(panel_visible, "StructureInfoPanel should open for completed structure")
 			var struct_panel := _main_scene.find_child("StructureInfoPanel", true, false)
 			assert_true(
-				_find_text_in_descendants(struct_panel, "Platform"),
+				_helpers.find_text_in_descendants(struct_panel, "Platform"),
 				"StructureInfoPanel should show 'Platform' build type",
 			)
 			# Deselect and verify panel closes.
-			_press_key(KEY_ESCAPE)
+			_helpers.press_key(KEY_ESCAPE)
 			var struct_closed := await _wait_for(
-				func(): return not _is_panel_visible("StructureInfoPanel"), 30
+				func(): return not _helpers.is_panel_visible("StructureInfoPanel"), 30
 			)
 			assert_true(struct_closed, "StructureInfoPanel should hide after ESC")
 
 	# -- Verify the construction panel opens via B key --
-	_press_key(KEY_B)
+	_helpers.press_key(KEY_B)
 	var found_construction := await _wait_for(func(): return _is_construction_active(), 30)
 	assert_true(found_construction, "Construction mode should activate on B key")
 
@@ -716,16 +653,16 @@ func test_construction_blueprint_placement() -> void:
 	for _fi in 3:
 		await get_tree().process_frame
 	assert_not_null(
-		_find_button(_main_scene, "Platform"),
+		_helpers.find_button(_main_scene, "Platform"),
 		"Construction mode should show 'Platform' button",
 	)
 	assert_not_null(
-		_find_button(_main_scene, "Building"),
+		_helpers.find_button(_main_scene, "Building"),
 		"Construction mode should show 'Building' button",
 	)
 
 	# Exit construction mode.
-	_press_key(KEY_ESCAPE)
+	_helpers.press_key(KEY_ESCAPE)
 	await _wait_for(func(): return not _is_construction_active(), 30)
 
 
@@ -779,23 +716,25 @@ func test_save_load_round_trip() -> void:
 	if _fixture.elf_count == 1:
 		pop_str = "1 Elf"
 	var sb := _main_scene.find_child("StatusBar", true, false)
-	var found_pop := await _wait_for(func(): return _find_text_in_descendants(sb, pop_str), 30)
+	var found_pop := await _wait_for(
+		func(): return _helpers.find_text_in_descendants(sb, pop_str), 30
+	)
 	assert_true(found_pop, "Status bar should show '%s' after initial load" % pop_str)
 
 	# Units panel should list the capybara.
-	_press_key(KEY_U)
-	var units_visible := await _wait_for(func(): return _is_panel_visible("UnitsPanel"), 30)
+	_helpers.press_key(KEY_U)
+	var units_visible := await _wait_for(func(): return _helpers.is_panel_visible("UnitsPanel"), 30)
 	assert_true(units_visible, "UnitsPanel should open on U key press")
 	# Wait for the panel to refresh its creature list.
 	for _fi in 5:
 		await get_tree().process_frame
 	var units_panel := _main_scene.find_child("UnitsPanel", true, false)
 	assert_true(
-		_find_text_in_descendants(units_panel, "Capybara"),
+		_helpers.find_text_in_descendants(units_panel, "Capybara"),
 		"UnitsPanel should show 'Capybara' section after load",
 	)
 	# Close units panel.
-	_press_key(KEY_U)
+	_helpers.press_key(KEY_U)
 
 	# -- Step time to modify state --
 	_step_ticks(100)
@@ -841,7 +780,7 @@ func test_save_load_round_trip() -> void:
 	if _fixture.elf_count == 1:
 		pop_str_reload = "1 Elf"
 	var found_pop_reload := await _wait_for(
-		func(): return _find_text_in_descendants(sb_reload, pop_str_reload), 30
+		func(): return _helpers.find_text_in_descendants(sb_reload, pop_str_reload), 30
 	)
 	assert_true(found_pop_reload, "Status bar should show '%s' after reload" % pop_str_reload)
 
@@ -924,96 +863,24 @@ func test_sprite_fruit_glowing() -> void:
 # ===========================================================================
 
 
-## Recursively find a Button whose text contains `substring`.
-## Searches all descendants regardless of visibility (the button itself
-## may be in a panel that was just made visible but hasn't rendered yet).
-func _find_button(root: Node, substring: String) -> Button:
-	if root == null:
-		return null
-	if root is Button and substring in root.text:
-		return root
-	for child in root.get_children():
-		var found := _find_button(child, substring)
-		if found:
-			return found
-	return null
-
-
-## Recursively find ALL Buttons whose text contains `substring`.
-func _find_all_buttons(root: Node, substring: String) -> Array[Button]:
-	var result: Array[Button] = []
-	if root == null:
-		return result
-	if root is Button and substring in root.text:
-		result.append(root)
-	for child in root.get_children():
-		result.append_array(_find_all_buttons(child, substring))
-	return result
-
-
-## Recursively search for a LineEdit whose text matches `expected_text`.
-func _find_line_edit_with_text(root: Node, expected_text: String) -> bool:
-	if root == null:
-		return false
-	if root is LineEdit and root.text == expected_text:
-		return true
-	for child in root.get_children():
-		if _find_line_edit_with_text(child, expected_text):
-			return true
-	return false
-
-
-## Programmatically press a Button node (emits its pressed signal).
-## Skips disabled buttons — a disabled button being pressed is a test bug.
-func _press_button(btn: Button) -> void:
-	if btn.disabled:
-		push_warning("_press_button: button '%s' is disabled, skipping" % btn.text)
-		return
-	btn.emit_signal("pressed")
-
-
-## Find a Button near a Label containing `label_text`. Searches all containers
-## in the subtree for one that has both a Label matching `label_text` and a
-## Button matching `button_text`. Returns the first matching Button, or null.
-## Used to find contextual buttons like the "X" remove button next to a
-## specific recipe name.
-func _find_button_near_label(root: Node, label_text: String, button_text: String) -> Button:
-	if root == null:
-		return null
-	# Check if this node's children contain both the label and button.
-	var has_label := false
-	var candidate_btn: Button = null
-	for child in root.get_children():
-		if child is Label and label_text in child.text:
-			has_label = true
-		if child is Button and button_text == child.text:
-			candidate_btn = child
-	if has_label and candidate_btn:
-		return candidate_btn
-	# Recurse into children.
-	for child in root.get_children():
-		var found := _find_button_near_label(child, label_text, button_text)
-		if found:
-			return found
-	return null
-
-
 ## Open the crafting details panel for the currently selected structure.
 ## Handles the two-Details-button ambiguity and waits for the panel to load.
 ## Returns true if the crafting details panel is visible.
 func _open_crafting_details(struct_panel: Node) -> bool:
 	# Wait for the details panel to be added to the tree.
-	var found := await _wait_for(func(): return _find_button(_main_scene, "Add Recipe") != null, 60)
+	var found := await _wait_for(
+		func(): return _helpers.find_button(_main_scene, "Add Recipe") != null, 60
+	)
 	if not found:
 		return false
 	# Two "Details..." buttons exist (crafting + logistics). Try each.
-	for btn in _find_all_buttons(struct_panel, "Details"):
-		_press_button(btn)
+	for btn in _helpers.find_all_buttons(struct_panel, "Details"):
+		_helpers.press_button(btn)
 		var opened := await _wait_for(
 			func():
 				return (
-					_find_button(_main_scene, "Crafting Enabled") != null
-					and _find_text_in_descendants(_main_scene, "Crafting Details")
+					_helpers.find_button(_main_scene, "Crafting Enabled") != null
+					and _helpers.find_text_in_descendants(_main_scene, "Crafting Details")
 				),
 			10
 		)
@@ -1022,35 +889,37 @@ func _open_crafting_details(struct_panel: Node) -> bool:
 	# Yield frames so _process populates the recipe cache.
 	for _fi in 5:
 		await get_tree().process_frame
-	return _find_text_in_descendants(_main_scene, "Crafting Details")
+	return _helpers.find_text_in_descendants(_main_scene, "Crafting Details")
 
 
 ## Open the recipe picker via the "Add Recipe..." button and find a recipe
 ## button by name, expanding categories if needed. Returns the Button or null.
 func _open_picker_and_find_recipe(recipe_name: String) -> Button:
-	var add_btn := _find_button(_main_scene, "Add Recipe")
+	var add_btn: Button = _helpers.find_button(_main_scene, "Add Recipe")
 	if not add_btn:
 		gut.p("WARNING: 'Add Recipe' button not found — picker cannot open")
 		return null
-	_press_button(add_btn)
+	_helpers.press_button(add_btn)
 	for _fi in 3:
 		await get_tree().process_frame
 
 	# Wait for recipe button to appear.
-	var found := await _wait_for(func(): return _find_button(_main_scene, recipe_name) != null, 30)
+	var found := await _wait_for(
+		func(): return _helpers.find_button(_main_scene, recipe_name) != null, 30
+	)
 	if found:
-		return _find_button(_main_scene, recipe_name)
+		return _helpers.find_button(_main_scene, recipe_name)
 
 	# Categories may be collapsed — try expanding each category header.
 	for cat_name in ["Woodcraft", "Processing", "Extraction"]:
-		var cat_btn := _find_button(_main_scene, cat_name)
+		var cat_btn: Button = _helpers.find_button(_main_scene, cat_name)
 		if cat_btn:
-			_press_button(cat_btn)
+			_helpers.press_button(cat_btn)
 			found = await _wait_for(
-				func(): return _find_button(_main_scene, recipe_name) != null, 10
+				func(): return _helpers.find_button(_main_scene, recipe_name) != null, 10
 			)
 			if found:
-				return _find_button(_main_scene, recipe_name)
+				return _helpers.find_button(_main_scene, recipe_name)
 	return null
 
 
@@ -1142,12 +1011,14 @@ func test_crafting_pipeline_via_ui() -> void:
 	# mesh click target is unreliable under headless xvfb.  The controller
 	# call exercises the same panel-wiring path a click would trigger.
 	selector.select_structure(workshop_id)
-	var panel_visible := await _wait_for(func(): return _is_panel_visible("StructureInfoPanel"), 30)
+	var panel_visible := await _wait_for(
+		func(): return _helpers.is_panel_visible("StructureInfoPanel"), 30
+	)
 	assert_true(panel_visible, "StructureInfoPanel should open when workshop selected")
 
 	var struct_panel := _main_scene.find_child("StructureInfoPanel", true, false)
 	assert_true(
-		_find_text_in_descendants(struct_panel, "Workshop"),
+		_helpers.find_text_in_descendants(struct_panel, "Workshop"),
 		"Panel should show 'Workshop' furnishing type",
 	)
 
@@ -1158,11 +1029,11 @@ func test_crafting_pipeline_via_ui() -> void:
 	assert_true(crafting_open, "Crafting details panel should open")
 	# Verify the panel shows "Crafting Details" header and "Crafting Enabled".
 	assert_true(
-		_find_text_in_descendants(_main_scene, "Crafting Details"),
+		_helpers.find_text_in_descendants(_main_scene, "Crafting Details"),
 		"Panel should show 'Crafting Details' header",
 	)
 	assert_not_null(
-		_find_button(_main_scene, "Crafting Enabled"),
+		_helpers.find_button(_main_scene, "Crafting Enabled"),
 		"Crafting Enabled checkbox should be visible",
 	)
 
@@ -1173,7 +1044,7 @@ func test_crafting_pipeline_via_ui() -> void:
 	assert_not_null(grow_bow_btn, "Should find 'Grow Oak Bow' recipe button in picker")
 	if not grow_bow_btn:
 		return
-	_press_button(grow_bow_btn)
+	_helpers.press_button(grow_bow_btn)
 	# Yield frames for the signal chain: button press → add_recipe_requested
 	# → bridge.add_active_recipe → sim processes command.
 	for _fi in 5:
@@ -1189,7 +1060,7 @@ func test_crafting_pipeline_via_ui() -> void:
 	for _fi in 5:
 		await get_tree().process_frame
 	assert_true(
-		_find_text_in_descendants(_main_scene, "Grow Oak Bow"),
+		_helpers.find_text_in_descendants(_main_scene, "Grow Oak Bow"),
 		"Panel should display 'Grow Oak Bow' in active recipes",
 	)
 	# Verify the bridge reports the correct display name.
@@ -1205,13 +1076,13 @@ func test_crafting_pipeline_via_ui() -> void:
 	# ---------------------------------------------------------------
 	# The active recipe row should have a "+" button for the Bow output target.
 	# The default increment is 1 since _get_output_quantity_for_target returns 1.
-	var plus_btn := _find_button_near_label(_main_scene, "Oak Bow", "+1")
+	var plus_btn: Button = _helpers.find_button_near_label(_main_scene, "Oak Bow", "+1")
 	assert_not_null(plus_btn, "Should find '+1' button near Bow target row")
 	if not plus_btn:
 		return
 	# Click it 5 times to set target to 5.
 	for _i in 5:
-		_press_button(plus_btn)
+		_helpers.press_button(plus_btn)
 	for _fi in 3:
 		await get_tree().process_frame
 
@@ -1235,7 +1106,7 @@ func test_crafting_pipeline_via_ui() -> void:
 		crafting_area = crafting_area.get_parent()
 	var found_target_5 := false
 	if crafting_area:
-		found_target_5 = _find_line_edit_with_text(crafting_area, "5")
+		found_target_5 = _helpers.find_line_edit_with_text(crafting_area, "5")
 	assert_true(found_target_5, "Target LineEdit near recipe should show '5'")
 
 	# ---------------------------------------------------------------
@@ -1263,7 +1134,7 @@ func test_crafting_pipeline_via_ui() -> void:
 			bow_count += int(item.get("quantity", 0))
 	assert_gt(bow_count, 0, "Workshop should have crafted bows, got %d" % bow_count)
 	assert_true(
-		_find_text_in_descendants(_main_scene, "Bow"),
+		_helpers.find_text_in_descendants(_main_scene, "Bow"),
 		"Panel inventory should show 'Bow'",
 	)
 
@@ -1272,7 +1143,7 @@ func test_crafting_pipeline_via_ui() -> void:
 	# ---------------------------------------------------------------
 	# Re-select workshop (see step 1 comment for xvfb exception rationale).
 	selector.select_structure(workshop_id)
-	await _wait_for(func(): return _is_panel_visible("StructureInfoPanel"), 30)
+	await _wait_for(func(): return _helpers.is_panel_visible("StructureInfoPanel"), 30)
 	struct_panel = _main_scene.find_child("StructureInfoPanel", true, false)
 
 	crafting_open = await _open_crafting_details(struct_panel)
@@ -1282,7 +1153,7 @@ func test_crafting_pipeline_via_ui() -> void:
 	assert_not_null(arrow_btn, "Should find 'Grow Oak Arrows' recipe button")
 	if not arrow_btn:
 		return
-	_press_button(arrow_btn)
+	_helpers.press_button(arrow_btn)
 	for _fi in 5:
 		await get_tree().process_frame
 
@@ -1293,11 +1164,11 @@ func test_crafting_pipeline_via_ui() -> void:
 	for _fi in 5:
 		await get_tree().process_frame
 	assert_true(
-		_find_text_in_descendants(_main_scene, "Grow Oak Bow"),
+		_helpers.find_text_in_descendants(_main_scene, "Grow Oak Bow"),
 		"Panel should still show 'Grow Oak Bow'",
 	)
 	assert_true(
-		_find_text_in_descendants(_main_scene, "Grow Oak Arrows"),
+		_helpers.find_text_in_descendants(_main_scene, "Grow Oak Arrows"),
 		"Panel should also show 'Grow Oak Arrows'",
 	)
 
@@ -1305,11 +1176,11 @@ func test_crafting_pipeline_via_ui() -> void:
 	# 8. Remove Grow Oak Bow recipe via its "X" button in the panel
 	# ---------------------------------------------------------------
 	# Find the "X" button next to the "Grow Oak Bow" label.
-	var remove_btn := _find_button_near_label(_main_scene, "Grow Oak Bow", "X")
+	var remove_btn: Button = _helpers.find_button_near_label(_main_scene, "Grow Oak Bow", "X")
 	assert_not_null(remove_btn, "Should find 'X' remove button near 'Grow Oak Bow'")
 	if not remove_btn:
 		return
-	_press_button(remove_btn)
+	_helpers.press_button(remove_btn)
 	for _fi in 5:
 		await get_tree().process_frame
 
@@ -1320,11 +1191,11 @@ func test_crafting_pipeline_via_ui() -> void:
 	for _fi in 5:
 		await get_tree().process_frame
 	assert_false(
-		_find_text_in_descendants(_main_scene, "Grow Oak Bow"),
+		_helpers.find_text_in_descendants(_main_scene, "Grow Oak Bow"),
 		"'Grow Oak Bow' should be gone from panel after removal",
 	)
 	assert_true(
-		_find_text_in_descendants(_main_scene, "Grow Oak Arrows"),
+		_helpers.find_text_in_descendants(_main_scene, "Grow Oak Arrows"),
 		"'Grow Oak Arrows' should remain in panel after removal",
 	)
 
@@ -1333,7 +1204,7 @@ func test_crafting_pipeline_via_ui() -> void:
 	# ---------------------------------------------------------------
 	# (See step 1 comment for xvfb exception rationale.)
 	selector.select_structure(kitchen_id)
-	await _wait_for(func(): return _is_panel_visible("StructureInfoPanel"), 30)
+	await _wait_for(func(): return _helpers.is_panel_visible("StructureInfoPanel"), 30)
 	struct_panel = _main_scene.find_child("StructureInfoPanel", true, false)
 
 	crafting_open = await _open_crafting_details(struct_panel)
@@ -1344,7 +1215,7 @@ func test_crafting_pipeline_via_ui() -> void:
 	assert_not_null(extract_btn, "Should find an Extract recipe button")
 	if not extract_btn:
 		return
-	_press_button(extract_btn)
+	_helpers.press_button(extract_btn)
 	for _fi in 5:
 		await get_tree().process_frame
 
@@ -1360,6 +1231,6 @@ func test_crafting_pipeline_via_ui() -> void:
 	for _fi in 5:
 		await get_tree().process_frame
 	assert_true(
-		_find_text_in_descendants(_main_scene, "Extract"),
+		_helpers.find_text_in_descendants(_main_scene, "Extract"),
 		"Panel should display extraction recipe",
 	)

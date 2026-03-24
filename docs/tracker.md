@@ -67,7 +67,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-ai-sprites           AI-generated sprite art pipeline
-[ ] F-ai-test-harness      Remote game control for AI-driven testing (Puppet)
 [ ] F-anatomy              DF-style hit location anatomy system
 [ ] F-apprentice           Skill transfer via proximity
 [ ] F-async-sim            Async sim: decouple sim thread from render thread via delta channel
@@ -271,6 +270,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-raid-spawn           Raiders sometimes spawn inside map instead of at perimeter
 [x] B-sim-floats           Remaining f32/f64 in sim logic threaten determinism
 [x] B-tab-serde-tests      Fix tabulosity test compilation under feature unification
+[x] F-ai-test-harness      Remote game control for AI-driven testing (Puppet)
 [x] F-alt-deselect         Alt+click to remove from selection
 [x] F-armor                Wearable armor system
 [x] F-arrow-chase          Enemies chase toward arrow source outside detection range
@@ -6081,20 +6081,49 @@ The audit should examine all test categories for remaining fragility,
 not assume any are fully hardened.
 
 #### F-ai-test-harness — Remote game control for AI-driven testing (Puppet)
-**Status:** Todo
+**Status:** Done
 
 Remote game control for AI-driven testing ("Puppet"). Three components:
-a GDScript TCP server autoload (activated by PUPPET_SERVER=<port> env
-var, inert otherwise), a JSON-over-TCP RPC protocol, and a standalone
-Python CLI (scripts/puppet.py, stdlib-only) that manages the full
-lifecycle — launch under xvfb-run, communicate, quit.
+a GDScript TCP server autoload (puppet_server.gd, activated by
+PUPPET_SERVER=<port> env var, inert otherwise), shared UI helpers
+(puppet_helpers.gd, also used by GUT integration tests), and a
+standalone Python CLI (scripts/puppet.py, stdlib-only) that manages
+the full lifecycle — launch under xvfb-run or --visible, communicate,
+kill.
 
-Built-in RPC methods mirror the helpers from test_harness_integration.gd
-(extracted into a shared puppet_helpers.gd): click-at-world-pos,
-press-key, read-panel-text, find-text, is-panel-visible, step-ticks,
-press-button, etc. An eval escape hatch sends GDScript file contents
-over RPC for bespoke queries. Multiple game sessions via -g flag enable
-multiplayer testing. Orphan guard shuts down after idle timeout.
+**Done:** 18 built-in RPC methods — observe (game-state, list-panels,
+is-panel-visible, read-panel-text, find-text, collect-text, tree-info,
+list-structures, ping) and act (click-at-world-pos, press-key,
+press-button, press-button-near, step-ticks, set-sim-speed,
+move-camera-to, quit). Helper extraction from integration tests into
+shared puppet_helpers.gd. 33 unit tests (test_puppet.gd). Python CLI
+with launch (xvfb-run or --visible), kill (graceful+SIGTERM+SIGKILL),
+list, -g session targeting. Orphan guard (300s default). Localhost-only
+TCP binding. Godot output logged to .tmp/puppet-<id>.log. End-to-end
+validated: menu navigation, game-state queries, UI text scraping,
+tree info, military panel, mana tracking across ticks.
+
+**Not yet implemented (from spec):** list-creatures (needs new bridge
+method), creature-info (bridge has get_creature_info_by_id but no RPC
+glue), select-creature (needs SelectionController glue), eval escape
+hatch (arbitrary GDScript execution), -- command chaining in puppet.py.
+
+**Desired features (discovered through use):**
+- wait-for-ready: block until bridge is available after scene load
+  (currently must poll ping manually, 30-120s on constrained systems)
+- wait-until: server-side poll for a condition (panel visible, text
+  appears) — eliminates client-side retry loops
+- collect-text filtering: --node-name flag to return only matching
+  node names (e.g., collect-text UnitsPanel --node-name NameLabel)
+- step-ticks-and-wait: yield a frame after stepping so UI is fresh
+  before responding
+- scene-info: return current scene path/name (menu vs game) so callers
+  know what state they're in without trying bridge calls
+- read-all-by-name: return all nodes matching a name, not just first
+  (solves the NameLabel collision problem)
+
+**Guide:** docs/puppet_guide.md — keep updated when adding RPCs or
+discovering gotchas.
 
 **Draft:** docs/drafts/F-ai-test-harness.md
 

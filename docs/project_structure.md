@@ -147,6 +147,7 @@ elven-canopy/
 │   │   ├── test_game_config.gd    # GameConfig autoload tests
 │   │   ├── test_geometry_utils.gd # Geometry utility tests
 │   │   ├── test_harness_integration.gd # Harness integration tests
+│   │   ├── test_puppet.gd          # Puppet helpers and server unit tests
 │   │   ├── test_item_utils.gd     # Item utility tests
 │   │   ├── test_mana_vfx.gd       # Mana VFX tests
 │   │   ├── test_minimap.gd        # Minimap tests
@@ -164,6 +165,8 @@ elven-canopy/
 │       ├── game_config.gd      # Autoload: persistent settings (user://config.json)
 │       ├── game_session.gd     # Autoload: persists seed/config across scenes
 │       ├── focus_guard.gd     # Autoload: disables keyboard focus on all buttons
+│       ├── puppet_server.gd   # Autoload: TCP server for remote control (env-activated)
+│       ├── puppet_helpers.gd  # Shared UI helpers (puppet server + integration tests)
 │       ├── main_menu.gd        # Main menu UI
 │       ├── new_game_menu.gd    # New game screen with tree parameter sliders
 │       ├── escape_menu.gd      # In-game escape menu overlay (ESC)
@@ -220,10 +223,12 @@ elven-canopy/
 │   ├── code_quality_plan.md    # Code quality improvement plan
 │   ├── construction_roadmap.md # Construction system roadmap
 │   ├── godot_scroll_sizing.md  # ScrollContainer/PanelContainer sizing guide (required reading for LLMs)
+│   ├── puppet_guide.md         # Puppet remote game control guide (keep updated)
 │   ├── design/                 # Approved/in-progress design documents
 │   └── drafts/                 # Working design documents
 ├── scripts/
 │   ├── build.sh                # Build, test, and run script
+│   ├── puppet.py               # CLI for puppet remote game control (launch/kill/RPC)
 │   └── tracker.py              # CLI tool for docs/tracker.md queries and mutations
 └── default_config.json         # Default GameConfig values
 ```
