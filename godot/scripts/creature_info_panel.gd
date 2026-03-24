@@ -1,8 +1,9 @@
 ## Creature info panel displayed on the right side of the screen.
 ##
 ## Shows information about the currently selected creature, organized into
-## three tabs: Status (vitals, position, task, needs, mood, ability scores),
-## Inventory (scrollable item list), and Thoughts (scrollable recent thoughts).
+## four tabs: Status (vitals, position, task, needs, mood, ability scores),
+## Skills (17 universal skills), Inventory (scrollable item list), and
+## Thoughts (scrollable recent thoughts).
 ##
 ## The panel is ~25% screen width, full height, anchored to the right edge.
 ## A fixed header (species, name, status, military group) and Follow button
@@ -23,10 +24,11 @@ signal military_group_clicked(group_id: int)
 
 const MAX_DISPLAYED_THOUGHTS := 10
 
-## Index constants for the three tabs.
+## Index constants for the four tabs.
 const TAB_STATUS := 0
-const TAB_INVENTORY := 1
-const TAB_THOUGHTS := 2
+const TAB_SKILLS := 1
+const TAB_INVENTORY := 2
+const TAB_THOUGHTS := 3
 
 var _species_label: Label
 var _name_label: Label
@@ -48,6 +50,7 @@ var _military_group_btn: Button
 var _military_group_id: int = -1
 var _mood_label: Label
 var _stat_labels: Dictionary = {}
+var _skill_labels: Dictionary = {}
 var _thoughts_container: VBoxContainer
 var _inventory_label: Label
 var _follow_button: Button
@@ -88,7 +91,7 @@ func _ready() -> void:
 	tab_bar.add_theme_constant_override("separation", 4)
 	root_vbox.add_child(tab_bar)
 
-	for tab_name in ["Status", "Inventory", "Thoughts"]:
+	for tab_name in ["Status", "Skills", "Inventory", "Thoughts"]:
 		var btn := Button.new()
 		btn.text = tab_name
 		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -100,6 +103,7 @@ func _ready() -> void:
 
 	# -- Tab contents (direct children of root_vbox, only one visible) --
 	_tab_contents.append(_build_status_tab(root_vbox))
+	_tab_contents.append(_build_skills_tab(root_vbox))
 	_tab_contents.append(_build_inventory_tab(root_vbox))
 	_tab_contents.append(_build_thoughts_tab(root_vbox))
 
@@ -347,6 +351,89 @@ func _build_stats_grid(parent: VBoxContainer) -> void:
 		_stat_labels[key] = val_lbl
 
 
+## Build the Skills tab: scrollable grid of 17 skills.
+func _build_skills_tab(parent: VBoxContainer) -> ScrollContainer:
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	parent.add_child(scroll)
+
+	var vbox := VBoxContainer.new()
+	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vbox.add_theme_constant_override("separation", 4)
+	scroll.add_child(vbox)
+
+	_build_skills_grid(vbox)
+
+	return scroll
+
+
+## Build the skills grid: 17 skills in 2-column layout (name + value per column).
+func _build_skills_grid(parent: VBoxContainer) -> void:
+	var grid := GridContainer.new()
+	grid.columns = 4
+	grid.add_theme_constant_override("h_separation", 4)
+	grid.add_theme_constant_override("v_separation", 2)
+	parent.add_child(grid)
+
+	var skill_order: Array[String] = [
+		"skill_striking",
+		"skill_archery",
+		"skill_evasion",
+		"skill_ranging",
+		"skill_herbalism",
+		"skill_beastcraft",
+		"skill_cuisine",
+		"skill_tailoring",
+		"skill_woodcraft",
+		"skill_alchemy",
+		"skill_singing",
+		"skill_channeling",
+		"skill_literature",
+		"skill_art",
+		"skill_influence",
+		"skill_culture",
+		"skill_counsel",
+	]
+	var display_names: Dictionary = {
+		"skill_striking": "Striking",
+		"skill_archery": "Archery",
+		"skill_evasion": "Evasion",
+		"skill_ranging": "Ranging",
+		"skill_herbalism": "Herbalism",
+		"skill_beastcraft": "Beastcraft",
+		"skill_cuisine": "Cuisine",
+		"skill_tailoring": "Tailoring",
+		"skill_woodcraft": "Woodcraft",
+		"skill_alchemy": "Alchemy",
+		"skill_singing": "Singing",
+		"skill_channeling": "Channeling",
+		"skill_literature": "Literature",
+		"skill_art": "Art",
+		"skill_influence": "Influence",
+		"skill_culture": "Culture",
+		"skill_counsel": "Counsel",
+	}
+
+	for key in skill_order:
+		var name_lbl := Label.new()
+		name_lbl.text = display_names[key]
+		name_lbl.add_theme_font_size_override("font_size", 13)
+		name_lbl.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+		name_lbl.custom_minimum_size.x = 80
+		grid.add_child(name_lbl)
+
+		var val_lbl := Label.new()
+		val_lbl.text = "0"
+		val_lbl.add_theme_font_size_override("font_size", 13)
+		val_lbl.custom_minimum_size.x = 40
+		val_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		val_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		grid.add_child(val_lbl)
+
+		_skill_labels[key] = val_lbl
+
+
 ## Build the Inventory tab: scrollable item list.
 func _build_inventory_tab(parent: VBoxContainer) -> ScrollContainer:
 	var scroll := ScrollContainer.new()
@@ -415,6 +502,7 @@ func show_creature(creature_id: String, info: Dictionary) -> void:
 	_update_rest(info)
 	_update_mood(info)
 	_update_stats(info)
+	_update_skills(info)
 	_update_thoughts(info)
 	_update_inventory(info)
 	_update_military_group(info)
@@ -435,6 +523,7 @@ func update_info(info: Dictionary) -> void:
 	_update_rest(info)
 	_update_mood(info)
 	_update_stats(info)
+	_update_skills(info)
 	_update_thoughts(info)
 	_update_inventory(info)
 	_update_military_group(info)
@@ -520,6 +609,12 @@ func _update_stats(info: Dictionary) -> void:
 	for key in _stat_labels:
 		var val: int = info.get(key, 0)
 		_stat_labels[key].text = "%d" % val
+
+
+func _update_skills(info: Dictionary) -> void:
+	for key in _skill_labels:
+		var val: int = info.get(key, 0)
+		_skill_labels[key].text = "%d" % val
 
 
 func _update_thoughts(info: Dictionary) -> void:

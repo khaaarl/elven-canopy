@@ -658,6 +658,26 @@ fn trait_kind_serde_roundtrip() {
         TraitKind::EarStyle,
         TraitKind::SkinColor,
         TraitKind::Accessory,
+        TraitKind::StripePattern,
+        TraitKind::WingStyle,
+        TraitKind::ScalePattern,
+        TraitKind::Striking,
+        TraitKind::Archery,
+        TraitKind::Evasion,
+        TraitKind::Ranging,
+        TraitKind::Herbalism,
+        TraitKind::Beastcraft,
+        TraitKind::Cuisine,
+        TraitKind::Tailoring,
+        TraitKind::Woodcraft,
+        TraitKind::Alchemy,
+        TraitKind::Singing,
+        TraitKind::Channeling,
+        TraitKind::Literature,
+        TraitKind::Art,
+        TraitKind::Influence,
+        TraitKind::Culture,
+        TraitKind::Counsel,
         TraitKind::Strength,
         TraitKind::Agility,
         TraitKind::Dexterity,
@@ -685,6 +705,25 @@ fn trait_value_serde_roundtrip() {
         let json = serde_json::to_string(&val).unwrap();
         let restored: TraitValue = serde_json::from_str(&json).unwrap();
         assert_eq!(val, restored);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Creature skills (F-creature-skills)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn creature_skills_default_to_zero() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+
+    // All 17 skills should default to 0 (no trait rows inserted at spawn).
+    for &tk in &crate::stats::SKILL_TRAIT_KINDS {
+        assert_eq!(
+            sim.trait_int(elf_id, tk, -1),
+            -1,
+            "skill {tk:?} should have no trait row (default -1 sentinel)"
+        );
     }
 }
 

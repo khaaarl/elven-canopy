@@ -389,6 +389,36 @@ fn build_creature_info_dict(
         };
         dict.set(key, val);
     }
+    // Creature skills (F-creature-skills).
+    for tk in elven_canopy_sim::stats::SKILL_TRAIT_KINDS {
+        let val = sim
+            .db
+            .creature_traits
+            .get(&(c.id, tk))
+            .map(|t| t.value.as_int(0))
+            .unwrap_or(0);
+        let key = match tk {
+            TraitKind::Striking => "skill_striking",
+            TraitKind::Archery => "skill_archery",
+            TraitKind::Evasion => "skill_evasion",
+            TraitKind::Ranging => "skill_ranging",
+            TraitKind::Herbalism => "skill_herbalism",
+            TraitKind::Beastcraft => "skill_beastcraft",
+            TraitKind::Cuisine => "skill_cuisine",
+            TraitKind::Tailoring => "skill_tailoring",
+            TraitKind::Woodcraft => "skill_woodcraft",
+            TraitKind::Alchemy => "skill_alchemy",
+            TraitKind::Singing => "skill_singing",
+            TraitKind::Channeling => "skill_channeling",
+            TraitKind::Literature => "skill_literature",
+            TraitKind::Art => "skill_art",
+            TraitKind::Influence => "skill_influence",
+            TraitKind::Culture => "skill_culture",
+            TraitKind::Counsel => "skill_counsel",
+            _ => continue,
+        };
+        dict.set(key, val);
+    }
     dict
 }
 

@@ -444,6 +444,46 @@ pub enum TraitKind {
     // -- Wyvern traits --
     /// Index into `SCALE_PATTERNS` array (0–2).
     ScalePattern,
+    // -- Creature skills (F-creature-skills) --
+    // Integer scale starting at 0. Every +100 doubles mechanical intensity
+    // via the same exponential stat multiplier table used by creature stats.
+    // Advancement is probabilistic: each relevant action rolls against a
+    // configurable probability; success increments the skill by 1.
+    // Capped by path tier (see SkillConfig).
+    /// Melee combat proficiency.
+    Striking,
+    /// Ranged combat proficiency.
+    Archery,
+    /// Dodge and threat avoidance.
+    Evasion,
+    /// Stealth, navigation, tracking, awareness.
+    Ranging,
+    /// Plant lifecycle: foraging, cultivation, extraction.
+    Herbalism,
+    /// Creature interaction and taming.
+    Beastcraft,
+    /// Food preparation.
+    Cuisine,
+    /// Textile work: weaving, sewing, dyeing.
+    Tailoring,
+    /// Wood knowledge, carpentry, non-magical shaping.
+    Woodcraft,
+    /// Potions, salves, magical material transformation.
+    Alchemy,
+    /// Musical performance and vocal mana channeling.
+    Singing,
+    /// Mana sensitivity and channeling efficiency.
+    Channeling,
+    /// Written/verbal composition, lore, scholarship.
+    Literature,
+    /// Visual creation: sculpture, decoration, aesthetics.
+    Art,
+    /// Persuasion, intimidation, social maneuvering.
+    Influence,
+    /// Tradition, ceremony, ritual, storytelling.
+    Culture,
+    /// Teaching, mentoring, guidance.
+    Counsel,
     // -- Creature stats (F-creature-stats) --
     // Integer scale centered on 0 (human baseline). Every +100 doubles
     // mechanical intensity via the exponential stat multiplier table.

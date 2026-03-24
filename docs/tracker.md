@@ -47,6 +47,7 @@ This reduces merge conflicts when parallel work streams add items.
 ### In Progress
 
 ```
+[~] F-creature-skills      Creature skill system (17 universal skills with path-gated advancement)
 [~] F-enemy-ai             Hostile creature AI (goblin/orc/troll behavior)
 [~] F-fruit-variety        Procedural fruit variety and processing
 [~] F-multiplayer          Relay-coordinator multiplayer networking
@@ -98,7 +99,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-controls-config-B    Controls persistence and sensitivity settings
 [ ] F-controls-config-C    Controls settings screen with rebinding UI
 [ ] F-creature-control     Temporary allegiance change and AI override
-[ ] F-creature-skills      Creature skill system (17 universal skills with path-gated advancement)
 [ ] F-cultural-drift       Inter-tree cultural divergence
 [ ] F-dappled-light        Dappled light effect via scrolling noise on ground shader
 [ ] F-day-night            Day/night cycle and pacing
@@ -1373,7 +1373,7 @@ meaningful tactical tool. Also improves general simulation fidelity.
 **Related:** F-pile-gravity
 
 #### F-creature-skills — Creature skill system (17 universal skills with path-gated advancement)
-**Status:** Todo · **Phase:** 4
+**Status:** In Progress · **Phase:** 4
 
 17 universal skills (Striking, Archery, Evasion, Ranging, Herbalism,
 Beastcraft, Cuisine, Tailoring, Woodcraft, Alchemy, Singing, Channeling,
@@ -1386,8 +1386,6 @@ Singing + Channeling + Art for construction woodsinging). Some applications
 gated by path (e.g., construction woodsinging requires Woodsinger path).
 No skill decay. Initial effect channels: speed and quality; efficiency,
 unlocks, and failure rate deferred.
-
-**Draft:** docs/drafts/F-creature-skills.md
 
 **Draft:** docs/drafts/F-creature-skills.md
 

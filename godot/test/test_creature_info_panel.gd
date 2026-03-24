@@ -1,8 +1,8 @@
-## Unit tests for creature_info_panel.gd tab switching and stats display.
+## Unit tests for creature_info_panel.gd tab switching, stats, and skills display.
 ##
-## Tests the tab state machine and stat label formatting without a SimBridge.
-## The panel is instantiated as a real node so its _ready() runs, then we
-## exercise the public methods with mock dictionaries.
+## Tests the tab state machine, stat label formatting, and skill label formatting
+## without a SimBridge. The panel is instantiated as a real node so its _ready()
+## runs, then we exercise the public methods with mock dictionaries.
 ##
 ## See also: creature_info_panel.gd for the implementation.
 extends GutTest
@@ -23,6 +23,16 @@ func before_each() -> void:
 func test_initial_tab_is_status() -> void:
 	assert_eq(_panel._active_tab, CreatureInfoPanel.TAB_STATUS)
 	assert_true(_panel._tab_contents[CreatureInfoPanel.TAB_STATUS].visible)
+	assert_false(_panel._tab_contents[CreatureInfoPanel.TAB_SKILLS].visible)
+	assert_false(_panel._tab_contents[CreatureInfoPanel.TAB_INVENTORY].visible)
+	assert_false(_panel._tab_contents[CreatureInfoPanel.TAB_THOUGHTS].visible)
+
+
+func test_switch_to_skills_tab() -> void:
+	_panel._switch_tab(CreatureInfoPanel.TAB_SKILLS)
+	assert_eq(_panel._active_tab, CreatureInfoPanel.TAB_SKILLS)
+	assert_false(_panel._tab_contents[CreatureInfoPanel.TAB_STATUS].visible)
+	assert_true(_panel._tab_contents[CreatureInfoPanel.TAB_SKILLS].visible)
 	assert_false(_panel._tab_contents[CreatureInfoPanel.TAB_INVENTORY].visible)
 	assert_false(_panel._tab_contents[CreatureInfoPanel.TAB_THOUGHTS].visible)
 
@@ -31,6 +41,7 @@ func test_switch_to_inventory_tab() -> void:
 	_panel._switch_tab(CreatureInfoPanel.TAB_INVENTORY)
 	assert_eq(_panel._active_tab, CreatureInfoPanel.TAB_INVENTORY)
 	assert_false(_panel._tab_contents[CreatureInfoPanel.TAB_STATUS].visible)
+	assert_false(_panel._tab_contents[CreatureInfoPanel.TAB_SKILLS].visible)
 	assert_true(_panel._tab_contents[CreatureInfoPanel.TAB_INVENTORY].visible)
 	assert_false(_panel._tab_contents[CreatureInfoPanel.TAB_THOUGHTS].visible)
 
@@ -39,6 +50,7 @@ func test_switch_to_thoughts_tab() -> void:
 	_panel._switch_tab(CreatureInfoPanel.TAB_THOUGHTS)
 	assert_eq(_panel._active_tab, CreatureInfoPanel.TAB_THOUGHTS)
 	assert_false(_panel._tab_contents[CreatureInfoPanel.TAB_STATUS].visible)
+	assert_false(_panel._tab_contents[CreatureInfoPanel.TAB_SKILLS].visible)
 	assert_false(_panel._tab_contents[CreatureInfoPanel.TAB_INVENTORY].visible)
 	assert_true(_panel._tab_contents[CreatureInfoPanel.TAB_THOUGHTS].visible)
 
@@ -46,6 +58,7 @@ func test_switch_to_thoughts_tab() -> void:
 func test_active_tab_button_is_disabled() -> void:
 	_panel._switch_tab(CreatureInfoPanel.TAB_INVENTORY)
 	assert_false(_panel._tab_buttons[CreatureInfoPanel.TAB_STATUS].disabled)
+	assert_false(_panel._tab_buttons[CreatureInfoPanel.TAB_SKILLS].disabled)
 	assert_true(_panel._tab_buttons[CreatureInfoPanel.TAB_INVENTORY].disabled)
 	assert_false(_panel._tab_buttons[CreatureInfoPanel.TAB_THOUGHTS].disabled)
 
@@ -133,6 +146,59 @@ func test_update_stats_missing_keys_default_to_zero() -> void:
 	_panel._update_stats({})
 	for key in _panel._stat_labels:
 		assert_eq(_panel._stat_labels[key].text, "0", "stat %s should default to 0" % key)
+
+
+# -- Skills display ----------------------------------------------------------
+
+
+func test_update_skills_populates_all_labels() -> void:
+	var info := {
+		"skill_striking": 10,
+		"skill_archery": 25,
+		"skill_evasion": 0,
+		"skill_ranging": 5,
+		"skill_herbalism": 100,
+		"skill_beastcraft": 0,
+		"skill_cuisine": 42,
+		"skill_tailoring": 0,
+		"skill_woodcraft": 7,
+		"skill_alchemy": 0,
+		"skill_singing": 150,
+		"skill_channeling": 88,
+		"skill_literature": 0,
+		"skill_art": 3,
+		"skill_influence": 0,
+		"skill_culture": 12,
+		"skill_counsel": 0,
+	}
+	_panel._update_skills(info)
+	assert_eq(_panel._skill_labels["skill_striking"].text, "10")
+	assert_eq(_panel._skill_labels["skill_archery"].text, "25")
+	assert_eq(_panel._skill_labels["skill_evasion"].text, "0")
+	assert_eq(_panel._skill_labels["skill_ranging"].text, "5")
+	assert_eq(_panel._skill_labels["skill_herbalism"].text, "100")
+	assert_eq(_panel._skill_labels["skill_beastcraft"].text, "0")
+	assert_eq(_panel._skill_labels["skill_cuisine"].text, "42")
+	assert_eq(_panel._skill_labels["skill_tailoring"].text, "0")
+	assert_eq(_panel._skill_labels["skill_woodcraft"].text, "7")
+	assert_eq(_panel._skill_labels["skill_alchemy"].text, "0")
+	assert_eq(_panel._skill_labels["skill_singing"].text, "150")
+	assert_eq(_panel._skill_labels["skill_channeling"].text, "88")
+	assert_eq(_panel._skill_labels["skill_literature"].text, "0")
+	assert_eq(_panel._skill_labels["skill_art"].text, "3")
+	assert_eq(_panel._skill_labels["skill_influence"].text, "0")
+	assert_eq(_panel._skill_labels["skill_culture"].text, "12")
+	assert_eq(_panel._skill_labels["skill_counsel"].text, "0")
+
+
+func test_update_skills_missing_keys_default_to_zero() -> void:
+	_panel._update_skills({})
+	for key in _panel._skill_labels:
+		assert_eq(_panel._skill_labels[key].text, "0", "skill %s should default to 0" % key)
+
+
+func test_skill_labels_has_all_17_skills() -> void:
+	assert_eq(_panel._skill_labels.size(), 17)
 
 
 # -- Helpers -----------------------------------------------------------------

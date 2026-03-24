@@ -139,6 +139,31 @@ pub const STAT_TRAIT_KINDS: [crate::types::TraitKind; 8] = {
     ]
 };
 
+/// The 17 skill trait kinds in canonical order, used for iteration when
+/// querying or displaying skill values.
+pub const SKILL_TRAIT_KINDS: [crate::types::TraitKind; 17] = {
+    use crate::types::TraitKind;
+    [
+        TraitKind::Striking,
+        TraitKind::Archery,
+        TraitKind::Evasion,
+        TraitKind::Ranging,
+        TraitKind::Herbalism,
+        TraitKind::Beastcraft,
+        TraitKind::Cuisine,
+        TraitKind::Tailoring,
+        TraitKind::Woodcraft,
+        TraitKind::Alchemy,
+        TraitKind::Singing,
+        TraitKind::Channeling,
+        TraitKind::Literature,
+        TraitKind::Art,
+        TraitKind::Influence,
+        TraitKind::Culture,
+        TraitKind::Counsel,
+    ]
+};
+
 /// Stat-modified movement speeds for a creature. Precomputed from species
 /// base values and the creature's Agility and Strength stats.
 pub struct CreatureMoveSpeeds {
@@ -514,5 +539,24 @@ mod tests {
         assert_eq!(r1.x, r2.x);
         assert_eq!(r1.y, r2.y);
         assert_eq!(r1.z, r2.z);
+    }
+
+    #[test]
+    fn skill_trait_kinds_no_duplicates() {
+        let mut seen = std::collections::BTreeSet::new();
+        for &tk in &SKILL_TRAIT_KINDS {
+            assert!(seen.insert(tk), "duplicate in SKILL_TRAIT_KINDS: {tk:?}");
+        }
+    }
+
+    #[test]
+    fn skill_and_stat_trait_kinds_are_disjoint() {
+        let stats: std::collections::BTreeSet<_> = STAT_TRAIT_KINDS.iter().collect();
+        for tk in &SKILL_TRAIT_KINDS {
+            assert!(
+                !stats.contains(tk),
+                "{tk:?} appears in both SKILL_TRAIT_KINDS and STAT_TRAIT_KINDS"
+            );
+        }
     }
 }
