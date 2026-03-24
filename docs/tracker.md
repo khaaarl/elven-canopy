@@ -143,6 +143,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-infra-decay          Infrastructure decay with automated maintenance
 [ ] F-insect-husbandry     Beekeeping and insect husbandry
 [ ] F-instinctual-flee     Instinctual flee thresholds (species-level fear overrides)
+[ ] F-item-quality         Item and output quality system
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-leaf-sway            Foliage vertex sway shader (wind simulation)
 [ ] F-leaf-tuning          Leaf visual fine-tuning and interior decisions
@@ -643,7 +644,7 @@ and quality depend on choir composition and harmony. Ties into the music
 system.
 
 **Blocked by:** F-group-activity
-**Related:** F-choir-harmony, F-combat-singing, F-mana-system, F-music-runtime, F-sung-furniture
+**Related:** F-choir-harmony, F-combat-singing, F-item-quality, F-mana-system, F-music-runtime, F-sung-furniture
 
 #### F-construction — Platform construction (designate/build/cancel)
 **Status:** Done · **Phase:** 2 · **Refs:** §11, §12
@@ -851,7 +852,7 @@ itself. Distinct from manufactured furniture (crafted from harvested wood).
 Costs mana instead of materials. Higher quality from skilled singers.
 Unique to the tree-spirit concept and reinforces the symbiotic theme.
 
-**Related:** F-choir-build, F-mana-system
+**Related:** F-choir-build, F-item-quality, F-mana-system
 
 #### F-support-struts — Support strut construction
 **Status:** Done · **Phase:** 3 · **Refs:** §9
@@ -1399,7 +1400,7 @@ channels.
 
 **Draft:** docs/drafts/F-creature-skills.md
 
-**Related:** F-apprentice, F-attack-evasion, F-path-core
+**Related:** F-apprentice, F-attack-evasion, F-item-quality, F-path-core
 
 #### F-creature-stats — Creature stats (str/agi/dex/con/wil/int/per/cha)
 **Status:** Done
@@ -2061,6 +2062,20 @@ Both thresholds are configurable in GameConfig. A GDScript mirror
 **Unblocked:** F-armor, F-arrow-durability
 **Related:** F-clothing
 
+#### F-item-quality — Item and output quality system
+**Status:** Todo · **Phase:** 4
+
+Item and output quality system. Needs design: quality metric (continuous
+integer scale vs discrete tiers), how quality is determined (skill-based
+roll at craft time, stat+skill combination), what quality affects (food
+mood bonus, equipment durability, construction aesthetics, trade value),
+how quality interacts with item stacking, and how quality is displayed
+in the UI. Referenced as a deferred effect channel in F-creature-skills
+and as a factor in choir construction (F-choir-build) and sung furniture
+(F-sung-furniture).
+
+**Related:** F-choir-build, F-creature-skills, F-manufacturing, F-sung-furniture
+
 #### F-items — Items and inventory system
 **Status:** Done · **Phase:** 3
 
@@ -2178,7 +2193,7 @@ fields), SetWorkshopConfig command, logistics wants from recipes.
 workshop_enabled, recipe list, craft_status — mirrors kitchen cooking
 section).
 
-**Related:** F-batch-craft, F-bldg-kitchen, F-bread, F-items, F-sculptures
+**Related:** F-batch-craft, F-bldg-kitchen, F-bread, F-item-quality, F-items, F-sculptures
 
 #### F-path-civil — Civil path definitions and organic self-assignment
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
