@@ -70,7 +70,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-anatomy              DF-style hit location anatomy system
 [ ] F-apprentice           Skill transfer via proximity
 [ ] F-async-sim            Async sim: decouple sim thread from render thread via delta channel
-[ ] F-attack-evasion       Attack accuracy and evasion with quasi-normal hit rolls
 [ ] F-audio-sampled        Sampled vocal syllables from conlang
 [ ] F-audio-vocal          Continuous vocal synthesis
 [ ] F-batch-blueprint      Batch blueprinting with dependency order
@@ -274,6 +273,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-armor                Wearable armor system
 [x] F-arrow-chase          Enemies chase toward arrow source outside detection range
 [x] F-arrow-durability     Arrow durability and recovery
+[x] F-attack-evasion       Attack accuracy and evasion with quasi-normal hit rolls
 [x] F-attack-move          Attack-move task (walk + fight en route)
 [x] F-attack-task          AttackCreature task (player-directed target pursuit)
 [x] F-audio-synth          Waveform synthesis for audio rendering
@@ -2888,7 +2888,7 @@ minimum 1).
 **Unblocked by:** F-item-durability
 
 #### F-attack-evasion — Attack accuracy and evasion with quasi-normal hit rolls
-**Status:** Todo · **Phase:** 3
+**Status:** Done · **Phase:** 3
 
 Attack accuracy and evasion using quasi-normal hit rolls. Attacker
 rolls (attacking skill + DEX) + quasi-normal random (stdev ~50) against

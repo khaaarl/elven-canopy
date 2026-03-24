@@ -1728,6 +1728,18 @@ fn default_fall_damage_per_voxel() -> i64 {
     10
 }
 
+fn default_evasion_crit_threshold() -> i64 {
+    100
+}
+
+fn default_evasion_crit_damage_multiplier() -> i64 {
+    2
+}
+
+fn default_evasion_dodge_advance_permille() -> u32 {
+    500
+}
+
 // ---------------------------------------------------------------------------
 // Civilization config
 // ---------------------------------------------------------------------------
@@ -2269,6 +2281,22 @@ pub struct GameConfig {
     /// Set to 0 to disable fall damage. Default 10.
     #[serde(default = "default_fall_damage_per_voxel")]
     pub fall_damage_per_voxel: i64,
+
+    // -- Attack evasion (F-attack-evasion) --
+    /// Margin above defender total required for a critical hit. Default 100
+    /// (≈ 2 stdevs of the quasi-normal roll, giving ~2.3% crit chance with
+    /// equal stats).
+    #[serde(default = "default_evasion_crit_threshold")]
+    pub evasion_crit_threshold: i64,
+
+    /// Damage multiplier on critical hits. Default 2 (double damage).
+    #[serde(default = "default_evasion_crit_damage_multiplier")]
+    pub evasion_crit_damage_multiplier: i64,
+
+    /// Base probability (per-mille) for defender Evasion skill advancement
+    /// on a successful dodge. Default 500.
+    #[serde(default = "default_evasion_dodge_advance_permille")]
+    pub evasion_dodge_advance_permille: u32,
 
     // -- Creature skills (F-creature-skills) --
     /// Skill advancement configuration. Backward-compatible: older configs
@@ -3308,6 +3336,9 @@ impl Default for GameConfig {
             melee_weapon_impact_damage_min: default_melee_weapon_impact_damage_min(),
             melee_weapon_impact_damage_max: default_melee_weapon_impact_damage_max(),
             fall_damage_per_voxel: default_fall_damage_per_voxel(),
+            evasion_crit_threshold: default_evasion_crit_threshold(),
+            evasion_crit_damage_multiplier: default_evasion_crit_damage_multiplier(),
+            evasion_dodge_advance_permille: default_evasion_dodge_advance_permille(),
             skills: SkillConfig::default(),
         }
     }

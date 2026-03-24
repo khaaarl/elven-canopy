@@ -244,12 +244,32 @@ pub enum SimEventKind {
         position: VoxelCoord,
         cause: DeathCause,
     },
+    /// A melee attack missed (defender evaded).
+    MeleeAttackMissed {
+        attacker_id: CreatureId,
+        target_id: CreatureId,
+    },
+    /// A melee attack scored a critical hit (double damage).
+    MeleeAttackCritical {
+        attacker_id: CreatureId,
+        target_id: CreatureId,
+    },
     /// A creature took melee damage from another creature.
     CreatureDamaged {
         attacker_id: CreatureId,
         target_id: CreatureId,
         damage: i64,
         remaining_hp: i64,
+    },
+    /// A projectile was evaded by the target creature.
+    ProjectileEvaded {
+        target_id: CreatureId,
+        shooter_id: Option<CreatureId>,
+    },
+    /// A projectile scored a critical hit on a creature.
+    ProjectileCritical {
+        target_id: CreatureId,
+        shooter_id: Option<CreatureId>,
     },
     /// A projectile hit a creature.
     ProjectileHitCreature {

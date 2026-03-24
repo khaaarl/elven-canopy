@@ -14,6 +14,14 @@
 // hit by projectiles from outside their detection range create an autonomous
 // AttackMove toward the arrow's origin voxel.
 //
+// Attack evasion (F-attack-evasion): both melee and ranged attacks roll a hit
+// check comparing attacker (Striking/Archery + DEX) + quasi-normal noise
+// (stdev ≈ 51) against defender (Evasion + AGI). Equal stats give ~50% hit
+// chance. Exceeding the defender total by `evasion_crit_threshold` (default
+// 100, ≈ 2 stdevs) scores a critical hit for multiplied damage. Misses skip
+// damage entirely but still consume the action cooldown. Successful dodges
+// advance the defender's Evasion skill.
+//
 // See also: `projectile.rs` (sub-voxel trajectory math), `preemption.rs`
 // (task priority for combat interruption), `movement.rs` (tactical repositioning).
 use super::*;
@@ -25,6 +33,52 @@ use crate::preemption;
 use crate::projectile::SubVoxelVec;
 use crate::task;
 use crate::types::NavEdgeId;
+
+/// Result of a hit-check roll comparing attacker skill vs defender evasion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HitResult {
+    Miss,
+    Hit,
+    CriticalHit,
+}
+
+/// Generate a quasi-normal random value with mean 0 and stdev ≈ 51.
+/// Uses the sum of 12 uniform integer samples in [-25, 25] (central limit
+/// theorem approximation). Always consumes exactly 12 PRNG calls.
+pub(crate) fn quasi_normal_roll(rng: &mut elven_canopy_prng::GameRng) -> i64 {
+    let mut total: i64 = 0;
+    for _ in 0..12 {
+        total += rng.range_i64_inclusive(-25, 25);
+    }
+    total
+}
+
+/// Roll a hit check: attacker (attack_skill + dex) + quasi-normal noise
+/// vs defender (evasion_skill + agi). Returns Miss, Hit, or CriticalHit.
+///
+/// - If attacker_total >= defender_total + crit_threshold → CriticalHit
+/// - If attacker_total >= defender_total → Hit
+/// - Otherwise → Miss
+///
+/// Always consumes exactly 12 PRNG calls (from quasi_normal_roll).
+pub(crate) fn roll_hit_check(
+    rng: &mut elven_canopy_prng::GameRng,
+    attack_skill: i64,
+    attacker_dex: i64,
+    evasion_skill: i64,
+    defender_agi: i64,
+    crit_threshold: i64,
+) -> HitResult {
+    let attacker_total = attack_skill + attacker_dex + quasi_normal_roll(rng);
+    let defender_total = evasion_skill + defender_agi;
+    if attacker_total >= defender_total + crit_threshold {
+        HitResult::CriticalHit
+    } else if attacker_total >= defender_total {
+        HitResult::Hit
+    } else {
+        HitResult::Miss
+    }
+}
 
 impl SimState {
     /// Process an `AttackCreature` command: create an AttackTarget task for
@@ -1822,31 +1876,79 @@ impl SimState {
         // Start the action (sets action_kind + next_available_tick, schedules activation).
         self.start_simple_action(attacker_id, ActionKind::MeleeStrike, duration);
 
-        // Degrade melee weapon if one was used.
-        if let Some(stack_id) = weapon_stack_id {
-            self.apply_melee_weapon_impact_damage(stack_id, events);
+        // Hit check: attacker (Striking + DEX) vs defender (Evasion + AGI).
+        let attack_skill = self.trait_int(attacker_id, TraitKind::Striking, 0);
+        let attacker_dex = self.trait_int(attacker_id, TraitKind::Dexterity, 0);
+        let evasion_skill = self.trait_int(target_id, TraitKind::Evasion, 0);
+        let defender_agi = self.trait_int(target_id, TraitKind::Agility, 0);
+        let crit_threshold = self.config.evasion_crit_threshold;
+        let hit_result = roll_hit_check(
+            &mut self.rng,
+            attack_skill,
+            attacker_dex,
+            evasion_skill,
+            defender_agi,
+            crit_threshold,
+        );
+
+        match hit_result {
+            HitResult::Miss => {
+                events.push(SimEvent {
+                    tick: self.tick,
+                    kind: SimEventKind::MeleeAttackMissed {
+                        attacker_id,
+                        target_id,
+                    },
+                });
+                // Defender's Evasion skill can advance on a successful dodge.
+                self.try_advance_skill(
+                    target_id,
+                    TraitKind::Evasion,
+                    self.config.evasion_dodge_advance_permille,
+                );
+            }
+            HitResult::Hit | HitResult::CriticalHit => {
+                // Degrade melee weapon on hit (not on miss — a whiff doesn't
+                // wear the weapon).
+                if let Some(stack_id) = weapon_stack_id {
+                    self.apply_melee_weapon_impact_damage(stack_id, events);
+                }
+
+                let raw_damage = if hit_result == HitResult::CriticalHit {
+                    events.push(SimEvent {
+                        tick: self.tick,
+                        kind: SimEventKind::MeleeAttackCritical {
+                            attacker_id,
+                            target_id,
+                        },
+                    });
+                    raw_damage * self.config.evasion_crit_damage_multiplier
+                } else {
+                    raw_damage
+                };
+
+                // Apply armor reduction and degrade equipped armor/clothing.
+                let damage = self.apply_armor_reduction(target_id, raw_damage, events);
+
+                // Apply damage (handles death if HP reaches 0).
+                self.apply_damage(target_id, damage, events);
+
+                // Emit CreatureDamaged event.
+                let remaining_hp = self.db.creatures.get(&target_id).map(|c| c.hp).unwrap_or(0);
+                events.push(SimEvent {
+                    tick: self.tick,
+                    kind: SimEventKind::CreatureDamaged {
+                        attacker_id,
+                        target_id,
+                        damage,
+                        remaining_hp,
+                    },
+                });
+            }
         }
 
-        // Apply armor reduction and degrade equipped armor/clothing.
-        let damage = self.apply_armor_reduction(target_id, raw_damage, events);
-
-        // Apply damage (handles death if HP reaches 0).
-        self.apply_damage(target_id, damage, events);
-
-        // Emit CreatureDamaged event.
-        let remaining_hp = self.db.creatures.get(&target_id).map(|c| c.hp).unwrap_or(0);
-        events.push(SimEvent {
-            tick: self.tick,
-            kind: SimEventKind::CreatureDamaged {
-                attacker_id,
-                target_id,
-                damage,
-                remaining_hp,
-            },
-        });
-
         // Skill advancement: Striking (melee combat proficiency).
-        self.try_advance_skill(attacker_id, crate::types::TraitKind::Striking, 500);
+        self.try_advance_skill(attacker_id, TraitKind::Striking, 500);
 
         true
     }
@@ -2272,26 +2374,87 @@ impl SimState {
         // Scale damage by arrow durability: a worn arrow hits softer.
         let raw_damage = self.scale_damage_by_arrow_hp(proj_inv, base_damage);
 
-        // Apply armor reduction and degrade equipped armor/clothing.
-        let damage = self.apply_armor_reduction(target_id, raw_damage, events);
+        // Hit check: shooter (Archery + DEX) vs target (Evasion + AGI).
+        // This is the second layer of miss chance — the first is the physical
+        // projectile trajectory (DEX deviation). This check represents the
+        // target dodging/deflecting a physically-on-target arrow.
+        let (attack_skill, attacker_dex) = if let Some(sid) = shooter_id {
+            (
+                self.trait_int(sid, TraitKind::Archery, 0),
+                self.trait_int(sid, TraitKind::Dexterity, 0),
+            )
+        } else {
+            (0, 0)
+        };
+        let evasion_skill = self.trait_int(target_id, TraitKind::Evasion, 0);
+        let defender_agi = self.trait_int(target_id, TraitKind::Agility, 0);
+        let crit_threshold = self.config.evasion_crit_threshold;
+        let hit_result = roll_hit_check(
+            &mut self.rng,
+            attack_skill,
+            attacker_dex,
+            evasion_skill,
+            defender_agi,
+            crit_threshold,
+        );
 
-        // Apply damage.
-        self.apply_damage(target_id, damage, events);
-
-        let remaining_hp = self.db.creatures.get(&target_id).map(|c| c.hp).unwrap_or(0);
-        events.push(SimEvent {
-            tick: self.tick,
-            kind: SimEventKind::ProjectileHitCreature {
+        if hit_result == HitResult::Miss {
+            // Evaded — no damage, but arrow still drops/breaks normally.
+            events.push(SimEvent {
+                tick: self.tick,
+                kind: SimEventKind::ProjectileEvaded {
+                    target_id,
+                    shooter_id,
+                },
+            });
+            // Defender's Evasion skill can advance on a successful dodge.
+            self.try_advance_skill(
                 target_id,
-                damage,
-                remaining_hp,
-                shooter_id,
-            },
-        });
+                TraitKind::Evasion,
+                self.config.evasion_dodge_advance_permille,
+            );
+        } else {
+            let raw_damage = if hit_result == HitResult::CriticalHit {
+                events.push(SimEvent {
+                    tick: self.tick,
+                    kind: SimEventKind::ProjectileCritical {
+                        target_id,
+                        shooter_id,
+                    },
+                });
+                raw_damage * self.config.evasion_crit_damage_multiplier
+            } else {
+                raw_damage
+            };
 
-        // Arrow chase: if the target is a non-passive hostile hit from outside
-        // its detection range, it attack-moves toward the arrow's origin.
-        if remaining_hp > 0 {
+            // Apply armor reduction and degrade equipped armor/clothing.
+            let damage = self.apply_armor_reduction(target_id, raw_damage, events);
+
+            // Apply damage.
+            self.apply_damage(target_id, damage, events);
+
+            let remaining_hp = self.db.creatures.get(&target_id).map(|c| c.hp).unwrap_or(0);
+            events.push(SimEvent {
+                tick: self.tick,
+                kind: SimEventKind::ProjectileHitCreature {
+                    target_id,
+                    damage,
+                    remaining_hp,
+                    shooter_id,
+                },
+            });
+        }
+
+        // Arrow chase: if the target is a non-passive hostile near-missed or
+        // hit from outside its detection range, it attack-moves toward the
+        // arrow's origin. Fires on both hit and evade — an arrow whizzing
+        // past is still noticed.
+        let target_alive = self
+            .db
+            .creatures
+            .get(&target_id)
+            .is_some_and(|c| c.vital_status == VitalStatus::Alive);
+        if target_alive {
             self.maybe_arrow_chase(target_id, origin_voxel);
         }
 

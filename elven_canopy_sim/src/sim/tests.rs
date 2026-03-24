@@ -1208,6 +1208,7 @@ fn strength_modifies_melee_damage() {
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
     zero_creature_stats(&mut sim, elf);
+    force_guaranteed_hits(&mut sim, goblin);
 
     let base_damage = sim.species_table[&Species::Goblin].melee_damage;
     let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
@@ -19038,6 +19039,40 @@ impl SimState {
     }
 }
 
+/// Give a creature a large attack advantage so melee/ranged attacks always
+/// hit (Striking/Archery far exceeds any defender's Evasion + AGI).
+/// Also sets crit threshold very high so guaranteed-hit tests don't produce
+/// unexpected critical damage. Does NOT touch DEX — changing DEX alters
+/// arrow deviation RNG consumption, which shifts the PRNG sequence and
+/// breaks timing-sensitive tests.
+fn force_guaranteed_hits(sim: &mut SimState, creature_id: CreatureId) {
+    use crate::db::CreatureTrait;
+    use crate::types::TraitValue;
+    // Set Striking and Archery to 500 (huge attack bonus).
+    // With zeroed defender stats, attacker_total = 500 + DEX + quasi_normal_roll.
+    // Even with DEX=0, min attacker_total = 500 + 0 + (-300) = 200 > 0, so
+    // always hits.
+    for skill in [TraitKind::Striking, TraitKind::Archery] {
+        if sim.db.creature_traits.get(&(creature_id, skill)).is_some() {
+            let _ = sim
+                .db
+                .creature_traits
+                .modify_unchecked(&(creature_id, skill), |t| {
+                    t.value = TraitValue::Int(500);
+                });
+        } else {
+            let _ = sim.db.creature_traits.insert_no_fk(CreatureTrait {
+                creature_id,
+                trait_kind: skill,
+                value: TraitValue::Int(500),
+            });
+        }
+    }
+    // Raise crit threshold so the large attack bonus guarantees a normal Hit,
+    // not a CriticalHit (which would double damage and break assertions).
+    sim.config.evasion_crit_threshold = 100_000;
+}
+
 // -- in_melee_range pure-function tests --
 
 #[test]
@@ -19110,6 +19145,7 @@ fn test_melee_strike_deals_damage() {
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
     zero_creature_stats(&mut sim, elf);
+    force_guaranteed_hits(&mut sim, goblin);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
     // Place goblin adjacent (x+1).
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
@@ -19155,6 +19191,7 @@ fn test_melee_strike_incapacitates_target() {
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
     zero_creature_stats(&mut sim, elf);
+    force_guaranteed_hits(&mut sim, goblin);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
@@ -19225,6 +19262,7 @@ fn test_melee_strike_cooldown() {
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
     zero_creature_stats(&mut sim, elf);
+    force_guaranteed_hits(&mut sim, goblin);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
@@ -19365,6 +19403,7 @@ fn test_melee_strike_cooldown_expires() {
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
     zero_creature_stats(&mut sim, elf);
+    force_guaranteed_hits(&mut sim, goblin);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
@@ -20436,9 +20475,26 @@ fn armor_extreme_penetrating_damage_no_overflow() {
 
 #[test]
 fn armor_reduces_projectile_damage() {
+    use crate::db::CreatureTrait;
     // Verify armor reduces damage from projectile (arrow) hits, not just melee.
     let mut sim = test_sim(42);
     let elf = spawn_elf(&mut sim);
+    // Set target's evasion stats deeply negative so the no-shooter projectile
+    // (0 attack + quasi_normal_roll) always exceeds defender_total and hits.
+    // Evasion skill has no row at spawn (default 0), so use insert_no_fk.
+    let _ = sim.db.creature_traits.insert_no_fk(CreatureTrait {
+        creature_id: elf,
+        trait_kind: TraitKind::Evasion,
+        value: TraitValue::Int(-500),
+    });
+    let _ = sim
+        .db
+        .creature_traits
+        .modify_unchecked(&(elf, TraitKind::Agility), |t| {
+            t.value = TraitValue::Int(-500);
+        });
+    // Raise crit threshold to prevent the large margin from triggering crits.
+    sim.config.evasion_crit_threshold = 100_000;
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
 
     // Equip full armor on the elf (total armor = 9).
@@ -21355,6 +21411,7 @@ fn test_hostile_ai_shoots_when_armed() {
     let mut sim = test_sim(300);
     let elf_id = spawn_species(&mut sim, Species::Elf);
     let goblin_id = spawn_species(&mut sim, Species::Goblin);
+    force_guaranteed_hits(&mut sim, goblin_id);
 
     // Arm the goblin with bow + arrows. Don't reposition — let the sim's
     // natural spawn placement and nav graph handle positions.
@@ -21472,6 +21529,7 @@ fn hostile_creature_pursues_and_attacks_elf() {
     let mut sim = test_sim(300);
     let elf_id = spawn_species(&mut sim, Species::Elf);
     let goblin_id = spawn_species(&mut sim, Species::Goblin);
+    force_guaranteed_hits(&mut sim, goblin_id);
 
     let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
     let goblin_start = sim.db.creatures.get(&goblin_id).unwrap().position;
@@ -21535,6 +21593,7 @@ fn hostile_creature_attacks_adjacent_elf() {
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
     zero_creature_stats(&mut sim, elf);
+    force_guaranteed_hits(&mut sim, goblin);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
     // Place goblin adjacent to elf.
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
@@ -22090,9 +22149,27 @@ fn all_hostile_species_pursue_elves() {
 
 #[test]
 fn projectile_hits_creature_beyond_origin_voxel() {
+    use crate::db::CreatureTrait;
     let mut sim = test_sim(42);
     // Place a target creature a few voxels away from the origin.
     let target = spawn_species(&mut sim, Species::Elf);
+    // Set target's evasion stats deeply negative so the no-shooter projectile
+    // (0 attack + quasi_normal_roll) always exceeds defender_total and hits.
+    // Don't use zero_creature_stats to avoid altering walk speed / behavior.
+    // Evasion skill has no row at spawn (default 0), so use insert_no_fk.
+    let _ = sim.db.creature_traits.insert_no_fk(CreatureTrait {
+        creature_id: target,
+        trait_kind: TraitKind::Evasion,
+        value: TraitValue::Int(-500),
+    });
+    let _ = sim
+        .db
+        .creature_traits
+        .modify_unchecked(&(target, TraitKind::Agility), |t| {
+            t.value = TraitValue::Int(-500);
+        });
+    // Raise crit threshold to prevent the large margin from triggering crits.
+    sim.config.evasion_crit_threshold = 100_000;
     let origin = VoxelCoord::new(40, 1, 40);
     let target_pos = VoxelCoord::new(42, 1, 40);
     if let Some(mut c) = sim.db.creatures.get(&target) {
@@ -26234,6 +26311,7 @@ fn creature_does_not_freeze_after_combat_preempts_task() {
     set_military_group(&mut sim, elf_id, Some(soldiers.id));
     arm_with_bow_and_arrows(&mut sim, elf_id, 20);
     zero_creature_stats(&mut sim, elf_id);
+    force_guaranteed_hits(&mut sim, elf_id);
 
     // Give elf a low-priority task.
     let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
@@ -26263,11 +26341,12 @@ fn creature_does_not_freeze_after_combat_preempts_task() {
         let _ = sim.db.creatures.update_no_fk(c);
     }
 
-    // Spawn orc nearby.
+    // Spawn orc nearby. Cancel its activations so it doesn't attack the elf
+    // (melee hit checks consume RNG that shifts the PRNG path).
     let orc_id = spawn_species(&mut sim, Species::Orc);
     let orc_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
     force_position(&mut sim, orc_id, orc_pos);
-    force_idle(&mut sim, orc_id);
+    force_idle_and_cancel_activations(&mut sim, orc_id);
 
     // Run for enough time for the elf to fire MULTIPLE shots.
     // shoot_cooldown is 3000 ticks; run 30000 ticks for ~10 shot windows.
@@ -26425,6 +26504,7 @@ fn aggressive_soldier_shoots_repeatedly_over_time() {
         .expect("spawn elf");
     let soldiers = soldiers_group(&sim);
     set_military_group(&mut sim, elf_id, Some(soldiers.id));
+    force_guaranteed_hits(&mut sim, elf_id);
 
     // Give elf bow + 20 arrows.
     arm_with_bow_and_arrows(&mut sim, elf_id, 20);
@@ -26437,7 +26517,7 @@ fn aggressive_soldier_shoots_repeatedly_over_time() {
     let orc_id = spawn_species(&mut sim, Species::Orc);
     let orc_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
     force_position(&mut sim, orc_id, orc_pos);
-    force_idle(&mut sim, orc_id);
+    force_idle_and_cancel_activations(&mut sim, orc_id);
 
     // Ensure elf is idle (no tasks pending).
     force_idle_and_cancel_activations(&mut sim, elf_id);
@@ -30285,6 +30365,7 @@ fn in_flight_arrow_passes_through_friendly_near_origin() {
     zero_creature_stats(&mut sim, shooter);
     zero_creature_stats(&mut sim, buddy);
     zero_creature_stats(&mut sim, goblin);
+    force_guaranteed_hits(&mut sim, shooter);
 
     // Place on flat ground away from the tree.
     let base = VoxelCoord::new(5, 1, 32);
@@ -38101,6 +38182,7 @@ fn melee_weapon_club_replaces_species_damage() {
     let target = spawn_species(&mut sim, Species::Goblin);
     zero_creature_stats(&mut sim, elf);
     zero_creature_stats(&mut sim, target);
+    force_guaranteed_hits(&mut sim, elf);
 
     let target_pos = sim.db.creatures.get(&target).unwrap().position;
     let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
@@ -38159,6 +38241,7 @@ fn melee_weapon_spear_extended_range() {
     let target = spawn_species(&mut sim, Species::Goblin);
     zero_creature_stats(&mut sim, elf);
     zero_creature_stats(&mut sim, target);
+    force_guaranteed_hits(&mut sim, elf);
 
     let target_pos = sim.db.creatures.get(&target).unwrap().position;
     // Place elf 2 voxels away (distance_sq = 4 for a single axis offset of 2).
@@ -38231,6 +38314,7 @@ fn melee_weapon_prefers_highest_damage_when_both_in_range() {
     let target = spawn_species(&mut sim, Species::Goblin);
     zero_creature_stats(&mut sim, elf);
     zero_creature_stats(&mut sim, target);
+    force_guaranteed_hits(&mut sim, elf);
 
     let target_pos = sim.db.creatures.get(&target).unwrap().position;
     let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
@@ -38293,6 +38377,7 @@ fn melee_weapon_spear_only_at_extended_range() {
     let target = spawn_species(&mut sim, Species::Goblin);
     zero_creature_stats(&mut sim, elf);
     zero_creature_stats(&mut sim, target);
+    force_guaranteed_hits(&mut sim, elf);
 
     let target_pos = sim.db.creatures.get(&target).unwrap().position;
     let elf_pos = VoxelCoord::new(target_pos.x + 2, target_pos.y, target_pos.z);
@@ -38358,6 +38443,7 @@ fn melee_weapon_degrades_on_strike() {
     let target = spawn_species(&mut sim, Species::Goblin);
     zero_creature_stats(&mut sim, elf);
     zero_creature_stats(&mut sim, target);
+    force_guaranteed_hits(&mut sim, elf);
 
     let target_pos = sim.db.creatures.get(&target).unwrap().position;
     let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
@@ -38425,6 +38511,7 @@ fn melee_bare_hands_fallback() {
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
     zero_creature_stats(&mut sim, elf);
+    force_guaranteed_hits(&mut sim, goblin);
 
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
@@ -38517,6 +38604,7 @@ fn melee_weapon_enables_attack_for_zero_damage_species() {
     let target = spawn_species(&mut sim, Species::Goblin);
     zero_creature_stats(&mut sim, capybara);
     zero_creature_stats(&mut sim, target);
+    force_guaranteed_hits(&mut sim, capybara);
 
     let target_pos = sim.db.creatures.get(&target).unwrap().position;
     let cap_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
@@ -38705,6 +38793,7 @@ fn melee_weapon_breaks_then_fallback_to_bare_hands() {
     let target = spawn_species(&mut sim, Species::Goblin);
     zero_creature_stats(&mut sim, elf);
     zero_creature_stats(&mut sim, target);
+    force_guaranteed_hits(&mut sim, elf);
 
     let target_pos = sim.db.creatures.get(&target).unwrap().position;
     let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
@@ -38990,6 +39079,7 @@ fn weapon_damage_reduced_by_armor() {
     let target = spawn_species(&mut sim, Species::Goblin);
     zero_creature_stats(&mut sim, elf);
     zero_creature_stats(&mut sim, target);
+    force_guaranteed_hits(&mut sim, elf);
 
     let target_pos = sim.db.creatures.get(&target).unwrap().position;
     let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
@@ -39047,6 +39137,7 @@ fn weapon_damage_scales_with_strength() {
     let target = spawn_species(&mut sim, Species::Goblin);
     zero_creature_stats(&mut sim, elf);
     zero_creature_stats(&mut sim, target);
+    force_guaranteed_hits(&mut sim, elf);
 
     let target_pos = sim.db.creatures.get(&target).unwrap().position;
     let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
@@ -39177,6 +39268,7 @@ fn hostile_ai_spear_attacks_at_extended_range() {
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
     zero_creature_stats(&mut sim, elf);
+    force_guaranteed_hits(&mut sim, goblin);
 
     // Give the goblin a spear.
     let inv_id = sim.db.creatures.get(&goblin).unwrap().inventory_id;
@@ -39548,6 +39640,7 @@ fn hornet_pursues_and_damages_elf() {
     // get adjacent, and melee the elf.
     let hornet_pos = VoxelCoord::new(elf_pos.x, elf_pos.y + 3, elf_pos.z);
     let hornet_id = spawn_hornet_at(&mut sim, hornet_pos);
+    force_guaranteed_hits(&mut sim, hornet_id);
 
     // Run the sim for a generous number of ticks to allow pursuit + melee.
     let target_tick = sim.tick + 5000;
@@ -39965,6 +40058,7 @@ fn wyvern_pursues_and_damages_elf() {
     let wyvern_id = sim
         .spawn_creature(Species::Wyvern, wyvern_pos, &mut events)
         .expect("wyvern should spawn");
+    force_guaranteed_hits(&mut sim, wyvern_id);
 
     // Wyvern is fast (flight_tpv=200) but needs time to detect, path, and strike.
     let target_tick = sim.tick + 15000;
@@ -40331,6 +40425,7 @@ fn damage_to_zero_hp_incapacitates_not_kills() {
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
     zero_creature_stats(&mut sim, elf);
+    force_guaranteed_hits(&mut sim, goblin);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
@@ -40398,6 +40493,7 @@ fn further_damage_on_incapacitated_pushes_hp_negative() {
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
     zero_creature_stats(&mut sim, elf);
+    force_guaranteed_hits(&mut sim, goblin);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
@@ -40579,6 +40675,7 @@ fn incapacitated_creature_is_targetable_by_melee() {
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
     zero_creature_stats(&mut sim, elf);
+    force_guaranteed_hits(&mut sim, goblin);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
@@ -43299,5 +43396,861 @@ fn shift_click_during_flee_preserves_and_extends_queue() {
     assert!(
         task_c.is_some(),
         "New shift-click task C should chain off surviving task B"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Attack evasion / hit-check tests (F-attack-evasion)
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_quasi_normal_roll_distribution() {
+    use crate::sim::combat::quasi_normal_roll;
+    let mut rng = elven_canopy_prng::GameRng::new(123);
+    let n = 100_000;
+    let mut sum: i64 = 0;
+    let mut sum_sq: i64 = 0;
+    let mut min_val: i64 = i64::MAX;
+    let mut max_val: i64 = i64::MIN;
+    for _ in 0..n {
+        let v = quasi_normal_roll(&mut rng);
+        sum += v;
+        sum_sq += v * v;
+        min_val = min_val.min(v);
+        max_val = max_val.max(v);
+    }
+    let mean = sum as f64 / n as f64;
+    let variance = sum_sq as f64 / n as f64 - mean * mean;
+    let stdev = variance.sqrt();
+    // Mean should be near 0 (within ±1).
+    assert!(mean.abs() < 1.0, "mean {mean} too far from 0");
+    // Stdev should be near 51 (within ±3).
+    assert!((stdev - 51.0).abs() < 3.0, "stdev {stdev} too far from 51");
+    // Range bounded by [-300, 300] (12 * 25 = 300).
+    assert!(min_val >= -300, "min {min_val} out of range");
+    assert!(max_val <= 300, "max {max_val} out of range");
+}
+
+#[test]
+fn test_hit_check_equal_stats_about_50_percent() {
+    use crate::sim::combat::{HitResult, roll_hit_check};
+    let mut rng = elven_canopy_prng::GameRng::new(456);
+    let n = 50_000;
+    let mut hits = 0u32;
+    for _ in 0..n {
+        match roll_hit_check(&mut rng, 0, 0, 0, 0, 100) {
+            HitResult::Hit | HitResult::CriticalHit => hits += 1,
+            HitResult::Miss => {}
+        }
+    }
+    let rate = hits as f64 / n as f64;
+    // Should be ~50% (within ±2%).
+    assert!(
+        (rate - 0.50).abs() < 0.02,
+        "equal-stat hit rate {rate:.3} not near 50%"
+    );
+}
+
+#[test]
+fn test_hit_check_large_attacker_advantage() {
+    use crate::sim::combat::{HitResult, roll_hit_check};
+    let mut rng = elven_canopy_prng::GameRng::new(789);
+    let n = 10_000;
+    let mut hits = 0u32;
+    // Attacker has +500 advantage — should almost always hit.
+    for _ in 0..n {
+        match roll_hit_check(&mut rng, 250, 250, 0, 0, 100) {
+            HitResult::Hit | HitResult::CriticalHit => hits += 1,
+            HitResult::Miss => {}
+        }
+    }
+    let rate = hits as f64 / n as f64;
+    assert!(
+        rate > 0.99,
+        "large-advantage hit rate {rate:.3} should be near 100%"
+    );
+}
+
+#[test]
+fn test_hit_check_large_defender_advantage() {
+    use crate::sim::combat::{HitResult, roll_hit_check};
+    let mut rng = elven_canopy_prng::GameRng::new(321);
+    let n = 10_000;
+    let mut hits = 0u32;
+    // Defender has +500 advantage — should almost never hit.
+    for _ in 0..n {
+        match roll_hit_check(&mut rng, 0, 0, 250, 250, 100) {
+            HitResult::Hit | HitResult::CriticalHit => hits += 1,
+            HitResult::Miss => {}
+        }
+    }
+    let rate = hits as f64 / n as f64;
+    assert!(
+        rate < 0.01,
+        "large-disadvantage hit rate {rate:.3} should be near 0%"
+    );
+}
+
+#[test]
+fn test_hit_check_crit_rate_equal_stats() {
+    use crate::sim::combat::{HitResult, roll_hit_check};
+    let mut rng = elven_canopy_prng::GameRng::new(654);
+    let n = 100_000;
+    let mut crits = 0u32;
+    for _ in 0..n {
+        if roll_hit_check(&mut rng, 0, 0, 0, 0, 100) == HitResult::CriticalHit {
+            crits += 1;
+        }
+    }
+    let rate = crits as f64 / n as f64;
+    // Should be ~2-3% (within 1%).
+    assert!(
+        rate > 0.01 && rate < 0.04,
+        "crit rate {rate:.4} should be ~2-3%"
+    );
+}
+
+#[test]
+fn test_hit_check_deterministic() {
+    use crate::sim::combat::{HitResult, roll_hit_check};
+    // Same seed → same sequence of results.
+    let results_a: Vec<HitResult> = {
+        let mut rng = elven_canopy_prng::GameRng::new(999);
+        (0..100)
+            .map(|_| roll_hit_check(&mut rng, 10, 5, 8, 7, 100))
+            .collect()
+    };
+    let results_b: Vec<HitResult> = {
+        let mut rng = elven_canopy_prng::GameRng::new(999);
+        (0..100)
+            .map(|_| roll_hit_check(&mut rng, 10, 5, 8, 7, 100))
+            .collect()
+    };
+    assert_eq!(results_a, results_b);
+}
+
+#[test]
+fn test_melee_miss_high_evasion() {
+    // A defender with very high Evasion + AGI should dodge almost all melee attacks.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+
+    // Give elf massive evasion advantage.
+    use crate::db::CreatureTrait;
+    use crate::types::TraitValue;
+    let _ = sim.db.creature_traits.insert_no_fk(CreatureTrait {
+        creature_id: elf,
+        trait_kind: TraitKind::Evasion,
+        value: TraitValue::Int(500),
+    });
+    let _ = sim
+        .db
+        .creature_traits
+        .modify_unchecked(&(elf, TraitKind::Agility), |t| {
+            t.value = TraitValue::Int(500);
+        });
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+
+    // Run many melee attacks and count misses.
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+    let mut miss_count = 0;
+    for _ in 0..100 {
+        force_idle(&mut sim, goblin);
+        let tick = sim.tick;
+        let events = sim.step(
+            &[SimCommand {
+                player_name: String::new(),
+                tick: tick + 1,
+                action: SimAction::DebugMeleeAttack {
+                    attacker_id: goblin,
+                    target_id: elf,
+                },
+            }],
+            tick + 1,
+        );
+        if events.events.iter().any(|e| {
+            matches!(
+                &e.kind,
+                SimEventKind::MeleeAttackMissed { attacker_id, target_id }
+                if *attacker_id == goblin && *target_id == elf
+            )
+        }) {
+            miss_count += 1;
+        }
+    }
+
+    // With +1000 evasion advantage, should miss nearly all attacks.
+    assert!(
+        miss_count > 95,
+        "expected nearly all misses, got {miss_count}/100"
+    );
+    // Elf HP should barely change (at most a few lucky hits).
+    let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+    assert!(
+        elf_hp_after > elf_hp_before - 20,
+        "elf took too much damage despite high evasion: {elf_hp_before} -> {elf_hp_after}"
+    );
+}
+
+#[test]
+fn test_melee_crit_doubles_damage() {
+    // With huge attacker advantage, most hits should be crits dealing double damage.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+
+    // Give goblin massive skill advantage.
+    use crate::db::CreatureTrait;
+    use crate::types::TraitValue;
+    let _ = sim.db.creature_traits.insert_no_fk(CreatureTrait {
+        creature_id: goblin,
+        trait_kind: TraitKind::Striking,
+        value: TraitValue::Int(500),
+    });
+    let _ = sim
+        .db
+        .creature_traits
+        .modify_unchecked(&(goblin, TraitKind::Dexterity), |t| {
+            t.value = TraitValue::Int(500);
+        });
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+
+    // Give elf huge HP so we can measure damage.
+    let _ = sim.db.creatures.modify_unchecked(&elf, |c| {
+        c.hp = 100_000;
+        c.hp_max = 100_000;
+    });
+
+    force_idle(&mut sim, goblin);
+    let tick = sim.tick;
+    let events = sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: goblin,
+                target_id: elf,
+            },
+        }],
+        tick + 1,
+    );
+
+    // Should be a crit with that much advantage.
+    assert!(
+        events.events.iter().any(|e| matches!(
+            &e.kind,
+            SimEventKind::MeleeAttackCritical { attacker_id, target_id }
+            if *attacker_id == goblin && *target_id == elf
+        )),
+        "expected a critical hit event"
+    );
+
+    // Damage should be double the base (goblin melee_damage with zero-stat STR).
+    // With zero STR, raw_damage = base_damage. Crit doubles it before armor.
+    // With zero armor, damage = 2 * base_damage.
+    let base_damage = sim.species_table[&Species::Goblin].melee_damage;
+    let crit_event = events
+        .events
+        .iter()
+        .find(|e| matches!(&e.kind, SimEventKind::CreatureDamaged { .. }));
+    if let Some(SimEvent {
+        kind: SimEventKind::CreatureDamaged { damage, .. },
+        ..
+    }) = crit_event
+    {
+        assert_eq!(
+            *damage,
+            base_damage * sim.config.evasion_crit_damage_multiplier,
+            "crit should deal {0}x base damage ({base_damage})",
+            sim.config.evasion_crit_damage_multiplier
+        );
+    } else {
+        panic!("expected CreatureDamaged event for crit hit");
+    }
+}
+
+#[test]
+fn test_melee_miss_still_consumes_cooldown() {
+    // Even on a miss, the attacker should still be on cooldown.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+
+    // Give elf high evasion to guarantee a miss.
+    use crate::db::CreatureTrait;
+    use crate::types::TraitValue;
+    let _ = sim.db.creature_traits.insert_no_fk(CreatureTrait {
+        creature_id: elf,
+        trait_kind: TraitKind::Evasion,
+        value: TraitValue::Int(500),
+    });
+    let _ = sim
+        .db
+        .creature_traits
+        .modify_unchecked(&(elf, TraitKind::Agility), |t| {
+            t.value = TraitValue::Int(500);
+        });
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, goblin);
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: goblin,
+                target_id: elf,
+            },
+        }],
+        tick + 1,
+    );
+
+    // Goblin should have an action kind set (cooldown).
+    let goblin_creature = sim.db.creatures.get(&goblin).unwrap();
+    assert_eq!(
+        goblin_creature.action_kind,
+        ActionKind::MeleeStrike,
+        "goblin should be in MeleeStrike action even on miss"
+    );
+    assert!(
+        goblin_creature.next_available_tick.is_some(),
+        "goblin should have a cooldown even on miss"
+    );
+}
+
+#[test]
+fn test_evasion_skill_advances_on_dodge() {
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+
+    // Give elf high AGI to guarantee misses, but keep Evasion skill at 0
+    // (below the default skill cap of 100) so it can advance.
+    let _ = sim
+        .db
+        .creature_traits
+        .modify_unchecked(&(elf, TraitKind::Agility), |t| {
+            t.value = TraitValue::Int(1000);
+        });
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+
+    let evasion_before = sim.trait_int(elf, TraitKind::Evasion, 0);
+    assert_eq!(evasion_before, 0, "evasion should start at 0");
+
+    // Run many melee attacks to give evasion advancement chances.
+    for _ in 0..200 {
+        force_idle(&mut sim, goblin);
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_name: String::new(),
+                tick: tick + 1,
+                action: SimAction::DebugMeleeAttack {
+                    attacker_id: goblin,
+                    target_id: elf,
+                },
+            }],
+            tick + 1,
+        );
+    }
+
+    let evasion_after = sim.trait_int(elf, TraitKind::Evasion, 0);
+    assert!(
+        evasion_after > evasion_before,
+        "evasion skill should advance on dodge: before={evasion_before}, after={evasion_after}"
+    );
+}
+
+#[test]
+fn test_projectile_evaded_by_high_agi_target() {
+    // A target with very high Evasion + AGI should dodge arrows that physically
+    // hit them, emitting ProjectileEvaded instead of ProjectileHitCreature.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, elf);
+
+    // Give elf massive evasion advantage.
+    let _ = sim
+        .db
+        .creature_traits
+        .modify_unchecked(&(elf, TraitKind::Evasion), |t| {
+            t.value = TraitValue::Int(500);
+        });
+    let _ = sim
+        .db
+        .creature_traits
+        .modify_unchecked(&(elf, TraitKind::Agility), |t| {
+            t.value = TraitValue::Int(500);
+        });
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+
+    // Spawn a projectile aimed at the elf (no gravity, no shooter).
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+    let origin = VoxelCoord::new(elf_pos.x - 10, elf_pos.y, elf_pos.z);
+    sim.spawn_projectile(origin, elf_pos, None);
+
+    // Run until resolved.
+    let mut evaded = false;
+    let mut hit = false;
+    for _ in 0..500 {
+        if sim.db.projectiles.is_empty() {
+            break;
+        }
+        sim.tick += 1;
+        let mut events = Vec::new();
+        sim.process_projectile_tick(&mut events);
+        for e in &events {
+            if matches!(&e.kind, SimEventKind::ProjectileEvaded { .. }) {
+                evaded = true;
+            }
+            if matches!(&e.kind, SimEventKind::ProjectileHitCreature { .. }) {
+                hit = true;
+            }
+        }
+    }
+
+    assert!(evaded, "arrow should have been evaded");
+    assert!(!hit, "arrow should not have dealt damage");
+    let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+    assert_eq!(elf_hp_after, elf_hp_before, "elf HP should be unchanged");
+}
+
+#[test]
+fn test_projectile_crit_doubles_damage() {
+    use crate::db::CreatureTrait;
+    use crate::types::TraitValue;
+    // A projectile from a high-skill shooter should crit and deal multiplied damage.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, elf);
+    let shooter = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, shooter);
+
+    // Give shooter massive attack advantage for guaranteed crit.
+    let _ = sim.db.creature_traits.insert_no_fk(CreatureTrait {
+        creature_id: shooter,
+        trait_kind: TraitKind::Archery,
+        value: TraitValue::Int(500),
+    });
+    let _ = sim
+        .db
+        .creature_traits
+        .modify_unchecked(&(shooter, TraitKind::Dexterity), |t| {
+            t.value = TraitValue::Int(500);
+        });
+
+    // Give elf huge HP so we can measure damage.
+    let _ = sim.db.creatures.modify_unchecked(&elf, |c| {
+        c.hp = 100_000;
+        c.hp_max = 100_000;
+    });
+    // Disable armor degradation to simplify.
+    sim.config.armor_degrade_location_weights = [0, 0, 0, 0, 0];
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+    let origin = VoxelCoord::new(elf_pos.x - 10, elf_pos.y, elf_pos.z);
+    sim.spawn_projectile(origin, elf_pos, Some(shooter));
+
+    let mut got_crit = false;
+    let mut hit_damage: Option<i64> = None;
+    for _ in 0..500 {
+        if sim.db.projectiles.is_empty() {
+            break;
+        }
+        sim.tick += 1;
+        let mut events = Vec::new();
+        sim.process_projectile_tick(&mut events);
+        for e in &events {
+            if matches!(&e.kind, SimEventKind::ProjectileCritical { .. }) {
+                got_crit = true;
+            }
+            if let SimEventKind::ProjectileHitCreature { damage, .. } = &e.kind {
+                hit_damage = Some(*damage);
+            }
+        }
+    }
+
+    assert!(got_crit, "expected ProjectileCritical event");
+    assert!(hit_damage.is_some(), "expected ProjectileHitCreature event");
+}
+
+#[test]
+fn test_projectile_evasion_with_shooter_stats() {
+    use crate::db::CreatureTrait;
+    use crate::types::TraitValue;
+    // When a projectile has a shooter_id, the shooter's Archery + DEX should
+    // be used in the hit check (not defaulted to 0). A high-Archery shooter
+    // should overcome a moderately evasive target.
+    let mut sim = test_sim(42);
+    let target = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, target);
+    let shooter = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, shooter);
+
+    // Target has moderate evasion (enough to dodge 0-stat shooters).
+    let _ = sim.db.creature_traits.insert_no_fk(CreatureTrait {
+        creature_id: target,
+        trait_kind: TraitKind::Evasion,
+        value: TraitValue::Int(200),
+    });
+    let _ = sim
+        .db
+        .creature_traits
+        .modify_unchecked(&(target, TraitKind::Agility), |t| {
+            t.value = TraitValue::Int(200);
+        });
+
+    // Shooter has high Archery + DEX to overcome the evasion.
+    let _ = sim.db.creature_traits.insert_no_fk(CreatureTrait {
+        creature_id: shooter,
+        trait_kind: TraitKind::Archery,
+        value: TraitValue::Int(500),
+    });
+    let _ = sim
+        .db
+        .creature_traits
+        .modify_unchecked(&(shooter, TraitKind::Dexterity), |t| {
+            t.value = TraitValue::Int(500);
+        });
+    // Raise crit threshold so we test hit, not crit.
+    sim.config.evasion_crit_threshold = 100_000;
+
+    // Give target huge HP.
+    let _ = sim.db.creatures.modify_unchecked(&target, |c| {
+        c.hp = 100_000;
+        c.hp_max = 100_000;
+    });
+
+    let target_pos = sim.db.creatures.get(&target).unwrap().position;
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+
+    // Fire many arrows and count hits.
+    let mut hits = 0;
+    let total = 20;
+    for _ in 0..total {
+        let origin = VoxelCoord::new(target_pos.x - 10, target_pos.y, target_pos.z);
+        sim.spawn_projectile(origin, target_pos, Some(shooter));
+        for _ in 0..500 {
+            if sim.db.projectiles.is_empty() {
+                break;
+            }
+            sim.tick += 1;
+            let mut events = Vec::new();
+            sim.process_projectile_tick(&mut events);
+            for e in &events {
+                if matches!(&e.kind, SimEventKind::ProjectileHitCreature { .. }) {
+                    hits += 1;
+                }
+            }
+        }
+    }
+
+    // With +600 attacker advantage, should hit nearly all.
+    assert!(
+        hits > 18,
+        "high-skill shooter should hit evasive target most of the time, got {hits}/{total}"
+    );
+}
+
+#[test]
+fn test_melee_miss_no_armor_degradation() {
+    use crate::db::CreatureTrait;
+    use crate::types::TraitValue;
+    // On a melee miss, the defender's armor should not degrade.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+
+    // Give elf high evasion to guarantee misses.
+    let _ = sim.db.creature_traits.insert_no_fk(CreatureTrait {
+        creature_id: elf,
+        trait_kind: TraitKind::Evasion,
+        value: TraitValue::Int(500),
+    });
+    let _ = sim
+        .db
+        .creature_traits
+        .modify_unchecked(&(elf, TraitKind::Agility), |t| {
+            t.value = TraitValue::Int(500);
+        });
+
+    // Equip armor on the elf.
+    equip_full_armor(&mut sim, elf);
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+
+    // Record armor durability before (find equipped stacks via equipped_slot).
+    let elf_inv = sim.db.creatures.get(&elf).unwrap().inventory_id;
+    let armor_hp_before: Vec<_> = sim
+        .db
+        .item_stacks
+        .iter_all()
+        .filter(|s| s.inventory_id == elf_inv && s.equipped_slot.is_some())
+        .map(|s| (s.id, s.current_hp))
+        .collect();
+    assert!(
+        !armor_hp_before.is_empty(),
+        "elf should have armor equipped"
+    );
+
+    // Attack many times (all should miss).
+    for _ in 0..20 {
+        force_idle(&mut sim, goblin);
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_name: String::new(),
+                tick: tick + 1,
+                action: SimAction::DebugMeleeAttack {
+                    attacker_id: goblin,
+                    target_id: elf,
+                },
+            }],
+            tick + 1,
+        );
+    }
+
+    // Armor durability should be unchanged.
+    for (stack_id, hp_before) in &armor_hp_before {
+        let hp_after = sim.db.item_stacks.get(stack_id).unwrap().current_hp;
+        assert_eq!(
+            hp_after, *hp_before,
+            "armor stack {stack_id:?} should not degrade on miss"
+        );
+    }
+}
+
+#[test]
+fn test_ranged_evasion_skill_advances_on_projectile_dodge() {
+    // When a projectile is evaded, the target's Evasion skill should advance.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, elf);
+
+    // Give elf high AGI to guarantee dodges, but Evasion skill at 0.
+    let _ = sim
+        .db
+        .creature_traits
+        .modify_unchecked(&(elf, TraitKind::Agility), |t| {
+            t.value = TraitValue::Int(1000);
+        });
+
+    let evasion_before = sim.trait_int(elf, TraitKind::Evasion, 0);
+    assert_eq!(evasion_before, 0, "evasion should start at 0");
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+
+    // Fire many arrows — all should be evaded, giving Evasion advancement rolls.
+    for _ in 0..100 {
+        let origin = VoxelCoord::new(elf_pos.x - 10, elf_pos.y, elf_pos.z);
+        sim.spawn_projectile(origin, elf_pos, None);
+        for _ in 0..500 {
+            if sim.db.projectiles.is_empty() {
+                break;
+            }
+            sim.tick += 1;
+            let mut events = Vec::new();
+            sim.process_projectile_tick(&mut events);
+        }
+    }
+
+    let evasion_after = sim.trait_int(elf, TraitKind::Evasion, 0);
+    assert!(
+        evasion_after > evasion_before,
+        "evasion skill should advance on projectile dodge: before={evasion_before}, after={evasion_after}"
+    );
+}
+
+#[test]
+fn test_evasion_config_serde_roundtrip() {
+    // New evasion config fields should survive serialization roundtrip,
+    // and missing fields should use defaults.
+    let config = GameConfig::default();
+    let json = serde_json::to_string(&config).unwrap();
+    let restored: GameConfig = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored.evasion_crit_threshold, 100);
+    assert_eq!(restored.evasion_crit_damage_multiplier, 2);
+    assert_eq!(restored.evasion_dodge_advance_permille, 500);
+
+    // Fields missing from JSON should use defaults.
+    let mut config_obj: serde_json::Value = serde_json::to_value(&config).unwrap();
+    let obj = config_obj.as_object_mut().unwrap();
+    obj.remove("evasion_crit_threshold");
+    obj.remove("evasion_crit_damage_multiplier");
+    obj.remove("evasion_dodge_advance_permille");
+    let restored2: GameConfig = serde_json::from_value(config_obj).unwrap();
+    assert_eq!(restored2.evasion_crit_threshold, 100);
+    assert_eq!(restored2.evasion_crit_damage_multiplier, 2);
+    assert_eq!(restored2.evasion_dodge_advance_permille, 500);
+}
+
+#[test]
+fn test_evaded_arrow_still_triggers_chase() {
+    // A hostile creature that evades an arrow from outside detection range
+    // should still chase the shooter (the arrow whizzed past them).
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, goblin);
+
+    // Give goblin very high evasion to guarantee dodge.
+    let _ = sim
+        .db
+        .creature_traits
+        .modify_unchecked(&(goblin, TraitKind::Agility), |t| {
+            t.value = TraitValue::Int(1000);
+        });
+
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+
+    // Origin above the goblin, outside detection range (20² = 400 > 225).
+    let origin = VoxelCoord::new(goblin_pos.x, goblin_pos.y + 20, goblin_pos.z);
+
+    force_idle_and_cancel_activations(&mut sim, goblin);
+
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+    sim.spawn_projectile(origin, goblin_pos, None);
+
+    // Run until the projectile resolves.
+    let mut evaded = false;
+    for _ in 0..1000 {
+        if sim.db.projectiles.is_empty() {
+            break;
+        }
+        sim.tick += 1;
+        let mut events = Vec::new();
+        sim.process_projectile_tick(&mut events);
+        for e in &events {
+            if matches!(e.kind, SimEventKind::ProjectileEvaded { .. }) {
+                evaded = true;
+            }
+        }
+    }
+
+    if !evaded {
+        // Projectile didn't reach goblin (terrain in the way) — skip.
+        return;
+    }
+
+    // Even though the arrow was evaded, the goblin should chase.
+    let creature = sim.db.creatures.get(&goblin).unwrap();
+    if creature.vital_status == VitalStatus::Alive {
+        let task_id = creature
+            .current_task
+            .expect("Goblin should have chase task after evading arrow from outside range");
+        let task = sim.db.tasks.get(&task_id).unwrap();
+        assert_eq!(task.kind_tag, crate::db::TaskKindTag::AttackMove);
+        assert_eq!(task.origin, crate::task::TaskOrigin::Autonomous);
+    }
+}
+
+#[test]
+fn test_melee_weapon_no_degrade_on_miss() {
+    // Melee weapons should not take durability damage when the attack misses.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+
+    // Give elf high evasion to guarantee misses.
+    use crate::db::CreatureTrait;
+    use crate::types::TraitValue;
+    let _ = sim.db.creature_traits.insert_no_fk(CreatureTrait {
+        creature_id: elf,
+        trait_kind: TraitKind::Evasion,
+        value: TraitValue::Int(500),
+    });
+    let _ = sim
+        .db
+        .creature_traits
+        .modify_unchecked(&(elf, TraitKind::Agility), |t| {
+            t.value = TraitValue::Int(500);
+        });
+
+    // Give goblin a spear.
+    let goblin_inv = sim.db.creatures.get(&goblin).unwrap().inventory_id;
+    sim.inv_add_item(
+        goblin_inv,
+        ItemKind::Spear,
+        1,
+        Some(goblin),
+        None,
+        Some(Material::Oak),
+        0,
+        None,
+        None,
+    );
+
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    // Place goblin within spear range (2 voxels).
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 2, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+
+    // Record spear durability before.
+    let spear_stack = sim
+        .db
+        .item_stacks
+        .iter_all()
+        .find(|s| s.inventory_id == goblin_inv && s.kind == ItemKind::Spear)
+        .unwrap();
+    let spear_id = spear_stack.id;
+    let spear_hp_before = spear_stack.current_hp;
+
+    // Attack many times (all should miss).
+    for _ in 0..20 {
+        force_idle(&mut sim, goblin);
+        let tick = sim.tick;
+        sim.step(
+            &[SimCommand {
+                player_name: String::new(),
+                tick: tick + 1,
+                action: SimAction::DebugMeleeAttack {
+                    attacker_id: goblin,
+                    target_id: elf,
+                },
+            }],
+            tick + 1,
+        );
+    }
+
+    // Spear durability should be unchanged.
+    let spear_hp_after = sim.db.item_stacks.get(&spear_id).unwrap().current_hp;
+    assert_eq!(
+        spear_hp_after, spear_hp_before,
+        "weapon should not degrade on miss"
     );
 }
