@@ -16,11 +16,12 @@
 //
 // Attack evasion (F-attack-evasion): both melee and ranged attacks roll a hit
 // check comparing attacker (Striking/Archery + DEX) + quasi-normal noise
-// (stdev ≈ 51) against defender (Evasion + AGI). Equal stats give ~50% hit
-// chance. Exceeding the defender total by `evasion_crit_threshold` (default
-// 100, ≈ 2 stdevs) scores a critical hit for multiplied damage. Misses skip
-// damage entirely but still consume the action cooldown. Successful dodges
-// advance the defender's Evasion skill.
+// (stdev 50, via `elven_canopy_prng::quasi_normal`) against defender
+// (Evasion + AGI). Equal stats give ~50% hit chance. Exceeding the defender
+// total by `evasion_crit_threshold` (default 100, ≈ 2 stdevs) scores a
+// critical hit for multiplied damage. Misses skip damage entirely but still
+// consume the action cooldown. Successful dodges advance the defender's
+// Evasion skill.
 //
 // See also: `projectile.rs` (sub-voxel trajectory math), `preemption.rs`
 // (task priority for combat interruption), `movement.rs` (tactical repositioning).
@@ -42,17 +43,6 @@ pub(crate) enum HitResult {
     CriticalHit,
 }
 
-/// Generate a quasi-normal random value with mean 0 and stdev ≈ 51.
-/// Uses the sum of 12 uniform integer samples in [-25, 25] (central limit
-/// theorem approximation). Always consumes exactly 12 PRNG calls.
-pub(crate) fn quasi_normal_roll(rng: &mut elven_canopy_prng::GameRng) -> i64 {
-    let mut total: i64 = 0;
-    for _ in 0..12 {
-        total += rng.range_i64_inclusive(-25, 25);
-    }
-    total
-}
-
 /// Roll a hit check: attacker (attack_skill + dex) + quasi-normal noise
 /// vs defender (evasion_skill + agi). Returns Miss, Hit, or CriticalHit.
 ///
@@ -60,7 +50,7 @@ pub(crate) fn quasi_normal_roll(rng: &mut elven_canopy_prng::GameRng) -> i64 {
 /// - If attacker_total >= defender_total → Hit
 /// - Otherwise → Miss
 ///
-/// Always consumes exactly 12 PRNG calls (from quasi_normal_roll).
+/// Always consumes exactly 12 PRNG calls (from `quasi_normal`).
 pub(crate) fn roll_hit_check(
     rng: &mut elven_canopy_prng::GameRng,
     attack_skill: i64,
@@ -69,7 +59,7 @@ pub(crate) fn roll_hit_check(
     defender_agi: i64,
     crit_threshold: i64,
 ) -> HitResult {
-    let attacker_total = attack_skill + attacker_dex + quasi_normal_roll(rng);
+    let attacker_total = attack_skill + attacker_dex + elven_canopy_prng::quasi_normal(rng, 50);
     let defender_total = evasion_skill + defender_agi;
     if attacker_total >= defender_total + crit_threshold {
         HitResult::CriticalHit

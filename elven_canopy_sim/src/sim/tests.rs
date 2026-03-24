@@ -19049,7 +19049,7 @@ fn force_guaranteed_hits(sim: &mut SimState, creature_id: CreatureId) {
     use crate::db::CreatureTrait;
     use crate::types::TraitValue;
     // Set Striking and Archery to 500 (huge attack bonus).
-    // With zeroed defender stats, attacker_total = 500 + DEX + quasi_normal_roll.
+    // With zeroed defender stats, attacker_total = 500 + DEX + quasi_normal.
     // Even with DEX=0, min attacker_total = 500 + 0 + (-300) = 200 > 0, so
     // always hits.
     for skill in [TraitKind::Striking, TraitKind::Archery] {
@@ -19582,6 +19582,11 @@ fn armor_reduces_melee_damage() {
     );
     force_idle(&mut sim, goblin);
 
+    // Zero stats for deterministic damage/HP values.
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+    force_guaranteed_hits(&mut sim, goblin);
+
     // Equip full armor on elf (total armor = 9).
     equip_full_armor(&mut sim, elf);
     // Disable degradation to isolate the damage-reduction test.
@@ -19631,6 +19636,11 @@ fn armor_enforces_minimum_damage() {
     );
     force_idle(&mut sim, goblin);
 
+    // Zero stats for deterministic damage/HP values.
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+    force_guaranteed_hits(&mut sim, goblin);
+
     equip_full_armor(&mut sim, elf);
 
     // Reduce goblin damage below total armor (9) to test the floor.
@@ -19679,6 +19689,11 @@ fn no_armor_means_full_damage() {
         VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z),
     );
     force_idle(&mut sim, goblin);
+
+    // Zero stats for deterministic damage/HP values.
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+    force_guaranteed_hits(&mut sim, goblin);
 
     // Unequip any starting equipment the elf might have.
     let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
@@ -19730,6 +19745,11 @@ fn worn_armor_provides_less_protection() {
         VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z),
     );
     force_idle(&mut sim, goblin);
+
+    // Zero stats for deterministic damage/HP values.
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+    force_guaranteed_hits(&mut sim, goblin);
 
     // Unequip all slots first.
     let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
@@ -19815,6 +19835,11 @@ fn damaged_armor_provides_even_less_protection() {
         VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z),
     );
     force_idle(&mut sim, goblin);
+
+    // Zero stats for deterministic damage/HP values.
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+    force_guaranteed_hits(&mut sim, goblin);
 
     // Unequip all slots.
     let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
@@ -20119,6 +20144,11 @@ fn clothing_degrades_from_combat_hit() {
     );
     force_idle(&mut sim, goblin);
 
+    // Zero stats for deterministic hit results.
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+    force_guaranteed_hits(&mut sim, goblin);
+
     // Unequip all slots.
     let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
     for slot in [
@@ -20345,6 +20375,11 @@ fn armor_mixed_condition_pieces_sum_correctly() {
     );
     force_idle(&mut sim, goblin);
 
+    // Zero stats for deterministic damage/HP values.
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+    force_guaranteed_hits(&mut sim, goblin);
+
     // Unequip all.
     let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
     for slot in [
@@ -20480,7 +20515,7 @@ fn armor_reduces_projectile_damage() {
     let mut sim = test_sim(42);
     let elf = spawn_elf(&mut sim);
     // Set target's evasion stats deeply negative so the no-shooter projectile
-    // (0 attack + quasi_normal_roll) always exceeds defender_total and hits.
+    // (0 attack + quasi_normal) always exceeds defender_total and hits.
     // Evasion skill has no row at spawn (default 0), so use insert_no_fk.
     let _ = sim.db.creature_traits.insert_no_fk(CreatureTrait {
         creature_id: elf,
@@ -20647,6 +20682,11 @@ fn armor_melee_incapacitate_with_armor_equipped() {
     );
     force_idle(&mut sim, goblin);
 
+    // Zero stats for deterministic hit results.
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+    force_guaranteed_hits(&mut sim, goblin);
+
     equip_full_armor(&mut sim, elf);
 
     // Set elf HP low enough that a single hit incapacitates even through armor.
@@ -20689,6 +20729,11 @@ fn armor_save_load_roundtrip_preserves_combat() {
         VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z),
     );
     force_idle(&mut sim, goblin);
+
+    // Zero stats for deterministic damage/HP values (before roundtrip so stats persist).
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+    force_guaranteed_hits(&mut sim, goblin);
 
     // Unequip all, equip a worn breastplate.
     let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
@@ -20834,6 +20879,11 @@ fn armor_degradation_targets_hands_slot() {
         VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z),
     );
     force_idle(&mut sim, goblin);
+
+    // Zero stats for deterministic hit results.
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+    force_guaranteed_hits(&mut sim, goblin);
 
     // Unequip all, equip gauntlets (Hands) and breastplate (Torso).
     let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
@@ -21716,9 +21766,25 @@ fn projectile_hits_solid_voxel_and_creates_ground_pile() {
 
 #[test]
 fn projectile_hits_creature_and_deals_damage() {
+    use crate::db::CreatureTrait;
+    use crate::types::TraitValue;
     let mut sim = test_sim(42);
     // Spawn a goblin at a known position.
     let goblin = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, goblin);
+    // Set evasion deeply negative so shooter-less projectile always hits.
+    let _ = sim.db.creature_traits.insert_no_fk(CreatureTrait {
+        creature_id: goblin,
+        trait_kind: TraitKind::Evasion,
+        value: TraitValue::Int(-500),
+    });
+    let _ = sim
+        .db
+        .creature_traits
+        .modify_unchecked(&(goblin, TraitKind::Agility), |t| {
+            t.value = TraitValue::Int(-500);
+        });
+    sim.config.evasion_crit_threshold = 100_000;
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
     let goblin_hp_before = sim.db.creatures.get(&goblin).unwrap().hp;
 
@@ -22154,7 +22220,7 @@ fn projectile_hits_creature_beyond_origin_voxel() {
     // Place a target creature a few voxels away from the origin.
     let target = spawn_species(&mut sim, Species::Elf);
     // Set target's evasion stats deeply negative so the no-shooter projectile
-    // (0 attack + quasi_normal_roll) always exceeds defender_total and hits.
+    // (0 attack + quasi_normal) always exceeds defender_total and hits.
     // Don't use zero_creature_stats to avoid altering walk speed / behavior.
     // Evasion skill has no row at spawn (default 0), so use insert_no_fk.
     let _ = sim.db.creature_traits.insert_no_fk(CreatureTrait {
@@ -34850,6 +34916,8 @@ fn arrow_impact_no_damage_when_min_exceeds_max() {
 /// at a goblin, and return the damage dealt (from the ProjectileHitCreature
 /// event).
 fn fire_arrow_at_goblin_with_hp(seed: u64, arrow_hp: i32) -> i64 {
+    use crate::db::CreatureTrait;
+    use crate::types::TraitValue;
     let mut sim = test_sim(seed);
     sim.config.arrow_gravity = 0;
     sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
@@ -34858,6 +34926,20 @@ fn fire_arrow_at_goblin_with_hp(seed: u64, arrow_hp: i32) -> i64 {
     sim.config.arrow_impact_damage_max = 0;
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, goblin);
+    // Set evasion deeply negative so shooter-less projectile always hits.
+    let _ = sim.db.creature_traits.insert_no_fk(CreatureTrait {
+        creature_id: goblin,
+        trait_kind: TraitKind::Evasion,
+        value: TraitValue::Int(-500),
+    });
+    let _ = sim
+        .db
+        .creature_traits
+        .modify_unchecked(&(goblin, TraitKind::Agility), |t| {
+            t.value = TraitValue::Int(-500);
+        });
+    sim.config.evasion_crit_threshold = 100_000;
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
     let origin = VoxelCoord::new(goblin_pos.x - 10, goblin_pos.y, goblin_pos.z);
     sim.spawn_projectile(origin, goblin_pos, None);
@@ -34929,6 +35011,8 @@ fn damaged_arrow_deals_at_least_one_damage() {
 
 #[test]
 fn indestructible_arrow_deals_full_damage() {
+    use crate::db::CreatureTrait;
+    use crate::types::TraitValue;
     // An arrow with max_hp=0 (indestructible) should deal full damage.
     let mut sim = test_sim(42);
     sim.config.arrow_gravity = 0;
@@ -34941,6 +35025,20 @@ fn indestructible_arrow_deals_full_damage() {
         .remove(&inventory::ItemKind::Arrow);
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, goblin);
+    // Set evasion deeply negative so shooter-less projectile always hits.
+    let _ = sim.db.creature_traits.insert_no_fk(CreatureTrait {
+        creature_id: goblin,
+        trait_kind: TraitKind::Evasion,
+        value: TraitValue::Int(-500),
+    });
+    let _ = sim
+        .db
+        .creature_traits
+        .modify_unchecked(&(goblin, TraitKind::Agility), |t| {
+            t.value = TraitValue::Int(-500);
+        });
+    sim.config.evasion_crit_threshold = 100_000;
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
     let origin = VoxelCoord::new(goblin_pos.x - 10, goblin_pos.y, goblin_pos.z);
     sim.spawn_projectile(origin, goblin_pos, None);
@@ -43402,34 +43500,6 @@ fn shift_click_during_flee_preserves_and_extends_queue() {
 // -----------------------------------------------------------------------
 // Attack evasion / hit-check tests (F-attack-evasion)
 // -----------------------------------------------------------------------
-
-#[test]
-fn test_quasi_normal_roll_distribution() {
-    use crate::sim::combat::quasi_normal_roll;
-    let mut rng = elven_canopy_prng::GameRng::new(123);
-    let n = 100_000;
-    let mut sum: i64 = 0;
-    let mut sum_sq: i64 = 0;
-    let mut min_val: i64 = i64::MAX;
-    let mut max_val: i64 = i64::MIN;
-    for _ in 0..n {
-        let v = quasi_normal_roll(&mut rng);
-        sum += v;
-        sum_sq += v * v;
-        min_val = min_val.min(v);
-        max_val = max_val.max(v);
-    }
-    let mean = sum as f64 / n as f64;
-    let variance = sum_sq as f64 / n as f64 - mean * mean;
-    let stdev = variance.sqrt();
-    // Mean should be near 0 (within ±1).
-    assert!(mean.abs() < 1.0, "mean {mean} too far from 0");
-    // Stdev should be near 51 (within ±3).
-    assert!((stdev - 51.0).abs() < 3.0, "stdev {stdev} too far from 51");
-    // Range bounded by [-300, 300] (12 * 25 = 300).
-    assert!(min_val >= -300, "min {min_val} out of range");
-    assert!(max_val <= 300, "max {max_val} out of range");
-}
 
 #[test]
 fn test_hit_check_equal_stats_about_50_percent() {

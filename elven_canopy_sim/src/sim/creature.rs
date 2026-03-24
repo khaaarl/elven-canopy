@@ -407,8 +407,9 @@ impl SimState {
         }
 
         // Roll creature stats from species-specific distributions.
-        // Uses sum-of-12-uniform-samples for a normal-ish distribution.
-        // Stats are rolled in STAT_TRAIT_KINDS order after visual traits.
+        // Roll stats from a quasi-normal distribution centered on the species
+        // mean with the species stdev. Stats are rolled in STAT_TRAIT_KINDS
+        // order after visual traits.
         // Extract distribution params up front to avoid borrow conflicts.
         let stat_params: Vec<(TraitKind, i64, i64)> = crate::stats::STAT_TRAIT_KINDS
             .iter()
@@ -422,10 +423,7 @@ impl SimState {
             })
             .collect();
         for (stat_kind, mean, stdev) in stat_params {
-            let sum: i64 = (0..12)
-                .map(|_| self.rng.range_i64_inclusive(-stdev, stdev))
-                .sum();
-            let stat_value = mean + sum / 2;
+            let stat_value = mean + elven_canopy_prng::quasi_normal(&mut self.rng, stdev);
             self.insert_trait(creature_id, stat_kind, TraitValue::Int(stat_value));
         }
     }

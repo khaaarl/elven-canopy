@@ -60,6 +60,7 @@ This reduces merge conflicts when parallel work streams add items.
 ```
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
+[ ] B-fragile-tests        Audit and harden tests against PRNG stream shifts and worldgen changes
 [ ] B-qem-deformation      QEM decimation visual artifacts
 [ ] B-start-paused-ui      start_paused_on_load UI desync and missing new-game support
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
@@ -5987,6 +5988,73 @@ maximum performance.
 **Related:** F-multiplayer, F-relay-multi-game
 
 ### Testing Infrastructure
+
+#### B-fragile-tests — Audit and harden tests against PRNG stream shifts and worldgen changes
+**Status:** Todo
+
+Audit and harden sim tests against PRNG stream shifts and worldgen changes.
+
+Many combat and projectile tests are fragile: they rely on specific
+creature stat values produced by a particular PRNG seed, so any change
+to PRNG consumption during worldgen or creature spawn causes cascading
+test failures. These tests pass for the wrong reason — they happen to
+get the right random numbers, not because they've isolated the behavior
+under test.
+
+**Incident 1 (F-attack-evasion, 2026-03-24):** Adding the evasion
+hit-check (12 extra PRNG calls per attack) shifted the PRNG stream,
+breaking 28 combat tests that asserted exact damage values. All 28
+needed `zero_creature_stats` + `force_guaranteed_hits` to make them
+deterministic regardless of PRNG state.
+
+**Incident 2 (quasi-normal-util, 2026-03-24):** Extracting the
+quasi-normal distribution function changed the internal sampling range
+used during creature stat generation (from [-stdev, stdev] to
+[-100M, 100M] with scaling). This shifted the PRNG stream during
+spawn, breaking 14 more combat tests that still depended on the
+specific stat rolls from seed 42. Same fix: zero stats + force hits.
+
+**Incident 3 (leaf density, earlier):** The test_config already pins
+`leaf_density` and `leaf_size` with the comment "Pin leaf config so
+tests don't break when visual defaults change." This was added after
+fruit tests broke when tree growth parameters changed — fruit positions
+depend on leaf voxel positions which depend on tree growth which
+depends on PRNG state. The pin was a targeted fix but the underlying
+pattern (tests depending on specific worldgen output) persists. The
+fruit tests remain fragile — they are merely pinned, not hardened.
+
+**The general problem:** Tests that use `test_sim(42)` inherit a full
+worldgen result — tree shape, creature stats, nav graph, fruit
+positions — and some tests implicitly depend on specific details of
+that worldgen output. When anything upstream in the PRNG stream changes
+(new PRNG calls, different sampling ranges, reordered operations), the
+entire worldgen output shifts and these tests break.
+
+**What "hardened" looks like:**
+- Combat tests should always `zero_creature_stats` on both attacker and
+  defender, then set only the specific stats the test needs. The
+  `force_guaranteed_hits` helper should be used whenever exact damage
+  values are asserted.
+- Tests that assert positions or coordinates should use positions
+  derived from the test setup (e.g., "place creature at X, check
+  result at X+1") not positions inherited from worldgen.
+- Tests that depend on tree shape (fruit positions, nav graph
+  connectivity) should either pin all relevant config parameters or
+  build a minimal test-specific world rather than relying on the
+  cached seed-42 sim's exact tree.
+- No test should break when: (a) a new PRNG call is added anywhere in
+  worldgen/spawn, (b) an existing PRNG sampling range changes, (c)
+  tree growth parameters or algorithms change, (d) species stat
+  distributions change.
+
+**Audit scope:** All tests in `elven_canopy_sim/src/sim/tests.rs` that
+use `test_sim(42)` and make assertions about exact numeric values
+(HP, damage, positions, counts of specific items). The combat tests
+fixed in incidents 1-2 above were hardened against stat-related PRNG
+shifts specifically, but may still be fragile to other worldgen
+changes. Fruit tests (incident 3) were never hardened — only pinned.
+The audit should examine all test categories for remaining fragility,
+not assume any are fully hardened.
 
 #### F-ai-test-harness — Remote game control for AI-driven testing (Puppet)
 **Status:** Todo
