@@ -796,6 +796,14 @@ func _setup_common(bridge: SimBridge) -> void:
 	# Wire smoothing toggle.
 	toolbar.smoothing_toggled.connect(func(enabled: bool): bridge.set_smoothing_enabled(enabled))
 
+	# Wire decimation toggle (near-zero threshold for lossless coplanar merging).
+	toolbar.decimation_toggled.connect(
+		func(enabled: bool):
+			bridge.set_decimation_enabled(enabled)
+			if enabled:
+				bridge.set_decimation_max_error(0.000001)
+	)
+
 	# Wire speed controls.
 	toolbar.speed_changed.connect(
 		func(speed_name: String):

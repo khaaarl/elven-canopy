@@ -13,6 +13,7 @@
 // - `tree_gen.rs`:    Energy-based recursive tree generation (trunk, branches, roots, leaves).
 // - `mesh_gen.rs`:    Chunk-based voxel mesh generation with smooth surface rendering.
 // - `smooth_mesh.rs`: Smooth mesh pipeline: subdivision, anchoring, chamfer, smoothing.
+// - `mesh_decimation.rs`: QEM edge-collapse decimation + coplanar retri + collinear collapse.
 // - `texture_gen.rs`: Procedural face texture generation (kept for reference, not active).
 // - `nav.rs`:         Navigation graph structures + construction from tree geometry.
 // - `flight_pathfinding.rs`: Vanilla A* on voxel grid for flying creatures (26-connected).
@@ -60,6 +61,7 @@ pub mod fruit;
 pub mod inventory;
 pub mod local_relay;
 pub mod lookup_map;
+pub mod mesh_decimation;
 pub mod mesh_gen;
 pub mod nav;
 pub mod pathfinding;

@@ -60,6 +60,7 @@ This reduces merge conflicts when parallel work streams add items.
 ```
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
+[ ] B-qem-deformation      QEM decimation visual artifacts
 [ ] B-start-paused-ui      start_paused_on_load UI desync and missing new-game support
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
@@ -81,6 +82,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-bldg-library         Magic learning building (library/spire)
 [ ] F-bldg-storehouse      Storehouse (item storage)
 [ ] F-blueprint-mode       Layer-based blueprint selection UI
+[ ] F-boundary-decim       Mesh decimation at chunk boundaries
 [ ] F-branch-growth        Grow branches for photosynthesis/fruit
 [ ] F-bridges              Bridge construction between tree parts
 [ ] F-buff-system          Generic timed stat modifier buffs on creatures
@@ -156,7 +158,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mass-conserve        Wood mass tracking and conservation
 [ ] F-megachunk            MegaChunk spatial hierarchy with draw distance and frustum culling
 [ ] F-mesh-cache-lru       LRU cache for chunk meshes at different Y cutoffs
-[ ] F-mesh-lod             Mesh level-of-detail for distant chunks
 [ ] F-mesh-par             Parallel off-main-thread chunk mesh generation with camera-priority
 [ ] F-military-campaign    Send elves on world expeditions
 [ ] F-military-org         Squad management and organization
@@ -368,6 +369,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-manufacturing        Item schema expansion + workshop manufacturing
 [x] F-melee-action         Melee attack action
 [x] F-mesh-gen-rle         RLE-aware chunk mesh generation
+[x] F-mesh-lod             Mesh level-of-detail for distant chunks
 [x] F-military-armor       Military equipment auto-equip and slot validation
 [x] F-military-equip       Military group equipment acquisition
 [x] F-military-groups      Military group data model and configuration
@@ -4034,6 +4036,13 @@ Two related fixes for the ESC menu:
 
 Most gameplay hotkeys (B, T, U, M, I, Y, Space, F1–F3, F12, ?) fire even when Ctrl/Shift/Alt are held. They should generally be suppressed when modifiers are active, but some cases may need individual consideration (e.g., Ctrl+1–9 for selection groups already uses modifiers intentionally). Go through each hotkey handler in action_toolbar.gd, main.gd, construction_controller.gd, and selection_controller.gd on a case-by-case basis.
 
+#### B-qem-deformation — QEM decimation visual artifacts
+**Status:** Todo
+
+Chamfer-only mode: the QEM edge-collapse decimation pass (the third stage after coplanar retri and collinear boundary collapse) produces occasional large visible deformations in rare geometric configurations. These are not subtle — vertices are moved significantly off-plane, creating obvious bumps, dents, or misshapen surfaces. The existing volume-preservation and watertightness tests do not catch them, so the triggering geometry is not yet identified. Only relevant for chamfer-only (non-smooth) rendering. Needs new test shapes that reproduce the issue, then a root-cause fix.
+
+**Related:** F-mesh-lod
+
 #### B-start-paused-ui — start_paused_on_load UI desync and missing new-game support
 **Status:** Todo
 
@@ -4118,6 +4127,23 @@ state so it skips ceiling faces during hit testing.
 **State:** Ephemeral — resets each session, not persisted in save files.
 
 **Related:** F-ghost-above, F-roof-click-select, F-wireframe-ghost, F-zlevel-vis
+
+#### F-boundary-decim — Mesh decimation at chunk boundaries
+**Status:** Todo
+
+Chamfer-only mode: chunk boundary vertices are currently pinned (never decimated) to prevent seams between adjacent chunks. This leaves the boundary as a dense band of original-subdivision triangles while the interior is beautifully simplified — very visible in wireframe mode on hilly terrain. Only relevant for chamfer-only (non-smooth) rendering; if smoothing is enabled, the decimation pipeline is different.
+
+Possible approaches:
+- Cross-chunk coordination: only decimate a boundary vertex if both adjacent chunks agree it's safe. Requires knowing the neighbor chunk's mesh state, which complicates the currently-independent per-chunk pipeline.
+- Collinear-only boundary decimation: allow the collinear boundary collapse pass to operate on chunk-boundary vertices (since it only removes vertices on straight lines between neighbors, this might be safe even without coordination). Keep QEM away from boundary vertices. The collinear pass is deterministic given the same boundary geometry, so both chunks would make the same decision independently.
+- T-junction tolerance: allow T-junctions at chunk boundaries (one side decimated, other not). May cause hairline cracks depending on how Godot handles them. Needs investigation.
+- Expanded border: increase the smooth mesh border so decimation can run on a larger overlapping region, with both chunks producing identical results in the overlap. May be expensive.
+
+Key concern: T-junctions. If one chunk decimates a boundary edge midpoint and the adjacent chunk doesn't, the seam has a T-junction (one side has vertex A-B-C, other side has A-C with B missing). Whether this causes visible cracks depends on float precision at shared vertex positions. Needs testing.
+
+The collinear-only approach seems most promising as a first step — it's local, deterministic, and only merges vertices that are provably on the same line. Even if only midpoints on straight boundary edges are merged, it would significantly reduce the boundary density on flat terrain (floors, walls).
+
+**Related:** F-mesh-lod
 
 #### F-build-queue-ui — Construction queue/progress UI
 **Status:** Todo · **Phase:** 2
@@ -4724,12 +4750,16 @@ F-rle-voxels.
 **Unblocked by:** F-rle-voxels
 
 #### F-mesh-lod — Mesh level-of-detail for distant chunks
-**Status:** Todo
+**Status:** Done
 
-Mesh level-of-detail for distant chunks. Once F-visual-smooth lands (smooth terrain rendering), LOD becomes viable: reduce triangle count for chunks far from the camera by generating coarser meshes (fewer subdivisions, simplified geometry). Multiple LOD tiers — e.g., full detail near camera, half-res at mid distance, quarter-res or billboard at far distance. LOD meshes can be pre-generated and cached alongside the full-detail mesh in the mesh cache, swapped based on camera distance. Pairs with F-megachunk (spatial hierarchy determines which LOD tier to use) and F-distance-fog (fog hides LOD transitions). Cubic voxels don't benefit much from LOD since they're already minimal geometry per face, but smooth surfaces have variable triangle density that can be decimated at distance.
+**Done:** Three-pass mesh decimation pipeline for chamfer-only mode: (1) coplanar region flood-fill with centroid-fan re-triangulation, (2) collinear boundary vertex collapse, (3) QEM edge-collapse with near-zero threshold. Achieves 84-99% triangle reduction on typical shapes while preserving watertightness and volume. Enabled by default. Togglable via debug panel.
+
+**Not done (future work):** Distance-based LOD tiers — generating multiple mesh resolutions per chunk and swapping based on camera distance. This is the actual "level of detail" part. Would use higher QEM error thresholds for distant chunks, but introduces complications: cache management for multiple LOD meshes per chunk, smooth LOD transitions to avoid popping, interaction with the megachunk spatial hierarchy, and the QEM deformation bug (B-qem-deformation) becomes more visible at higher thresholds. The current near-zero-threshold pipeline is a prerequisite (reduces the full-detail mesh) but the multi-tier LOD system is a separate effort.
+
+**Known issues:** QEM pass produces rare large deformations in unidentified geometric configurations (B-qem-deformation, chamfer-only). Chunk boundary vertices are pinned, leaving dense triangle bands at chunk seams (F-boundary-decim, chamfer-only).
 
 **Unblocked by:** F-visual-smooth
-**Related:** F-distance-fog, F-megachunk, F-mesh-cache-lru, F-visual-smooth
+**Related:** B-qem-deformation, F-boundary-decim, F-distance-fog, F-megachunk, F-mesh-cache-lru, F-visual-smooth
 
 #### F-mesh-par — Parallel off-main-thread chunk mesh generation with camera-priority
 **Status:** Todo

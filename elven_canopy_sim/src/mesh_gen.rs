@@ -23,6 +23,12 @@
 // visible through semi-transparent leaves). Leaf uses a procedural noise
 // shader for alpha scissor (no UVs needed).
 //
+// ## Decimation
+//
+// After the smooth mesh pipeline, an optional decimation pass in
+// `mesh_decimation.rs` reduces triangle count via QEM edge-collapse,
+// coplanar region re-triangulation, and collinear vertex collapse.
+//
 // ## RLE-aware iteration
 //
 // The smooth mesh pass iterates all voxels in the chunk + border region. The
@@ -68,6 +74,37 @@ static SMOOTHING_ENABLED: AtomicBool = AtomicBool::new(false);
 /// Global toggle for smooth vs flat normals. When false, each triangle
 /// gets a flat per-face normal instead of smooth area-weighted normals.
 static SMOOTH_NORMALS_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Global toggle for QEM mesh decimation. When enabled, coplanar triangles
+/// are collapsed after chamfer (and optionally smoothing) to reduce triangle
+/// count with minimal visual impact.
+static DECIMATION_ENABLED: AtomicBool = AtomicBool::new(true);
+
+/// Maximum quadric error for mesh decimation. Lower values preserve more
+/// detail; near-zero is lossless for flat-shaded chamfered meshes.
+/// Default: 1e-6 (near-zero, lossless for chamfered meshes).
+static DECIMATION_MAX_ERROR: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0x3586_37BD); // f32::to_bits(1e-6)
+
+/// Enable or disable QEM mesh decimation.
+pub fn set_decimation_enabled(enabled: bool) {
+    DECIMATION_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+/// Returns whether mesh decimation is currently enabled.
+pub fn decimation_enabled() -> bool {
+    DECIMATION_ENABLED.load(Ordering::Relaxed)
+}
+
+/// Set the maximum error threshold for decimation.
+pub fn set_decimation_max_error(max_error: f32) {
+    DECIMATION_MAX_ERROR.store(max_error.to_bits(), Ordering::Relaxed);
+}
+
+/// Returns the current decimation max error threshold.
+pub fn decimation_max_error() -> f32 {
+    f32::from_bits(DECIMATION_MAX_ERROR.load(Ordering::Relaxed))
+}
 
 /// Enable or disable the smoothing pass (chamfer always runs).
 pub fn set_smoothing_enabled(enabled: bool) {
@@ -450,15 +487,18 @@ pub fn generate_chunk_mesh(
         if smoothing_enabled() {
             solid_smooth.smooth();
         }
-
-        // Split into bark, ground, and leaf surfaces, filtering to only
-        // include triangles whose source voxel is within this chunk.
+        // Chunk bounds used for both decimation boundary pinning and output filtering.
         let chunk_min = [base_x, base_y, base_z];
         let chunk_max = [
             base_x + CHUNK_SIZE,
             base_y + CHUNK_SIZE,
             base_z + CHUNK_SIZE,
         ];
+        if decimation_enabled() {
+            solid_smooth.coplanar_region_retri(Some((chunk_min, chunk_max)));
+            solid_smooth.collapse_collinear_boundary_vertices(Some((chunk_min, chunk_max)));
+            solid_smooth.decimate(decimation_max_error(), Some((chunk_min, chunk_max)));
+        }
         let mut surfaces = solid_smooth.to_split_surface_meshes_filtered(chunk_min, chunk_max);
         if let Some(bark) = surfaces.remove(&TAG_BARK) {
             mesh.bark = bark;
@@ -479,7 +519,10 @@ mod tests {
     use super::*;
 
     /// Helper: create a small world (one chunk = 16x16x16) and return it.
+    /// Also disables decimation — mesh_gen tests check exact triangle counts
+    /// from the subdivision pipeline and should not be affected by decimation.
     fn one_chunk_world() -> VoxelWorld {
+        set_decimation_enabled(false);
         VoxelWorld::new(16, 16, 16)
     }
 
@@ -563,6 +606,7 @@ mod tests {
 
     #[test]
     fn chunk_boundary_neighbor_check() {
+        set_decimation_enabled(false);
         // World is 32 voxels wide (2 chunks). Place voxels at chunk boundary.
         let mut world = VoxelWorld::new(32, 16, 16);
         world.set(VoxelCoord::new(15, 8, 8), VoxelType::Trunk); // last voxel in chunk 0
@@ -751,6 +795,7 @@ mod tests {
 
     #[test]
     fn span_clips_to_chunk_y_range() {
+        set_decimation_enabled(false);
         // World with 2 vertical chunks (32 tall). Place a tall column of trunk
         // spanning y=10..25 (crosses the chunk boundary at y=16).
         let mut world = VoxelWorld::new(16, 32, 16);
@@ -774,6 +819,7 @@ mod tests {
 
     #[test]
     fn empty_chunk_in_tall_world() {
+        set_decimation_enabled(false);
         // A tall world where a chunk far above the content is empty.
         let mut world = VoxelWorld::new(16, 128, 16);
         world.set(VoxelCoord::new(8, 0, 8), VoxelType::Trunk);
@@ -807,6 +853,7 @@ mod tests {
     fn world_smaller_than_chunk_skips_out_of_bounds_columns() {
         // World is only 8×16×8 but chunk footprint is 16×16. The 8 columns
         // outside the world in each dimension should be skipped.
+        set_decimation_enabled(false);
         let mut world = VoxelWorld::new(8, 16, 8);
         world.set(VoxelCoord::new(4, 4, 4), VoxelType::Trunk);
         let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None);
@@ -889,6 +936,7 @@ mod tests {
         // code. For two adjacent chunks sharing a boundary at x=16, every
         // vertex that appears in BOTH chunks' output must have IDENTICAL
         // position AND normal (within float epsilon).
+        set_decimation_enabled(false);
         let mut world = VoxelWorld::new(32, 16, 16);
         for x in 0..32 {
             let height = 3 + (x % 3);

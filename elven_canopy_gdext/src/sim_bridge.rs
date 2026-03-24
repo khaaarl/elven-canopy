@@ -5031,6 +5031,29 @@ impl SimBridge {
         elven_canopy_sim::mesh_gen::smoothing_enabled()
     }
 
+    /// Toggle QEM mesh decimation on/off. When enabled, coplanar triangles
+    /// are collapsed to reduce triangle count. Requires a full mesh rebuild.
+    #[func]
+    fn set_decimation_enabled(&mut self, enabled: bool) {
+        elven_canopy_sim::mesh_gen::set_decimation_enabled(enabled);
+        self.rebuild_mesh_cache();
+    }
+
+    /// Returns whether mesh decimation is currently enabled.
+    #[func]
+    fn is_decimation_enabled(&self) -> bool {
+        elven_canopy_sim::mesh_gen::decimation_enabled()
+    }
+
+    /// Set the maximum quadric error threshold for decimation. Lower values
+    /// preserve more detail. Near-zero is lossless for flat-shaded meshes.
+    /// Requires a full mesh rebuild to take effect.
+    #[func]
+    fn set_decimation_max_error(&mut self, max_error: f32) {
+        elven_canopy_sim::mesh_gen::set_decimation_max_error(max_error);
+        self.rebuild_mesh_cache();
+    }
+
     /// Set the mesh memory budget in bytes. Cached chunk meshes beyond this
     /// budget are evicted LRU. Pass 0 for unlimited (no eviction).
     #[func]

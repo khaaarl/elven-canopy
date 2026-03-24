@@ -41,6 +41,7 @@ signal spawn_requested(species_name: String)
 signal action_requested(action_name: String)
 signal speed_changed(speed_name: String)
 signal smoothing_toggled(enabled: bool)
+signal decimation_toggled(enabled: bool)
 
 ## Ordered list of speed names for +/- cycling (excludes Paused).
 const SPEED_ORDER: Array = ["Normal", "Fast", "VeryFast"]
@@ -243,6 +244,11 @@ func _ready() -> void:
 	smooth_button.pressed.connect(_toggle_smoothing.bind(smooth_button))
 	_debug_row.add_child(smooth_button)
 
+	var decimate_button := Button.new()
+	decimate_button.text = "Decimation: ON"
+	decimate_button.pressed.connect(_toggle_decimation.bind(decimate_button))
+	_debug_row.add_child(decimate_button)
+
 	var debug_sep := VSeparator.new()
 	_debug_row.add_child(debug_sep)
 
@@ -348,6 +354,13 @@ func _toggle_smoothing(button: Button) -> void:
 	var new_state := not currently_on
 	button.text = "Smoothing: ON" if new_state else "Smoothing: OFF"
 	smoothing_toggled.emit(new_state)
+
+
+func _toggle_decimation(button: Button) -> void:
+	var currently_on := button.text == "Decimation: ON"
+	var new_state := not currently_on
+	button.text = "Decimation: ON" if new_state else "Decimation: OFF"
+	decimation_toggled.emit(new_state)
 
 
 func _toggle_wireframe(button: Button) -> void:

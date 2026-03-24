@@ -29,6 +29,8 @@
 // See `docs/drafts/visual_smooth.md` for the full design document.
 // See `mesh_gen.rs` for the mesh generation entry point and the
 // `SurfaceMesh` / `ChunkMesh` output types.
+// See `mesh_decimation.rs` for an optional post-pipeline decimation pass
+// (QEM edge-collapse, coplanar retri, collinear collapse).
 
 use std::collections::BTreeMap;
 
@@ -61,7 +63,7 @@ pub struct SmoothVertex {
 /// (1.5, 2, 3) becomes (3, 4, 6). This gives exact comparison for all
 /// positions on the half-integer grid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct VertexKey {
+pub struct VertexKey {
     /// 2x the x coordinate.
     x2: i32,
     /// 2x the y coordinate.
@@ -71,7 +73,7 @@ struct VertexKey {
 }
 
 impl VertexKey {
-    fn from_position(pos: [f32; 3]) -> Self {
+    pub fn from_position(pos: [f32; 3]) -> Self {
         Self {
             x2: (pos[0] * 2.0).round() as i32,
             y2: (pos[1] * 2.0).round() as i32,
@@ -112,7 +114,7 @@ pub struct SmoothMesh {
     /// voxel, regardless of where smoothing moved the vertices.
     pub triangle_voxel_pos: Vec<[i32; 3]>,
     /// Deduplication map: grid position → vertex index.
-    dedup: BTreeMap<VertexKey, u32>,
+    pub dedup: BTreeMap<VertexKey, u32>,
 }
 
 impl Default for SmoothMesh {

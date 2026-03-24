@@ -36,6 +36,7 @@ elven-canopy/
 │       ├── db.rs               # SimDb — tabulosity relational store (38 tables, all entities)
 │       ├── mesh_gen.rs         # Chunk-based voxel mesh generation with smooth surface rendering
 │       ├── smooth_mesh.rs      # Smooth mesh pipeline: subdivision, anchoring, chamfer, smoothing
+│       ├── mesh_decimation.rs  # QEM edge-collapse decimation + coplanar retri + collinear collapse
 │       ├── texture_gen.rs      # Prime-period tiling textures (kept for reference, not active)
 │       ├── nav.rs              # NavGraph, NavNode, NavEdge, graph construction
 │       ├── pathfinding.rs      # A* search over NavGraph
