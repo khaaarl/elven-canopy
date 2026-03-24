@@ -69,6 +69,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-anatomy              DF-style hit location anatomy system
 [ ] F-apprentice           Skill transfer via proximity
 [ ] F-async-sim            Async sim: decouple sim thread from render thread via delta channel
+[ ] F-attack-evasion       Attack accuracy and evasion with quasi-normal hit rolls
 [ ] F-audio-sampled        Sampled vocal syllables from conlang
 [ ] F-audio-vocal          Continuous vocal synthesis
 [ ] F-batch-blueprint      Batch blueprinting with dependency order
@@ -1390,7 +1391,7 @@ unlocks, and failure rate deferred.
 
 **Draft:** docs/drafts/F-creature-skills.md
 
-**Related:** F-apprentice, F-path-core
+**Related:** F-apprentice, F-attack-evasion, F-path-core
 
 #### F-creature-stats — Creature stats (str/agi/dex/con/wil/int/per/cha)
 **Status:** Done
@@ -1414,7 +1415,7 @@ TraitValue::Int in the creature_traits table.
 
 **Draft:** docs/drafts/creature_stats.md
 
-**Related:** F-creature-biology, F-elf-mana-pool, F-per-detection, F-phased-archery
+**Related:** F-attack-evasion, F-creature-biology, F-elf-mana-pool, F-per-detection, F-phased-archery
 
 #### F-elf-assign — Elf-to-building assignment UI
 **Status:** Todo · **Phase:** 3
@@ -2857,6 +2858,21 @@ minimum 1).
 **Branch:** `feature/arrow-damage-scaling`
 
 **Unblocked by:** F-item-durability
+
+#### F-attack-evasion — Attack accuracy and evasion with quasi-normal hit rolls
+**Status:** Todo · **Phase:** 3
+
+Attack accuracy and evasion using quasi-normal hit rolls. Attacker
+rolls (attacking skill + DEX) + quasi-normal random (stdev ~50) against
+defender (Evasion skill + AGI). Equal stats → ~50% hit chance. If roll
+exceeds defender total by 100+ (≈2 stdev, ~2.3%), critical hit deals
+double damage. Uses sum of 12 uniform integer samples in [-25,25] for
+deterministic quasi-normal distribution. Melee uses Striking + DEX vs
+Evasion + AGI. Ranged applies this check only after the existing
+projectile-hit check passes (arrow can miss physically OR be evaded).
+Stacks with existing armor damage reduction.
+
+**Related:** F-creature-skills, F-creature-stats
 
 #### F-attack-move — Attack-move task (walk + fight en route)
 **Status:** Done
