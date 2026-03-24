@@ -1288,15 +1288,25 @@ pub struct ComponentRecipeConfig {
     #[serde(default = "default_sew_leggings_output")]
     pub sew_leggings_output: u32,
 
-    /// Sew boots: cloth → pair of boots. Work ticks.
-    #[serde(default = "default_sew_boots_work_ticks")]
-    pub sew_boots_work_ticks: u64,
-    /// Sew boots: units of cloth consumed.
-    #[serde(default = "default_sew_boots_input")]
-    pub sew_boots_input: u32,
-    /// Sew boots: pairs of boots produced.
-    #[serde(default = "default_sew_boots_output")]
-    pub sew_boots_output: u32,
+    /// Sew sandals: cloth → pair of sandals. Work ticks.
+    #[serde(default = "default_sew_sandals_work_ticks")]
+    pub sew_sandals_work_ticks: u64,
+    /// Sew sandals: units of cloth consumed.
+    #[serde(default = "default_sew_sandals_input")]
+    pub sew_sandals_input: u32,
+    /// Sew sandals: pairs of sandals produced.
+    #[serde(default = "default_sew_sandals_output")]
+    pub sew_sandals_output: u32,
+
+    /// Sew shoes: cloth → pair of shoes. Work ticks.
+    #[serde(default = "default_sew_shoes_work_ticks")]
+    pub sew_shoes_work_ticks: u64,
+    /// Sew shoes: units of cloth consumed.
+    #[serde(default = "default_sew_shoes_input")]
+    pub sew_shoes_input: u32,
+    /// Sew shoes: pairs of shoes produced.
+    #[serde(default = "default_sew_shoes_output")]
+    pub sew_shoes_output: u32,
 
     /// Sew hat: cloth → hat. Work ticks.
     #[serde(default = "default_sew_hat_work_ticks")]
@@ -1359,9 +1369,12 @@ impl Default for ComponentRecipeConfig {
             sew_leggings_work_ticks: default_sew_leggings_work_ticks(),
             sew_leggings_input: default_sew_leggings_input(),
             sew_leggings_output: default_sew_leggings_output(),
-            sew_boots_work_ticks: default_sew_boots_work_ticks(),
-            sew_boots_input: default_sew_boots_input(),
-            sew_boots_output: default_sew_boots_output(),
+            sew_sandals_work_ticks: default_sew_sandals_work_ticks(),
+            sew_sandals_input: default_sew_sandals_input(),
+            sew_sandals_output: default_sew_sandals_output(),
+            sew_shoes_work_ticks: default_sew_shoes_work_ticks(),
+            sew_shoes_input: default_sew_shoes_input(),
+            sew_shoes_output: default_sew_shoes_output(),
             sew_hat_work_ticks: default_sew_hat_work_ticks(),
             sew_hat_input: default_sew_hat_input(),
             sew_hat_output: default_sew_hat_output(),
@@ -1565,13 +1578,22 @@ fn default_sew_leggings_input() -> u32 {
 fn default_sew_leggings_output() -> u32 {
     1
 }
-fn default_sew_boots_work_ticks() -> u64 {
+fn default_sew_sandals_work_ticks() -> u64 {
+    3000
+}
+fn default_sew_sandals_input() -> u32 {
+    1
+}
+fn default_sew_sandals_output() -> u32 {
+    1
+}
+fn default_sew_shoes_work_ticks() -> u64 {
     5000
 }
-fn default_sew_boots_input() -> u32 {
+fn default_sew_shoes_input() -> u32 {
     2
 }
-fn default_sew_boots_output() -> u32 {
+fn default_sew_shoes_output() -> u32 {
     1
 }
 fn default_sew_hat_work_ticks() -> u64 {
@@ -1696,10 +1718,13 @@ fn default_item_durability() -> BTreeMap<ItemKind, i32> {
         (ItemKind::Breastplate, 60),
         (ItemKind::Greaves, 40),
         (ItemKind::Gauntlets, 30),
+        // Boots (armor) — same durability tier as other armor.
+        (ItemKind::Boots, 30),
         // Clothing — moderate durability.
         (ItemKind::Tunic, 30),
         (ItemKind::Leggings, 25),
-        (ItemKind::Boots, 20),
+        (ItemKind::Sandals, 15),
+        (ItemKind::Shoes, 20),
         (ItemKind::Hat, 20),
         (ItemKind::Gloves, 15),
     ])
@@ -2418,8 +2443,8 @@ fn default_elf_default_wants() -> Vec<crate::building::LogisticsWant> {
             target_quantity: 1,
         },
         LogisticsWant {
-            item_kind: ItemKind::Boots,
-            material_filter: MaterialFilter::NonWood,
+            item_kind: ItemKind::Shoes,
+            material_filter: MaterialFilter::Any,
             target_quantity: 1,
         },
         LogisticsWant {
@@ -3222,7 +3247,7 @@ impl Default for GameConfig {
                 },
                 InitialGroundPileSpec {
                     position: VoxelCoord::new(512, 51, 522),
-                    item_kind: ItemKind::Boots,
+                    item_kind: ItemKind::Shoes,
                     quantity: 2,
                     material: None,
                     dye_color: None,

@@ -2182,6 +2182,8 @@ impl SimBridge {
             "Tunic" => Some(ItemKind::Tunic),
             "Leggings" => Some(ItemKind::Leggings),
             "Boots" => Some(ItemKind::Boots),
+            "Sandals" => Some(ItemKind::Sandals),
+            "Shoes" => Some(ItemKind::Shoes),
             "Hat" => Some(ItemKind::Hat),
             "Helmet" => Some(ItemKind::Helmet),
             "Breastplate" => Some(ItemKind::Breastplate),
@@ -2344,6 +2346,8 @@ impl SimBridge {
             ItemKind::Tunic,
             ItemKind::Leggings,
             ItemKind::Boots,
+            ItemKind::Sandals,
+            ItemKind::Shoes,
             ItemKind::Hat,
             ItemKind::Helmet,
             ItemKind::Breastplate,
@@ -2396,6 +2400,8 @@ impl SimBridge {
             "Tunic" => ItemKind::Tunic,
             "Leggings" => ItemKind::Leggings,
             "Boots" => ItemKind::Boots,
+            "Sandals" => ItemKind::Sandals,
+            "Shoes" => ItemKind::Shoes,
             "Hat" => ItemKind::Hat,
             "Helmet" => ItemKind::Helmet,
             "Breastplate" => ItemKind::Breastplate,
@@ -2433,7 +2439,8 @@ impl SimBridge {
             | ItemKind::Cloth
             | ItemKind::Tunic
             | ItemKind::Leggings
-            | ItemKind::Boots
+            | ItemKind::Sandals
+            | ItemKind::Shoes
             | ItemKind::Hat
             | ItemKind::Gloves
             | ItemKind::Dye => {
@@ -2456,6 +2463,7 @@ impl SimBridge {
             | ItemKind::Breastplate
             | ItemKind::Greaves
             | ItemKind::Gauntlets
+            | ItemKind::Boots
             | ItemKind::Spear
             | ItemKind::Club => {
                 // Add each wood material.

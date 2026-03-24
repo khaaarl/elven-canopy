@@ -1,7 +1,7 @@
 // Parameterized recipe templates for the crafting system.
 //
 // Key types:
-// - `Recipe` — fixed enum (23 variants), each a recipe template.
+// - `Recipe` — fixed enum (24 active variants), each a recipe template.
 // - `RecipeParams` — parameter bindings (currently just material).
 // - `ResolvedRecipe` — concrete inputs/outputs from `Recipe::resolve()`.
 // - `RecipeVerb` — verb enum used for UI grouping via `Recipe::verb()`.
@@ -98,8 +98,7 @@ pub enum Recipe {
     SewTunic = 9,
     /// Cloth → Leggings.
     SewLeggings = 10,
-    /// Cloth → Boots.
-    SewBoots = 11,
+    // 11 = reserved (was SewBoots, now split into SewSandals + SewShoes)
     /// Cloth → Hat.
     SewHat = 12,
     /// Cloth → Gloves.
@@ -124,12 +123,16 @@ pub enum Recipe {
     GrowSpear = 21,
     /// (no input) → Club.
     GrowClub = 22,
+    /// Cloth → Sandals (light civilian footwear).
+    SewSandals = 23,
+    /// Cloth → Shoes (standard civilian footwear).
+    SewShoes = 24,
     // Future: DyeTunic, DyeLeggings, etc. (F-dye-application)
     // Future: MixDye (F-dye-mixing)
 }
 
 /// All Recipe variants in definition order.
-pub const ALL_RECIPES: [Recipe; 23] = [
+pub const ALL_RECIPES: [Recipe; 24] = [
     Recipe::Extract,
     Recipe::Mill,
     Recipe::Bake,
@@ -141,7 +144,8 @@ pub const ALL_RECIPES: [Recipe; 23] = [
     Recipe::AssembleCordBowstring,
     Recipe::SewTunic,
     Recipe::SewLeggings,
-    Recipe::SewBoots,
+    Recipe::SewSandals,
+    Recipe::SewShoes,
     Recipe::SewHat,
     Recipe::SewGloves,
     Recipe::GrowBow,
@@ -223,7 +227,8 @@ impl Recipe {
             | Recipe::AssembleThreadBowstring
             | Recipe::SewTunic
             | Recipe::SewLeggings
-            | Recipe::SewBoots
+            | Recipe::SewSandals
+            | Recipe::SewShoes
             | Recipe::SewHat
             | Recipe::SewGloves => fruit_species
                 .iter()
@@ -507,7 +512,10 @@ impl Recipe {
             Recipe::SewLeggings => {
                 self.resolve_sew(material, fruit_species, config, ItemKind::Leggings)
             }
-            Recipe::SewBoots => self.resolve_sew(material, fruit_species, config, ItemKind::Boots),
+            Recipe::SewSandals => {
+                self.resolve_sew(material, fruit_species, config, ItemKind::Sandals)
+            }
+            Recipe::SewShoes => self.resolve_sew(material, fruit_species, config, ItemKind::Shoes),
             Recipe::SewHat => self.resolve_sew(material, fruit_species, config, ItemKind::Hat),
             Recipe::SewGloves => {
                 self.resolve_sew(material, fruit_species, config, ItemKind::Gloves)
@@ -612,7 +620,8 @@ impl Recipe {
             Recipe::AssembleCordBowstring => format!("{mat_name} Cord Bowstring"),
             Recipe::SewTunic => format!("Sew {mat_name} Tunic"),
             Recipe::SewLeggings => format!("Sew {mat_name} Leggings"),
-            Recipe::SewBoots => format!("Sew {mat_name} Boots"),
+            Recipe::SewSandals => format!("Sew {mat_name} Sandals"),
+            Recipe::SewShoes => format!("Sew {mat_name} Shoes"),
             Recipe::SewHat => format!("Sew {mat_name} Hat"),
             Recipe::SewGloves => format!("Sew {mat_name} Gloves"),
             Recipe::GrowBow => format!("Grow {mat_name} Bow"),
@@ -642,7 +651,8 @@ impl Recipe {
             }
             Recipe::SewTunic
             | Recipe::SewLeggings
-            | Recipe::SewBoots
+            | Recipe::SewSandals
+            | Recipe::SewShoes
             | Recipe::SewHat
             | Recipe::SewGloves => vec!["Processing", "Tailoring"],
             Recipe::GrowBow | Recipe::GrowArrow | Recipe::GrowSpear | Recipe::GrowClub => {
@@ -669,7 +679,8 @@ impl Recipe {
             | Recipe::AssembleCordBowstring
             | Recipe::SewTunic
             | Recipe::SewLeggings
-            | Recipe::SewBoots
+            | Recipe::SewSandals
+            | Recipe::SewShoes
             | Recipe::SewHat
             | Recipe::SewGloves
             | Recipe::GrowBow
@@ -697,7 +708,8 @@ impl Recipe {
             Recipe::AssembleThreadBowstring | Recipe::AssembleCordBowstring => RecipeVerb::Assemble,
             Recipe::SewTunic
             | Recipe::SewLeggings
-            | Recipe::SewBoots
+            | Recipe::SewSandals
+            | Recipe::SewShoes
             | Recipe::SewHat
             | Recipe::SewGloves => RecipeVerb::Sew,
             Recipe::GrowBow
@@ -878,10 +890,15 @@ impl Recipe {
                     cr.sew_leggings_output,
                     cr.sew_leggings_work_ticks,
                 ),
-                ItemKind::Boots => (
-                    cr.sew_boots_input,
-                    cr.sew_boots_output,
-                    cr.sew_boots_work_ticks,
+                ItemKind::Sandals => (
+                    cr.sew_sandals_input,
+                    cr.sew_sandals_output,
+                    cr.sew_sandals_work_ticks,
+                ),
+                ItemKind::Shoes => (
+                    cr.sew_shoes_input,
+                    cr.sew_shoes_output,
+                    cr.sew_shoes_work_ticks,
                 ),
                 ItemKind::Hat => (cr.sew_hat_input, cr.sew_hat_output, cr.sew_hat_work_ticks),
                 ItemKind::Gloves => (
@@ -1418,7 +1435,8 @@ mod recipe_enum_tests {
         for (recipe, expected_kind) in [
             (Recipe::SewTunic, ItemKind::Tunic),
             (Recipe::SewLeggings, ItemKind::Leggings),
-            (Recipe::SewBoots, ItemKind::Boots),
+            (Recipe::SewSandals, ItemKind::Sandals),
+            (Recipe::SewShoes, ItemKind::Shoes),
             (Recipe::SewHat, ItemKind::Hat),
             (Recipe::SewGloves, ItemKind::Gloves),
         ] {

@@ -29582,9 +29582,9 @@ fn clothing_wants_in_default_config() {
     let has_leggings = wants
         .iter()
         .any(|w| w.item_kind == inventory::ItemKind::Leggings);
-    let has_boots = wants
+    let has_shoes = wants
         .iter()
-        .any(|w| w.item_kind == inventory::ItemKind::Boots);
+        .any(|w| w.item_kind == inventory::ItemKind::Shoes);
     let has_hat = wants
         .iter()
         .any(|w| w.item_kind == inventory::ItemKind::Hat);
@@ -29593,19 +29593,20 @@ fn clothing_wants_in_default_config() {
         .any(|w| w.item_kind == inventory::ItemKind::Gloves);
     assert!(has_tunic, "Should want Tunic");
     assert!(has_leggings, "Should want Leggings");
-    assert!(has_boots, "Should want Boots");
+    assert!(has_shoes, "Should want Shoes");
     assert!(has_hat, "Should want Hat");
     assert!(has_gloves, "Should want Gloves");
 
-    // Boots want should use NonWood filter so elves avoid wood boots (armor).
-    let boots_want = wants
+    // Shoes want uses Any filter — no need for NonWood workaround since
+    // boots are now a separate armor-only item kind.
+    let shoes_want = wants
         .iter()
-        .find(|w| w.item_kind == inventory::ItemKind::Boots)
+        .find(|w| w.item_kind == inventory::ItemKind::Shoes)
         .unwrap();
     assert_eq!(
-        boots_want.material_filter,
-        inventory::MaterialFilter::NonWood,
-        "Boots want should use NonWood filter to avoid picking up armor"
+        shoes_want.material_filter,
+        inventory::MaterialFilter::Any,
+        "Shoes want should use Any filter"
     );
 }
 
@@ -30153,23 +30154,21 @@ fn shoot_arrow_hostile_in_path_does_not_block() {
 }
 
 #[test]
-fn elf_does_not_acquire_wood_boots_as_clothing() {
-    // Wood boots are armor, not clothing. Elves seeking boots should
-    // skip them (NonWood filter on the Boots want).
+fn elf_wanting_shoes_ignores_boots() {
+    // Boots and Shoes are distinct item kinds. An elf wanting Shoes
+    // should not pick up Boots (which are armor, not clothing).
     let mut sim = test_sim(42);
 
-    // Set up elf wants: only boots, NonWood filter.
     sim.config.elf_default_wants = vec![crate::building::LogisticsWant {
-        item_kind: inventory::ItemKind::Boots,
-        material_filter: inventory::MaterialFilter::NonWood,
+        item_kind: inventory::ItemKind::Shoes,
+        material_filter: inventory::MaterialFilter::Any,
         target_quantity: 1,
     }];
     sim.config.elf_starting_bread = 0;
 
-    // Spawn elf (gets wants from config).
     let elf_id = spawn_elf(&mut sim);
 
-    // Place wood boots on the ground near the tree.
+    // Place armor boots on the ground near the tree.
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x + 1, 1, tree_pos.z);
     let pile_id = sim.ensure_ground_pile(pile_pos);
@@ -30186,32 +30185,31 @@ fn elf_does_not_acquire_wood_boots_as_clothing() {
         None,
     );
 
-    // Run heartbeat — elf should NOT create an AcquireItem task for
-    // wood boots because the NonWood filter rejects them.
+    // Elf wants Shoes, only Boots available — should not acquire.
     sim.check_creature_wants(elf_id);
 
     let creature = sim.db.creatures.get(&elf_id).unwrap();
     assert!(
         creature.current_task.is_none(),
-        "Elf should not acquire wood boots (armor) as clothing"
+        "Elf should not acquire Boots when wanting Shoes"
     );
 }
 
 #[test]
-fn elf_acquires_non_wood_boots_as_clothing() {
-    // Non-wood boots (e.g., fruit-material) are clothing, not armor.
+fn elf_acquires_shoes_as_clothing() {
+    // Shoes are clothing — elves wanting shoes should pick them up.
     let mut sim = test_sim(42);
 
     sim.config.elf_default_wants = vec![crate::building::LogisticsWant {
-        item_kind: inventory::ItemKind::Boots,
-        material_filter: inventory::MaterialFilter::NonWood,
+        item_kind: inventory::ItemKind::Shoes,
+        material_filter: inventory::MaterialFilter::Any,
         target_quantity: 1,
     }];
     sim.config.elf_starting_bread = 0;
 
     let elf_id = spawn_elf(&mut sim);
 
-    // Place fruit-material boots on the ground.
+    // Place shoes on the ground.
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x + 1, 1, tree_pos.z);
     let pile_id = sim.ensure_ground_pile(pile_pos);
@@ -30219,7 +30217,7 @@ fn elf_acquires_non_wood_boots_as_clothing() {
     let fruit_mat = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(0));
     sim.inv_add_item(
         pile_inv,
-        inventory::ItemKind::Boots,
+        inventory::ItemKind::Shoes,
         1,
         None,
         None,
@@ -30229,14 +30227,13 @@ fn elf_acquires_non_wood_boots_as_clothing() {
         None,
     );
 
-    // Run heartbeat — elf should create an AcquireItem task for
-    // fruit-material boots (passes NonWood filter).
+    // Run heartbeat — elf should create an AcquireItem task for shoes.
     sim.check_creature_wants(elf_id);
 
     let creature = sim.db.creatures.get(&elf_id).unwrap();
     assert!(
         creature.current_task.is_some(),
-        "Elf should acquire non-wood boots as clothing"
+        "Elf should acquire shoes as clothing"
     );
 }
 
@@ -38876,6 +38873,107 @@ fn recipe_grow_weapons_serde_roundtrip() {
         serde_json::to_string(&Recipe::GrowClub).unwrap(),
         "\"GrowClub\""
     );
+}
+
+// -----------------------------------------------------------------------
+// Footwear split (F-footwear-split)
+// -----------------------------------------------------------------------
+
+/// Sandals and Shoes ItemKind serde roundtrip.
+#[test]
+fn item_kind_sandals_shoes_serde_roundtrip() {
+    for kind in [ItemKind::Sandals, ItemKind::Shoes] {
+        let json = serde_json::to_string(&kind).unwrap();
+        let restored: ItemKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(kind, restored, "roundtrip failed for {json}");
+    }
+    // Verify exact serialization names (discriminant stability).
+    assert_eq!(
+        serde_json::to_string(&ItemKind::Sandals).unwrap(),
+        "\"Sandals\""
+    );
+    assert_eq!(
+        serde_json::to_string(&ItemKind::Shoes).unwrap(),
+        "\"Shoes\""
+    );
+}
+
+/// SewSandals and SewShoes recipe serde roundtrip.
+#[test]
+fn recipe_sew_footwear_serde_roundtrip() {
+    for recipe in [Recipe::SewSandals, Recipe::SewShoes] {
+        let json = serde_json::to_string(&recipe).unwrap();
+        let restored: Recipe = serde_json::from_str(&json).unwrap();
+        assert_eq!(recipe, restored, "roundtrip failed for {json}");
+    }
+    assert_eq!(
+        serde_json::to_string(&Recipe::SewSandals).unwrap(),
+        "\"SewSandals\""
+    );
+    assert_eq!(
+        serde_json::to_string(&Recipe::SewShoes).unwrap(),
+        "\"SewShoes\""
+    );
+}
+
+/// SewSandals resolves with correct config values (1 cloth, 3000 ticks).
+#[test]
+fn sew_sandals_recipe_resolve() {
+    let config = crate::config::GameConfig::default();
+    let mut sim = test_sim(42);
+    let species_id = insert_full_chain_fruit_species(&mut sim);
+    let species: Vec<_> = sim.db.fruit_species.iter_all().cloned().collect();
+    let params = crate::recipe::RecipeParams {
+        material: Some(inventory::Material::FruitSpecies(species_id)),
+    };
+    let resolved = Recipe::SewSandals
+        .resolve(&params, &config, &species)
+        .expect("SewSandals should resolve");
+    assert_eq!(resolved.inputs[0].item_kind, inventory::ItemKind::Cloth);
+    assert_eq!(
+        resolved.inputs[0].quantity,
+        config.component_recipes.sew_sandals_input
+    );
+    assert_eq!(resolved.outputs[0].item_kind, inventory::ItemKind::Sandals);
+    assert_eq!(
+        resolved.work_ticks,
+        config.component_recipes.sew_sandals_work_ticks
+    );
+}
+
+/// SewShoes resolves with correct config values (2 cloth, 5000 ticks).
+#[test]
+fn sew_shoes_recipe_resolve() {
+    let config = crate::config::GameConfig::default();
+    let mut sim = test_sim(42);
+    let species_id = insert_full_chain_fruit_species(&mut sim);
+    let species: Vec<_> = sim.db.fruit_species.iter_all().cloned().collect();
+    let params = crate::recipe::RecipeParams {
+        material: Some(inventory::Material::FruitSpecies(species_id)),
+    };
+    let resolved = Recipe::SewShoes
+        .resolve(&params, &config, &species)
+        .expect("SewShoes should resolve");
+    assert_eq!(resolved.inputs[0].item_kind, inventory::ItemKind::Cloth);
+    assert_eq!(
+        resolved.inputs[0].quantity,
+        config.component_recipes.sew_shoes_input
+    );
+    assert_eq!(resolved.outputs[0].item_kind, inventory::ItemKind::Shoes);
+    assert_eq!(
+        resolved.work_ticks,
+        config.component_recipes.sew_shoes_work_ticks
+    );
+}
+
+/// Default durability for all three footwear types.
+#[test]
+fn footwear_durability_defaults() {
+    let config = crate::config::GameConfig::default();
+    let dur = &config.item_durability;
+    assert_eq!(dur[&ItemKind::Sandals], 15, "Sandals should have 15 HP");
+    assert_eq!(dur[&ItemKind::Shoes], 20, "Shoes should have 20 HP");
+    assert_eq!(dur[&ItemKind::Boots], 30, "Boots (armor) should have 30 HP");
 }
 
 /// When a weapon breaks (reaches 0 HP), the next melee strike should fall

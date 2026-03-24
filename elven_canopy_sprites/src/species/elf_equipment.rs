@@ -6,7 +6,9 @@
 // and shading uses `darken()`/`lighten()` — no hard-coded palettes.
 //
 // Clothing and armor for the same slot look visually distinct: clothing is
-// simple and soft, armor is bulkier with metallic highlights. Draw order is
+// simple and soft, armor is bulkier with highlights. Footwear has three
+// tiers: sandals (minimal straps), shoes (closed but short), boots (chunky
+// armor). Draw order is
 // managed by `create_creature_sprite` in `elf.rs` — this module just draws
 // individual pieces.
 //
@@ -28,6 +30,8 @@ pub fn draw_equipment(buf: &mut PixelBuffer, kind: ItemKind, color: Color) {
         ItemKind::Breastplate => draw_breastplate(buf, color),
         ItemKind::Leggings => draw_leggings(buf, color),
         ItemKind::Greaves => draw_greaves(buf, color),
+        ItemKind::Sandals => draw_sandals(buf, color),
+        ItemKind::Shoes => draw_shoes(buf, color),
         ItemKind::Boots => draw_boots(buf, color),
         ItemKind::Gloves => draw_gloves(buf, color),
         ItemKind::Gauntlets => draw_gauntlets(buf, color),
@@ -144,7 +148,35 @@ fn draw_greaves(buf: &mut PixelBuffer, color: Color) {
 // Feet slot
 // ---------------------------------------------------------------------------
 
-/// Chunky boots in the given color.
+/// Light sandals — just a sole and a strap across the top.
+fn draw_sandals(buf: &mut PixelBuffer, color: Color) {
+    let dark = color.darken(0.15);
+    let foot_y = 46;
+    // Thin sole under each foot.
+    buf.draw_hline(CX - 5, CX - 1, foot_y, color);
+    buf.draw_hline(CX + 1, CX + 5, foot_y, color);
+    // Darkened bottom edge.
+    buf.draw_hline(CX - 5, CX - 1, foot_y + 1, dark);
+    buf.draw_hline(CX + 1, CX + 5, foot_y + 1, dark);
+    // Single strap across each foot.
+    buf.draw_hline(CX - 5, CX - 1, foot_y - 1, color);
+    buf.draw_hline(CX + 1, CX + 5, foot_y - 1, color);
+}
+
+/// Closed shoes covering the foot, shorter than boots.
+fn draw_shoes(buf: &mut PixelBuffer, color: Color) {
+    let dark = color.darken(0.15);
+    let shoe_top = 45;
+    // Left shoe — 3 rows high (shorter than boots' 5).
+    buf.draw_rect(CX - 5, shoe_top, 5, 3, color);
+    // Right shoe.
+    buf.draw_rect(CX + 1, shoe_top, 5, 3, color);
+    // Darkened sole at bottom row.
+    buf.draw_hline(CX - 5, CX - 1, shoe_top + 2, dark);
+    buf.draw_hline(CX + 1, CX + 5, shoe_top + 2, dark);
+}
+
+/// Chunky boots in the given color (armor piece).
 fn draw_boots(buf: &mut PixelBuffer, color: Color) {
     let dark = color.darken(0.15);
     let boot_top = 43;
@@ -189,14 +221,16 @@ mod tests {
 
     const TEST_COLOR: Color = Color::rgb(0.6, 0.3, 0.2);
 
-    /// All 9 equippable item kinds, used to verify each draws pixels.
-    const EQUIPPABLE_KINDS: [ItemKind; 9] = [
+    /// All 11 equippable item kinds, used to verify each draws pixels.
+    const EQUIPPABLE_KINDS: [ItemKind; 11] = [
         ItemKind::Hat,
         ItemKind::Helmet,
         ItemKind::Tunic,
         ItemKind::Breastplate,
         ItemKind::Leggings,
         ItemKind::Greaves,
+        ItemKind::Sandals,
+        ItemKind::Shoes,
         ItemKind::Boots,
         ItemKind::Gloves,
         ItemKind::Gauntlets,

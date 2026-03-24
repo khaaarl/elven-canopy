@@ -129,7 +129,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fog-of-war           Visibility via tree and root network
 [ ] F-follow-multi         Camera zoom-to and follow for multi-selections
 [ ] F-food-chain           Food production/distribution pipeline
-[ ] F-footwear-split       Sandals/shoes as footwear, boots as armor
 [ ] F-forest-ecology       Forest floor ecology (flora, fauna, foraging)
 [ ] F-forest-radar         Forest awareness radar (world map detection)
 [ ] F-fruit-pigments       More natural fruit pigment colors (secondaries on fruit parts)
@@ -242,6 +241,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-vaelith-expand       Expand Vaelith language for runtime use
 [ ] F-vertical-garden      Vertical gardens on the tree
 [ ] F-voxel-ao             Per-vertex ambient occlusion baked into chunk meshes
+[ ] F-want-categories      Categorical want specifications (any footwear, any melee weapon)
 [ ] F-war-magic            War magic (combat spells)
 [ ] F-weather              Weather within seasons
 [ ] F-winged-elf           Winged elf species variant with flight-only movement
@@ -330,6 +330,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-flying-nav           3D flight nav for 1×1 flying creatures (vanilla A*)
 [x] F-flying-nav-big       3D flight nav for 2×2×2 flying creatures
 [x] F-food-gauge           Creature food gauge with decay
+[x] F-footwear-split       Sandals/shoes as footwear, boots as armor
 [x] F-friendly-fire        Friendly-fire avoidance for ranged attacks
 [x] F-fruit-extraction     Fruit extraction (hulling/separation into components)
 [x] F-fruit-naming         Fruit naming overhaul
@@ -1873,14 +1874,14 @@ creation, building input/output slots, and elf decision-making.
 **Related:** F-bldg-dining, F-bldg-kitchen, F-bldg-storehouse, F-bread, F-fruit-extraction, F-fruit-prod, F-fruit-variety, F-hauling, F-logistics, F-recipes
 
 #### F-footwear-split — Sandals/shoes as footwear, boots as armor
-**Status:** Todo
+**Status:** Done
 
 Split footwear into civilian (sandals, shoes) and military (boots as armor).
 Sandals and shoes are normal clothing items; boots become explicitly an
 armor piece that provides protection at the cost of comfort or speed.
 Requires updates to equipment slots and item definitions.
 
-**Related:** F-armor, F-clothing
+**Related:** F-armor, F-clothing, F-want-categories
 
 #### F-fruit-extraction — Fruit extraction (hulling/separation into components)
 **Status:** Done · **Phase:** 7
@@ -2401,6 +2402,23 @@ F-greenhouse-revamp (enclosed building) — these are open-air, integrated
 into the tree's living surface.
 
 **Related:** F-fruit-prod, F-greenhouse-revamp
+
+#### F-want-categories — Categorical want specifications (any footwear, any melee weapon)
+**Status:** Todo
+
+Allow logistics wants to specify item categories instead of exact ItemKind
+values. For example, "any civilian footwear" (Sandals or Shoes), "any melee
+weapon" (Spear or Club), "any armor piece", etc. Currently each want must
+name a specific ItemKind, which means the default wants hard-code Shoes
+rather than expressing "I want some kind of footwear." A categorical want
+would let creatures pick up whichever matching item is available, making the
+system more flexible and reducing the need to update wants when new item
+variants are added.
+
+Change the default elf wants to use categorical specifications where
+appropriate (e.g., "any civilian footwear" instead of "Shoes").
+
+**Related:** F-footwear-split
 
 #### F-wood-stats — Wood-type material variation for crafted items
 **Status:** Todo

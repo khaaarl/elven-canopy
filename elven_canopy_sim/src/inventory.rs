@@ -3,9 +3,8 @@
 // Provides `ItemKind` (the enum of distinct item types: Bread, Fruit, Bow,
 // Arrow, Bowstring, extracted fruit components — Pulp, Husk, Seed,
 // FruitFiber, FruitSap, FruitResin — processed products — Flour, Thread,
-// Cord, Cloth, Dye — clothing — Tunic, Leggings, Hat, Gloves — armor —
-// Helmet, Breastplate, Greaves, Gauntlets — and Boots, which are both
-// clothing and armor depending on material),
+// Cord, Cloth, Dye — clothing — Tunic, Leggings, Sandals, Shoes, Hat,
+// Gloves — armor — Helmet, Breastplate, Greaves, Gauntlets, Boots),
 // `Material` (wood species for crafted items, `FruitSpecies` for
 // fruits, extracted components, and processed products),
 // `MaterialFilter` (logistics want constraint: `Any` or `Specific(Material)`),
@@ -68,7 +67,7 @@ pub enum ItemKind {
     Tunic = 15,
     /// Sewn leggings (leg garment).
     Leggings = 16,
-    /// Sewn pair of boots (foot garment).
+    /// Grown wooden boots (foot armor).
     Boots = 17,
     /// Sewn hat (head garment).
     Hat = 18,
@@ -89,6 +88,10 @@ pub enum ItemKind {
     Spear = 25,
     /// Grown wooden club (melee weapon with high damage).
     Club = 26,
+    /// Sewn pair of sandals (light civilian footwear).
+    Sandals = 27,
+    /// Sewn pair of shoes (standard civilian footwear).
+    Shoes = 28,
     // Append new variants here with the next sequential number.
 }
 
@@ -123,6 +126,8 @@ impl ItemKind {
             ItemKind::Dye => "Dye",
             ItemKind::Spear => "Spear",
             ItemKind::Club => "Club",
+            ItemKind::Sandals => "Sandals",
+            ItemKind::Shoes => "Shoes",
         }
     }
 
@@ -155,7 +160,8 @@ impl ItemKind {
             self,
             ItemKind::Tunic
                 | ItemKind::Leggings
-                | ItemKind::Boots
+                | ItemKind::Sandals
+                | ItemKind::Shoes
                 | ItemKind::Hat
                 | ItemKind::Gloves
         )
@@ -169,7 +175,7 @@ impl ItemKind {
             ItemKind::Hat | ItemKind::Helmet => Some(EquipSlot::Head),
             ItemKind::Tunic | ItemKind::Breastplate => Some(EquipSlot::Torso),
             ItemKind::Leggings | ItemKind::Greaves => Some(EquipSlot::Legs),
-            ItemKind::Boots => Some(EquipSlot::Feet),
+            ItemKind::Boots | ItemKind::Sandals | ItemKind::Shoes => Some(EquipSlot::Feet),
             ItemKind::Gloves | ItemKind::Gauntlets => Some(EquipSlot::Hands),
             _ => None,
         }
@@ -194,7 +200,7 @@ impl ItemKind {
 
     /// Base (unconditioned) damage reduction for this item kind when made
     /// from the given material. Returns 0 for non-armor items and for
-    /// non-wood materials (e.g., cloth boots provide no protection). All
+    /// non-wood materials (only wood grants armor protection). All
     /// wood types currently give the same values; material-specific
     /// differentiation is deferred.
     ///
@@ -285,8 +291,9 @@ pub enum MaterialFilter {
     Any = 0,
     /// A specific material. "Give me Shinethúni Fruit."
     Specific(Material) = 1,
-    /// Any material except wood types. Used for clothing wants so elves
-    /// don't pick up wood boots (armor) when they want cloth boots (clothing).
+    /// Any material except wood types. Originally used for the boots want
+    /// workaround (before boots were split into Sandals/Shoes/Boots); kept
+    /// for general use and serde backward compatibility.
     NonWood = 2,
     // Append new variants here with the next sequential number.
 }
@@ -478,13 +485,35 @@ mod tests {
         assert!(!ItemKind::Bow.is_armor());
         assert!(!ItemKind::Bread.is_armor());
         assert!(!ItemKind::Gloves.is_armor());
+        assert!(!ItemKind::Sandals.is_armor());
+        assert!(!ItemKind::Shoes.is_armor());
     }
 
     #[test]
-    fn boots_is_both_clothing_and_armor() {
-        // Boots can be either — wood boots are armor, cloth boots are clothing.
-        assert!(ItemKind::Boots.is_clothing());
+    fn boots_is_armor_only() {
+        // Boots are armor only — civilian footwear is Sandals/Shoes.
+        assert!(!ItemKind::Boots.is_clothing());
         assert!(ItemKind::Boots.is_armor());
+    }
+
+    #[test]
+    fn sandals_and_shoes_are_clothing_only() {
+        assert!(ItemKind::Sandals.is_clothing());
+        assert!(!ItemKind::Sandals.is_armor());
+        assert!(ItemKind::Shoes.is_clothing());
+        assert!(!ItemKind::Shoes.is_armor());
+    }
+
+    #[test]
+    fn sandals_and_shoes_equip_to_feet() {
+        assert_eq!(ItemKind::Sandals.equip_slot(), Some(EquipSlot::Feet));
+        assert_eq!(ItemKind::Shoes.equip_slot(), Some(EquipSlot::Feet));
+    }
+
+    #[test]
+    fn sandals_and_shoes_have_no_armor_value() {
+        assert_eq!(ItemKind::Sandals.base_armor_value(Some(Material::Oak)), 0);
+        assert_eq!(ItemKind::Shoes.base_armor_value(Some(Material::Oak)), 0);
     }
 
     #[test]
