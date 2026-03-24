@@ -66,7 +66,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-ai-sprites           AI-generated sprite art pipeline
-[ ] F-ai-test-harness      Headless test harness for AI-driven manual testing
+[ ] F-ai-test-harness      Remote game control for AI-driven testing (Puppet)
 [ ] F-anatomy              DF-style hit location anatomy system
 [ ] F-apprentice           Skill transfer via proximity
 [ ] F-async-sim            Async sim: decouple sim thread from render thread via delta channel
@@ -5986,29 +5986,23 @@ maximum performance.
 
 ### Testing Infrastructure
 
-#### F-ai-test-harness — Headless test harness for AI-driven manual testing
+#### F-ai-test-harness — Remote game control for AI-driven testing (Puppet)
 **Status:** Todo
 
-Build a headless "screen reader" harness that lets Claude (or automated
-scripts) play the game without eyes. Three components:
+Remote game control for AI-driven testing ("Puppet"). Three components:
+a GDScript TCP server autoload (activated by PUPPET_SERVER=<port> env
+var, inert otherwise), a JSON-over-TCP RPC protocol, and a standalone
+Python CLI (scripts/puppet.py, stdlib-only) that manages the full
+lifecycle — launch under xvfb-run, communicate, quit.
 
-1. **State observation layer** — dump visible UI state as text/JSON: open
-   panels, label text, button states, inventory contents, creature lists.
-   Activated via command-line flag or autoload.
+Built-in RPC methods mirror the helpers from test_harness_integration.gd
+(extracted into a shared puppet_helpers.gd): click-at-world-pos,
+press-key, read-panel-text, find-text, is-panel-visible, step-ticks,
+press-button, etc. An eval escape hatch sends GDScript file contents
+over RPC for bespoke queries. Multiple game sessions via -g flag enable
+multiplayer testing. Orphan guard shuts down after idle timeout.
 
-2. **Command interface** — high-level actions ("select workshop at 5,3,1",
-   "activate Wooden Bowl recipe", "wait 100 ticks") translated into real
-   UI interactions (input events or direct bridge calls).
-
-3. **Assertion helpers** — check observable state against expectations
-   ("workshop inventory contains 1 Wooden Bowl with material Oak").
-
-Catches full-vertical-slice bugs (Rust sim → bridge serialization →
-GDScript display) that unit tests miss, like inventories showing items
-without material info. Same infrastructure supports both AI-driven
-exploratory testing and deterministic regression scripts.
-
-**Draft:** docs/drafts/F-bridge-integ-tests-and-ai-test-harness.md
+**Draft:** docs/drafts/F-ai-test-harness.md
 
 **Related:** F-bridge-integ-tests, F-gdscript-tests
 
