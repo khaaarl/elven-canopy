@@ -128,6 +128,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fog-of-war           Visibility via tree and root network
 [ ] F-follow-multi         Camera zoom-to and follow for multi-selections
 [ ] F-food-chain           Food production/distribution pipeline
+[ ] F-food-quality-mood    Food quality affects dining mood boost
 [ ] F-forest-ecology       Forest floor ecology (flora, fauna, foraging)
 [ ] F-forest-radar         Forest awareness radar (world map detection)
 [ ] F-fruit-pigments       More natural fruit pigment colors (secondaries on fruit parts)
@@ -519,7 +520,7 @@ Details to be worked out in a design doc.
 Communal dining building where elves eat together. Provides a social
 eating bonus compared to eating alone.
 
-**Related:** F-bldg-concert, F-bldg-kitchen, F-food-chain
+**Related:** F-bldg-concert, F-bldg-kitchen, F-food-chain, F-food-quality-mood
 
 #### F-bldg-dormitory — Dormitory (unassigned elf sleep)
 **Status:** Done · **Phase:** 3
@@ -1874,6 +1875,17 @@ creation, building input/output slots, and elf decision-making.
 
 **Related:** F-bldg-dining, F-bldg-kitchen, F-bldg-storehouse, F-bread, F-fruit-extraction, F-fruit-prod, F-fruit-variety, F-hauling, F-logistics, F-recipes
 
+#### F-food-quality-mood — Food quality affects dining mood boost
+**Status:** Todo · **Phase:** 4
+
+When item quality lands on food, scale the dining mood boost by
+quality tier. Crude food gives a reduced (or zero) bonus; Fine and
+above give progressively larger boosts. Applies to dining hall meals
+and possibly carried-food eating. Depends on F-item-quality for the
+quality tiers and F-bldg-dining for the dining mood system.
+
+**Related:** F-bldg-dining, F-item-quality
+
 #### F-footwear-split — Sandals/shoes as footwear, boots as armor
 **Status:** Done
 
@@ -2081,7 +2093,7 @@ mood, equipment stats, construction aesthetics TBD per tier.
 
 **Draft:** docs/drafts/F-item-quality.md
 
-**Related:** F-choir-build, F-creature-skills, F-manufacturing, F-quality-filters, F-sung-furniture
+**Related:** F-choir-build, F-creature-skills, F-food-quality-mood, F-manufacturing, F-quality-filters, F-sung-furniture
 
 #### F-items — Items and inventory system
 **Status:** Done · **Phase:** 3
