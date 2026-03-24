@@ -150,6 +150,8 @@ elven-canopy/
 │   │   ├── test_item_utils.gd     # Item utility tests
 │   │   ├── test_mana_vfx.gd       # Mana VFX tests
 │   │   ├── test_minimap.gd        # Minimap tests
+│   │   ├── test_notification_bell.gd # Notification bell tests
+│   │   ├── test_notification_history_panel.gd # Notification history panel tests
 │   │   ├── test_orbital_camera.gd # Orbital camera tests
 │   │   ├── test_selection_controller.gd # Selection controller tests
 │   │   ├── test_selection_utils.gd # Selection utility tests
@@ -180,6 +182,8 @@ elven-canopy/
 │       ├── selection_utils.gd      # Pure click/box modifier helpers for selection
 │       ├── tooltip_controller.gd    # Hover tooltips for world objects
 │       ├── notification_display.gd  # Toast-style event notifications
+│       ├── notification_bell.gd    # Bell icon button with procedural icon + unread badge
+│       ├── notification_history_panel.gd  # Full-height scrollable notification log
 │       ├── status_bar.gd           # Persistent bottom-left status bar (population, idle, tasks, speed)
 │       ├── keybind_help.gd         # Keyboard shortcuts help overlay
 │       ├── creature_info_panel.gd   # Right-side creature info panel (tabbed: status/inventory/thoughts)

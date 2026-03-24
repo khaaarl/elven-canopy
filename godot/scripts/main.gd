@@ -115,6 +115,8 @@ var _projectile_renderer: Node3D
 var _selection_highlight: Node3D
 var _tooltip_controller: Node
 var _notification_display: VBoxContainer
+var _notification_bell: Button
+var _notification_history: PanelContainer
 var _status_bar: PanelContainer
 var _minimap: PanelContainer
 var _construction_music: Node
@@ -130,6 +132,8 @@ var _height_btn: Control
 ## using 0 as the sentinel would cause the first notification to be skipped
 ## by the `> _last_notification_id` filter.
 var _last_notification_id: int = -1
+## Running count of unread notifications (incremented on poll, reset on panel open).
+var _unread_notification_count: int = 0
 var _escape_menu: ColorRect
 var _lobby_overlay: ColorRect
 var _elfcyclopedia_url_label: RichTextLabel
@@ -303,6 +307,19 @@ func _setup_common(bridge: SimBridge) -> void:
 	_notification_display = VBoxContainer.new()
 	_notification_display.set_script(notif_script)
 	canvas_layer.add_child(_notification_display)
+
+	# Set up notification bell button (bottom-right, above toasts).
+	var bell_script = load("res://scripts/notification_bell.gd")
+	_notification_bell = Button.new()
+	_notification_bell.name = "NotificationBell"
+	_notification_bell.set_script(bell_script)
+	canvas_layer.add_child(_notification_bell)
+	# Anchor to bottom-right, just above the toast area.
+	_notification_bell.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	_notification_bell.offset_left = -46
+	_notification_bell.offset_top = -46
+	_notification_bell.offset_right = -10
+	_notification_bell.offset_bottom = -10
 
 	# Set up status bar (bottom-left, at-a-glance stats).
 	var status_bar_script = load("res://scripts/status_bar.gd")
@@ -747,6 +764,21 @@ func _setup_common(bridge: SimBridge) -> void:
 	_help_panel.set_script(help_panel_script)
 	help_panel_layer.add_child(_help_panel)
 
+	# Notification history panel (overlay, layer 2).
+	var notif_history_layer := CanvasLayer.new()
+	notif_history_layer.layer = 2
+	add_child(notif_history_layer)
+
+	var notif_history_script = load("res://scripts/notification_history_panel.gd")
+	_notification_history = PanelContainer.new()
+	_notification_history.name = "NotificationHistoryPanel"
+	_notification_history.set_script(notif_history_script)
+	notif_history_layer.add_child(_notification_history)
+
+	# Wire bell -> toggle history panel, and panel opened -> mark all read.
+	_notification_bell.bell_pressed.connect(_notification_history.toggle)
+	_notification_history.panel_opened.connect(_on_notification_history_opened)
+
 	# Tree info panel (on its own CanvasLayer, added after units panel
 	# so its ESC handler fires first in reverse tree order).
 	var tree_panel_layer := CanvasLayer.new()
@@ -906,7 +938,13 @@ func _setup_common(bridge: SimBridge) -> void:
 
 	# Initialize notification cursor to the highest existing ID so that
 	# historical notifications (from a loaded save) aren't replayed as toasts.
+	# Hydrate the history panel with all existing notifications from the DB.
 	_last_notification_id = bridge.get_max_notification_id()
+	_unread_notification_count = 0
+	if _notification_history:
+		var all_notifs := bridge.get_notifications_after(-1)
+		if all_notifs.size() > 0:
+			_notification_history.add_entries(all_notifs)
 
 	# Hydrate selection groups from sim (restores groups after loading a save).
 	_selector.hydrate_selection_groups()
@@ -1094,16 +1132,26 @@ func _process(delta: float) -> void:
 			_last_cutoff_y = new_y
 			bridge.set_mesh_y_cutoff(new_y)
 
-	# Poll for new notifications and push them to the toast display.
+	# Poll for new notifications and push them to the toast display + history.
 	if _notification_display:
 		var new_notifs := bridge.get_notifications_after(_last_notification_id)
-		for notif in new_notifs:
-			var nid: int = notif.get("id", 0)
-			var msg: String = notif.get("message", "")
-			if nid > _last_notification_id:
-				_last_notification_id = nid
-			if not msg.is_empty():
-				_notification_display.push_notification(msg)
+		if new_notifs.size() > 0:
+			# Feed history panel with the raw entries.
+			if _notification_history:
+				_notification_history.add_entries(new_notifs)
+			for notif in new_notifs:
+				var nid: int = notif.get("id", 0)
+				var msg: String = notif.get("message", "")
+				if nid > _last_notification_id:
+					_last_notification_id = nid
+				if not msg.is_empty():
+					_notification_display.push_notification(msg)
+			# Update bell badge — don't count as unread if the panel is open
+			# (the user is already looking at them).
+			if not _notification_history or not _notification_history.visible:
+				_unread_notification_count += new_notifs.size()
+				if _notification_bell:
+					_notification_bell.set_unread_count(_unread_notification_count)
 
 	# Poll for construction music composition completions.
 	if _construction_music:
@@ -1120,6 +1168,12 @@ func _unhandled_input(event: InputEvent) -> void:
 			_height_btn.queue_redraw()
 			_on_height_toggle(_height_btn.active)
 			get_viewport().set_input_as_handled()
+
+
+func _on_notification_history_opened() -> void:
+	_unread_notification_count = 0
+	if _notification_bell:
+		_notification_bell.set_unread_count(0)
 
 
 func _on_roof_toggle(is_active: bool) -> void:

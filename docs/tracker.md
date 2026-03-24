@@ -2513,8 +2513,6 @@ Log viewable by player, drives emergent storytelling.
 #### F-notifications — Player-visible event notifications
 **Status:** In Progress · **Phase:** 4
 
-Toast-style notification system for important sim events.
-
 **Done so far:**
 - Toast display UI (notification_display.gd): toasts appear in bottom-right,
   stay 4s, fade out over 1s, max 8 visible, mouse-transparent.
@@ -2527,11 +2525,16 @@ Toast-style notification system for important sim events.
 - Moping creates a notification with elf name and mood tier.
 - Load-game initializes notification cursor to max existing ID so
   historical notifications aren't replayed as toasts.
+- Bell icon button (top-right HUD) with unread count badge. Opens a
+  scrollable notification history panel showing timestamped entries
+  grouped by type, newest-first, with 200-entry cap and oldest-first
+  eviction. Count-based unread tracking, hydrated on save/load.
+- Minimap relocated from bottom-right to bottom-left (above status bar)
+  to accommodate the history panel.
+- GDScript unit tests for bell state, panel population, eviction, and
+  unread tracking (test_notification_bell.gd, test_notification_history_panel.gd).
 
 **Still needed:**
-- Notification history panel: a bell icon button (bottom-right, near where
-  toasts appear) that opens a scrollable log of all past notifications.
-  Unread indicator (count badge or color) until panel is opened.
 - Wire more sim events to push notifications (construction complete,
   creature idle, structure collapsed, elf left, etc.).
 

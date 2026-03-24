@@ -2,7 +2,8 @@
 ##
 ## Renders a cached terrain heightmap, creature position dots, selected-unit
 ## highlights, and the camera frustum outline in a small square panel anchored
-## to the bottom-right corner of the screen. Size is ~15% of viewport height.
+## to the bottom-left corner of the screen, above the status bar. Size is
+## ~15% of viewport height.
 ##
 ## Zoom: discrete steps controlled by mouse wheel (when cursor is over the
 ## minimap) or +/- icon buttons. Follow mode: toggleable — follow camera
@@ -126,13 +127,13 @@ func _ready() -> void:
 	style.set_content_margin_all(0)
 	add_theme_stylebox_override("panel", style)
 
-	# Anchor to bottom-right corner.
-	set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
-	anchor_left = 1.0
+	# Anchor to bottom-left corner, above the status bar.
+	set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	anchor_left = 0.0
 	anchor_top = 1.0
-	anchor_right = 1.0
+	anchor_right = 0.0
 	anchor_bottom = 1.0
-	grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	grow_horizontal = Control.GROW_DIRECTION_END
 	grow_vertical = Control.GROW_DIRECTION_BEGIN
 
 	# The draw area handles all custom rendering.
@@ -280,10 +281,12 @@ func _update_size() -> void:
 	var total := map_px + 2.0
 	custom_minimum_size = Vector2(total, total)
 	size = Vector2(total, total)
-	offset_left = -total - 10
-	offset_top = -total - 10
-	offset_right = -10
-	offset_bottom = -10
+	# Position above the status bar (~34px tall + 10px bottom margin = 44px).
+	var status_bar_clearance := 44
+	offset_left = 10
+	offset_top = -total - status_bar_clearance
+	offset_right = total + 10
+	offset_bottom = -status_bar_clearance
 
 
 func _update_zoom_buttons() -> void:

@@ -11,9 +11,11 @@
 ## Notifications are created sim-side (persisted in SimDb) and go through
 ## the full command pipeline, making them multiplayer-aware.
 ##
-## See also: action_toolbar.gd for the debug button that triggers test
-## notifications, main.gd for wiring and polling, sim_bridge.rs for the
-## bridge methods (get_notifications_after, send_debug_notification).
+## See also: notification_bell.gd for the bell icon button,
+## notification_history_panel.gd for the scrollable notification log,
+## action_toolbar.gd for the debug button that triggers test notifications,
+## main.gd for wiring and polling, sim_bridge.rs for the bridge methods
+## (get_notifications_after, send_debug_notification).
 
 extends VBoxContainer
 

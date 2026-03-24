@@ -6,8 +6,8 @@
 ## from bridge queries.
 ##
 ## Sits on the base CanvasLayer (layer 1) alongside the action toolbar and
-## notification display. Positioned at bottom-left to avoid overlap with
-## notifications (bottom-right) and the toolbar (top-left).
+## notification display. Positioned at bottom-left, below the minimap. The
+## minimap clears 44px above the bottom edge to avoid overlapping this bar.
 ##
 ## See also: action_toolbar.gd for speed controls, main.gd for wiring,
 ## sim_bridge.rs for the bridge query methods used here.
