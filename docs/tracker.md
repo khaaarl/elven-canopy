@@ -183,6 +183,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-poetry-reading       Social gatherings and poetry readings
 [ ] F-population           Natural population growth/immigration
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
+[ ] F-quality-filters      Quality filters for logistics wants and active recipes
 [ ] F-raid-detection       Raid detection gating and stealth spawning
 [ ] F-raid-polish          Raid polish: military groups, provisions for long treks
 [ ] F-recipe-any-mat       Any-material recipe parameter support
@@ -2080,7 +2081,7 @@ mood, equipment stats, construction aesthetics TBD per tier.
 
 **Draft:** docs/drafts/F-item-quality.md
 
-**Related:** F-choir-build, F-creature-skills, F-manufacturing, F-sung-furniture
+**Related:** F-choir-build, F-creature-skills, F-manufacturing, F-quality-filters, F-sung-furniture
 
 #### F-items — Items and inventory system
 **Status:** Done · **Phase:** 3
@@ -2226,6 +2227,11 @@ surface. If a falling pile lands on a voxel that already has a ground pile,
 the two piles merge their inventories into one.
 
 **Related:** F-creature-gravity
+
+#### F-quality-filters — Quality filters for logistics wants and active recipes
+**Status:** Todo
+
+**Related:** F-item-quality
 
 #### F-recipe-any-mat — Any-material recipe parameter support
 **Status:** Todo
