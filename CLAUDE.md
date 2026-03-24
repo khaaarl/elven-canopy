@@ -133,7 +133,7 @@ This applies to all commits — single-line and multi-line alike. Do NOT use `-m
 
 ## The Once-Over
 
-When a feature branch's work is done, the user will likely ask for a "once-over" — a final quality review before merging. Use the `/once-over` slash command, which delegates the review to a subagent to keep the main context clean. See `.claude/commands/once-over.md` for the full checklist.
+When a feature branch's work is done, use `/once-over` for a final quality review. It spawns four parallel review agents (code quality, test coverage, corner cases, spec adherence). Agent instructions live in `docs/once-over/`.
 
 ## Merging to Main
 
@@ -183,6 +183,13 @@ When the user asks to merge a feature branch to main, use the `/merge-to-main` s
     - Do not count on shared infrastructure being "tested elsewhere" as a reason to skip testing a specific feature's use of that infrastructure. The test proves *this feature's* integration works, not that the infrastructure works in general.
 
 When tests fail unexpectedly, diagnose the root cause. Do not bypass, skip, or work around failing checks (validators, lints, assertions). Never increase retry counts, disable validation, or add #[ignore] to make a test pass. Do not ever take the "easy" route; do the right thing. If the user has not requested that you operate on your own, you may ask the user for guidance after thoroughly examining the problem.
+
+## Test Robustness (CRITICAL)
+
+**No flaky tests.** Every test must pass deterministically, every time.
+
+1. **Trust failures.** A failing test is a real bug — investigate, don't re-run.
+2. **Resilient assertions.** Don't assert exact pseudorandom worldgen values — assert structural properties (counts, bounds, ordering). Don't use wall-clock timing. Set config values explicitly rather than relying on defaults. Build minimal test worlds, not shared fixtures.
 
 ## GDScript: Unit Testing with GUT
 

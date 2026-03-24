@@ -6,116 +6,71 @@ documentation staleness, and anything that would be embarrassing to merge.
 
 ## Procedure
 
-1. **Identify changed files.** Run `git diff main --name-only` to get the list
-   of files changed on this branch. Also run `git diff main` to get the full
-   diff — you'll pass both to the agents.
+1. **Gather inputs.** Capture diffs and write a shared context file:
+   - `git diff main --name-only > .tmp/once-over-files.txt`
+   - `git diff main > .tmp/once-over-diff.txt`
+   - Write `.tmp/once-over-context.md` containing, in order:
+     1. **Tracker IDs** — the tracker item ID(s) for the work on this branch.
+     2. **Design doc paths** — paths to any design docs linked from the
+        tracker or referenced in conversation.
+     3. **Summary** — a brief summary of what the user asked for and why.
+     4. **User requests (verbatim)** — the user's literal text requests from
+        the conversation that prompted the work. Copy verbatim — do not
+        paraphrase or abbreviate.
 
-2. **Spawn three review agents in parallel.** Each agent receives the file list
-   and full diff. Launching them in parallel keeps total wall-clock time low
-   while giving each agent a focused mandate.
+   These files persist in `.tmp/` so agents can re-read them during their
+   review and so you can reference them during triage.
 
-   ### Agent A — Code quality, documentation, and consistency
+2. **Spawn four review agents in parallel.** Each agent reads the shared
+   context file and its own instruction file. Launching them in parallel
+   keeps wall-clock time low.
 
-   This agent handles everything except test coverage analysis.
+   | Agent | Instruction file |
+   |-------|-----------------|
+   | A — Code quality, docs, consistency | `docs/once-over/code-quality.md` |
+   | B — Test coverage gap analysis | `docs/once-over/test-coverage.md` |
+   | C — Adversarial corner-case hunting | `docs/once-over/corner-cases.md` |
+   | D — Spec adherence & shortcut detection | `docs/once-over/spec-adherence.md` |
 
-   **Code quality:**
-   - Read every changed file in full.
-   - Look for bugs, logic errors, off-by-one errors, missed error handling.
-   - Check for security issues (injection, unchecked input at boundaries).
-   - Check for violations of codebase patterns described in CLAUDE.md (e.g.,
-     determinism constraints in the sim crate, no HashMap, no stdlib PRNG).
-   - Check that new code matches the style and conventions of surrounding code.
-   - Look for dead code, unused imports, TODO/FIXME/HACK comments that should
-     be resolved before merge.
+   Use the Agent tool to spawn each agent with the prompt: "Read
+   `docs/once-over/<your-file>.md` for your mandate. Read
+   `.tmp/once-over-context.md`, `.tmp/once-over-files.txt`, and
+   `.tmp/once-over-diff.txt` for shared inputs."
 
-   **Test quality (existing tests only — coverage gaps are Agent B's job):**
-   - Read all new and modified tests.
-   - Check that tests actually assert the behavior they claim to test (not
-     just "does it run without panicking").
-   - Verify test names accurately describe what they test.
-
-   **Documentation accuracy:**
-   - Check that module docstrings in changed files are accurate and up to date.
-   - Check module docstrings in **sibling files** that reference changed
-     modules — a renamed function, new parameter, or shifted responsibility
-     can leave other files' docstrings silently wrong.
-   - Check that CLAUDE.md sections (especially "Implementation Status" and
-     "Project Structure") are still accurate after the changes.
-   - Check that tracker.md entries for related features are up to date.
-   - Check that `docs/project_structure.md` is still accurate — especially
-     if files were added, removed, renamed, or restructured.
-
-   **Consistency:**
-   - If the feature adds new protocol messages, config fields, or public API,
-     verify they're used consistently across all layers (sim, relay, gdext,
-     tests).
-   - Check that error messages are helpful and consistent in style.
-
-   ### Agent B — Test coverage gap analysis
-
-   This agent's job is **generative**: find code paths that lack test coverage
-   and propose specific tests that should be written.
-
-   - For each changed or added module, read the implementation and enumerate
-     the distinct code paths: happy path, error/rejection paths, guard
-     clauses, match arms, boundary conditions.
-   - Cross-reference against existing tests (read the test files) to identify
-     paths that have **no corresponding test**.
-   - Check for missing interaction tests — what happens when this feature
-     intersects with other systems? If a new task can be interrupted, is
-     that tested? If a new item can be serialized, is the serde roundtrip
-     tested?
-   - Check that every new enum variant, config field, or persisted type has
-     a serde roundtrip test if sibling variants do.
-   - **Output a concrete list of proposed tests**, each with:
-     - A descriptive test name (e.g., `test_assign_task_returns_none_when_inventory_full`).
-     - One or two sentences explaining what it verifies and why it matters.
-     - Which file the test should live in.
-   - Prioritize the list: most important (likely bugs, untested error paths)
-     first, nice-to-haves last.
-
-   ### Agent C — Adversarial corner-case hunting
-
-   This agent thinks like an attacker or a fuzzer. Its goal is to find
-   scenarios where the new code would misbehave and propose tests that
-   prove (or disprove) correctness.
-
-   - Read every changed file and understand the invariants the code assumes.
-   - Actively try to break those invariants. Consider:
-     - Integer overflow or underflow (especially in index math, quantities,
-       coordinates).
-     - Empty collections where the code assumes non-empty (`.unwrap()` on
-       `.first()`, `.next()`, division by `.len()`).
-     - Off-by-one errors in loops, ranges, and slice indices.
-     - State machine transitions that could leave inconsistent state (e.g.,
-       an elf assigned to a destroyed building, a task half-completed when
-       the entity dies).
-     - Re-entrancy or ordering issues (what if event A triggers event B
-       which modifies state that event A is iterating over?).
-     - Determinism violations if sim code is touched: iteration order over
-       collections, floating-point inconsistencies, anything that could
-       diverge across platforms.
-   - For each potential issue found, **propose a specific test** with:
-     - A descriptive test name.
-     - A short description of the scenario and what could go wrong.
-     - Which file the test should live in.
-   - If the agent finds an actual bug (not just a missing test), flag it
-     prominently at the top of the output.
-
-3. **Triage findings from all three agents.** Organize the combined results
+3. **Triage findings from all four agents.** Organize the combined results
    into:
    - **Bugs / must-fix** — actual defects or high-confidence issues.
+   - **Spec violations / must-fix** — requirements missing or implemented
+     incorrectly (from Agent D).
+   - **Spec ambiguities — need user decision** — spec is unclear and the code
+     made an assumption (from Agent D).
    - **Missing tests — high priority** — untested error paths, untested
-     interactions with other systems, missing serde roundtrips.
-   - **Missing tests — nice to have** — additional coverage that would be
-     good but isn't critical.
+     interactions, missing serde roundtrips.
+   - **Missing tests — nice to have** — additional coverage, not critical.
+   - **Shortcuts / quality issues** — implementations that work but should be
+     done properly (from Agent D).
+   - **Test integrity issues** — tests that don't test what they claim
+     (from Agents A and D).
    - **Documentation / style** — docstring staleness, naming, consistency.
 
 4. **Fix bugs and write missing tests.** Fix all must-fix items and write the
-   high-priority missing tests directly — don't just report them back to the
-   user. For nice-to-have tests, use your judgment: write them if they're
-   quick and valuable, otherwise mention them in your summary. For
-   documentation and style issues, fix them directly.
+   high-priority missing tests directly — don't just report them. For
+   nice-to-have tests, use your judgment: write if quick and valuable,
+   otherwise mention in summary. Fix documentation and style issues directly.
+   For spec violations, fix any with a clear correct implementation; escalate
+   ambiguous ones to the user. Fix shortcuts/quality issues.
+
+   **Pre-existing bugs.** If any agent flags a bug that is unrelated to the
+   current branch's work (e.g., a latent issue in code that was only read,
+   not changed), highlight it prominently to the user and suggest adding it
+   as a tracker bug via `scripts/tracker.py add`.
+
+   **Dismissals.** When dismissing an agent's finding, you MUST include a
+   concise but thorough summary of the complaint and a clear explanation of
+   why it is safe to dismiss. Do not silently drop findings — the user needs
+   to see what was raised and why you consider it resolved. A bare "not
+   relevant" or "already handled" is not sufficient; cite the specific code
+   or reasoning that makes the finding a non-issue.
 
 5. **Run checks.** After any fixes, run `scripts/build.sh check` and
    `scripts/build.sh quicktest` to confirm everything still passes.
