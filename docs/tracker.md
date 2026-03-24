@@ -198,6 +198,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-settlement-gen       Procedural NPC settlement generation
 [ ] F-shadow-cull          Shadow-only rendering for culled chunks in light direction
 [ ] F-skirmish             Ranged skirmish/kite behavior (shoot-retreat loop)
+[ ] F-slow-eating          Slow eating with interruptible consumption and partial restoration
 [ ] F-smooth-perf          Smooth mesh performance optimization
 [ ] F-smooth-ycutoff       Post-smoothing Y-cutoff with cap faces
 [ ] F-social-graph         Relationships and social contagion
@@ -517,10 +518,18 @@ Details to be worked out in a design doc.
 #### F-bldg-dining — Dining hall
 **Status:** Todo · **Phase:** 4
 
-Communal dining building where elves eat together. Provides a social
-eating bonus compared to eating alone.
+Communal dining building where elves eat meals. Two hunger thresholds:
+food_dining_threshold_pct (new, higher) triggers dining hall seek;
+food_hunger_threshold_pct (existing, lowered) triggers carried food /
+foraging. Dining gives mood boost (AteDining); non-dining eating gives
+small penalty (AteAlone). Tables have implicit seats; capacity =
+tables × dining_seats_per_table. Food stocked via logistics wants.
+Elf reserves seat + food item, paths to table, eats instantly on
+arrival. Interrupted elves release reservations, food preserved.
 
-**Related:** F-bldg-concert, F-bldg-kitchen, F-food-chain, F-food-quality-mood
+**Draft:** docs/drafts/F-bldg-dining.md
+
+**Related:** F-bldg-concert, F-bldg-kitchen, F-food-chain, F-food-quality-mood, F-slow-eating
 
 #### F-bldg-dormitory — Dormitory (unassigned elf sleep)
 **Status:** Done · **Phase:** 3
@@ -1580,6 +1589,17 @@ Ranged attack as a creature ACTION. Uses the standard ActionKind / next_availabl
 **Draft:** docs/drafts/combat_military.md (§5)
 
 **Related:** F-friendly-fire, F-phased-archery, F-skirmish, F-spell-ench-arrow
+
+#### F-slow-eating — Slow eating with interruptible consumption and partial restoration
+**Status:** Todo · **Phase:** 4
+
+Eating takes time rather than being instant. Food is consumed gradually
+over eat_action_ticks (or a new duration field). If interrupted mid-meal,
+food item is destroyed and elf gets partial hunger restoration proportional
+to progress. Applies to all eating paths (dining hall, carried food,
+foraging). Currently all eating is instant on arrival.
+
+**Related:** F-bldg-dining
 
 #### F-starvation-rework — Starvation rework: incapacitation interaction and bleed-out
 **Status:** Todo
