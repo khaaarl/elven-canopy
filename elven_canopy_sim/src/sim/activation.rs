@@ -59,21 +59,25 @@ impl SimState {
                         });
                 }
 
-                // Apply per-creature bread count.
+                // Apply per-creature bread count. Starting bread is Crude.
                 if let Some(&count) = spec.bread_counts.get(i)
                     && count > 0
                 {
                     let inv_id = self.creature_inv(creature_id);
-                    self.inv_add_simple_item(
+                    self.inv_add_item(
                         inv_id,
                         crate::inventory::ItemKind::Bread,
                         count,
                         Some(creature_id),
                         None,
+                        None,
+                        -1, // Crude
+                        None,
+                        None,
                     );
                 }
 
-                // Apply per-creature starting equipment.
+                // Apply per-creature starting equipment. Initial gear is Crude.
                 if let Some(equip_list) = spec.initial_equipment.get(i) {
                     let inv_id = self.creature_inv(creature_id);
                     for equip in equip_list {
@@ -85,7 +89,7 @@ impl SimState {
                             Some(creature_id),
                             None,
                             equip.material,
-                            0,
+                            -1, // Crude
                             None,
                             slot,
                         );
@@ -116,7 +120,7 @@ impl SimState {
                 None,
                 None,
                 pile_spec.material,
-                0,
+                -1, // Crude — starting supplies
                 None,
                 None,
             );

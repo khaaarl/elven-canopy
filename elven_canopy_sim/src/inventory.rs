@@ -881,6 +881,17 @@ impl EffectKind {
     }
 }
 
+/// Return the display label for an item quality tier, or `None` for unknown
+/// values (future +2/+3 tiers will get labels when implemented).
+pub fn quality_label(quality: i32) -> Option<&'static str> {
+    match quality {
+        -1 => Some("Crude"),
+        0 => Some("Fine"),
+        1 => Some("Superior"),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod color_tests {
     use super::*;

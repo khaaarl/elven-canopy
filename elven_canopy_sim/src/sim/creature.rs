@@ -163,32 +163,45 @@ impl SimState {
         }
 
         // Give elves starting items so they don't immediately forage and can
-        // defend themselves.
+        // defend themselves. Starting gear is Crude (-1) for early progression.
         if species == Species::Elf {
+            let starting_quality = -1; // Crude
             if self.config.elf_starting_bread > 0 {
-                self.inv_add_simple_item(
+                self.inv_add_item(
                     inv_id,
                     inventory::ItemKind::Bread,
                     self.config.elf_starting_bread,
                     Some(creature_id),
                     None,
+                    None,
+                    starting_quality,
+                    None,
+                    None,
                 );
             }
             if self.config.elf_starting_bows > 0 {
-                self.inv_add_simple_item(
+                self.inv_add_item(
                     inv_id,
                     inventory::ItemKind::Bow,
                     self.config.elf_starting_bows,
                     Some(creature_id),
                     None,
+                    None,
+                    starting_quality,
+                    None,
+                    None,
                 );
             }
             if self.config.elf_starting_arrows > 0 {
-                self.inv_add_simple_item(
+                self.inv_add_item(
                     inv_id,
                     inventory::ItemKind::Arrow,
                     self.config.elf_starting_arrows,
                     Some(creature_id),
+                    None,
+                    None,
+                    starting_quality,
+                    None,
                     None,
                 );
             }

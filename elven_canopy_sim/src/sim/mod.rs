@@ -1685,21 +1685,28 @@ impl SimState {
 
     /// Build the full display name for an item stack.
     ///
-    /// Format: `[DyeColor] [Material/Species] ItemKind [suffixes]`.
+    /// Format: `[Quality] [DyeColor] [Material/Species] ItemKind [suffixes]`.
     ///
     /// Examples:
-    /// - `"Red Oak Breastplate (worn)"`
-    /// - `"Blue Tunic (equipped)"`
-    /// - `"Shinethúni Pod"`
-    /// - `"Oak Helmet"`
-    /// - `"Bread"`
+    /// - `"Crude Blue Oak Bow (worn)"`
+    /// - `"Fine Red Oak Breastplate"`
+    /// - `"Superior Tunic (equipped)"`
+    /// - `"Fine Shinethúni Pod"`
+    /// - `"Crude Bread"`
     ///
-    /// Dye color names come from `ItemColor::display_name()`. Material
-    /// prefix uses `Material::display_name()` for wood types; fruit-species
-    /// items use the Vaelith species name. Suffixes: "(equipped)" if in a
-    /// slot, "(worn)"/"(damaged)" if durability is below threshold.
+    /// Quality prefix comes from `inventory::quality_label()`. Dye color
+    /// names come from `ItemColor::display_name()`. Material prefix uses
+    /// `Material::display_name()` for wood types; fruit-species items use
+    /// the Vaelith species name. Suffixes: "(equipped)" if in a slot,
+    /// "(worn)"/"(damaged)" if durability is below threshold.
     pub fn item_display_name(&self, stack: &crate::db::ItemStack) -> String {
         let mut name = String::new();
+
+        // Quality prefix (e.g., "Crude", "Fine", "Superior").
+        if let Some(label) = inventory::quality_label(stack.quality) {
+            name.push_str(label);
+            name.push(' ');
+        }
 
         // Dye color prefix (only for explicitly dyed items).
         if let Some(dye) = stack.dye_color {

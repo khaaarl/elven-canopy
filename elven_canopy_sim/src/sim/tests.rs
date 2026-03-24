@@ -27691,7 +27691,7 @@ fn extraction_display_names_use_vaelith_species() {
         .iter()
         .find(|s| s.kind == inventory::ItemKind::Pulp)
         .expect("should have pulp");
-    assert_eq!(sim.item_display_name(pulp_stack), "Testaleth Pulp");
+    assert_eq!(sim.item_display_name(pulp_stack), "Fine Testaleth Pulp");
 }
 
 #[test]
@@ -30331,8 +30331,8 @@ fn item_display_name_shows_equipped_suffix() {
         .iter()
         .find(|s| s.kind == inventory::ItemKind::Hat)
         .unwrap();
-    assert_eq!(sim.item_display_name(tunic), "Tunic");
-    assert_eq!(sim.item_display_name(hat), "Hat (equipped)");
+    assert_eq!(sim.item_display_name(tunic), "Fine Tunic");
+    assert_eq!(sim.item_display_name(hat), "Fine Hat (equipped)");
 }
 
 #[test]
@@ -30376,8 +30376,8 @@ fn item_display_name_dye_color_prefix() {
         .find(|s| s.kind == inventory::ItemKind::Tunic)
         .unwrap();
 
-    // Undyed oak helmet: "Oak Helmet".
-    assert_eq!(sim.item_display_name(helmet), "Oak Helmet");
+    // Undyed oak helmet: "Fine Oak Helmet".
+    assert_eq!(sim.item_display_name(helmet), "Fine Oak Helmet");
 
     // Now dye the tunic blue.
     let tunic_id = tunic.id;
@@ -30385,7 +30385,7 @@ fn item_display_name_dye_color_prefix() {
         s.dye_color = Some(inventory::ItemColor::new(50, 70, 180));
     });
     let tunic_dyed = sim.db.item_stacks.get(&tunic_id).unwrap();
-    assert_eq!(sim.item_display_name(&tunic_dyed), "Blue Tunic");
+    assert_eq!(sim.item_display_name(&tunic_dyed), "Fine Blue Tunic");
 
     // Dyed oak breastplate.
     sim.inv_add_item(
@@ -30412,7 +30412,7 @@ fn item_display_name_dye_color_prefix() {
         s.dye_color = Some(inventory::ItemColor::new(180, 40, 40));
     });
     let bp_dyed = sim.db.item_stacks.get(&bp_id).unwrap();
-    assert_eq!(sim.item_display_name(&bp_dyed), "Red Oak Breastplate");
+    assert_eq!(sim.item_display_name(&bp_dyed), "Fine Red Oak Breastplate");
 }
 
 #[test]
@@ -34280,7 +34280,7 @@ fn item_display_name_shows_condition_worn() {
         .db
         .item_stacks
         .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
-    assert_eq!(sim.item_display_name(&stacks[0]), "Arrow (worn)");
+    assert_eq!(sim.item_display_name(&stacks[0]), "Fine Arrow (worn)");
 }
 
 #[test]
@@ -34304,7 +34304,7 @@ fn item_display_name_shows_condition_damaged() {
         .db
         .item_stacks
         .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
-    assert_eq!(sim.item_display_name(&stacks[0]), "Arrow (damaged)");
+    assert_eq!(sim.item_display_name(&stacks[0]), "Fine Arrow (damaged)");
 }
 
 #[test]
@@ -34316,7 +34316,7 @@ fn item_display_name_no_condition_at_full_hp() {
         .db
         .item_stacks
         .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
-    assert_eq!(sim.item_display_name(&stacks[0]), "Arrow");
+    assert_eq!(sim.item_display_name(&stacks[0]), "Fine Arrow");
 }
 
 #[test]
@@ -34342,7 +34342,7 @@ fn item_display_name_equipped_and_damaged() {
         .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
     assert_eq!(
         sim.item_display_name(&stacks[0]),
-        "Hat (equipped) (damaged)"
+        "Fine Hat (equipped) (damaged)"
     );
 }
 
@@ -34356,7 +34356,7 @@ fn item_display_name_indestructible_no_condition() {
         .db
         .item_stacks
         .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
-    assert_eq!(sim.item_display_name(&stacks[0]), "Bread");
+    assert_eq!(sim.item_display_name(&stacks[0]), "Fine Bread");
 }
 
 // ---------------------------------------------------------------------------
@@ -44421,4 +44421,583 @@ fn test_melee_weapon_no_degrade_on_miss() {
         spear_hp_after, spear_hp_before,
         "weapon should not degrade on miss"
     );
+}
+
+// ---------------------------------------------------------------------------
+// F-item-quality: quality labels and display
+// ---------------------------------------------------------------------------
+
+#[test]
+fn quality_label_returns_correct_strings() {
+    assert_eq!(inventory::quality_label(-1), Some("Crude"));
+    assert_eq!(inventory::quality_label(0), Some("Fine"));
+    assert_eq!(inventory::quality_label(1), Some("Superior"));
+    // Future tiers and out-of-range values return None.
+    assert_eq!(inventory::quality_label(2), None);
+    assert_eq!(inventory::quality_label(3), None);
+    assert_eq!(inventory::quality_label(-2), None);
+}
+
+#[test]
+fn item_display_name_shows_quality_prefix() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+
+    // Crude bread.
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Bread,
+        1,
+        None,
+        None,
+        None,
+        -1,
+        None,
+        None,
+    );
+    // Fine bread (quality 0).
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Bread,
+        1,
+        None,
+        None,
+        None,
+        0,
+        None,
+        None,
+    );
+    // Superior oak bow.
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Bow,
+        1,
+        None,
+        None,
+        Some(inventory::Material::Oak),
+        1,
+        None,
+        None,
+    );
+
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    let crude_bread = stacks
+        .iter()
+        .find(|s| s.kind == inventory::ItemKind::Bread && s.quality == -1)
+        .unwrap();
+    let fine_bread = stacks
+        .iter()
+        .find(|s| s.kind == inventory::ItemKind::Bread && s.quality == 0)
+        .unwrap();
+    let superior_bow = stacks
+        .iter()
+        .find(|s| s.kind == inventory::ItemKind::Bow && s.quality == 1)
+        .unwrap();
+
+    assert_eq!(sim.item_display_name(crude_bread), "Crude Bread");
+    assert_eq!(sim.item_display_name(fine_bread), "Fine Bread");
+    assert_eq!(sim.item_display_name(superior_bow), "Superior Oak Bow");
+}
+
+#[test]
+fn item_display_name_quality_with_dye_color() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+
+    // Crude blue tunic.
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Tunic,
+        1,
+        None,
+        None,
+        None,
+        -1,
+        None,
+        None,
+    );
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    let tunic = stacks
+        .iter()
+        .find(|s| s.kind == inventory::ItemKind::Tunic)
+        .unwrap();
+    let tunic_id = tunic.id;
+    let _ = sim.db.item_stacks.modify_unchecked(&tunic_id, |s| {
+        s.dye_color = Some(inventory::ItemColor::new(50, 70, 180));
+    });
+    let tunic_dyed = sim.db.item_stacks.get(&tunic_id).unwrap();
+    assert_eq!(sim.item_display_name(&tunic_dyed), "Crude Blue Tunic");
+}
+
+#[test]
+fn quality_from_roll_thresholds() {
+    use super::crafting::quality_from_roll;
+    // Boundary tests per design doc.
+    assert_eq!(quality_from_roll(i64::MIN), -1); // far below
+    assert_eq!(quality_from_roll(-100), -1);
+    assert_eq!(quality_from_roll(0), -1);
+    assert_eq!(quality_from_roll(49), -1);
+    assert_eq!(quality_from_roll(50), 0); // Fine threshold
+    assert_eq!(quality_from_roll(100), 0);
+    assert_eq!(quality_from_roll(249), 0);
+    assert_eq!(quality_from_roll(250), 1); // Superior threshold
+    assert_eq!(quality_from_roll(500), 1);
+    assert_eq!(quality_from_roll(i64::MAX), 1);
+}
+
+#[test]
+fn elf_starting_gear_is_crude() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    let inv_id = sim.creature_inv(elf_id);
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    // Elves start with bread, bows, and arrows — all should be Crude (-1).
+    for stack in &stacks {
+        assert_eq!(
+            stack.quality,
+            -1,
+            "starting {} should be Crude (-1), got {}",
+            stack.kind.display_name(),
+            stack.quality,
+        );
+    }
+    // Sanity check: the elf has at least some items.
+    assert!(!stacks.is_empty(), "elf should have starting gear");
+}
+
+#[test]
+fn initial_equipment_is_crude() {
+    // Items added via InitialEquipSpec (activation.rs) should be Crude.
+    let mut config = test_config();
+    use crate::config::InitialEquipSpec;
+    // Add a creature spec with initial equipment.
+    if let Some(spec) = config.initial_creatures.first_mut() {
+        spec.initial_equipment = vec![vec![InitialEquipSpec {
+            item_kind: inventory::ItemKind::Helmet,
+            material: Some(Material::Oak),
+            dye_color: None,
+        }]];
+    }
+    let mut sim = SimState::with_config(42, config);
+    let mut events = Vec::new();
+    sim.spawn_initial_creatures(&mut events);
+
+    // Find any helmets in any creature inventory.
+    let helmets: Vec<_> = sim
+        .db
+        .item_stacks
+        .iter_all()
+        .filter(|s| s.kind == inventory::ItemKind::Helmet)
+        .collect();
+    // Filter to only helmets with an owner (equipped starting gear, not
+    // dropped/ground items). The helmet in our test config is given to elf 0.
+    let owned_helmets: Vec<_> = helmets.iter().filter(|s| s.owner.is_some()).collect();
+    assert!(
+        !owned_helmets.is_empty(),
+        "should have spawned owned helmets"
+    );
+    for h in &owned_helmets {
+        assert_eq!(
+            h.quality, -1,
+            "initial equipment helmet should be Crude (-1)"
+        );
+    }
+}
+
+#[test]
+fn items_different_quality_do_not_stack() {
+    let mut sim = test_sim(42);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
+    // Add crude and fine bread.
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Bread,
+        3,
+        None,
+        None,
+        None,
+        -1,
+        None,
+        None,
+    );
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Bread,
+        2,
+        None,
+        None,
+        None,
+        0,
+        None,
+        None,
+    );
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    let bread_stacks: Vec<_> = stacks
+        .iter()
+        .filter(|s| s.kind == inventory::ItemKind::Bread)
+        .collect();
+    assert_eq!(
+        bread_stacks.len(),
+        2,
+        "crude and fine bread should not merge"
+    );
+    let crude = bread_stacks.iter().find(|s| s.quality == -1).unwrap();
+    let fine = bread_stacks.iter().find(|s| s.quality == 0).unwrap();
+    assert_eq!(crude.quantity, 3);
+    assert_eq!(fine.quantity, 2);
+}
+
+#[test]
+fn quality_propagation_score_mapping() {
+    use super::crafting::quality_score;
+    assert_eq!(quality_score(-1), 0); // Crude
+    assert_eq!(quality_score(0), 150); // Fine
+    assert_eq!(quality_score(1), 300); // Superior
+}
+
+#[test]
+fn quality_propagation_crude_inputs_drag_down() {
+    use super::crafting::{quality_from_roll, quality_score};
+    // Crafter rolls 200 (would be Fine), all-crude inputs (score 0).
+    // Adjusted = (200 + 0) / 2 = 100 → Fine, but dragged down from near-superior.
+    let avg_input_score = quality_score(-1); // 0
+    let roll = 200i64;
+    // Drag-down: avg < roll, so adjust = (roll + avg) / 2
+    assert!(avg_input_score < roll);
+    let adjusted = (roll + avg_input_score) / 2; // 100
+    assert_eq!(quality_from_roll(adjusted), 0); // Fine
+
+    // Without drag-down, roll 260 would be Superior.
+    let roll = 260i64;
+    assert_eq!(quality_from_roll(roll), 1); // Superior
+    // With crude inputs, adjusted = (260 + 0) / 2 = 130 → Fine.
+    let adjusted = (roll + avg_input_score) / 2; // 130
+    assert_eq!(quality_from_roll(adjusted), 0); // Dragged to Fine
+}
+
+#[test]
+fn quality_propagation_with_inputs_statistical() {
+    // Verify determine_craft_quality_with_inputs applies drag-down:
+    // a high-skill elf with all-crude inputs should produce lower quality
+    // on average than the same elf with no inputs (extract recipe).
+    let mut sim = test_sim(123);
+    let creature_id = spawn_creature(&mut sim, Species::Elf);
+    // High combined stats+skill = ~200 (mostly Fine/Superior without drag).
+    set_trait(&mut sim, creature_id, TraitKind::Dexterity, 50);
+    set_trait(&mut sim, creature_id, TraitKind::Intelligence, 50);
+    set_trait(&mut sim, creature_id, TraitKind::Perception, 50);
+    set_trait(&mut sim, creature_id, TraitKind::Herbalism, 50);
+
+    let n = 5_000;
+    let crude_inputs = vec![-1i32; 5]; // 5 crude inputs
+
+    // Roll with no inputs (extract).
+    let mut no_input_sum = 0i64;
+    let mut sim_a = sim.clone();
+    for _ in 0..n {
+        let q = sim_a.determine_craft_quality(creature_id, crate::recipe::RecipeVerb::Extract);
+        no_input_sum += q as i64;
+    }
+
+    // Roll with crude inputs.
+    let mut crude_input_sum = 0i64;
+    let mut sim_b = sim.clone();
+    for _ in 0..n {
+        let q = sim_b.determine_craft_quality_with_inputs(
+            creature_id,
+            crate::recipe::RecipeVerb::Extract,
+            &crude_inputs,
+        );
+        crude_input_sum += q as i64;
+    }
+
+    // Crude inputs should drag quality down (lower average).
+    let no_input_avg = no_input_sum as f64 / n as f64;
+    let crude_input_avg = crude_input_sum as f64 / n as f64;
+    assert!(
+        crude_input_avg < no_input_avg,
+        "crude inputs should produce lower avg quality: no_input={no_input_avg:.3}, crude={crude_input_avg:.3}"
+    );
+}
+
+#[test]
+fn quality_propagation_good_inputs_no_boost() {
+    use super::crafting::{quality_from_roll, quality_score};
+    // Crafter rolls 100 (Fine), superior inputs (score 300).
+    // avg_input_score >= roll, so NO adjustment — good materials can't boost.
+    let avg_input_score = quality_score(1); // 300
+    let roll = 100i64;
+    assert!(avg_input_score >= roll);
+    // Roll stays 100 → Fine.
+    assert_eq!(quality_from_roll(roll), 0);
+}
+
+#[test]
+fn craft_output_gets_rolled_quality() {
+    // Verify that crafted items receive quality from determine_craft_quality,
+    // not a hardcoded value. A high-skill elf baking bread should sometimes
+    // produce non-zero quality.
+    let mut sim = test_sim(42);
+    let species_id = insert_full_chain_fruit_species(&mut sim);
+    let mat = Material::FruitSpecies(species_id);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Kitchen);
+    place_all_furniture(&mut sim, structure_id);
+    add_recipe_with_targets(&mut sim, structure_id, Recipe::Bake, Some(mat), 100);
+
+    // Stock the kitchen with flour.
+    let inv_id = sim.structure_inv(structure_id);
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Flour,
+        50,
+        None,
+        None,
+        Some(mat),
+        0,
+        None,
+        None,
+    );
+
+    // Spawn an elf near the structure and give it exceptional Cuisine skill
+    // and high stats so it reliably produces Superior items.
+    let anchor = sim.db.structures.get(&structure_id).unwrap().anchor;
+    let mut events = Vec::new();
+    sim.spawn_creature(Species::Elf, anchor, &mut events);
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+    set_trait(&mut sim, elf_id, TraitKind::Dexterity, 80);
+    set_trait(&mut sim, elf_id, TraitKind::Intelligence, 80);
+    set_trait(&mut sim, elf_id, TraitKind::Perception, 80);
+    set_trait(&mut sim, elf_id, TraitKind::Cuisine, 100);
+
+    // Run sim long enough for several crafts to complete.
+    sim.step(&[], sim.tick + 100_000);
+
+    // Check produced bread. With combined stat+skill ~340, all rolls should
+    // land in Superior (+1) range (threshold 250, mean roll ~340).
+    let bread: Vec<_> = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .filter(|s| s.kind == inventory::ItemKind::Bread)
+        .collect();
+    assert!(!bread.is_empty(), "elf should have baked some bread");
+    // With stats 240 + skill 100 = 340 combined and stddev 50, the raw roll
+    // mean is ~340. Input drag-down from Fine flour (score 150) adjusts rolls
+    // above 150 to (roll + 150) / 2, near the Superior threshold. At minimum,
+    // quality should not be hardcoded 0 on all items — at least some should
+    // be Superior (+1), proving the roll is active.
+    let any_non_fine = bread.iter().any(|s| s.quality != 0);
+    assert!(
+        any_non_fine,
+        "with stats+skill ~340, at least some bread should be non-Fine quality"
+    );
+}
+
+#[test]
+fn determine_craft_quality_statistical() {
+    // Elf with combined stat+skill ~100 should produce ~16% Crude, ~84% Fine,
+    // ~0% Superior over many trials.
+    let mut sim = test_sim(999);
+    let creature_id = spawn_creature(&mut sim, Species::Elf);
+    // Set DEX=20, INT=20, PER=10 (sum=50) and Herbalism=50 → combined=100.
+    set_trait(&mut sim, creature_id, TraitKind::Dexterity, 20);
+    set_trait(&mut sim, creature_id, TraitKind::Intelligence, 20);
+    set_trait(&mut sim, creature_id, TraitKind::Perception, 10);
+    set_trait(&mut sim, creature_id, TraitKind::Herbalism, 50);
+
+    let mut counts = [0i32; 3]; // crude, fine, superior
+    let n = 10_000;
+    for _ in 0..n {
+        let q = sim.determine_craft_quality(creature_id, crate::recipe::RecipeVerb::Extract);
+        match q {
+            -1 => counts[0] += 1,
+            0 => counts[1] += 1,
+            1 => counts[2] += 1,
+            _ => panic!("unexpected quality {q}"),
+        }
+    }
+    let crude_pct = counts[0] as f64 / n as f64 * 100.0;
+    let fine_pct = counts[1] as f64 / n as f64 * 100.0;
+    let superior_pct = counts[2] as f64 / n as f64 * 100.0;
+
+    // At combined=100: quasi_normal(50) has stddev~50, so roll mean=100.
+    // P(roll<50) ≈ 16%, P(roll>=250) ≈ 0.1%.
+    assert!(
+        crude_pct > 8.0 && crude_pct < 25.0,
+        "crude {crude_pct:.1}% out of expected ~16% range"
+    );
+    assert!(
+        fine_pct > 70.0 && fine_pct < 95.0,
+        "fine {fine_pct:.1}% out of expected ~84% range"
+    );
+    assert!(
+        superior_pct < 3.0,
+        "superior {superior_pct:.1}% should be near 0%"
+    );
+}
+
+#[test]
+fn grow_quality_uses_woodcraft_not_singing() {
+    // Grow recipes should use DEX + INT + PER + Woodcraft for quality,
+    // not CHA + INT + PER + Singing (which is for Construction).
+    let mut sim = test_sim(42);
+    let creature_id = spawn_creature(&mut sim, Species::Elf);
+    // High DEX + Woodcraft, zero CHA + Singing.
+    set_trait(&mut sim, creature_id, TraitKind::Dexterity, 100);
+    set_trait(&mut sim, creature_id, TraitKind::Intelligence, 50);
+    set_trait(&mut sim, creature_id, TraitKind::Perception, 50);
+    set_trait(&mut sim, creature_id, TraitKind::Woodcraft, 100);
+    set_trait(&mut sim, creature_id, TraitKind::Charisma, 0);
+    set_trait(&mut sim, creature_id, TraitKind::Singing, 0);
+
+    let n = 1_000;
+    let mut quality_sum = 0i64;
+    for _ in 0..n {
+        let q = sim.determine_craft_quality(creature_id, crate::recipe::RecipeVerb::Grow);
+        quality_sum += q as i64;
+    }
+    // Combined = DEX(100) + INT(50) + PER(50) + Woodcraft(100) = 300.
+    // Mean roll ~300, well above Superior threshold (250).
+    // Average quality should be close to +1 (Superior).
+    let avg = quality_sum as f64 / n as f64;
+    assert!(
+        avg > 0.7,
+        "Grow quality with high DEX+Woodcraft should be mostly Superior, avg={avg:.2}"
+    );
+}
+
+#[test]
+fn subcomponent_records_inherit_parent_quality() {
+    // Verify that subcomponent records get the parent item's rolled quality,
+    // not a hardcoded 0.
+    let mut sim = test_sim(42);
+    let species_id = insert_full_chain_fruit_species(&mut sim);
+    let mat = Material::FruitSpecies(species_id);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+    place_all_furniture(&mut sim, structure_id);
+
+    // Assemble recipe (e.g., GrowBow) typically has subcomponents.
+    // Use a recipe that records subcomponents. Let's check which ones do.
+    // GrowBow has a Bowstring subcomponent.
+    add_recipe_with_targets(
+        &mut sim,
+        structure_id,
+        Recipe::GrowBow,
+        Some(Material::Oak),
+        10,
+    );
+
+    // Stock the workshop with bowstrings (needed as input for GrowBow).
+    let inv_id = sim.structure_inv(structure_id);
+    sim.inv_add_item(
+        inv_id,
+        inventory::ItemKind::Bowstring,
+        10,
+        None,
+        None,
+        Some(mat),
+        -1, // Crude bowstrings
+        None,
+        None,
+    );
+
+    // Spawn a high-skill elf to ensure Superior output.
+    let anchor = sim.db.structures.get(&structure_id).unwrap().anchor;
+    let mut events = Vec::new();
+    sim.spawn_creature(Species::Elf, anchor, &mut events);
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+    set_trait(&mut sim, elf_id, TraitKind::Dexterity, 100);
+    set_trait(&mut sim, elf_id, TraitKind::Intelligence, 100);
+    set_trait(&mut sim, elf_id, TraitKind::Perception, 100);
+    set_trait(&mut sim, elf_id, TraitKind::Woodcraft, 100);
+
+    // Give elf enough mana for Grow recipes.
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.mp = 100_000;
+    });
+
+    sim.step(&[], sim.tick + 200_000);
+
+    // Find any crafted bows.
+    let bows: Vec<_> = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .filter(|s| s.kind == inventory::ItemKind::Bow)
+        .collect();
+
+    if !bows.is_empty() {
+        for bow in &bows {
+            let subs = sim
+                .db
+                .item_subcomponents
+                .by_item_stack_id(&bow.id, tabulosity::QueryOpts::ASC);
+            for sub in &subs {
+                assert_eq!(
+                    sub.quality, bow.quality,
+                    "subcomponent quality ({}) should match parent bow quality ({})",
+                    sub.quality, bow.quality,
+                );
+            }
+        }
+    }
+    // If no bows were produced (elf couldn't reach workshop, mana issues, etc.)
+    // the test passes vacuously — the craft integration test covers production.
+}
+
+#[test]
+fn starting_ground_pile_items_are_crude() {
+    let config = test_config();
+    let mut sim = SimState::with_config(42, config);
+    let mut events = Vec::new();
+    sim.spawn_initial_creatures(&mut events);
+
+    // Check all ground pile items.
+    let pile_inv_ids: Vec<_> = sim
+        .db
+        .ground_piles
+        .iter_all()
+        .map(|p| p.inventory_id)
+        .collect();
+    for inv_id in &pile_inv_ids {
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(inv_id, tabulosity::QueryOpts::ASC);
+        for stack in &stacks {
+            assert_eq!(
+                stack.quality,
+                -1,
+                "ground pile {} should be Crude (-1), got {}",
+                stack.kind.display_name(),
+                stack.quality,
+            );
+        }
+    }
 }

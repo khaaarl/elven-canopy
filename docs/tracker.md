@@ -144,7 +144,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-infra-decay          Infrastructure decay with automated maintenance
 [ ] F-insect-husbandry     Beekeeping and insect husbandry
 [ ] F-instinctual-flee     Instinctual flee thresholds (species-level fear overrides)
-[ ] F-item-quality         Item and output quality system
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-leaf-sway            Foliage vertex sway shader (wind simulation)
 [ ] F-leaf-tuning          Leaf visual fine-tuning and interior decisions
@@ -358,6 +357,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-incapacitation       Incapacitation at 0 HP instead of instant death
 [x] F-item-color           Item color system (material-derived and dye override)
 [x] F-item-durability      Item durability system (current/max HP on items)
+[x] F-item-quality         Item and output quality system
 [x] F-items                Items and inventory system
 [x] F-keybind-help         Keyboard shortcuts help overlay
 [x] F-ladders              Rope/wood ladders as cheap connectors
@@ -2100,7 +2100,7 @@ Both thresholds are configurable in GameConfig. A GDScript mirror
 **Related:** F-clothing
 
 #### F-item-quality — Item and output quality system
-**Status:** Todo · **Phase:** 4
+**Status:** Done · **Phase:** 4
 
 Coarse-grained item quality (-1 to +3). At craft completion, roll
 quasi_normal(stddev=50) + stats + skill against thresholds: <50 Crude,

@@ -1,9 +1,15 @@
-// Crafting system — recipe execution, active recipe management.
+// Crafting system — recipe execution, active recipe management, quality rolls.
 //
 // Implements the unified crafting monitor that creates and manages crafting
 // tasks based on active recipes at workstations. Bread production goes through
 // the Extract → Mill → Bake chain. Includes recipe queue management (add,
 // remove, reorder, enable/disable).
+//
+// **Item quality (F-item-quality):** At craft completion, a quality roll
+// determines the output tier: quasi_normal(stddev=50) + crafter stats + skill
+// against thresholds (<50 Crude, 50–249 Fine, 250+ Superior). The verb
+// determines which stats and skill are used (`raw_craft_quality_roll`). Input
+// quality drags down the roll but cannot boost it (`avg_input_quality_score`).
 //
 // **Grow-verb mana drain (F-mana-grow-recipes):** Grow recipes (magical wood
 // shaping) are multi-action tasks that drain mana per action, using the same
@@ -19,6 +25,37 @@ use crate::db::ActionKind;
 use crate::event::ScheduledEventKind;
 use crate::inventory;
 use crate::task;
+
+/// Map a combined quality roll (quasi_normal + stats + skill) to a quality
+/// tier: <50 → Crude (-1), 50–249 → Fine (0), 250+ → Superior (+1).
+pub fn quality_from_roll(roll: i64) -> i32 {
+    match roll {
+        ..50 => -1,
+        50..250 => 0,
+        250.. => 1,
+    }
+}
+
+/// Map a quality tier to a representative score on the roll scale for
+/// input quality propagation. These are tuning values that control how
+/// strongly inputs drag down the crafter's roll.
+pub fn quality_score(quality: i32) -> i64 {
+    match quality {
+        ..=-1 => 0, // Crude
+        0 => 150,   // Fine
+        _ => 300,   // Superior (and above)
+    }
+}
+
+/// Compute the average quality score for a set of input items. Returns
+/// `None` if there are no inputs (no propagation needed).
+fn avg_input_quality_score(input_qualities: &[i32]) -> Option<i64> {
+    if input_qualities.is_empty() {
+        return None;
+    }
+    let sum: i64 = input_qualities.iter().map(|q| quality_score(*q)).sum();
+    Some(sum / input_qualities.len() as i64)
+}
 
 impl SimState {
     /// Start a Craft action: set action kind and schedule next activation.
@@ -162,6 +199,20 @@ impl SimState {
         let inv_id = self.structure_inv(structure_id);
 
         if let Some(resolved) = &resolved {
+            // Collect input qualities before consuming them (for propagation).
+            let input_qualities: Vec<i32> = self
+                .db
+                .item_stacks
+                .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+                .into_iter()
+                .filter(|s| s.reserved_by == Some(task_id))
+                .map(|s| s.quality)
+                .collect();
+
+            // Roll quality and apply input quality drag-down.
+            let quality =
+                self.determine_craft_quality_with_inputs(creature_id, verb, &input_qualities);
+
             for input in &resolved.inputs {
                 self.inv_remove_reserved_items(inv_id, input.item_kind, input.quantity, task_id);
             }
@@ -173,12 +224,12 @@ impl SimState {
                     None,
                     None,
                     output.material,
-                    output.quality,
+                    quality,
                     None,
                     None,
                 );
-                self.apply_output_dye_color(inv_id, output);
-                self.record_subcomponents(inv_id, output, &resolved.subcomponent_records);
+                self.apply_output_dye_color(inv_id, output, quality);
+                self.record_subcomponents(inv_id, output, &resolved.subcomponent_records, quality);
             }
         }
 
@@ -218,6 +269,7 @@ impl SimState {
         &mut self,
         inv_id: InventoryId,
         output: &crate::config::RecipeOutput,
+        quality: i32,
     ) {
         let Some(dye_color) = output.dye_color else {
             return;
@@ -229,7 +281,7 @@ impl SimState {
         if let Some(stack) = stacks.iter().rev().find(|s| {
             s.kind == output.item_kind
                 && s.material == output.material
-                && s.quality == output.quality
+                && s.quality == quality
                 && s.dye_color.is_none()
         }) {
             let stack_id = stack.id;
@@ -248,6 +300,7 @@ impl SimState {
         inv_id: InventoryId,
         output: &crate::config::RecipeOutput,
         subcomponent_records: &[crate::config::RecipeSubcomponentRecord],
+        quality: i32,
     ) {
         if subcomponent_records.is_empty() {
             return;
@@ -259,7 +312,7 @@ impl SimState {
         if let Some(output_stack) = stacks.iter().rev().find(|s| {
             s.kind == output.item_kind
                 && s.material == output.material
-                && s.quality == output.quality
+                && s.quality == quality
                 && s.owner.is_none()
                 && s.reserved_by.is_none()
         }) {
@@ -271,12 +324,104 @@ impl SimState {
                         seq,
                         component_kind: sub.input_kind,
                         material: None,
-                        quality: 0,
+                        quality,
                         quantity_per_item: sub.quantity_per_item,
                     }
                 });
             }
         }
+    }
+
+    /// Roll quality with input quality drag-down. Crude inputs drag down a
+    /// high roll; good inputs cannot boost a low one. See design doc
+    /// F-item-quality §Quality Propagation.
+    pub(crate) fn determine_craft_quality_with_inputs(
+        &mut self,
+        creature_id: CreatureId,
+        verb: crate::recipe::RecipeVerb,
+        input_qualities: &[i32],
+    ) -> i32 {
+        let raw_roll = self.raw_craft_quality_roll(creature_id, verb);
+        let mut roll = raw_roll;
+        if let Some(avg_score) = avg_input_quality_score(input_qualities)
+            && avg_score < roll
+        {
+            roll = (roll + avg_score) / 2;
+        }
+        quality_from_roll(roll)
+    }
+
+    /// Roll quality without input propagation. Used by tests only — the
+    /// production path uses `determine_craft_quality_with_inputs`.
+    #[cfg(test)]
+    pub(crate) fn determine_craft_quality(
+        &mut self,
+        creature_id: CreatureId,
+        verb: crate::recipe::RecipeVerb,
+    ) -> i32 {
+        quality_from_roll(self.raw_craft_quality_roll(creature_id, verb))
+    }
+
+    /// Compute the raw quality roll value (quasi_normal + stats + skill).
+    /// The verb determines which stats and skill are used.
+    fn raw_craft_quality_roll(
+        &mut self,
+        creature_id: CreatureId,
+        verb: crate::recipe::RecipeVerb,
+    ) -> i64 {
+        use crate::recipe::RecipeVerb;
+        use crate::types::TraitKind;
+
+        let (stats, skill) = match verb {
+            RecipeVerb::Extract | RecipeVerb::Mill | RecipeVerb::Press => (
+                &[
+                    TraitKind::Dexterity,
+                    TraitKind::Intelligence,
+                    TraitKind::Perception,
+                ][..],
+                TraitKind::Herbalism,
+            ),
+            RecipeVerb::Spin | RecipeVerb::Twist | RecipeVerb::Weave | RecipeVerb::Sew => (
+                &[
+                    TraitKind::Dexterity,
+                    TraitKind::Intelligence,
+                    TraitKind::Perception,
+                ][..],
+                TraitKind::Tailoring,
+            ),
+            RecipeVerb::Bake => (
+                &[
+                    TraitKind::Dexterity,
+                    TraitKind::Intelligence,
+                    TraitKind::Perception,
+                ][..],
+                TraitKind::Cuisine,
+            ),
+            RecipeVerb::Assemble => (
+                &[
+                    TraitKind::Dexterity,
+                    TraitKind::Intelligence,
+                    TraitKind::Perception,
+                ][..],
+                TraitKind::Woodcraft,
+            ),
+            RecipeVerb::Grow => (
+                &[
+                    TraitKind::Dexterity,
+                    TraitKind::Intelligence,
+                    TraitKind::Perception,
+                ][..],
+                TraitKind::Woodcraft,
+            ),
+        };
+
+        let bell = elven_canopy_prng::quasi_normal(&mut self.rng, 50);
+        let skill_val = self.trait_int(creature_id, skill, 0);
+        let stat_total: i64 = stats
+            .iter()
+            .map(|s| self.trait_int(creature_id, *s, 0))
+            .sum();
+        bell + stat_total + skill_val
     }
 
     /// Clean up a Craft task on node invalidation: release reserved inputs in

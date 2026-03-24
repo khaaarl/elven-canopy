@@ -1164,15 +1164,15 @@ pub struct RecipeInput {
     pub material_filter: MaterialFilter,
 }
 
-/// An output product from a recipe.
+/// An output product from a recipe. Quality is determined at craft time by
+/// the crafter's stats and skills (see `determine_craft_quality`), not stored
+/// per recipe.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RecipeOutput {
     pub item_kind: ItemKind,
     pub quantity: u32,
     #[serde(default)]
     pub material: Option<Material>,
-    #[serde(default)]
-    pub quality: i32,
     /// If set, the crafted item gets this dye color on its `ItemStack`.
     /// Used by Press recipes to produce colored dye items.
     #[serde(default)]

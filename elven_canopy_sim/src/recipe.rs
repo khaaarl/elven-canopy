@@ -300,7 +300,7 @@ impl Recipe {
                         item_kind: part.part_type.extracted_item_kind(),
                         quantity: part.component_units as u32,
                         material: Some(material),
-                        quality: 0,
+
                         dye_color: None,
                     })
                     .collect();
@@ -328,7 +328,7 @@ impl Recipe {
                             item_kind: ItemKind::Flour,
                             quantity: cr.mill_output,
                             material: Some(material),
-                            quality: 0,
+
                             dye_color: None,
                         }],
                         work_ticks: cr.mill_work_ticks,
@@ -351,7 +351,7 @@ impl Recipe {
                         item_kind: ItemKind::Bread,
                         quantity: cr.bake_output,
                         material: Some(material),
-                        quality: 0,
+
                         dye_color: None,
                     }],
                     work_ticks: cr.bake_work_ticks,
@@ -374,7 +374,7 @@ impl Recipe {
                             item_kind: ItemKind::Thread,
                             quantity: cr.spin_output,
                             material: Some(material),
-                            quality: 0,
+
                             dye_color: None,
                         }],
                         work_ticks: cr.spin_work_ticks,
@@ -399,7 +399,7 @@ impl Recipe {
                             item_kind: ItemKind::Cord,
                             quantity: cr.twist_output,
                             material: Some(material),
-                            quality: 0,
+
                             dye_color: None,
                         }],
                         work_ticks: cr.twist_work_ticks,
@@ -422,7 +422,7 @@ impl Recipe {
                         item_kind: ItemKind::Cloth,
                         quantity: cr.weave_output,
                         material: Some(material),
-                        quality: 0,
+
                         dye_color: None,
                     }],
                     work_ticks: cr.weave_work_ticks,
@@ -454,7 +454,7 @@ impl Recipe {
                         item_kind: ItemKind::Dye,
                         quantity: cr.press_output,
                         material: Some(material),
-                        quality: 0,
+
                         dye_color: Some(dye_color),
                     }],
                     work_ticks: cr.press_work_ticks,
@@ -476,7 +476,7 @@ impl Recipe {
                             item_kind: ItemKind::Bowstring,
                             quantity: cr.thread_bowstring_output,
                             material: Some(material),
-                            quality: 0,
+
                             dye_color: None,
                         }],
                         work_ticks: cr.thread_bowstring_work_ticks,
@@ -499,7 +499,7 @@ impl Recipe {
                             item_kind: ItemKind::Bowstring,
                             quantity: cr.cord_bowstring_output,
                             material: Some(material),
-                            quality: 0,
+
                             dye_color: None,
                         }],
                         work_ticks: cr.cord_bowstring_work_ticks,
@@ -536,7 +536,7 @@ impl Recipe {
                         item_kind: ItemKind::Bow,
                         quantity: 1,
                         material: Some(material),
-                        quality: 0,
+
                         dye_color: None,
                     }],
                     work_ticks: gr.grow_bow_work_ticks,
@@ -558,7 +558,7 @@ impl Recipe {
                         item_kind: ItemKind::Arrow,
                         quantity: gr.grow_arrow_output,
                         material: Some(material),
-                        quality: 0,
+
                         dye_color: None,
                     }],
                     work_ticks: gr.grow_arrow_work_ticks,
@@ -918,7 +918,7 @@ impl Recipe {
                     item_kind: output_kind,
                     quantity: output_qty,
                     material: Some(material),
-                    quality: 0,
+
                     dye_color: None,
                 }],
                 work_ticks,
@@ -952,7 +952,7 @@ impl Recipe {
                 item_kind: output_kind,
                 quantity: 1,
                 material: Some(material),
-                quality: 0,
+
                 dye_color: None,
             }],
             work_ticks,
@@ -982,7 +982,7 @@ impl Recipe {
                 item_kind: output_kind,
                 quantity: 1,
                 material: Some(material),
-                quality: 0,
+
                 dye_color: None,
             }],
             work_ticks,

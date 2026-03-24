@@ -1,6 +1,6 @@
 # F-item-quality: Item Quality System
 
-**Status:** Draft
+**Status:** Implemented (core: quality roll, display, propagation, starting gear)
 **Depends on:** F-creature-skills (done), F-manufacturing (done)
 **Related:** F-path-core, F-creature-skills, F-choir-build, F-sung-furniture
 
