@@ -143,7 +143,7 @@ Return a concise summary to the outer context:
 ## After the agent returns
 
 Review the agent's summary. If the agent stopped for user approval (non-trivial
-conflicts, rebase concerns, test failures), address the issue and re-run or
+conflicts, rebase concerns, CI failures), address the issue and re-run or
 continue manually.
 
 ## Why squash first, then rebase?

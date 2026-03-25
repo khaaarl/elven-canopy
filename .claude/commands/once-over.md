@@ -75,8 +75,18 @@ once-overs in succession, which helps check for issues more thoroughly.
    relevant" or "already handled" is not sufficient; cite the specific code
    or reasoning that makes the finding a non-issue.
 
-5. **Run checks.** After any fixes, run `scripts/build.sh check` and
-   `scripts/build.sh quicktest` to confirm everything still passes.
+5. **Verify via CI.** After any fixes, commit and push to the feature branch,
+   then wait for CI:
+
+   ```
+   git push
+   scripts/wait-for-ci.sh
+   ```
+
+   The script polls GitHub Actions CI on the exact pushed commit SHA. It exits
+   early on any job failure and doesn't block on the slow `coverage` job. If
+   CI fails, diagnose and fix the issue, then re-push and re-run.
 
 6. **Commit fixes.** If you made changes, commit them to the feature branch
-   with a message like "Once-over fixes: [brief summary]" and push.
+   with a message like "Once-over fixes: [brief summary]" and push. (If step
+   5 already pushed the fix commits, this step is done.)

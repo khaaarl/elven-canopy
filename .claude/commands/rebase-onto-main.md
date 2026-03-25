@@ -121,18 +121,30 @@ in step 7 will catch issues, and the backup branch means nothing is lost.
 If the rebase is hopelessly tangled (e.g., massive restructuring on both
 sides), **stop and report back** rather than making uncertain resolutions.
 
-### Step 5: Automated verification
+### Step 5: Push and verify via CI
 
-Run checks and tests:
+Force-push the rebased branch so GitHub Actions CI runs on the new commit:
 
 ```
-scripts/build.sh check 2>&1 | tee .tmp/rebase-check.txt
-scripts/build.sh quicktest 2>&1 | tee .tmp/rebase-quicktest.txt
+git push --force
 ```
 
-If either fails:
-- Diagnose and fix the issue.
-- Re-run until both pass.
+Then wait for CI to pass on the exact commit that was pushed:
+
+```
+scripts/wait-for-ci.sh
+```
+
+The script polls `gh run list --commit <SHA>` (defaulting to HEAD) until the
+CI run resolves. It exits early if any job fails (no point waiting) and doesn't
+block on the `coverage` job (which is slow and non-blocking). If the commit
+doesn't trigger CI (e.g., only docs changed), the script detects this locally
+from the changed file paths and exits 0 immediately.
+
+If CI fails:
+- Use `gh run view --job=<JOB_ID>` to inspect the failing job's logs.
+- Diagnose and fix the issue, amend the commit, force-push, and re-run
+  `scripts/wait-for-ci.sh`.
 - If you cannot resolve a failure after a thorough attempt, **stop and report
   back** with the failure details and your diagnosis.
 
@@ -203,16 +215,12 @@ Return a concise summary to the outer context:
 - **Backup branch name** — so the user knows what to reset to if needed.
 - **Conflict resolution** — were there conflicts? How were they resolved?
   Trivial (adjacent lines, imports) or substantive (overlapping logic)?
-- **Test results** — did check and quicktest pass on first try? If not, what
-  was fixed?
+- **CI results** — did CI pass? If not, what was fixed?
 - **Intent diff assessment** — was the delta empty, small, or large? For
   non-empty deltas, summarize each difference and your assessment.
 - **Qualitative concerns** — any suspicious patterns found during the scan,
   even if tests pass. Be specific: name the file, the interaction, and why
   it's concerning.
-- **Force-push needed** — if invoked standalone (not from `/merge-to-main`),
-  remind the user that the branch history was rewritten and they will need to
-  `git push --force` to update the remote.
 - **Recommendation** — one of:
   - "Clean rebase, no concerns" — everything looks good.
   - "Clean rebase with minor adaptations" — small intent delta, all changes
@@ -224,9 +232,9 @@ Return a concise summary to the outer context:
 
 ## After a standalone rebase
 
-The branch's history has been rewritten (squashed and rebased). To update the
-remote, the user will need to force-push: `git push --force`. Mention this in
-the report if the rebase was invoked standalone (not from `/merge-to-main`).
+The branch's history has been rewritten (squashed and rebased). The branch was
+already force-pushed during CI verification (step 5), so the remote is up to
+date.
 
 The squash commit has a mechanical concatenation message. The user may want to
 amend it with a better summary before continuing work.

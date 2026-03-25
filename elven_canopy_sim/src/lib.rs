@@ -9,7 +9,7 @@
 // - `sim/`:           SimState and all simulation logic, split into focused sub-modules
 //                     (mod.rs, activation, combat, construction, crafting, creature,
 //                     greenhouse, inventory_mgmt, logistics, movement, needs, task_helpers).
-// - `world.rs`:       RLE column-based voxel grid (the world's spatial truth).
+// - `world.rs`:       RLE column-based voxel grid (the world's spatial truth, Y-up).
 // - `tree_gen.rs`:    Energy-based recursive tree generation (trunk, branches, roots, leaves).
 // - `mesh_gen.rs`:    Chunk-based voxel mesh generation with smooth surface rendering.
 // - `smooth_mesh.rs`: Smooth mesh pipeline: subdivision, anchoring, chamfer, smoothing.
