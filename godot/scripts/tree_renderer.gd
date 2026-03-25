@@ -29,10 +29,13 @@
 ## ## Visibility pipeline (per frame)
 ##
 ## 1. Extract camera frustum planes from the active Camera3D.
-## 2. Send camera position + frustum to Rust via update_visibility().
-## 3. Rust returns delta lists: chunks to show/hide/generate/evict.
-## 4. GDScript toggles .visible, creates new MeshInstance3Ds for generated
-##    chunks, and frees evicted ones.
+## 2. Send light direction + camera position + frustum to Rust.
+## 3. Rust classifies each chunk as visible (in frustum), shadow-only
+##    (outside frustum but inside the shadow caster volume extruded along
+##    the light direction), or hidden. Returns delta lists.
+## 4. GDScript toggles .visible and cast_shadow accordingly: visible chunks
+##    use SHADOW_CASTING_SETTING_ON, shadow-only chunks use SHADOWS_ONLY,
+##    hidden chunks have .visible = false.
 ##
 ## Fruit is rendered as billboarded Sprite3D nodes, one per fruit voxel,
 ## using procedural 16x16 pixel art textures from elven_canopy_sprites.
@@ -48,6 +51,8 @@ extends Node3D
 var _bridge: SimBridge
 ## Reference to the active Camera3D for frustum extraction.
 var _camera: Camera3D
+## Reference to the main DirectionalLight3D for shadow-only culling.
+var _sun: DirectionalLight3D
 ## Leaf material: procedural noise shader with boolean alpha discard.
 var _leaf_material: ShaderMaterial
 ## Global procedural-noise material for bark surfaces (anisotropic grain).
@@ -68,9 +73,10 @@ var _current_draw_distance: int = -1
 
 ## Call after SimBridge is initialized to build the chunk meshes.
 ## camera: the active Camera3D used for frustum culling.
-func setup(bridge: SimBridge, camera: Camera3D) -> void:
+func setup(bridge: SimBridge, camera: Camera3D, sun: DirectionalLight3D) -> void:
 	_bridge = bridge
 	_camera = camera
+	_sun = sun
 	_leaf_material = _build_leaf_material()
 	_fruit_container = Node3D.new()
 	_fruit_container.name = "FruitSprites"
@@ -128,14 +134,28 @@ func refresh() -> void:
 	_refresh_fruit()
 
 
-## Send camera frustum + position to Rust and process the resulting
-## show/hide/generate/evict delta lists.
+## Send light direction, camera frustum, and position to Rust and process the
+## resulting show/hide/shadow/generate/evict delta lists.
 func _update_chunk_visibility() -> void:
 	var frustum := _extract_frustum_planes()
 	var cam_pos := _camera.global_position
+
+	# Pass the sun's forward direction (-Z in local space) to Rust for
+	# shadow-only culling. The light direction points from the light toward
+	# the scene.
+	if _sun:
+		var light_dir := -_sun.global_basis.z
+		_bridge.set_light_direction(light_dir.x, light_dir.y, light_dir.z)
+
 	_bridge.update_visibility(cam_pos.x, cam_pos.y, cam_pos.z, frustum)
 
-	# Hide chunks that left visibility.
+	# Create MeshInstance3Ds for freshly generated chunks FIRST so that the
+	# delta loops below can find them. Without this, a shadow-only chunk
+	# generated this frame would be created with default cast_shadow=ON and
+	# never corrected (since it's already in shadow_set next frame).
+	_process_generated_chunks()
+
+	# Hide chunks that left full visibility (visible → hidden).
 	var to_hide := _bridge.get_chunks_to_hide()
 	var hide_count := to_hide.size() / 3
 	for i in hide_count:
@@ -145,7 +165,29 @@ func _update_chunk_visibility() -> void:
 			var inst: MeshInstance3D = _chunk_instances[key]
 			inst.visible = false
 
-	# Show chunks that entered visibility (already have MeshInstance3D).
+	# Transition chunks to shadow-only (hidden→shadow or visible→shadow).
+	var to_shadow := _bridge.get_chunks_to_shadow()
+	var shadow_count := to_shadow.size() / 3
+	for i in shadow_count:
+		var idx := i * 3
+		var key := "%d,%d,%d" % [to_shadow[idx], to_shadow[idx + 1], to_shadow[idx + 2]]
+		if _chunk_instances.has(key):
+			var inst: MeshInstance3D = _chunk_instances[key]
+			inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY
+			inst.visible = true
+
+	# Transition chunks from shadow-only to hidden (shadow→hidden).
+	var from_shadow := _bridge.get_chunks_from_shadow()
+	var from_shadow_count := from_shadow.size() / 3
+	for i in from_shadow_count:
+		var idx := i * 3
+		var key := "%d,%d,%d" % [from_shadow[idx], from_shadow[idx + 1], from_shadow[idx + 2]]
+		if _chunk_instances.has(key):
+			var inst: MeshInstance3D = _chunk_instances[key]
+			inst.visible = false
+
+	# Show chunks that entered full visibility (hidden→visible or shadow→visible).
+	# Restore normal shadow casting for chunks that were shadow-only.
 	var to_show := _bridge.get_chunks_to_show()
 	var show_count := to_show.size() / 3
 	for i in show_count:
@@ -153,10 +195,8 @@ func _update_chunk_visibility() -> void:
 		var key := "%d,%d,%d" % [to_show[idx], to_show[idx + 1], to_show[idx + 2]]
 		if _chunk_instances.has(key):
 			var inst: MeshInstance3D = _chunk_instances[key]
+			inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 			inst.visible = true
-
-	# Create MeshInstance3Ds for freshly generated chunks.
-	_process_generated_chunks()
 
 	# Free evicted chunks.
 	var evicted := _bridge.get_chunks_evicted()

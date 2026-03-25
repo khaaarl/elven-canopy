@@ -5350,6 +5350,57 @@ impl SimBridge {
         arr
     }
 
+    /// Set the directional light direction for shadow-only culling.
+    /// The direction is a unit vector pointing from the light source toward
+    /// the scene. Pass (0,0,0) to disable shadow-only culling.
+    #[func]
+    fn set_light_direction(&mut self, dx: f32, dy: f32, dz: f32) {
+        let Some(cache) = &mut self.mesh_cache else {
+            return;
+        };
+        let len_sq = dx * dx + dy * dy + dz * dz;
+        if len_sq < 0.001 {
+            cache.set_light_direction(None);
+        } else {
+            let inv = 1.0 / len_sq.sqrt();
+            cache.set_light_direction(Some([dx * inv, dy * inv, dz * inv]));
+        }
+    }
+
+    /// Return chunks entering shadow-only state this frame.
+    /// GDScript should set cast_shadow = SHADOW_CASTING_SETTING_SHADOWS_ONLY
+    /// and visible = true. Flat PackedInt32Array of (cx,cy,cz) triples.
+    #[func]
+    fn get_chunks_to_shadow(&self) -> PackedInt32Array {
+        let Some(cache) = &self.mesh_cache else {
+            return PackedInt32Array::new();
+        };
+        let mut arr = PackedInt32Array::new();
+        for c in cache.chunks_to_shadow() {
+            arr.push(c.cx);
+            arr.push(c.cy);
+            arr.push(c.cz);
+        }
+        arr
+    }
+
+    /// Return chunks leaving shadow-only state to fully hidden this frame.
+    /// GDScript should set visible = false. Flat PackedInt32Array of
+    /// (cx,cy,cz) triples.
+    #[func]
+    fn get_chunks_from_shadow(&self) -> PackedInt32Array {
+        let Some(cache) = &self.mesh_cache else {
+            return PackedInt32Array::new();
+        };
+        let mut arr = PackedInt32Array::new();
+        for c in cache.chunks_from_shadow() {
+            arr.push(c.cx);
+            arr.push(c.cy);
+            arr.push(c.cz);
+        }
+        arr
+    }
+
     /// Return total cached mesh memory in bytes.
     #[func]
     fn get_total_mesh_bytes(&self) -> i64 {

@@ -195,7 +195,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-seasons              Seasonal visual and gameplay effects
 [ ] F-selection-bar        Bottom-of-screen selection bar (SC2-style)
 [ ] F-settlement-gen       Procedural NPC settlement generation
-[ ] F-shadow-cull          Shadow-only rendering for culled chunks in light direction
 [ ] F-skirmish             Ranged skirmish/kite behavior (shoot-retreat loop)
 [ ] F-slow-eating          Slow eating with interruptible consumption and partial restoration
 [ ] F-smooth-perf          Smooth mesh performance optimization
@@ -427,6 +426,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-selection-groups     Ctrl+number selection groups with double-tap camera center
 [x] F-serde                Serialization for all sim types
 [x] F-session-sm           Formal session & sim state machines
+[x] F-shadow-cull          Shadow-only rendering for culled chunks in light direction
 [x] F-shared-prng          Shared PRNG crate across all Rust crates
 [x] F-shoot-action         Ranged attack action (shooting arrows)
 [x] F-sim-commands         SimCommand pipeline
@@ -5108,7 +5108,7 @@ Requires F-player-identity for per-player persistent storage.
 **Related:** B-doubletap-groups, F-controls-config, F-dblclick-select, F-follow-multi, F-player-identity
 
 #### F-shadow-cull — Shadow-only rendering for culled chunks in light direction
-**Status:** Todo
+**Status:** Done
 
 Chunks culled by frustum/height hiding currently become fully invisible, which removes them from Godot's shadow map pass. This causes canopy above the camera to stop casting shadows on the ground below. Fix: instead of setting `.visible = false` on culled chunks that are above or diagonal-in-light-direction from the camera frustum, set their `shadow_casting_setting` to `SHADOW_CASTING_SETTING_SHADOWS_ONLY`. They render into the shadow map (depth only, cheap) but skip the color pass. Chunks behind/below the camera that can't cast shadows into the visible area can still be fully hidden. Requires knowing the DirectionalLight3D direction to determine which culled chunks are shadow-relevant.
 

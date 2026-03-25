@@ -248,7 +248,7 @@ func _on_mp_game_started() -> void:
 func _setup_common(bridge: SimBridge) -> void:
 	# Set up tree renderer (refreshed every frame for carve updates).
 	_tree_renderer = $TreeRenderer
-	_tree_renderer.setup(bridge, $CameraPivot/Camera3D)
+	_tree_renderer.setup(bridge, $CameraPivot/Camera3D, $DirectionalLight3D)
 
 	# Set up elf renderer.
 	var elf_renderer = $ElfRenderer

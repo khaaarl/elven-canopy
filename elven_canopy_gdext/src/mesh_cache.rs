@@ -2,33 +2,43 @@
 //
 // Sits between the sim's pure `mesh_gen` module and the Godot-facing
 // `sim_bridge.rs`. Organises chunks into MegaChunks (16×16 horizontal groups)
-// for fast draw-distance and frustum culling. Meshes are generated lazily —
-// only when a chunk first enters the camera's visible set — and evicted via
-// LRU when a configurable memory budget is exceeded.
+// for fast draw-distance, frustum culling, and shadow-only culling. Meshes are
+// generated lazily — only when a chunk first enters the visible or shadow set —
+// and evicted via LRU when a configurable memory budget is exceeded.
 //
 // ## Visibility pipeline (per frame)
 //
-// 1. GDScript sends camera position + 6 frustum planes.
-// 2. `update_visibility()` tests each MegaChunk AABB against draw distance
-//    (XZ only) and then against the frustum (coarse).
-// 3. Individual chunk AABBs within passing MegaChunks are frustum-tested (fine).
-// 4. Newly-visible chunks without cached meshes are generated on-demand, up to
-//    `max_gen_per_frame` per call.
-// 5. Delta lists (show, hide, generated, evicted) are produced for GDScript to
-//    toggle MeshInstance3D visibility and create/free nodes.
+// Each chunk is in one of three states: **visible** (in camera frustum),
+// **shadow-only** (outside frustum but inside the shadow caster volume), or
+// **hidden**. The shadow caster volume is a light-space oriented bounding box
+// around the frustum, extended backward along the light direction by the draw
+// distance (see `build_shadow_planes()`).
+//
+// 1. GDScript sends the light direction, camera position, and 6 frustum planes.
+// 2. `update_visibility()` builds the shadow volume planes from the frustum and
+//    light direction.
+// 3. Coarse pass: each MegaChunk AABB is tested against draw distance, frustum,
+//    and shadow volume.
+// 4. Fine pass: individual chunk AABBs are classified as visible, shadow-only,
+//    or hidden.
+// 5. Newly-visible/shadow chunks without cached meshes are generated on-demand,
+//    up to `max_gen_per_frame` per call.
+// 6. Delta lists (show, hide, to_shadow, from_shadow, generated, evicted) are
+//    produced for GDScript to toggle MeshInstance3D visibility, cast_shadow
+//    settings, and create/free nodes.
 //
 // ## LRU eviction
 //
 // Every cached chunk has a `last_accessed` frame stamp. When total cached mesh
 // bytes exceed `memory_budget`, the least-recently-accessed chunk NOT in the
-// visible set is evicted (mesh data freed). GDScript frees the corresponding
-// MeshInstance3D node.
+// visible or shadow set is evicted (mesh data freed). GDScript frees the
+// corresponding MeshInstance3D node.
 //
 // ## Dirty chunk deferral
 //
-// `update_dirty()` only regenerates dirty chunks in the visible set. Non-visible
-// dirty chunks stay in the dirty set and are rebuilt when they next enter
-// visibility.
+// `update_dirty()` only regenerates dirty chunks in the visible or shadow set.
+// Non-visible/non-shadow dirty chunks stay in the dirty set and are rebuilt
+// when they next enter visibility or the shadow set.
 //
 // Also owns the `TilingCache` (global prime-period tiling textures) which
 // is built once and shared across all chunks — it doesn't depend on world
@@ -166,6 +176,168 @@ impl Aabb3 {
         }
         false
     }
+}
+
+// ---------------------------------------------------------------------------
+// Shadow volume construction (light-space AABB)
+// ---------------------------------------------------------------------------
+
+fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn normalize3(v: [f32; 3]) -> Option<[f32; 3]> {
+    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if len < 1e-10 {
+        None
+    } else {
+        Some([v[0] / len, v[1] / len, v[2] / len])
+    }
+}
+
+/// Build the set of planes that define the shadow caster volume for a
+/// directional light.
+///
+/// Uses a **light-space AABB** approach: the 8 frustum corners are
+/// transformed into a coordinate system aligned with the light direction,
+/// the AABB is computed in that space, the near side is extended backward
+/// along the light axis by `extend_distance`, and the 6 AABB planes are
+/// transformed back to world space.
+///
+/// This produces a tight oriented bounding box that varies smoothly with
+/// camera movement — no silhouette classification, no discontinuous flips.
+///
+/// `extend_distance` controls how far upstream (toward the light source)
+/// the volume extends beyond the frustum. Typically set to the draw
+/// distance so that shadow casters within range are included.
+///
+/// The returned planes use the same convention as `is_outside_frustum()`:
+/// outward-facing normals, inside when `n·p - d < 0`.
+pub fn build_shadow_planes(
+    frustum: &[[f32; 4]],
+    light_dir: [f32; 3],
+    extend_distance: f32,
+) -> Vec<[f32; 4]> {
+    if frustum.len() < 6 {
+        return Vec::new();
+    }
+
+    // Build a right-handed orthonormal basis where Z = light_dir (toward scene).
+    let z_axis = light_dir;
+    // Choose an up hint that isn't parallel to light_dir.
+    let up_hint = if light_dir[1].abs() < 0.9 {
+        [0.0, 1.0, 0.0]
+    } else {
+        [1.0, 0.0, 0.0]
+    };
+    let Some(x_axis) = normalize3(cross3(up_hint, z_axis)) else {
+        return Vec::new();
+    };
+    let y_axis = cross3(z_axis, x_axis); // already unit length
+
+    // Extract the 8 frustum corners by intersecting triples of planes.
+    let corners = frustum_corners(frustum);
+    if corners.is_empty() {
+        return Vec::new();
+    }
+
+    // Project corners into light space.
+    let mut ls_min = [f32::MAX; 3];
+    let mut ls_max = [f32::MIN; 3];
+    for c in &corners {
+        let lx = dot3(*c, x_axis);
+        let ly = dot3(*c, y_axis);
+        let lz = dot3(*c, z_axis);
+        ls_min[0] = ls_min[0].min(lx);
+        ls_min[1] = ls_min[1].min(ly);
+        ls_min[2] = ls_min[2].min(lz);
+        ls_max[0] = ls_max[0].max(lx);
+        ls_max[1] = ls_max[1].max(ly);
+        ls_max[2] = ls_max[2].max(lz);
+    }
+
+    // Extend the near side backward along the light axis (toward the light
+    // source, i.e., negative Z in light space) so shadow casters upstream of
+    // the frustum are included.
+    ls_min[2] -= extend_distance;
+
+    // Build 6 planes from the light-space AABB, transformed back to world space.
+    // Each AABB face has an outward normal in light space; we express it in world
+    // space and compute d from a point on the face.
+    vec![
+        // +X face: outward normal = +x_axis, d = ls_max[0]
+        [x_axis[0], x_axis[1], x_axis[2], ls_max[0]],
+        // -X face: outward normal = -x_axis, d = -ls_min[0]
+        [-x_axis[0], -x_axis[1], -x_axis[2], -ls_min[0]],
+        // +Y face: outward normal = +y_axis, d = ls_max[1]
+        [y_axis[0], y_axis[1], y_axis[2], ls_max[1]],
+        // -Y face: outward normal = -y_axis, d = -ls_min[1]
+        [-y_axis[0], -y_axis[1], -y_axis[2], -ls_min[1]],
+        // +Z face (downstream, far from light): outward normal = +z_axis, d = ls_max[2]
+        [z_axis[0], z_axis[1], z_axis[2], ls_max[2]],
+        // -Z face (upstream, toward light): outward normal = -z_axis, d = -ls_min[2]
+        [-z_axis[0], -z_axis[1], -z_axis[2], -ls_min[2]],
+    ]
+}
+
+/// The 8 frustum corner triples (indices into the 6 frustum planes).
+/// Godot order: near(0), far(1), left(2), right(3), top(4), bottom(5).
+const CORNER_TRIPLES: [(usize, usize, usize); 8] = [
+    (0, 2, 4), // near-left-top
+    (0, 3, 4), // near-right-top
+    (0, 2, 5), // near-left-bottom
+    (0, 3, 5), // near-right-bottom
+    (1, 2, 4), // far-left-top
+    (1, 3, 4), // far-right-top
+    (1, 2, 5), // far-left-bottom
+    (1, 3, 5), // far-right-bottom
+];
+
+/// Extract the 8 frustum corners by intersecting triples of adjacent planes.
+fn frustum_corners(frustum: &[[f32; 4]]) -> Vec<[f32; 3]> {
+    let mut corners = Vec::with_capacity(8);
+    for &(a, b, c) in &CORNER_TRIPLES {
+        if let Some(p) = intersect_three_planes(frustum[a], frustum[b], frustum[c]) {
+            corners.push(p);
+        }
+    }
+    corners
+}
+
+/// Intersect three planes to find a single point.
+/// Each plane is `[nx, ny, nz, d]` with convention `n·p = d` on the plane.
+fn intersect_three_planes(p1: [f32; 4], p2: [f32; 4], p3: [f32; 4]) -> Option<[f32; 3]> {
+    let n1 = [p1[0], p1[1], p1[2]];
+    let n2 = [p2[0], p2[1], p2[2]];
+    let n3 = [p3[0], p3[1], p3[2]];
+
+    let det = n1[0] * (n2[1] * n3[2] - n2[2] * n3[1]) - n1[1] * (n2[0] * n3[2] - n2[2] * n3[0])
+        + n1[2] * (n2[0] * n3[1] - n2[1] * n3[0]);
+
+    if det.abs() < 1e-10 {
+        return None;
+    }
+
+    let inv = 1.0 / det;
+    let x = (p1[3] * (n2[1] * n3[2] - n2[2] * n3[1]) - p2[3] * (n1[1] * n3[2] - n1[2] * n3[1])
+        + p3[3] * (n1[1] * n2[2] - n1[2] * n2[1]))
+        * inv;
+    let y = (p2[3] * (n1[0] * n3[2] - n1[2] * n3[0]) - p1[3] * (n2[0] * n3[2] - n2[2] * n3[0])
+        + p3[3] * (n1[2] * n2[0] - n1[0] * n2[2]))
+        * inv;
+    let z = (p1[3] * (n2[0] * n3[1] - n2[1] * n3[0]) - p2[3] * (n1[0] * n3[1] - n1[1] * n3[0])
+        + p3[3] * (n1[0] * n2[1] - n1[1] * n2[0]))
+        * inv;
+
+    Some([x, y, z])
 }
 
 // ---------------------------------------------------------------------------
@@ -356,6 +528,13 @@ pub struct MeshCache {
     chunks_generated: Vec<ChunkCoord>,
     /// Chunks evicted from the LRU cache this frame (need MeshInstance3D freed).
     chunks_evicted: Vec<ChunkCoord>,
+    /// Chunks currently in shadow-only state (outside frustum, inside shadow volume).
+    shadow_set: BTreeSet<ChunkCoord>,
+    /// Chunks entering shadow-only state this frame.
+    chunks_to_shadow: Vec<ChunkCoord>,
+    /// Chunks leaving shadow-only state to hidden this frame.
+    chunks_from_shadow: Vec<ChunkCoord>,
+
     /// Chunks that passed visibility but couldn't be generated this frame
     /// (max_gen_per_frame exceeded). Will be retried next frame.
     pending_gen: BTreeSet<ChunkCoord>,
@@ -382,6 +561,10 @@ pub struct MeshCache {
     memory_budget: usize,
     /// Maximum number of chunk meshes to generate per `update_visibility()` call.
     max_gen_per_frame: usize,
+    /// Light direction for shadow-only culling. Unit vector pointing from
+    /// light source toward scene. `None` disables shadow-only (all culled
+    /// chunks are hidden).
+    light_direction: Option<[f32; 3]>,
 
     /// Accumulated performance timing samples.
     pub perf: PerfStats,
@@ -400,8 +583,11 @@ impl MeshCache {
             cz_max: 0,
             megachunks: BTreeMap::new(),
             visible_set: BTreeSet::new(),
+            shadow_set: BTreeSet::new(),
             chunks_to_show: Vec::new(),
             chunks_to_hide: Vec::new(),
+            chunks_to_shadow: Vec::new(),
+            chunks_from_shadow: Vec::new(),
             chunks_generated: Vec::new(),
             chunks_evicted: Vec::new(),
             pending_gen: BTreeSet::new(),
@@ -413,6 +599,7 @@ impl MeshCache {
             draw_distance_voxels: 50.0,
             memory_budget: 0,
             max_gen_per_frame: 64,
+            light_direction: None,
             perf: PerfStats::new(),
         }
     }
@@ -430,6 +617,10 @@ impl MeshCache {
     #[cfg(test)]
     pub fn set_max_gen_per_frame(&mut self, n: usize) {
         self.max_gen_per_frame = n;
+    }
+
+    pub fn set_light_direction(&mut self, dir: Option<[f32; 3]>) {
+        self.light_direction = dir;
     }
 
     pub fn total_cached_bytes(&self) -> usize {
@@ -452,6 +643,7 @@ impl MeshCache {
         self.last_updated.clear();
         self.megachunks.clear();
         self.visible_set.clear();
+        self.shadow_set.clear();
         self.pending_gen.clear();
         self.empty_chunks.clear();
         self.lru_stamps.clear();
@@ -560,6 +752,8 @@ impl MeshCache {
         self.frame_counter += 1;
         self.chunks_to_show.clear();
         self.chunks_to_hide.clear();
+        self.chunks_to_shadow.clear();
+        self.chunks_from_shadow.clear();
         self.chunks_generated.clear();
         self.chunks_evicted.clear();
 
@@ -570,7 +764,26 @@ impl MeshCache {
         };
 
         let mut new_visible: BTreeSet<ChunkCoord> = BTreeSet::new();
+        let mut new_shadow: BTreeSet<ChunkCoord> = BTreeSet::new();
         let mut gen_count: usize = 0;
+
+        // Build shadow volume planes (once per frame).
+        let shadow_planes: Vec<[f32; 4]> = match self.light_direction {
+            Some(dir) if frustum_planes.len() >= 6 => {
+                let extend = if self.draw_distance_voxels > 0.0 {
+                    self.draw_distance_voxels
+                } else {
+                    // Unlimited draw distance: extend by the world diagonal.
+                    let wx = self.cx_max as f32 * CHUNK_SIZE as f32;
+                    let wy = self.cy_max as f32 * CHUNK_SIZE as f32;
+                    let wz = self.cz_max as f32 * CHUNK_SIZE as f32;
+                    (wx * wx + wy * wy + wz * wz).sqrt()
+                };
+                build_shadow_planes(frustum_planes, dir, extend)
+            }
+            _ => Vec::new(),
+        };
+        let have_shadow = !shadow_planes.is_empty();
 
         // Include any chunks still pending from last frame.
         let mut pending_this_frame: BTreeSet<ChunkCoord> = std::mem::take(&mut self.pending_gen);
@@ -578,50 +791,55 @@ impl MeshCache {
         // -- Culling pass (timed) --
         let t_cull = Instant::now();
 
-        // Coarse pass: MegaChunk draw-distance + frustum.
+        // Coarse pass: MegaChunk draw-distance + frustum + shadow volume.
         for mega in self.megachunks.values() {
             let aabb = match mega.aabb {
                 Some(a) => a,
                 None => continue,
             };
 
-            // Draw distance (XZ only).
+            // Draw distance (XZ only). This applies to both visible and shadow.
             if aabb.horizontal_distance_sq(cam_pos[0], cam_pos[2]) > draw_dist_sq {
                 continue;
             }
 
-            // Frustum cull (coarse).
-            if frustum_planes.len() >= 6 && aabb.is_outside_frustum(frustum_planes) {
+            // Coarse frustum and shadow volume tests.
+            let mega_in_frustum =
+                frustum_planes.len() < 6 || !aabb.is_outside_frustum(frustum_planes);
+            let mega_in_shadow = have_shadow && !aabb.is_outside_frustum(&shadow_planes);
+
+            if !mega_in_frustum && !mega_in_shadow {
                 continue;
             }
 
-            // Fine pass: per-chunk draw-distance + frustum test.
+            // Fine pass: per-chunk tests.
             for &chunk_coord in &mega.chunks {
-                // Skip chunks known to produce empty meshes (interior volumes).
                 if self.empty_chunks.contains(&chunk_coord) {
                     continue;
                 }
 
                 let chunk_aabb = Aabb3::from_chunk(chunk_coord);
 
-                // Per-chunk draw distance (the coarse megachunk test may pass
-                // even when individual chunks within it are out of range).
+                // Per-chunk draw distance.
                 if chunk_aabb.horizontal_distance_sq(cam_pos[0], cam_pos[2]) > draw_dist_sq {
                     continue;
                 }
 
-                if frustum_planes.len() >= 6 && chunk_aabb.is_outside_frustum(frustum_planes) {
+                let in_frustum =
+                    frustum_planes.len() < 6 || !chunk_aabb.is_outside_frustum(frustum_planes);
+
+                if in_frustum {
+                    new_visible.insert(chunk_coord);
+                } else if have_shadow && !chunk_aabb.is_outside_frustum(&shadow_planes) {
+                    new_shadow.insert(chunk_coord);
+                } else {
                     continue;
                 }
 
-                new_visible.insert(chunk_coord);
-
-                // Ensure mesh exists.
+                // Ensure mesh exists (both visible and shadow-only need meshes).
                 if self.chunks.contains_key(&chunk_coord) {
-                    // Touch LRU.
                     self.lru_stamps.insert(chunk_coord, self.frame_counter);
                 } else {
-                    // Need to generate. Add to pending; we'll generate up to the cap.
                     pending_this_frame.insert(chunk_coord);
                 }
             }
@@ -647,7 +865,7 @@ impl MeshCache {
         self.pending_gen.clear();
         let mut batch = Vec::new();
         for coord in pending_sorted {
-            if !new_visible.contains(&coord) {
+            if !new_visible.contains(&coord) && !new_shadow.contains(&coord) {
                 continue;
             }
             if batch.len() >= self.max_gen_per_frame {
@@ -699,29 +917,71 @@ impl MeshCache {
                 // regenerate it every frame.
                 self.empty_chunks.insert(coord);
                 new_visible.remove(&coord);
+                new_shadow.remove(&coord);
             }
         }
 
-        // Diff: compute show/hide lists.
+        // Diff: compute show/hide/shadow delta lists.
+        //
+        // State transitions:
+        //   hidden  → visible:     chunks_to_show (cast_shadow ON, visible true)
+        //   hidden  → shadow-only: chunks_to_shadow (cast_shadow SHADOWS_ONLY, visible true)
+        //   shadow  → visible:     chunks_to_show (cast_shadow ON)
+        //   shadow  → hidden:      chunks_from_shadow (visible false)
+        //   visible → shadow-only: chunks_to_shadow (cast_shadow SHADOWS_ONLY)
+        //   visible → hidden:      chunks_to_hide (visible false)
+        //
+        // Note: chunks_to_show doubles as the "restore full rendering" signal,
+        // covering both hidden→visible and shadow→visible transitions.
+
         for &coord in &new_visible {
             if !self.visible_set.contains(&coord) && self.chunks.contains_key(&coord) {
+                // hidden→visible or shadow→visible
                 self.chunks_to_show.push(coord);
             }
         }
-        // Ensure all generated chunks are in the show list, even if they were
-        // already in visible_set from a previous frame (carry-over pending).
+        // Ensure all generated chunks are in the show or shadow list.
         for &coord in &self.chunks_generated {
-            if !self.chunks_to_show.contains(&coord) {
-                self.chunks_to_show.push(coord);
+            if new_visible.contains(&coord) {
+                if !self.chunks_to_show.contains(&coord) {
+                    self.chunks_to_show.push(coord);
+                }
+            } else if new_shadow.contains(&coord) && !self.chunks_to_shadow.contains(&coord) {
+                self.chunks_to_shadow.push(coord);
+            }
+        }
+        for &coord in &new_shadow {
+            // Skip if already added by the chunks_generated loop above.
+            if self.chunks_to_shadow.contains(&coord) {
+                continue;
+            }
+            if !self.shadow_set.contains(&coord)
+                && !self.visible_set.contains(&coord)
+                && self.chunks.contains_key(&coord)
+            {
+                // hidden→shadow
+                self.chunks_to_shadow.push(coord);
+            } else if self.visible_set.contains(&coord) {
+                // visible→shadow
+                self.chunks_to_shadow.push(coord);
             }
         }
         for &coord in &self.visible_set {
-            if !new_visible.contains(&coord) {
+            if !new_visible.contains(&coord) && !new_shadow.contains(&coord) {
+                // visible→hidden
                 self.chunks_to_hide.push(coord);
             }
         }
+        for &coord in &self.shadow_set {
+            if !new_visible.contains(&coord) && !new_shadow.contains(&coord) {
+                // shadow→hidden
+                self.chunks_from_shadow.push(coord);
+            }
+            // shadow→visible is already covered by chunks_to_show above
+        }
 
         self.visible_set = new_visible;
+        self.shadow_set = new_shadow;
 
         // LRU eviction. Chunks that just left visibility may be evicted.
         if self.memory_budget > 0 {
@@ -731,12 +991,13 @@ impl MeshCache {
             if evict_us > 0 || !self.chunks_evicted.is_empty() {
                 PerfStats::record_us(&mut self.perf.eviction_us, evict_us);
             }
-            // Evicted chunks don't need a hide toggle — they're being freed.
-            // Remove them from chunks_to_hide to avoid double-processing.
+            // Evicted chunks don't need a hide/shadow toggle — they're being freed.
+            // Remove them from delta lists to avoid double-processing.
             if !self.chunks_evicted.is_empty() {
                 let evicted_set: BTreeSet<ChunkCoord> =
                     self.chunks_evicted.iter().copied().collect();
                 self.chunks_to_hide.retain(|c| !evicted_set.contains(c));
+                self.chunks_from_shadow.retain(|c| !evicted_set.contains(c));
             }
         }
 
@@ -749,11 +1010,13 @@ impl MeshCache {
     /// Evict least-recently-accessed chunks until under memory budget.
     fn evict_lru(&mut self) {
         while self.total_cached_bytes > self.memory_budget {
-            // Find the chunk with the oldest stamp that is NOT visible.
+            // Find the chunk with the oldest stamp that is NOT visible or shadow-only.
             let victim = self
                 .lru_stamps
                 .iter()
-                .filter(|(coord, _)| !self.visible_set.contains(coord))
+                .filter(|(coord, _)| {
+                    !self.visible_set.contains(coord) && !self.shadow_set.contains(coord)
+                })
                 .min_by_key(|&(_, &stamp)| stamp)
                 .map(|(&coord, _)| coord);
 
@@ -789,6 +1052,16 @@ impl MeshCache {
     /// MeshInstance3D nodes, not just a visibility toggle.
     pub fn chunks_generated(&self) -> &[ChunkCoord] {
         &self.chunks_generated
+    }
+
+    /// Chunks entering shadow-only state (set `SHADOWS_ONLY` + visible).
+    pub fn chunks_to_shadow(&self) -> &[ChunkCoord] {
+        &self.chunks_to_shadow
+    }
+
+    /// Chunks leaving shadow-only state to fully hidden (set `.visible = false`).
+    pub fn chunks_from_shadow(&self) -> &[ChunkCoord] {
+        &self.chunks_from_shadow
     }
 
     /// Chunks evicted from the LRU cache. Their MeshInstance3D nodes should
@@ -861,12 +1134,12 @@ impl MeshCache {
     /// of chunks updated. Non-visible dirty chunks remain dirty and will be
     /// rebuilt when they enter visibility.
     pub fn update_dirty(&mut self, world: &VoxelWorld) -> usize {
-        // Only process dirty chunks that are currently visible.
+        // Only process dirty chunks that are currently visible or shadow-only.
         let visible_dirty: Vec<ChunkCoord> = self
             .dirty
             .iter()
             .copied()
-            .filter(|c| self.visible_set.contains(c))
+            .filter(|c| self.visible_set.contains(c) || self.shadow_set.contains(c))
             .collect();
         if visible_dirty.is_empty() {
             self.last_updated.clear();
@@ -906,6 +1179,7 @@ impl MeshCache {
                 self.chunks.remove(&coord);
                 self.lru_stamps.remove(&coord);
                 self.visible_set.remove(&coord);
+                self.shadow_set.remove(&coord);
                 self.empty_chunks.insert(coord);
                 let mega_coord = chunk_to_mega(coord);
                 if let Some(mc) = self.megachunks.get_mut(&mega_coord) {
@@ -2061,6 +2335,453 @@ mod tests {
         assert!(
             cache.empty_chunks.contains(&ChunkCoord::new(0, 0, 0)),
             "update_dirty should add emptied chunk to empty_chunks"
+        );
+    }
+
+    // -- build_shadow_planes --
+
+    /// Build a box-shaped frustum centered on (0, 0, 100): X in [-50, 50],
+    /// Y in [-50, 50], Z in [1, 200]. Outward normals, inside when n·p - d < 0.
+    fn camera_frustum_looking_z() -> Vec<[f32; 4]> {
+        vec![
+            [0.0, 0.0, -1.0, -1.0], // near: outward -Z, inside when z > 1
+            [0.0, 0.0, 1.0, 200.0], // far: outward +Z, inside when z < 200
+            [-1.0, 0.0, 0.0, 50.0], // left: outward -X, inside when x > -50
+            [1.0, 0.0, 0.0, 50.0],  // right: outward +X, inside when x < 50
+            [0.0, 1.0, 0.0, 50.0],  // top: outward +Y, inside when y < 50
+            [0.0, -1.0, 0.0, 50.0], // bottom: outward -Y, inside when y > -50
+        ]
+    }
+
+    #[test]
+    fn shadow_planes_chunk_above_camera_with_downward_light() {
+        // Camera looking along +Z. Light shines straight down: (0, -1, 0).
+        // A chunk directly above the camera (high Y) is upstream of the light
+        // and should be inside the shadow volume.
+        let frustum = camera_frustum_looking_z();
+        let light_dir = [0.0, -1.0, 0.0]; // pointing down
+
+        let shadow_planes = build_shadow_planes(&frustum, light_dir, 500.0);
+        assert!(!shadow_planes.is_empty(), "should produce shadow planes");
+
+        // Chunk at (0, 5, 6): Y range [80, 96], well above camera.
+        // Z range [96, 112], within frustum Z range.
+        let above = Aabb3::from_chunk(ChunkCoord::new(0, 5, 6));
+        assert!(
+            !above.is_outside_frustum(&shadow_planes),
+            "chunk above camera should be inside shadow volume with downward light"
+        );
+    }
+
+    #[test]
+    fn shadow_planes_chunk_below_camera_with_downward_light() {
+        // Camera at origin looking +Z. Light shines down.
+        // A chunk below the camera (negative Y) is downstream — its shadow goes
+        // further down, not into the frustum.
+        let frustum = camera_frustum_looking_z();
+        let light_dir = [0.0, -1.0, 0.0];
+
+        let shadow_planes = build_shadow_planes(&frustum, light_dir, 500.0);
+
+        // Chunk at (0, -5, 6): Y range [-80, -64], well below camera.
+        let below = Aabb3::from_chunk(ChunkCoord::new(0, -5, 6));
+        assert!(
+            below.is_outside_frustum(&shadow_planes),
+            "chunk below camera should be outside shadow volume with downward light"
+        );
+    }
+
+    #[test]
+    fn shadow_planes_chunk_laterally_outside() {
+        // Camera looking +Z. Light shines down. A chunk far to the right
+        // (high X) can't cast shadows into the frustum even though it's
+        // upstream vertically.
+        let frustum = camera_frustum_looking_z();
+        let light_dir = [0.0, -1.0, 0.0];
+
+        let shadow_planes = build_shadow_planes(&frustum, light_dir, 500.0);
+
+        // Chunk at (10, 5, 6): X range [160, 176], way off to the right.
+        let lateral = Aabb3::from_chunk(ChunkCoord::new(10, 5, 6));
+        assert!(
+            lateral.is_outside_frustum(&shadow_planes),
+            "chunk far to the side should be outside shadow volume"
+        );
+    }
+
+    #[test]
+    fn shadow_planes_diagonal_light() {
+        // Camera looking +Z. Light from upper-left: normalized (-0.5, -0.7, -0.5).
+        let frustum = camera_frustum_looking_z();
+        let light_dir = [-0.5, -0.707, -0.5]; // roughly normalized
+
+        let shadow_planes = build_shadow_planes(&frustum, light_dir, 500.0);
+        assert!(!shadow_planes.is_empty());
+
+        // Chunk above and to the left: should be inside shadow volume.
+        // X range [-16, 0], Y range [48, 64], Z range [96, 112].
+        let upstream = Aabb3::from_chunk(ChunkCoord::new(-1, 3, 6));
+        assert!(
+            !upstream.is_outside_frustum(&shadow_planes),
+            "chunk upstream of diagonal light should be in shadow volume"
+        );
+
+        // Chunk below and to the right: downstream, should be outside.
+        let downstream = Aabb3::from_chunk(ChunkCoord::new(10, -5, 6));
+        assert!(
+            downstream.is_outside_frustum(&shadow_planes),
+            "chunk downstream of diagonal light should be outside shadow volume"
+        );
+    }
+
+    #[test]
+    fn shadow_planes_empty_with_insufficient_planes() {
+        let light_dir = [0.0, -1.0, 0.0];
+        let planes = build_shadow_planes(&[], light_dir, 500.0);
+        assert!(planes.is_empty());
+    }
+
+    #[test]
+    fn shadow_planes_frustum_interior_still_inside() {
+        // Points inside the original frustum should also be inside the shadow
+        // volume (it's a superset).
+        let frustum = camera_frustum_looking_z();
+        let light_dir = [0.0, -1.0, 0.0];
+
+        let shadow_planes = build_shadow_planes(&frustum, light_dir, 500.0);
+
+        let inside = Aabb3::from_chunk(ChunkCoord::new(0, 0, 6));
+        assert!(
+            !inside.is_outside_frustum(&shadow_planes),
+            "chunk inside the original frustum should also be inside shadow volume"
+        );
+    }
+
+    // -- Shadow-only visibility integration tests --
+
+    #[test]
+    fn shadow_visibility_chunk_above_frustum_becomes_shadow_only() {
+        // World: two chunks stacked — one at Y=0 (in frustum), one at Y=3 (above).
+        let mut world = VoxelWorld::new(16, 64, 16);
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk); // chunk (0,0,0)
+        world.set(VoxelCoord::new(8, 56, 8), VoxelType::Trunk); // chunk (0,3,0)
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+        cache.set_draw_distance(0.0); // unlimited
+        cache.set_max_gen_per_frame(100);
+        // Light shines straight down.
+        cache.set_light_direction(Some([0.0, -1.0, 0.0]));
+
+        // Frustum: Y in [-10, 20], so chunk at Y=0 is in frustum, Y=3 is above.
+        let frustum = vec![
+            [0.0, 0.0, -1.0, 500.0], // near
+            [0.0, 0.0, 1.0, 500.0],  // far
+            [-1.0, 0.0, 0.0, 500.0], // left
+            [1.0, 0.0, 0.0, 500.0],  // right
+            [0.0, 1.0, 0.0, 20.0],   // top: inside when y < 20
+            [0.0, -1.0, 0.0, 10.0],  // bottom: inside when y > -10
+        ];
+
+        cache.update_visibility(&world, [8.0, 8.0, 8.0], &frustum);
+
+        assert!(
+            cache.visible_set.contains(&ChunkCoord::new(0, 0, 0)),
+            "chunk at Y=0 should be visible"
+        );
+        assert!(
+            cache.shadow_set.contains(&ChunkCoord::new(0, 3, 0)),
+            "chunk at Y=3 should be shadow-only (above frustum, upstream of downward light)"
+        );
+        // The shadow chunk should be in chunks_to_shadow (first frame).
+        assert!(
+            cache.chunks_to_shadow().contains(&ChunkCoord::new(0, 3, 0)),
+            "chunk at Y=3 should be in chunks_to_shadow"
+        );
+    }
+
+    #[test]
+    fn shadow_visibility_no_light_direction_means_no_shadow_set() {
+        let mut world = VoxelWorld::new(16, 64, 16);
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
+        world.set(VoxelCoord::new(8, 56, 8), VoxelType::Trunk);
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+        cache.set_draw_distance(0.0);
+        cache.set_max_gen_per_frame(100);
+        // No light direction set.
+
+        let frustum = vec![
+            [0.0, 0.0, -1.0, 500.0],
+            [0.0, 0.0, 1.0, 500.0],
+            [-1.0, 0.0, 0.0, 500.0],
+            [1.0, 0.0, 0.0, 500.0],
+            [0.0, 1.0, 0.0, 20.0],
+            [0.0, -1.0, 0.0, 10.0],
+        ];
+
+        cache.update_visibility(&world, [8.0, 8.0, 8.0], &frustum);
+
+        assert!(
+            cache.shadow_set.is_empty(),
+            "no light direction → no shadow-only chunks"
+        );
+        assert!(
+            !cache.visible_set.contains(&ChunkCoord::new(0, 3, 0)),
+            "chunk above frustum should be hidden without light direction"
+        );
+    }
+
+    #[test]
+    fn shadow_visibility_shadow_to_visible_transition() {
+        let mut world = VoxelWorld::new(16, 64, 16);
+        world.set(VoxelCoord::new(8, 56, 8), VoxelType::Trunk); // chunk (0,3,0)
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+        cache.set_draw_distance(0.0);
+        cache.set_max_gen_per_frame(100);
+        cache.set_light_direction(Some([0.0, -1.0, 0.0]));
+
+        // Frame 1: frustum excludes Y=3 → shadow-only.
+        let narrow_frustum = vec![
+            [0.0, 0.0, -1.0, 500.0],
+            [0.0, 0.0, 1.0, 500.0],
+            [-1.0, 0.0, 0.0, 500.0],
+            [1.0, 0.0, 0.0, 500.0],
+            [0.0, 1.0, 0.0, 20.0],
+            [0.0, -1.0, 0.0, 10.0],
+        ];
+        cache.update_visibility(&world, [8.0, 8.0, 8.0], &narrow_frustum);
+        assert!(cache.shadow_set.contains(&ChunkCoord::new(0, 3, 0)));
+
+        // Frame 2: frustum includes Y=3 → visible.
+        cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum());
+        assert!(
+            cache.visible_set.contains(&ChunkCoord::new(0, 3, 0)),
+            "chunk should transition to visible"
+        );
+        assert!(
+            !cache.shadow_set.contains(&ChunkCoord::new(0, 3, 0)),
+            "chunk should leave shadow set"
+        );
+        assert!(
+            cache.chunks_to_show().contains(&ChunkCoord::new(0, 3, 0)),
+            "shadow→visible should produce chunks_to_show entry"
+        );
+    }
+
+    #[test]
+    fn shadow_visibility_shadow_to_hidden_transition() {
+        let mut world = VoxelWorld::new(16, 64, 16);
+        world.set(VoxelCoord::new(8, 56, 8), VoxelType::Trunk); // chunk (0,3,0)
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+        cache.set_draw_distance(0.0);
+        cache.set_max_gen_per_frame(100);
+        cache.set_light_direction(Some([0.0, -1.0, 0.0]));
+
+        // Frame 1: shadow-only.
+        let narrow_frustum = vec![
+            [0.0, 0.0, -1.0, 500.0],
+            [0.0, 0.0, 1.0, 500.0],
+            [-1.0, 0.0, 0.0, 500.0],
+            [1.0, 0.0, 0.0, 500.0],
+            [0.0, 1.0, 0.0, 20.0],
+            [0.0, -1.0, 0.0, 10.0],
+        ];
+        cache.update_visibility(&world, [8.0, 8.0, 8.0], &narrow_frustum);
+        assert!(cache.shadow_set.contains(&ChunkCoord::new(0, 3, 0)));
+
+        // Frame 2: disable light direction → shadow→hidden.
+        cache.set_light_direction(None);
+        cache.update_visibility(&world, [8.0, 8.0, 8.0], &narrow_frustum);
+        assert!(cache.shadow_set.is_empty());
+        assert!(
+            cache
+                .chunks_from_shadow()
+                .contains(&ChunkCoord::new(0, 3, 0)),
+            "shadow→hidden should produce chunks_from_shadow entry"
+        );
+    }
+
+    #[test]
+    fn shadow_visibility_visible_to_shadow_transition() {
+        let mut world = VoxelWorld::new(16, 64, 16);
+        world.set(VoxelCoord::new(8, 56, 8), VoxelType::Trunk); // chunk (0,3,0)
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+        cache.set_draw_distance(0.0);
+        cache.set_max_gen_per_frame(100);
+        cache.set_light_direction(Some([0.0, -1.0, 0.0]));
+
+        // Frame 1: open frustum → chunk is visible.
+        cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum());
+        assert!(cache.visible_set.contains(&ChunkCoord::new(0, 3, 0)));
+        assert!(!cache.shadow_set.contains(&ChunkCoord::new(0, 3, 0)));
+
+        // Frame 2: narrow frustum excludes Y=3 → visible→shadow.
+        let narrow_frustum = vec![
+            [0.0, 0.0, -1.0, 500.0],
+            [0.0, 0.0, 1.0, 500.0],
+            [-1.0, 0.0, 0.0, 500.0],
+            [1.0, 0.0, 0.0, 500.0],
+            [0.0, 1.0, 0.0, 20.0],
+            [0.0, -1.0, 0.0, 10.0],
+        ];
+        cache.update_visibility(&world, [8.0, 8.0, 8.0], &narrow_frustum);
+        assert!(
+            !cache.visible_set.contains(&ChunkCoord::new(0, 3, 0)),
+            "chunk should leave visible set"
+        );
+        assert!(
+            cache.shadow_set.contains(&ChunkCoord::new(0, 3, 0)),
+            "chunk should enter shadow set"
+        );
+        assert!(
+            cache.chunks_to_shadow().contains(&ChunkCoord::new(0, 3, 0)),
+            "visible→shadow should produce chunks_to_shadow entry"
+        );
+    }
+
+    #[test]
+    fn shadow_visibility_visible_to_hidden_not_in_shadow() {
+        // A chunk that leaves the frustum AND the shadow volume should go
+        // to chunks_to_hide, not chunks_to_shadow.
+        let mut world = VoxelWorld::new(16, 64, 16);
+        // Chunk at Y=0, below the camera in a downward-light scenario.
+        // Its shadow goes further down, not into the frustum.
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk); // chunk (0,0,0)
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+        cache.set_draw_distance(0.0);
+        cache.set_max_gen_per_frame(100);
+        cache.set_light_direction(Some([0.0, -1.0, 0.0]));
+
+        // Frame 1: open frustum → visible.
+        cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum());
+        assert!(cache.visible_set.contains(&ChunkCoord::new(0, 0, 0)));
+
+        // Frame 2: frustum high above → chunk below is hidden (not shadow).
+        let high_frustum = vec![
+            [0.0, 0.0, -1.0, 500.0],
+            [0.0, 0.0, 1.0, 500.0],
+            [-1.0, 0.0, 0.0, 500.0],
+            [1.0, 0.0, 0.0, 500.0],
+            [0.0, 1.0, 0.0, 500.0],
+            [0.0, -1.0, 0.0, -100.0], // bottom: inside when y > 100
+        ];
+        cache.update_visibility(&world, [8.0, 200.0, 8.0], &high_frustum);
+        assert!(
+            cache.chunks_to_hide().contains(&ChunkCoord::new(0, 0, 0)),
+            "chunk below camera with downward light should go to hide, not shadow"
+        );
+        assert!(
+            !cache.chunks_to_shadow().contains(&ChunkCoord::new(0, 0, 0)),
+            "chunk should NOT be in shadow list"
+        );
+    }
+
+    #[test]
+    fn shadow_visibility_stable_shadow_no_delta() {
+        let mut world = VoxelWorld::new(16, 64, 16);
+        world.set(VoxelCoord::new(8, 56, 8), VoxelType::Trunk); // chunk (0,3,0)
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+        cache.set_draw_distance(0.0);
+        cache.set_max_gen_per_frame(100);
+        cache.set_light_direction(Some([0.0, -1.0, 0.0]));
+
+        let narrow_frustum = vec![
+            [0.0, 0.0, -1.0, 500.0],
+            [0.0, 0.0, 1.0, 500.0],
+            [-1.0, 0.0, 0.0, 500.0],
+            [1.0, 0.0, 0.0, 500.0],
+            [0.0, 1.0, 0.0, 20.0],
+            [0.0, -1.0, 0.0, 10.0],
+        ];
+
+        // Frame 1: enters shadow.
+        cache.update_visibility(&world, [8.0, 8.0, 8.0], &narrow_frustum);
+        assert!(cache.shadow_set.contains(&ChunkCoord::new(0, 3, 0)));
+        assert!(!cache.chunks_to_shadow().is_empty());
+
+        // Frame 2: same state → no delta.
+        cache.update_visibility(&world, [8.0, 8.0, 8.0], &narrow_frustum);
+        assert!(cache.shadow_set.contains(&ChunkCoord::new(0, 3, 0)));
+        assert!(
+            cache.chunks_to_shadow().is_empty(),
+            "stable shadow chunk should not re-emit to_shadow"
+        );
+        assert!(
+            cache.chunks_from_shadow().is_empty(),
+            "stable shadow chunk should not emit from_shadow"
+        );
+    }
+
+    #[test]
+    fn shadow_visibility_draw_distance_limits_shadow() {
+        // Chunk far in XZ (200 voxels away) but upstream of downward light.
+        let mut world = VoxelWorld::new(256, 64, 16);
+        world.set(VoxelCoord::new(200, 56, 8), VoxelType::Trunk); // chunk (12,3,0)
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+        cache.set_draw_distance(50.0); // 50 voxels — chunk at x=200 is out of range
+        cache.set_max_gen_per_frame(100);
+        cache.set_light_direction(Some([0.0, -1.0, 0.0]));
+
+        let narrow_frustum = vec![
+            [0.0, 0.0, -1.0, 500.0],
+            [0.0, 0.0, 1.0, 500.0],
+            [-1.0, 0.0, 0.0, 500.0],
+            [1.0, 0.0, 0.0, 500.0],
+            [0.0, 1.0, 0.0, 20.0],
+            [0.0, -1.0, 0.0, 10.0],
+        ];
+        cache.update_visibility(&world, [8.0, 8.0, 8.0], &narrow_frustum);
+
+        assert!(
+            !cache.shadow_set.contains(&ChunkCoord::new(12, 3, 0)),
+            "chunk beyond draw distance should not be in shadow set"
+        );
+    }
+
+    #[test]
+    fn shadow_visibility_pending_gen_serves_shadow_chunks() {
+        let mut world = VoxelWorld::new(16, 64, 16);
+        world.set(VoxelCoord::new(8, 56, 8), VoxelType::Trunk); // chunk (0,3,0)
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+        cache.set_draw_distance(0.0);
+        cache.set_max_gen_per_frame(100);
+        cache.set_light_direction(Some([0.0, -1.0, 0.0]));
+
+        // Narrow frustum: chunk at Y=3 is outside frustum but in shadow volume.
+        let narrow_frustum = vec![
+            [0.0, 0.0, -1.0, 500.0],
+            [0.0, 0.0, 1.0, 500.0],
+            [-1.0, 0.0, 0.0, 500.0],
+            [1.0, 0.0, 0.0, 500.0],
+            [0.0, 1.0, 0.0, 20.0],
+            [0.0, -1.0, 0.0, 10.0],
+        ];
+        cache.update_visibility(&world, [8.0, 8.0, 8.0], &narrow_frustum);
+
+        // The shadow-only chunk should have been generated (mesh exists).
+        assert!(
+            cache.chunks.contains_key(&ChunkCoord::new(0, 3, 0)),
+            "shadow-only chunk should get mesh generated"
+        );
+        assert!(
+            cache.shadow_set.contains(&ChunkCoord::new(0, 3, 0)),
+            "chunk should be in shadow set"
         );
     }
 }
