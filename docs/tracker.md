@@ -47,6 +47,7 @@ This reduces merge conflicts when parallel work streams add items.
 ### In Progress
 
 ```
+[~] B-qem-deformation      QEM decimation visual artifacts
 [~] F-creature-skills      Creature skill system (17 universal skills with path-gated advancement)
 [~] F-enemy-ai             Hostile creature AI (goblin/orc/troll behavior)
 [~] F-fruit-variety        Procedural fruit variety and processing
@@ -62,7 +63,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fragile-tests        Audit and harden tests against PRNG stream shifts and worldgen changes
-[ ] B-qem-deformation      QEM decimation visual artifacts
 [ ] B-start-paused-ui      start_paused_on_load UI desync and missing new-game support
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
@@ -4100,7 +4100,7 @@ Two related fixes for the ESC menu:
 Most gameplay hotkeys (B, T, U, M, I, Y, Space, F1–F3, F12, ?) fire even when Ctrl/Shift/Alt are held. They should generally be suppressed when modifiers are active, but some cases may need individual consideration (e.g., Ctrl+1–9 for selection groups already uses modifiers intentionally). Go through each hotkey handler in action_toolbar.gd, main.gd, construction_controller.gd, and selection_controller.gd on a case-by-case basis.
 
 #### B-qem-deformation — QEM decimation visual artifacts
-**Status:** Todo
+**Status:** In Progress
 
 Chamfer-only mode: the three-pass mesh decimation pipeline (coplanar retri, collinear boundary collapse, QEM edge-collapse) produced visible deformations — triangles bridging across crease boundaries between differently-angled chamfer surfaces, creating obvious bumps, dents, and misshapen surfaces.
 
