@@ -232,6 +232,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-task-panel-sprites   Creature sprites in tasks panel and activity cards
 [ ] F-task-priority        Priority queue and auto-assignment
 [ ] F-terrain-manip        Temporary voxel/zone placement with expiry
+[ ] F-test-perf            Test performance audit: per-test timing
 [ ] F-traders              Visiting traders from other civs
 [ ] F-tree-capacity        Per-tree carrying capacity limits
 [ ] F-tree-disease         Tree diseases and parasites
@@ -6262,6 +6263,17 @@ coordinate math, selection helpers, input mode transitions. Add a
 the sim or bridge — just GDScript in isolation.
 
 **Related:** F-ai-test-harness, F-bridge-integ-tests
+
+#### F-test-perf — Test performance audit: per-test timing
+**Status:** Todo
+
+Audit test suite for slow tests and add per-test timing visibility.
+
+**Rust:** Install `cargo-nextest` (`cargo install cargo-nextest`) and wire it into `build.sh`. Drop-in replacement for `cargo test` that shows per-test durations. Alternatively, the built-in `--report-time` flag works on nightly (`cargo test -- -Z unstable-options --report-time`).
+
+**GDScript/GUT:** GUT already tracks `time_taken` per test internally but doesn't print it to console. Two options: (1) enable JUnit XML export via `"junit_xml_file"` in `.gutconfig.json` — each `<testcase>` gets a `time` attribute; (2) patch GUT's `logger.gd` or `summary.gd` to print `time_taken` inline.
+
+**Goal:** Identify slow tests, decide which should be `#[ignore]`d or optimized, and make timing a routine part of test output.
 
 ### Platform
 
