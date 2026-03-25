@@ -306,6 +306,11 @@ case "$MODE" in
             exit 1
         fi
 
+        # Record HEAD before any checkout/reset so we can touch changed files
+        # afterward.  Cargo uses mtime-based change detection; branch switches
+        # can leave mtimes ambiguous, causing stale builds.
+        PREV_HEAD="$(git rev-parse HEAD)"
+
         CURRENT_BRANCH="$(git branch --show-current)"
         if [ "$CURRENT_BRANCH" != "$RESOLVED" ]; then
             echo "Switching to $RESOLVED..."
@@ -330,6 +335,13 @@ case "$MODE" in
             else
                 echo "Already up to date."
             fi
+        fi
+
+        # Touch source files that changed so cargo's mtime-based detection
+        # reliably triggers a rebuild for exactly the affected crates.
+        NEW_HEAD="$(git rev-parse HEAD)"
+        if [ "$PREV_HEAD" != "$NEW_HEAD" ]; then
+            git diff --name-only "$PREV_HEAD" "$NEW_HEAD" -- '*.rs' 'Cargo.toml' 'Cargo.lock' | xargs -r touch
         fi
 
         echo ""
