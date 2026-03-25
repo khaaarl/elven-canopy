@@ -71,8 +71,12 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
 [ ] F-adventure-mode       Control individual elf (RPG-like)
+[ ] F-aggro-fauna          Neutral fauna with aggro triggers
 [ ] F-ai-sprites           AI-generated sprite art pipeline
 [ ] F-anatomy              DF-style hit location anatomy system
+[ ] F-animal-bonds         Elf-animal relationships and bonded pairs
+[ ] F-animal-breeding      Breed tamed animals
+[ ] F-animal-husbandry     Tamed animal needs and care
 [ ] F-apprentice           Skill transfer via proximity
 [ ] F-async-sim            Async sim: decouple sim thread from render thread via delta channel
 [ ] F-audio-sampled        Sampled vocal syllables from conlang
@@ -93,6 +97,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-build-queue-ui       Construction queue/progress UI
 [ ] F-building-door        Player-controlled building door orientation
 [ ] F-cascade-fail         Cascading structural failure
+[ ] F-cavalry              Mount tamed creatures as cavalry
 [ ] F-choir-build          Choir-based construction singing
 [ ] F-choir-harmony        Ensemble harmony in construction singing
 [ ] F-civ-knowledge        Civilization knowledge system (fruit tiers, discovery)
@@ -143,10 +148,12 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-group-chat           Group chat social activity
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-herbalism            Herbalism and alchemy
+[ ] F-herding              Manage animal groups with pens and grazing areas
 [ ] F-infra-decay          Infrastructure decay with automated maintenance
 [ ] F-insect-husbandry     Beekeeping and insect husbandry
 [ ] F-instinctual-flee     Instinctual flee thresholds (species-level fear overrides)
 [ ] F-jobs                 Elf job/role specialization
+[ ] F-labor-panel          DF/Rimworld-style labor assignment UI
 [ ] F-leaf-sway            Foliage vertex sway shader (wind simulation)
 [ ] F-leaf-tuning          Leaf visual fine-tuning and interior decisions
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
@@ -170,6 +177,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-multi-tree           NPC trees with personalities
 [ ] F-narrative-log        Events and narrative log
 [ ] F-night-predators      Nocturnal predators
+[ ] F-pack-animals         Beast-of-burden hauling for heavy loads and caravans
 [ ] F-partial-struct       Structural checks on incomplete builds
 [ ] F-path-civil           Civil path definitions and organic self-assignment
 [ ] F-path-combat          Combat path definitions and player assignment
@@ -226,9 +234,12 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tab-indexmap-fork    Forked IndexMap with tombstone compaction (alternative to F-tab-ordered-idx)
 [ ] F-tab-joins            Join iterators across tables
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
+[ ] F-tame-aggro           Taming failure can aggro the target animal
+[ ] F-taming               Tame neutral creatures via Scout-path elves
 [ ] F-task-assign-opt      Event-driven bidirectional task assignment
 [ ] F-task-panel-sprites   Creature sprites in tasks panel and activity cards
 [ ] F-task-priority        Priority queue and auto-assignment
+[ ] F-task-tags            Decouple task eligibility from species via capability tags
 [ ] F-terrain-manip        Temporary voxel/zone placement with expiry
 [ ] F-test-perf            Test performance audit: per-test timing
 [ ] F-traders              Visiting traders from other civs
@@ -244,8 +255,10 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-vertical-garden      Vertical gardens on the tree
 [ ] F-voxel-ao             Per-vertex ambient occlusion baked into chunk meshes
 [ ] F-want-categories      Categorical want specifications (any footwear, any melee weapon)
+[ ] F-war-animals          Train tamed creatures for combat
 [ ] F-war-magic            War magic (combat spells)
 [ ] F-weather              Weather within seasons
+[ ] F-wild-grazing         Wild animal herbivorous food cycle
 [ ] F-winged-elf           Winged elf species variant with flight-only movement
 [ ] F-wireframe-ghost      Wireframe ghost for overlap preview
 [ ] F-wood-stats           Wood-type material variation for crafted items
@@ -1306,6 +1319,38 @@ task-driven system (player commands, construction, hauling, etc.).
 **Unblocked:** B-flying-arrow-chase, F-winged-elf
 **Related:** F-arrow-chase
 
+#### F-aggro-fauna — Neutral fauna with aggro triggers
+**Status:** Todo
+
+Neutral animals that can become hostile when provoked — territorial
+creatures that aggro when you enter their space, mothers defending young,
+predators that attack when hungry. Prerequisite for taming having real
+risk. Distinct from F-enemy-ai (always-hostile species) — these start
+neutral and transition to hostile based on triggers.
+
+**Related:** F-enemy-ai, F-tame-aggro
+
+#### F-animal-breeding — Breed tamed animals
+**Status:** Todo
+
+Breed tamed animals to grow herds. Mating pairs, gestation periods,
+offspring with inherited traits. Population management — designating
+breeding pairs, culling. Enables sustainable animal populations without
+continual taming of wild stock.
+
+**Related:** F-animal-husbandry, F-civ-pets
+
+#### F-animal-husbandry — Tamed animal needs and care
+**Status:** Todo
+
+Care and maintenance of tamed animals — feeding (supplied food, trough
+filling), shelter (stables, pens), health (injury treatment, disease).
+Animals have needs that must be met or they become unhappy, unhealthy,
+or revert to wild. Elves with Beastcraft skill perform husbandry tasks.
+
+**Blocked by:** F-wild-grazing
+**Related:** F-animal-breeding, F-civ-pets
+
 #### F-bread — Bread items and elf food management
 **Status:** Done · **Phase:** 3
 
@@ -1326,11 +1371,16 @@ and species-specific speed config.
 #### F-civ-pets — Non-elf civ members and pets
 **Status:** Todo
 
-Non-elf creatures that belong to the player's civilization — tamed animals,
-companion creatures, working beasts. They live in the settlement, have
-needs, and may perform tasks or provide combat support.
+Non-elf creatures that belong to the player's civilization — tamed
+animals, companion creatures, working beasts. They live in the
+settlement, have needs, and may perform tasks or provide combat support.
 
-**Related:** F-civilizations
+Encompasses: elf-animal bonds/relationships, war training, mounting and
+cavalry, animal needs (food, shelter), breeding, labor assignment panel
+for controlling which creatures do which tasks.
+
+**Blocked by:** F-taming
+**Related:** F-animal-bonds, F-animal-breeding, F-animal-husbandry, F-cavalry, F-civilizations, F-herding, F-labor-panel, F-pack-animals, F-task-tags, F-war-animals
 
 #### F-creature-actions — Creature action system: typed duration-bearing actions
 **Status:** Done
@@ -1420,7 +1470,7 @@ channels.
 
 **Draft:** docs/drafts/F-creature-skills.md
 
-**Related:** F-apprentice, F-attack-evasion, F-item-quality, F-path-core
+**Related:** F-apprentice, F-attack-evasion, F-item-quality, F-path-core, F-taming
 
 #### F-creature-stats — Creature stats (str/agi/dex/con/wil/int/per/cha)
 **Status:** Done
@@ -1610,6 +1660,33 @@ foraging). Currently all eating is instant on arrival.
 **Status:** Todo
 
 **Related:** F-incapacitation
+
+#### F-tame-aggro — Taming failure can aggro the target animal
+**Status:** Todo
+
+Failed taming attempts can provoke the target animal into aggro,
+creating risk/reward tension for taming dangerous species. Chance of
+aggro per failed attempt, scaled by species temperament and tamer
+skill. Depends on F-aggro-fauna for the neutral-to-hostile transition
+mechanic.
+
+**Related:** F-aggro-fauna, F-taming
+
+#### F-taming — Tame neutral creatures via Scout-path elves
+**Status:** Todo
+
+Scout-path elves can tame neutral creatures. Toggle a "Tame" button on
+a neutral creature's detail panel to create an open task for any
+available Scout. Each attempt is a quick action (few seconds) with a
+small success chance based on WIL + CHA + Beastcraft skill; the Scout
+keeps trying (and gaining Beastcraft XP) until success. Unchecking the
+button cancels the task.
+
+Post-taming: creature gets the player's civ_id, default wander behavior,
+appears in a Pets/Animals section of the units panel.
+
+**Blocks:** F-civ-pets
+**Related:** F-creature-skills, F-tame-aggro, F-task-tags
 
 #### F-task-interruption — Unified task interruption and cleanup
 **Status:** Done
@@ -2057,6 +2134,16 @@ implementation.
 
 **Related:** F-forest-ecology, F-rescue, F-tree-disease
 
+#### F-herding — Manage animal groups with pens and grazing areas
+**Status:** Todo
+
+Manage groups of tamed animals — designate pastures and pens, assign
+animals to grazing areas, herd movement between zones. Prevents animals
+from wandering off. Elves with Beastcraft skill perform herding tasks.
+
+**Blocked by:** F-wild-grazing
+**Related:** F-civ-pets
+
 #### F-insect-husbandry — Beekeeping and insect husbandry
 **Status:** Todo
 
@@ -2239,6 +2326,16 @@ section).
 
 **Related:** F-batch-craft, F-bldg-kitchen, F-bread, F-item-quality, F-items, F-sculptures
 
+#### F-pack-animals — Beast-of-burden hauling for heavy loads and caravans
+**Status:** Todo
+
+Tamed beasts of burden that can carry heavier loads than elves. Useful
+for hauling large quantities of resources, potentially for trade
+caravans. Species determines carry capacity. May require loading/
+unloading tasks.
+
+**Related:** F-civ-pets
+
 #### F-path-civil — Civil path definitions and organic self-assignment
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
 
@@ -2384,6 +2481,19 @@ Supersedes F-task-proximity (pull-side Dijkstra nearest, already implemented).
 
 **Related:** F-task-assign-opt
 
+#### F-task-tags — Decouple task eligibility from species via capability tags
+**Status:** Todo
+
+Replace hardcoded elf-only checks on tasks with a tag-based capability
+system. Each species defines a set of capability tags (e.g. can_haul,
+can_build, can_craft, can_cook, can_fight, can_tame). Elves have the
+broadest tag set; tamed animals get a species-appropriate subset (most
+just can_haul). Current path supplements the species base tags (e.g.
+Scout adds can_tame). Task eligibility checks query tags instead of
+checking `species == Elf`.
+
+**Related:** F-civ-pets, F-labor-panel, F-path-core, F-taming
+
 #### F-textile-crafting — Textile and clothing crafting recipes
 **Status:** Done · **Phase:** 7
 
@@ -2470,6 +2580,17 @@ appropriate (e.g., "any civilian footwear" instead of "Shoes").
 
 ### Social & Emotional
 
+#### F-animal-bonds — Elf-animal relationships and bonded pairs
+**Status:** Todo
+
+Relationships between specific elves and tamed animals. Bonded pairs
+form through prolonged interaction (taming, care, proximity). Mood
+effects for both elf and animal — happiness from bond, grief on death.
+Bonded animals follow their elf, respond better to commands, and may
+defend them in combat.
+
+**Related:** F-civ-pets, F-emotions
+
 #### F-apprentice — Skill transfer via proximity
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
 
@@ -2485,7 +2606,7 @@ Emotions as multiple simultaneous dimensions: joy, fulfillment, sorrow,
 stress, pain, fear, anxiety. Not a single "happiness" number.
 
 **Blocks:** F-elf-leave, F-hedonic-adapt, F-mana-mood
-**Related:** F-path-core, F-path-stuck, F-social-graph
+**Related:** F-animal-bonds, F-path-core, F-path-stuck, F-social-graph
 
 #### F-emotions-basic — Mood score from thought weights
 **Status:** Done · **Phase:** 4 · **Refs:** §18
@@ -2630,7 +2751,7 @@ until F-personality exists. Foundation for all other path features.
 **Draft:** docs/drafts/F-elf-paths.md
 
 **Unblocked:** F-path-civil, F-path-combat, F-path-residue, F-path-stuck, F-path-ui
-**Related:** F-apprentice, F-creature-skills, F-emotions, F-personality
+**Related:** F-apprentice, F-creature-skills, F-emotions, F-personality, F-task-tags
 
 #### F-path-residue — Skill residue from past paths
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
@@ -3016,6 +3137,16 @@ berserk, and future buff-granting spells.
 **Blocks:** F-combat-singing, F-spell-berserk, F-spell-ench-arrow
 **Related:** F-combat-singing, F-path-combat, F-status-effects
 
+#### F-cavalry — Mount tamed creatures as cavalry
+**Status:** Todo
+
+Elves can mount tamed creatures tagged as rideable. Mounted unit moves
+at the mount's speed, uses the mount's footprint for pathing, and the
+rider can use ranged or melee weapons from the saddle. Archers on
+elephants, scouts on deer, etc. Mount and rider take damage separately.
+
+**Related:** F-civ-pets, F-war-animals
+
 #### F-combat — Combat and invader threat system
 **Status:** Todo · **Phase:** 8+ · **Refs:** §16
 
@@ -3087,7 +3218,7 @@ Simple aggression AI for non-civ hostile creatures. This is the first "it all co
 **Draft:** docs/drafts/combat_military.md (§6 "Initial Behavior")
 
 **Blocks:** F-combat
-**Related:** F-arrow-chase, F-enemy-raids, F-engagement-style
+**Related:** F-aggro-fauna, F-arrow-chase, F-enemy-raids, F-engagement-style
 
 #### F-enemy-raids — Enemy civilizations send raids
 **Status:** Done
@@ -3657,6 +3788,16 @@ user: Thornbriar spell. Future: ice walls, fire zones, magical barriers.
 
 Creatures should not be able to enter a voxel already occupied by a hostile creature (and vice versa). Currently multiple creatures freely share voxels regardless of faction. Needs pathfinding and/or movement-step checks to enforce. Edge case: if creatures are already sharing a voxel when hostility begins, behavior is TBD (push apart, allow temporary overlap, etc.).
 
+#### F-war-animals — Train tamed creatures for combat
+**Status:** Todo
+
+Train tamed creatures for combat — attack commands, combat AI, charging
+behavior. War-trained animals can be assigned to military groups and
+respond to attack-move orders. Species determines combat style (wolves
+bite, elephants trample, birds dive).
+
+**Related:** F-cavalry, F-civ-pets
+
 #### F-war-magic — War magic (combat spells)
 **Status:** Todo
 
@@ -3762,7 +3903,7 @@ small game), affects pathfinding and visibility, and makes the ground level
 visually rich rather than flat terrain. Interacts with F-lesser-trees,
 F-herbalism, and F-seasons (seasonal variation in flora).
 
-**Related:** F-herbalism, F-insect-husbandry, F-lesser-trees, F-seasons
+**Related:** F-herbalism, F-insect-husbandry, F-lesser-trees, F-seasons, F-wild-grazing
 
 #### F-fruit-naming — Fruit naming overhaul
 **Status:** Done · **Phase:** 7
@@ -3938,6 +4079,18 @@ Rain, wind, storms within seasons. Could affect mood, fire spread, and
 construction difficulty. Open design question (§27).
 
 **Related:** F-cloak-slot, F-fire-ecology, F-infra-decay, F-seasons
+
+#### F-wild-grazing — Wild animal herbivorous food cycle
+**Status:** Todo
+
+Wild herbivorous animals graze on grass and forage for wild fruit instead
+of starving. Grazing consumes ground-level vegetation, foraging targets
+wild fruit sources. Different species prefer different food sources.
+Fixes the current problem where wild animals all starve to death.
+Foundation for both forest ecology and domesticated animal feeding.
+
+**Blocks:** F-animal-husbandry, F-herding
+**Related:** F-forest-ecology
 
 #### F-worldgen-framework — Worldgen generator framework
 **Status:** Done
@@ -4798,6 +4951,16 @@ shortcuts and mouse controls: camera orbit/zoom/pan, speed controls, ESC
 chain, construction mode keys, etc. Pure GDScript UI — no sim changes.
 
 **Related:** F-build-queue-ui, F-controls-config, F-controls-config-C
+
+#### F-labor-panel — DF/Rimworld-style labor assignment UI
+**Status:** Todo
+
+A DF/Rimworld-style labor assignment panel where the player can toggle
+task categories per creature. Grid of creatures × task types with
+checkboxes. Controls which elves and tamed animals will pick up which
+kinds of work. Replaces ad-hoc per-creature task restrictions.
+
+**Related:** F-civ-pets, F-task-tags
 
 #### F-leaf-sway — Foliage vertex sway shader (wind simulation)
 **Status:** Todo
