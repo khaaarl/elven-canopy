@@ -38,7 +38,7 @@ Use `scripts/build.sh` for all build operations. It ensures the `godot/target` s
 scripts/build.sh            # Debug build
 scripts/build.sh release    # Release build
 scripts/build.sh test       # Run all crate tests
-scripts/build.sh quicktest  # Test only crates changed vs main
+scripts/build.sh quicktest  # Test only changed code vs main (includes Rust and GDScript)
 scripts/build.sh gdtest     # Run GDScript unit tests (GUT)
 scripts/build.sh relay      # Optimized standalone relay binary (LTO, stripped)
 scripts/build.sh run        # Debug build, then launch the game
@@ -124,7 +124,7 @@ ALWAYS ASK FOR PERMISSION BEFORE COMMITTING TO MAIN/MASTER, BUT COMMITTING TO FE
 
 **Remote testing (CRITICAL):** The user tests on a different machine. Any time you tell the user to build, run, or test something, you MUST commit and push first. Code that isn't pushed doesn't exist from the user's perspective.
 
-**Pre-commit checks (CRITICAL):** Before every commit that includes code changes (Rust or GDScript), run `scripts/build.sh check` and fix any issues. Do NOT commit code that fails formatting or linting. For commits that change Rust code, also run `scripts/build.sh quicktest` and ensure all tests pass. For commits that change GDScript code, also run `scripts/build.sh gdtest` and ensure all GDScript unit tests pass. Non-code changes (e.g., docs, config, CLAUDE.md) can skip these steps.
+**Pre-commit checks (CRITICAL):** Before every commit that includes code changes (Rust or GDScript), run `scripts/build.sh check` and fix any issues. Do NOT commit code that fails formatting or linting. For commits that change code, also run `scripts/build.sh quicktest` and ensure all tests pass (`quicktest` automatically detects which crates and GDScript files changed and runs the appropriate tests). Non-code changes (e.g., docs, config, CLAUDE.md) can skip these steps.
 
 **Commit message procedure:** Always write the commit message to `.tmp/commit-msg.txt` using the Write tool, then commit with `-F`:
 
@@ -203,7 +203,7 @@ GDScript unit tests use the [GUT](https://github.com/bitwes/Gut) (Godot Unit Tes
 
 **Test file naming:** `godot/test/test_<module>.gd` — mirrors the source file in `godot/scripts/`.
 
-**Pre-commit:** For commits that change `.gd` files, `scripts/build.sh check` already covers formatting and linting. Also run `scripts/build.sh gdtest` to verify GDScript tests pass (analogous to `quicktest` for Rust).
+**Pre-commit:** For commits that change `.gd` files, `scripts/build.sh check` already covers formatting and linting. `scripts/build.sh quicktest` automatically runs GDScript unit tests when `.gd` files are in the changeset, so no separate `gdtest` run is needed.
 
 ## Project Tracker (`docs/tracker.md`)
 
