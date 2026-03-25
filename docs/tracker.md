@@ -51,6 +51,7 @@ This reduces merge conflicts when parallel work streams add items.
 [~] F-creature-skills      Creature skill system (17 universal skills with path-gated advancement)
 [~] F-enemy-ai             Hostile creature AI (goblin/orc/troll behavior)
 [~] F-fruit-variety        Procedural fruit variety and processing
+[~] F-group-dance          Group dance and social singing activities
 [~] F-multiplayer          Relay-coordinator multiplayer networking
 [~] F-notifications        Player-visible event notifications
 [~] F-parallel-dedup       Radix-partitioned parallel dedup (elven_canopy_utils)
@@ -350,7 +351,6 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-giant-hornet         Giant hornet hostile flying creature
 [x] F-godot-setup          Godot 4 project setup
 [x] F-group-activity       Multi-worker activity coordination layer
-[x] F-group-dance          Group dance and social singing activities
 [x] F-hauling              Item hauling task type
 [x] F-hilly-terrain        Hilly forest floor with dirt voxels
 [x] F-home-camera          Home key to center camera on tree
@@ -518,7 +518,7 @@ mechanics uncertain — may involve assigned musician elves, scheduled
 performances, audience satisfaction, or ties to the music system.
 Details to be worked out in a design doc.
 
-**Related:** F-bldg-dining, F-music-runtime
+**Related:** F-bldg-dining, F-group-dance, F-music-runtime
 
 #### F-bldg-dining — Dining hall
 **Status:** Todo · **Phase:** 4
@@ -2525,9 +2525,19 @@ and F-social-graph (close relationships = deeper grief).
 **Unblocked by:** F-group-activity
 
 #### F-group-dance — Group dance and social singing activities
-**Status:** Done
+**Status:** In Progress
+
+Procedural dance generator for group dance activities. Elves on a
+rectangular voxel-grid floor perform coordinated figures (chains, ring
+rotations, swaps, etc.) synchronized to music generator output. V1:
+sequential figures, one at a time. Future V2: simultaneous overlapping
+figures with per-beat collision avoidance — Celtic knot-style interlocking
+geometric patterns. Module within elven_canopy_sim.
+
+**Draft:** docs/drafts/F-group-dance.md
 
 **Unblocked by:** F-group-activity
+**Related:** F-bldg-concert, F-music-runtime
 
 #### F-hedonic-adapt — Asymmetric hedonic adaptation
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
@@ -2815,7 +2825,7 @@ Bridge the standalone music crate into the Godot runtime. Generate music
 in response to game events (construction, celebrations, idle time). Requires
 audio output path (see F-audio-synth).
 
-**Related:** F-bldg-concert, F-choir-build, F-choir-harmony
+**Related:** F-bldg-concert, F-choir-build, F-choir-harmony, F-group-dance
 
 #### F-music-use-lang — Migrate music crate to shared lang crate
 **Status:** Done · **Phase:** 6
