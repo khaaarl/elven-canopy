@@ -341,7 +341,7 @@ case "$MODE" in
         # reliably triggers a rebuild for exactly the affected crates.
         NEW_HEAD="$(git rev-parse HEAD)"
         if [ "$PREV_HEAD" != "$NEW_HEAD" ]; then
-            git diff --name-only "$PREV_HEAD" "$NEW_HEAD" -- '*.rs' 'Cargo.toml' 'Cargo.lock' | while read -r f; do [ -f "$f" ] && touch "$f"; done
+            git diff --name-only "$PREV_HEAD" "$NEW_HEAD" -- '*.rs' 'Cargo.toml' 'Cargo.lock' | while read -r f; do [ -f "$f" ] && touch "$f" || true; done
         fi
 
         echo ""
