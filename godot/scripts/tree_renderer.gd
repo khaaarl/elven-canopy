@@ -347,3 +347,13 @@ func _refresh_fruit() -> void:
 	# Hide excess sprites from pool.
 	for i in range(count, _fruit_sprites.size()):
 		_fruit_sprites[i].visible = false
+
+
+## Toggle directional face tinting on all chunk materials. When enabled,
+## upward-facing surfaces are warmed and downward-facing surfaces are cooled
+## (sky-dome ambient effect). When disabled, face_tint_strength is zeroed out.
+func set_face_tint_enabled(enabled: bool) -> void:
+	var strength := 0.5 if enabled else 0.0
+	_bark_material.set_shader_parameter("face_tint_strength", strength)
+	_ground_material.set_shader_parameter("face_tint_strength", strength)
+	_leaf_material.set_shader_parameter("face_tint_strength", strength)

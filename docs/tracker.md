@@ -50,6 +50,7 @@ This reduces merge conflicts when parallel work streams add items.
 [~] B-qem-deformation      QEM decimation visual artifacts
 [~] F-creature-skills      Creature skill system (17 universal skills with path-gated advancement)
 [~] F-enemy-ai             Hostile creature AI (goblin/orc/troll behavior)
+[~] F-face-tint            Directional face tinting by normal (top warm, bottom cool)
 [~] F-fruit-variety        Procedural fruit variety and processing
 [~] F-group-dance          Group dance and social singing activities
 [~] F-multiplayer          Relay-coordinator multiplayer networking
@@ -122,7 +123,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-elf-leave            Devastated elves permanently leave
 [ ] F-elfcyclopedia-know   Elfcyclopedia civ/fruit knowledge pages
 [ ] F-emotions             Multi-dimensional emotional state
-[ ] F-face-tint            Directional face tinting by normal (top warm, bottom cool)
 [ ] F-festivals            Festivals and community ceremonies
 [ ] F-ff-vertical-arc      Vertical arc awareness for friendly-fire checks
 [ ] F-fire-advanced        Heat accumulation and ignition thresholds
@@ -4681,7 +4681,7 @@ Design decisions:
 **Unblocked:** F-equipment-color
 
 #### F-face-tint — Directional face tinting by normal (top warm, bottom cool)
-**Status:** Todo
+**Status:** In Progress
 
 Tint voxel faces based on normal direction: top faces slightly warmer (sky light), side faces neutral, bottom faces cooler/darker (indirect light). A single dot(normal, up) in the fragment shader, essentially free. Gives strong sense of natural directional lighting. Could also be baked into vertex colors at mesh gen time for zero shader cost.
 

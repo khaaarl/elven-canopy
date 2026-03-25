@@ -7,6 +7,10 @@
 // Triplanar mapping blends noise from all three projection planes.
 // Both sides rendered (cull disabled in the material, not the shader).
 //
+// A directional face tint simulates sky-dome ambient lighting: upward-facing
+// surfaces are shifted warm and downward-facing surfaces cool, controlled by
+// the `face_tint_strength` uniform.
+//
 // See also: smooth_solid.gdshader (solid surface noise),
 // tree_renderer.gd (material setup).
 
@@ -19,6 +23,11 @@ uniform float noise_freq : hint_range(1.0, 32.0) = 8.0;
 // Alpha threshold: fragments with noise below this are discarded.
 // Higher = more holes = sparser leaves.
 uniform float alpha_threshold : hint_range(0.0, 1.0) = 0.4;
+
+// Directional face tint strength. Controls how much upward-facing surfaces
+// are warmed and downward-facing surfaces are cooled, simulating sky-dome
+// ambient lighting. 0.0 = no tinting, 1.0 = full effect.
+uniform float face_tint_strength : hint_range(0.0, 1.0) = 0.0;
 
 // World-space position and normal passed from vertex to fragment shader.
 varying vec3 world_pos;
@@ -101,5 +110,9 @@ void fragment() {
 	vec3 base = COLOR.rgb;
 	// Slight blue-green tint on average; hue variation is subtle.
 	vec3 tinted = base + vec3(hue_shift * 0.3 - 0.02, hue_shift * 0.1, -hue_shift * 0.2 + 0.03);
-	ALBEDO = clamp(tinted * brightness, vec3(0.0), vec3(1.0));
+	// Directional face tint: warm top faces, cool bottom faces.
+	float up_dot = dot(normalize(world_normal), vec3(0.0, 1.0, 0.0));
+	vec3 face_tint = vec3(1.0) + up_dot * face_tint_strength * vec3(0.08, 0.04, -0.12);
+
+	ALBEDO = clamp(tinted * brightness * face_tint, vec3(0.0), vec3(1.0));
 }

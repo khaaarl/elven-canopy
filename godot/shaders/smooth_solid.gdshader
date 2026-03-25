@@ -11,6 +11,10 @@
 // anisotropic scaling (compress Y axis for vertical grain lines) via the
 // `y_scale` uniform; ground surfaces set `y_scale = 1.0` for isotropic noise.
 //
+// A directional face tint simulates sky-dome ambient lighting: upward-facing
+// surfaces are shifted warm (yellow-ish) and downward-facing surfaces cool
+// (blue-ish), controlled by the `face_tint_strength` uniform.
+//
 // See also: smooth_mesh.rs (geometry pipeline), tree_renderer.gd (material
 // setup), bark_ground.gdshader (old texture-based approach, kept for
 // reference).
@@ -20,6 +24,11 @@ shader_type spatial;
 // Y-axis frequency multiplier for anisotropic noise. Bark uses ~3.0 for
 // vertical grain lines; ground uses 1.0 for isotropic noise.
 uniform float y_scale : hint_range(0.1, 5.0) = 1.0;
+
+// Directional face tint strength. Controls how much upward-facing surfaces
+// are warmed and downward-facing surfaces are cooled, simulating sky-dome
+// ambient lighting. 0.0 = no tinting, 1.0 = full effect.
+uniform float face_tint_strength : hint_range(0.0, 1.0) = 0.0;
 
 // Overall noise frequency. Higher = more detail, smaller features.
 uniform float noise_freq : hint_range(0.5, 32.0) = 2.0;
@@ -106,5 +115,15 @@ void fragment() {
 	// With noise_strength=0.4: range is roughly [0.72, 1.28].
 	float modulation = 1.0 + (noise - 0.35) * noise_strength * 2.0;
 
-	ALBEDO = COLOR.rgb * modulation;
+	// Directional face tint: dot(normal, up) ranges from -1 (bottom) to +1
+	// (top). Upward faces get a warm (yellow-ish) shift simulating sky light;
+	// downward faces get a cool (blue-ish) shift simulating indirect/bounce
+	// light. Side faces stay neutral. The tint is multiplied into the albedo
+	// so it interacts naturally with both the noise modulation and Godot's
+	// PBR lighting.
+	float up_dot = dot(normalize(world_normal), vec3(0.0, 1.0, 0.0));
+	// Warm shift for top faces, cool shift for bottom faces.
+	vec3 tint = vec3(1.0) + up_dot * face_tint_strength * vec3(0.08, 0.04, -0.12);
+
+	ALBEDO = COLOR.rgb * modulation * tint;
 }

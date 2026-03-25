@@ -33,6 +33,7 @@
 ## - smoothing_toggled(enabled: bool) — toggles mesh smoothing (chamfer vs smooth).
 ## - decimation_toggled(enabled: bool) — toggles mesh decimation on/off.
 ## - qem_only_toggled(enabled: bool) — toggles QEM-only mode (skip retri+collinear).
+## - face_tint_toggled(enabled: bool) — toggles directional face tinting on/off.
 ##
 ## See also: placement_controller.gd which listens for spawn/action signals,
 ## construction_controller.gd which listens for the "Build" action,
@@ -49,6 +50,7 @@ signal speed_changed(speed_name: String)
 signal smoothing_toggled(enabled: bool)
 signal decimation_toggled(enabled: bool)
 signal qem_only_toggled(enabled: bool)
+signal face_tint_toggled(enabled: bool)
 
 ## Ordered list of speed names for +/- cycling (excludes Paused).
 const SPEED_ORDER: Array = ["Normal", "Fast", "VeryFast"]
@@ -266,6 +268,11 @@ func _ready() -> void:
 	qem_only_button.pressed.connect(_toggle_qem_only.bind(qem_only_button))
 	_debug_row.add_child(qem_only_button)
 
+	var face_tint_button := Button.new()
+	face_tint_button.text = "Face Tint: ✗"
+	face_tint_button.pressed.connect(_toggle_face_tint.bind(face_tint_button))
+	_debug_row.add_child(face_tint_button)
+
 	var export_mesh_button := Button.new()
 	export_mesh_button.text = "Export Mesh"
 	export_mesh_button.pressed.connect(func(): action_requested.emit("ExportMesh"))
@@ -390,6 +397,13 @@ func _toggle_qem_only(button: Button) -> void:
 	var new_state := not currently_on
 	button.text = "QEM-Only: ✓" if new_state else "QEM-Only: ✗"
 	qem_only_toggled.emit(new_state)
+
+
+func _toggle_face_tint(button: Button) -> void:
+	var currently_on := button.text == "Face Tint: ✓"
+	var new_state := not currently_on
+	button.text = "Face Tint: ✓" if new_state else "Face Tint: ✗"
+	face_tint_toggled.emit(new_state)
 
 
 func _toggle_wireframe(button: Button) -> void:

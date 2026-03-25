@@ -839,6 +839,11 @@ func _setup_common(bridge: SimBridge) -> void:
 	# Wire QEM-only toggle (skip retri + collinear, run only QEM decimate).
 	toolbar.qem_only_toggled.connect(func(enabled: bool): bridge.set_qem_only(enabled))
 
+	# Wire face tint toggle (directional sky-dome ambient tinting on chunk materials).
+	toolbar.face_tint_toggled.connect(
+		func(enabled: bool): _tree_renderer.set_face_tint_enabled(enabled)
+	)
+
 	# Wire speed controls.
 	toolbar.speed_changed.connect(
 		func(speed_name: String):
