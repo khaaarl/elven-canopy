@@ -1,8 +1,11 @@
 # Once-Over: Final Quality Review
 
-Perform a final quality review of the current feature branch before merging to
-main. This review should catch bugs, quality issues, missing test coverage,
-documentation staleness, and anything that would be embarrassing to merge.
+Perform a quality review of the current feature branch, typically before
+merging to main. This review should catch bugs, quality issues, missing
+test coverage, documentation staleness, and anything that would be
+embarrassing to merge. The user may ask for a once-over prior to merging,
+or while in the middle of development. The user might ask for multiple
+once-overs in succession, which helps check for issues more thoroughly.
 
 ## Procedure
 
