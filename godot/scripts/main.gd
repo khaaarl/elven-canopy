@@ -836,6 +836,9 @@ func _setup_common(bridge: SimBridge) -> void:
 				bridge.set_decimation_max_error(0.000001)
 	)
 
+	# Wire QEM-only toggle (skip retri + collinear, run only QEM decimate).
+	toolbar.qem_only_toggled.connect(func(enabled: bool): bridge.set_qem_only(enabled))
+
 	# Wire speed controls.
 	toolbar.speed_changed.connect(
 		func(speed_name: String):
@@ -880,6 +883,8 @@ func _setup_common(bridge: SimBridge) -> void:
 				)
 			elif action == "TriggerRaid":
 				bridge.trigger_raid()
+			elif action == "ExportMesh":
+				_export_chunk_mesh(bridge)
 	)
 
 	_task_panel.zoom_to_creature.connect(
@@ -1229,6 +1234,32 @@ func _get_creature_world_pos_by_id(
 	var y: float = info.get("y", 0.0)
 	var z: float = info.get("z", 0.0)
 	return Vector3(x + 0.5, y + y_off, z + 0.5)
+
+
+## Export the chunk mesh at the camera focus point as two OBJ files
+## (with and without decimation) to user://mesh_export/.
+func _export_chunk_mesh(bridge: Node) -> void:
+	var cam_pos := _camera_pivot.global_position
+	DirAccess.make_dir_recursive_absolute("user://mesh_export")
+
+	var real_dir := ProjectSettings.globalize_path("user://mesh_export")
+	for decimate in [false, true]:
+		var obj_text: String = bridge.export_chunk_obj(cam_pos.x, cam_pos.y, cam_pos.z, decimate)
+		if obj_text.is_empty():
+			push_warning("export_chunk_obj returned empty")
+			return
+		var suffix := "decimated" if decimate else "no_decimation"
+		var path := "user://mesh_export/chunk_%s.obj" % suffix
+		var file := FileAccess.open(path, FileAccess.WRITE)
+		if file:
+			file.store_string(obj_text)
+			file.close()
+			var real_path := ProjectSettings.globalize_path(path)
+			print("Exported: %s (%d bytes)" % [real_path, obj_text.length()])
+		else:
+			push_error("Failed to open %s for writing" % path)
+
+	bridge.send_debug_notification("Mesh exported to %s" % real_dir)
 
 
 ## Toggle visibility of the elfcyclopedia URL next to the book button.

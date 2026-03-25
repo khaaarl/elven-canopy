@@ -80,6 +80,19 @@ static SMOOTH_NORMALS_ENABLED: AtomicBool = AtomicBool::new(false);
 /// count with minimal visual impact.
 static DECIMATION_ENABLED: AtomicBool = AtomicBool::new(true);
 
+/// When true, skip retri and collinear passes — only run QEM decimate().
+static QEM_ONLY: AtomicBool = AtomicBool::new(false);
+
+/// Enable or disable QEM-only mode (skip retri + collinear).
+pub fn set_qem_only(enabled: bool) {
+    QEM_ONLY.store(enabled, Ordering::Relaxed);
+}
+
+/// Returns whether QEM-only mode is active.
+pub fn qem_only() -> bool {
+    QEM_ONLY.load(Ordering::Relaxed)
+}
+
 /// Maximum quadric error for mesh decimation. Lower values preserve more
 /// detail; near-zero is lossless for flat-shaded chamfered meshes.
 /// Default: 1e-6 (near-zero, lossless for chamfered meshes).
@@ -211,6 +224,74 @@ impl ChunkMesh {
             + self.ground.estimate_byte_size()
             + self.leaf.estimate_byte_size()
     }
+}
+
+/// Export a `ChunkMesh` as Wavefront OBJ text. Combines all surfaces
+/// (bark, ground, leaf) into one mesh with named groups.
+pub fn chunk_mesh_to_obj(mesh: &ChunkMesh) -> String {
+    let mut obj = String::from("# Elven Canopy chunk mesh export\n");
+    let mut vertex_offset = 0u32;
+
+    for (name, surface) in [
+        ("bark", &mesh.bark),
+        ("ground", &mesh.ground),
+        ("leaf", &mesh.leaf),
+    ] {
+        if surface.is_empty() {
+            continue;
+        }
+        // OBJ uses the same index for vertex and normal (f a//a). This
+        // requires 1:1 correspondence between vertices and normals.
+        debug_assert_eq!(
+            surface.vertices.len(),
+            surface.normals.len(),
+            "OBJ export requires vertex/normal count parity"
+        );
+        obj.push_str(&format!("g {name}\n"));
+        let vert_count = surface.vertices.len() / 3;
+        for i in 0..vert_count {
+            let x = surface.vertices[i * 3];
+            let y = surface.vertices[i * 3 + 1];
+            let z = surface.vertices[i * 3 + 2];
+            obj.push_str(&format!("v {x} {y} {z}\n"));
+        }
+        let norm_count = surface.normals.len() / 3;
+        for i in 0..norm_count {
+            let nx = surface.normals[i * 3];
+            let ny = surface.normals[i * 3 + 1];
+            let nz = surface.normals[i * 3 + 2];
+            obj.push_str(&format!("vn {nx} {ny} {nz}\n"));
+        }
+        let tri_count = surface.indices.len() / 3;
+        for i in 0..tri_count {
+            let a = surface.indices[i * 3] + 1 + vertex_offset;
+            let b = surface.indices[i * 3 + 1] + 1 + vertex_offset;
+            let c = surface.indices[i * 3 + 2] + 1 + vertex_offset;
+            obj.push_str(&format!("f {a}//{a} {b}//{b} {c}//{c}\n"));
+        }
+        vertex_offset += vert_count as u32;
+    }
+    obj
+}
+
+/// Generate a chunk mesh with decimation explicitly enabled or disabled,
+/// regardless of the global toggle. Restores the global state afterward.
+///
+/// NOT THREAD-SAFE: temporarily mutates the global `DECIMATION_ENABLED`
+/// atomic. Must only be called from the main thread. If mesh generation
+/// is ever parallelized (F-mesh-par), this must be refactored to pass
+/// the flag through as a parameter instead of mutating global state.
+pub fn generate_chunk_mesh_with_decimation(
+    world: &VoxelWorld,
+    chunk: ChunkCoord,
+    y_cutoff: Option<i32>,
+    decimate: bool,
+) -> ChunkMesh {
+    let was_enabled = decimation_enabled();
+    set_decimation_enabled(decimate);
+    let mesh = generate_chunk_mesh(world, chunk, y_cutoff);
+    set_decimation_enabled(was_enabled);
+    mesh
 }
 
 /// Return the vertex color for a voxel type. Returns `[r, g, b, a]`.
@@ -495,8 +576,10 @@ pub fn generate_chunk_mesh(
             base_z + CHUNK_SIZE,
         ];
         if decimation_enabled() {
-            solid_smooth.coplanar_region_retri(Some((chunk_min, chunk_max)));
-            solid_smooth.collapse_collinear_boundary_vertices(Some((chunk_min, chunk_max)));
+            if !qem_only() {
+                solid_smooth.coplanar_region_retri(Some((chunk_min, chunk_max)));
+                solid_smooth.collapse_collinear_boundary_vertices(Some((chunk_min, chunk_max)));
+            }
             solid_smooth.decimate(decimation_max_error(), Some((chunk_min, chunk_max)));
         }
         let mut surfaces = solid_smooth.to_split_surface_meshes_filtered(chunk_min, chunk_max);

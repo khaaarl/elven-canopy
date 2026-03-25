@@ -6,6 +6,9 @@
 ## creature spawn buttons, Summon Elf, Test Notif (sends a debug
 ## notification through the full sim command pipeline via SimBridge),
 ## Trigger Raid (spawns a hostile raiding party at the forest edge),
+## Wireframe toggle, Smoothing toggle, Decimation toggle,
+## QEM-Only toggle (skip retri+collinear, run only QEM decimate),
+## Export Mesh (exports chunk at camera as OBJ to user://mesh_export/),
 ## and a 3D Scale toggle (switches between 1.0 and 0.25 render scale
 ## for fill-rate vs polygon bottleneck diagnosis).
 ## Debug spawn buttons are click-only (no keyboard shortcuts).
@@ -15,18 +18,21 @@
 ## [B] Build, [T] Tasks, [U] Units, [M] Military, [I] Tree Info, [?] Help, [F12] Toggle debug panel
 ## [1-9] Selection groups (see selection_controller.gd)
 ##
-## Emits three signals:
+## Emits six signals:
 ## - spawn_requested(species_name: String) — for creature spawns. Picked up
 ##   by placement_controller.gd to enter placement mode.
 ## - action_requested(action_name: String) — for task actions ("Summon"),
-##   mode toggles ("Build", "Structures"), and "TestNotification" (debug
-##   notification sent through the sim command pipeline by main.gd).
+##   mode toggles ("Build", "Structures"), "TestNotification", "TriggerRaid",
+##   and "ExportMesh" (debug mesh OBJ export at camera position).
 ##   "Summon" creates a GoTo task at the clicked location via SimBridge.
 ##   "Build" toggles construction mode, handled by construction_controller.gd.
 ##   "Structures" toggles the structure list panel.
 ## - speed_changed(speed_name: String) — emitted when the user changes sim
 ##   speed via buttons or keyboard. Picked up by main.gd to call
 ##   bridge.set_sim_speed(). Values: "Paused", "Normal", "Fast", "VeryFast".
+## - smoothing_toggled(enabled: bool) — toggles mesh smoothing (chamfer vs smooth).
+## - decimation_toggled(enabled: bool) — toggles mesh decimation on/off.
+## - qem_only_toggled(enabled: bool) — toggles QEM-only mode (skip retri+collinear).
 ##
 ## See also: placement_controller.gd which listens for spawn/action signals,
 ## construction_controller.gd which listens for the "Build" action,
@@ -42,6 +48,7 @@ signal action_requested(action_name: String)
 signal speed_changed(speed_name: String)
 signal smoothing_toggled(enabled: bool)
 signal decimation_toggled(enabled: bool)
+signal qem_only_toggled(enabled: bool)
 
 ## Ordered list of speed names for +/- cycling (excludes Paused).
 const SPEED_ORDER: Array = ["Normal", "Fast", "VeryFast"]
@@ -249,6 +256,16 @@ func _ready() -> void:
 	decimate_button.pressed.connect(_toggle_decimation.bind(decimate_button))
 	_debug_row.add_child(decimate_button)
 
+	var qem_only_button := Button.new()
+	qem_only_button.text = "QEM-Only: ✗"
+	qem_only_button.pressed.connect(_toggle_qem_only.bind(qem_only_button))
+	_debug_row.add_child(qem_only_button)
+
+	var export_mesh_button := Button.new()
+	export_mesh_button.text = "Export Mesh"
+	export_mesh_button.pressed.connect(func(): action_requested.emit("ExportMesh"))
+	_debug_row.add_child(export_mesh_button)
+
 	var debug_sep := VSeparator.new()
 	_debug_row.add_child(debug_sep)
 
@@ -361,6 +378,13 @@ func _toggle_decimation(button: Button) -> void:
 	var new_state := not currently_on
 	button.text = "Decimation: ON" if new_state else "Decimation: OFF"
 	decimation_toggled.emit(new_state)
+
+
+func _toggle_qem_only(button: Button) -> void:
+	var currently_on := button.text == "QEM-Only: ✓"
+	var new_state := not currently_on
+	button.text = "QEM-Only: ✓" if new_state else "QEM-Only: ✗"
+	qem_only_toggled.emit(new_state)
 
 
 func _toggle_wireframe(button: Button) -> void:

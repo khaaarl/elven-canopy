@@ -24,6 +24,64 @@ use std::collections::BinaryHeap;
 
 use crate::smooth_mesh::SmoothMesh;
 
+/// The 26 canonical normal directions for chamfered voxel meshes:
+/// 6 cardinal face normals, 12 edge-chamfer normals (45°), and
+/// 8 corner-chamfer normals. Any triangle normal that doesn't match
+/// one of these (within tolerance) represents a surface that doesn't
+/// exist in the original chamfered mesh — a decimation artifact.
+#[allow(clippy::approx_constant)]
+const CANONICAL_NORMALS: [[f32; 3]; 26] = [
+    // 6 cardinal
+    [1.0, 0.0, 0.0],
+    [-1.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0],
+    [0.0, -1.0, 0.0],
+    [0.0, 0.0, 1.0],
+    [0.0, 0.0, -1.0],
+    // 12 edge chamfer
+    [0.7071, 0.7071, 0.0],
+    [0.7071, -0.7071, 0.0],
+    [-0.7071, 0.7071, 0.0],
+    [-0.7071, -0.7071, 0.0],
+    [0.7071, 0.0, 0.7071],
+    [0.7071, 0.0, -0.7071],
+    [-0.7071, 0.0, 0.7071],
+    [-0.7071, 0.0, -0.7071],
+    [0.0, 0.7071, 0.7071],
+    [0.0, 0.7071, -0.7071],
+    [0.0, -0.7071, 0.7071],
+    [0.0, -0.7071, -0.7071],
+    // 8 corner chamfer
+    [0.5774, 0.5774, 0.5774],
+    [0.5774, 0.5774, -0.5774],
+    [0.5774, -0.5774, 0.5774],
+    [0.5774, -0.5774, -0.5774],
+    [-0.5774, 0.5774, 0.5774],
+    [-0.5774, 0.5774, -0.5774],
+    [-0.5774, -0.5774, 0.5774],
+    [-0.5774, -0.5774, -0.5774],
+];
+
+/// Minimum dot product with a canonical normal for a triangle to be
+/// considered "on-surface." cos(10°) ≈ 0.985. Triangles whose best
+/// canonical match is below this threshold are cross-surface artifacts.
+const CANONICAL_NORMAL_THRESHOLD: f32 = 0.985;
+
+/// Maximum aspect ratio (longest_edge² / area) for triangles produced
+/// by the decimation pipeline. With flat shading, slivers don't cause
+/// interpolation artifacts, so this is generous — only blocks
+/// pathological cases where triangles span many voxels with near-zero
+/// width. Used in retri fan quality check, QEM collapse guard, and tests.
+const MAX_SLIVER_ASPECT_RATIO: f32 = 5000.0;
+
+/// Check whether a normalized normal vector matches one of the 26
+/// canonical directions within the threshold.
+fn is_canonical_normal(normal: [f32; 3]) -> bool {
+    CANONICAL_NORMALS.iter().any(|cn| {
+        normal[0] * cn[0] + normal[1] * cn[1] + normal[2] * cn[2] >= CANONICAL_NORMAL_THRESHOLD
+    })
+}
+
 /// A symmetric 4×4 matrix representing the quadric error for a vertex.
 /// Stored as 10 unique elements (upper triangle):
 ///
@@ -458,9 +516,7 @@ impl SmoothMesh {
 
             // Re-triangulate as a centroid fan: add a new vertex at the
             // centroid of the boundary polygon, then create one triangle per
-            // boundary edge (centroid, edge.a, edge.b). This guarantees all
-            // triangles have reasonable aspect ratios (no degenerate slivers)
-            // and maintains all boundary edges for watertightness.
+            // boundary edge (centroid, edge.a, edge.b).
             let n_poly = polygon.len();
 
             // Only accept if we'll actually reduce triangle count.
@@ -481,6 +537,79 @@ impl SmoothMesh {
             }
             let inv_n = 1.0 / n_poly as f32;
             let centroid_pos = [cx * inv_n, cy * inv_n, cz * inv_n];
+
+            // Check that every fan triangle (centroid, edge.a, edge.b) has
+            // acceptable quality. Two failure modes:
+            //
+            // 1. Collinear centroid: the centroid lies on a boundary edge,
+            //    producing a degenerate zero-area fan triangle.
+            //
+            // 2. Near-collinear centroid: the centroid is very close to a
+            //    boundary edge but not on it, producing a sliver triangle
+            //    with unstable normals and visible shading artifacts.
+            //
+            // Check the aspect ratio (longest_edge² / area) of each fan
+            // triangle. If any exceeds the threshold, skip this region.
+            let mut has_bad_fan_tri = false;
+            for i in 0..n_poly {
+                let pa = self.vertices[polygon[i] as usize].position;
+                let pb = self.vertices[polygon[(i + 1) % n_poly] as usize].position;
+
+                // Cross product of (centroid - pa) and (pb - pa) gives
+                // twice the triangle area as a vector.
+                let e1 = [
+                    centroid_pos[0] - pa[0],
+                    centroid_pos[1] - pa[1],
+                    centroid_pos[2] - pa[2],
+                ];
+                let e2 = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+                let cross = [
+                    e1[1] * e2[2] - e1[2] * e2[1],
+                    e1[2] * e2[0] - e1[0] * e2[2],
+                    e1[0] * e2[1] - e1[1] * e2[0],
+                ];
+                let twice_area =
+                    (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+                let area = twice_area * 0.5;
+
+                // Degenerate: zero area.
+                if twice_area < 1e-8 {
+                    has_bad_fan_tri = true;
+                    break;
+                }
+
+                // In chamfer-only mode, check that the fan triangle's
+                // normal matches one of the 26 canonical directions.
+                if !crate::mesh_gen::smoothing_enabled() {
+                    let n = [
+                        cross[0] / twice_area,
+                        cross[1] / twice_area,
+                        cross[2] / twice_area,
+                    ];
+                    if !is_canonical_normal(n) {
+                        has_bad_fan_tri = true;
+                        break;
+                    }
+                }
+
+                // Sliver: check aspect ratio (longest_edge² / area).
+                let e3 = [
+                    centroid_pos[0] - pb[0],
+                    centroid_pos[1] - pb[1],
+                    centroid_pos[2] - pb[2],
+                ];
+                let len1_sq = e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2];
+                let len2_sq = e2[0] * e2[0] + e2[1] * e2[1] + e2[2] * e2[2];
+                let len3_sq = e3[0] * e3[0] + e3[1] * e3[1] + e3[2] * e3[2];
+                let longest_sq = len1_sq.max(len2_sq).max(len3_sq);
+                if longest_sq / area > MAX_SLIVER_ASPECT_RATIO {
+                    has_bad_fan_tri = true;
+                    break;
+                }
+            }
+            if has_bad_fan_tri {
+                continue;
+            }
 
             // Add the centroid as a new vertex.
             let centroid_idx = self.vertices.len() as u32;
@@ -752,6 +881,29 @@ impl SmoothMesh {
                 || removed_verts[centroid_b as usize]
             {
                 continue;
+            }
+
+            // Before committing: in chamfer-only mode, verify that the
+            // merged triangles would have canonical normals. If not, skip
+            // this vertex (the collinear collapse would bridge surfaces).
+            if !crate::mesh_gen::smoothing_enabled() {
+                let mut would_produce_bad_normal = false;
+                for &(centroid, _, _) in &pairs {
+                    let new_positions: [[f32; 3]; 3] = [
+                        self.vertices[centroid as usize].position,
+                        self.vertices[prev as usize].position,
+                        self.vertices[next as usize].position,
+                    ];
+                    let n = triangle_normal(new_positions);
+                    let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                    if len > 1e-10 && !is_canonical_normal([n[0] / len, n[1] / len, n[2] / len]) {
+                        would_produce_bad_normal = true;
+                        break;
+                    }
+                }
+                if would_produce_bad_normal {
+                    continue;
+                }
             }
 
             // Collapse: kill all 4 triangles, replace with 2.
@@ -1269,10 +1421,20 @@ impl SmoothMesh {
                 continue;
             }
 
-            // Reject if the triangle would become degenerate (zero-area from
-            // collinear vertices). Degenerate triangles create holes when
-            // removed during compaction.
-            if len_after < 1e-10 {
+            // Reject if the triangle would become degenerate or near-degenerate.
+            // A near-degenerate triangle (three nearly-collinear vertices) has
+            // an unstable normal that causes visible shading artifacts. The
+            // cross product magnitude is twice the triangle area; 1e-6
+            // corresponds to area ~5e-7, well below any visible triangle.
+            if len_after < 1e-6 {
+                return true;
+            }
+
+            // Reject if the triangle's area shrinks dramatically — even if
+            // the absolute area is still above the threshold, a 1000×
+            // reduction means the collapse is squashing the triangle nearly
+            // flat, producing a sliver with unreliable normals.
+            if len_after < len_before * 0.001 {
                 return true;
             }
 
@@ -1282,6 +1444,49 @@ impl SmoothMesh {
 
             if dot < 0.0 {
                 return true;
+            }
+
+            // Reject if the collapse would create an extreme sliver. On
+            // coplanar surfaces the QEM error is zero for any in-plane
+            // collapse, so the error threshold alone can't prevent triangles
+            // from spanning arbitrarily large distances. Check the aspect
+            // ratio: longest_edge² / area. Threshold 5000 is generous (flat
+            // shading means slivers don't cause interpolation artifacts) but
+            // prevents pathological cases where triangles span many voxels.
+            let edges_sq_after: [f32; 3] = [
+                (positions_after[1][0] - positions_after[0][0]).powi(2)
+                    + (positions_after[1][1] - positions_after[0][1]).powi(2)
+                    + (positions_after[1][2] - positions_after[0][2]).powi(2),
+                (positions_after[2][0] - positions_after[1][0]).powi(2)
+                    + (positions_after[2][1] - positions_after[1][1]).powi(2)
+                    + (positions_after[2][2] - positions_after[1][2]).powi(2),
+                (positions_after[0][0] - positions_after[2][0]).powi(2)
+                    + (positions_after[0][1] - positions_after[2][1]).powi(2)
+                    + (positions_after[0][2] - positions_after[2][2]).powi(2),
+            ];
+            let longest_sq = edges_sq_after[0]
+                .max(edges_sq_after[1])
+                .max(edges_sq_after[2]);
+            let area_after = len_after * 0.5;
+            if area_after > 1e-6 && longest_sq / area_after > MAX_SLIVER_ASPECT_RATIO {
+                return true;
+            }
+
+            // In chamfer-only mode (no smoothing), reject collapses that
+            // would produce triangles with non-canonical normals. Chamfered
+            // voxel meshes have exactly 26 possible orientations; any other
+            // normal means the collapse bridges two differently-angled
+            // surfaces across a crease edge. This check is skipped in smooth
+            // mode where arbitrary normals are expected (future LoD use).
+            if !crate::mesh_gen::smoothing_enabled() {
+                let n_after_normalized = [
+                    n_after[0] / len_after,
+                    n_after[1] / len_after,
+                    n_after[2] / len_after,
+                ];
+                if !is_canonical_normal(n_after_normalized) {
+                    return true;
+                }
             }
         }
 
@@ -1410,6 +1615,126 @@ fn triangle_normal(positions: [[f32; 3]; 3]) -> [f32; 3] {
         e1[2] * e2[0] - e1[0] * e2[2],
         e1[0] * e2[1] - e1[1] * e2[0],
     ]
+}
+
+/// Ray direction for point-in-mesh testing. Slightly tilted from +X to
+/// avoid axis-aligned coincidences with voxel geometry edges/vertices.
+/// The small prime-ratio Y and Z offsets ensure the ray is not parallel
+/// to any face of the voxel grid.
+#[cfg(test)]
+const RAY_DIR: [f32; 3] = [1.0, 0.0000037, 0.0000059];
+
+/// Möller–Trumbore ray-triangle intersection test. Returns the distance
+/// along the ray if it hits the triangle, or `None` if it misses.
+#[cfg(test)]
+fn ray_triangle_intersect(
+    origin: [f32; 3],
+    dir: [f32; 3],
+    v0: [f32; 3],
+    v1: [f32; 3],
+    v2: [f32; 3],
+) -> Option<f32> {
+    let e1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+    let e2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
+
+    // h = cross(dir, e2)
+    let h = [
+        dir[1] * e2[2] - dir[2] * e2[1],
+        dir[2] * e2[0] - dir[0] * e2[2],
+        dir[0] * e2[1] - dir[1] * e2[0],
+    ];
+
+    let a = e1[0] * h[0] + e1[1] * h[1] + e1[2] * h[2];
+    if a.abs() < 1e-10 {
+        return None; // Ray parallel to triangle.
+    }
+
+    let f = 1.0 / a;
+    let s = [origin[0] - v0[0], origin[1] - v0[1], origin[2] - v0[2]];
+    let u = f * (s[0] * h[0] + s[1] * h[1] + s[2] * h[2]);
+    if !(0.0..=1.0).contains(&u) {
+        return None;
+    }
+
+    // q = cross(s, e1)
+    let q = [
+        s[1] * e1[2] - s[2] * e1[1],
+        s[2] * e1[0] - s[0] * e1[2],
+        s[0] * e1[1] - s[1] * e1[0],
+    ];
+    let v = f * (dir[0] * q[0] + dir[1] * q[1] + dir[2] * q[2]);
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+
+    let t = f * (e2[0] * q[0] + e2[1] * q[1] + e2[2] * q[2]);
+    if t > 1e-6 {
+        Some(t)
+    } else {
+        None // Intersection behind ray origin.
+    }
+}
+
+/// Test whether a point is inside a watertight triangle mesh using
+/// raycasting: cast a ray in the +X direction and count intersections.
+/// Odd count = inside, even count = outside.
+#[cfg(test)]
+fn point_is_inside(point: [f32; 3], vertices: &[[f32; 3]], triangles: &[[u32; 3]]) -> bool {
+    let mut count = 0;
+    for tri in triangles {
+        let v0 = vertices[tri[0] as usize];
+        let v1 = vertices[tri[1] as usize];
+        let v2 = vertices[tri[2] as usize];
+        if ray_triangle_intersect(point, RAY_DIR, v0, v1, v2).is_some() {
+            count += 1;
+        }
+    }
+    count % 2 == 1
+}
+
+/// Generate sample points near the surface of a mesh. For each triangle,
+/// compute its centroid and offset slightly inward and outward along the
+/// normal. Returns `(inside_points, outside_points)`.
+#[cfg(test)]
+fn sample_near_surface(
+    vertices: &[[f32; 3]],
+    triangles: &[[u32; 3]],
+    offset: f32,
+) -> (Vec<[f32; 3]>, Vec<[f32; 3]>) {
+    let mut inside = Vec::new();
+    let mut outside = Vec::new();
+
+    for tri in triangles {
+        let p: [[f32; 3]; 3] = std::array::from_fn(|i| vertices[tri[i] as usize]);
+        let n = triangle_normal(p);
+        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        if len < 1e-10 {
+            continue;
+        }
+        let normal = [n[0] / len, n[1] / len, n[2] / len];
+
+        // Triangle centroid.
+        let centroid = [
+            (p[0][0] + p[1][0] + p[2][0]) / 3.0,
+            (p[0][1] + p[1][1] + p[2][1]) / 3.0,
+            (p[0][2] + p[1][2] + p[2][2]) / 3.0,
+        ];
+
+        // Offset outward (along normal) and inward (against normal).
+        // For meshes with outward-pointing normals, +normal = outside.
+        outside.push([
+            centroid[0] + normal[0] * offset,
+            centroid[1] + normal[1] * offset,
+            centroid[2] + normal[2] * offset,
+        ]);
+        inside.push([
+            centroid[0] - normal[0] * offset,
+            centroid[1] - normal[1] * offset,
+            centroid[2] - normal[2] * offset,
+        ]);
+    }
+
+    (inside, outside)
 }
 
 #[cfg(test)]
@@ -2200,22 +2525,81 @@ mod tests {
         }
     }
 
+    /// Check that every vertex position after decimation existed (within
+    /// tolerance) before decimation. The QEM pass should only pick existing
+    /// endpoint positions, but cascading collapses after retri centroid
+    /// insertion could in theory produce positions far from any original.
+    fn assert_no_novel_positions(
+        before: &[[f32; 3]],
+        after: &[[f32; 3]],
+        max_dist: f32,
+        label: &str,
+    ) {
+        for (vi, pos) in after.iter().enumerate() {
+            let min_dist_sq = before
+                .iter()
+                .map(|p| {
+                    (p[0] - pos[0]).powi(2) + (p[1] - pos[1]).powi(2) + (p[2] - pos[2]).powi(2)
+                })
+                .fold(f32::MAX, f32::min);
+            let min_dist = min_dist_sq.sqrt();
+            assert!(
+                min_dist < max_dist,
+                "{label}: vertex {vi} at {:?} is {min_dist:.4} from nearest original position \
+                 (max allowed: {max_dist})",
+                pos
+            );
+        }
+    }
+
     /// Run the full integrity suite on a mesh: watertight, no degenerate
-    /// triangles, no stray vertices, volume preserved. Runs the flat-face
-    /// pre-pass before QEM decimation (matching the production pipeline).
+    /// triangles, no stray vertices, volume preserved, no novel vertex
+    /// positions. Runs the flat-face pre-pass before QEM decimation
+    /// (matching the production pipeline).
     fn assert_decimation_integrity(label: &str, mesh: &mut SmoothMesh, vol_tolerance: f32) {
         assert_watertight(mesh, &format!("{label} pre-decimation"));
         assert_no_degenerate_triangles(mesh, &format!("{label} pre-decimation"));
         let vol_before = smooth_mesh_volume(mesh);
         let tri_before = mesh.triangles.len();
+        let positions_before: Vec<[f32; 3]> = mesh.vertices.iter().map(|v| v.position).collect();
 
         mesh.coplanar_region_retri(None);
         mesh.collapse_collinear_boundary_vertices(None);
+
+        // Record positions after retri (includes centroids) but before QEM.
+        let positions_after_retri: Vec<[f32; 3]> =
+            mesh.vertices.iter().map(|v| v.position).collect();
+
         mesh.decimate(1e-6, None);
 
         assert_watertight(mesh, &format!("{label} post-decimation"));
         assert_no_degenerate_triangles(mesh, &format!("{label} post-decimation"));
         assert_no_stray_vertices(mesh, [-1.0; 3], label);
+
+        // Every post-decimation vertex should be near a position that existed
+        // after retri (QEM only picks existing endpoints, never creates new
+        // positions). Tolerance of 0.01 allows for f32 accumulation error.
+        let positions_after: Vec<[f32; 3]> = mesh.vertices.iter().map(|v| v.position).collect();
+        assert_no_novel_positions(
+            &positions_after_retri,
+            &positions_after,
+            0.01,
+            &format!("{label} QEM vs retri"),
+        );
+
+        // Also check that retri centroids didn't stray far from original
+        // vertex positions. Centroids of coplanar regions should be within
+        // the convex hull of original positions on that region, so max
+        // distance should be bounded by the region diameter.
+        // Use a generous 2.0 threshold (centroids can be inside a polygon
+        // far from any original vertex on large flat faces).
+        assert_no_novel_positions(
+            &positions_before,
+            &positions_after_retri,
+            2.0,
+            &format!("{label} retri vs original"),
+        );
+
         let vol_after = smooth_mesh_volume(mesh);
         let tri_after = mesh.triangles.len();
 
@@ -2612,6 +2996,1746 @@ mod tests {
         }
     }
 
+    // --- Diagonal terrain shape builders (B-qem-deformation) ---
+    //
+    // These target the specific geometries that cause visible deformation in
+    // practice: flat terrain with single-voxel height steps (grassy hills),
+    // diagonal valleys, concave diagonal corners, and thin diagonal ridges.
+    // The existing test shapes (pyramids, prisms) are too regular and convex.
+
+    /// Flat 12×12 terrain with a diagonal ridge running from corner to
+    /// corner. The ridge is 2 voxels wide to maintain face-adjacency with
+    /// the base (1-wide diagonal creates edge-only adjacency → non-manifold).
+    fn build_diagonal_ridge() -> SmoothMesh {
+        let mut voxels = Vec::new();
+        // Flat base layer
+        for x in 0..12 {
+            for z in 0..12 {
+                voxels.push((x, 0, z));
+            }
+        }
+        // Diagonal ridge: y=1 along x==z, 2 voxels wide (x and x+1)
+        for i in 0..12 {
+            voxels.push((i, 1, i));
+            if i + 1 < 12 {
+                voxels.push((i + 1, 1, i));
+            }
+        }
+        voxels.sort();
+        voxels.dedup();
+        build_chamfered_voxel_mesh(&voxels)
+    }
+
+    /// Rolling hills: flat 16×16 base with scattered single-height bumps
+    /// creating irregular diagonal edges. Mimics the grassy terrain that
+    /// causes the most visible artifacts.
+    fn build_rolling_hills() -> SmoothMesh {
+        let mut voxels = Vec::new();
+        // Flat base layer
+        for x in 0..16 {
+            for z in 0..16 {
+                voxels.push((x, 0, z));
+            }
+        }
+        // Hill 1: 3×3 bump near corner
+        for x in 2..5 {
+            for z in 2..5 {
+                voxels.push((x, 1, z));
+            }
+        }
+        // Hill 2: 2×4 bump, offset — creates diagonal step between hills
+        for x in 5..7 {
+            for z in 4..8 {
+                voxels.push((x, 1, z));
+            }
+        }
+        // Hill 3: single voxel bump — isolated step
+        voxels.push((10, 1, 10));
+        // Hill 4: L-shaped bump — concave diagonal corner
+        for x in 9..13 {
+            voxels.push((x, 1, 3));
+        }
+        for z in 3..7 {
+            voxels.push((9, 1, z));
+        }
+        // Hill 5: 2-high bump on top of hill 1 — nested steps
+        voxels.push((3, 2, 3));
+        voxels.push((3, 2, 4));
+        voxels.push((4, 2, 3));
+
+        voxels.sort();
+        voxels.dedup();
+        build_chamfered_voxel_mesh(&voxels)
+    }
+
+    /// Diagonal valley: two slopes descending toward the x-axis center,
+    /// creating a V-shape in cross-section. Height increases with distance
+    /// from the center column (z == size/2). This avoids edge-only adjacency
+    /// by using axis-aligned height steps.
+    fn build_diagonal_valley() -> SmoothMesh {
+        let mut voxels = Vec::new();
+        let size = 12;
+        let center_z = size / 2;
+        for x in 0..size {
+            for z in 0..size {
+                let dist = (z as i32 - center_z as i32).abs();
+                // Stagger the step positions based on x to create diagonal
+                // creases rather than axis-aligned ones.
+                let stagger = x % 2;
+                let height = (dist + stagger).max(1);
+                for y in 0..height {
+                    voxels.push((x, y, z));
+                }
+            }
+        }
+        voxels.sort();
+        voxels.dedup();
+        build_chamfered_voxel_mesh(&voxels)
+    }
+
+    /// Concave diagonal nook: two walls meeting at 45°. The inside corner
+    /// is the concave diagonal geometry where deformation is most visible.
+    fn build_diagonal_nook() -> SmoothMesh {
+        let mut voxels = Vec::new();
+        // Floor
+        for x in 0..10 {
+            for z in 0..10 {
+                voxels.push((x, 0, z));
+            }
+        }
+        // Wall 1: along x==0, full height
+        for z in 0..10 {
+            for y in 1..4 {
+                voxels.push((0, y, z));
+            }
+        }
+        // Wall 2: diagonal wall along x==z, from (1,1,1) to (9,1,9)
+        for i in 1..10 {
+            for y in 1..4 {
+                voxels.push((i, y, i));
+            }
+        }
+        // Fill the corner: voxels between the two walls where z > x
+        for x in 1..10 {
+            for z in (x + 1)..10 {
+                for y in 1..4 {
+                    voxels.push((x, y, z));
+                }
+            }
+        }
+        voxels.sort();
+        voxels.dedup();
+        build_chamfered_voxel_mesh(&voxels)
+    }
+
+    /// Zigzag terrain: alternating single-step rises and falls creating a
+    /// sawtooth pattern along the X axis. Every other column is 1 higher.
+    fn build_zigzag_terrain() -> SmoothMesh {
+        let mut voxels = Vec::new();
+        for x in 0..14 {
+            let height = if x % 2 == 0 { 1 } else { 2 };
+            for y in 0..height {
+                for z in 0..8 {
+                    voxels.push((x, y, z));
+                }
+            }
+        }
+        build_chamfered_voxel_mesh(&voxels)
+    }
+
+    /// Scattered bumps on a flat base: a solid y=0 base with isolated 2×2
+    /// bumps at y=1 placed on a 5×5 grid so no two bumps are diagonally
+    /// adjacent. Creates many independent step edges and concave corners
+    /// from each bump meeting the flat base.
+    fn build_diagonal_checkerboard() -> SmoothMesh {
+        let mut voxels = Vec::new();
+        // Full base layer
+        for x in 0..15 {
+            for z in 0..15 {
+                voxels.push((x, 0, z));
+            }
+        }
+        // 2×2 bumps on a 5-spacing grid (gap of 3 prevents diagonal adjacency)
+        for gx in 0..3 {
+            for gz in 0..3 {
+                let bx = gx * 5 + 1;
+                let bz = gz * 5 + 1;
+                for x in bx..(bx + 2) {
+                    for z in bz..(bz + 2) {
+                        voxels.push((x, 1, z));
+                    }
+                }
+            }
+        }
+        build_chamfered_voxel_mesh(&voxels)
+    }
+
+    /// Terraced hillside: flat layers stepping up diagonally, like a rice
+    /// paddy on a hillside. Each terrace is 3 deep, stepping up by 1 in Y
+    /// and back by 3 in Z.
+    fn build_terraced_hillside() -> SmoothMesh {
+        let mut voxels = Vec::new();
+        let width = 10;
+        for terrace in 0..5 {
+            let y_base = terrace;
+            let z_start = terrace * 3;
+            for x in 0..width {
+                for z in z_start..(z_start + 3) {
+                    for y in 0..=y_base {
+                        voxels.push((x, y, z));
+                    }
+                }
+            }
+        }
+        build_chamfered_voxel_mesh(&voxels)
+    }
+
+    /// Saddle point: two diagonal ridges crossing, creating a saddle (the
+    /// height is max(|x-cx|, |z-cz|) inverted). Concave in one diagonal,
+    /// convex in the other.
+    fn build_saddle() -> SmoothMesh {
+        let mut voxels = Vec::new();
+        let size = 10;
+        let cx = size / 2;
+        let cz = size / 2;
+        for x in 0..size {
+            for z in 0..size {
+                // Saddle: height = |x-cx| - |z-cz| shifted to be non-negative
+                let h = ((x as i32 - cx as i32).abs() - (z as i32 - cz as i32).abs()) + cx;
+                let h = h.max(0).min(size);
+                for y in 0..h {
+                    voxels.push((x, y, z));
+                }
+            }
+        }
+        build_chamfered_voxel_mesh(&voxels)
+    }
+
+    /// Cove: a concave bowl shape (inverted truncated diamond pyramid).
+    /// The inside surfaces are where deformation is most visible because
+    /// normals point inward toward the concavity.
+    fn build_cove() -> SmoothMesh {
+        let mut voxels = Vec::new();
+        let outer = 10;
+        let depth = 4;
+        // Solid base
+        for x in 0..outer {
+            for z in 0..outer {
+                voxels.push((x, 0, z));
+            }
+        }
+        // Walls: remove interior voxels to create bowl
+        let cx = outer / 2;
+        let cz = outer / 2;
+        for y in 1..=depth {
+            let inner_radius = y; // bowl opens wider as we go up
+            for x in 0..outer {
+                for z in 0..outer {
+                    let dx = (x as i32 - cx as i32).abs();
+                    let dz = (z as i32 - cz as i32).abs();
+                    // Keep voxel if it's OUTSIDE the bowl (Manhattan distance
+                    // from center > inner_radius)
+                    if dx + dz >= inner_radius {
+                        voxels.push((x, y, z));
+                    }
+                }
+            }
+        }
+        voxels.sort();
+        voxels.dedup();
+        build_chamfered_voxel_mesh(&voxels)
+    }
+
+    // --- Integrity tests for diagonal terrain shapes ---
+
+    #[test]
+    fn diagonal_ridge_decimation_integrity() {
+        let mut mesh = build_diagonal_ridge();
+        assert_decimation_integrity("diagonal ridge", &mut mesh, 0.01);
+    }
+
+    #[test]
+    fn rolling_hills_decimation_integrity() {
+        let mut mesh = build_rolling_hills();
+        assert_decimation_integrity("rolling hills", &mut mesh, 0.01);
+    }
+
+    #[test]
+    fn diagonal_valley_decimation_integrity() {
+        let mut mesh = build_diagonal_valley();
+        assert_decimation_integrity("diagonal valley", &mut mesh, 0.01);
+    }
+
+    #[test]
+    fn diagonal_nook_decimation_integrity() {
+        let mut mesh = build_diagonal_nook();
+        assert_decimation_integrity("diagonal nook", &mut mesh, 0.01);
+    }
+
+    #[test]
+    fn zigzag_terrain_decimation_integrity() {
+        let mut mesh = build_zigzag_terrain();
+        assert_decimation_integrity("zigzag terrain", &mut mesh, 0.01);
+    }
+
+    #[test]
+    fn diagonal_checkerboard_decimation_integrity() {
+        let mut mesh = build_diagonal_checkerboard();
+        assert_decimation_integrity("diagonal checkerboard", &mut mesh, 0.01);
+    }
+
+    #[test]
+    fn terraced_hillside_decimation_integrity() {
+        let mut mesh = build_terraced_hillside();
+        assert_decimation_integrity("terraced hillside", &mut mesh, 0.01);
+    }
+
+    #[test]
+    fn saddle_decimation_integrity() {
+        let mut mesh = build_saddle();
+        assert_decimation_integrity("saddle", &mut mesh, 0.01);
+    }
+
+    #[test]
+    fn cove_decimation_integrity() {
+        let mut mesh = build_cove();
+        assert_decimation_integrity("cove", &mut mesh, 0.01);
+    }
+
+    // --- Aggressive decimation stress tests ---
+    //
+    // These use higher max_error thresholds to force more QEM collapses,
+    // which is more likely to trigger visible deformation cascades. Even
+    // with higher error, watertightness and no-degenerate-triangles must
+    // still hold. Volume tolerance is proportionally relaxed.
+
+    /// Run decimation at a given max_error and check structural integrity.
+    /// Unlike assert_decimation_integrity, this does NOT check volume
+    /// (aggressive decimation intentionally trades volume for triangle count)
+    /// but still checks watertight, no degenerate, and no normal flips
+    /// (via signed volume staying positive).
+    fn assert_aggressive_decimation_integrity(label: &str, mesh: &mut SmoothMesh, max_error: f32) {
+        assert_watertight(mesh, &format!("{label} pre"));
+        let signed_vol_before = {
+            let positions: Vec<[f32; 3]> = mesh.vertices.iter().map(|v| v.position).collect();
+            mesh_signed_volume(&positions, &mesh.triangles)
+        };
+        // Volume sign depends on winding convention — just check non-zero.
+        assert!(
+            signed_vol_before.abs() > 0.01,
+            "{label}: pre-decimation volume is near zero: {signed_vol_before}"
+        );
+
+        mesh.coplanar_region_retri(None);
+        mesh.collapse_collinear_boundary_vertices(None);
+        mesh.decimate(max_error, None);
+
+        assert_watertight(mesh, &format!("{label} post (max_error={max_error})"));
+        assert_no_degenerate_triangles(mesh, &format!("{label} post (max_error={max_error})"));
+
+        let signed_vol_after = {
+            let positions: Vec<[f32; 3]> = mesh.vertices.iter().map(|v| v.position).collect();
+            mesh_signed_volume(&positions, &mesh.triangles)
+        };
+        // Volume sign must be preserved (no global normal flip).
+        assert!(
+            signed_vol_before.signum() == signed_vol_after.signum(),
+            "{label}: volume sign flipped after decimation: {signed_vol_before} → {signed_vol_after}"
+        );
+    }
+
+    /// Test diagonal shapes with chunk bounds matching the production 16×16×16
+    /// chunk size. Chunk boundary pinning interacts with diagonal step edges
+    /// because the pinned vertices constrain which collapses are available,
+    /// potentially forcing suboptimal collapse choices on nearby geometry.
+    #[test]
+    fn chunk_bounded_diagonal_shapes() {
+        // Use a 16×16×16 chunk bounds matching production.
+        let bounds = Some(([0, 0, 0], [16, 16, 16]));
+        let shapes: Vec<(&str, SmoothMesh)> = vec![
+            ("diagonal ridge", build_diagonal_ridge()),
+            ("rolling hills", build_rolling_hills()),
+            ("diagonal valley", build_diagonal_valley()),
+            ("diagonal nook", build_diagonal_nook()),
+            ("zigzag terrain", build_zigzag_terrain()),
+            ("terraced hillside", build_terraced_hillside()),
+            ("saddle", build_saddle()),
+            ("cove", build_cove()),
+        ];
+
+        for (name, mut mesh) in shapes {
+            assert_watertight(&mesh, &format!("{name} pre"));
+            assert_no_degenerate_triangles(&mesh, &format!("{name} pre"));
+            let vol_before = smooth_mesh_volume(&mesh);
+
+            mesh.coplanar_region_retri(bounds);
+            mesh.collapse_collinear_boundary_vertices(bounds);
+            mesh.decimate(1e-6, bounds);
+
+            assert_watertight(&mesh, &format!("{name} post-chunk"));
+            assert_no_degenerate_triangles(&mesh, &format!("{name} post-chunk"));
+            let vol_after = smooth_mesh_volume(&mesh);
+            let vol_diff = (vol_after - vol_before).abs();
+            assert!(
+                vol_diff < 0.01,
+                "{name}: volume changed by {vol_diff} with chunk bounds: {vol_before} → {vol_after}"
+            );
+        }
+    }
+
+    #[test]
+    fn aggressive_decimation_diagonal_shapes() {
+        // Test all diagonal terrain shapes at progressively higher error
+        // thresholds. Even aggressive decimation must stay watertight.
+        let thresholds = [0.001, 0.01, 0.1, 1.0];
+        let builders: Vec<(&str, fn() -> SmoothMesh)> = vec![
+            ("diagonal ridge", build_diagonal_ridge),
+            ("rolling hills", build_rolling_hills),
+            ("diagonal valley", build_diagonal_valley),
+            ("diagonal nook", build_diagonal_nook),
+            ("zigzag terrain", build_zigzag_terrain),
+            ("terraced hillside", build_terraced_hillside),
+            ("saddle", build_saddle),
+            ("cove", build_cove),
+        ];
+        for &threshold in &thresholds {
+            for &(name, builder) in &builders {
+                let mut mesh = builder();
+                let label = format!("{name} @{threshold}");
+                assert_aggressive_decimation_integrity(&label, &mut mesh, threshold);
+            }
+        }
+    }
+
+    /// Convert a heightmap to a list of voxel positions.
+    fn heightmap_to_voxels(heights: &[Vec<i32>]) -> Vec<(i32, i32, i32)> {
+        let mut voxels = Vec::new();
+        for (x, col) in heights.iter().enumerate() {
+            for (z, &h) in col.iter().enumerate() {
+                for y in 0..h {
+                    voxels.push((x as i32, y, z as i32));
+                }
+            }
+        }
+        voxels
+    }
+
+    /// Build terrain from a heightmap. Each (x,z) column has `height[x][z]`
+    /// voxels stacked from y=0. This is the closest test analogue to the
+    /// actual game terrain where the bugs appear.
+    fn build_heightmap_terrain(heights: &[Vec<i32>]) -> SmoothMesh {
+        build_chamfered_voxel_mesh(&heightmap_to_voxels(heights))
+    }
+
+    /// Generate a pseudo-random heightmap terrain using a simple hash.
+    /// Returns heights in range [min_h, max_h] for a size×size grid.
+    fn random_heightmap(seed: u64, size: usize, min_h: i32, max_h: i32) -> Vec<Vec<i32>> {
+        let mut heights = vec![vec![0i32; size]; size];
+        let mut state = seed.wrapping_add(1); // +1 avoids seed=0 producing all zeros
+        for x in 0..size {
+            for z in 0..size {
+                // Simple xorshift hash for deterministic "randomness".
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                let range = (max_h - min_h + 1) as u64;
+                heights[x][z] = min_h + (state % range) as i32;
+            }
+        }
+        heights
+    }
+
+    /// Generate a smooth heightmap where adjacent columns differ by at most
+    /// 1, and no diagonal-only voxel adjacency occurs. The latter constraint
+    /// prevents the chamfer from producing non-manifold edges.
+    ///
+    /// Diagonal-only adjacency happens when h(x,z) >= k, h(x+1,z+1) >= k,
+    /// but h(x+1,z) < k AND h(x,z+1) < k. The fix: after generating random
+    /// heights, fill such saddle points by raising one neighbor.
+    fn smooth_random_heightmap(seed: u64, size: usize, base_h: i32) -> Vec<Vec<i32>> {
+        let mut heights = vec![vec![base_h; size]; size];
+        let mut state = seed.wrapping_add(1); // +1 avoids seed=0 all-zeros
+        for x in 0..size {
+            for z in 0..size {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                let neighbor_h = if x > 0 && z > 0 {
+                    (heights[x - 1][z] + heights[x][z - 1]) / 2
+                } else if x > 0 {
+                    heights[x - 1][z]
+                } else if z > 0 {
+                    heights[x][z - 1]
+                } else {
+                    base_h
+                };
+                let delta = match state % 3 {
+                    0 => -1,
+                    1 => 0,
+                    _ => 1,
+                };
+                heights[x][z] = (neighbor_h + delta).max(1);
+            }
+        }
+
+        // Fix diagonal-only adjacency: for each height level, ensure no
+        // two voxels are connected only by a shared edge (not a face).
+        let max_h = heights
+            .iter()
+            .flat_map(|col| col.iter())
+            .copied()
+            .max()
+            .unwrap_or(0);
+        for h in 1..=max_h {
+            for x in 0..(size - 1) {
+                for z in 0..(size - 1) {
+                    // Check both diagonal directions
+                    // Diagonal (x,z)-(x+1,z+1): both >= h but neither (x+1,z) nor (x,z+1) >= h
+                    if heights[x][z] >= h
+                        && heights[x + 1][z + 1] >= h
+                        && heights[x + 1][z] < h
+                        && heights[x][z + 1] < h
+                    {
+                        heights[x + 1][z] = h; // Fill the gap
+                    }
+                    // Diagonal (x+1,z)-(x,z+1): both >= h but neither (x,z) nor (x+1,z+1) >= h
+                    if heights[x + 1][z] >= h
+                        && heights[x][z + 1] >= h
+                        && heights[x][z] < h
+                        && heights[x + 1][z + 1] < h
+                    {
+                        heights[x][z] = h; // Fill the gap
+                    }
+                }
+            }
+        }
+
+        heights
+    }
+
+    /// Fuzz test: run decimation on many random terrain heightmaps and check
+    /// integrity. This is the most likely way to find the rare geometric
+    /// configurations that trigger deformation bugs.
+    #[test]
+    fn fuzz_random_terrain_decimation() {
+        let mut skipped = 0;
+        for seed in 0..50 {
+            let heights = random_heightmap(seed, 10, 1, 4);
+            let mut mesh = build_heightmap_terrain(&heights);
+            let (boundary, non_manifold) = check_watertight(&mesh);
+            if !non_manifold.is_empty() || !boundary.is_empty() {
+                skipped += 1;
+                continue;
+            }
+            let label = format!("random terrain seed={seed}");
+            assert_no_degenerate_triangles(&mesh, &label);
+            let vol_before = smooth_mesh_volume(&mesh);
+            let tri_before = mesh.triangles.len();
+
+            mesh.coplanar_region_retri(None);
+            mesh.collapse_collinear_boundary_vertices(None);
+            mesh.decimate(1e-6, None);
+
+            assert_watertight(&mesh, &format!("{label} post"));
+            assert_no_degenerate_triangles(&mesh, &format!("{label} post"));
+            let vol_after = smooth_mesh_volume(&mesh);
+            let vol_diff = (vol_after - vol_before).abs();
+            let vol_pct = if vol_before > 0.0 {
+                vol_diff / vol_before * 100.0
+            } else {
+                0.0
+            };
+            assert!(
+                vol_pct < 0.1,
+                "{label}: volume changed by {vol_pct:.4}% ({vol_diff:.4}): {vol_before} → {vol_after}"
+            );
+            assert!(
+                mesh.triangles.len() <= tri_before,
+                "{label}: triangle count increased: {tri_before} → {}",
+                mesh.triangles.len()
+            );
+        }
+        println!("fuzz_random_terrain: skipped {skipped}/50 seeds (non-manifold input)");
+    }
+
+    // Note: smooth_terrain_seed5_degenerate_triangle and
+    // qem_near_degenerate_seed1 were seed-specific reproduction tests for
+    // bugs that are now guarded by the retri collinear centroid check and
+    // the QEM near-degenerate threshold fix respectively. The fuzz tests
+    // cover these scenarios across many seeds.
+
+    /// Fuzz test with smooth terrain (adjacent columns differ by at most 1).
+    /// This directly simulates the grassy hillside terrain described in the
+    /// bug report.
+    #[test]
+    fn fuzz_smooth_terrain_decimation() {
+        let mut skipped = 0;
+        let mut tested = 0;
+        for seed in 0..200 {
+            let heights = smooth_random_heightmap(seed, 12, 3);
+            let mut mesh = build_heightmap_terrain(&heights);
+            let (boundary, non_manifold) = check_watertight(&mesh);
+            if !non_manifold.is_empty() || !boundary.is_empty() {
+                skipped += 1;
+                continue;
+            }
+            tested += 1;
+            let label = format!("smooth terrain seed={seed}");
+            assert_no_degenerate_triangles(&mesh, &label);
+            let vol_before = smooth_mesh_volume(&mesh);
+
+            mesh.coplanar_region_retri(None);
+            mesh.collapse_collinear_boundary_vertices(None);
+            mesh.decimate(1e-6, None);
+
+            assert_watertight(&mesh, &format!("{label} post"));
+            assert_no_degenerate_triangles(&mesh, &format!("{label} post"));
+            let vol_after = smooth_mesh_volume(&mesh);
+            let vol_diff = (vol_after - vol_before).abs();
+            let vol_pct = if vol_before > 0.0 {
+                vol_diff / vol_before * 100.0
+            } else {
+                0.0
+            };
+            assert!(
+                vol_pct < 0.1,
+                "{label}: volume changed by {vol_pct:.4}% ({vol_diff:.4}): {vol_before} → {vol_after}"
+            );
+        }
+        println!("fuzz_smooth_terrain: tested {tested}, skipped {skipped}/200");
+    }
+
+    /// Fuzz with chunk bounds — test the interaction between chunk boundary
+    /// vertex pinning and diagonal terrain geometry.
+    #[test]
+    fn fuzz_chunked_smooth_terrain() {
+        let bounds = Some(([0, 0, 0], [16, 16, 16]));
+        for seed in 0..100 {
+            let heights = smooth_random_heightmap(seed, 14, 3);
+            let mut mesh = build_heightmap_terrain(&heights);
+            let (boundary, non_manifold) = check_watertight(&mesh);
+            if !non_manifold.is_empty() || !boundary.is_empty() {
+                continue;
+            }
+            let label = format!("chunked smooth seed={seed}");
+            let vol_before = smooth_mesh_volume(&mesh);
+
+            mesh.coplanar_region_retri(bounds);
+            mesh.collapse_collinear_boundary_vertices(bounds);
+            mesh.decimate(1e-6, bounds);
+
+            assert_watertight(&mesh, &format!("{label} post"));
+            assert_no_degenerate_triangles(&mesh, &format!("{label} post"));
+            let vol_after = smooth_mesh_volume(&mesh);
+            let vol_diff = (vol_after - vol_before).abs();
+            let vol_pct = if vol_before > 0.0 {
+                vol_diff / vol_before * 100.0
+            } else {
+                0.0
+            };
+            assert!(
+                vol_pct < 0.1,
+                "{label}: volume changed by {vol_pct:.4}% ({vol_diff:.4}): {vol_before} → {vol_after}"
+            );
+        }
+    }
+
+    /// Check for near-degenerate triangles — triangles with very small area
+    /// that survive but produce numerically unstable normals, causing visual
+    /// artifacts even though they technically have non-zero area.
+    fn assert_no_near_degenerate_triangles(mesh: &SmoothMesh, min_area: f32, label: &str) {
+        for (ti, tri) in mesh.triangles.iter().enumerate() {
+            let positions: [[f32; 3]; 3] =
+                std::array::from_fn(|i| mesh.vertices[tri[i] as usize].position);
+            let n = triangle_normal(positions);
+            let area = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt() * 0.5;
+            assert!(
+                area >= min_area,
+                "{label}: triangle {ti} has near-degenerate area {area:.6} (min: {min_area}), \
+                 vertices: {:?}",
+                positions
+            );
+        }
+    }
+
+    /// Check for sliver triangles — triangles with extreme aspect ratios.
+    /// A sliver has non-zero area but one very long edge and a very short
+    /// altitude, producing unreliable normals when the mesh is rendered
+    /// with per-vertex interpolation. Aspect ratio = longest_edge² / area.
+    fn assert_no_sliver_triangles(mesh: &SmoothMesh, max_aspect_ratio: f32, label: &str) {
+        for (ti, tri) in mesh.triangles.iter().enumerate() {
+            let p: [[f32; 3]; 3] = std::array::from_fn(|i| mesh.vertices[tri[i] as usize].position);
+
+            // Compute edge lengths squared.
+            let edges_sq: [f32; 3] = [
+                (p[1][0] - p[0][0]).powi(2)
+                    + (p[1][1] - p[0][1]).powi(2)
+                    + (p[1][2] - p[0][2]).powi(2),
+                (p[2][0] - p[1][0]).powi(2)
+                    + (p[2][1] - p[1][1]).powi(2)
+                    + (p[2][2] - p[1][2]).powi(2),
+                (p[0][0] - p[2][0]).powi(2)
+                    + (p[0][1] - p[2][1]).powi(2)
+                    + (p[0][2] - p[2][2]).powi(2),
+            ];
+            let longest_sq = edges_sq[0].max(edges_sq[1]).max(edges_sq[2]);
+
+            let n = triangle_normal(p);
+            let area = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt() * 0.5;
+            if area < 1e-10 {
+                continue; // Degenerate — caught by other checks.
+            }
+
+            // Aspect ratio: longest_edge² / (4 * area / sqrt(3))
+            // For an equilateral triangle this is 1.0; for slivers it grows.
+            // Simplified: we just check longest_edge² / area.
+            let ratio = longest_sq / area;
+            assert!(
+                ratio <= max_aspect_ratio,
+                "{label}: triangle {ti} is a sliver (aspect ratio {ratio:.1}, max {max_aspect_ratio}). \
+                 area={area:.6}, longest_edge={:.4}, vertices: {:?}",
+                longest_sq.sqrt(),
+                p
+            );
+        }
+    }
+
+    /// Check that no triangle's normal changed drastically. Compares each
+    /// post-operation triangle's normal against the nearest pre-operation
+    /// triangle normal (matched by centroid position). A large angular
+    /// deviation indicates a visual distortion even if volume is preserved.
+    fn assert_normals_consistent(
+        before_verts: &[[f32; 3]],
+        before_tris: &[[u32; 3]],
+        after_mesh: &SmoothMesh,
+        max_angle_deg: f32,
+        label: &str,
+    ) {
+        // Pre-compute before-triangle centroids and normals.
+        let before_data: Vec<([f32; 3], [f32; 3])> = before_tris
+            .iter()
+            .filter_map(|tri| {
+                let p: [[f32; 3]; 3] = std::array::from_fn(|i| before_verts[tri[i] as usize]);
+                let n = triangle_normal(p);
+                let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                if len < 1e-10 {
+                    return None;
+                }
+                let normal = [n[0] / len, n[1] / len, n[2] / len];
+                let centroid = [
+                    (p[0][0] + p[1][0] + p[2][0]) / 3.0,
+                    (p[0][1] + p[1][1] + p[2][1]) / 3.0,
+                    (p[0][2] + p[1][2] + p[2][2]) / 3.0,
+                ];
+                Some((centroid, normal))
+            })
+            .collect();
+
+        let cos_threshold = (max_angle_deg * std::f32::consts::PI / 180.0).cos();
+
+        for (ti, tri) in after_mesh.triangles.iter().enumerate() {
+            let p: [[f32; 3]; 3] =
+                std::array::from_fn(|i| after_mesh.vertices[tri[i] as usize].position);
+            let n = triangle_normal(p);
+            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            if len < 1e-10 {
+                continue; // Degenerate — caught by other checks.
+            }
+            let normal = [n[0] / len, n[1] / len, n[2] / len];
+            let centroid = [
+                (p[0][0] + p[1][0] + p[2][0]) / 3.0,
+                (p[0][1] + p[1][1] + p[2][1]) / 3.0,
+                (p[0][2] + p[1][2] + p[2][2]) / 3.0,
+            ];
+
+            // Find the nearest before-triangle by centroid distance.
+            let nearest = before_data.iter().min_by(|a, b| {
+                let da = (a.0[0] - centroid[0]).powi(2)
+                    + (a.0[1] - centroid[1]).powi(2)
+                    + (a.0[2] - centroid[2]).powi(2);
+                let db = (b.0[0] - centroid[0]).powi(2)
+                    + (b.0[1] - centroid[1]).powi(2)
+                    + (b.0[2] - centroid[2]).powi(2);
+                da.partial_cmp(&db).unwrap()
+            });
+
+            if let Some((nearest_centroid, _)) = nearest {
+                let dist_sq = (nearest_centroid[0] - centroid[0]).powi(2)
+                    + (nearest_centroid[1] - centroid[1]).powi(2)
+                    + (nearest_centroid[2] - centroid[2]).powi(2);
+                // Only compare normals if we found a close match (within 0.5
+                // units). Farther matches are likely on a different surface
+                // patch (e.g., a different face of a chamfered voxel), where
+                // normal differences are expected.
+                if dist_sq > 0.25 {
+                    continue;
+                }
+                // Among all before-triangles within range, find the one whose
+                // normal is most similar (highest dot). If even the best match
+                // is poor, that's a real normal flip.
+                let best_dot = before_data
+                    .iter()
+                    .filter(|(bc, _)| {
+                        let d = (bc[0] - centroid[0]).powi(2)
+                            + (bc[1] - centroid[1]).powi(2)
+                            + (bc[2] - centroid[2]).powi(2);
+                        d < 0.25
+                    })
+                    .map(|(_, bn)| normal[0] * bn[0] + normal[1] * bn[1] + normal[2] * bn[2])
+                    .fold(f32::NEG_INFINITY, f32::max);
+
+                assert!(
+                    best_dot >= cos_threshold,
+                    "{label}: triangle {ti} normal deviated too much from all nearby originals. \
+                     best_dot={best_dot:.4} (threshold={cos_threshold:.4}, max_angle={max_angle_deg}°). \
+                     After normal: {:?}, centroid: {:?}",
+                    normal,
+                    centroid
+                );
+            }
+        }
+    }
+
+    /// Run each pipeline stage independently and in combination, checking
+    /// all integrity metrics after each. This isolates which stage causes
+    /// any detected issue.
+    fn assert_per_stage_integrity(label: &str, voxels: &[(i32, i32, i32)], vol_pct_tol: f32) {
+        let base_mesh = build_chamfered_voxel_mesh(voxels);
+        let (boundary, non_manifold) = check_watertight(&base_mesh);
+        if !non_manifold.is_empty() || !boundary.is_empty() {
+            return; // Non-manifold input — skip (separate bug B-chamfer-nonmfld).
+        }
+        let vol_orig = smooth_mesh_volume(&base_mesh);
+        let positions_orig: Vec<[f32; 3]> = base_mesh.vertices.iter().map(|v| v.position).collect();
+        let tris_orig: Vec<[u32; 3]> = base_mesh.triangles.clone();
+
+        // Sliver threshold: longest_edge² / area. With flat shading, slivers
+        // only matter when they're extreme enough to cause f32 normal
+        // instability. Threshold matches the production guards (5000).
+        let sliver_max = super::MAX_SLIVER_ASPECT_RATIO;
+
+        // --- QEM only (no retri, no collinear collapse) ---
+        {
+            let mut mesh = base_mesh.clone();
+            mesh.decimate(1e-6, None);
+            let tag = format!("{label} QEM-only");
+            assert_watertight(&mesh, &tag);
+            assert_no_degenerate_triangles(&mesh, &tag);
+            assert_no_near_degenerate_triangles(&mesh, 1e-6, &tag);
+            assert_no_sliver_triangles(&mesh, sliver_max, &tag);
+            let vol = smooth_mesh_volume(&mesh);
+            let pct = (vol - vol_orig).abs() / vol_orig * 100.0;
+            assert!(pct < vol_pct_tol, "{tag}: volume changed by {pct:.4}%");
+        }
+
+        // --- Retri only ---
+        {
+            let mut mesh = base_mesh.clone();
+            mesh.coplanar_region_retri(None);
+            let tag = format!("{label} retri-only");
+            assert_watertight(&mesh, &tag);
+            assert_no_degenerate_triangles(&mesh, &tag);
+            assert_no_sliver_triangles(&mesh, sliver_max, &tag);
+            let vol = smooth_mesh_volume(&mesh);
+            let pct = (vol - vol_orig).abs() / vol_orig * 100.0;
+            assert!(pct < vol_pct_tol, "{tag}: volume changed by {pct:.4}%");
+        }
+
+        // --- Retri + collinear ---
+        {
+            let mut mesh = base_mesh.clone();
+            mesh.coplanar_region_retri(None);
+            mesh.collapse_collinear_boundary_vertices(None);
+            let tag = format!("{label} retri+collinear");
+            assert_watertight(&mesh, &tag);
+            assert_no_degenerate_triangles(&mesh, &tag);
+            assert_no_sliver_triangles(&mesh, sliver_max, &tag);
+            let vol = smooth_mesh_volume(&mesh);
+            let pct = (vol - vol_orig).abs() / vol_orig * 100.0;
+            assert!(pct < vol_pct_tol, "{tag}: volume changed by {pct:.4}%");
+        }
+
+        // --- Full pipeline ---
+        {
+            let mut mesh = base_mesh.clone();
+            mesh.coplanar_region_retri(None);
+            mesh.collapse_collinear_boundary_vertices(None);
+            mesh.decimate(1e-6, None);
+            let tag = format!("{label} full-pipeline");
+            assert_watertight(&mesh, &tag);
+            assert_no_degenerate_triangles(&mesh, &tag);
+            assert_no_near_degenerate_triangles(&mesh, 1e-6, &tag);
+            assert_no_sliver_triangles(&mesh, sliver_max, &tag);
+            let vol = smooth_mesh_volume(&mesh);
+            let pct = (vol - vol_orig).abs() / vol_orig * 100.0;
+            assert!(pct < vol_pct_tol, "{tag}: volume changed by {pct:.4}%");
+        }
+    }
+
+    // Note: qem_near_degenerate_seed1 and normal_flip_large_seed0 were
+    // seed-specific reproduction tests for bugs now guarded by the QEM
+    // near-degenerate threshold and canonical normal checks. The fuzz
+    // tests cover these scenarios across many seeds.
+
+    /// Fuzz: run per-stage integrity checks on smooth terrain heightmaps.
+    #[test]
+    fn fuzz_per_stage_smooth_terrain() {
+        for seed in 0..200 {
+            let heights = smooth_random_heightmap(seed, 12, 3);
+            let voxels = heightmap_to_voxels(&heights);
+            assert_per_stage_integrity(&format!("seed={seed}"), &voxels, 0.1);
+        }
+    }
+
+    /// Fuzz with larger terrain, per-stage.
+    #[test]
+    fn fuzz_per_stage_large_terrain() {
+        for seed in 0..30 {
+            let heights = smooth_random_heightmap(seed, 20, 3);
+            let voxels = heightmap_to_voxels(&heights);
+            assert_per_stage_integrity(&format!("large seed={seed}"), &voxels, 0.1);
+        }
+    }
+
+    /// Fuzz with larger terrain (20×20) to stress-test with more complex
+    /// geometry, more triangle fans, and more potential for cascading collapse
+    /// errors.
+    #[test]
+    fn fuzz_large_smooth_terrain() {
+        for seed in 0..30 {
+            let heights = smooth_random_heightmap(seed, 20, 3);
+            let mut mesh = build_heightmap_terrain(&heights);
+            let (boundary, non_manifold) = check_watertight(&mesh);
+            if !non_manifold.is_empty() || !boundary.is_empty() {
+                continue;
+            }
+            let label = format!("large smooth seed={seed}");
+            let vol_before = smooth_mesh_volume(&mesh);
+
+            mesh.coplanar_region_retri(None);
+            mesh.collapse_collinear_boundary_vertices(None);
+            mesh.decimate(1e-6, None);
+
+            assert_watertight(&mesh, &format!("{label} post"));
+            assert_no_degenerate_triangles(&mesh, &format!("{label} post"));
+            let vol_after = smooth_mesh_volume(&mesh);
+            let vol_diff = (vol_after - vol_before).abs();
+            let vol_pct = if vol_before > 0.0 {
+                vol_diff / vol_before * 100.0
+            } else {
+                0.0
+            };
+            assert!(
+                vol_pct < 0.1,
+                "{label}: volume changed by {vol_pct:.4}% ({vol_diff:.4}): {vol_before} → {vol_after}"
+            );
+        }
+    }
+
+    // --- Point-in-mesh surface sampling tests ---
+    //
+    // These sample points near the mesh surface before decimation, classify
+    // them as inside or outside, then verify the classification is preserved
+    // after decimation. This catches local geometry deformations that
+    // cancel out in volume but are visually distorted.
+
+    /// Extract positions and triangles from a SmoothMesh for raycasting.
+    fn mesh_arrays(mesh: &SmoothMesh) -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {
+        let verts: Vec<[f32; 3]> = mesh.vertices.iter().map(|v| v.position).collect();
+        (verts, mesh.triangles.clone())
+    }
+
+    /// Determine whether the mesh has outward or inward normals by checking
+    /// signed volume sign. Returns the offset sign: +1.0 if normals point
+    /// outward (positive signed volume), -1.0 if inward.
+    fn normal_sign(verts: &[[f32; 3]], tris: &[[u32; 3]]) -> f32 {
+        if mesh_signed_volume(verts, tris) >= 0.0 {
+            1.0
+        } else {
+            -1.0
+        }
+    }
+
+    /// Run the point-in-mesh deformation test on a SmoothMesh. Samples
+    /// points near the surface before the pipeline, runs the full pipeline,
+    /// then checks every sample point's inside/outside classification is
+    /// preserved.
+    fn assert_surface_preserved(label: &str, mesh: &mut SmoothMesh, offset: f32) -> usize {
+        let (verts_before, tris_before) = mesh_arrays(mesh);
+        let sign = normal_sign(&verts_before, &tris_before);
+
+        // Generate sample points. If normals point inward (sign < 0),
+        // swap inside/outside.
+        let (mut inside_pts, mut outside_pts) =
+            sample_near_surface(&verts_before, &tris_before, offset);
+        if sign < 0.0 {
+            std::mem::swap(&mut inside_pts, &mut outside_pts);
+        }
+
+        // Sanity check: verify classifications against the original mesh.
+        let mut inside_ok = 0;
+        let mut inside_bad = 0;
+        for pt in &inside_pts {
+            if point_is_inside(*pt, &verts_before, &tris_before) {
+                inside_ok += 1;
+            } else {
+                inside_bad += 1;
+            }
+        }
+        let mut outside_ok = 0;
+        let mut outside_bad = 0;
+        for pt in &outside_pts {
+            if !point_is_inside(*pt, &verts_before, &tris_before) {
+                outside_ok += 1;
+            } else {
+                outside_bad += 1;
+            }
+        }
+
+        // Some points near edges/corners may be misclassified due to
+        // f32 precision in raycasting. Allow a small fraction of failures
+        // on the ORIGINAL mesh (these are sampling artifacts, not bugs).
+        let total = inside_pts.len() + outside_pts.len();
+        let pre_bad = inside_bad + outside_bad;
+        let pre_bad_pct = pre_bad as f64 / total as f64 * 100.0;
+        assert!(
+            pre_bad_pct < 5.0,
+            "{label}: too many pre-decimation misclassifications: {pre_bad}/{total} ({pre_bad_pct:.1}%)"
+        );
+
+        // Run full pipeline.
+        mesh.coplanar_region_retri(None);
+        mesh.collapse_collinear_boundary_vertices(None);
+        mesh.decimate(1e-6, None);
+
+        let (verts_after, tris_after) = mesh_arrays(mesh);
+
+        // Check inside points are still inside.
+        let mut flipped_inside = Vec::new();
+        for (i, pt) in inside_pts.iter().enumerate() {
+            // Skip points that were already misclassified pre-decimation.
+            if !point_is_inside(*pt, &verts_before, &tris_before) {
+                continue;
+            }
+            if !point_is_inside(*pt, &verts_after, &tris_after) {
+                flipped_inside.push(i);
+            }
+        }
+
+        // Check outside points are still outside.
+        let mut flipped_outside = Vec::new();
+        for (i, pt) in outside_pts.iter().enumerate() {
+            if point_is_inside(*pt, &verts_before, &tris_before) {
+                continue;
+            }
+            if point_is_inside(*pt, &verts_after, &tris_after) {
+                flipped_outside.push(i);
+            }
+        }
+
+        let total_flipped = flipped_inside.len() + flipped_outside.len();
+        if total_flipped > 0 {
+            let first_in = flipped_inside.first().map(|&i| inside_pts[i]);
+            let first_out = flipped_outside.first().map(|&i| outside_pts[i]);
+            println!(
+                "DEFORMATION {label}: {total_flipped} sample points changed inside/outside \
+                 ({} inside→outside, {} outside→inside). \
+                 First inside→outside: {:?}, first outside→inside: {:?}",
+                flipped_inside.len(),
+                flipped_outside.len(),
+                first_in,
+                first_out,
+            );
+        }
+        total_flipped
+    }
+
+    /// Sanity test: raycasting works on a simple unit cube.
+    #[test]
+    fn point_in_mesh_sanity_cube() {
+        // Raw unit cube (same as volume_computation_sanity).
+        let verts: Vec<[f32; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [0.0, 1.0, 1.0],
+        ];
+        let tris: Vec<[u32; 3]> = vec![
+            [4, 5, 6],
+            [4, 6, 7],
+            [1, 0, 3],
+            [1, 3, 2],
+            [5, 1, 2],
+            [5, 2, 6],
+            [0, 4, 7],
+            [0, 7, 3],
+            [3, 7, 6],
+            [3, 6, 2],
+            [0, 1, 5],
+            [0, 5, 4],
+        ];
+
+        assert!(
+            point_is_inside([0.5, 0.5, 0.5], &verts, &tris),
+            "center should be inside"
+        );
+        assert!(
+            !point_is_inside([5.0, 0.5, 0.5], &verts, &tris),
+            "far +X should be outside"
+        );
+        assert!(
+            !point_is_inside([-5.0, 0.5, 0.5], &verts, &tris),
+            "far -X should be outside"
+        );
+    }
+
+    /// Sanity test: raycasting works on a chamfered voxel mesh.
+    #[test]
+    fn point_in_mesh_sanity_chamfered() {
+        let mesh = build_chamfered_voxel_mesh(&[(0, 0, 0)]);
+        let (verts, tris) = mesh_arrays(&mesh);
+
+        // Center of the voxel should be inside.
+        assert!(
+            point_is_inside([0.5, 0.5, 0.5], &verts, &tris),
+            "center of voxel should be inside (got {} intersections)",
+            {
+                let mut c = 0;
+                for tri in &tris {
+                    if ray_triangle_intersect(
+                        [0.5, 0.5, 0.5],
+                        RAY_DIR,
+                        verts[tri[0] as usize],
+                        verts[tri[1] as usize],
+                        verts[tri[2] as usize],
+                    )
+                    .is_some()
+                    {
+                        c += 1;
+                    }
+                }
+                c
+            }
+        );
+
+        // Well outside should be outside.
+        assert!(
+            !point_is_inside([5.0, 5.0, 5.0], &verts, &tris),
+            "far point should be outside"
+        );
+    }
+
+    /// Per-stage surface preservation: isolate which pipeline stage causes
+    /// any detected surface change.
+    fn assert_surface_preserved_per_stage(label: &str, mesh: &SmoothMesh, offset: f32) {
+        let (verts_orig, tris_orig) = mesh_arrays(mesh);
+        let sign = normal_sign(&verts_orig, &tris_orig);
+        let (mut inside_pts, mut outside_pts) =
+            sample_near_surface(&verts_orig, &tris_orig, offset);
+        if sign < 0.0 {
+            std::mem::swap(&mut inside_pts, &mut outside_pts);
+        }
+
+        // Filter to points that are correctly classified on the original.
+        let valid_inside: Vec<[f32; 3]> = inside_pts
+            .iter()
+            .copied()
+            .filter(|pt| point_is_inside(*pt, &verts_orig, &tris_orig))
+            .collect();
+        let valid_outside: Vec<[f32; 3]> = outside_pts
+            .iter()
+            .copied()
+            .filter(|pt| !point_is_inside(*pt, &verts_orig, &tris_orig))
+            .collect();
+
+        let check = |verts: &[[f32; 3]], tris: &[[u32; 3]], stage: &str| -> (usize, usize) {
+            let mut in_to_out = 0;
+            for pt in &valid_inside {
+                if !point_is_inside(*pt, verts, tris) {
+                    if in_to_out == 0 {
+                        println!("  {label} {stage}: first inside→outside at {:?}", pt);
+                    }
+                    in_to_out += 1;
+                }
+            }
+            let mut out_to_in = 0;
+            for pt in &valid_outside {
+                if point_is_inside(*pt, verts, tris) {
+                    if out_to_in == 0 {
+                        println!("  {label} {stage}: first outside→inside at {:?}", pt);
+                    }
+                    out_to_in += 1;
+                }
+            }
+            if in_to_out > 0 || out_to_in > 0 {
+                println!(
+                    "  {label} {stage}: {in_to_out} inside→outside, {out_to_in} outside→inside"
+                );
+            }
+            (in_to_out, out_to_in)
+        };
+
+        // Retri only
+        let mut m1 = mesh.clone();
+        m1.coplanar_region_retri(None);
+        let (v1, t1) = mesh_arrays(&m1);
+        check(&v1, &t1, "retri-only");
+
+        // Retri + collinear
+        let mut m2 = m1.clone();
+        m2.collapse_collinear_boundary_vertices(None);
+        let (v2, t2) = mesh_arrays(&m2);
+        check(&v2, &t2, "retri+collinear");
+
+        // Full pipeline
+        let mut m3 = m2;
+        m3.decimate(1e-6, None);
+        let (v3, t3) = mesh_arrays(&m3);
+        check(&v3, &t3, "full");
+
+        // QEM only (no retri)
+        let mut m4 = mesh.clone();
+        m4.decimate(1e-6, None);
+        let (v4, t4) = mesh_arrays(&m4);
+        check(&v4, &t4, "QEM-only");
+    }
+
+    /// Diagnose: which stage causes the terraced hillside deformation?
+    #[test]
+    fn diagnose_terraced_hillside_deformation() {
+        let mesh = build_terraced_hillside();
+        assert_surface_preserved_per_stage("terraced_hillside", &mesh, 0.02);
+    }
+
+    /// Surface preservation survey on handcrafted shapes. Reports
+    /// deformations but does not fail — the detected deformations are
+    /// known (B-qem-deformation) and under investigation. This test
+    /// serves as a regression detector: if the deformation count increases
+    /// after a code change, something got worse.
+    #[test]
+    fn surface_preserved_handcrafted_shapes() {
+        let shapes: Vec<(&str, fn() -> SmoothMesh)> = vec![
+            ("prism 10x3x10", || build_prism(10, 3, 10)),
+            ("pyramid 10x5", || build_pyramid(10, 5)),
+            ("diamond r=6 h=7", || build_diamond_pyramid(6, 7)),
+            ("L-shape", build_l_shape),
+            ("hollow frame", build_hollow_frame),
+            ("staircase", build_staircase),
+            ("platform on base", build_platform_on_base),
+            ("diagonal ridge", build_diagonal_ridge),
+            ("rolling hills", build_rolling_hills),
+            ("diagonal nook", build_diagonal_nook),
+            ("zigzag terrain", build_zigzag_terrain),
+            ("terraced hillside", build_terraced_hillside),
+            ("saddle", build_saddle),
+            ("cove", build_cove),
+        ];
+        let mut total_deformations = 0;
+        for (name, builder) in shapes {
+            let mut mesh = builder();
+            let (boundary, non_manifold) = check_watertight(&mesh);
+            if !non_manifold.is_empty() || !boundary.is_empty() {
+                continue;
+            }
+            total_deformations += assert_surface_preserved(name, &mut mesh, 0.02);
+        }
+        println!("Surface survey: {total_deformations} total deformations across all shapes");
+        // Regression gate: fail if deformation count exceeds known baseline.
+        // Update this baseline when fixes reduce the count further.
+        assert!(
+            total_deformations <= 3,
+            "handcrafted surface deformations regressed: {total_deformations} (baseline: 3)"
+        );
+    }
+
+    /// Surface preservation fuzz on smooth heightmap terrain. Asserts
+    /// deformation count doesn't exceed a known baseline as a regression gate.
+    #[test]
+    fn fuzz_surface_preserved_smooth_terrain() {
+        let mut total_deformations = 0;
+        let mut tested = 0;
+        for seed in 0..100 {
+            let heights = smooth_random_heightmap(seed, 12, 3);
+            let mut mesh = build_heightmap_terrain(&heights);
+            let (boundary, non_manifold) = check_watertight(&mesh);
+            if !non_manifold.is_empty() || !boundary.is_empty() {
+                continue;
+            }
+            tested += 1;
+            total_deformations +=
+                assert_surface_preserved(&format!("smooth seed={seed}"), &mut mesh, 0.02);
+        }
+        println!("Smooth terrain fuzz: {total_deformations} deformations across {tested} seeds");
+        // Regression gate: fail if deformation count exceeds known baseline.
+        // Update this baseline when fixes reduce the count further.
+        assert!(
+            total_deformations <= 40,
+            "fuzz surface deformations regressed: {total_deformations} (baseline: 40)"
+        );
+    }
+
+    // --- Canonical normal tests (B-qem-deformation Category A) ---
+    //
+    // Chamfered voxel meshes have exactly 26 possible triangle normal
+    // directions: 6 cardinal, 12 edge-chamfer, 8 corner-chamfer. Any
+    // triangle with a normal outside this set is a cross-surface bridging
+    // artifact from the decimation pipeline.
+
+    /// Check that every triangle normal in a mesh matches one of the 26
+    /// canonical chamfer directions (within `tolerance` radians angular
+    /// deviation). Returns the count of non-canonical triangles.
+    fn count_non_canonical_normals(mesh: &SmoothMesh, tolerance_deg: f32) -> Vec<(usize, f32)> {
+        let cos_tol = (tolerance_deg * std::f32::consts::PI / 180.0).cos();
+        let mut bad = Vec::new();
+
+        for (ti, tri) in mesh.triangles.iter().enumerate() {
+            let positions: [[f32; 3]; 3] =
+                std::array::from_fn(|i| mesh.vertices[tri[i] as usize].position);
+            let n = triangle_normal(positions);
+            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            if len < 1e-10 {
+                continue;
+            }
+            let normal = [n[0] / len, n[1] / len, n[2] / len];
+
+            // Find best matching canonical normal.
+            let best_dot = super::CANONICAL_NORMALS
+                .iter()
+                .map(|cn| normal[0] * cn[0] + normal[1] * cn[1] + normal[2] * cn[2])
+                .fold(f32::NEG_INFINITY, f32::max);
+
+            if best_dot < cos_tol {
+                let angle = best_dot.clamp(-1.0, 1.0).acos() * 180.0 / std::f32::consts::PI;
+                bad.push((ti, angle));
+            }
+        }
+        bad
+    }
+
+    /// Assert that a chamfered mesh has zero non-canonical normals.
+    fn assert_all_normals_canonical(mesh: &SmoothMesh, tolerance_deg: f32, label: &str) {
+        let bad = count_non_canonical_normals(mesh, tolerance_deg);
+        if !bad.is_empty() {
+            let details: Vec<String> = bad
+                .iter()
+                .take(5)
+                .map(|(ti, angle)| {
+                    let tri = mesh.triangles[*ti];
+                    let positions: [[f32; 3]; 3] =
+                        std::array::from_fn(|i| mesh.vertices[tri[i] as usize].position);
+                    format!(
+                        "  tri {ti}: deviation {angle:.1}°, verts {:?}, {:?}, {:?}",
+                        positions[0], positions[1], positions[2]
+                    )
+                })
+                .collect();
+            panic!(
+                "{label}: {}/{} triangles have non-canonical normals (tolerance {tolerance_deg}°):\n{}",
+                bad.len(),
+                mesh.triangles.len(),
+                details.join("\n")
+            );
+        }
+    }
+
+    /// Unit test: `is_canonical_normal` accepts all 26 canonical directions
+    /// and rejects non-canonical vectors.
+    #[test]
+    fn is_canonical_normal_unit_test() {
+        // All 26 canonical normals should be accepted.
+        for (i, cn) in super::CANONICAL_NORMALS.iter().enumerate() {
+            assert!(
+                super::is_canonical_normal(*cn),
+                "canonical normal {i} ({:?}) was rejected",
+                cn
+            );
+        }
+        // Non-canonical normals should be rejected.
+        let bad: [[f32; 3]; 4] = [
+            [0.9, 0.3, 0.3],          // between cardinal and corner chamfer
+            [0.9, 0.0, 0.4359],       // between cardinal and edge chamfer
+            [0.4, 0.4, 0.8244],       // arbitrary direction
+            [0.3015, 0.3015, 0.9045], // the actual cross-surface normal from OBJ analysis
+        ];
+        for b in &bad {
+            let len = (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]).sqrt();
+            let normalized = [b[0] / len, b[1] / len, b[2] / len];
+            assert!(
+                !super::is_canonical_normal(normalized),
+                "non-canonical normal {:?} was accepted",
+                normalized
+            );
+        }
+    }
+
+    /// Verify that the actual chamfer output normals match the hardcoded
+    /// canonical normal table with high precision (dot > 0.9999). This
+    /// catches any drift between the chamfer algorithm and the table.
+    #[test]
+    fn chamfer_output_matches_canonical_table_precisely() {
+        let mesh = build_chamfered_voxel_mesh(&[(5, 5, 5)]);
+        for (ti, tri) in mesh.triangles.iter().enumerate() {
+            let positions: [[f32; 3]; 3] =
+                std::array::from_fn(|i| mesh.vertices[tri[i] as usize].position);
+            let n = triangle_normal(positions);
+            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            if len < 1e-10 {
+                continue;
+            }
+            let normal = [n[0] / len, n[1] / len, n[2] / len];
+            let best_dot = super::CANONICAL_NORMALS
+                .iter()
+                .map(|cn| normal[0] * cn[0] + normal[1] * cn[1] + normal[2] * cn[2])
+                .fold(f32::NEG_INFINITY, f32::max);
+            assert!(
+                best_dot > 0.9999,
+                "chamfer triangle {ti} normal {:?} has best canonical dot {best_dot:.6} \
+                 (expected > 0.9999)",
+                normal
+            );
+        }
+    }
+
+    /// Verify that the original chamfered mesh (before any decimation)
+    /// has all canonical normals — baseline sanity check.
+    #[test]
+    fn chamfered_mesh_normals_are_canonical() {
+        let shapes: Vec<(&str, SmoothMesh)> = vec![
+            ("single voxel", build_chamfered_voxel_mesh(&[(0, 0, 0)])),
+            ("prism 5x3x5", build_prism(5, 3, 5)),
+            ("L-shape", build_l_shape()),
+            ("staircase", build_staircase()),
+            ("terraced hillside", build_terraced_hillside()),
+        ];
+        for (name, mesh) in &shapes {
+            assert_all_normals_canonical(mesh, 1.0, name);
+        }
+    }
+
+    /// Category A reproduction: QEM collapses edges across crease
+    /// boundaries between differently-oriented chamfer surfaces. A simple
+    /// height step creates edge and corner chamfers meeting flat faces;
+    /// QEM should not bridge them.
+    #[test]
+    fn qem_preserves_canonical_normals_height_step() {
+        // Simple height step: flat ground at y=0, one step up at y=1.
+        // Creates chamfer bevels between the flat top and the step side.
+        let mut voxels = Vec::new();
+        for x in 0..8 {
+            for z in 0..8 {
+                voxels.push((x, 0, z));
+            }
+        }
+        // Step up in one corner
+        for x in 4..8 {
+            for z in 4..8 {
+                voxels.push((x, 1, z));
+            }
+        }
+        let mut mesh = build_chamfered_voxel_mesh(&voxels);
+        assert_all_normals_canonical(&mesh, 1.0, "height step pre-decimation");
+
+        mesh.decimate(1e-6, None);
+        assert_all_normals_canonical(&mesh, 2.0, "height step QEM-only");
+    }
+
+    /// Category A reproduction: L-shaped terrain with concave corner.
+    #[test]
+    fn qem_preserves_canonical_normals_l_terrain() {
+        let mut voxels = Vec::new();
+        for x in 0..6 {
+            for z in 0..6 {
+                voxels.push((x, 0, z));
+            }
+        }
+        // L-shaped step: two arms
+        for x in 0..6 {
+            for z in 0..2 {
+                voxels.push((x, 1, z));
+            }
+        }
+        for x in 0..2 {
+            for z in 2..6 {
+                voxels.push((x, 1, z));
+            }
+        }
+        let mut mesh = build_chamfered_voxel_mesh(&voxels);
+        assert_all_normals_canonical(&mesh, 1.0, "L terrain pre-decimation");
+
+        mesh.decimate(1e-6, None);
+        assert_all_normals_canonical(&mesh, 2.0, "L terrain QEM-only");
+    }
+
+    /// Category A reproduction with full pipeline (retri + collinear + QEM).
+    #[test]
+    fn full_pipeline_preserves_canonical_normals() {
+        let shapes: Vec<(&str, SmoothMesh)> = vec![
+            ("prism 10x3x10", build_prism(10, 3, 10)),
+            ("pyramid 10x5", build_pyramid(10, 5)),
+            ("L-shape", build_l_shape()),
+            ("staircase", build_staircase()),
+            ("terraced hillside", build_terraced_hillside()),
+            ("diagonal ridge", build_diagonal_ridge()),
+            ("rolling hills", build_rolling_hills()),
+            ("saddle", build_saddle()),
+            ("cove", build_cove()),
+        ];
+        for (name, mut mesh) in shapes {
+            let (boundary, non_manifold) = check_watertight(&mesh);
+            if !non_manifold.is_empty() || !boundary.is_empty() {
+                continue;
+            }
+            assert_all_normals_canonical(&mesh, 1.0, &format!("{name} pre"));
+            mesh.coplanar_region_retri(None);
+            mesh.collapse_collinear_boundary_vertices(None);
+            mesh.decimate(1e-6, None);
+            assert_all_normals_canonical(&mesh, 2.0, &format!("{name} post"));
+        }
+    }
+
+    /// Category A reproduction: large terrain with tall features.
+    /// The real game chunk that exhibited the bug had bark surfaces
+    /// (vertical walls 9 voxels tall) with chamfer bevels at the top.
+    /// This test creates a tall structure on flat ground to reproduce
+    /// the cross-surface bridging.
+    #[test]
+    fn qem_preserves_canonical_normals_tall_structure() {
+        let mut voxels = Vec::new();
+        // Flat ground 16×16
+        for x in 0..16 {
+            for z in 0..16 {
+                voxels.push((x, 0, z));
+            }
+        }
+        // Tall wall/column in the middle (simulates tree trunk)
+        for x in 6..10 {
+            for z in 6..10 {
+                for y in 1..10 {
+                    voxels.push((x, y, z));
+                }
+            }
+        }
+        // Step feature on one side
+        for x in 3..6 {
+            for z in 3..13 {
+                voxels.push((x, 1, z));
+            }
+        }
+        let mut mesh = build_chamfered_voxel_mesh(&voxels);
+        assert_all_normals_canonical(&mesh, 1.0, "tall structure pre");
+
+        // QEM only
+        mesh.decimate(1e-6, None);
+        assert_all_normals_canonical(&mesh, 2.0, "tall structure QEM-only");
+    }
+
+    /// Category A reproduction: full pipeline on tall structure.
+    #[test]
+    fn full_pipeline_preserves_canonical_normals_tall_structure() {
+        let mut voxels = Vec::new();
+        for x in 0..16 {
+            for z in 0..16 {
+                voxels.push((x, 0, z));
+            }
+        }
+        for x in 6..10 {
+            for z in 6..10 {
+                for y in 1..10 {
+                    voxels.push((x, y, z));
+                }
+            }
+        }
+        for x in 3..6 {
+            for z in 3..13 {
+                voxels.push((x, 1, z));
+            }
+        }
+        let mut mesh = build_chamfered_voxel_mesh(&voxels);
+        assert_all_normals_canonical(&mesh, 1.0, "tall structure pre");
+
+        mesh.coplanar_region_retri(None);
+        mesh.collapse_collinear_boundary_vertices(None);
+        mesh.decimate(1e-6, None);
+        assert_all_normals_canonical(&mesh, 2.0, "tall structure full pipeline");
+    }
+
+    /// Category A reproduction: full pipeline with chunk bounds. Chunk
+    /// boundary pinning constrains the collapse order and can force
+    /// cross-surface collapses that don't happen without bounds.
+    #[test]
+    fn full_pipeline_preserves_canonical_normals_with_chunk_bounds() {
+        // Build terrain that extends beyond chunk bounds (simulating
+        // the border region used in real mesh gen).
+        let mut voxels = Vec::new();
+        // Ground extends -2..18 in x and z (2-voxel border beyond 0..16 chunk)
+        for x in -2..18 {
+            for z in -2..18 {
+                voxels.push((x, 0, z));
+            }
+        }
+        // Tall column in center
+        for x in 6..10 {
+            for z in 6..10 {
+                for y in 1..12 {
+                    voxels.push((x, y, z));
+                }
+            }
+        }
+        // Steps at various locations
+        for x in 0..5 {
+            for z in 0..16 {
+                voxels.push((x, 1, z));
+            }
+        }
+        for x in 12..16 {
+            for z in 0..8 {
+                voxels.push((x, 1, z));
+                voxels.push((x, 2, z));
+            }
+        }
+        voxels.sort();
+        voxels.dedup();
+
+        let mut mesh = build_chamfered_voxel_mesh(&voxels);
+        assert_all_normals_canonical(&mesh, 1.0, "chunked terrain pre");
+
+        let bounds = Some(([0, 0, 0], [16, 16, 16]));
+        mesh.coplanar_region_retri(bounds);
+        mesh.collapse_collinear_boundary_vertices(bounds);
+        mesh.decimate(1e-6, bounds);
+        assert_all_normals_canonical(&mesh, 2.0, "chunked terrain full pipeline");
+    }
+
+    /// Category A reproduction: complex multi-height terrain with chunk
+    /// bounds and tall features to force retri centroid fans near chamfer
+    /// bevel boundaries.
+    #[test]
+    fn canonical_normals_complex_terrain_with_bounds() {
+        let mut voxels = Vec::new();
+        // Large ground with border (-2..18)
+        for x in -2..18 {
+            for z in -2..18 {
+                voxels.push((x, 0, z));
+            }
+        }
+        // Multiple height steps at various locations
+        for x in 0..8 {
+            for z in 0..16 {
+                voxels.push((x, 1, z));
+            }
+        }
+        for x in 2..6 {
+            for z in 4..12 {
+                voxels.push((x, 2, z));
+            }
+        }
+        // Tall wall (tree trunk analog) — 10 voxels tall
+        for x in 7..11 {
+            for z in 7..11 {
+                for y in 1..11 {
+                    voxels.push((x, y, z));
+                }
+            }
+        }
+        // Second tall wall
+        for x in 2..4 {
+            for z in 13..15 {
+                for y in 1..8 {
+                    voxels.push((x, y, z));
+                }
+            }
+        }
+        // Isolated step blocks (create lots of chamfer bevels)
+        voxels.push((12, 1, 3));
+        voxels.push((13, 1, 3));
+        voxels.push((12, 1, 4));
+        voxels.push((14, 1, 8));
+        voxels.push((14, 1, 9));
+        voxels.push((14, 2, 8));
+
+        voxels.sort();
+        voxels.dedup();
+
+        let mut mesh = build_chamfered_voxel_mesh(&voxels);
+        let pre_count = mesh.triangles.len();
+        assert_all_normals_canonical(&mesh, 1.0, "complex terrain pre");
+
+        let bounds = Some(([0, 0, 0], [16, 16, 16]));
+        mesh.coplanar_region_retri(bounds);
+        let post_retri = mesh.triangles.len();
+        mesh.collapse_collinear_boundary_vertices(bounds);
+        let post_collinear = mesh.triangles.len();
+        mesh.decimate(1e-6, bounds);
+        let post_qem = mesh.triangles.len();
+
+        println!(
+            "Complex terrain: {} → {} (retri) → {} (collinear) → {} (QEM)",
+            pre_count, post_retri, post_collinear, post_qem
+        );
+
+        let bad = count_non_canonical_normals(&mesh, 2.0);
+        if !bad.is_empty() {
+            for (ti, angle) in &bad {
+                let tri = mesh.triangles[*ti];
+                let positions: [[f32; 3]; 3] =
+                    std::array::from_fn(|i| mesh.vertices[tri[i] as usize].position);
+                println!(
+                    "  non-canonical tri {ti}: {angle:.1}°, verts {:?}, {:?}, {:?}",
+                    positions[0], positions[1], positions[2]
+                );
+            }
+        }
+        assert!(
+            bad.is_empty(),
+            "complex terrain: {} non-canonical normals",
+            bad.len()
+        );
+    }
+
+    /// Fuzz: canonical normal preservation on smooth terrain.
+    #[test]
+    fn fuzz_canonical_normals_smooth_terrain() {
+        let mut failures = 0;
+        let mut tested = 0;
+        for seed in 0..100 {
+            let heights = smooth_random_heightmap(seed, 12, 3);
+            let mut mesh = build_heightmap_terrain(&heights);
+            let (boundary, non_manifold) = check_watertight(&mesh);
+            if !non_manifold.is_empty() || !boundary.is_empty() {
+                continue;
+            }
+            tested += 1;
+            // Verify pre-decimation is canonical.
+            let pre_bad = count_non_canonical_normals(&mesh, 1.0);
+            assert!(
+                pre_bad.is_empty(),
+                "seed={seed} pre-decimation has non-canonical normals"
+            );
+
+            mesh.coplanar_region_retri(None);
+            mesh.collapse_collinear_boundary_vertices(None);
+            mesh.decimate(1e-6, None);
+
+            let post_bad = count_non_canonical_normals(&mesh, 2.0);
+            if !post_bad.is_empty() {
+                failures += 1;
+                println!(
+                    "seed={seed}: {} non-canonical normals (worst: {:.1}°)",
+                    post_bad.len(),
+                    post_bad.iter().map(|(_, a)| *a).fold(0.0f32, f32::max)
+                );
+            }
+        }
+        assert!(
+            failures == 0,
+            "{failures}/{tested} seeds have non-canonical normals after decimation"
+        );
+    }
+
     #[test]
     fn reduction_summary() {
         let shapes: Vec<(&str, SmoothMesh)> = vec![
@@ -2624,6 +4748,15 @@ mod tests {
             ("Hollow frame", build_hollow_frame()),
             ("Staircase", build_staircase()),
             ("Platform on base", build_platform_on_base()),
+            ("Diagonal ridge", build_diagonal_ridge()),
+            ("Rolling hills", build_rolling_hills()),
+            ("Diagonal valley", build_diagonal_valley()),
+            ("Diagonal nook", build_diagonal_nook()),
+            ("Zigzag terrain", build_zigzag_terrain()),
+            ("Diag checkerboard", build_diagonal_checkerboard()),
+            ("Terraced hillside", build_terraced_hillside()),
+            ("Saddle", build_saddle()),
+            ("Cove", build_cove()),
         ];
         for (name, mut mesh) in shapes {
             let original = mesh.triangles.len();

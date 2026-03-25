@@ -5062,6 +5062,14 @@ impl SimBridge {
         self.rebuild_mesh_cache();
     }
 
+    /// Enable or disable QEM-only mode (skip retri + collinear passes).
+    /// Requires a full mesh rebuild to take effect.
+    #[func]
+    fn set_qem_only(&mut self, enabled: bool) {
+        elven_canopy_sim::mesh_gen::set_qem_only(enabled);
+        self.rebuild_mesh_cache();
+    }
+
     /// Set the mesh memory budget in bytes. Cached chunk meshes beyond this
     /// budget are evicted LRU. Pass 0 for unlimited (no eviction).
     #[func]
@@ -5069,6 +5077,36 @@ impl SimBridge {
         if let Some(cache) = &mut self.mesh_cache {
             cache.set_memory_budget(bytes.max(0) as usize);
         }
+    }
+
+    /// Export the chunk mesh at the given world position as OBJ text.
+    /// `with_decimation`: true for decimated, false for undecimated.
+    /// Returns the OBJ text as a string (GDScript writes it to disk).
+    #[func]
+    fn export_chunk_obj(
+        &mut self,
+        world_x: f32,
+        world_y: f32,
+        world_z: f32,
+        with_decimation: bool,
+    ) -> GString {
+        use elven_canopy_sim::mesh_gen::{
+            CHUNK_SIZE, ChunkCoord, chunk_mesh_to_obj, generate_chunk_mesh_with_decimation,
+        };
+
+        let Some(sim) = &self.session.sim else {
+            return GString::new();
+        };
+
+        let cx = (world_x as i32).div_euclid(CHUNK_SIZE);
+        let cy = (world_y as i32).div_euclid(CHUNK_SIZE);
+        let cz = (world_z as i32).div_euclid(CHUNK_SIZE);
+        let chunk = ChunkCoord::new(cx, cy, cz);
+
+        let mesh = generate_chunk_mesh_with_decimation(&sim.world, chunk, None, with_decimation);
+        let obj = chunk_mesh_to_obj(&mesh);
+
+        GString::from(obj.as_str())
     }
 
     /// Update chunk visibility based on camera position and frustum planes.

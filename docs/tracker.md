@@ -58,6 +58,7 @@ This reduces merge conflicts when parallel work streams add items.
 ### Todo
 
 ```
+[ ] B-chamfer-nonmfld      Chamfer produces non-manifold edges for diagonally-adjacent voxels
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fragile-tests        Audit and harden tests against PRNG stream shifts and worldgen changes
@@ -4101,9 +4102,34 @@ Most gameplay hotkeys (B, T, U, M, I, Y, Space, F1–F3, F12, ?) fire even when 
 #### B-qem-deformation — QEM decimation visual artifacts
 **Status:** Todo
 
-Chamfer-only mode: the QEM edge-collapse decimation pass (the third stage after coplanar retri and collinear boundary collapse) produces occasional large visible deformations in rare geometric configurations. These are not subtle — vertices are moved significantly off-plane, creating obvious bumps, dents, or misshapen surfaces. The existing volume-preservation and watertightness tests do not catch them, so the triggering geometry is not yet identified. Only relevant for chamfer-only (non-smooth) rendering. Needs new test shapes that reproduce the issue, then a root-cause fix.
+Chamfer-only mode: the three-pass mesh decimation pipeline (coplanar retri, collinear boundary collapse, QEM edge-collapse) produced visible deformations — triangles bridging across crease boundaries between differently-angled chamfer surfaces, creating obvious bumps, dents, and misshapen surfaces.
 
-**Related:** F-mesh-lod
+**Root cause (identified via OBJ mesh export and analysis):**
+
+The QEM edge-collapse pass was collapsing edges that sit on creases between differently-oriented chamfer surfaces (e.g., an edge chamfer at 45° meeting a corner chamfer at 35°). Each individual collapse had near-zero QEM error (both vertices are near the accumulated planes) and passed the normal-flip check (dot > 0), but the resulting triangle spanned two surfaces at a non-canonical angle — an orientation that doesn't exist in the original chamfered voxel mesh. In a real game chunk, 18 out of 626 decimated triangles (2.9%) had non-canonical normals, with angular deviations of 13–25°.
+
+**Fix (2026-03-25):**
+
+Added a canonical normal check to `collapse_would_flip` in `mesh_decimation.rs`. Chamfered voxel meshes have exactly 26 possible triangle normal directions (6 cardinal, 12 edge-chamfer, 8 corner-chamfer). The check rejects any collapse that would produce a surviving triangle whose normal doesn't match one of these 26 directions (within cos(10°) ≈ 0.985 threshold). This prevents cross-surface bridging without affecting triangle reduction on legitimate coplanar surfaces. The check is gated on `!smoothing_enabled()` so it won't interfere with future smooth-mode LoD decimation.
+
+**Status: NOT FULLY FIXED.** The canonical normal check (applied to all three pipeline stages: retri, collinear, and QEM) fixes the majority of visible deformation artifacts but problems remain. The remaining issues appear regardless of whether QEM-only mode is used, indicating the QEM pass itself still has cross-surface bridging that the canonical normal check doesn't catch.
+
+**IMPORTANT: The canonical normal check is a HACK, not a root-cause fix.** There is a latent bug in how the decimation pipeline handles material boundaries and/or chunk boundaries that causes cross-surface bridging. The canonical normal check papers over it by rejecting the bad output, but only works for chamfer-only mode where the set of valid normals is known. The same underlying bug would produce similar artifacts when decimating smooth-mode meshes (future LoD), where arbitrary normals are valid and we have no canonical set to check against. The bug is not fully fixed until the actual root cause (likely in boundary handling) is identified and corrected.
+
+**Other fixes made during investigation:**
+1. Retri collinear centroid — `coplanar_region_retri` created degenerate zero-area fan triangles when a region's boundary polygon was a thin strip.
+2. QEM near-degenerate threshold — raised from 1e-10 to 1e-6, added relative area shrinkage guard.
+3. Retri sliver fan triangles — added aspect ratio check for fan triangles.
+4. QEM unbounded slivers on coplanar surfaces — added aspect ratio check to collapse_would_flip.
+
+**Debug tooling added:**
+- OBJ mesh export button (debug toolbar) — exports chunk mesh with and without decimation for comparison in mesh viewers.
+- QEM-Only toggle — skips retri+collinear to isolate QEM behavior.
+- Point-in-mesh surface sampling tests — raycasting-based inside/outside deformation detection.
+- Canonical normal validation tests — verify all triangle normals match the 26 chamfer directions.
+- Fuzz testing with randomized smooth heightmaps (200+ seeds).
+
+**Related:** B-chamfer-nonmfld, F-mesh-lod
 
 #### B-start-paused-ui — start_paused_on_load UI desync and missing new-game support
 **Status:** Todo
@@ -4821,7 +4847,7 @@ F-rle-voxels.
 **Known issues:** QEM pass produces rare large deformations in unidentified geometric configurations (B-qem-deformation, chamfer-only). Chunk boundary vertices are pinned, leaving dense triangle bands at chunk seams (F-boundary-decim, chamfer-only).
 
 **Unblocked by:** F-visual-smooth
-**Related:** B-qem-deformation, F-boundary-decim, F-distance-fog, F-megachunk, F-mesh-cache-lru, F-visual-smooth
+**Related:** B-chamfer-nonmfld, B-qem-deformation, F-boundary-decim, F-distance-fog, F-megachunk, F-mesh-cache-lru, F-visual-smooth
 
 #### F-mesh-par — Parallel off-main-thread chunk mesh generation with camera-priority
 **Status:** Todo
@@ -5224,6 +5250,26 @@ cutaway, or hide-upper-levels toggle. Open design question (§27).
 **Related:** F-bldg-transparency, F-ghost-above, F-minimap
 
 ### Sim Engine
+
+#### B-chamfer-nonmfld — Chamfer produces non-manifold edges for diagonally-adjacent voxels
+**Status:** Todo
+
+The chamfer pass in `smooth_mesh.rs` produces non-manifold edges (edges shared by 3+ triangles) when two voxels are diagonally adjacent — sharing only an edge, not a face. This is a distinct issue from the QEM deformation bug (B-qem-deformation).
+
+**How it happens:** When two voxels share only an edge (e.g., voxels at (x,y,z) and (x+1,y,z+1) with neither (x+1,y,z) nor (x,y,z+1) present), each voxel generates exposed faces on its sides. The chamfer subdivides these faces and deduplicates vertices by position. Along the shared edge, both voxels' face vertices merge, creating edges shared by triangles from two different faces on two different planes — a non-manifold configuration.
+
+**Where it occurs in terrain:** Any heightmap where adjacent columns create a "checkerboard" height pattern triggers this. For example, a 2×2 area where h(0,0)=2, h(1,0)=1, h(0,1)=1, h(1,1)=2: the y=1 voxels at (0,0) and (1,1) are diagonally adjacent with no face-adjacent neighbor at the same height. This is common in natural-looking terrain with scattered single-step height variations.
+
+**Evidence from testing:** In B-qem-deformation fuzz testing, 49/50 random heightmap seeds (height range 1–4) and 99/100 smooth heightmap seeds (max ±1 step) produced non-manifold chamfer output before a diagonal-gap-filling workaround was added to the test heightmap generator.
+
+**Impact:** Non-manifold edges cause rendering artifacts (z-fighting, self-intersection, overlapping geometry) that could look like "bumps, dents, or misshapen surfaces." The QEM decimation pass has a non-manifold guard (`collapse_would_create_non_manifold`) that prevents creating NEW non-manifold edges, but cannot fix ones inherited from the chamfer input.
+
+**Possible fix approaches:**
+1. **Gap-filling in terrain gen:** Ensure no diagonal-only voxel adjacency exists by filling gaps (raise one neighbor column to eliminate the checkerboard pattern). The B-qem-deformation test suite uses this approach in `smooth_random_heightmap`.
+2. **Chamfer-level fix:** Detect diagonal-only adjacency during face generation and either skip the conflicting faces or merge them into a single surface.
+3. **Post-chamfer cleanup:** Add a non-manifold edge resolution pass before decimation.
+
+**Related:** B-qem-deformation, F-mesh-lod
 
 #### B-dead-enums — Remove dead GrownStairs/Bridge code and add explicit enum discriminants
 **Status:** Done
