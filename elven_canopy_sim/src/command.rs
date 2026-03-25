@@ -405,6 +405,13 @@ pub enum SimAction {
         activity_id: ActivityId,
         creature_id: CreatureId,
     },
+
+    // --- Path commands (F-path-core) ---
+    /// Assign a path to a creature. Replaces any existing path assignment.
+    AssignPath {
+        creature_id: CreatureId,
+        path_id: PathId,
+    },
 }
 
 #[cfg(test)]

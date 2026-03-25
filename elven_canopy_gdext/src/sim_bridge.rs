@@ -368,6 +368,15 @@ fn build_creature_info_dict(
         dict.set("military_group_id", group_id);
         dict.set("military_group_name", GString::from(group_name.as_str()));
     }
+    // Path info (F-path-core).
+    if let Some(path_id) = sim.creature_path(c.id) {
+        dict.set("path_id", GString::from(format!("{path_id:?}").as_str()));
+        dict.set("path_name", GString::from(path_id.display_name()));
+    } else {
+        dict.set("path_id", GString::from(""));
+        dict.set("path_name", GString::from(""));
+    }
+
     // Creature stats (ability scores).
     for tk in elven_canopy_sim::stats::STAT_TRAIT_KINDS {
         let val = sim
@@ -3785,6 +3794,53 @@ impl SimBridge {
             group_id: elven_canopy_sim::types::MilitaryGroupId(group_id as u64),
             wants,
         });
+    }
+
+    // -------------------------------------------------------------------
+    // Path assignment (F-path-core)
+    // -------------------------------------------------------------------
+
+    /// Assign a path to a creature. `path_id` is one of: "Outcast",
+    /// "Warrior", "Scout".
+    #[func]
+    fn assign_path(&mut self, creature_uuid: GString, path_id_str: GString) {
+        let Some(creature_id) = parse_creature_id(&creature_uuid.to_string()) else {
+            return;
+        };
+        let path_id = match path_id_str.to_string().as_str() {
+            "Outcast" => elven_canopy_sim::types::PathId::Outcast,
+            "Warrior" => elven_canopy_sim::types::PathId::Warrior,
+            "Scout" => elven_canopy_sim::types::PathId::Scout,
+            other => {
+                godot_error!("SimBridge: unknown path_id '{other}'");
+                return;
+            }
+        };
+        self.apply_or_send(SimAction::AssignPath {
+            creature_id,
+            path_id,
+        });
+    }
+
+    /// Get the list of all available path IDs (for UI dropdowns).
+    #[func]
+    fn get_path_ids(&self) -> VarArray {
+        let mut arr = VarArray::new();
+        for path_id in elven_canopy_sim::types::PathId::ALL {
+            arr.push(&GString::from(format!("{path_id:?}").as_str()).to_variant());
+        }
+        arr
+    }
+
+    /// Get the display name for a path ID string.
+    #[func]
+    fn get_path_display_name(&self, path_id_str: GString) -> GString {
+        match path_id_str.to_string().as_str() {
+            "Outcast" => GString::from(elven_canopy_sim::types::PathId::Outcast.display_name()),
+            "Warrior" => GString::from(elven_canopy_sim::types::PathId::Warrior.display_name()),
+            "Scout" => GString::from(elven_canopy_sim::types::PathId::Scout.display_name()),
+            _ => GString::from(""),
+        }
     }
 
     // -------------------------------------------------------------------

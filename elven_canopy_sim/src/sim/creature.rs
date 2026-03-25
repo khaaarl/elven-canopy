@@ -208,6 +208,18 @@ impl SimState {
             }
         }
 
+        // Assign default path (Outcast) for elves. Other species don't
+        // participate in the path system.
+        if species == Species::Elf {
+            let _ = self
+                .db
+                .path_assignments
+                .insert_no_fk(crate::db::PathAssignment {
+                    creature_id,
+                    path_id: PathId::Outcast,
+                });
+        }
+
         // Schedule first activation (drives movement — wander or task work).
         // Fires 1 tick after spawn so the creature starts moving immediately.
         self.event_queue.schedule(
@@ -443,7 +455,12 @@ impl SimState {
     }
 
     /// Insert a single trait row for a creature.
-    fn insert_trait(&mut self, creature_id: CreatureId, trait_kind: TraitKind, value: TraitValue) {
+    pub(crate) fn insert_trait(
+        &mut self,
+        creature_id: CreatureId,
+        trait_kind: TraitKind,
+        value: TraitValue,
+    ) {
         let _ = self.db.creature_traits.insert_no_fk(CreatureTrait {
             creature_id,
             trait_kind,

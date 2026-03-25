@@ -307,6 +307,11 @@ pub enum SimEventKind {
         damage: i64,
         remaining_hp: i64,
     },
+    /// A creature's path was assigned or changed (F-path-core).
+    PathAssigned {
+        creature_id: CreatureId,
+        path_id: PathId,
+    },
 }
 
 #[cfg(test)]

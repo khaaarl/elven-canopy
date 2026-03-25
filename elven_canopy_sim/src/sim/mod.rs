@@ -548,6 +548,7 @@ mod inventory_mgmt;
 mod logistics;
 mod movement;
 mod needs;
+mod paths;
 mod raid;
 mod skills;
 mod task_helpers;
@@ -1177,6 +1178,13 @@ impl SimState {
                 creature_id,
             } => {
                 self.handle_remove_from_activity(*activity_id, *creature_id, events);
+            }
+
+            SimAction::AssignPath {
+                creature_id,
+                path_id,
+            } => {
+                self.assign_path(*creature_id, *path_id, events);
             }
         }
     }
@@ -2060,6 +2068,9 @@ impl SimState {
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         let mut state: SimState = serde_json::from_str(json)?;
         state.rebuild_transient_state();
+        // Backfill Outcast path for elves from old saves that predate the
+        // path system (F-path-core).
+        state.backfill_outcast_paths();
         Ok(state)
     }
 

@@ -6,7 +6,7 @@
 //
 // ## Table layout
 //
-// The database has 40 tables organized in four tiers:
+// The database has 41 tables organized in four tiers:
 //
 // **Player tables:** `players` — human operators identified by username string.
 // One entry per connected human player; persisted in save files.
@@ -23,11 +23,12 @@
 // vital_status. Incapacitated creatures are rendered and targetable but
 // cannot act.
 //
-// **Child tables:** `thoughts`, `creature_traits`, `move_actions`,
-// `notifications`, `inventories`, `item_stacks`, `ground_piles`,
-// `logistics_wants`, `furniture`, `music_compositions` —
+// **Child tables:** `thoughts`, `creature_traits`, `path_assignments`,
+// `move_actions`, `notifications`, `inventories`, `item_stacks`,
+// `ground_piles`, `logistics_wants`, `furniture`, `music_compositions` —
 // normalized data that was previously stored as inline `Vec` fields on parent
-// entities, plus player-visible notifications and construction music metadata.
+// entities, plus player-visible notifications, construction music metadata,
+// and elf path assignments (F-path-core).
 //
 // **Task decomposition tables:** `task_blueprint_refs`, `task_structure_refs`,
 // `task_voxel_refs`, `task_haul_data`, `task_sleep_data`, `task_acquire_data`,
@@ -67,9 +68,9 @@ use crate::types::{
     ActiveRecipeId, ActiveRecipeTargetId, ActivityId, ActivityKind, ActivityPhase, BuildType,
     CivId, CivOpinion, CivSpecies, CompositionId, CreatureId, CultureTag, DeparturePolicy,
     EnchantmentId, FruitSpeciesId, FurnishingType, FurnitureId, GroundPileId, InventoryId,
-    ItemStackId, MilitaryGroupId, NotificationId, ParticipantRole, ParticipantStatus, ProjectId,
-    ProjectileId, RecruitmentMode, SelectionGroupId, Species, StructureId, StrutId, TaskId,
-    ThoughtKind, TraitKind, TraitValue, TreeId, VitalStatus, VoxelCoord,
+    ItemStackId, MilitaryGroupId, NotificationId, ParticipantRole, ParticipantStatus, PathId,
+    ProjectId, ProjectileId, RecruitmentMode, SelectionGroupId, Species, StructureId, StrutId,
+    TaskId, ThoughtKind, TraitKind, TraitValue, TreeId, VitalStatus, VoxelCoord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -413,6 +414,20 @@ pub struct CreatureTrait {
 
 fn default_trait_value() -> TraitValue {
     TraitValue::Int(0)
+}
+
+/// A creature's current path assignment (F-path-core). Each creature has at
+/// most one active path. The path determines which skills receive elevated
+/// caps and extra advancement rolls (defined in `PathConfig`).
+///
+/// All elves are assigned `PathId::Outcast` at spawn. Non-elf creatures do
+/// not have path assignments. Cascade-on-delete removes the assignment when
+/// the creature is deleted.
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct PathAssignment {
+    #[primary_key]
+    pub creature_id: CreatureId,
+    pub path_id: PathId,
 }
 
 /// A player-visible notification. Persists across saves so the notification
@@ -1477,6 +1492,10 @@ pub struct SimDb {
     #[table(singular = "creature_trait",
             fks(creature_id = "creatures" on_delete cascade))]
     pub creature_traits: CreatureTraitTable,
+
+    #[table(singular = "path_assignment",
+            fks(creature_id = "creatures" pk on_delete cascade))]
+    pub path_assignments: PathAssignmentTable,
 
     #[table(singular = "task",
             fks(target_creature? = "creatures"))]

@@ -540,6 +540,62 @@ impl TraitValue {
 }
 
 // ---------------------------------------------------------------------------
+// Elf paths — discipline a creature walks (F-path-core).
+// ---------------------------------------------------------------------------
+
+/// Identifier for a creature's path (discipline/specialization).
+///
+/// Paths determine which skills receive elevated caps and extra advancement
+/// rolls. Each path is associated with a set of skills defined in
+/// `PathConfig`. Currently a fixed enum; future paths (specializations,
+/// esoteric) will extend this.
+///
+/// `Outcast` is the default path assigned to all elves at spawn. It confers
+/// no skill bonuses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum PathId {
+    /// Default path — no skill bonuses. All elves start here.
+    Outcast,
+    /// Combat path. Associated skills: Striking, Archery, Evasion.
+    Warrior,
+    /// Combat path focused on exploration and beast-taming. Associated skills: Beastcraft, Ranging.
+    Scout,
+}
+
+impl PathId {
+    /// Display name shown in the UI.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            PathId::Outcast => "Way of the Outcast",
+            PathId::Warrior => "Way of the Warrior",
+            PathId::Scout => "Way of the Scout",
+        }
+    }
+
+    /// All path variants, in display order.
+    pub const ALL: &[PathId] = &[PathId::Outcast, PathId::Warrior, PathId::Scout];
+}
+
+impl fmt::Display for PathId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.display_name())
+    }
+}
+
+/// Category of a path. Combat paths are player-assigned only; civil paths
+/// can eventually self-assign. Currently all implemented paths are Combat
+/// (or Outcast which is its own category).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum PathCategory {
+    /// No category — the default Outcast path.
+    None,
+    /// Warrior, Archer, Guard, etc.
+    Combat,
+    /// Cook, Harvester, Artisan, etc.
+    Civil,
+}
+
+// ---------------------------------------------------------------------------
 // Civilization IDs — sequential u16, assigned by worldgen in batch.
 // ---------------------------------------------------------------------------
 

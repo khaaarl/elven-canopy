@@ -55,6 +55,7 @@ This reduces merge conflicts when parallel work streams add items.
 [~] F-multiplayer          Relay-coordinator multiplayer networking
 [~] F-notifications        Player-visible event notifications
 [~] F-parallel-dedup       Radix-partitioned parallel dedup (elven_canopy_utils)
+[~] F-path-ui              Path management UI and notifications
 ```
 
 ### Todo
@@ -172,11 +173,9 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-partial-struct       Structural checks on incomplete builds
 [ ] F-path-civil           Civil path definitions and organic self-assignment
 [ ] F-path-combat          Combat path definitions and player assignment
-[ ] F-path-core            Elf path system core (Way/Calling/Attunement)
 [ ] F-path-residue         Skill residue from past paths
 [ ] F-path-specialize      Path specialization branching and prerequisites
 [ ] F-path-stuck           Deep commitment personality drift and refusal
-[ ] F-path-ui              Path management UI and notifications
 [ ] F-patrol               Patrol command for military groups
 [ ] F-personality          Personality axes affecting behavior
 [ ] F-phased-archery       Phased archery (nock/draw/loose) with skill-gated mobility
@@ -401,6 +400,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-new-game-ui          New game screen with tree presets
 [x] F-no-bp-overlap        Reject overlapping blueprint designations
 [x] F-orbital-cam          Orbital camera controller
+[x] F-path-core            Elf path system core (Way/Calling/Attunement)
 [x] F-pathfinding          A* pathfinding over nav graph
 [x] F-pause-menu           In-game pause overlay
 [x] F-per-detection        Perception stat modifies hostile detection range
@@ -2251,8 +2251,8 @@ provides passive mana generation bonus scaling with CHA. Personality-based
 compatibility checks deferred until F-personality exists — initial
 self-assignment is purely counter-based.
 
-**Blocked by:** F-path-core
 **Blocks:** F-path-specialize
+**Unblocked by:** F-path-core
 **Related:** F-personality
 
 #### F-pile-gravity — Ground pile gravity and merging
@@ -2616,7 +2616,7 @@ Log viewable by player, drives emergent storytelling.
 **Related:** F-status-bar
 
 #### F-path-core — Elf path system core (Way/Calling/Attunement)
-**Status:** Todo · **Phase:** 4 · **Refs:** §18
+**Status:** Done · **Phase:** 4 · **Refs:** §18
 
 Core data model for the elf path system. Paths are disciplines elves commit
 to with escalating depth: Way (flexible, learning) → Calling (committed,
@@ -2629,7 +2629,7 @@ until F-personality exists. Foundation for all other path features.
 
 **Draft:** docs/drafts/F-elf-paths.md
 
-**Blocks:** F-path-civil, F-path-combat, F-path-residue, F-path-stuck, F-path-ui
+**Unblocked:** F-path-civil, F-path-combat, F-path-residue, F-path-stuck, F-path-ui
 **Related:** F-apprentice, F-creature-skills, F-emotions, F-personality
 
 #### F-path-residue — Skill residue from past paths
@@ -2645,7 +2645,7 @@ transitions. Residue fraction is configurable per path via
 residue_fraction_permille. Woodsinging has a higher residue fraction than
 other craft paths.
 
-**Blocked by:** F-path-core
+**Unblocked by:** F-path-core
 
 #### F-path-specialize — Path specialization branching and prerequisites
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
@@ -2673,7 +2673,8 @@ category) is part of F-path-core's tier transition logic and does not
 require personality. This feature covers only the personality-dependent
 aspects: drift, mood scaling, and personality-informed behavior changes.
 
-**Blocked by:** F-path-core, F-personality
+**Blocked by:** F-personality
+**Unblocked by:** F-path-core
 **Related:** F-emotions
 
 #### F-personality — Personality axes affecting behavior
@@ -3338,8 +3339,8 @@ gained from combat actions (melee hits, ranged kills, damage taken). All
 combat-path elves of the same type and level behave identically — no
 per-elf perk divergence, keeping the system RTS-friendly.
 
-**Blocked by:** F-path-core
 **Blocks:** F-path-specialize
+**Unblocked by:** F-path-core
 **Related:** F-buff-system
 
 #### F-patrol — Patrol command for military groups
@@ -4955,7 +4956,7 @@ shapes.
 Orbit, zoom, pan. Smooth interpolation. Follow mode for creatures.
 
 #### F-path-ui — Path management UI and notifications
-**Status:** Todo · **Phase:** 4 · **Refs:** §18
+**Status:** In Progress · **Phase:** 4 · **Refs:** §18
 
 UI for path management. Path info displayed in creature info panel (current
 path, tier, level, XP progress). Player-facing controls for assigning
@@ -4964,7 +4965,7 @@ self-assignments, and Attunement warnings. Elf roster view showing path
 distribution at a glance (who's flexible, who's committed, who's locked in).
 Specialization picker when an elf reaches the branching threshold.
 
-**Blocked by:** F-path-core
+**Unblocked by:** F-path-core
 
 #### F-pause-menu — In-game pause overlay
 **Status:** Done · **Refs:** §26

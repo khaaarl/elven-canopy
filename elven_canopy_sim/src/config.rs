@@ -36,7 +36,8 @@ use crate::species::{
     WeaponPreference,
 };
 use crate::types::{
-    CivSpecies, FaceType, MoodTier, Species, ThoughtKind, TraitKind, VoxelCoord, VoxelType,
+    CivSpecies, FaceType, MoodTier, PathCategory, PathId, Species, ThoughtKind, TraitKind,
+    VoxelCoord, VoxelType,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -2429,6 +2430,12 @@ pub struct GameConfig {
     /// without this field use defaults.
     #[serde(default)]
     pub skills: SkillConfig,
+
+    // -- Elf paths (F-path-core) --
+    /// Path system configuration. Backward-compatible: older configs without
+    /// this field use defaults (Outcast/Warrior/Scout with standard bonuses).
+    #[serde(default)]
+    pub paths: PathConfig,
 }
 
 /// Configuration for the creature skill advancement system (F-creature-skills).
@@ -2462,6 +2469,84 @@ impl Default for SkillConfig {
             advancement_decay_base: 100,
         }
     }
+}
+
+/// Configuration for the elf path system (F-path-core).
+///
+/// Defines per-path skill caps, extra advancement rolls, and category. The
+/// default provides Outcast (no bonuses), Warrior (Striking/Archery/Evasion),
+/// and Scout (Beastcraft/Ranging).
+///
+/// See also: `types.rs` for `PathId` / `PathCategory`, `sim/skills.rs` for
+/// how paths modify skill advancement, `sim/paths.rs` for assignment logic.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PathConfig {
+    /// Per-path definitions keyed by `PathId`.
+    pub paths: BTreeMap<PathId, PathDef>,
+}
+
+impl Default for PathConfig {
+    fn default() -> Self {
+        let mut paths = BTreeMap::new();
+
+        // Outcast — no bonuses.
+        paths.insert(
+            PathId::Outcast,
+            PathDef {
+                name: "Way of the Outcast".to_string(),
+                category: PathCategory::None,
+                skill_caps: BTreeMap::new(),
+                extra_advancement_rolls: 0,
+            },
+        );
+
+        // Warrior — Striking, Archery, Evasion get cap 200 + double rolls.
+        let mut warrior_caps = BTreeMap::new();
+        warrior_caps.insert(TraitKind::Striking, 200);
+        warrior_caps.insert(TraitKind::Archery, 200);
+        warrior_caps.insert(TraitKind::Evasion, 200);
+        paths.insert(
+            PathId::Warrior,
+            PathDef {
+                name: "Way of the Warrior".to_string(),
+                category: PathCategory::Combat,
+                skill_caps: warrior_caps,
+                extra_advancement_rolls: 1,
+            },
+        );
+
+        // Scout — Beastcraft, Ranging get cap 200 + double rolls.
+        let mut scout_caps = BTreeMap::new();
+        scout_caps.insert(TraitKind::Beastcraft, 200);
+        scout_caps.insert(TraitKind::Ranging, 200);
+        paths.insert(
+            PathId::Scout,
+            PathDef {
+                name: "Way of the Scout".to_string(),
+                category: PathCategory::Combat,
+                skill_caps: scout_caps,
+                extra_advancement_rolls: 1,
+            },
+        );
+
+        Self { paths }
+    }
+}
+
+/// Definition of a single path — its name, category, and skill bonuses.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PathDef {
+    /// Display name (e.g., "Way of the Warrior").
+    pub name: String,
+    /// Category (Combat, Civil, or None for Outcast).
+    pub category: PathCategory,
+    /// Per-skill cap overrides. Skills listed here use the specified cap
+    /// instead of `SkillConfig::default_skill_cap`. Skills not listed use
+    /// the default cap.
+    pub skill_caps: BTreeMap<TraitKind, i64>,
+    /// Number of *extra* advancement rolls per relevant action. 0 = normal
+    /// (1 roll), 1 = double (2 rolls), etc.
+    pub extra_advancement_rolls: u32,
 }
 
 fn default_platform_mana_cost_per_mille() -> u32 {
@@ -3467,6 +3552,7 @@ impl Default for GameConfig {
             evasion_crit_damage_multiplier: default_evasion_crit_damage_multiplier(),
             evasion_dodge_advance_permille: default_evasion_dodge_advance_permille(),
             skills: SkillConfig::default(),
+            paths: PathConfig::default(),
         }
     }
 }

@@ -3,7 +3,8 @@
 ## Shows information about the currently selected creature, organized into
 ## four tabs: Status (vitals, position, task, needs, mood, ability scores),
 ## Skills (17 universal skills), Inventory (scrollable item list), and
-## Thoughts (scrollable recent thoughts).
+## Thoughts (scrollable recent thoughts). For elves, a path assignment
+## dropdown (F-path-core) is shown in the header.
 ##
 ## The panel is ~25% screen width, full height, anchored to the right edge.
 ## A fixed header (species, name, status, military group) and Follow button
@@ -21,6 +22,7 @@ signal unfollow_requested
 signal panel_closed
 signal zoom_to_task_location(x: float, y: float, z: float)
 signal military_group_clicked(group_id: int)
+signal path_changed(creature_id: String, path_id: String)
 
 const MAX_DISPLAYED_THOUGHTS := 10
 
@@ -48,6 +50,12 @@ var _mp_row: HBoxContainer
 var _status_label: Label
 var _military_group_btn: Button
 var _military_group_id: int = -1
+var _path_option: OptionButton
+var _path_row: HBoxContainer
+## Maps OptionButton item index → path_id string ("Outcast", "Warrior", "Scout").
+var _path_index_to_id: Array[String] = []
+## Suppress signal when programmatically updating the OptionButton.
+var _updating_path: bool = false
 var _mood_label: Label
 var _stat_labels: Dictionary = {}
 var _skill_labels: Dictionary = {}
@@ -154,6 +162,25 @@ func _build_header(parent: VBoxContainer) -> void:
 	_military_group_btn.visible = false
 	_military_group_btn.pressed.connect(_on_military_group_clicked)
 	parent.add_child(_military_group_btn)
+
+	# Path assignment row (F-path-core).
+	_path_row = HBoxContainer.new()
+	_path_row.add_theme_constant_override("separation", 6)
+	_path_row.visible = false
+	parent.add_child(_path_row)
+
+	var path_label := Label.new()
+	path_label.text = "Path:"
+	_path_row.add_child(path_label)
+
+	_path_option = OptionButton.new()
+	_path_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_path_index_to_id = ["Outcast", "Warrior", "Scout"]
+	_path_option.add_item("Way of the Outcast")
+	_path_option.add_item("Way of the Warrior")
+	_path_option.add_item("Way of the Scout")
+	_path_option.item_selected.connect(_on_path_selected)
+	_path_row.add_child(_path_option)
 
 
 ## Build the Status tab: HP, MP, position, task, food, rest, mood, stats grid.
@@ -527,6 +554,7 @@ func update_info(info: Dictionary) -> void:
 	_update_thoughts(info)
 	_update_inventory(info)
 	_update_military_group(info)
+	_update_path(info)
 
 
 func hide_panel() -> void:
@@ -705,6 +733,32 @@ func _update_military_group(info: Dictionary) -> void:
 func _on_military_group_clicked() -> void:
 	if _military_group_id >= 0:
 		military_group_clicked.emit(_military_group_id)
+
+
+func _update_path(info: Dictionary) -> void:
+	var path_id: String = info.get("path_id", "")
+	var species: String = info.get("species", "")
+	# Only show path UI for elves.
+	if path_id.is_empty() or species != "Elf":
+		_path_row.visible = false
+		return
+	_path_row.visible = true
+	# Find the index for this path_id and select it without triggering signal.
+	var idx: int = _path_index_to_id.find(path_id)
+	if idx >= 0 and _path_option.selected != idx:
+		_updating_path = true
+		_path_option.select(idx)
+		_updating_path = false
+
+
+func _on_path_selected(index: int) -> void:
+	if _updating_path:
+		return
+	if index < 0 or index >= _path_index_to_id.size():
+		return
+	var path_id: String = _path_index_to_id[index]
+	if not _selected_creature_id.is_empty():
+		path_changed.emit(_selected_creature_id, path_id)
 
 
 func _match_viewport_height() -> void:

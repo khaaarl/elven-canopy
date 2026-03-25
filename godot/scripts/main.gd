@@ -931,6 +931,9 @@ func _setup_common(bridge: SimBridge) -> void:
 			_selector.deselect()
 			_camera_pivot.stop_follow()
 	)
+	_panel.path_changed.connect(
+		func(creature_id: String, path_id: String): bridge.assign_path(creature_id, path_id)
+	)
 
 	# Fix ESC precedence. _unhandled_input fires in reverse tree order (last
 	# child first). Move the three input controllers to the end so they get

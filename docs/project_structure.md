@@ -31,6 +31,7 @@ elven-canopy/
 │       │   ├── logistics.rs    #   Hauling, harvesting, pickup/dropoff, logistics heartbeat
 │       │   ├── movement.rs     #   GoTo commands, unit spreading, step execution, wandering, command queue
 │       │   ├── needs.rs        #   Eating, sleeping, moping, personal item acquisition
+│       │   ├── paths.rs       #   Elf path assignment, skill cap/roll queries, backfill
 │       │   ├── raid.rs         #   Raid triggering (hostile civ raiding parties)
 │       │   ├── skills.rs      #   Probabilistic skill advancement (try_advance_skill)
 │       │   └── task_helpers.rs #   Task extension table accessors, insert_task
