@@ -477,8 +477,8 @@ impl SimState {
     /// Find the nearest available task this creature can work on.
     /// Uses Dijkstra search on the nav graph to prefer tasks closest by
     /// actual travel cost, not just insertion order. Respects species
-    /// restrictions: tasks with `required_species` are only visible to
-    /// matching creatures.
+    /// and civilization restrictions: tasks with `required_species` or
+    /// `required_civ_id` are only visible to matching creatures.
     pub(crate) fn find_available_task(&self, creature_id: CreatureId) -> Option<TaskId> {
         let creature = self.db.creatures.get(&creature_id)?;
         let species = creature.species;
@@ -510,6 +510,12 @@ impl SimState {
                     return false;
                 }
                 if t.required_species.is_some_and(|s| s != species) {
+                    return false;
+                }
+                // Civ filter: skip tasks restricted to a different civilization.
+                if t.required_civ_id
+                    .is_some_and(|civ| Some(civ) != creature.civ_id)
+                {
                     return false;
                 }
                 // Command queue: skip tasks restricted to a different creature.
@@ -1047,6 +1053,7 @@ impl SimState {
             target_creature: None,
             restrict_to_creature_id: None,
             prerequisite_task_id: None,
+            required_civ_id: None,
         };
         self.insert_task(new_task);
         if let Some(mut creature) = self.db.creatures.get(&creature_id) {
@@ -1152,6 +1159,7 @@ impl SimState {
                 target_creature: None,
                 restrict_to_creature_id: None,
                 prerequisite_task_id: None,
+                required_civ_id: None,
             };
             self.insert_task(new_task);
             if let Some(mut creature) = self.db.creatures.get(&creature_id) {
@@ -1380,6 +1388,7 @@ impl SimState {
                 target_creature: None,
                 restrict_to_creature_id: None,
                 prerequisite_task_id: None,
+                required_civ_id: None,
             };
             self.insert_task(new_task);
             if let Some(mut creature) = self.db.creatures.get(&creature_id) {

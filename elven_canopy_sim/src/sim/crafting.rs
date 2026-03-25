@@ -573,6 +573,7 @@ impl SimState {
                 target_creature: None,
                 restrict_to_creature_id: None,
                 prerequisite_task_id: None,
+                required_civ_id: self.player_civ_id,
             };
             self.insert_task(new_task);
 

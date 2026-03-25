@@ -638,6 +638,7 @@ impl SimState {
             target_creature: None,
             restrict_to_creature_id: Some(creature_id),
             prerequisite_task_id: None,
+            required_civ_id: None,
         };
         self.db.tasks.insert_no_fk(task).unwrap();
 

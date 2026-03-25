@@ -57,6 +57,7 @@ impl SimState {
                 target_creature: None,
                 restrict_to_creature_id: Some(creature_id),
                 prerequisite_task_id: Some(tail_id),
+                required_civ_id: None,
             };
             self.insert_task(new_task);
             return;
@@ -112,6 +113,7 @@ impl SimState {
             target_creature: None,
             restrict_to_creature_id: None,
             prerequisite_task_id: None,
+            required_civ_id: None,
         };
         self.insert_task(new_task);
         if let Some(mut c) = self.db.creatures.get(&creature_id) {

@@ -2148,6 +2148,7 @@ fn insert_goto_task(sim: &mut SimState, location: NavNodeId) -> TaskId {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(task);
     task_id
@@ -2645,6 +2646,7 @@ fn harvest_fruit_carries_species_material() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(task);
     sim.resolve_harvest_action(elf_id, task_id, fruit_pos);
@@ -3545,6 +3547,7 @@ fn busy_tired_elf_does_not_create_sleep_task() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(goto_task);
     let mut c = sim.db.creatures.get(&elf_id).unwrap();
@@ -6327,6 +6330,7 @@ fn eat_fruit_task_restores_food_on_arrival() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(eat_task);
     {
@@ -6488,6 +6492,7 @@ fn busy_hungry_elf_does_not_create_eat_fruit_task() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(goto_task);
     {
@@ -6700,6 +6705,7 @@ fn eat_bread_restores_food_and_removes_bread() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(eat_task);
     {
@@ -6904,6 +6910,7 @@ fn eat_bread_generates_thought() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(eat_task);
     {
@@ -7295,6 +7302,7 @@ fn walk_toward_dead_task_node_does_not_panic() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     });
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
@@ -11434,6 +11442,7 @@ fn logistics_counts_in_transit() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(existing_haul);
 
@@ -11652,6 +11661,7 @@ fn harvest_task_creates_ground_pile() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(harvest_task);
     {
@@ -11799,6 +11809,7 @@ fn haul_source_empty_cancels() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(haul_task);
 
@@ -12139,6 +12150,7 @@ fn acquire_item_picks_up_and_owns() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(acquire_task);
     {
@@ -12543,6 +12555,7 @@ fn devastated_elf_interrupts_task_to_mope() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(goto_task);
     {
@@ -12665,6 +12678,7 @@ fn mope_does_not_interrupt_autonomous_sleep() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(sleep_task);
     {
@@ -12773,6 +12787,7 @@ fn mope_always_preempts_player_directed_build() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(build_task);
     {
@@ -13778,6 +13793,7 @@ fn craft_task_serde_roundtrip() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
 
     let json = serde_json::to_string(&task).unwrap();
@@ -15798,6 +15814,7 @@ fn sleep_adaptive_completion_rest_full_exits_early() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(sleep_task);
     {
@@ -16060,6 +16077,7 @@ fn eat_action_ticks_controls_timing() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(eat_task);
 
@@ -16680,6 +16698,7 @@ fn insert_pursuit_task(
         target_creature: Some(target_id),
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(task);
     // Directly assign the pursuer to this task.
@@ -16770,6 +16789,7 @@ fn pursuit_task_completes_when_adjacent() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(sleep_task);
     let mut target = sim.db.creatures.get(&target_id).unwrap();
@@ -17372,6 +17392,7 @@ fn interrupt_goto_completes_task_and_clears_creature() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(goto_task);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
@@ -17558,6 +17579,7 @@ fn interrupt_sleep_completes_task() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(sleep_task);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
@@ -17628,6 +17650,7 @@ fn interrupt_clears_move_action() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(goto_task);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
@@ -22614,6 +22637,7 @@ fn attack_target_task_serde_roundtrip() {
         target_creature: Some(target),
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
 
     let json = serde_json::to_string(&task).unwrap();
@@ -22931,6 +22955,7 @@ fn test_attack_move_serde_roundtrip() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
 
     let json = serde_json::to_string(&task).unwrap();
@@ -23000,6 +23025,7 @@ fn directed_goto_replaces_player_directed_task() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(task);
     sim.claim_task(elf, task_id);
@@ -23052,6 +23078,7 @@ fn directed_goto_preempts_autonomous_task() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(task);
     sim.claim_task(elf, task_id);
@@ -24702,6 +24729,7 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     let near_task = crate::db::Task {
         id: near_task_id,
@@ -24715,6 +24743,7 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
 
     sim.db.tasks.insert_no_fk(far_task).unwrap();
@@ -24776,6 +24805,7 @@ fn find_available_task_single_candidate_skips_dijkstra() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.db.tasks.insert_no_fk(task).unwrap();
 
@@ -24834,6 +24864,7 @@ fn find_available_task_respects_species_filter_with_proximity() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.db.tasks.insert_no_fk(elf_task).unwrap();
 
@@ -24845,6 +24876,218 @@ fn find_available_task_respects_species_filter_with_proximity() {
     assert_eq!(
         chosen, None,
         "capybara should not be assigned an elf-only task"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Civilization eligibility filter tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn find_available_task_respects_civ_filter() {
+    let mut sim = test_sim(42);
+    let hostile_civ = ensure_hostile_civ(&mut sim);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let player_civ = sim.player_civ_id.unwrap();
+
+    // Spawn a goblin belonging to the hostile civ.
+    let mut events = Vec::new();
+    let goblin_id = sim
+        .spawn_creature_with_civ(Species::Goblin, tree_pos, Some(hostile_civ), &mut events)
+        .expect("should spawn goblin");
+    let _ = sim.db.creatures.modify_unchecked(&goblin_id, |c| {
+        c.current_task = None;
+    });
+
+    let task_node = sim
+        .nav_graph
+        .live_nodes()
+        .next()
+        .expect("should have nodes")
+        .id;
+
+    // Create a task restricted to the player's civ — hostile goblin should NOT see it.
+    let task_id = TaskId::new(&mut sim.rng);
+    let task = crate::db::Task {
+        id: task_id,
+        kind_tag: TaskKindTag::GoTo,
+        state: TaskState::Available,
+        location: sim.nav_graph.node(task_node).position,
+        progress: 0,
+        total_cost: 1,
+        required_species: None, // no species filter — only civ filter
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
+        required_civ_id: Some(player_civ),
+    };
+    sim.db.tasks.insert_no_fk(task).unwrap();
+
+    let chosen = sim.find_available_task(goblin_id);
+    assert_eq!(
+        chosen, None,
+        "hostile-civ goblin should not be assigned a player-civ task"
+    );
+
+    // Spawn an elf (player civ) — it SHOULD see the task.
+    let elf_id = sim
+        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .expect("should spawn elf");
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.current_task = None;
+    });
+
+    let chosen = sim.find_available_task(elf_id);
+    assert_eq!(
+        chosen,
+        Some(task_id),
+        "player-civ elf should be assigned the player-civ task"
+    );
+}
+
+#[test]
+fn find_available_task_unaffiliated_creature_blocked_by_civ_filter() {
+    // A creature with civ_id = None (wild/unaffiliated) cannot claim a
+    // player-civ task. This is the same filter path as hostile creatures,
+    // but exercises the None vs Some comparison.
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let player_civ = sim.player_civ_id.unwrap();
+
+    // Spawn a capybara (civ_id = None by default for non-elves).
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Capybara,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 2);
+
+    let capy = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Capybara)
+        .expect("capybara should exist");
+    let capy_id = capy.id;
+    assert_eq!(capy.civ_id, None, "capybara should be unaffiliated");
+
+    let _ = sim.db.creatures.modify_unchecked(&capy_id, |c| {
+        c.current_task = None;
+    });
+
+    let task_node = sim
+        .nav_graph
+        .live_nodes()
+        .next()
+        .expect("should have nodes")
+        .id;
+
+    // Create a player-civ task — unaffiliated capybara should NOT see it.
+    let task_id = TaskId::new(&mut sim.rng);
+    let task = crate::db::Task {
+        id: task_id,
+        kind_tag: TaskKindTag::GoTo,
+        state: TaskState::Available,
+        location: sim.nav_graph.node(task_node).position,
+        progress: 0,
+        total_cost: 1,
+        required_species: None,
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
+        required_civ_id: Some(player_civ),
+    };
+    sim.db.tasks.insert_no_fk(task).unwrap();
+
+    let chosen = sim.find_available_task(capy_id);
+    assert_eq!(
+        chosen, None,
+        "unaffiliated creature should not claim a player-civ task"
+    );
+}
+
+#[test]
+fn insert_task_propagates_required_civ_id() {
+    // Verify that insert_task copies required_civ_id from the DTO to the DB row.
+    let mut sim = test_sim(42);
+    let player_civ = sim.player_civ_id.unwrap();
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    let task_id = TaskId::new(&mut sim.rng);
+    let dto = task::Task {
+        id: task_id,
+        kind: task::TaskKind::GoTo,
+        state: task::TaskState::Available,
+        location: tree_pos,
+        progress: 0,
+        total_cost: 0,
+        required_species: None,
+        origin: task::TaskOrigin::PlayerDirected,
+        target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
+        required_civ_id: Some(player_civ),
+    };
+    sim.insert_task(dto);
+
+    let db_task = sim.db.tasks.get(&task_id).expect("task should be inserted");
+    assert_eq!(
+        db_task.required_civ_id,
+        Some(player_civ),
+        "insert_task should propagate required_civ_id to the DB row"
+    );
+}
+
+#[test]
+fn find_available_task_no_civ_filter_allows_any() {
+    // Tasks with required_civ_id = None should be claimable by anyone.
+    let mut sim = test_sim(42);
+    let hostile_civ = ensure_hostile_civ(&mut sim);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    let mut events = Vec::new();
+    let goblin_id = sim
+        .spawn_creature_with_civ(Species::Goblin, tree_pos, Some(hostile_civ), &mut events)
+        .expect("should spawn goblin");
+    let _ = sim.db.creatures.modify_unchecked(&goblin_id, |c| {
+        c.current_task = None;
+    });
+
+    let task_node = sim
+        .nav_graph
+        .live_nodes()
+        .next()
+        .expect("should have nodes")
+        .id;
+
+    // Task with no civ restriction.
+    let task_id = TaskId::new(&mut sim.rng);
+    let task = crate::db::Task {
+        id: task_id,
+        kind_tag: TaskKindTag::GoTo,
+        state: TaskState::Available,
+        location: sim.nav_graph.node(task_node).position,
+        progress: 0,
+        total_cost: 1,
+        required_species: None,
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
+        required_civ_id: None,
+    };
+    sim.db.tasks.insert_no_fk(task).unwrap();
+
+    let chosen = sim.find_available_task(goblin_id);
+    assert_eq!(
+        chosen,
+        Some(task_id),
+        "any creature should be able to claim a task with no civ restriction"
     );
 }
 
@@ -26315,6 +26558,7 @@ fn aggressive_soldier_interrupts_low_priority_task_to_fight() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(acquire_task);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
@@ -26401,6 +26645,7 @@ fn creature_does_not_freeze_after_combat_preempts_task() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(acquire_task);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
@@ -26506,6 +26751,7 @@ fn defensive_elf_fights_instead_of_claiming_non_preemptable_task() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(goto_task);
 
@@ -27017,6 +27263,7 @@ fn defensive_elf_with_task_interrupts_to_shoot_troll_at_10_voxels() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(acquire_task);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
@@ -29161,6 +29408,7 @@ fn acquire_item_auto_equips_one_from_multi_qty() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(acquire_task);
     {
@@ -29346,6 +29594,7 @@ fn acquire_item_preserves_material() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(acquire_task);
     {
@@ -29426,6 +29675,7 @@ fn acquire_item_auto_equips_clothing() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(acquire_task);
     {
@@ -29513,6 +29763,7 @@ fn acquire_item_does_not_equip_if_slot_occupied() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(acquire_task);
     {
@@ -30542,6 +30793,7 @@ fn position_blocks_friendly_archer_on_line() {
             target_creature: Some(goblin),
             restrict_to_creature_id: None,
             prerequisite_task_id: None,
+            required_civ_id: None,
         };
         sim.insert_task(task);
         if let Some(mut c) = sim.db.creatures.get(&archer) {
@@ -33328,6 +33580,7 @@ fn soldier_acquires_military_equipment_no_ownership_change() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(acquire_task);
     {
@@ -34105,6 +34358,7 @@ fn cleanup_acquire_military_equipment_clears_reservations() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(task);
 
@@ -34161,6 +34415,7 @@ fn acquire_military_equipment_task_serde_roundtrip() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
 
     let json = serde_json::to_string(&task).unwrap();
@@ -35203,6 +35458,7 @@ fn military_equipment_auto_equips_wearable_on_pickup() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(acquire_task);
     {
@@ -35316,6 +35572,7 @@ fn military_equipment_auto_equip_displaces_existing_clothing() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(acquire_task);
     {
@@ -35411,6 +35668,7 @@ fn military_equipment_non_wearable_not_equipped() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(acquire_task);
     {
@@ -36609,6 +36867,7 @@ fn nonmagical_creature_cannot_claim_build_task() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(task);
 
@@ -36650,6 +36909,7 @@ fn elf_with_no_mana_skips_build_task() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(task);
 
@@ -36774,6 +37034,7 @@ fn try_drain_mana_exact_boundary() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(task);
     let mut elf = sim.db.creatures.get(&elf_id).unwrap();
@@ -36809,6 +37070,7 @@ fn nonmagical_creature_cannot_claim_furnish_task() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(task);
 
@@ -36907,6 +37169,7 @@ fn cleanup_early_exit_resets_wasted_action_count() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(task);
     let mut elf = sim.db.creatures.get(&elf_id).unwrap();
@@ -36997,6 +37260,7 @@ fn mana_wasted_position_recorded_on_failed_drain() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(task);
     let mut elf = sim.db.creatures.get(&elf_id).unwrap();
@@ -37048,6 +37312,7 @@ fn successful_drain_does_not_record_position() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(task);
     let mut elf = sim.db.creatures.get(&elf_id).unwrap();
@@ -40584,6 +40849,7 @@ fn creature_gravity_clears_task_and_path() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(fake_task);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
@@ -41208,6 +41474,7 @@ fn incapacitated_creature_not_assigned_available_tasks() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(go_task);
 
@@ -41888,6 +42155,7 @@ fn arrow_chase_preempts_autonomous_task() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(goto_task);
     if let Some(mut c) = sim.db.creatures.get(&goblin) {
@@ -42203,6 +42471,7 @@ fn find_available_task_works_for_flying_creature() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(task);
 
@@ -42275,6 +42544,7 @@ fn flying_creature_walk_toward_task_unreachable_unassigns() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(task);
     sim.claim_task(hornet, task_id);
@@ -42360,6 +42630,7 @@ fn flying_creature_find_available_task_nearest_by_euclidean() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(near_task);
 
@@ -42376,6 +42647,7 @@ fn flying_creature_find_available_task_nearest_by_euclidean() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(far_task);
 
@@ -42538,6 +42810,7 @@ fn find_available_task_skips_task_restricted_to_other_creature() {
         target_creature: None,
         restrict_to_creature_id: Some(elf_a),
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(task);
 
@@ -42574,6 +42847,7 @@ fn find_available_task_skips_incomplete_prerequisite() {
         target_creature: None,
         restrict_to_creature_id: Some(elf_id),
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.insert_task(task_a);
 
@@ -42592,6 +42866,7 @@ fn find_available_task_skips_incomplete_prerequisite() {
         target_creature: None,
         restrict_to_creature_id: Some(elf_id),
         prerequisite_task_id: Some(task_a_id),
+        required_civ_id: None,
     };
     sim.insert_task(task_b);
 
@@ -42636,6 +42911,7 @@ fn cancel_creature_queue_cancels_entire_chain() {
         target_creature: None,
         restrict_to_creature_id: Some(elf_id),
         prerequisite_task_id: None,
+        required_civ_id: None,
     });
     // Assign A to the elf.
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
@@ -42656,6 +42932,7 @@ fn cancel_creature_queue_cancels_entire_chain() {
         target_creature: None,
         restrict_to_creature_id: Some(elf_id),
         prerequisite_task_id: Some(task_a_id),
+        required_civ_id: None,
     });
 
     let task_c_id = TaskId::new(&mut sim.rng);
@@ -42671,6 +42948,7 @@ fn cancel_creature_queue_cancels_entire_chain() {
         target_creature: None,
         restrict_to_creature_id: Some(elf_id),
         prerequisite_task_id: Some(task_b_id),
+        required_civ_id: None,
     });
 
     // Cancel the queue via cancel_creature_queue (simulates unshifted player
@@ -42712,6 +42990,7 @@ fn cancel_creature_queue_only_cancels_player_directed() {
         target_creature: None,
         restrict_to_creature_id: Some(elf_id),
         prerequisite_task_id: None,
+        required_civ_id: None,
     });
 
     // Create an autonomous restricted task (should survive cancellation).
@@ -42728,6 +43007,7 @@ fn cancel_creature_queue_only_cancels_player_directed() {
         target_creature: None,
         restrict_to_creature_id: Some(elf_id),
         prerequisite_task_id: None,
+        required_civ_id: None,
     });
 
     // Cancel the creature's player-directed queue.
@@ -43160,6 +43440,7 @@ fn deleted_prerequisite_unblocks_dependent_task() {
         target_creature: None,
         restrict_to_creature_id: Some(elf),
         prerequisite_task_id: None,
+        required_civ_id: None,
     });
 
     // Create dependent task B.
@@ -43176,6 +43457,7 @@ fn deleted_prerequisite_unblocks_dependent_task() {
         target_creature: None,
         restrict_to_creature_id: Some(elf),
         prerequisite_task_id: Some(task_a_id),
+        required_civ_id: None,
     });
 
     // Delete the prerequisite task entirely (simulates DB compaction/pruning).
@@ -43411,6 +43693,7 @@ fn find_queue_tail_terminates_on_cycle() {
         target_creature: None,
         restrict_to_creature_id: Some(elf),
         prerequisite_task_id: Some(task_b_id),
+        required_civ_id: None,
     });
     sim.insert_task(Task {
         id: task_b_id,
@@ -43424,6 +43707,7 @@ fn find_queue_tail_terminates_on_cycle() {
         target_creature: None,
         restrict_to_creature_id: Some(elf),
         prerequisite_task_id: Some(task_a_id),
+        required_civ_id: None,
     });
 
     // Set the elf's current_task to task_a to start the chain.
@@ -45176,6 +45460,7 @@ fn quorum_prunes_busy_volunteers() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.db.tasks.insert_no_fk(task).unwrap();
     let mut c = sim.db.creatures.get(&elves[0]).unwrap();
@@ -46202,6 +46487,7 @@ fn busy_creatures_dont_volunteer() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.db.tasks.insert_no_fk(task).unwrap();
     let mut c = sim.db.creatures.get(&elves[0]).unwrap();
@@ -46308,6 +46594,7 @@ fn activity_with_all_elves_busy_stays_recruiting() {
             target_creature: None,
             restrict_to_creature_id: None,
             prerequisite_task_id: None,
+            required_civ_id: None,
         };
         sim.db.tasks.insert_no_fk(task).unwrap();
         let mut c = sim.db.creatures.get(eid).unwrap();
@@ -46745,6 +47032,7 @@ fn stale_volunteer_row_cleared_so_creature_can_revolunteer() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.db.tasks.insert_no_fk(task).unwrap();
     let mut c = sim.db.creatures.get(&elves[0]).unwrap();
@@ -46806,6 +47094,7 @@ fn recruiting_stall_resolved_by_revolunteering() {
             target_creature: None,
             restrict_to_creature_id: None,
             prerequisite_task_id: None,
+            required_civ_id: None,
         };
         sim.db.tasks.insert_no_fk(task).unwrap();
         let mut c = sim.db.creatures.get(&elves[i]).unwrap();
@@ -47288,6 +47577,7 @@ fn desired_count_caps_volunteer_discovery() {
         target_creature: None,
         restrict_to_creature_id: None,
         prerequisite_task_id: None,
+        required_civ_id: None,
     };
     sim.db.tasks.insert_no_fk(task).unwrap();
     let mut c0 = sim.db.creatures.get(&elves[0]).unwrap();

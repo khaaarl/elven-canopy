@@ -508,6 +508,11 @@ pub struct Task {
     #[indexed]
     #[serde(default)]
     pub prerequisite_task_id: Option<TaskId>,
+    /// If set, only creatures belonging to this civilization can claim it.
+    /// Prevents hostile creatures from claiming player tasks.
+    #[indexed]
+    #[serde(default)]
+    pub required_civ_id: Option<CivId>,
 }
 
 /// Task-to-blueprint reference (Build tasks only).

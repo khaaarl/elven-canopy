@@ -23,7 +23,9 @@
 //
 // `required_species` optionally restricts which species can claim the task.
 // If `Some(Species::Elf)`, only elves will pick it up. If `None`, any idle
-// creature of any species can claim it.
+// creature of any species can claim it. `required_civ_id` optionally restricts
+// which civilization can claim the task, preventing hostile creatures from
+// claiming player-civ tasks.
 //
 // `target_creature` optionally makes the task track a moving creature
 // (e.g., pursuit in combat). When set, `execute_task_behavior()` updates
@@ -111,7 +113,7 @@
 
 use crate::inventory::ItemKind;
 use crate::types::{
-    ActiveRecipeId, CreatureId, ProjectId, Species, StructureId, TaskId, VoxelCoord,
+    ActiveRecipeId, CivId, CreatureId, ProjectId, Species, StructureId, TaskId, VoxelCoord,
 };
 use serde::{Deserialize, Serialize};
 
@@ -297,6 +299,10 @@ pub struct Task {
     /// Forms a linked list for sequential command queues (A → B → C).
     #[serde(default)]
     pub prerequisite_task_id: Option<TaskId>,
+    /// If set, only creatures belonging to this civilization can claim it.
+    /// Prevents hostile creatures from claiming player tasks.
+    #[serde(default)]
+    pub required_civ_id: Option<CivId>,
 }
 
 #[cfg(test)]
@@ -324,6 +330,7 @@ mod tests {
             target_creature: None,
             restrict_to_creature_id: None,
             prerequisite_task_id: None,
+            required_civ_id: None,
         };
 
         let json = serde_json::to_string(&task).unwrap();
@@ -359,6 +366,7 @@ mod tests {
             target_creature: None,
             restrict_to_creature_id: None,
             prerequisite_task_id: None,
+            required_civ_id: None,
         };
 
         let json = serde_json::to_string(&task).unwrap();
@@ -393,6 +401,7 @@ mod tests {
             target_creature: None,
             restrict_to_creature_id: None,
             prerequisite_task_id: None,
+            required_civ_id: None,
         };
 
         let json = serde_json::to_string(&task).unwrap();
@@ -426,6 +435,7 @@ mod tests {
             target_creature: None,
             restrict_to_creature_id: None,
             prerequisite_task_id: None,
+            required_civ_id: None,
         };
 
         let json = serde_json::to_string(&task).unwrap();
@@ -490,6 +500,7 @@ mod tests {
             target_creature: None,
             restrict_to_creature_id: None,
             prerequisite_task_id: None,
+            required_civ_id: None,
         };
 
         let json = serde_json::to_string(&task).unwrap();
@@ -537,6 +548,7 @@ mod tests {
             target_creature: None,
             restrict_to_creature_id: None,
             prerequisite_task_id: None,
+            required_civ_id: None,
         };
 
         let json2 = serde_json::to_string(&task2).unwrap();
@@ -573,6 +585,7 @@ mod tests {
             target_creature: None,
             restrict_to_creature_id: None,
             prerequisite_task_id: None,
+            required_civ_id: None,
         };
 
         let json = serde_json::to_string(&task).unwrap();
@@ -613,6 +626,7 @@ mod tests {
             target_creature: None,
             restrict_to_creature_id: None,
             prerequisite_task_id: None,
+            required_civ_id: None,
         };
 
         let json = serde_json::to_string(&task).unwrap();
@@ -648,6 +662,7 @@ mod tests {
             target_creature: None,
             restrict_to_creature_id: None,
             prerequisite_task_id: None,
+            required_civ_id: None,
         };
 
         let mut registry: BTreeMap<TaskId, Task> = BTreeMap::new();
@@ -681,6 +696,7 @@ mod tests {
             target_creature: None,
             restrict_to_creature_id: Some(creature_id),
             prerequisite_task_id: Some(prereq_id),
+            required_civ_id: None,
         };
 
         let json = serde_json::to_string(&task).unwrap();
@@ -688,6 +704,49 @@ mod tests {
 
         assert_eq!(restored.restrict_to_creature_id, Some(creature_id));
         assert_eq!(restored.prerequisite_task_id, Some(prereq_id));
+    }
+
+    #[test]
+    fn required_civ_id_serde_roundtrip() {
+        let mut rng = GameRng::new(42);
+        let task_id = TaskId::new(&mut rng);
+
+        let task = Task {
+            id: task_id,
+            kind: TaskKind::GoTo,
+            state: TaskState::Available,
+            location: VoxelCoord::new(5, 0, 0),
+            progress: 0,
+            total_cost: 0,
+            required_species: None,
+            origin: TaskOrigin::PlayerDirected,
+            target_creature: None,
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
+            required_civ_id: Some(CivId(0)),
+        };
+
+        let json = serde_json::to_string(&task).unwrap();
+        let restored: Task = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.required_civ_id, Some(CivId(0)));
+    }
+
+    #[test]
+    fn required_civ_id_backward_compat() {
+        // Old save format without required_civ_id should default to None.
+        let json = r#"{
+            "id": "00000000-0000-0000-0000-000000000001",
+            "kind": "GoTo",
+            "state": "Available",
+            "location": [5, 0, 0],
+            "progress": 0,
+            "total_cost": 0,
+            "required_species": null,
+            "origin": "PlayerDirected"
+        }"#;
+        let task: Task = serde_json::from_str(json).unwrap();
+        assert_eq!(task.required_civ_id, None);
     }
 
     #[test]
