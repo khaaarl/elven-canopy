@@ -10,7 +10,7 @@
 // - **Entity IDs:** Strongly-typed UUID v4 wrappers generated via the
 //   `entity_id!` macro. Each entity type gets its own newtype around `SimUuid`
 //   so the compiler prevents mixing them up. Current IDs: `TreeId`,
-//   `CreatureId`, `ProjectId`, `TaskId`.
+//   `CreatureId`, `ProjectId`, `TaskId`, `ActivityId`.
 // - **Sequential IDs:** `StructureId` is a sequential `u64` newtype (not
 //   UUID-based) for user-friendly numbering (#0, #1, #2). Assigned by
 //   `SimState` when a build completes.
@@ -287,6 +287,8 @@ entity_id!(/// Unique identifier for an in-progress build project.
 ProjectId);
 entity_id!(/// Unique identifier for a task (go-to, build, harvest, etc.).
 TaskId);
+entity_id!(/// Unique identifier for a group activity (dance, construction choir, etc.).
+ActivityId);
 
 // Bounded impls for UUID-based entity IDs. These enable use as tabulosity
 // primary keys. AutoIncrementable is intentionally not implemented — UUIDs
@@ -306,6 +308,10 @@ impl Bounded for ProjectId {
 impl Bounded for TaskId {
     const MIN: Self = TaskId(SimUuid::MIN);
     const MAX: Self = TaskId(SimUuid::MAX);
+}
+impl Bounded for ActivityId {
+    const MIN: Self = ActivityId(SimUuid::MIN);
+    const MAX: Self = ActivityId(SimUuid::MAX);
 }
 
 // ---------------------------------------------------------------------------
@@ -906,6 +912,10 @@ pub enum ThoughtKind {
     SleptOnGround,
     AteMeal,
     LowCeiling(StructureId),
+    /// Recurring small mood boost while participating in a group dance.
+    EnjoyingDance,
+    /// Moderate mood boost on completing a group dance.
+    DancedInGroup,
 }
 
 impl ThoughtKind {
@@ -917,6 +927,8 @@ impl ThoughtKind {
             ThoughtKind::SleptOnGround => "Slept on the ground",
             ThoughtKind::AteMeal => "Ate a meal",
             ThoughtKind::LowCeiling(_) => "Bothered by a low ceiling",
+            ThoughtKind::EnjoyingDance => "Enjoying a group dance",
+            ThoughtKind::DancedInGroup => "Danced with friends",
         }
     }
 }
@@ -948,6 +960,99 @@ impl MoodTier {
             MoodTier::Elated => "Elated",
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Group activity system — multi-creature coordination layer
+// ---------------------------------------------------------------------------
+
+/// What kind of group activity this is. Each kind has default config for
+/// departure policy, late-join behavior, and recruitment mode. Extension
+/// tables (keyed by `ActivityId`) carry kind-specific data — see
+/// `sim/activity.rs` for the lifecycle logic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum ActivityKind {
+    /// Construction choir — sing to grow a structure.
+    ConstructionChoir,
+    /// Social dance — recreational, generates happiness.
+    Dance,
+    /// Combat singing — buff nearby allies.
+    CombatSinging,
+    /// Heavy hauling — move a large object together.
+    GroupHaul,
+    /// Ceremony/ritual — seasonal or milestone event.
+    Ceremony,
+}
+
+/// Lifecycle phase of a group activity. See `sim/activity.rs` for transition
+/// rules and the full state machine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum ActivityPhase {
+    /// Open for volunteers / awaiting directed assignments. Participants with
+    /// `Volunteered` status are tentative — not yet committed.
+    Recruiting,
+    /// Participants have been committed and are walking to their positions.
+    /// Transitions to `Executing` when enough have arrived.
+    Assembling,
+    /// The group activity is in progress. Progress advances each tick.
+    Executing,
+    /// Activity finished successfully.
+    Complete,
+    /// Execution paused because a participant left and the departure policy
+    /// is `PauseAndWait`. Resumes if the gap is filled; cancelled on timeout.
+    Paused,
+    /// Activity was cancelled.
+    Cancelled,
+}
+
+/// How participants join this activity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum RecruitmentMode {
+    /// Push: the activity (or player) selects and assigns specific creatures.
+    Directed,
+    /// Pull: the activity advertises open slots. Idle creatures discover it
+    /// during their activation loop and volunteer to join.
+    Open,
+}
+
+/// What happens when a participant leaves during the `Executing` phase.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum DeparturePolicy {
+    /// Remaining participants keep going at reduced effectiveness.
+    Continue,
+    /// Activity pauses, waiting for a replacement. Cancelled after timeout.
+    PauseAndWait {
+        /// How long to wait (in sim ticks) before cancelling.
+        timeout_ticks: u64,
+    },
+    /// Activity is cancelled immediately if any participant leaves.
+    CancelOnDeparture,
+}
+
+/// A participant's role within the activity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum ParticipantRole {
+    /// Organizer/lead — initiated the activity.
+    Organizer,
+    /// Regular participant.
+    Member,
+}
+
+/// A participant's commitment status within the activity. Progresses from
+/// `Volunteered` (tentative, creature is free) → `Traveling` (committed,
+/// has GoTo task) → `Arrived` (at position, waiting or executing).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum ParticipantStatus {
+    /// Tentative — creature is free to do other things. If the creature picks
+    /// up a task or activity before quorum is reached, this row is pruned.
+    /// `creature.current_activity` is NOT set in this state.
+    Volunteered,
+    /// Committed — has a GoTo task, walking to assigned position.
+    /// `creature.current_activity` IS set.
+    Traveling,
+    /// At assigned position, waiting for others or actively executing.
+    /// `creature.current_activity` IS set.
+    Arrived,
 }
 
 /// Types of structures that can be built.
@@ -1512,6 +1617,158 @@ mod tests {
             VoxelType::Root.classify_for_overlap(),
             OverlapClassification::AlreadyWood
         );
+    }
+
+    // --- Activity type serde roundtrip tests ---
+
+    #[test]
+    fn activity_enums_serde_roundtrip() {
+        use crate::types::{
+            ActivityKind, ActivityPhase, DeparturePolicy, ParticipantRole, ParticipantStatus,
+            RecruitmentMode,
+        };
+
+        // ActivityKind
+        let kinds = [
+            ActivityKind::ConstructionChoir,
+            ActivityKind::Dance,
+            ActivityKind::CombatSinging,
+            ActivityKind::GroupHaul,
+            ActivityKind::Ceremony,
+        ];
+        for kind in &kinds {
+            let json = serde_json::to_string(kind).unwrap();
+            let restored: ActivityKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(*kind, restored);
+        }
+
+        // ActivityPhase
+        let phases = [
+            ActivityPhase::Recruiting,
+            ActivityPhase::Assembling,
+            ActivityPhase::Executing,
+            ActivityPhase::Complete,
+            ActivityPhase::Paused,
+            ActivityPhase::Cancelled,
+        ];
+        for phase in &phases {
+            let json = serde_json::to_string(phase).unwrap();
+            let restored: ActivityPhase = serde_json::from_str(&json).unwrap();
+            assert_eq!(*phase, restored);
+        }
+
+        // RecruitmentMode
+        let modes = [RecruitmentMode::Directed, RecruitmentMode::Open];
+        for mode in &modes {
+            let json = serde_json::to_string(mode).unwrap();
+            let restored: RecruitmentMode = serde_json::from_str(&json).unwrap();
+            assert_eq!(*mode, restored);
+        }
+
+        // DeparturePolicy
+        let policies = [
+            DeparturePolicy::Continue,
+            DeparturePolicy::PauseAndWait {
+                timeout_ticks: 5000,
+            },
+            DeparturePolicy::CancelOnDeparture,
+        ];
+        for policy in &policies {
+            let json = serde_json::to_string(policy).unwrap();
+            let restored: DeparturePolicy = serde_json::from_str(&json).unwrap();
+            assert_eq!(*policy, restored);
+        }
+
+        // ParticipantRole
+        let roles = [ParticipantRole::Organizer, ParticipantRole::Member];
+        for role in &roles {
+            let json = serde_json::to_string(role).unwrap();
+            let restored: ParticipantRole = serde_json::from_str(&json).unwrap();
+            assert_eq!(*role, restored);
+        }
+
+        // ParticipantStatus
+        let statuses = [
+            ParticipantStatus::Volunteered,
+            ParticipantStatus::Traveling,
+            ParticipantStatus::Arrived,
+        ];
+        for status in &statuses {
+            let json = serde_json::to_string(status).unwrap();
+            let restored: ParticipantStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(*status, restored);
+        }
+    }
+
+    #[test]
+    fn activity_id_serde_roundtrip() {
+        let mut rng = crate::prng::GameRng::new(42);
+        let id = ActivityId::new(&mut rng);
+        let json = serde_json::to_string(&id).unwrap();
+        let restored: ActivityId = serde_json::from_str(&json).unwrap();
+        assert_eq!(id, restored);
+    }
+
+    #[test]
+    fn activity_table_serde_roundtrip() {
+        use crate::db::{Activity, ActivityParticipant};
+        use crate::task::TaskOrigin;
+
+        let mut rng = crate::prng::GameRng::new(99);
+        let activity_id = ActivityId::new(&mut rng);
+        let creature_id = CreatureId::new(&mut rng);
+
+        let activity = Activity {
+            id: activity_id,
+            kind: ActivityKind::Dance,
+            phase: ActivityPhase::Recruiting,
+            location: VoxelCoord::new(10, 51, 20),
+            min_count: Some(3),
+            desired_count: Some(3),
+            progress: 0,
+            total_cost: 1000,
+            origin: TaskOrigin::Automated,
+            recruitment: RecruitmentMode::Open,
+            departure_policy: DeparturePolicy::Continue,
+            allows_late_join: true,
+            civ_id: Some(CivId(0)),
+            required_species: Some(Species::Elf),
+            execution_start_tick: None,
+            pause_started_tick: None,
+        };
+        let json = serde_json::to_string(&activity).unwrap();
+        let restored: Activity = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.id, activity.id);
+        assert_eq!(restored.kind, activity.kind);
+        assert_eq!(restored.phase, activity.phase);
+        assert_eq!(restored.min_count, activity.min_count);
+        assert_eq!(restored.civ_id, activity.civ_id);
+        assert_eq!(restored.required_species, activity.required_species);
+
+        let participant = ActivityParticipant {
+            activity_id,
+            creature_id,
+            role: ParticipantRole::Member,
+            status: ParticipantStatus::Volunteered,
+            assigned_position: VoxelCoord::new(10, 51, 20),
+            travel_task: None,
+        };
+        let json = serde_json::to_string(&participant).unwrap();
+        let restored: ActivityParticipant = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.activity_id, participant.activity_id);
+        assert_eq!(restored.creature_id, participant.creature_id);
+        assert_eq!(restored.role, participant.role);
+        assert_eq!(restored.status, participant.status);
+    }
+
+    #[test]
+    fn dance_thought_kinds_serde_roundtrip() {
+        let kinds = [ThoughtKind::EnjoyingDance, ThoughtKind::DancedInGroup];
+        for kind in &kinds {
+            let json = serde_json::to_string(kind).unwrap();
+            let restored: ThoughtKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(*kind, restored);
+        }
     }
 
     #[test]

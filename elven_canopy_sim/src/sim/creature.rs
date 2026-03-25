@@ -111,6 +111,7 @@ impl SimState {
             name_meaning,
             path: None,
             current_task: None,
+            current_activity: None,
             food: food_max,
             rest: rest_max,
             assigned_home: None,

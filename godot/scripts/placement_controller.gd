@@ -131,9 +131,9 @@ func _on_spawn_requested(species_name: String) -> void:
 
 
 func _on_action_requested(action_name: String) -> void:
-	# Only handle placement actions (e.g., "Summon"). "Build" is handled by
-	# construction_controller.gd, not by placement.
-	if action_name != "Summon":
+	# Only handle placement actions (e.g., "Summon", "DebugDance"). "Build"
+	# is handled by construction_controller.gd, not by placement.
+	if action_name != "Summon" and action_name != "DebugDance":
 		return
 	if _state == State.PLACING:
 		if _action_name == action_name and _species_name == "":
@@ -214,6 +214,8 @@ func _confirm_spawn() -> void:
 
 	if _action_name == "Summon":
 		_bridge.create_goto_task(x, y, z)
+	elif _action_name == "DebugDance":
+		_bridge.start_debug_dance(x, y, z)
 	elif _species_name != "":
 		_bridge.spawn_creature(_species_name, x, y, z)
 

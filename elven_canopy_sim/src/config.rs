@@ -293,6 +293,10 @@ pub struct ThoughtConfig {
     pub dedup_slept_ground_ticks: u64,
     pub dedup_ate_meal_ticks: u64,
     pub dedup_low_ceiling_ticks: u64,
+    #[serde(default = "default_dedup_enjoying_dance")]
+    pub dedup_enjoying_dance_ticks: u64,
+    #[serde(default = "default_dedup_danced_in_group")]
+    pub dedup_danced_in_group_ticks: u64,
 
     // --- Expiry durations (ticks after which a thought is removed) ---
     pub expiry_slept_home_ticks: u64,
@@ -300,6 +304,29 @@ pub struct ThoughtConfig {
     pub expiry_slept_ground_ticks: u64,
     pub expiry_ate_meal_ticks: u64,
     pub expiry_low_ceiling_ticks: u64,
+    #[serde(default = "default_expiry_enjoying_dance")]
+    pub expiry_enjoying_dance_ticks: u64,
+    #[serde(default = "default_expiry_danced_in_group")]
+    pub expiry_danced_in_group_ticks: u64,
+}
+
+fn default_dedup_enjoying_dance() -> u64 {
+    30_000
+}
+fn default_dedup_danced_in_group() -> u64 {
+    150_000
+}
+fn default_expiry_enjoying_dance() -> u64 {
+    60_000
+}
+fn default_expiry_danced_in_group() -> u64 {
+    300_000
+}
+fn default_weight_enjoying_dance() -> i32 {
+    15
+}
+fn default_weight_danced_in_group() -> i32 {
+    60
 }
 
 impl ThoughtConfig {
@@ -311,6 +338,8 @@ impl ThoughtConfig {
             ThoughtKind::SleptOnGround => self.dedup_slept_ground_ticks,
             ThoughtKind::AteMeal => self.dedup_ate_meal_ticks,
             ThoughtKind::LowCeiling(_) => self.dedup_low_ceiling_ticks,
+            ThoughtKind::EnjoyingDance => self.dedup_enjoying_dance_ticks,
+            ThoughtKind::DancedInGroup => self.dedup_danced_in_group_ticks,
         }
     }
 
@@ -322,6 +351,8 @@ impl ThoughtConfig {
             ThoughtKind::SleptOnGround => self.expiry_slept_ground_ticks,
             ThoughtKind::AteMeal => self.expiry_ate_meal_ticks,
             ThoughtKind::LowCeiling(_) => self.expiry_low_ceiling_ticks,
+            ThoughtKind::EnjoyingDance => self.expiry_enjoying_dance_ticks,
+            ThoughtKind::DancedInGroup => self.expiry_danced_in_group_ticks,
         }
     }
 }
@@ -337,6 +368,10 @@ impl Default for ThoughtConfig {
             dedup_ate_meal_ticks: 150_000,
             // Low ceiling: reminder each visit (~30 sim-seconds).
             dedup_low_ceiling_ticks: 30_000,
+            // Dance: small mood trickle during execution (~30 sim-seconds dedup).
+            dedup_enjoying_dance_ticks: 30_000,
+            // Danced: one completion thought per day cycle.
+            dedup_danced_in_group_ticks: 150_000,
             // Medium expiry (~10 min real time).
             expiry_slept_home_ticks: 600_000,
             expiry_slept_dormitory_ticks: 600_000,
@@ -344,6 +379,9 @@ impl Default for ThoughtConfig {
             // Shorter expiry (~2.5 min real time).
             expiry_ate_meal_ticks: 150_000,
             expiry_low_ceiling_ticks: 150_000,
+            // Dance thoughts: enjoying fades quickly, completion lasts longer.
+            expiry_enjoying_dance_ticks: 60_000,
+            expiry_danced_in_group_ticks: 300_000,
         }
     }
 }
@@ -367,6 +405,12 @@ pub struct MoodConfig {
     pub weight_ate_meal: i32,
     /// Weight for LowCeiling thoughts.
     pub weight_low_ceiling: i32,
+    /// Weight for EnjoyingDance thoughts (small, recurring during dance).
+    #[serde(default = "default_weight_enjoying_dance")]
+    pub weight_enjoying_dance: i32,
+    /// Weight for DancedInGroup thoughts (moderate, on dance completion).
+    #[serde(default = "default_weight_danced_in_group")]
+    pub weight_danced_in_group: i32,
 
     /// Scores at or below this are Devastated.
     pub tier_devastated_below: i32,
@@ -391,6 +435,8 @@ impl MoodConfig {
             ThoughtKind::SleptOnGround => self.weight_slept_ground,
             ThoughtKind::AteMeal => self.weight_ate_meal,
             ThoughtKind::LowCeiling(_) => self.weight_low_ceiling,
+            ThoughtKind::EnjoyingDance => self.weight_enjoying_dance,
+            ThoughtKind::DancedInGroup => self.weight_danced_in_group,
         }
     }
 
@@ -422,6 +468,8 @@ impl Default for MoodConfig {
             weight_slept_ground: -100,
             weight_ate_meal: 60,
             weight_low_ceiling: -50,
+            weight_enjoying_dance: 15,
+            weight_danced_in_group: 60,
             tier_devastated_below: -300,
             tier_miserable_below: -150,
             tier_unhappy_below: -30,
@@ -478,6 +526,54 @@ impl Default for MoodConsequencesConfig {
             mope_mean_ticks_devastated: 50_000,
             mope_can_interrupt_task: true,
             mope_duration_ticks: 10_000,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Group activities — configuration for multi-creature coordination
+// ---------------------------------------------------------------------------
+
+/// Configuration for the group activity system. Per-kind defaults for
+/// departure policy, late-join, assembly timeout, and debug dance parameters.
+/// See `sim/activity.rs` for the lifecycle logic.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ActivityConfig {
+    /// Maximum ticks to wait during assembly before cancelling. If not all
+    /// required participants have arrived within this window, the activity is
+    /// cancelled. 0 = no timeout.
+    pub assembly_timeout_ticks: u64,
+
+    /// Maximum distance (Manhattan) an idle creature will consider when
+    /// looking for open activities to volunteer for.
+    pub volunteer_search_radius: i32,
+
+    /// Ticks to wait in PauseAndWait departure policy before cancelling.
+    /// Used by ConstructionChoir and similar activities that pause when a
+    /// participant leaves and wait for a replacement.
+    pub pause_timeout_ticks: u64,
+
+    // --- Debug dance (temporary hard-coded values for proof-of-concept) ---
+    /// Total progress units needed to complete a debug dance. Each creature
+    /// activation during execution contributes 1 unit, so this is roughly
+    /// (duration_in_ticks / activation_interval) * participant_count.
+    /// TEMPORARY: hard-coded for debug dance proof-of-concept.
+    pub debug_dance_total_cost: i64,
+}
+
+impl Default for ActivityConfig {
+    fn default() -> Self {
+        Self {
+            // ~5 min real time before giving up on assembly.
+            assembly_timeout_ticks: 300_000,
+            // ~30 voxels — creatures won't trek across the map to volunteer.
+            volunteer_search_radius: 30,
+            // ~1 min real time before cancelling a paused activity.
+            pause_timeout_ticks: 60_000,
+            // ~1000 progress units. With 3 elves each contributing 1 per
+            // activation (~every 1000 ticks), that's ~333 activations ≈
+            // 333 sim-seconds ≈ ~33 seconds real time.
+            debug_dance_total_cost: 1000,
         }
     }
 }
@@ -2070,6 +2166,11 @@ pub struct GameConfig {
     #[serde(default)]
     pub mood_consequences: MoodConsequencesConfig,
 
+    /// Group activity system configuration. Controls assembly timeouts,
+    /// volunteer search radius, and debug dance parameters.
+    #[serde(default)]
+    pub activity: ActivityConfig,
+
     /// Ticks between logistics heartbeats that scan buildings for unmet wants
     /// and create haul tasks. Default 5000 = 5 sim-seconds.
     #[serde(default = "default_logistics_heartbeat_interval")]
@@ -3111,6 +3212,7 @@ impl Default for GameConfig {
             thoughts: ThoughtConfig::default(),
             mood: MoodConfig::default(),
             mood_consequences: MoodConsequencesConfig::default(),
+            activity: ActivityConfig::default(),
             logistics_heartbeat_interval_ticks: 5000,
             max_haul_tasks_per_heartbeat: 5,
             elf_starting_bread: 2,

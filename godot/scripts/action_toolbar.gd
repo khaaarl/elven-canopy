@@ -220,6 +220,11 @@ func _ready() -> void:
 	summon_button.pressed.connect(_on_summon_pressed)
 	_debug_row.add_child(summon_button)
 
+	var dance_button := Button.new()
+	dance_button.text = "Debug Dance"
+	dance_button.pressed.connect(func(): action_requested.emit("DebugDance"))
+	_debug_row.add_child(dance_button)
+
 	var notif_button := Button.new()
 	notif_button.text = "Test Notif"
 	notif_button.pressed.connect(_on_test_notif_pressed)

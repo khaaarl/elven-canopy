@@ -21,6 +21,7 @@ elven-canopy/
 │       ├── sim/                # SimState and all simulation logic (directory module)
 │       │   ├── mod.rs          #   Struct definition, constructors, tick loop, event dispatch, serialization
 │       │   ├── activation.rs   #   Creature activation chain, task selection, claiming
+│       │   ├── activity.rs     #   Group activity lifecycle (dance, choir, ceremony)
 │       │   ├── combat.rs       #   Melee, ranged, projectiles, flee, hostile AI, diplomacy
 │       │   ├── construction.rs #   Build/carve designation, materialization, furnishing, raycast
 │       │   ├── crafting.rs     #   Recipe execution, active recipe management, cooking

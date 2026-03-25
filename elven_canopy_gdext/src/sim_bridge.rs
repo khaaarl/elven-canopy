@@ -1224,6 +1224,20 @@ impl SimBridge {
         });
     }
 
+    /// Create a debug Dance activity at the given location. Idle elves will
+    /// discover it, volunteer, assemble, and dance for a while — proof-of-concept
+    /// for the group activity system.
+    #[func]
+    fn start_debug_dance(&mut self, x: i32, y: i32, z: i32) {
+        self.apply_or_send(SimAction::CreateActivity {
+            kind: elven_canopy_sim::types::ActivityKind::Dance,
+            location: VoxelCoord::new(x, y, z),
+            min_count: Some(3),
+            desired_count: Some(3),
+            origin: elven_canopy_sim::task::TaskOrigin::PlayerDirected,
+        });
+    }
+
     /// Send a specific creature to a location. Creates a GoTo task and
     /// immediately assigns it, preempting lower-priority tasks.
     #[func]
@@ -1482,16 +1496,97 @@ impl SimBridge {
         result
     }
 
-    /// Return all non-complete tasks as a `VarArray` of dictionaries.
+    /// Return all active group activities as a `VarArray` of dictionaries.
     ///
-    /// Each dictionary contains: `id` (short hex), `id_full` (full UUID),
-    /// `kind` ("GoTo", "Build", "EatBread", "EatFruit", "Sleep", "Furnish", "Haul", "Cook",
-    /// "Harvest", "AcquireItem", "Moping", or "Craft"),
-    /// `origin` ("PlayerDirected", "Autonomous", or "Automated"),
-    /// `state` ("Available" or "In Progress"), `progress`, `total_cost`,
-    /// `location_x/y/z`, and `assignees` (array of dictionaries with
-    /// `id_short`, `name`, `species`, `index`).
-    ///
+    /// Each dictionary contains: `id_full` (String), `kind` (String),
+    /// `phase` (String), `location_x/y/z` (int), `progress` (int),
+    /// `total_cost` (int), `min_count` (int), `desired_count` (int),
+    /// `participants` (Array of dicts with `creature_id`, `name`, `species`,
+    /// `status`). Used by `task_panel.gd` to display the activities section.
+    #[func]
+    fn get_active_activities(&self) -> VarArray {
+        let Some(sim) = &self.session.sim else {
+            return VarArray::new();
+        };
+
+        let mut result = VarArray::new();
+        for activity in sim.db.activities.iter_all() {
+            // Skip terminal phases.
+            if matches!(
+                activity.phase,
+                elven_canopy_sim::types::ActivityPhase::Complete
+                    | elven_canopy_sim::types::ActivityPhase::Cancelled
+            ) {
+                continue;
+            }
+
+            let mut dict = VarDictionary::new();
+            let id_full = activity.id.0.to_string();
+            dict.set("id_full", GString::from(&id_full));
+
+            let kind_str = match activity.kind {
+                elven_canopy_sim::types::ActivityKind::Dance => "Dance",
+                elven_canopy_sim::types::ActivityKind::ConstructionChoir => "Construction Choir",
+                elven_canopy_sim::types::ActivityKind::CombatSinging => "Combat Singing",
+                elven_canopy_sim::types::ActivityKind::GroupHaul => "Group Haul",
+                elven_canopy_sim::types::ActivityKind::Ceremony => "Ceremony",
+            };
+            dict.set("kind", GString::from(kind_str));
+
+            let phase_str = match activity.phase {
+                elven_canopy_sim::types::ActivityPhase::Recruiting => "Recruiting",
+                elven_canopy_sim::types::ActivityPhase::Assembling => "Assembling",
+                elven_canopy_sim::types::ActivityPhase::Executing => "Executing",
+                elven_canopy_sim::types::ActivityPhase::Paused => "Paused",
+                elven_canopy_sim::types::ActivityPhase::Complete => "Complete",
+                elven_canopy_sim::types::ActivityPhase::Cancelled => "Cancelled",
+            };
+            dict.set("phase", GString::from(phase_str));
+
+            dict.set("location_x", activity.location.x);
+            dict.set("location_y", activity.location.y);
+            dict.set("location_z", activity.location.z);
+            dict.set("progress", activity.progress as i32);
+            dict.set("total_cost", activity.total_cost as i32);
+            dict.set("min_count", activity.min_count.unwrap_or(0) as i32);
+            dict.set("desired_count", activity.desired_count.unwrap_or(0) as i32);
+
+            // Participants.
+            let mut participants_arr = VarArray::new();
+            for p in sim
+                .db
+                .activity_participants
+                .by_activity_id(&activity.id, elven_canopy_sim::tabulosity::QueryOpts::ASC)
+            {
+                let mut pd = VarDictionary::new();
+                let cid_full = p.creature_id.0.to_string();
+                pd.set("creature_id", GString::from(cid_full.as_str()));
+
+                let status_str = match p.status {
+                    elven_canopy_sim::types::ParticipantStatus::Volunteered => "Volunteered",
+                    elven_canopy_sim::types::ParticipantStatus::Traveling => "Traveling",
+                    elven_canopy_sim::types::ParticipantStatus::Arrived => "Arrived",
+                };
+                pd.set("status", GString::from(status_str));
+
+                // Look up creature name and species.
+                if let Some(creature) = sim.db.creatures.get(&p.creature_id) {
+                    pd.set("name", GString::from(creature.name.as_str()));
+                    pd.set("species", GString::from(species_name(creature.species)));
+                } else {
+                    pd.set("name", GString::from("???"));
+                    pd.set("species", GString::from("Unknown"));
+                }
+
+                participants_arr.push(&pd.to_variant());
+            }
+            dict.set("participants", participants_arr);
+
+            result.push(&dict.to_variant());
+        }
+        result
+    }
+
     /// The creature `index` matches the species-filtered iteration order used
     /// by `get_creature_positions()`, so GDScript can use it directly for
     /// camera follow and selection.

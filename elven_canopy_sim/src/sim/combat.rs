@@ -1405,6 +1405,16 @@ impl SimState {
             self.abort_current_action(creature_id);
         }
 
+        // Remove from any group activity (same as handle_creature_death).
+        if let Some(activity_id) = self
+            .db
+            .creatures
+            .get(&creature_id)
+            .and_then(|c| c.current_activity)
+        {
+            self.remove_participant(activity_id, creature_id, events);
+        }
+
         // Set vital_status = Incapacitated (indexed field → update_no_fk).
         if let Some(mut c) = self.db.creatures.get(&creature_id) {
             c.vital_status = VitalStatus::Incapacitated;
@@ -1483,6 +1493,16 @@ impl SimState {
             self.abort_current_action(creature_id);
         }
         self.cancel_creature_queue(creature_id);
+
+        // 1b. Remove from any group activity (as a participant departure).
+        if let Some(activity_id) = self
+            .db
+            .creatures
+            .get(&creature_id)
+            .and_then(|c| c.current_activity)
+        {
+            self.remove_participant(activity_id, creature_id, events);
+        }
 
         // 2. Drop all inventory items as a ground pile at death position.
         // Use inv_move_items to preserve all item properties (material,

@@ -59,11 +59,13 @@ This reduces merge conflicts when parallel work streams add items.
 ### Todo
 
 ```
+[ ] B-assembly-timeout     Activity assembly timeout not enforced
 [ ] B-chamfer-nonmfld      Chamfer produces non-manifold edges for diagonally-adjacent voxels
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fragile-tests        Audit and harden tests against PRNG stream shifts and worldgen changes
 [ ] B-start-paused-ui      start_paused_on_load UI desync and missing new-game support
+[ ] B-task-civ-filter      Tasks lack civilization-level eligibility filtering
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
 [ ] F-adventure-mode       Control individual elf (RPG-like)
@@ -137,9 +139,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fruit-sprite-ui      Fruit sprites in inventory/logistics/selection UI
 [ ] F-funeral-rites        Funeral rites and mourning
 [ ] F-greenhouse-revamp    Greenhouse planter growth cycle and pluck tasks
-[ ] F-group-activity       Multi-worker activity coordination layer
 [ ] F-group-chat           Group chat social activity
-[ ] F-group-dance          Group dance and social singing activities
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
 [ ] F-herbalism            Herbalism and alchemy
 [ ] F-infra-decay          Infrastructure decay with automated maintenance
@@ -229,6 +229,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tab-joins            Join iterators across tables
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
 [ ] F-task-assign-opt      Event-driven bidirectional task assignment
+[ ] F-task-panel-sprites   Creature sprites in tasks panel and activity cards
 [ ] F-task-priority        Priority queue and auto-assignment
 [ ] F-terrain-manip        Temporary voxel/zone placement with expiry
 [ ] F-traders              Visiting traders from other civs
@@ -347,6 +348,8 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-ghost-above          Hide voxels above camera focus height
 [x] F-giant-hornet         Giant hornet hostile flying creature
 [x] F-godot-setup          Godot 4 project setup
+[x] F-group-activity       Multi-worker activity coordination layer
+[x] F-group-dance          Group dance and social singing activities
 [x] F-hauling              Item hauling task type
 [x] F-hilly-terrain        Hilly forest floor with dirt voxels
 [x] F-home-camera          Home key to center camera on tree
@@ -659,7 +662,7 @@ Elves assemble into choirs to sing the tree into growing. Construction speed
 and quality depend on choir composition and harmony. Ties into the music
 system.
 
-**Blocked by:** F-group-activity
+**Unblocked by:** F-group-activity
 **Related:** F-choir-harmony, F-combat-singing, F-item-quality, F-mana-system, F-music-runtime, F-sung-furniture
 
 #### F-construction — Platform construction (designate/build/cancel)
@@ -2518,12 +2521,12 @@ and F-social-graph (close relationships = deeper grief).
 #### F-group-chat — Group chat social activity
 **Status:** Todo
 
-**Blocked by:** F-group-activity
+**Unblocked by:** F-group-activity
 
 #### F-group-dance — Group dance and social singing activities
-**Status:** Todo
+**Status:** Done
 
-**Blocked by:** F-group-activity
+**Unblocked by:** F-group-activity
 
 #### F-hedonic-adapt — Asymmetric hedonic adaptation
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
@@ -5160,6 +5163,14 @@ buttons instead of hex IDs. Adds `TaskOrigin` enum to `task.rs` with
 
 **Modified files:** `task.rs`, `sim.rs`, `sim_bridge.rs`, `task_panel.gd`
 
+#### F-task-panel-sprites — Creature sprites in tasks panel and activity cards
+**Status:** Todo
+
+Show creature portrait sprites next to assignee names in the tasks panel
+and next to participant names in activity cards. Use the existing
+SpriteGenerator.species_sprite(species, index) pattern from
+units_panel.gd with a sprite cache keyed by creature_id.
+
 #### F-tiling-tex — Prime-period tiling textures for bark and ground
 **Status:** Done
 
@@ -5251,6 +5262,18 @@ cutaway, or hide-upper-levels toggle. Open design question (§27).
 
 ### Sim Engine
 
+#### B-assembly-timeout — Activity assembly timeout not enforced
+**Status:** Todo
+
+ActivityConfig::assembly_timeout_ticks is defined (default 300,000) but
+never checked. An activity stuck in Assembling phase (e.g., participants
+died or got lost en route) will wait indefinitely. Should check elapsed
+time in the Assembling branch of the activation loop and cancel the
+activity if the timeout has been exceeded, similar to how
+check_activity_pause_timeout handles the Paused phase.
+
+**Related:** F-group-activity
+
 #### B-chamfer-nonmfld — Chamfer produces non-manifold edges for diagonally-adjacent voxels
 **Status:** Todo
 
@@ -5302,6 +5325,13 @@ Worldgen floats (tree_gen.rs, structural.rs, texture_gen.rs) are run
 once at init with a seeded PRNG — lower risk but still non-portable.
 Rendering-only floats (mesh_gen, interpolated_position, raycast) are
 safe since they don't affect sim truth.
+
+#### B-task-civ-filter — Tasks lack civilization-level eligibility filtering
+**Status:** Todo
+
+Tasks have required_species but no civ_id filter. Any creature of the right species can claim any available task regardless of civilization membership. A hostile goblin could theoretically claim a player-civ construction task. Tasks need a civ_id field and find_available_task needs to check it.
+
+**Related:** F-group-activity
 
 #### F-activation-revamp — Replace manual event scheduling with automatic reactivation
 **Status:** Todo · **Phase:** 5
@@ -5372,7 +5402,7 @@ GDExtension bridge crate exposing sim to Godot. SimBridge node with
 methods for commands, queries, and rendering data.
 
 #### F-group-activity — Multi-worker activity coordination layer
-**Status:** Todo
+**Status:** Done
 
 Coordination layer above the task system for activities that require
 multiple participants. Activities own tasks (GoTo for assembly) rather
@@ -5383,8 +5413,8 @@ plus kind-specific extension tables.
 
 **Draft:** docs/drafts/group_activities.md
 
-**Blocks:** F-choir-build, F-group-chat, F-group-dance
-**Related:** F-choir-harmony, F-combat-singing
+**Unblocked:** F-choir-build, F-group-chat, F-group-dance
+**Related:** B-assembly-timeout, B-task-civ-filter, F-choir-harmony, F-combat-singing
 
 #### F-immediate-commands — Immediate command application (zero-tick updates)
 **Status:** Done · **Phase:** 2

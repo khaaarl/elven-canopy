@@ -6,7 +6,7 @@
 //
 // ## Table layout
 //
-// The database has 38 tables organized in four tiers:
+// The database has 40 tables organized in four tiers:
 //
 // **Player tables:** `players` — human operators identified by username string.
 // One entry per connected human player; persisted in save files.
@@ -64,11 +64,12 @@ use crate::inventory::{EffectKind, EquipSlot, ItemColor, ItemKind, Material};
 use crate::projectile::{SubVoxelCoord, SubVoxelVec};
 use crate::task::{HaulPhase, TaskOrigin, TaskState};
 use crate::types::{
-    ActiveRecipeId, ActiveRecipeTargetId, BuildType, CivId, CivOpinion, CivSpecies, CompositionId,
-    CreatureId, CultureTag, EnchantmentId, FruitSpeciesId, FurnishingType, FurnitureId,
-    GroundPileId, InventoryId, ItemStackId, MilitaryGroupId, NotificationId, ProjectId,
-    ProjectileId, SelectionGroupId, Species, StructureId, StrutId, TaskId, ThoughtKind, TraitKind,
-    TraitValue, TreeId, VitalStatus, VoxelCoord,
+    ActiveRecipeId, ActiveRecipeTargetId, ActivityId, ActivityKind, ActivityPhase, BuildType,
+    CivId, CivOpinion, CivSpecies, CompositionId, CreatureId, CultureTag, DeparturePolicy,
+    EnchantmentId, FruitSpeciesId, FurnishingType, FurnitureId, GroundPileId, InventoryId,
+    ItemStackId, MilitaryGroupId, NotificationId, ParticipantRole, ParticipantStatus, ProjectId,
+    ProjectileId, RecruitmentMode, SelectionGroupId, Species, StructureId, StrutId, TaskId,
+    ThoughtKind, TraitKind, TraitValue, TreeId, VitalStatus, VoxelCoord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -321,6 +322,12 @@ pub struct Creature {
     pub name_meaning: String,
     #[indexed]
     pub current_task: Option<TaskId>,
+    /// Group activity this creature is participating in. Only set when the
+    /// creature is committed (Traveling or Arrived status) — NOT set for
+    /// tentative volunteers. See `sim/activity.rs` for the lifecycle.
+    #[serde(default)]
+    #[indexed]
+    pub current_activity: Option<ActivityId>,
     pub food: i64,
     pub rest: i64,
     #[indexed]
@@ -1034,6 +1041,100 @@ pub struct TaskCraftData {
 }
 
 // ---------------------------------------------------------------------------
+// Group activity tables — multi-creature coordination
+// ---------------------------------------------------------------------------
+
+/// A group activity — a coordination layer above the task system for actions
+/// that require multiple participants (dances, construction choirs, rituals).
+/// Activities own tasks (GoTo for assembly) rather than replacing them.
+/// See `sim/activity.rs` for the lifecycle logic.
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct Activity {
+    #[primary_key]
+    pub id: ActivityId,
+
+    /// What kind of group activity this is.
+    #[indexed]
+    pub kind: ActivityKind,
+
+    /// Lifecycle phase.
+    #[indexed]
+    pub phase: ActivityPhase,
+
+    /// Where the group activity takes place (center point).
+    pub location: VoxelCoord,
+
+    /// Minimum participants needed before the activity can begin execution.
+    /// `None` means the activity can start with any number of participants.
+    pub min_count: Option<u16>,
+
+    /// Desired number of participants. Recruitment continues up to this count.
+    /// `None` means same as `min_count`.
+    pub desired_count: Option<u16>,
+
+    /// Current work progress (only advances during `Executing` phase).
+    pub progress: i64,
+
+    /// Total work needed to complete. 0 for instant-on-assembly activities.
+    pub total_cost: i64,
+
+    /// Origin — player-directed or automated.
+    pub origin: TaskOrigin,
+
+    /// How participants join this activity.
+    pub recruitment: RecruitmentMode,
+
+    /// What happens when a participant leaves during execution.
+    pub departure_policy: DeparturePolicy,
+
+    /// Whether new participants can join after execution has started.
+    pub allows_late_join: bool,
+
+    /// Civilization that owns this activity. Creatures must belong to this
+    /// civ to participate (`None` = no civ restriction).
+    #[serde(default)]
+    pub civ_id: Option<CivId>,
+
+    /// Species restriction. Only creatures of this species can participate
+    /// (`None` = no species restriction).
+    #[serde(default)]
+    pub required_species: Option<Species>,
+
+    /// Tick when the activity entered the Executing phase.
+    pub execution_start_tick: Option<u64>,
+
+    /// Tick when the activity entered the Paused phase (`PauseAndWait` only).
+    /// Cleared when resuming to Executing.
+    pub pause_started_tick: Option<u64>,
+}
+
+/// Links a creature to an activity with role and commitment status.
+/// A creature can only be committed to one activity at a time (enforced by
+/// the `current_activity` FK on Creature for Traveling/Arrived participants).
+/// Volunteered participants do NOT have `current_activity` set.
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+#[primary_key("activity_id", "creature_id")]
+pub struct ActivityParticipant {
+    #[indexed]
+    pub activity_id: ActivityId,
+    #[indexed]
+    pub creature_id: CreatureId,
+
+    /// This participant's role within the activity.
+    pub role: ParticipantRole,
+
+    /// Commitment status: Volunteered → Traveling → Arrived.
+    pub status: ParticipantStatus,
+
+    /// The position this participant needs to reach for assembly.
+    pub assigned_position: VoxelCoord,
+
+    /// The GoTo task driving movement during assembly (Traveling status only).
+    /// Cleared when the creature arrives or the activity transitions.
+    pub travel_task: Option<TaskId>,
+}
+
+// ---------------------------------------------------------------------------
 // Active recipe tables (unified crafting system)
 // ---------------------------------------------------------------------------
 
@@ -1353,6 +1454,7 @@ pub struct SimDb {
 
     #[table(singular = "creature",
             fks(current_task? = "tasks",
+                current_activity? = "activities" on_delete nullify,
                 assigned_home? = "structures",
                 civ_id? = "civilizations" on_delete nullify,
                 military_group? = "military_groups" on_delete nullify))]
@@ -1423,6 +1525,14 @@ pub struct SimDb {
     #[table(singular = "task_attack_move_data",
             fks(task_id = "tasks" pk on_delete cascade))]
     pub task_attack_move_data: TaskAttackMoveDataTable,
+
+    #[table(singular = "activity")]
+    pub activities: ActivityTable,
+
+    #[table(singular = "activity_participant",
+            fks(activity_id = "activities" on_delete cascade,
+                creature_id = "creatures" on_delete cascade))]
+    pub activity_participants: ActivityParticipantTable,
 
     #[table(singular = "music_composition", auto)]
     pub music_compositions: MusicCompositionTable,

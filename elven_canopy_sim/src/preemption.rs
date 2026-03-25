@@ -1,8 +1,11 @@
-// Task preemption priority system.
+// Task and activity preemption priority system.
 //
 // Assigns a numeric priority level to each (TaskKindTag, TaskOrigin) pair and
-// determines whether a new task can preempt a creature's current task. This
-// replaces the ad-hoc `mope_can_interrupt_task` config flag with a general,
+// determines whether a new task can preempt a creature's current task. Also
+// provides `activity_preemption_level` for group activities, used by the
+// activation loop's autonomous combat check to decide whether a creature in
+// an activity should engage hostiles. This replaces the ad-hoc
+// `mope_can_interrupt_task` config flag with a general,
 // exhaustive priority scheme.
 //
 // The `PreemptionLevel` enum has 8 levels from Idle(0) to Flee(7). The mapping
@@ -113,6 +116,23 @@ pub fn preemption_level(kind: TaskKindTag, origin: TaskOrigin) -> PreemptionLeve
             TaskOrigin::PlayerDirected => PreemptionLevel::PlayerCombat,
             TaskOrigin::Autonomous | TaskOrigin::Automated => PreemptionLevel::AutonomousCombat,
         },
+    }
+}
+
+/// Compute the preemption level for a group activity with the given kind and origin.
+/// Activities use the same preemption level scheme as tasks. Dances and social
+/// activities are Autonomous (interruptible by combat), while player-directed
+/// construction choirs are PlayerDirected.
+pub fn activity_preemption_level(
+    _kind: crate::types::ActivityKind,
+    origin: TaskOrigin,
+) -> PreemptionLevel {
+    // All activity kinds currently follow the same rule: PlayerDirected origin
+    // gets PlayerDirected preemption, everything else gets Autonomous. This may
+    // diverge per-kind in the future (e.g., combat singing at a higher level).
+    match origin {
+        TaskOrigin::PlayerDirected => PreemptionLevel::PlayerDirected,
+        TaskOrigin::Autonomous | TaskOrigin::Automated => PreemptionLevel::Autonomous,
     }
 }
 

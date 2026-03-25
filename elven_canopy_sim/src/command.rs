@@ -48,6 +48,10 @@
 //   PlayerCombat preemption, pursues target until dead.
 // - `DirectedGoTo` — player-directed goto for a specific creature, preempting
 //   lower-priority tasks.
+// - `CreateActivity` — create a group activity at a location.
+// - `CancelActivity` — cancel a group activity and release participants.
+// - `AssignToActivity` — assign a creature to an activity (directed recruitment).
+// - `RemoveFromActivity` — remove a creature from an activity.
 // - `AttackMove` — player-directed attack-move: creature walks toward a
 //   destination, engaging hostiles en route. Creates an AttackMove task with
 //   PlayerCombat preemption.
@@ -376,6 +380,31 @@ pub enum SimAction {
         /// Creature that "shot" this projectile (for attribution). Optional.
         shooter_id: Option<CreatureId>,
     },
+
+    // --- Group activity commands ---
+    /// Create a group activity at a location. For Open-recruitment activities
+    /// (e.g., debug dance), idle creatures discover and volunteer via their
+    /// activation loop. For Directed activities, use `AssignToActivity` after.
+    CreateActivity {
+        kind: ActivityKind,
+        location: VoxelCoord,
+        min_count: Option<u16>,
+        desired_count: Option<u16>,
+        origin: crate::task::TaskOrigin,
+    },
+    /// Cancel a group activity. Releases all participants and cleans up.
+    CancelActivity { activity_id: ActivityId },
+    /// Assign a specific creature to an activity (Directed recruitment).
+    /// The creature must be alive with no current activity.
+    AssignToActivity {
+        activity_id: ActivityId,
+        creature_id: CreatureId,
+    },
+    /// Remove a creature from an activity (voluntary departure or player removal).
+    RemoveFromActivity {
+        activity_id: ActivityId,
+        creature_id: CreatureId,
+    },
 }
 
 #[cfg(test)]
@@ -402,5 +431,63 @@ mod tests {
         // SimAction doesn't derive PartialEq (unnecessary overhead for an
         // enum with Vec fields), so we verify via re-serialization.
         assert_eq!(json, serde_json::to_string(&restored).unwrap());
+    }
+
+    #[test]
+    fn activity_command_serialization_roundtrip() {
+        let cmd = SimCommand {
+            player_name: "test".to_string(),
+            tick: 42,
+            action: SimAction::CreateActivity {
+                kind: ActivityKind::Dance,
+                location: VoxelCoord::new(10, 51, 20),
+                min_count: Some(3),
+                desired_count: Some(3),
+                origin: crate::task::TaskOrigin::PlayerDirected,
+            },
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        let restored: SimCommand = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&restored).unwrap());
+
+        let mut rng = crate::prng::GameRng::new(1);
+        let activity_id = ActivityId::new(&mut rng);
+        let creature_id = CreatureId::new(&mut rng);
+
+        // CancelActivity
+        let cmd2 = SimCommand {
+            player_name: "test".to_string(),
+            tick: 43,
+            action: SimAction::CancelActivity { activity_id },
+        };
+        let json2 = serde_json::to_string(&cmd2).unwrap();
+        let restored2: SimCommand = serde_json::from_str(&json2).unwrap();
+        assert_eq!(json2, serde_json::to_string(&restored2).unwrap());
+
+        // AssignToActivity
+        let cmd3 = SimCommand {
+            player_name: "test".to_string(),
+            tick: 44,
+            action: SimAction::AssignToActivity {
+                activity_id,
+                creature_id,
+            },
+        };
+        let json3 = serde_json::to_string(&cmd3).unwrap();
+        let restored3: SimCommand = serde_json::from_str(&json3).unwrap();
+        assert_eq!(json3, serde_json::to_string(&restored3).unwrap());
+
+        // RemoveFromActivity
+        let cmd4 = SimCommand {
+            player_name: "test".to_string(),
+            tick: 45,
+            action: SimAction::RemoveFromActivity {
+                activity_id,
+                creature_id,
+            },
+        };
+        let json4 = serde_json::to_string(&cmd4).unwrap();
+        let restored4: SimCommand = serde_json::from_str(&json4).unwrap();
+        assert_eq!(json4, serde_json::to_string(&restored4).unwrap());
     }
 }

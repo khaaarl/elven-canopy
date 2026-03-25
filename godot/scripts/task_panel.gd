@@ -1,6 +1,10 @@
-## Full-screen task list overlay showing all active simulation tasks.
+## Full-screen task list overlay showing active group activities and tasks.
 ##
-## Tasks are grouped into three sections by origin:
+## The panel has four sections from top to bottom:
+## - **Group Activities** — multi-creature coordination (dances, choirs).
+##   Each card shows kind, phase, participant count or progress bar, and a
+##   per-participant list with creature name buttons (zoom on click) and
+##   status labels (Volunteered / Traveling / Arrived).
 ## - **Player Directives** — tasks the player explicitly created (build, goto,
 ##   furnish). Origin string: "PlayerDirected".
 ## - **Automated Management** — tasks created by management systems (not yet
@@ -8,16 +12,15 @@
 ## - **Autonomous Decisions** — tasks creatures create on their own (eat, sleep).
 ##   Origin string: "Autonomous".
 ##
-## Each card shows the task kind, state, progress (for Build/Furnish tasks),
+## Each task card shows the task kind, state, progress (for Build/Furnish tasks),
 ## a "Zoom to Site" button, and per-assignee zoom buttons showing creature
 ## names (Vaelith names for elves, species + short ID for unnamed creatures).
 ##
-## Data flow: main.gd calls update_tasks(data) each frame while the panel is
-## visible, passing the result of bridge.get_active_tasks(). The panel uses a
-## reconciliation pattern — it maintains a dictionary mapping task id_full to
-## card nodes, creating/updating/removing cards as tasks appear and disappear.
-## Cards are routed to the correct section VBoxContainer based on the task's
-## origin field from sim_bridge.rs.
+## Data flow: main.gd calls update_tasks(data) and update_activities(data) each
+## frame while the panel is visible, passing the results of
+## bridge.get_active_tasks() and bridge.get_active_activities(). Both use a
+## reconciliation pattern — dictionaries map id_full to card nodes,
+## creating/updating/removing cards as data changes.
 ##
 ## Signals:
 ## - zoom_to_creature(creature_id) — zoom camera to an assigned creature
@@ -29,8 +32,9 @@
 ## escape_menu (see main.gd docstring).
 ##
 ## See also: main.gd (creates and wires this panel), sim_bridge.rs for
-## get_active_tasks(), action_toolbar.gd for the "Tasks [T]" button,
-## selection_controller.gd for select_creature_by_id() used by zoom-to-assignee.
+## get_active_tasks() and get_active_activities(), action_toolbar.gd for the
+## "Tasks [T]" button, selection_controller.gd for select_creature_by_id()
+## used by zoom-to-assignee.
 
 extends ColorRect
 
@@ -40,10 +44,15 @@ signal panel_closed
 
 ## Maps task id_full (String) -> PanelContainer card node.
 var _task_rows: Dictionary = {}
+## Maps activity id_full (String) -> PanelContainer card node.
+var _activity_rows: Dictionary = {}
 ## The three section containers, keyed by origin string.
 var _section_player: VBoxContainer
 var _section_automated: VBoxContainer
 var _section_autonomous: VBoxContainer
+## Activities section container.
+var _section_activities: VBoxContainer
+var _label_activities_empty: Label
 ## Per-section "(none)" labels.
 var _label_player_empty: Label
 var _label_automated_empty: Label
@@ -105,6 +114,13 @@ func _ready() -> void:
 	_sections_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_sections_vbox.add_theme_constant_override("separation", 8)
 	scroll.add_child(_sections_vbox)
+
+	# Group Activities section (above tasks).
+	_section_activities = _create_section("Group Activities")
+	_label_activities_empty = _section_activities.get_meta("empty_label")
+
+	# Separator.
+	_sections_vbox.add_child(HSeparator.new())
 
 	# Player Directives section.
 	_section_player = _create_section("Player Directives")
@@ -228,7 +244,7 @@ func update_tasks(data: Array) -> void:
 	_label_automated_empty.visible = _section_automated.get_child_count() == 0
 	_label_autonomous_empty.visible = _section_autonomous.get_child_count() == 0
 
-	var all_empty := _task_rows.is_empty()
+	var all_empty := _task_rows.is_empty() and _activity_rows.is_empty()
 	_empty_label.visible = all_empty
 	_sections_vbox.visible = not all_empty
 
@@ -346,4 +362,198 @@ func _assignee_fingerprint(assignees: Array) -> String:
 		var a: Dictionary = assignees[i]
 		var creature_name: String = a.get("name", "")
 		parts.append("%s:%s" % [a.get("id_short", ""), creature_name])
+	return ",".join(parts)
+
+
+# ===========================================================================
+# Group Activities
+# ===========================================================================
+
+
+## Called each frame by main.gd with the result of bridge.get_active_activities().
+func update_activities(data: Array) -> void:
+	var seen_ids: Dictionary = {}
+	for i in data.size():
+		var activity: Dictionary = data[i]
+		var id_full: String = activity.get("id_full", "")
+		seen_ids[id_full] = true
+
+		if _activity_rows.has(id_full):
+			_update_activity_card(_activity_rows[id_full], activity)
+		else:
+			var card := _create_activity_card(activity)
+			_section_activities.add_child(card)
+			_activity_rows[id_full] = card
+
+	# Remove cards for activities no longer present.
+	var to_remove: Array = []
+	for id_full in _activity_rows:
+		if not seen_ids.has(id_full):
+			to_remove.append(id_full)
+	for id_full in to_remove:
+		var card: PanelContainer = _activity_rows[id_full]
+		card.get_parent().remove_child(card)
+		card.queue_free()
+		_activity_rows.erase(id_full)
+
+	_label_activities_empty.visible = _section_activities.get_child_count() == 0
+
+	# Update top-level empty state (consider both tasks and activities).
+	var all_empty := _task_rows.is_empty() and _activity_rows.is_empty()
+	_empty_label.visible = all_empty
+	_sections_vbox.visible = not all_empty
+
+
+func _create_activity_card(activity: Dictionary) -> PanelContainer:
+	var card := PanelContainer.new()
+
+	var vbox := VBoxContainer.new()
+	vbox.add_theme_constant_override("separation", 4)
+	card.add_child(vbox)
+
+	# Header row: Kind + Phase, participant count or progress, zoom button.
+	var header := HBoxContainer.new()
+	header.add_theme_constant_override("separation", 12)
+	vbox.add_child(header)
+
+	var kind_label := Label.new()
+	kind_label.name = "KindLabel"
+	kind_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(kind_label)
+
+	var count_label := Label.new()
+	count_label.name = "CountLabel"
+	count_label.add_theme_font_size_override("font_size", 14)
+	count_label.add_theme_color_override("font_color", Color(0.7, 0.7, 0.6))
+	header.add_child(count_label)
+
+	var progress_bar := ProgressBar.new()
+	progress_bar.name = "ProgressBar"
+	progress_bar.custom_minimum_size = Vector2(150, 20)
+	progress_bar.show_percentage = true
+	header.add_child(progress_bar)
+
+	var zoom_btn := Button.new()
+	zoom_btn.name = "ZoomSiteBtn"
+	zoom_btn.text = "Zoom to Site"
+	zoom_btn.pressed.connect(
+		func():
+			var lx: float = activity.get("location_x", 0)
+			var ly: float = activity.get("location_y", 0)
+			var lz: float = activity.get("location_z", 0)
+			zoom_to_location.emit(lx, ly, lz)
+	)
+	header.add_child(zoom_btn)
+
+	# Participant list container.
+	var participants_vbox := VBoxContainer.new()
+	participants_vbox.name = "ParticipantsVBox"
+	participants_vbox.add_theme_constant_override("separation", 2)
+	vbox.add_child(participants_vbox)
+
+	_update_activity_card(card, activity)
+	return card
+
+
+func _update_activity_card(card: PanelContainer, activity: Dictionary) -> void:
+	var kind: String = activity.get("kind", "?")
+	var phase: String = activity.get("phase", "?")
+	var progress: float = activity.get("progress", 0.0)
+	var total_cost: float = activity.get("total_cost", 0.0)
+	var participants: Array = activity.get("participants", [])
+	var min_count: int = activity.get("min_count", 0)
+	var desired_count: int = activity.get("desired_count", 0)
+
+	var kind_label: Label = card.find_child("KindLabel", true, false)
+	if kind_label:
+		kind_label.text = "%s (%s)" % [kind, phase]
+
+	# Show participant count during Recruiting/Assembling, progress during Executing.
+	var count_label: Label = card.find_child("CountLabel", true, false)
+	var progress_bar: ProgressBar = card.find_child("ProgressBar", true, false)
+	if phase == "Executing" or phase == "Paused":
+		if count_label:
+			count_label.visible = false
+		if progress_bar and total_cost > 0.0:
+			progress_bar.visible = true
+			progress_bar.max_value = total_cost
+			progress_bar.value = progress
+		elif progress_bar:
+			progress_bar.visible = false
+	else:
+		if progress_bar:
+			progress_bar.visible = false
+		if count_label:
+			count_label.visible = true
+			var target: int = desired_count if desired_count > 0 else min_count
+			count_label.text = "%d/%d" % [participants.size(), target]
+
+	# Rebuild participant rows when the list changes.
+	var fingerprint := _participant_fingerprint(participants)
+	var prev: String = card.get_meta("participant_fp", "")
+	if fingerprint != prev:
+		card.set_meta("participant_fp", fingerprint)
+		var participants_vbox: VBoxContainer = card.find_child("ParticipantsVBox", true, false)
+		if participants_vbox:
+			# Clear old rows.
+			for child in participants_vbox.get_children():
+				participants_vbox.remove_child(child)
+				child.queue_free()
+			# Create new rows.
+			for j in participants.size():
+				var p: Dictionary = participants[j]
+				var row := HBoxContainer.new()
+				row.add_theme_constant_override("separation", 8)
+
+				var bullet := Label.new()
+				bullet.text = "\u2022"
+				bullet.add_theme_font_size_override("font_size", 14)
+				row.add_child(bullet)
+
+				var cid: String = p.get("creature_id", "")
+				var creature_name: String = p.get("name", "")
+				var sp: String = p.get("species", "?")
+				var status: String = p.get("status", "?")
+
+				var name_btn := Button.new()
+				name_btn.flat = true
+				if creature_name != "":
+					name_btn.text = creature_name
+				else:
+					name_btn.text = sp
+				name_btn.pressed.connect(func(): zoom_to_creature.emit(cid))
+				row.add_child(name_btn)
+
+				var status_label := Label.new()
+				status_label.text = status
+				status_label.add_theme_font_size_override("font_size", 13)
+				status_label.add_theme_color_override("font_color", _status_color(status))
+				row.add_child(status_label)
+
+				participants_vbox.add_child(row)
+
+
+## Color-code participant status for visual clarity.
+func _status_color(status: String) -> Color:
+	match status:
+		"Volunteered":
+			return Color(0.6, 0.6, 0.5)
+		"Traveling":
+			return Color(0.7, 0.8, 0.5)
+		"Arrived":
+			return Color(0.5, 0.9, 0.5)
+		_:
+			return Color(0.7, 0.7, 0.7)
+
+
+## Fingerprint for participant list change detection.
+func _participant_fingerprint(participants: Array) -> String:
+	if participants.is_empty():
+		return ""
+	var parts: PackedStringArray = PackedStringArray()
+	for i in participants.size():
+		var p: Dictionary = participants[i]
+		parts.append(
+			"%s:%s:%s" % [p.get("creature_id", ""), p.get("status", ""), p.get("name", "")]
+		)
 	return ",".join(parts)

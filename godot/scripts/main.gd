@@ -1056,6 +1056,8 @@ func _process(delta: float) -> void:
 	if _task_panel and _task_panel.visible:
 		var tasks := bridge.get_active_tasks()
 		_task_panel.update_tasks(tasks)
+		var activities := bridge.get_active_activities()
+		_task_panel.update_activities(activities)
 
 	# Refresh structure list panel while visible.
 	if _structure_panel and _structure_panel.visible:

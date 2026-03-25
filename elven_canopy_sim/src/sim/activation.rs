@@ -346,16 +346,25 @@ impl SimState {
                         | crate::species::EngagementInitiative::Defensive
                 )
             {
-                let should_try_combat = if let Some(task_id) = self
-                    .db
-                    .creatures
-                    .get(&creature_id)
-                    .and_then(|c| c.current_task)
+                let creature_ref = self.db.creatures.get(&creature_id);
+                let should_try_combat = if let Some(task_id) =
+                    creature_ref.as_ref().and_then(|c| c.current_task)
                     && let Some(task) = self.db.tasks.get(&task_id)
                 {
+                    // Has a task — only try combat if the task is Autonomous level.
                     let current_level = preemption::preemption_level(task.kind_tag, task.origin);
                     current_level == preemption::PreemptionLevel::Autonomous
+                } else if let Some(activity_id) =
+                    creature_ref.as_ref().and_then(|c| c.current_activity)
+                    && let Some(activity) = self.db.activities.get(&activity_id)
+                {
+                    // Has an activity (no task) — only try combat if activity
+                    // preemption level is Autonomous.
+                    let level =
+                        preemption::activity_preemption_level(activity.kind, activity.origin);
+                    level == preemption::PreemptionLevel::Autonomous
                 } else {
+                    // No task, no activity — try combat unconditionally.
                     true
                 };
 
@@ -389,18 +398,76 @@ impl SimState {
         }
 
         // --- Decision cascade (shared) ---
-        let current_task = self
-            .db
-            .creatures
-            .get(&creature_id)
-            .and_then(|c| c.current_task);
+        let creature_snapshot = self.db.creatures.get(&creature_id);
+        let current_task = creature_snapshot.as_ref().and_then(|c| c.current_task);
+        let current_activity = creature_snapshot.as_ref().and_then(|c| c.current_activity);
+
+        // Activity check: creature has current_activity but no current_task.
+        // This means the creature is either executing, waiting (assembled but
+        // not yet executing), or paused. During assembly with a GoTo task,
+        // current_task is set and the normal task path handles movement.
+        if let Some(activity_id) = current_activity
+            && current_task.is_none()
+        {
+            let phase = self.db.activities.get(&activity_id).map(|a| a.phase);
+            match phase {
+                Some(crate::types::ActivityPhase::Executing) => {
+                    self.execute_activity_behavior(creature_id, activity_id, events);
+                    // If the activity completed during execution, complete_activity
+                    // already scheduled reactivation. Only schedule if the creature
+                    // is still in the activity (not yet completed).
+                    if self
+                        .db
+                        .creatures
+                        .get(&creature_id)
+                        .is_some_and(|c| c.current_activity.is_some())
+                    {
+                        self.schedule_reactivation(creature_id);
+                    }
+                }
+                Some(crate::types::ActivityPhase::Paused) => {
+                    // Idle in place. Check pause timeout for PauseAndWait.
+                    self.check_activity_pause_timeout(activity_id, events);
+                    self.schedule_reactivation(creature_id);
+                }
+                Some(crate::types::ActivityPhase::Assembling) => {
+                    // Check if this creature is a Traveling participant whose
+                    // GoTo task was preempted (e.g., by moping). If so, re-create
+                    // the GoTo task so they resume walking to the assembly point.
+                    self.reissue_activity_goto_if_needed(activity_id, creature_id, events);
+                    self.schedule_reactivation(creature_id);
+                }
+                _ => {
+                    // Activity is gone or in an unexpected phase (e.g., Recruiting
+                    // for a directed participant who arrived early, or Complete/Cancelled).
+                    // Clean up both the creature reference and any orphaned participant row.
+                    let _ = self
+                        .db
+                        .remove_activity_participant(&(activity_id, creature_id));
+                    if let Some(mut c) = self.db.creatures.get(&creature_id) {
+                        c.current_activity = None;
+                        let _ = self.db.creatures.update_no_fk(c);
+                    }
+                    self.schedule_reactivation(creature_id);
+                }
+            }
+            return;
+        }
 
         if let Some(task_id) = current_task {
             self.execute_task_behavior(creature_id, task_id, current_node, events);
+        } else if let Some(task_id) = self.find_available_task(creature_id) {
+            self.claim_task(creature_id, task_id);
+            self.execute_task_behavior(creature_id, task_id, current_node, events);
         } else {
-            if let Some(task_id) = self.find_available_task(creature_id) {
-                self.claim_task(creature_id, task_id);
-                self.execute_task_behavior(creature_id, task_id, current_node, events);
+            // Before discovering activities, prune any stale Volunteered rows
+            // left over from a previous activation cycle (e.g., creature
+            // volunteered, then picked up an Eat task, now idle again).
+            self.prune_stale_volunteer_rows(creature_id);
+            if let Some(activity_id) = self.find_open_activity_for_creature(creature_id) {
+                // Idle creature discovers an Open-recruitment activity and volunteers.
+                self.volunteer_for_activity(activity_id, creature_id, events);
+                self.schedule_reactivation(creature_id);
             } else {
                 self.wander_dispatch(creature_id, current_node, events);
             }
@@ -791,7 +858,16 @@ impl SimState {
 
         match task.kind_tag {
             crate::db::TaskKindTag::GoTo => {
+                // If this GoTo was for an activity assembly, notify the activity.
+                let activity_id = self
+                    .db
+                    .creatures
+                    .get(&creature_id)
+                    .and_then(|c| c.current_activity);
                 self.complete_task(task_id);
+                if let Some(activity_id) = activity_id {
+                    self.on_activity_participant_arrived(activity_id, creature_id, events);
+                }
             }
             crate::db::TaskKindTag::EatBread | crate::db::TaskKindTag::EatFruit => {
                 self.start_simple_action(

@@ -538,6 +538,7 @@ pub fn melee_distance_sq(
 }
 
 mod activation;
+mod activity;
 mod combat;
 mod construction;
 mod crafting;
@@ -1143,6 +1144,39 @@ impl SimState {
                     creature_ids.clone(),
                     structure_ids.clone(),
                 );
+            }
+
+            // --- Group activity commands ---
+            SimAction::CreateActivity {
+                kind,
+                location,
+                min_count,
+                desired_count,
+                origin,
+            } => {
+                self.handle_create_activity(
+                    *kind,
+                    *location,
+                    *min_count,
+                    *desired_count,
+                    *origin,
+                    events,
+                );
+            }
+            SimAction::CancelActivity { activity_id } => {
+                self.handle_cancel_activity(*activity_id, events);
+            }
+            SimAction::AssignToActivity {
+                activity_id,
+                creature_id,
+            } => {
+                self.handle_assign_to_activity(*activity_id, *creature_id, events);
+            }
+            SimAction::RemoveFromActivity {
+                activity_id,
+                creature_id,
+            } => {
+                self.handle_remove_from_activity(*activity_id, *creature_id, events);
             }
         }
     }
