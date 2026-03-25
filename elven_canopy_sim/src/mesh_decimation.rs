@@ -3517,6 +3517,7 @@ mod tests {
     /// integrity. This is the most likely way to find the rare geometric
     /// configurations that trigger deformation bugs.
     #[test]
+    #[ignore] // Slow fuzz test (~50 seeds); run explicitly with `cargo test -- --ignored`
     fn fuzz_random_terrain_decimation() {
         let mut skipped = 0;
         for seed in 0..50 {
@@ -3568,6 +3569,7 @@ mod tests {
     /// This directly simulates the grassy hillside terrain described in the
     /// bug report.
     #[test]
+    #[ignore] // Slow fuzz test (~200 seeds); run explicitly with `cargo test -- --ignored`
     fn fuzz_smooth_terrain_decimation() {
         let mut skipped = 0;
         let mut tested = 0;
@@ -3608,6 +3610,7 @@ mod tests {
     /// Fuzz with chunk bounds — test the interaction between chunk boundary
     /// vertex pinning and diagonal terrain geometry.
     #[test]
+    #[ignore] // Slow fuzz test (~100 seeds); run explicitly with `cargo test -- --ignored`
     fn fuzz_chunked_smooth_terrain() {
         let bounds = Some(([0, 0, 0], [16, 16, 16]));
         for seed in 0..100 {
@@ -3879,6 +3882,7 @@ mod tests {
 
     /// Fuzz: run per-stage integrity checks on smooth terrain heightmaps.
     #[test]
+    #[ignore] // Slow fuzz test (~200 seeds); run explicitly with `cargo test -- --ignored`
     fn fuzz_per_stage_smooth_terrain() {
         for seed in 0..200 {
             let heights = smooth_random_heightmap(seed, 12, 3);
@@ -3889,6 +3893,7 @@ mod tests {
 
     /// Fuzz with larger terrain, per-stage.
     #[test]
+    #[ignore] // Slow fuzz test (~30 seeds, large terrain); run explicitly with `cargo test -- --ignored`
     fn fuzz_per_stage_large_terrain() {
         for seed in 0..30 {
             let heights = smooth_random_heightmap(seed, 20, 3);
@@ -3901,6 +3906,7 @@ mod tests {
     /// geometry, more triangle fans, and more potential for cascading collapse
     /// errors.
     #[test]
+    #[ignore] // Slow fuzz test (~30 seeds, large terrain); run explicitly with `cargo test -- --ignored`
     fn fuzz_large_smooth_terrain() {
         for seed in 0..30 {
             let heights = smooth_random_heightmap(seed, 20, 3);
@@ -4255,6 +4261,7 @@ mod tests {
     /// Surface preservation fuzz on smooth heightmap terrain. Asserts
     /// deformation count doesn't exceed a known baseline as a regression gate.
     #[test]
+    #[ignore] // Slow fuzz test (~100 seeds); run explicitly with `cargo test -- --ignored`
     fn fuzz_surface_preserved_smooth_terrain() {
         let mut total_deformations = 0;
         let mut tested = 0;
@@ -4698,6 +4705,7 @@ mod tests {
 
     /// Fuzz: canonical normal preservation on smooth terrain.
     #[test]
+    #[ignore] // Slow fuzz test (~100 seeds); run explicitly with `cargo test -- --ignored`
     fn fuzz_canonical_normals_smooth_terrain() {
         let mut failures = 0;
         let mut tested = 0;
