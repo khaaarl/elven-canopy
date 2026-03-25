@@ -1,10 +1,10 @@
 ## Creature info panel displayed on the right side of the screen.
 ##
 ## Shows information about the currently selected creature, organized into
-## four tabs: Status (vitals, position, task, needs, mood, ability scores),
-## Skills (17 universal skills), Inventory (scrollable item list), and
-## Thoughts (scrollable recent thoughts). For elves, a path assignment
-## dropdown (F-path-core) is shown in the header.
+## five tabs: Status (vitals, position, task, needs, mood, ability scores),
+## Skills (17 universal skills), Inventory (scrollable item list),
+## Thoughts (scrollable recent thoughts), and Path (path assignment dropdown
+## for elves, F-path-core). The header shows the current path name for elves.
 ##
 ## The panel is ~25% screen width, full height, anchored to the right edge.
 ## A fixed header (species, name, status, military group) and Follow button
@@ -26,11 +26,12 @@ signal path_changed(creature_id: String, path_id: String)
 
 const MAX_DISPLAYED_THOUGHTS := 10
 
-## Index constants for the four tabs.
+## Index constants for the five tabs.
 const TAB_STATUS := 0
 const TAB_SKILLS := 1
 const TAB_INVENTORY := 2
 const TAB_THOUGHTS := 3
+const TAB_PATH := 4
 
 var _species_label: Label
 var _name_label: Label
@@ -50,8 +51,9 @@ var _mp_row: HBoxContainer
 var _status_label: Label
 var _military_group_btn: Button
 var _military_group_id: int = -1
-var _path_option: OptionButton
-var _path_row: HBoxContainer
+var _path_label: Label
+## Path tab: OptionButton for assignment.
+var _path_tab_option: OptionButton
 ## Maps OptionButton item index → path_id string ("Outcast", "Warrior", "Scout").
 var _path_index_to_id: Array[String] = []
 ## Suppress signal when programmatically updating the OptionButton.
@@ -99,7 +101,7 @@ func _ready() -> void:
 	tab_bar.add_theme_constant_override("separation", 4)
 	root_vbox.add_child(tab_bar)
 
-	for tab_name in ["Status", "Skills", "Inventory", "Thoughts"]:
+	for tab_name in ["Status", "Skills", "Inventory", "Thoughts", "Path"]:
 		var btn := Button.new()
 		btn.text = tab_name
 		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -114,6 +116,7 @@ func _ready() -> void:
 	_tab_contents.append(_build_skills_tab(root_vbox))
 	_tab_contents.append(_build_inventory_tab(root_vbox))
 	_tab_contents.append(_build_thoughts_tab(root_vbox))
+	_tab_contents.append(_build_path_tab(root_vbox))
 
 	# -- Follow button (always visible) --
 	_follow_button = Button.new()
@@ -163,24 +166,10 @@ func _build_header(parent: VBoxContainer) -> void:
 	_military_group_btn.pressed.connect(_on_military_group_clicked)
 	parent.add_child(_military_group_btn)
 
-	# Path assignment row (F-path-core).
-	_path_row = HBoxContainer.new()
-	_path_row.add_theme_constant_override("separation", 6)
-	_path_row.visible = false
-	parent.add_child(_path_row)
-
-	var path_label := Label.new()
-	path_label.text = "Path:"
-	_path_row.add_child(path_label)
-
-	_path_option = OptionButton.new()
-	_path_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_path_index_to_id = ["Outcast", "Warrior", "Scout"]
-	_path_option.add_item("Way of the Outcast")
-	_path_option.add_item("Way of the Warrior")
-	_path_option.add_item("Way of the Scout")
-	_path_option.item_selected.connect(_on_path_selected)
-	_path_row.add_child(_path_option)
+	# Path label (F-path-core). Shows current path name in the header.
+	_path_label = Label.new()
+	_path_label.visible = false
+	parent.add_child(_path_label)
 
 
 ## Build the Status tab: HP, MP, position, task, food, rest, mood, stats grid.
@@ -495,6 +484,39 @@ func _build_thoughts_tab(parent: VBoxContainer) -> ScrollContainer:
 	return scroll
 
 
+## Build the Path tab: assignment dropdown and future path info.
+func _build_path_tab(parent: VBoxContainer) -> ScrollContainer:
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	parent.add_child(scroll)
+
+	var vbox := VBoxContainer.new()
+	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vbox.add_theme_constant_override("separation", 8)
+	scroll.add_child(vbox)
+
+	# Path assignment dropdown.
+	var assign_row := HBoxContainer.new()
+	assign_row.add_theme_constant_override("separation", 6)
+	vbox.add_child(assign_row)
+
+	var assign_label := Label.new()
+	assign_label.text = "Assign Path:"
+	assign_row.add_child(assign_label)
+
+	_path_tab_option = OptionButton.new()
+	_path_tab_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_path_index_to_id = ["Outcast", "Warrior", "Scout"]
+	_path_tab_option.add_item("Way of the Outcast")
+	_path_tab_option.add_item("Way of the Warrior")
+	_path_tab_option.add_item("Way of the Scout")
+	_path_tab_option.item_selected.connect(_on_path_selected)
+	assign_row.add_child(_path_tab_option)
+
+	return scroll
+
+
 func _switch_tab(index: int) -> void:
 	_active_tab = index
 	for i in range(_tab_contents.size()):
@@ -533,6 +555,7 @@ func show_creature(creature_id: String, info: Dictionary) -> void:
 	_update_thoughts(info)
 	_update_inventory(info)
 	_update_military_group(info)
+	_update_path(info)
 	if _is_following:
 		unfollow_requested.emit()
 	_is_following = false
@@ -737,17 +760,24 @@ func _on_military_group_clicked() -> void:
 
 func _update_path(info: Dictionary) -> void:
 	var path_id: String = info.get("path_id", "")
+	var path_name: String = info.get("path_name", "")
 	var species: String = info.get("species", "")
-	# Only show path UI for elves.
-	if path_id.is_empty() or species != "Elf":
-		_path_row.visible = false
+	var is_elf: bool = (not path_id.is_empty()) and species == "Elf"
+	# Hide path header label and tab button for non-elves.
+	_path_label.visible = is_elf
+	if TAB_PATH < _tab_buttons.size():
+		_tab_buttons[TAB_PATH].visible = is_elf
+	if not is_elf:
+		# If currently on the Path tab, switch to Status.
+		if _active_tab == TAB_PATH:
+			_switch_tab(TAB_STATUS)
 		return
-	_path_row.visible = true
-	# Find the index for this path_id and select it without triggering signal.
+	_path_label.text = path_name
+	# Update Path tab dropdown without triggering signal.
 	var idx: int = _path_index_to_id.find(path_id)
-	if idx >= 0 and _path_option.selected != idx:
+	if idx >= 0 and _path_tab_option.selected != idx:
 		_updating_path = true
-		_path_option.select(idx)
+		_path_tab_option.select(idx)
 		_updating_path = false
 
 

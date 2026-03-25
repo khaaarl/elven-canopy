@@ -343,9 +343,13 @@ func _update_card(card: PanelContainer, task: Dictionary) -> void:
 				var cid: String = a.get("creature_id", "")
 				var id_short: String = a.get("id_short", "?")
 				var creature_name: String = a.get("name", "")
+				var path_short: String = a.get("path_short", "")
 				var btn := Button.new()
 				if creature_name != "":
-					btn.text = creature_name
+					if path_short != "":
+						btn.text = "%s (%s)" % [creature_name, path_short]
+					else:
+						btn.text = creature_name
 				else:
 					btn.text = "%s %s" % [sp, id_short]
 				btn.pressed.connect(func(): zoom_to_creature.emit(cid))
@@ -353,7 +357,8 @@ func _update_card(card: PanelContainer, task: Dictionary) -> void:
 
 
 ## Build a short string fingerprint of the assignee list for change detection.
-## Includes name so buttons rebuild when a creature gets named.
+## Includes name and path so buttons rebuild when a creature gets named or
+## changes path.
 func _assignee_fingerprint(assignees: Array) -> String:
 	if assignees.is_empty():
 		return ""
@@ -361,7 +366,8 @@ func _assignee_fingerprint(assignees: Array) -> String:
 	for i in assignees.size():
 		var a: Dictionary = assignees[i]
 		var creature_name: String = a.get("name", "")
-		parts.append("%s:%s" % [a.get("id_short", ""), creature_name])
+		var path_short: String = a.get("path_short", "")
+		parts.append("%s:%s:%s" % [a.get("id_short", ""), creature_name, path_short])
 	return ",".join(parts)
 
 
@@ -514,11 +520,15 @@ func _update_activity_card(card: PanelContainer, activity: Dictionary) -> void:
 				var creature_name: String = p.get("name", "")
 				var sp: String = p.get("species", "?")
 				var status: String = p.get("status", "?")
+				var path_short: String = p.get("path_short", "")
 
 				var name_btn := Button.new()
 				name_btn.flat = true
 				if creature_name != "":
-					name_btn.text = creature_name
+					if path_short != "":
+						name_btn.text = "%s (%s)" % [creature_name, path_short]
+					else:
+						name_btn.text = creature_name
 				else:
 					name_btn.text = sp
 				name_btn.pressed.connect(func(): zoom_to_creature.emit(cid))
@@ -553,7 +563,18 @@ func _participant_fingerprint(participants: Array) -> String:
 	var parts: PackedStringArray = PackedStringArray()
 	for i in participants.size():
 		var p: Dictionary = participants[i]
-		parts.append(
-			"%s:%s:%s" % [p.get("creature_id", ""), p.get("status", ""), p.get("name", "")]
+		(
+			parts
+			. append(
+				(
+					"%s:%s:%s:%s"
+					% [
+						p.get("creature_id", ""),
+						p.get("status", ""),
+						p.get("name", ""),
+						p.get("path_short", ""),
+					]
+				)
+			)
 		)
 	return ",".join(parts)

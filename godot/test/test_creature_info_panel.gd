@@ -26,6 +26,7 @@ func test_initial_tab_is_status() -> void:
 	assert_false(_panel._tab_contents[CreatureInfoPanel.TAB_SKILLS].visible)
 	assert_false(_panel._tab_contents[CreatureInfoPanel.TAB_INVENTORY].visible)
 	assert_false(_panel._tab_contents[CreatureInfoPanel.TAB_THOUGHTS].visible)
+	assert_false(_panel._tab_contents[CreatureInfoPanel.TAB_PATH].visible)
 
 
 func test_switch_to_skills_tab() -> void:
@@ -201,6 +202,66 @@ func test_skill_labels_has_all_17_skills() -> void:
 	assert_eq(_panel._skill_labels.size(), 17)
 
 
+# -- Path tab ----------------------------------------------------------------
+
+
+func test_switch_to_path_tab() -> void:
+	_panel._switch_tab(CreatureInfoPanel.TAB_PATH)
+	assert_eq(_panel._active_tab, CreatureInfoPanel.TAB_PATH)
+	assert_false(_panel._tab_contents[CreatureInfoPanel.TAB_STATUS].visible)
+	assert_true(_panel._tab_contents[CreatureInfoPanel.TAB_PATH].visible)
+
+
+func test_path_label_visible_for_elf() -> void:
+	var info := _minimal_info()
+	info["path_id"] = "Warrior"
+	info["path_name"] = "Way of the Warrior"
+	_panel.show_creature("elf-1", info)
+	assert_true(_panel._path_label.visible)
+	assert_eq(_panel._path_label.text, "Way of the Warrior")
+
+
+func test_path_label_hidden_for_non_elf() -> void:
+	var info := _minimal_info()
+	info["species"] = "Boar"
+	info["path_id"] = ""
+	info["path_name"] = ""
+	_panel.show_creature("boar-1", info)
+	assert_false(_panel._path_label.visible)
+
+
+func test_path_tab_hidden_for_non_elf() -> void:
+	var info := _minimal_info()
+	info["species"] = "Boar"
+	info["path_id"] = ""
+	info["path_name"] = ""
+	_panel.show_creature("boar-1", info)
+	assert_false(_panel._tab_buttons[CreatureInfoPanel.TAB_PATH].visible)
+
+
+func test_path_tab_auto_switches_to_status_for_non_elf() -> void:
+	# Show an elf and switch to Path tab.
+	_panel.show_creature("elf-1", _minimal_info())
+	_panel._switch_tab(CreatureInfoPanel.TAB_PATH)
+	assert_eq(_panel._active_tab, CreatureInfoPanel.TAB_PATH)
+	# Now switch to a non-elf — should auto-switch to Status.
+	var info := _minimal_info()
+	info["species"] = "Boar"
+	info["path_id"] = ""
+	info["path_name"] = ""
+	_panel.show_creature("boar-1", info)
+	assert_eq(_panel._active_tab, CreatureInfoPanel.TAB_STATUS)
+
+
+func test_path_tab_dropdown_syncs_with_path_id() -> void:
+	var info := _minimal_info()
+	info["path_id"] = "Scout"
+	info["path_name"] = "Way of the Scout"
+	_panel.show_creature("elf-1", info)
+	var scout_idx: int = _panel._path_index_to_id.find("Scout")
+	assert_eq(_panel._path_tab_option.selected, scout_idx)
+
+
 # -- Helpers -----------------------------------------------------------------
 
 
@@ -229,4 +290,6 @@ func _minimal_info() -> Dictionary:
 		"incapacitated": false,
 		"military_group_name": "",
 		"military_group_id": -1,
+		"path_id": "Outcast",
+		"path_name": "Way of the Outcast",
 	}

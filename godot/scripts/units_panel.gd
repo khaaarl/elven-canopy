@@ -3,7 +3,8 @@
 ## Displays a scrollable roster grouped by species: elves first (alphabetically
 ## by Vaelith name), then other species grouped alphabetically. Each row shows
 ## the creature's sprite (32x32), name (or "Species #N" for unnamed creatures),
-## and current activity (Idle, Building, Eating, Sleeping, Walking, Furnishing).
+## path (short name for elves, blank for others), and current activity
+## (Idle, Building, Eating, Sleeping, Walking, Furnishing).
 ##
 ## Clicking a creature row emits creature_clicked so the selection controller
 ## can select that creature and open the creature info panel on top of this one.
@@ -253,6 +254,13 @@ func _create_row(entry: Dictionary) -> HBoxContainer:
 	name_label.custom_minimum_size.x = 200
 	row.add_child(name_label)
 
+	# Path label (F-path-ui). Blank for non-elf creatures.
+	var path_label := Label.new()
+	path_label.name = "PathLabel"
+	path_label.custom_minimum_size.x = 70
+	path_label.add_theme_color_override("font_color", Color(0.6, 0.75, 0.9))
+	row.add_child(path_label)
+
 	# Activity label.
 	var activity_label := Label.new()
 	activity_label.name = "ActivityLabel"
@@ -291,6 +299,10 @@ func _update_row(row: HBoxContainer, entry: Dictionary) -> void:
 				name_label.text = creature_name
 		else:
 			name_label.text = "%s #%d" % [sp, idx + 1]
+
+	var path_label: Label = row.find_child("PathLabel", false, false)
+	if path_label:
+		path_label.text = entry.get("path_short", "")
 
 	var activity_label: Label = row.find_child("ActivityLabel", false, false)
 	if activity_label:

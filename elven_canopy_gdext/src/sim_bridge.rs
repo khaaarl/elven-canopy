@@ -1437,11 +1437,7 @@ impl SimBridge {
             return VarArray::new();
         };
 
-        // Collect (creature_id, species, index, name, name_meaning, has_task,
-        // task_kind) tuples per species.
-        let mut entries: Vec<(String, &'static str, i32, &str, &str, bool, &str)> = Vec::new();
-
-        // Count per species to compute species-filtered indices.
+        // Build dicts directly per creature, then sort.
         let species_list = [
             Species::Elf,
             Species::Boar,
@@ -1451,6 +1447,8 @@ impl SimBridge {
             Species::Monkey,
             Species::Squirrel,
         ];
+
+        let mut entries: Vec<VarDictionary> = Vec::new();
 
         for &sp in &species_list {
             for (idx, creature) in (0_i32..).zip(
@@ -1465,41 +1463,55 @@ impl SimBridge {
                     .and_then(|tid| sim.db.tasks.get(tid).map(|t| t.kind_tag.display_name()))
                     .unwrap_or("");
 
-                entries.push((
-                    creature.id.0.to_string(),
-                    species_name(sp),
-                    idx,
-                    creature.name.as_str(),
-                    creature.name_meaning.as_str(),
-                    creature.current_task.is_some(),
-                    task_kind,
-                ));
+                let path_short = sim
+                    .creature_path(creature.id)
+                    .map(|p| p.short_name())
+                    .unwrap_or("");
+
+                let mut dict = VarDictionary::new();
+                dict.set(
+                    "creature_id",
+                    GString::from(creature.id.0.to_string().as_str()),
+                );
+                dict.set("species", GString::from(species_name(sp)));
+                dict.set("index", idx);
+                dict.set("name", GString::from(creature.name.as_str()));
+                dict.set(
+                    "name_meaning",
+                    GString::from(creature.name_meaning.as_str()),
+                );
+                dict.set("has_task", creature.current_task.is_some());
+                dict.set("task_kind", GString::from(task_kind));
+                dict.set("path_short", GString::from(path_short));
+                entries.push(dict);
             }
         }
 
         // Sort: elves first (alphabetically by name), then other species
         // (alphabetically by species name, then by index).
         entries.sort_by(|a, b| {
-            let a_is_elf = a.1 == "Elf";
-            let b_is_elf = b.1 == "Elf";
+            let a_sp: String = a.get("species").unwrap_or_default().to_string();
+            let b_sp: String = b.get("species").unwrap_or_default().to_string();
+            let a_is_elf = a_sp == "Elf";
+            let b_is_elf = b_sp == "Elf";
             match (a_is_elf, b_is_elf) {
                 (true, false) => std::cmp::Ordering::Less,
                 (false, true) => std::cmp::Ordering::Greater,
-                (true, true) => a.3.cmp(b.3), // both elves: sort by name
-                (false, false) => a.1.cmp(b.1).then(a.2.cmp(&b.2)),
+                (true, true) => {
+                    let a_name: String = a.get("name").unwrap_or_default().to_string();
+                    let b_name: String = b.get("name").unwrap_or_default().to_string();
+                    a_name.cmp(&b_name)
+                }
+                (false, false) => {
+                    let a_idx: i32 = a.get("index").unwrap_or_default().to::<i32>();
+                    let b_idx: i32 = b.get("index").unwrap_or_default().to::<i32>();
+                    a_sp.cmp(&b_sp).then(a_idx.cmp(&b_idx))
+                }
             }
         });
 
         let mut result = VarArray::new();
-        for (cid, sp, idx, name, meaning, has_task, task_kind) in &entries {
-            let mut dict = VarDictionary::new();
-            dict.set("creature_id", GString::from(cid.as_str()));
-            dict.set("species", GString::from(*sp));
-            dict.set("index", *idx);
-            dict.set("name", GString::from(*name));
-            dict.set("name_meaning", GString::from(*meaning));
-            dict.set("has_task", *has_task);
-            dict.set("task_kind", GString::from(*task_kind));
+        for dict in &entries {
             result.push(&dict.to_variant());
         }
         result
@@ -1582,9 +1594,15 @@ impl SimBridge {
                 if let Some(creature) = sim.db.creatures.get(&p.creature_id) {
                     pd.set("name", GString::from(creature.name.as_str()));
                     pd.set("species", GString::from(species_name(creature.species)));
+                    let path_short = sim
+                        .creature_path(creature.id)
+                        .map(|pp| pp.short_name())
+                        .unwrap_or("");
+                    pd.set("path_short", GString::from(path_short));
                 } else {
                     pd.set("name", GString::from("???"));
                     pd.set("species", GString::from("Unknown"));
+                    pd.set("path_short", GString::from(""));
                 }
 
                 participants_arr.push(&pd.to_variant());
@@ -1663,6 +1681,12 @@ impl SimBridge {
 
                 let sp = species_name(creature.species);
                 a.set("species", GString::from(sp));
+
+                let path_short = sim
+                    .creature_path(creature.id)
+                    .map(|p| p.short_name())
+                    .unwrap_or("");
+                a.set("path_short", GString::from(path_short));
 
                 assignees_arr.push(&a.to_variant());
             }

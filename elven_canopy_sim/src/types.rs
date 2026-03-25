@@ -563,12 +563,21 @@ pub enum PathId {
 }
 
 impl PathId {
-    /// Display name shown in the UI.
+    /// Full display name shown in the UI (e.g., "Way of the Warrior").
     pub fn display_name(self) -> &'static str {
         match self {
             PathId::Outcast => "Way of the Outcast",
             PathId::Warrior => "Way of the Warrior",
             PathId::Scout => "Way of the Scout",
+        }
+    }
+
+    /// Short name for compact UI contexts (e.g., "Warrior").
+    pub fn short_name(self) -> &'static str {
+        match self {
+            PathId::Outcast => "Outcast",
+            PathId::Warrior => "Warrior",
+            PathId::Scout => "Scout",
         }
     }
 

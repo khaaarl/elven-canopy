@@ -48640,3 +48640,20 @@ fn extra_rolls_never_exceed_cap() {
         "skill should never exceed path cap"
     );
 }
+
+#[test]
+fn path_id_short_name() {
+    assert_eq!(PathId::Outcast.short_name(), "Outcast");
+    assert_eq!(PathId::Warrior.short_name(), "Warrior");
+    assert_eq!(PathId::Scout.short_name(), "Scout");
+    // short_name is a substring of display_name for all variants.
+    for &path_id in PathId::ALL {
+        assert!(
+            path_id.display_name().contains(path_id.short_name()),
+            "{:?}: short_name '{}' not in display_name '{}'",
+            path_id,
+            path_id.short_name(),
+            path_id.display_name()
+        );
+    }
+}
