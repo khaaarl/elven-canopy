@@ -7,6 +7,7 @@
 ## Current settings:
 ##   - Player name (LineEdit, max 32 chars)
 ##   - Start paused on load (toggle button)
+##   - Draw distance (LineEdit, 0–500 voxels, 0 = unlimited)
 ##
 ## On open, reads current values from the provided GameConfig instance.
 ## Save writes values back to GameConfig and closes. Cancel discards edits.
@@ -28,6 +29,7 @@ signal closed
 var _config: Node  ## GameConfig (or test stand-in)
 var _name_input: LineEdit
 var _paused_toggle: Button
+var _draw_distance_input: LineEdit
 var _save_btn: Button
 var _paused_value: bool = false
 
@@ -102,6 +104,26 @@ func _ready() -> void:
 	_paused_toggle.pressed.connect(_toggle_paused)
 	paused_row.add_child(_paused_toggle)
 
+	# Draw distance row.
+	var draw_dist_row := HBoxContainer.new()
+	draw_dist_row.add_theme_constant_override("separation", 10)
+	settings_vbox.add_child(draw_dist_row)
+
+	var draw_dist_label := Label.new()
+	draw_dist_label.text = "Draw Distance"
+	draw_dist_label.custom_minimum_size = Vector2(160, 0)
+	draw_dist_row.add_child(draw_dist_label)
+
+	_draw_distance_input = LineEdit.new()
+	_draw_distance_input.custom_minimum_size = Vector2(120, 0)
+	_draw_distance_input.placeholder_text = "0–500 (0 = unlimited)"
+	_draw_distance_input.tooltip_text = "Chunk draw distance in voxels (0 = unlimited)"
+	draw_dist_row.add_child(_draw_distance_input)
+
+	var draw_dist_unit := Label.new()
+	draw_dist_unit.text = "voxels"
+	draw_dist_row.add_child(draw_dist_unit)
+
 	# --- Button row ---
 	var spacer := Control.new()
 	spacer.custom_minimum_size = Vector2(0, 8)
@@ -141,12 +163,22 @@ func _update_paused_label() -> void:
 	_paused_toggle.text = "\u2713 ENABLED" if _paused_value else "\u2717 DISABLED"
 
 
+## Parse draw distance text to a clamped int (0–500). Invalid input returns
+## the current config value (or the default 50 if no config is set).
+func _parse_draw_distance() -> int:
+	var text := _draw_distance_input.text.strip_edges()
+	if not text.is_valid_int():
+		return _config.get_setting("draw_distance") if _config else 50
+	return clampi(text.to_int(), 0, 500)
+
+
 ## Populate controls from the given config and show the panel.
 func open(config: Node) -> void:
 	_config = config
 	_name_input.text = config.get_setting("player_name")
 	_paused_value = config.get_setting("start_paused_on_load")
 	_update_paused_label()
+	_draw_distance_input.text = str(config.get_setting("draw_distance"))
 	_save_btn.disabled = _name_input.text.strip_edges().is_empty()
 
 
@@ -156,6 +188,7 @@ func save_and_close() -> void:
 	if not name_text.is_empty():
 		_config.set_setting("player_name", name_text)
 	_config.set_setting("start_paused_on_load", _paused_value)
+	_config.set_setting("draw_distance", _parse_draw_distance())
 	closed.emit()
 	queue_free()
 
@@ -194,3 +227,11 @@ func get_start_paused_checked() -> bool:
 func set_start_paused_checked(value: bool) -> void:
 	_paused_value = value
 	_update_paused_label()
+
+
+func get_draw_distance_value() -> int:
+	return _parse_draw_distance()
+
+
+func set_draw_distance_value(value: int) -> void:
+	_draw_distance_input.text = str(value)

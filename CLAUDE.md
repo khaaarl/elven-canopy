@@ -98,6 +98,9 @@ For the full list of codebase patterns, conventions, and gotchas, see `docs/code
 - Before assigning ANY new keyboard shortcut, **thoroughly audit all existing bindings** across every GDScript file. Search for `KEY_` in `godot/scripts/`. Many keys are already in use.
 - **Always ask the user** before assigning a shortcut — never pick one unilaterally.
 
+**No SpinBox (CRITICAL):**
+- **Never use Godot's `SpinBox` control.** It has terrible UX. For numeric inputs, use a `LineEdit` with manual int/float parsing and validation.
+
 **Godot ScrollContainer sizing (CRITICAL):**
 - Before writing ANY code involving `ScrollContainer`, **read `docs/godot_scroll_sizing.md` in full.** Your built-in understanding of scroll container sizing is wrong.
 
@@ -162,6 +165,8 @@ When the user asks to merge a feature branch to main, use the `/merge-to-main` s
 **TDD audit:** After writing a plan, audit it for TDD compliance before presenting it. Every implementation step that changes behavior must be preceded by a failing test in the plan. For simulator work (`elven_canopy_sim`), this is mandatory — do not present a plan that batches tests at the end. For other crates, TDD ordering is strongly recommended but not blocking.
 
 ## Key Constraints
+
+- **No auto-memory.** Do NOT use Claude Code's memory system (`~/.claude/` memory files). Memory is local to one machine and does not persist across the team. If something is worth remembering, suggest adding it to `CLAUDE.md` or another project file instead.
 
 - **No silent deferrals.** If you notice a bug or issue, even if out of current scope of work or a pre-existing issue, you MUST alert the user LOUDLY. DO NOT merge to main unless you have fixed it and/or added a tracker bug. NO MERCY FOR BUGS.
 

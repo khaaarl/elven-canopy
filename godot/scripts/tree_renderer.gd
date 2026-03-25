@@ -62,6 +62,8 @@ var _fruit_textures: Dictionary = {}
 var _fruit_container: Node3D
 ## Pool of reusable Sprite3D nodes for fruit rendering.
 var _fruit_sprites: Array[Sprite3D] = []
+## Last applied draw distance (voxels). Tracked to avoid redundant bridge calls.
+var _current_draw_distance: int = -1
 
 
 ## Call after SimBridge is initialized to build the chunk meshes.
@@ -76,6 +78,7 @@ func setup(bridge: SimBridge, camera: Camera3D) -> void:
 	_bridge.build_world_mesh()
 	_bark_material = _build_noise_material(0.3, 16.0)  # stretch Y, high freq
 	_ground_material = _build_noise_material(1.0, 8.0)  # isotropic, medium freq
+	_apply_draw_distance()
 	_do_initial_visibility()
 	_cache_fruit_textures()
 	_refresh_fruit()
@@ -94,6 +97,14 @@ func _do_initial_visibility() -> void:
 	# Subsequent refresh() calls will generate the rest via _update_chunk_visibility.
 
 
+## Read draw distance from GameConfig and apply to the bridge if changed.
+func _apply_draw_distance() -> void:
+	var dist: int = GameConfig.get_setting("draw_distance")
+	if dist != _current_draw_distance:
+		_current_draw_distance = dist
+		_bridge.set_draw_distance(float(dist))
+
+
 ## Rebuild dirty chunks, update visibility, and refresh fruit.
 ## Called every frame by main.gd.
 func refresh() -> void:
@@ -107,6 +118,9 @@ func refresh() -> void:
 			var cy := dirty[idx + 1]
 			var cz := dirty[idx + 2]
 			_rebuild_chunk(cx, cy, cz)
+
+	# Apply draw distance if changed (e.g. via settings panel).
+	_apply_draw_distance()
 
 	# Visibility update: send camera state to Rust, process deltas.
 	_update_chunk_visibility()

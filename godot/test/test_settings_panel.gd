@@ -138,6 +138,51 @@ func test_save_button_enables_on_nonempty_text() -> void:
 	assert_false(_panel._save_btn.disabled)
 
 
+## Panel populates draw distance from config on open.
+func test_open_populates_draw_distance() -> void:
+	_config.set_setting("draw_distance", 75)
+	_panel.open(_config)
+	assert_eq(_panel.get_draw_distance_value(), 75)
+
+
+## Save writes draw distance to config.
+func test_save_writes_draw_distance() -> void:
+	_panel.set_draw_distance_value(100)
+	_panel.save_and_close()
+	assert_eq(_config.get_setting("draw_distance"), 100)
+
+
+## Cancel discards draw distance changes.
+func test_cancel_discards_draw_distance() -> void:
+	_config.set_setting("draw_distance", 60)
+	_panel.open(_config)
+	_panel.set_draw_distance_value(120)
+	_panel.cancel_and_close()
+	assert_eq(_config.get_setting("draw_distance"), 60)
+
+
+## Draw distance defaults to 50 when not set.
+func test_draw_distance_default() -> void:
+	assert_eq(_panel.get_draw_distance_value(), 50)
+
+
+## Invalid draw distance text falls back to current config value.
+func test_draw_distance_invalid_text_keeps_config() -> void:
+	_config.set_setting("draw_distance", 80)
+	_panel.open(_config)
+	_panel._draw_distance_input.text = "not a number"
+	_panel.save_and_close()
+	assert_eq(_config.get_setting("draw_distance"), 80)
+
+
+## Draw distance is clamped to 0–500.
+func test_draw_distance_clamped() -> void:
+	_panel._draw_distance_input.text = "999"
+	assert_eq(_panel.get_draw_distance_value(), 500)
+	_panel._draw_distance_input.text = "-10"
+	assert_eq(_panel.get_draw_distance_value(), 0)
+
+
 ## Panel runs with PROCESS_MODE_ALWAYS (required for escape menu paused tree).
 func test_process_mode_always() -> void:
 	assert_eq(

@@ -7,6 +7,7 @@
 ## Known settings (with defaults):
 ##   player_name: String = ""         — persistent player display name
 ##   start_paused_on_load: bool = false — pause sim immediately after loading a save
+##   draw_distance: int = 50          — chunk draw distance in voxels (0 = unlimited)
 ##
 ## Unknown keys in the JSON file are preserved across load/save (forward
 ## compatibility — a newer version's settings won't be lost if an older
@@ -27,6 +28,7 @@ const DEFAULT_CONFIG_PATH := "user://config.json"
 const DEFAULTS := {
 	"player_name": "",
 	"start_paused_on_load": false,
+	"draw_distance": 50,
 }
 
 ## File path for the config JSON. Tests can override this to use a temp path.

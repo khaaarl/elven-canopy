@@ -39,6 +39,7 @@ func after_each() -> void:
 func test_defaults_when_no_file() -> void:
 	assert_eq(_config.get_setting("player_name"), "")
 	assert_eq(_config.get_setting("start_paused_on_load"), false)
+	assert_eq(_config.get_setting("draw_distance"), 50)
 
 
 ## Settings can be changed and read back.
