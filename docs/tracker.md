@@ -2944,7 +2944,20 @@ Scale dance activities beyond the current 3-elf minimum/desired count. Larger da
 #### F-dance-self-org — Elves self-organize dances
 **Status:** Todo
 
-Idle elves autonomously discover dance halls and organize dances without player intervention via the Debug Dance button. Includes choosing when to dance (mood/social need triggers), recruiting other elves, and naturally ending dances. Open question: how many elves should a dance recruit? Currently hardcoded min=3 desired=6 in the debug dance path.
+Idle elves autonomously organize dances at furnished dance halls. This is the first autonomous activity — dances should be both player-created and spontaneous.
+
+**Organizer model:** During idle activation, an elf near a dance hall can decide to organize a dance. The organizer creates the activity (origin: Autonomous, recruitment: Open) and is written as the first participant with role: Organizer. No physical recruitment — other idle elves discover and volunteer via the existing Open recruitment flow.
+
+**Frequency control (all config-driven):**
+- Per-hall cooldown: minimum ticks between dances at the same hall.
+- Per-elf cooldown: minimum ticks before an elf can organize or join another dance.
+- Organize probability: chance per idle activation that an eligible elf near a hall organizes a dance. Should be low enough to not interrupt production, high enough to keep elves happy.
+
+**Venue exclusivity:** Before creating a dance, check ActivityStructureRef for any active activity linked to that hall. If one exists, skip — no two dances on the same hall simultaneously. Applies to both spontaneous and player-created dances.
+
+**First-dance nudge:** Newly-furnished dance halls should trigger their first spontaneous dance quickly (reduced or zero cooldown on fresh halls), so the player gets a visible reward shortly after building one.
+
+**Scope notes:** Recruitment counts (min/desired) currently hardcoded at 3/6 in the debug dance path — may want to make these config-driven or scale with hall size (see F-dance-scaling).
 
 **Related:** F-group-dance
 
