@@ -185,8 +185,8 @@ use elven_canopy_sim::structural::{self, ValidationTier};
 use elven_canopy_sim::task::{TaskOrigin, TaskState};
 use elven_canopy_sim::types::{
     ActiveRecipeId, ActiveRecipeTargetId, BuildType, CreatureId, DiplomaticRelation, FaceDirection,
-    FruitSpeciesId, FurnishingType, FurnitureKind, LadderKind, OverlapClassification, Priority,
-    SimUuid, Species, StructureId, TraitKind, VitalStatus, VoxelCoord, VoxelType,
+    FruitSpeciesId, FurnishingType, FurnitureKind, ItemStackId, LadderKind, OverlapClassification,
+    Priority, SimUuid, Species, StructureId, TraitKind, VitalStatus, VoxelCoord, VoxelType,
 };
 use godot::classes::ImageTexture;
 use godot::prelude::*;
@@ -329,6 +329,7 @@ fn build_creature_info_dict(
     let mut inv_arr = VarArray::new();
     for stack in sim.inv_items(c.inventory_id) {
         let mut item_dict = VarDictionary::new();
+        item_dict.set("item_stack_id", stack.id.0 as i64);
         item_dict.set(
             "kind",
             GString::from(sim.item_display_name(&stack).as_str()),
@@ -2031,6 +2032,7 @@ impl SimBridge {
         let mut inv_arr = VarArray::new();
         for stack in sim.inv_items(structure.inventory_id) {
             let mut item_dict = VarDictionary::new();
+            item_dict.set("item_stack_id", stack.id.0 as i64);
             item_dict.set(
                 "kind",
                 GString::from(sim.item_display_name(&stack).as_str()),
@@ -3343,6 +3345,7 @@ impl SimBridge {
             let mut inv_arr = VarArray::new();
             for stack in sim.inv_items(pile.inventory_id) {
                 let mut item_dict = VarDictionary::new();
+                item_dict.set("item_stack_id", stack.id.0 as i64);
                 item_dict.set(
                     "kind",
                     GString::from(sim.item_display_name(&stack).as_str()),
@@ -3387,6 +3390,7 @@ impl SimBridge {
         let mut inv_arr = VarArray::new();
         for stack in sim.inv_items(pile.inventory_id) {
             let mut item_dict = VarDictionary::new();
+            item_dict.set("item_stack_id", stack.id.0 as i64);
             item_dict.set(
                 "kind",
                 GString::from(sim.item_display_name(&stack).as_str()),
@@ -3395,6 +3399,90 @@ impl SimBridge {
             inv_arr.push(&item_dict.to_variant());
         }
         dict.set("inventory", inv_arr);
+        dict
+    }
+
+    /// Return detailed information about a single item stack.
+    ///
+    /// Returns a `VarDictionary` with: `display_name` (String), `kind` (String,
+    /// raw item type), `material` (String or empty), `quality` (i64),
+    /// `quality_label` (String or empty), `current_hp` (i64), `max_hp` (i64),
+    /// `condition` (String: "", "worn", or "damaged"), `equipped_slot` (String
+    /// or empty), `owner_id` (String creature UUID or empty),
+    /// `owner_name` (String or empty), `owner_x/y/z` (i32, only if owner exists),
+    /// `dye_color` (String or empty), `quantity` (i64).
+    /// Returns an empty dictionary if the stack does not exist.
+    /// Used by `item_detail_panel.gd` for the item detail popup.
+    #[func]
+    fn get_item_detail(&self, item_stack_id: i64) -> VarDictionary {
+        let Some(sim) = &self.session.sim else {
+            return VarDictionary::new();
+        };
+        let id = ItemStackId(item_stack_id as u64);
+        let Some(stack) = sim.db.item_stacks.get(&id) else {
+            return VarDictionary::new();
+        };
+
+        let mut dict = VarDictionary::new();
+        dict.set(
+            "display_name",
+            GString::from(sim.item_display_name(&stack).as_str()),
+        );
+        dict.set("kind", GString::from(stack.kind.display_name()));
+
+        // Material — resolve fruit species name if applicable.
+        let material_str = match stack.material {
+            Some(elven_canopy_sim::inventory::Material::FruitSpecies(fs_id)) => sim
+                .db
+                .fruit_species
+                .get(&fs_id)
+                .map(|s| s.vaelith_name.clone())
+                .unwrap_or_default(),
+            Some(m) => m.display_name().to_string(),
+            None => String::new(),
+        };
+        dict.set("material", GString::from(material_str.as_str()));
+
+        dict.set("quality", stack.quality as i64);
+        let qlabel = elven_canopy_sim::inventory::quality_label(stack.quality).unwrap_or("");
+        dict.set("quality_label", GString::from(qlabel));
+
+        dict.set("current_hp", stack.current_hp as i64);
+        dict.set("max_hp", stack.max_hp as i64);
+
+        let condition = elven_canopy_sim::sim::SimState::condition_label(
+            stack.current_hp,
+            stack.max_hp,
+            sim.config.durability_worn_pct,
+            sim.config.durability_damaged_pct,
+        )
+        .unwrap_or("");
+        dict.set("condition", GString::from(condition));
+
+        let slot_str = stack.equipped_slot.map(|s| s.display_name()).unwrap_or("");
+        dict.set("equipped_slot", GString::from(slot_str));
+
+        // Owner — resolve creature name and position.
+        if let Some(owner_id) = stack.owner
+            && let Some(creature) = sim.db.creatures.get(&owner_id)
+        {
+            dict.set("owner_id", GString::from(owner_id.0.to_string().as_str()));
+            dict.set("owner_name", GString::from(creature.name.as_str()));
+            dict.set("owner_x", creature.position.x);
+            dict.set("owner_y", creature.position.y);
+            dict.set("owner_z", creature.position.z);
+        } else {
+            dict.set("owner_id", GString::from(""));
+            dict.set("owner_name", GString::from(""));
+        }
+
+        let dye_str = stack
+            .dye_color
+            .map(|c| c.display_name().to_string())
+            .unwrap_or_default();
+        dict.set("dye_color", GString::from(dye_str.as_str()));
+
+        dict.set("quantity", stack.quantity as i64);
         dict
     }
 

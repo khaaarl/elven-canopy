@@ -23,6 +23,7 @@ signal panel_closed
 signal zoom_to_task_location(x: float, y: float, z: float)
 signal military_group_clicked(group_id: int)
 signal path_changed(creature_id: String, path_id: String)
+signal item_clicked(item_stack_id: int)
 
 const MAX_DISPLAYED_THOUGHTS := 10
 
@@ -62,7 +63,9 @@ var _mood_label: Label
 var _stat_labels: Dictionary = {}
 var _skill_labels: Dictionary = {}
 var _thoughts_container: VBoxContainer
-var _inventory_label: Label
+var _inventory_container: VBoxContainer
+var _inventory_empty_label: Label
+var _last_inventory: Array = []
 var _follow_button: Button
 var _is_following: bool = false
 var _selected_creature_id: String = ""
@@ -450,21 +453,21 @@ func _build_skills_grid(parent: VBoxContainer) -> void:
 		_skill_labels[key] = val_lbl
 
 
-## Build the Inventory tab: scrollable item list.
+## Build the Inventory tab: scrollable list of clickable item rows.
 func _build_inventory_tab(parent: VBoxContainer) -> ScrollContainer:
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	parent.add_child(scroll)
 
-	var vbox := VBoxContainer.new()
-	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	vbox.add_theme_constant_override("separation", 4)
-	scroll.add_child(vbox)
+	_inventory_container = VBoxContainer.new()
+	_inventory_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_inventory_container.add_theme_constant_override("separation", 2)
+	scroll.add_child(_inventory_container)
 
-	_inventory_label = Label.new()
-	_inventory_label.text = "(empty)"
-	vbox.add_child(_inventory_label)
+	_inventory_empty_label = Label.new()
+	_inventory_empty_label.text = "(empty)"
+	_inventory_container.add_child(_inventory_empty_label)
 
 	return scroll
 
@@ -531,6 +534,7 @@ func _on_tab_pressed(index: int) -> void:
 
 func show_creature(creature_id: String, info: Dictionary) -> void:
 	_selected_creature_id = creature_id
+	_last_inventory = []  # Force rebuild for new creature.
 	var species: String = info.get("species", "")
 	_species_label.text = "Species: %s" % species
 	var creature_name: String = info.get("name", "")
@@ -719,15 +723,39 @@ func _on_task_zoom_pressed() -> void:
 
 func _update_inventory(info: Dictionary) -> void:
 	var inv: Array = info.get("inventory", [])
-	if inv.is_empty():
-		_inventory_label.text = "(empty)"
+	# Skip rebuild if inventory hasn't changed — newly-created buttons don't
+	# have a valid layout rect until the next frame, so clicks fall through
+	# them to _unhandled_input and cause deselection.
+	if inv == _last_inventory:
 		return
-	var lines: PackedStringArray = []
+	_last_inventory = inv.duplicate(true)
+
+	# Remove old item buttons (keep the empty label at index 0).
+	while _inventory_container.get_child_count() > 1:
+		var child := _inventory_container.get_child(1)
+		_inventory_container.remove_child(child)
+		child.queue_free()
+
+	if inv.is_empty():
+		_inventory_empty_label.visible = true
+		return
+
+	_inventory_empty_label.visible = false
 	for entry in inv:
 		var kind: String = entry.get("kind", "?")
 		var qty: int = entry.get("quantity", 0)
-		lines.append("%s: %d" % [kind, qty])
-	_inventory_label.text = "\n".join(lines)
+		var stack_id: int = entry.get("item_stack_id", -1)
+		var btn := Button.new()
+		btn.text = "%s: %d" % [kind, qty]
+		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		btn.set_meta("item_stack_id", stack_id)
+		btn.pressed.connect(_on_item_pressed.bind(stack_id))
+		_inventory_container.add_child(btn)
+
+
+func _on_item_pressed(stack_id: int) -> void:
+	item_clicked.emit(stack_id)
 
 
 func _on_follow_pressed() -> void:

@@ -52,6 +52,7 @@
 ## selection_highlight.gd for faction-colored selection rings,
 ## structure_info_panel.gd for the structure info panel,
 ## ground_pile_info_panel.gd for the ground pile info panel,
+## item_detail_panel.gd for the item detail panel (left of info panels),
 ## tree_info_panel.gd for the tree stats panel, task_panel.gd for
 ## the task list overlay, structure_list_panel.gd for the structure list
 ## overlay, units_panel.gd for the creature roster overlay,
@@ -93,6 +94,7 @@ var _panel: PanelContainer
 var _group_panel: PanelContainer
 var _structure_info_panel: PanelContainer
 var _pile_info_panel: PanelContainer
+var _item_detail_panel: PanelContainer
 var _tree_info_panel: PanelContainer
 var _task_panel: ColorRect
 var _structure_panel: ColorRect
@@ -488,6 +490,23 @@ func _setup_common(bridge: SimBridge) -> void:
 	_pile_info_panel.set_script(pile_panel_script)
 	info_panel_layer.add_child(_pile_info_panel)
 
+	# Set up item detail panel (shows when clicking an item in any inventory).
+	# Added directly to the CanvasLayer with anchor positioning, same offset
+	# scheme as the crafting/logistics detail panels in structure_info_panel.gd.
+	var item_detail_script = load("res://scripts/item_detail_panel.gd")
+	_item_detail_panel = PanelContainer.new()
+	_item_detail_panel.name = "ItemDetailPanel"
+	_item_detail_panel.set_script(item_detail_script)
+	info_panel_layer.add_child(_item_detail_panel)
+	_item_detail_panel.anchor_top = 0.0
+	_item_detail_panel.anchor_bottom = 1.0
+	_item_detail_panel.anchor_left = 1.0
+	_item_detail_panel.anchor_right = 1.0
+	_item_detail_panel.offset_right = -328
+	_item_detail_panel.offset_left = -688
+	_item_detail_panel.offset_top = 0
+	_item_detail_panel.offset_bottom = 0
+
 	# Set up tooltip controller (hover tooltips on CanvasLayer 4 so they
 	# render above info panels on layer 3).
 	var tooltip_layer := CanvasLayer.new()
@@ -539,6 +558,7 @@ func _setup_common(bridge: SimBridge) -> void:
 				_pile_info_panel.hide_panel()
 			if _military_panel and _military_panel.visible:
 				_military_panel.toggle()
+			_item_detail_panel.hide_panel()
 			if ids.size() == 1:
 				# Single selection — show detailed creature info panel.
 				if _group_panel and _group_panel.visible:
@@ -558,44 +578,55 @@ func _setup_common(bridge: SimBridge) -> void:
 			_panel.hide_panel()
 			if _group_panel:
 				_group_panel.hide_panel()
+			_item_detail_panel.hide_panel()
 			_camera_pivot.stop_follow()
 	)
 
 	# Wire structure selection -> structure info panel.
 	_selector.structure_selected.connect(
 		func(structure_id: int):
-			# Mutual exclusion: hide creature, tree info, and pile panels.
+			# Mutual exclusion: hide creature, tree info, pile, and item detail panels.
 			if _panel and _panel.visible:
 				_panel.hide_panel()
 			if _tree_info_panel and _tree_info_panel.visible:
 				_tree_info_panel.hide_panel()
 			if _pile_info_panel and _pile_info_panel.visible:
 				_pile_info_panel.hide_panel()
+			_item_detail_panel.hide_panel()
 			if _camera_pivot:
 				_camera_pivot.stop_follow()
 			var info := bridge.get_structure_info(structure_id)
 			if not info.is_empty():
 				_structure_info_panel.show_structure(info)
 	)
-	_selector.structure_deselected.connect(func(): _structure_info_panel.hide_panel())
+	_selector.structure_deselected.connect(
+		func():
+			_structure_info_panel.hide_panel()
+			_item_detail_panel.hide_panel()
+	)
 
 	# Wire pile selection -> pile info panel.
 	_selector.pile_selected.connect(
 		func(x: int, y: int, z: int):
-			# Mutual exclusion: hide creature, structure, and tree info panels.
+			# Mutual exclusion: hide creature, structure, tree info, and item detail panels.
 			if _panel and _panel.visible:
 				_panel.hide_panel()
 			if _structure_info_panel and _structure_info_panel.visible:
 				_structure_info_panel.hide_panel()
 			if _tree_info_panel and _tree_info_panel.visible:
 				_tree_info_panel.hide_panel()
+			_item_detail_panel.hide_panel()
 			if _camera_pivot:
 				_camera_pivot.stop_follow()
 			var info := bridge.get_ground_pile_info(x, y, z)
 			if not info.is_empty():
 				_pile_info_panel.show_pile(info)
 	)
-	_selector.pile_deselected.connect(func(): _pile_info_panel.hide_panel())
+	_selector.pile_deselected.connect(
+		func():
+			_pile_info_panel.hide_panel()
+			_item_detail_panel.hide_panel()
+	)
 
 	# Wire pile info panel close -> deselect.
 	_pile_info_panel.panel_closed.connect(
@@ -603,6 +634,12 @@ func _setup_common(bridge: SimBridge) -> void:
 			if _selector.get_selected_pile_pos() != Vector3i(-1, -1, -1):
 				_selector.deselect()
 	)
+
+	# Wire item detail panel — item_clicked from all three inventory panels.
+	_panel.item_clicked.connect(_on_item_clicked)
+	_structure_info_panel.item_clicked.connect(_on_item_clicked)
+	_pile_info_panel.item_clicked.connect(_on_item_clicked)
+	_item_detail_panel.owner_clicked.connect(_on_item_owner_clicked)
 
 	# Wire structure info panel signals.
 	_structure_info_panel.zoom_requested.connect(
@@ -1142,6 +1179,11 @@ func _process(delta: float) -> void:
 			# Pile was removed — deselect and hide panel.
 			_selector.deselect()
 
+	# Refresh item detail panel while visible.
+	if _item_detail_panel and _item_detail_panel.visible:
+		var iinfo := bridge.get_item_detail(_item_detail_panel.get_item_stack_id())
+		_item_detail_panel.update_item(iinfo)
+
 	# Update height cutoff when camera focus Y changes.
 	if _height_cutoff_active:
 		var new_y: int = _camera_pivot.get_focus_voxel().y + 1
@@ -1278,3 +1320,33 @@ func _export_chunk_mesh(bridge: Node) -> void:
 func _toggle_elfcyclopedia_url() -> void:
 	if _elfcyclopedia_url_label:
 		_elfcyclopedia_url_label.visible = not _elfcyclopedia_url_label.visible
+
+
+## Handle item click from any inventory panel — show/toggle item detail panel.
+func _on_item_clicked(item_stack_id: int) -> void:
+	if item_stack_id < 0:
+		return
+	# Toggle off if clicking the same item.
+	if _item_detail_panel.visible and _item_detail_panel.get_item_stack_id() == item_stack_id:
+		_item_detail_panel.hide_panel()
+		return
+	var bridge: SimBridge = $SimBridge
+	var info: Dictionary = bridge.get_item_detail(item_stack_id)
+	if not info.is_empty():
+		_item_detail_panel.show_item(item_stack_id, info)
+
+
+## Handle owner click from item detail panel — select and zoom to creature.
+func _on_item_owner_clicked(creature_id: String) -> void:
+	if creature_id.is_empty():
+		return
+	_item_detail_panel.hide_panel()
+	_selector.select_creature_by_id(creature_id)
+	var bridge: SimBridge = $SimBridge
+	var render_tick := float(bridge.current_tick())
+	var info: Dictionary = bridge.get_creature_info_by_id(creature_id, render_tick)
+	if not info.is_empty():
+		var x: float = info.get("x", 0.0)
+		var y: float = info.get("y", 0.0)
+		var z: float = info.get("z", 0.0)
+		_look_at_position(Vector3(x + 0.5, y, z + 0.5))

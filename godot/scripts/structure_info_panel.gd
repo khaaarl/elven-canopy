@@ -77,6 +77,7 @@ signal recipe_auto_logistics_changed(
 signal recipe_enabled_changed(active_recipe_id: int, enabled: bool)
 signal recipe_move_up_requested(active_recipe_id: int)
 signal recipe_move_down_requested(active_recipe_id: int)
+signal item_clicked(item_stack_id: int)
 
 var _name_edit: LineEdit
 var _type_label: Label
@@ -91,7 +92,9 @@ var _assign_label: Label
 var _assign_button: Button
 var _elf_picker_scroll: ScrollContainer
 var _elf_picker_vbox: VBoxContainer
-var _inventory_label: Label
+var _inventory_container: VBoxContainer
+var _inventory_empty_label: Label
+var _last_inventory: Array = []
 var _logistics_wrapper: VBoxContainer
 var _logistics_summary_label: Label
 var _logistics_details_button: Button
@@ -275,9 +278,13 @@ func _ready() -> void:
 	inv_title.add_theme_font_size_override("font_size", 16)
 	vbox.add_child(inv_title)
 
-	_inventory_label = Label.new()
-	_inventory_label.text = "(empty)"
-	vbox.add_child(_inventory_label)
+	_inventory_container = VBoxContainer.new()
+	_inventory_container.add_theme_constant_override("separation", 2)
+	vbox.add_child(_inventory_container)
+
+	_inventory_empty_label = Label.new()
+	_inventory_empty_label.text = "(empty)"
+	_inventory_container.add_child(_inventory_empty_label)
 
 	# Logistics section — summary + details button (visible for furnished buildings).
 	_logistics_wrapper = VBoxContainer.new()
@@ -553,6 +560,7 @@ func set_logistics_material_options(options: Dictionary) -> void:
 
 
 func show_structure(info: Dictionary) -> void:
+	_last_inventory = []  # Force rebuild for new structure.
 	_editing_name = false
 	_furnish_picker.visible = false
 	_greenhouse_picker_scroll.visible = false
@@ -702,15 +710,38 @@ func _update_info(info: Dictionary) -> void:
 
 func _update_inventory(info: Dictionary) -> void:
 	var inv: Array = info.get("inventory", [])
-	if inv.is_empty():
-		_inventory_label.text = "(empty)"
+	# Skip rebuild if inventory hasn't changed — newly-created buttons don't
+	# have a valid layout rect until the next frame, so clicks fall through.
+	if inv == _last_inventory:
 		return
-	var lines: PackedStringArray = []
+	_last_inventory = inv.duplicate(true)
+
+	# Remove old item buttons (keep the empty label at index 0).
+	while _inventory_container.get_child_count() > 1:
+		var child := _inventory_container.get_child(1)
+		_inventory_container.remove_child(child)
+		child.queue_free()
+
+	if inv.is_empty():
+		_inventory_empty_label.visible = true
+		return
+
+	_inventory_empty_label.visible = false
 	for entry in inv:
 		var kind: String = entry.get("kind", "?")
 		var qty: int = entry.get("quantity", 0)
-		lines.append("%s: %d" % [kind, qty])
-	_inventory_label.text = "\n".join(lines)
+		var stack_id: int = entry.get("item_stack_id", -1)
+		var btn := Button.new()
+		btn.text = "%s: %d" % [kind, qty]
+		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		btn.set_meta("item_stack_id", stack_id)
+		btn.pressed.connect(_on_item_pressed.bind(stack_id))
+		_inventory_container.add_child(btn)
+
+
+func _on_item_pressed(stack_id: int) -> void:
+	item_clicked.emit(stack_id)
 
 
 func _update_logistics(info: Dictionary, furnishing: String) -> void:

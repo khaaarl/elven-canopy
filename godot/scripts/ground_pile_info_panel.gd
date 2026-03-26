@@ -1,9 +1,9 @@
 ## Ground pile info panel displayed on the right side of the screen.
 ##
 ## Shows information about the currently selected ground pile: title, position,
-## and inventory contents. Built programmatically as a PanelContainer following
-## the same pattern as structure_info_panel.gd. Anchored to the right edge,
-## 320px minimum width, full height.
+## and inventory contents as clickable item rows. Built programmatically as a
+## PanelContainer following the same pattern as structure_info_panel.gd.
+## Anchored to the right edge, 320px minimum width, full height.
 ##
 ## Updated every frame by main.gd while visible (pile contents can change as
 ## creatures pick up or drop items). If the pile is removed (empty dict from
@@ -16,9 +16,12 @@
 extends PanelContainer
 
 signal panel_closed
+signal item_clicked(item_stack_id: int)
 
 var _position_label: Label
-var _inventory_label: Label
+var _inventory_container: VBoxContainer
+var _inventory_empty_label: Label
+var _last_inventory: Array = []
 
 
 func _ready() -> void:
@@ -67,14 +70,19 @@ func _ready() -> void:
 	inv_title.add_theme_font_size_override("font_size", 16)
 	vbox.add_child(inv_title)
 
-	_inventory_label = Label.new()
-	_inventory_label.text = "(empty)"
-	vbox.add_child(_inventory_label)
+	_inventory_container = VBoxContainer.new()
+	_inventory_container.add_theme_constant_override("separation", 2)
+	vbox.add_child(_inventory_container)
+
+	_inventory_empty_label = Label.new()
+	_inventory_empty_label.text = "(empty)"
+	_inventory_container.add_child(_inventory_empty_label)
 
 	visible = false
 
 
 func show_pile(info: Dictionary) -> void:
+	_last_inventory = []  # Force rebuild for new pile.
 	_update_info(info)
 	visible = true
 
@@ -94,15 +102,38 @@ func _update_info(info: Dictionary) -> void:
 	_position_label.text = "Position: (%d, %d, %d)" % [px, py, pz]
 
 	var inv: Array = info.get("inventory", [])
-	if inv.is_empty():
-		_inventory_label.text = "(empty)"
+	# Skip rebuild if inventory hasn't changed — newly-created buttons don't
+	# have a valid layout rect until the next frame, so clicks fall through.
+	if inv == _last_inventory:
 		return
-	var lines: PackedStringArray = []
+	_last_inventory = inv.duplicate(true)
+
+	# Remove old item buttons (keep the empty label at index 0).
+	while _inventory_container.get_child_count() > 1:
+		var child := _inventory_container.get_child(1)
+		_inventory_container.remove_child(child)
+		child.queue_free()
+
+	if inv.is_empty():
+		_inventory_empty_label.visible = true
+		return
+
+	_inventory_empty_label.visible = false
 	for entry in inv:
 		var kind: String = entry.get("kind", "?")
 		var qty: int = entry.get("quantity", 0)
-		lines.append("%s: %d" % [kind, qty])
-	_inventory_label.text = "\n".join(lines)
+		var stack_id: int = entry.get("item_stack_id", -1)
+		var btn := Button.new()
+		btn.text = "%s: %d" % [kind, qty]
+		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		btn.set_meta("item_stack_id", stack_id)
+		btn.pressed.connect(_on_item_pressed.bind(stack_id))
+		_inventory_container.add_child(btn)
+
+
+func _on_item_pressed(stack_id: int) -> void:
+	item_clicked.emit(stack_id)
 
 
 func _on_close_pressed() -> void:
