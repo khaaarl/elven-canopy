@@ -64,6 +64,7 @@ This reduces merge conflicts when parallel work streams add items.
 ```
 [ ] B-assembly-timeout     Activity assembly timeout not enforced
 [ ] B-chamfer-nonmfld      Chamfer produces non-manifold edges for diagonally-adjacent voxels
+[ ] B-dead-owner-items     Dead creature items retain ownership, becoming invisible to all systems
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fragile-tests        Audit and harden tests against PRNG stream shifts and worldgen changes
@@ -1795,6 +1796,9 @@ Requires F-flying-nav-big.
 **Related:** F-giant-hornet
 
 ### Economy & Logistics
+
+#### B-dead-owner-items — Dead creature items retain ownership, becoming invisible to all systems
+**Status:** Todo
 
 #### F-batch-craft — Workstation-driven batch crafting with time discount
 **Status:** Todo

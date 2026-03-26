@@ -1084,6 +1084,9 @@ impl SimState {
     /// Check a creature's personal wants and create an AcquireItem task for
     /// the first unsatisfied want. Called during heartbeat Phase 2c when the
     /// creature is idle.
+    ///
+    /// Prefers reclaiming the creature's own items from other inventories
+    /// (ground piles, buildings) before acquiring new unowned items.
     pub(crate) fn check_creature_wants(&mut self, creature_id: CreatureId) {
         // Gather want info from creature (borrow creature briefly, then release).
         let owned_counts = {
@@ -1112,71 +1115,85 @@ impl SimState {
             }
             let needed = *target - *owned;
 
-            // Find a source.
-            let (source, quantity, nav_node) =
-                match self.find_item_source(*item_kind, *filter, needed) {
-                    Some(s) => s,
-                    None => continue, // No source for this kind; try next want.
-                };
-
-            // Reserve items at source.
-            let task_id = TaskId::new(&mut self.rng);
-            match &source {
-                task::HaulSource::GroundPile(pos) => {
-                    if let Some(pile) = self
-                        .db
-                        .ground_piles
-                        .by_position(pos, tabulosity::QueryOpts::ASC)
-                        .into_iter()
-                        .next()
-                    {
-                        self.inv_reserve_unowned_items(
-                            pile.inventory_id,
-                            *item_kind,
-                            *filter,
-                            quantity,
-                            task_id,
-                        );
-                    }
+            // Prefer reclaiming own items from other inventories.
+            if let Some((source, quantity, nav_node)) =
+                self.find_owned_item_source(*item_kind, *filter, needed, creature_id)
+            {
+                let task_id = TaskId::new(&mut self.rng);
+                if let Some(inv_id) = self.source_inventory_id(&source) {
+                    self.inv_reserve_owned_items(
+                        inv_id,
+                        *item_kind,
+                        *filter,
+                        quantity,
+                        task_id,
+                        creature_id,
+                    );
                 }
-                task::HaulSource::Building(sid) => {
-                    if let Some(structure) = self.db.structures.get(sid) {
-                        self.inv_reserve_unowned_items(
-                            structure.inventory_id,
-                            *item_kind,
-                            *filter,
-                            quantity,
-                            task_id,
-                        );
-                    }
-                }
-            }
-
-            // Create AcquireItem task, directly assigned (same pattern as EatBread).
-            let new_task = task::Task {
-                id: task_id,
-                kind: task::TaskKind::AcquireItem {
+                self.create_acquire_item_task(
+                    task_id,
+                    creature_id,
                     source,
-                    item_kind: *item_kind,
+                    *item_kind,
                     quantity,
-                },
-                state: task::TaskState::InProgress,
-                location: nav_node,
-                progress: 0,
-                total_cost: 0,
-                required_species: None,
-                origin: task::TaskOrigin::Autonomous,
-                target_creature: None,
-                restrict_to_creature_id: None,
-                prerequisite_task_id: None,
-                required_civ_id: None,
-            };
-            self.insert_task(new_task);
-            if let Some(mut creature) = self.db.creatures.get(&creature_id) {
-                creature.current_task = Some(task_id);
-                let _ = self.db.creatures.update_no_fk(creature);
+                    nav_node,
+                );
+                return; // One task per heartbeat.
             }
-            return; // One task per heartbeat.
+
+            // Fall back to unowned items.
+            if let Some((source, quantity, nav_node)) =
+                self.find_unowned_item_source(*item_kind, *filter, needed)
+            {
+                let task_id = TaskId::new(&mut self.rng);
+                if let Some(inv_id) = self.source_inventory_id(&source) {
+                    self.inv_reserve_unowned_items(inv_id, *item_kind, *filter, quantity, task_id);
+                }
+                self.create_acquire_item_task(
+                    task_id,
+                    creature_id,
+                    source,
+                    *item_kind,
+                    quantity,
+                    nav_node,
+                );
+                return; // One task per heartbeat.
+            }
+        }
+    }
+
+    /// Helper: create an AcquireItem task and assign it to the creature.
+    fn create_acquire_item_task(
+        &mut self,
+        task_id: TaskId,
+        creature_id: CreatureId,
+        source: task::HaulSource,
+        item_kind: inventory::ItemKind,
+        quantity: u32,
+        location: VoxelCoord,
+    ) {
+        let new_task = task::Task {
+            id: task_id,
+            kind: task::TaskKind::AcquireItem {
+                source,
+                item_kind,
+                quantity,
+            },
+            state: task::TaskState::InProgress,
+            location,
+            progress: 0,
+            total_cost: 0,
+            required_species: None,
+            origin: task::TaskOrigin::Autonomous,
+            target_creature: None,
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
+            required_civ_id: None,
+        };
+        self.insert_task(new_task);
+        if let Some(mut creature) = self.db.creatures.get(&creature_id) {
+            creature.current_task = Some(task_id);
+            let _ = self.db.creatures.update_no_fk(creature);
         }
     }
 
@@ -1309,11 +1326,37 @@ impl SimState {
     /// Check a creature's military group equipment wants and create an
     /// `AcquireMilitaryEquipment` task for the first unsatisfied want.
     /// Called during heartbeat Phase 2b¾ when the creature is idle.
+    ///
+    /// Prefers reclaiming the creature's own items from other inventories
+    /// before acquiring new unowned items (same priority as personal wants).
+    ///
+    /// Skips acquisition entirely when hostile targets are in detection range
+    /// — the creature should stay idle so that the next activation enters
+    /// combat rather than sending the creature to pick up arrows mid-fight.
     pub(crate) fn check_military_equipment_wants(&mut self, creature_id: CreatureId) {
         let creature = match self.db.creatures.get(&creature_id) {
             Some(c) => c,
             None => return,
         };
+
+        // Suppress equipment acquisition while hostiles are nearby.
+        let species = creature.species;
+        let detection_range_sq = self.effective_detection_range_sq(creature_id, species);
+        if detection_range_sq > 0 {
+            let has_hostiles = !self
+                .detect_hostile_targets(
+                    creature_id,
+                    species,
+                    creature.position,
+                    creature.civ_id,
+                    detection_range_sq,
+                )
+                .is_empty();
+            if has_hostiles {
+                return;
+            }
+        }
+
         let group_id = match creature.military_group {
             Some(gid) => gid,
             None => return,
@@ -1341,71 +1384,94 @@ impl SimState {
             }
             let needed = want.target_quantity - have;
 
-            // Find a source.
-            let (source, quantity, nav_node) =
-                match self.find_item_source(want.item_kind, want.material_filter, needed) {
-                    Some(s) => s,
-                    None => continue,
-                };
-
-            // Reserve items at source.
-            let task_id = TaskId::new(&mut self.rng);
-            match &source {
-                task::HaulSource::GroundPile(pos) => {
-                    if let Some(pile) = self
-                        .db
-                        .ground_piles
-                        .by_position(pos, tabulosity::QueryOpts::ASC)
-                        .into_iter()
-                        .next()
-                    {
-                        self.inv_reserve_unowned_items(
-                            pile.inventory_id,
-                            want.item_kind,
-                            want.material_filter,
-                            quantity,
-                            task_id,
-                        );
-                    }
+            // Prefer reclaiming own items from other inventories.
+            if let Some((source, quantity, nav_node)) = self.find_owned_item_source(
+                want.item_kind,
+                want.material_filter,
+                needed,
+                creature_id,
+            ) {
+                let task_id = TaskId::new(&mut self.rng);
+                if let Some(src_inv) = self.source_inventory_id(&source) {
+                    self.inv_reserve_owned_items(
+                        src_inv,
+                        want.item_kind,
+                        want.material_filter,
+                        quantity,
+                        task_id,
+                        creature_id,
+                    );
                 }
-                task::HaulSource::Building(sid) => {
-                    if let Some(structure) = self.db.structures.get(sid) {
-                        self.inv_reserve_unowned_items(
-                            structure.inventory_id,
-                            want.item_kind,
-                            want.material_filter,
-                            quantity,
-                            task_id,
-                        );
-                    }
-                }
-            }
-
-            // Create AcquireMilitaryEquipment task, directly assigned.
-            let new_task = task::Task {
-                id: task_id,
-                kind: task::TaskKind::AcquireMilitaryEquipment {
+                self.create_acquire_military_task(
+                    task_id,
+                    creature_id,
                     source,
-                    item_kind: want.item_kind,
+                    want.item_kind,
                     quantity,
-                },
-                state: task::TaskState::InProgress,
-                location: nav_node,
-                progress: 0,
-                total_cost: 0,
-                required_species: None,
-                origin: task::TaskOrigin::Autonomous,
-                target_creature: None,
-                restrict_to_creature_id: None,
-                prerequisite_task_id: None,
-                required_civ_id: None,
-            };
-            self.insert_task(new_task);
-            if let Some(mut creature) = self.db.creatures.get(&creature_id) {
-                creature.current_task = Some(task_id);
-                let _ = self.db.creatures.update_no_fk(creature);
+                    nav_node,
+                );
+                return; // One task per heartbeat.
             }
-            return; // One task per heartbeat.
+
+            // Fall back to unowned items.
+            if let Some((source, quantity, nav_node)) =
+                self.find_unowned_item_source(want.item_kind, want.material_filter, needed)
+            {
+                let task_id = TaskId::new(&mut self.rng);
+                if let Some(src_inv) = self.source_inventory_id(&source) {
+                    self.inv_reserve_unowned_items(
+                        src_inv,
+                        want.item_kind,
+                        want.material_filter,
+                        quantity,
+                        task_id,
+                    );
+                }
+                self.create_acquire_military_task(
+                    task_id,
+                    creature_id,
+                    source,
+                    want.item_kind,
+                    quantity,
+                    nav_node,
+                );
+                return; // One task per heartbeat.
+            }
+        }
+    }
+
+    /// Helper: create an AcquireMilitaryEquipment task and assign it to the creature.
+    fn create_acquire_military_task(
+        &mut self,
+        task_id: TaskId,
+        creature_id: CreatureId,
+        source: task::HaulSource,
+        item_kind: inventory::ItemKind,
+        quantity: u32,
+        location: VoxelCoord,
+    ) {
+        let new_task = task::Task {
+            id: task_id,
+            kind: task::TaskKind::AcquireMilitaryEquipment {
+                source,
+                item_kind,
+                quantity,
+            },
+            state: task::TaskState::InProgress,
+            location,
+            progress: 0,
+            total_cost: 0,
+            required_species: None,
+            origin: task::TaskOrigin::Autonomous,
+            target_creature: None,
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
+            required_civ_id: None,
+        };
+        self.insert_task(new_task);
+        if let Some(mut creature) = self.db.creatures.get(&creature_id) {
+            creature.current_task = Some(task_id);
+            let _ = self.db.creatures.update_no_fk(creature);
         }
     }
 

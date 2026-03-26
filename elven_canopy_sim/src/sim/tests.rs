@@ -11897,6 +11897,1013 @@ fn haul_source_empty_cancels() {
 }
 
 // -----------------------------------------------------------------------
+// Logistics ownership tests: owned items must not be hauled or counted
+// by building logistics wants.
+// -----------------------------------------------------------------------
+
+#[test]
+fn logistics_ignores_owned_items_in_ground_pile() {
+    // Owned bread in a ground pile must NOT be hauled to a building.
+    let mut sim = test_sim(42);
+
+    let pile_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let elf_id = spawn_elf(&mut sim);
+
+    // Place 5 owned bread (owned by elf) in a ground pile.
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(
+            pile.inventory_id,
+            crate::inventory::ItemKind::Bread,
+            5,
+            Some(elf_id),
+            None,
+        );
+    }
+
+    // Building wants 5 bread.
+    let building_anchor = VoxelCoord::new(pile_pos.x + 3, pile_pos.y, pile_pos.z);
+    let _sid = insert_building(
+        &mut sim,
+        building_anchor,
+        Some(5),
+        vec![crate::building::LogisticsWant {
+            item_kind: crate::inventory::ItemKind::Bread,
+            material_filter: crate::inventory::MaterialFilter::Any,
+            target_quantity: 5,
+        }],
+    );
+
+    sim.process_logistics_heartbeat();
+
+    // No haul task should be created — all bread is owned.
+    let haul_tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Haul)
+        .collect();
+    assert_eq!(
+        haul_tasks.len(),
+        0,
+        "Owned items must not be hauled by logistics"
+    );
+}
+
+#[test]
+fn logistics_hauls_unowned_but_skips_owned_in_same_pile() {
+    // A ground pile with 3 owned + 5 unowned bread: only the 5 unowned
+    // should be hauled.
+    let mut sim = test_sim(42);
+
+    let pile_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let elf_id = spawn_elf(&mut sim);
+
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        // 3 owned bread.
+        sim.inv_add_simple_item(
+            pile.inventory_id,
+            crate::inventory::ItemKind::Bread,
+            3,
+            Some(elf_id),
+            None,
+        );
+        // 5 unowned bread.
+        sim.inv_add_simple_item(
+            pile.inventory_id,
+            crate::inventory::ItemKind::Bread,
+            5,
+            None,
+            None,
+        );
+    }
+
+    // Building wants 10 bread.
+    let building_anchor = VoxelCoord::new(pile_pos.x + 3, pile_pos.y, pile_pos.z);
+    let _sid = insert_building(
+        &mut sim,
+        building_anchor,
+        Some(5),
+        vec![crate::building::LogisticsWant {
+            item_kind: crate::inventory::ItemKind::Bread,
+            material_filter: crate::inventory::MaterialFilter::Any,
+            target_quantity: 10,
+        }],
+    );
+
+    sim.process_logistics_heartbeat();
+
+    // Haul task should haul at most 5 (the unowned bread).
+    let haul_tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Haul)
+        .collect();
+    assert_eq!(
+        haul_tasks.len(),
+        1,
+        "Expected 1 haul task for unowned items"
+    );
+    let haul = sim.task_haul_data(haul_tasks[0].id).unwrap();
+    assert_eq!(haul.quantity, 5, "Should only haul the 5 unowned bread");
+}
+
+#[test]
+fn logistics_ignores_owned_items_in_lower_priority_building() {
+    // Phase 2 source (lower-priority building): owned items must not be
+    // pulled from it.
+    let mut sim = test_sim(42);
+
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let elf_id = spawn_elf(&mut sim);
+
+    // Low-priority building with only owned bread.
+    let low_anchor = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
+    let low_sid = insert_building(&mut sim, low_anchor, Some(1), Vec::new());
+    let low_inv = sim.db.structures.get(&low_sid).unwrap().inventory_id;
+    sim.inv_add_simple_item(
+        low_inv,
+        crate::inventory::ItemKind::Bread,
+        5,
+        Some(elf_id),
+        None,
+    );
+
+    // High-priority building wants bread.
+    let high_anchor = VoxelCoord::new(tree_pos.x + 6, tree_pos.y, tree_pos.z);
+    let _high_sid = insert_building(
+        &mut sim,
+        high_anchor,
+        Some(10),
+        vec![crate::building::LogisticsWant {
+            item_kind: crate::inventory::ItemKind::Bread,
+            material_filter: crate::inventory::MaterialFilter::Any,
+            target_quantity: 5,
+        }],
+    );
+
+    sim.process_logistics_heartbeat();
+
+    let haul_tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Haul)
+        .collect();
+    assert_eq!(
+        haul_tasks.len(),
+        0,
+        "Owned items in lower-priority building must not be hauled"
+    );
+}
+
+#[test]
+fn logistics_surplus_ignores_owned_items() {
+    // Phase 3 surplus source: a building with 10 bread (5 owned + 5 unowned)
+    // and want target of 5 should have surplus of 0 (only 5 unowned, all
+    // needed to meet the want).
+    let mut sim = test_sim(42);
+
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let elf_id = spawn_elf(&mut sim);
+
+    // Source building: priority 5, wants 5 bread, has 5 owned + 5 unowned.
+    let src_anchor = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
+    let src_sid = insert_building(
+        &mut sim,
+        src_anchor,
+        Some(5),
+        vec![crate::building::LogisticsWant {
+            item_kind: crate::inventory::ItemKind::Bread,
+            material_filter: crate::inventory::MaterialFilter::Any,
+            target_quantity: 5,
+        }],
+    );
+    let src_inv = sim.db.structures.get(&src_sid).unwrap().inventory_id;
+    sim.inv_add_simple_item(
+        src_inv,
+        crate::inventory::ItemKind::Bread,
+        5,
+        Some(elf_id),
+        None,
+    );
+    sim.inv_add_simple_item(src_inv, crate::inventory::ItemKind::Bread, 5, None, None);
+
+    // Destination building: same priority, wants bread.
+    let dst_anchor = VoxelCoord::new(tree_pos.x + 6, tree_pos.y, tree_pos.z);
+    let _dst_sid = insert_building(
+        &mut sim,
+        dst_anchor,
+        Some(5),
+        vec![crate::building::LogisticsWant {
+            item_kind: crate::inventory::ItemKind::Bread,
+            material_filter: crate::inventory::MaterialFilter::Any,
+            target_quantity: 5,
+        }],
+    );
+
+    sim.process_logistics_heartbeat();
+
+    // Source has exactly 5 unowned = 5 wanted, so surplus = 0.
+    // No haul task should be created.
+    let haul_tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Haul)
+        .collect();
+    assert_eq!(
+        haul_tasks.len(),
+        0,
+        "No surplus when owned items are excluded from held count"
+    );
+}
+
+#[test]
+fn logistics_current_inventory_excludes_owned_items() {
+    // A building that wants 5 bread and has 5 owned bread should still
+    // create a haul task because the owned bread doesn't satisfy the want.
+    let mut sim = test_sim(42);
+
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let elf_id = spawn_elf(&mut sim);
+
+    // Building wants 5 bread and already contains 5 owned bread.
+    let anchor = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
+    let sid = insert_building(
+        &mut sim,
+        anchor,
+        Some(5),
+        vec![crate::building::LogisticsWant {
+            item_kind: crate::inventory::ItemKind::Bread,
+            material_filter: crate::inventory::MaterialFilter::Any,
+            target_quantity: 5,
+        }],
+    );
+    let inv = sim.db.structures.get(&sid).unwrap().inventory_id;
+    sim.inv_add_simple_item(
+        inv,
+        crate::inventory::ItemKind::Bread,
+        5,
+        Some(elf_id),
+        None,
+    );
+
+    // Place unowned bread in a ground pile as a source.
+    let pile_pos = tree_pos;
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(
+            pile.inventory_id,
+            crate::inventory::ItemKind::Bread,
+            5,
+            None,
+            None,
+        );
+    }
+
+    sim.process_logistics_heartbeat();
+
+    // Should create a haul task for 5 bread — the owned bread in the
+    // building doesn't count toward satisfying the want.
+    let haul_tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Haul)
+        .collect();
+    assert_eq!(
+        haul_tasks.len(),
+        1,
+        "Owned bread in building should not satisfy the want"
+    );
+    let haul = sim.task_haul_data(haul_tasks[0].id).unwrap();
+    assert_eq!(haul.quantity, 5);
+}
+
+#[test]
+fn logistics_reserve_haul_items_skips_owned_stacks() {
+    // Directly test that reserve_haul_items only reserves unowned items.
+    let mut sim = test_sim(42);
+
+    let pile_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let elf_id = spawn_elf(&mut sim);
+
+    let pile_id = sim.ensure_ground_pile(pile_pos);
+    let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+    // 3 owned + 5 unowned.
+    sim.inv_add_simple_item(
+        pile.inventory_id,
+        crate::inventory::ItemKind::Bread,
+        3,
+        Some(elf_id),
+        None,
+    );
+    sim.inv_add_simple_item(
+        pile.inventory_id,
+        crate::inventory::ItemKind::Bread,
+        5,
+        None,
+        None,
+    );
+
+    let task_id = TaskId::new(&mut sim.rng);
+    sim.reserve_haul_items(
+        &task::HaulSource::GroundPile(pile_pos),
+        crate::inventory::ItemKind::Bread,
+        crate::inventory::MaterialFilter::Any,
+        5,
+        task_id,
+    );
+
+    // Verify: only unowned items should be reserved.
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&pile.inventory_id, tabulosity::QueryOpts::ASC);
+    let owned_reserved: u32 = stacks
+        .iter()
+        .filter(|s| s.owner == Some(elf_id) && s.reserved_by.is_some())
+        .map(|s| s.quantity)
+        .sum();
+    assert_eq!(
+        owned_reserved, 0,
+        "Owned items must not be reserved by haul tasks"
+    );
+
+    let unowned_reserved: u32 = stacks
+        .iter()
+        .filter(|s| s.owner.is_none() && s.reserved_by.is_some())
+        .map(|s| s.quantity)
+        .sum();
+    assert_eq!(
+        unowned_reserved, 5,
+        "All 5 unowned items should be reserved"
+    );
+}
+
+#[test]
+fn crafting_reserve_skips_owned_items() {
+    // inv_reserve_items (used by crafting) should also skip owned items
+    // so that an elf's personal belongings stored in a workshop aren't
+    // consumed by a recipe.
+    let mut sim = test_sim(42);
+
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let elf_id = spawn_elf(&mut sim);
+
+    let anchor = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
+    let sid = insert_building(&mut sim, anchor, Some(5), Vec::new());
+    let inv = sim.db.structures.get(&sid).unwrap().inventory_id;
+
+    // 3 owned + 5 unowned arrows.
+    sim.inv_add_simple_item(
+        inv,
+        crate::inventory::ItemKind::Arrow,
+        3,
+        Some(elf_id),
+        None,
+    );
+    sim.inv_add_simple_item(inv, crate::inventory::ItemKind::Arrow, 5, None, None);
+
+    let task_id = TaskId::new(&mut sim.rng);
+    sim.inv_reserve_items(
+        inv,
+        crate::inventory::ItemKind::Arrow,
+        crate::inventory::MaterialFilter::Any,
+        5,
+        task_id,
+    );
+
+    // Verify: only unowned items should be reserved.
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv, tabulosity::QueryOpts::ASC);
+    let owned_reserved: u32 = stacks
+        .iter()
+        .filter(|s| s.owner == Some(elf_id) && s.reserved_by.is_some())
+        .map(|s| s.quantity)
+        .sum();
+    assert_eq!(
+        owned_reserved, 0,
+        "Owned items must not be reserved for crafting"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Personal acquisition: prefer reclaiming owned items
+// -----------------------------------------------------------------------
+
+#[test]
+fn personal_acquisition_prefers_owned_items_in_ground_pile() {
+    // An elf who wants bread and has owned bread in a ground pile should
+    // reclaim it rather than acquiring different unowned bread.
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bread = 0;
+    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
+        elf_data.food_decay_per_tick = 0;
+        elf_data.rest_decay_per_tick = 0;
+    }
+    sim.species_table = sim
+        .config
+        .species
+        .iter()
+        .map(|(k, v)| (*k, v.clone()))
+        .collect();
+    sim.config.elf_default_wants = vec![building::LogisticsWant {
+        item_kind: inventory::ItemKind::Bread,
+        material_filter: inventory::MaterialFilter::Any,
+        target_quantity: 2,
+    }];
+
+    let elf_id = spawn_elf(&mut sim);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    // Pile A: 2 bread owned by this elf.
+    let owned_pile_pos = VoxelCoord::new(tree_pos.x, tree_pos.y, tree_pos.z);
+    {
+        let pile_id = sim.ensure_ground_pile(owned_pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(
+            pile.inventory_id,
+            inventory::ItemKind::Bread,
+            2,
+            Some(elf_id),
+            None,
+        );
+    }
+
+    // Pile B: 5 unowned bread at a different location.
+    let unowned_pile_pos = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
+    {
+        let pile_id = sim.ensure_ground_pile(unowned_pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Bread, 5, None, None);
+    }
+
+    // Directly call check_creature_wants.
+    sim.check_creature_wants(elf_id);
+
+    // Elf should have an AcquireItem task targeting the owned pile.
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    let task_id = elf.current_task.expect("Elf should have a task");
+    let acquire = sim
+        .task_acquire_data(task_id)
+        .expect("Task should be AcquireItem");
+    assert_eq!(acquire.item_kind, inventory::ItemKind::Bread);
+    assert_eq!(
+        acquire.source_kind,
+        crate::db::HaulSourceKind::Pile,
+        "Source should be a ground pile"
+    );
+
+    // The owned pile's bread should be reserved.
+    let owned_pile = sim
+        .db
+        .ground_piles
+        .by_position(&owned_pile_pos, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .next()
+        .unwrap();
+    let reserved: u32 = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&owned_pile.inventory_id, tabulosity::QueryOpts::ASC)
+        .iter()
+        .filter(|s| s.reserved_by.is_some())
+        .map(|s| s.quantity)
+        .sum();
+    assert_eq!(reserved, 2, "Owned bread in the pile should be reserved");
+
+    // The unowned pile should have NO reservations.
+    let unowned_pile = sim
+        .db
+        .ground_piles
+        .by_position(&unowned_pile_pos, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .next()
+        .unwrap();
+    let unowned_reserved: u32 = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&unowned_pile.inventory_id, tabulosity::QueryOpts::ASC)
+        .iter()
+        .filter(|s| s.reserved_by.is_some())
+        .map(|s| s.quantity)
+        .sum();
+    assert_eq!(
+        unowned_reserved, 0,
+        "Unowned bread should not be reserved when owned bread is available"
+    );
+}
+
+#[test]
+fn personal_acquisition_falls_back_to_unowned() {
+    // When no owned items exist elsewhere, the elf should acquire unowned items.
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bread = 0;
+    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
+        elf_data.food_decay_per_tick = 0;
+        elf_data.rest_decay_per_tick = 0;
+    }
+    sim.species_table = sim
+        .config
+        .species
+        .iter()
+        .map(|(k, v)| (*k, v.clone()))
+        .collect();
+    sim.config.elf_default_wants = vec![building::LogisticsWant {
+        item_kind: inventory::ItemKind::Bread,
+        material_filter: inventory::MaterialFilter::Any,
+        target_quantity: 2,
+    }];
+
+    let elf_id = spawn_elf(&mut sim);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    // Only unowned bread available.
+    let pile_pos = VoxelCoord::new(tree_pos.x, tree_pos.y, tree_pos.z);
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Bread, 5, None, None);
+    }
+
+    sim.check_creature_wants(elf_id);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        elf.current_task.is_some(),
+        "Elf should acquire unowned bread when no owned items exist"
+    );
+}
+
+#[test]
+fn personal_acquisition_skips_other_creatures_owned_items() {
+    // Elf A's owned bread should not be reclaimed by elf B.
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bread = 0;
+    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
+        elf_data.food_decay_per_tick = 0;
+        elf_data.rest_decay_per_tick = 0;
+    }
+    sim.species_table = sim
+        .config
+        .species
+        .iter()
+        .map(|(k, v)| (*k, v.clone()))
+        .collect();
+    sim.config.elf_default_wants = vec![building::LogisticsWant {
+        item_kind: inventory::ItemKind::Bread,
+        material_filter: inventory::MaterialFilter::Any,
+        target_quantity: 2,
+    }];
+
+    let elf_a = spawn_elf(&mut sim);
+    let elf_b = spawn_elf(&mut sim);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    // Pile has bread owned by elf A — no unowned bread anywhere.
+    let pile_pos = VoxelCoord::new(tree_pos.x, tree_pos.y, tree_pos.z);
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(
+            pile.inventory_id,
+            inventory::ItemKind::Bread,
+            5,
+            Some(elf_a),
+            None,
+        );
+    }
+
+    // Elf B wants bread but only elf A's owned bread exists.
+    sim.check_creature_wants(elf_b);
+
+    let elf_b_data = sim.db.creatures.get(&elf_b).unwrap();
+    assert!(
+        elf_b_data.current_task.is_none(),
+        "Elf B must not acquire elf A's owned bread"
+    );
+}
+
+#[test]
+fn military_acquisition_prefers_owned_items() {
+    // A soldier with owned bow in a ground pile should reclaim it rather
+    // than acquiring a different unowned bow.
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bread = 0;
+    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
+        elf_data.food_decay_per_tick = 0;
+        elf_data.rest_decay_per_tick = 0;
+    }
+    sim.species_table = sim
+        .config
+        .species
+        .iter()
+        .map(|(k, v)| (*k, v.clone()))
+        .collect();
+
+    let elf_id = spawn_elf(&mut sim);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    // Create military group wanting a bow.
+    let group_id = sim
+        .db
+        .military_groups
+        .insert_auto_no_fk(|id| crate::db::MilitaryGroup {
+            id,
+            civ_id: sim.player_civ_id.unwrap(),
+            name: "Test".into(),
+            is_default_civilian: false,
+            engagement_style: Default::default(),
+            equipment_wants: vec![building::LogisticsWant {
+                item_kind: inventory::ItemKind::Bow,
+                material_filter: inventory::MaterialFilter::Any,
+                target_quantity: 1,
+            }],
+        })
+        .unwrap();
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.military_group = Some(group_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Pile A: 1 bow owned by this elf.
+    let owned_pile_pos = VoxelCoord::new(tree_pos.x, tree_pos.y, tree_pos.z);
+    {
+        let pile_id = sim.ensure_ground_pile(owned_pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(
+            pile.inventory_id,
+            inventory::ItemKind::Bow,
+            1,
+            Some(elf_id),
+            None,
+        );
+    }
+
+    // Pile B: 1 unowned bow.
+    let unowned_pile_pos = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
+    {
+        let pile_id = sim.ensure_ground_pile(unowned_pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Bow, 1, None, None);
+    }
+
+    sim.check_military_equipment_wants(elf_id);
+
+    // Should have a task.
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    let task_id = elf.current_task.expect("Elf should have acquisition task");
+
+    // The owned bow should be reserved, the unowned bow should not.
+    let owned_pile = sim
+        .db
+        .ground_piles
+        .by_position(&owned_pile_pos, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .next()
+        .unwrap();
+    let owned_reserved: u32 = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&owned_pile.inventory_id, tabulosity::QueryOpts::ASC)
+        .iter()
+        .filter(|s| s.reserved_by == Some(task_id))
+        .map(|s| s.quantity)
+        .sum();
+    assert_eq!(owned_reserved, 1, "Owned bow should be reserved");
+
+    let unowned_pile = sim
+        .db
+        .ground_piles
+        .by_position(&unowned_pile_pos, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .next()
+        .unwrap();
+    let unowned_reserved: u32 = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&unowned_pile.inventory_id, tabulosity::QueryOpts::ASC)
+        .iter()
+        .filter(|s| s.reserved_by.is_some())
+        .map(|s| s.quantity)
+        .sum();
+    assert_eq!(
+        unowned_reserved, 0,
+        "Unowned bow should not be reserved when owned bow is available"
+    );
+}
+
+#[test]
+fn find_owned_item_source_searches_buildings() {
+    // Owned items in a building should be found by find_owned_item_source.
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    let anchor = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
+    let sid = insert_building(&mut sim, anchor, Some(5), Vec::new());
+    let inv = sim.db.structures.get(&sid).unwrap().inventory_id;
+    sim.inv_add_simple_item(inv, inventory::ItemKind::Bread, 3, Some(elf_id), None);
+
+    let result = sim.find_owned_item_source(
+        inventory::ItemKind::Bread,
+        inventory::MaterialFilter::Any,
+        3,
+        elf_id,
+    );
+    assert!(result.is_some(), "Should find owned bread in building");
+    let (source, qty, _) = result.unwrap();
+    assert_eq!(qty, 3);
+    assert!(
+        matches!(source, task::HaulSource::Building(_)),
+        "Source should be a building"
+    );
+}
+
+#[test]
+fn military_acquisition_suppressed_during_combat() {
+    // When hostiles are in detection range, check_military_equipment_wants
+    // should skip acquisition entirely so the creature stays idle for combat.
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bread = 0;
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
+        elf_data.food_decay_per_tick = 0;
+        elf_data.rest_decay_per_tick = 0;
+    }
+    sim.species_table = sim
+        .config
+        .species
+        .iter()
+        .map(|(k, v)| (*k, v.clone()))
+        .collect();
+
+    let elf_id = spawn_elf(&mut sim);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    // Put elf in soldiers group wanting a bow.
+    let soldiers = sim
+        .db
+        .military_groups
+        .by_civ_id(&sim.player_civ_id.unwrap(), tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|g| !g.is_default_civilian)
+        .unwrap();
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.military_group = Some(soldiers.id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Place an unowned bow in a ground pile (elf could acquire it).
+    let pile_pos = VoxelCoord::new(tree_pos.x, tree_pos.y, tree_pos.z);
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Bow, 1, None, None);
+    }
+
+    // Spawn a troll near the elf so hostiles are in detection range.
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let mut events = Vec::new();
+    let troll_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
+    sim.spawn_creature(Species::Troll, troll_pos, &mut events);
+
+    // Call check_military_equipment_wants — should do nothing due to hostiles.
+    sim.check_military_equipment_wants(elf_id);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        elf.current_task.is_none(),
+        "Should not create acquisition task when hostiles are nearby"
+    );
+}
+
+#[test]
+fn military_acquisition_falls_back_to_unowned() {
+    // When no owned items exist elsewhere, military acquisition should
+    // fall back to acquiring unowned items.
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bread = 0;
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
+        elf_data.food_decay_per_tick = 0;
+        elf_data.rest_decay_per_tick = 0;
+    }
+    sim.species_table = sim
+        .config
+        .species
+        .iter()
+        .map(|(k, v)| (*k, v.clone()))
+        .collect();
+
+    let elf_id = spawn_elf(&mut sim);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    // Put elf in soldiers group wanting a bow.
+    let soldiers = sim
+        .db
+        .military_groups
+        .by_civ_id(&sim.player_civ_id.unwrap(), tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|g| !g.is_default_civilian)
+        .unwrap();
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.military_group = Some(soldiers.id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Only unowned bow available.
+    let pile_pos = VoxelCoord::new(tree_pos.x, tree_pos.y, tree_pos.z);
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Bow, 1, None, None);
+    }
+
+    sim.check_military_equipment_wants(elf_id);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        elf.current_task.is_some(),
+        "Should acquire unowned bow when no owned items exist"
+    );
+}
+
+#[test]
+fn military_acquisition_skips_other_creatures_owned_items() {
+    // Soldier B should not reclaim soldier A's owned equipment.
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bread = 0;
+    sim.config.elf_starting_bows = 0;
+    sim.config.elf_starting_arrows = 0;
+    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
+        elf_data.food_decay_per_tick = 0;
+        elf_data.rest_decay_per_tick = 0;
+    }
+    sim.species_table = sim
+        .config
+        .species
+        .iter()
+        .map(|(k, v)| (*k, v.clone()))
+        .collect();
+
+    let elf_a = spawn_elf(&mut sim);
+    let elf_b = spawn_elf(&mut sim);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    // Put elf_b in soldiers group wanting a bow.
+    let soldiers = sim
+        .db
+        .military_groups
+        .by_civ_id(&sim.player_civ_id.unwrap(), tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|g| !g.is_default_civilian)
+        .unwrap();
+    {
+        let mut c = sim.db.creatures.get(&elf_b).unwrap();
+        c.military_group = Some(soldiers.id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Only elf_a's owned bow exists — no unowned bows.
+    let pile_pos = VoxelCoord::new(tree_pos.x, tree_pos.y, tree_pos.z);
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(
+            pile.inventory_id,
+            inventory::ItemKind::Bow,
+            1,
+            Some(elf_a),
+            None,
+        );
+    }
+
+    sim.check_military_equipment_wants(elf_b);
+
+    let elf_b_data = sim.db.creatures.get(&elf_b).unwrap();
+    assert!(
+        elf_b_data.current_task.is_none(),
+        "Soldier B must not reclaim soldier A's owned bow"
+    );
+}
+
+#[test]
+fn find_owned_item_source_skips_reserved_owned_items() {
+    // Owned items already reserved by another task should not be found
+    // by find_owned_item_source (prevents double-reservation).
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    let pile_pos = VoxelCoord::new(tree_pos.x, tree_pos.y, tree_pos.z);
+    let pile_id = sim.ensure_ground_pile(pile_pos);
+    let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+    sim.inv_add_simple_item(
+        pile.inventory_id,
+        inventory::ItemKind::Bread,
+        3,
+        Some(elf_id),
+        None,
+    );
+
+    // Reserve all owned items for a fake task.
+    let fake_task_id = TaskId::new(&mut sim.rng);
+    sim.inv_reserve_owned_items(
+        pile.inventory_id,
+        inventory::ItemKind::Bread,
+        inventory::MaterialFilter::Any,
+        3,
+        fake_task_id,
+        elf_id,
+    );
+
+    // Now find_owned_item_source should return None — everything is reserved.
+    let result = sim.find_owned_item_source(
+        inventory::ItemKind::Bread,
+        inventory::MaterialFilter::Any,
+        3,
+        elf_id,
+    );
+    assert!(
+        result.is_none(),
+        "Reserved owned items should not be found as a reclaim source"
+    );
+}
+
+#[test]
+fn inv_reserve_owned_items_splits_stack_preserving_owner() {
+    // When reserving a partial owned stack, both the remaining and reserved
+    // halves should preserve the owner field.
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    let pile_pos = VoxelCoord::new(tree_pos.x, tree_pos.y, tree_pos.z);
+    let pile_id = sim.ensure_ground_pile(pile_pos);
+    let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+    sim.inv_add_simple_item(
+        pile.inventory_id,
+        inventory::ItemKind::Bread,
+        5,
+        Some(elf_id),
+        None,
+    );
+
+    let task_id = TaskId::new(&mut sim.rng);
+    let material = sim.inv_reserve_owned_items(
+        pile.inventory_id,
+        inventory::ItemKind::Bread,
+        inventory::MaterialFilter::Any,
+        3,
+        task_id,
+        elf_id,
+    );
+
+    // Check stacks after split.
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&pile.inventory_id, tabulosity::QueryOpts::ASC);
+
+    let reserved: Vec<_> = stacks.iter().filter(|s| s.reserved_by.is_some()).collect();
+    let unreserved: Vec<_> = stacks.iter().filter(|s| s.reserved_by.is_none()).collect();
+
+    assert_eq!(reserved.len(), 1, "Should have one reserved stack");
+    assert_eq!(reserved[0].quantity, 3);
+    assert_eq!(
+        reserved[0].owner,
+        Some(elf_id),
+        "Reserved stack must keep owner"
+    );
+
+    assert_eq!(unreserved.len(), 1, "Should have one unreserved stack");
+    assert_eq!(unreserved[0].quantity, 2);
+    assert_eq!(
+        unreserved[0].owner,
+        Some(elf_id),
+        "Unreserved stack must keep owner"
+    );
+
+    // Return value should be the material (None for bread).
+    assert_eq!(material, None);
+}
+
+// -----------------------------------------------------------------------
 // 15.10 New SimAction variants (SetCreatureFood, SetCreatureRest,
 //       AddCreatureItem, AddGroundPileItem)
 // -----------------------------------------------------------------------

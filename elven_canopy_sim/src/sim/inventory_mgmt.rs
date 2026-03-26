@@ -12,6 +12,24 @@ use crate::event::{SimEvent, SimEventKind};
 use crate::inventory;
 use std::collections::BTreeMap;
 
+/// Ownership predicate for `inv_reserve_matching`. Determines which items
+/// are eligible for reservation based on the `owner` field.
+enum OwnerFilter {
+    /// Only reserve items with `owner == None` (unowned).
+    Unowned,
+    /// Only reserve items with `owner == Some(creature_id)`.
+    OwnedBy(CreatureId),
+}
+
+impl OwnerFilter {
+    fn matches(&self, owner: Option<CreatureId>) -> bool {
+        match self {
+            OwnerFilter::Unowned => owner.is_none(),
+            OwnerFilter::OwnedBy(id) => owner == Some(*id),
+        }
+    }
+}
+
 impl SimState {
     /// Create a new Inventory row and return its ID.
     pub(crate) fn create_inventory(
@@ -298,7 +316,28 @@ impl SimState {
             .sum()
     }
 
-    /// Count unreserved items of the given kind, filtered by material.
+    /// Count unowned items of the given kind, regardless of reservation
+    /// status. Used by logistics to count "current" inventory in a building:
+    /// owned items don't satisfy the building's wants because they belong to
+    /// a creature and may be reclaimed at any time.
+    pub(crate) fn inv_count_unowned(
+        &self,
+        inv_id: InventoryId,
+        kind: inventory::ItemKind,
+        filter: inventory::MaterialFilter,
+    ) -> u32 {
+        self.db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .filter(|s| s.kind == kind && s.owner.is_none() && filter.matches(s.material))
+            .map(|s| s.quantity)
+            .sum()
+    }
+
+    /// Count unowned, unreserved items of the given kind, filtered by
+    /// material. Owned items are excluded — they belong to a creature and
+    /// must not be considered available for logistics or crafting.
     pub(crate) fn inv_unreserved_item_count(
         &self,
         inv_id: InventoryId,
@@ -309,7 +348,12 @@ impl SimState {
             .item_stacks
             .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
             .iter()
-            .filter(|s| s.kind == kind && s.reserved_by.is_none() && filter.matches(s.material))
+            .filter(|s| {
+                s.kind == kind
+                    && s.owner.is_none()
+                    && s.reserved_by.is_none()
+                    && filter.matches(s.material)
+            })
             .map(|s| s.quantity)
             .sum()
     }
@@ -346,10 +390,12 @@ impl SimState {
         removed
     }
 
-    /// Reserve up to `quantity` unreserved items of the given kind for a task,
-    /// filtered by material. Under `Any` filter, locks in a single material on
-    /// the first matching stack (avoids mixed-material hauls). Returns the
-    /// material of the reserved stacks.
+    /// Reserve up to `quantity` unowned, unreserved items of the given kind
+    /// for a task, filtered by material. Owned items (`owner.is_some()`) are
+    /// skipped — they belong to a creature and must not be claimed by
+    /// logistics, crafting, or other automated systems.  Under `Any` filter,
+    /// locks in a single material on the first matching stack (avoids
+    /// mixed-material hauls). Returns the material of the reserved stacks.
     pub(crate) fn inv_reserve_items(
         &mut self,
         inv_id: InventoryId,
@@ -358,14 +404,47 @@ impl SimState {
         quantity: u32,
         task_id: TaskId,
     ) -> Option<inventory::Material> {
+        self.inv_reserve_matching(
+            inv_id,
+            kind,
+            filter,
+            quantity,
+            task_id,
+            OwnerFilter::Unowned,
+        )
+        .1
+    }
+
+    /// Shared reservation logic used by `inv_reserve_items`,
+    /// `inv_reserve_unowned_items`, and `inv_reserve_owned_items`.
+    ///
+    /// Iterates unreserved stacks matching `kind`, `filter`, and the
+    /// `owner_filter` predicate, reserving up to `quantity` items for
+    /// `task_id`. Applies a single-material lock (under `Any` filter, the
+    /// first matching material is locked in to avoid mixed-material hauls).
+    ///
+    /// Returns `(reserved_count, locked_material)`.
+    fn inv_reserve_matching(
+        &mut self,
+        inv_id: InventoryId,
+        kind: inventory::ItemKind,
+        filter: inventory::MaterialFilter,
+        quantity: u32,
+        task_id: TaskId,
+        owner_filter: OwnerFilter,
+    ) -> (u32, Option<inventory::Material>) {
         let stacks = self
             .db
             .item_stacks
             .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
         let mut remaining = quantity;
+        let mut reserved = 0u32;
         let mut locked_material: Option<Option<inventory::Material>> = None;
         for stack in &stacks {
             if stack.kind != kind || stack.reserved_by.is_some() || remaining == 0 {
+                continue;
+            }
+            if !owner_filter.matches(stack.owner) {
                 continue;
             }
             if !filter.matches(stack.material) {
@@ -417,8 +496,9 @@ impl SimState {
                     });
             }
             remaining -= take;
+            reserved += take;
         }
-        locked_material.flatten()
+        (reserved, locked_material.flatten())
     }
 
     /// Clear all reservations for a task, then re-merge matching stacks.
@@ -500,68 +580,63 @@ impl SimState {
         quantity: u32,
         task_id: TaskId,
     ) -> u32 {
-        let stacks = self
-            .db
+        self.inv_reserve_matching(
+            inv_id,
+            kind,
+            filter,
+            quantity,
+            task_id,
+            OwnerFilter::Unowned,
+        )
+        .0
+    }
+
+    /// Count unreserved items of the given kind owned by a specific creature,
+    /// filtered by material. Used by `find_owned_item_source` to locate a
+    /// creature's belongings in other inventories (ground piles, buildings).
+    pub(crate) fn inv_count_owned_unreserved(
+        &self,
+        inv_id: InventoryId,
+        kind: inventory::ItemKind,
+        filter: inventory::MaterialFilter,
+        owner: CreatureId,
+    ) -> u32 {
+        self.db
             .item_stacks
-            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
-        let mut remaining = quantity;
-        let mut reserved = 0u32;
-        let mut locked_material: Option<Option<inventory::Material>> = None;
-        for stack in &stacks {
-            if stack.kind != kind
-                || stack.owner.is_some()
-                || stack.reserved_by.is_some()
-                || remaining == 0
-            {
-                continue;
-            }
-            if !filter.matches(stack.material) {
-                continue;
-            }
-            match locked_material {
-                None => locked_material = Some(stack.material),
-                Some(locked) if locked != stack.material => continue,
-                _ => {}
-            }
-            let take = remaining.min(stack.quantity);
-            if take == stack.quantity {
-                let mut s = stack.clone();
-                s.reserved_by = Some(task_id);
-                let _ = self.db.item_stacks.update_no_fk(s);
-            } else {
-                let new_qty = stack.quantity - take;
-                let _ = self.db.item_stacks.modify_unchecked(&stack.id, |s| {
-                    s.quantity = new_qty;
-                });
-                let mat = stack.material;
-                let qual = stack.quality;
-                let chp = stack.current_hp;
-                let mhp = stack.max_hp;
-                let ench = stack.enchantment_id;
-                let dye = stack.dye_color;
-                let _ = self
-                    .db
-                    .item_stacks
-                    .insert_auto_no_fk(|id| crate::db::ItemStack {
-                        id,
-                        inventory_id: inv_id,
-                        kind,
-                        quantity: take,
-                        material: mat,
-                        quality: qual,
-                        current_hp: chp,
-                        max_hp: mhp,
-                        enchantment_id: ench,
-                        owner: None,
-                        reserved_by: Some(task_id),
-                        equipped_slot: None,
-                        dye_color: dye,
-                    });
-            }
-            remaining -= take;
-            reserved += take;
-        }
-        reserved
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .filter(|s| {
+                s.kind == kind
+                    && s.owner == Some(owner)
+                    && s.reserved_by.is_none()
+                    && filter.matches(s.material)
+            })
+            .map(|s| s.quantity)
+            .sum()
+    }
+
+    /// Reserve up to `quantity` items owned by a specific creature for a
+    /// task, filtered by material. Used when a creature reclaims their own
+    /// belongings from a ground pile or building. Single-material lock
+    /// applies. Returns the material of the reserved stacks.
+    pub(crate) fn inv_reserve_owned_items(
+        &mut self,
+        inv_id: InventoryId,
+        kind: inventory::ItemKind,
+        filter: inventory::MaterialFilter,
+        quantity: u32,
+        task_id: TaskId,
+        owner: CreatureId,
+    ) -> Option<inventory::Material> {
+        self.inv_reserve_matching(
+            inv_id,
+            kind,
+            filter,
+            quantity,
+            task_id,
+            OwnerFilter::OwnedBy(owner),
+        )
+        .1
     }
 
     /// Consolidate matching stacks within an inventory. Two stacks are

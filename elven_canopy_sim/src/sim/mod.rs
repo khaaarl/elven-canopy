@@ -56,9 +56,9 @@
 //   else current node. Duration from `MoodConsequencesConfig`.
 // - **Phase 2c (acquisition):** If still idle after hunger/sleep checks,
 //   iterate the creature's `wants` list. For each want where owned items are
-//   below the target, call `find_item_source()` to locate unowned items in
-//   ground piles or building inventories, reserve them, and create an
-//   `AcquireItem` task. One task per heartbeat (first unsatisfied want wins).
+//   below the target, first call `find_owned_item_source()` to reclaim
+//   the creature's own items from other inventories, then fall back to
+//   `find_unowned_item_source()` for unclaimed items. One task per heartbeat.
 //
 // The activation loop (`process_creature_activation`) runs this logic:
 //

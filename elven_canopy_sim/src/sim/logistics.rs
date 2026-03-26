@@ -285,7 +285,7 @@ impl SimState {
                 .map(|w| w.target_quantity)
                 .sum();
             if fruit_target > 0 {
-                let current = self.inv_item_count(
+                let current = self.inv_count_unowned(
                     *inv_id,
                     inventory::ItemKind::Fruit,
                     inventory::MaterialFilter::Any,
@@ -435,7 +435,7 @@ impl SimState {
                     .db
                     .structures
                     .get(building_id)
-                    .map(|s| self.inv_item_count(s.inventory_id, want.item_kind, filter))
+                    .map(|s| self.inv_count_unowned(s.inventory_id, want.item_kind, filter))
                     .unwrap_or(0);
 
                 // Count in-transit items (from active Haul tasks targeting this building).
@@ -628,36 +628,65 @@ impl SimState {
         quantity: u32,
         task_id: TaskId,
     ) -> Option<inventory::Material> {
+        let inv_id = self.source_inventory_id(source)?;
+        self.inv_reserve_items(inv_id, item_kind, filter, quantity, task_id)
+    }
+
+    /// Resolve a `HaulSource` to its backing `InventoryId`, if the source
+    /// still exists.
+    pub(crate) fn source_inventory_id(&self, source: &task::HaulSource) -> Option<InventoryId> {
         match source {
-            task::HaulSource::GroundPile(pos) => {
-                if let Some(pile) = self
-                    .db
-                    .ground_piles
-                    .by_position(pos, tabulosity::QueryOpts::ASC)
-                    .into_iter()
-                    .next()
-                {
-                    return self.inv_reserve_items(
-                        pile.inventory_id,
-                        item_kind,
-                        filter,
-                        quantity,
-                        task_id,
-                    );
-                }
-            }
-            task::HaulSource::Building(sid) => {
-                if let Some(structure) = self.db.structures.get(sid) {
-                    return self.inv_reserve_items(
-                        structure.inventory_id,
-                        item_kind,
-                        filter,
-                        quantity,
-                        task_id,
-                    );
-                }
+            task::HaulSource::GroundPile(pos) => self
+                .db
+                .ground_piles
+                .by_position(pos, tabulosity::QueryOpts::ASC)
+                .into_iter()
+                .next()
+                .map(|p| p.inventory_id),
+            task::HaulSource::Building(sid) => self.db.structures.get(sid).map(|s| s.inventory_id),
+        }
+    }
+
+    /// Find a source of items owned by a specific creature, for reclaiming
+    /// belongings that ended up outside the creature's inventory (e.g., in a
+    /// ground pile or building). Searched before `find_unowned_item_source`
+    /// so creatures prefer reclaiming their own items over acquiring new ones.
+    ///
+    /// Searches ground piles first (deterministic BTreeMap order), then any
+    /// building inventory. Returns the source, capped quantity, and nav node.
+    pub(crate) fn find_owned_item_source(
+        &self,
+        kind: inventory::ItemKind,
+        filter: inventory::MaterialFilter,
+        needed: u32,
+        owner: CreatureId,
+    ) -> Option<(task::HaulSource, u32, VoxelCoord)> {
+        // Check ground piles.
+        for pile in self.db.ground_piles.iter_all() {
+            let available = self.inv_count_owned_unreserved(pile.inventory_id, kind, filter, owner);
+            if available > 0 && self.nav_graph.find_nearest_node(pile.position).is_some() {
+                return Some((
+                    task::HaulSource::GroundPile(pile.position),
+                    available.min(needed),
+                    pile.position,
+                ));
             }
         }
+
+        // Check building inventories.
+        for structure in self.db.structures.iter_all() {
+            let sid = structure.id;
+            let available =
+                self.inv_count_owned_unreserved(structure.inventory_id, kind, filter, owner);
+            if available > 0 && self.nav_graph.find_nearest_node(structure.anchor).is_some() {
+                return Some((
+                    task::HaulSource::Building(sid),
+                    available.min(needed),
+                    structure.anchor,
+                ));
+            }
+        }
+
         None
     }
 
@@ -666,7 +695,7 @@ impl SimState {
     /// Searches ground piles first (deterministic BTreeMap order), then any
     /// building inventory (ignoring logistics priority — personal acquisition
     /// pulls from anywhere). Returns the source, capped quantity, and nav node.
-    pub(crate) fn find_item_source(
+    pub(crate) fn find_unowned_item_source(
         &self,
         kind: inventory::ItemKind,
         filter: inventory::MaterialFilter,
