@@ -104,7 +104,7 @@ For the full list of codebase patterns, conventions, and gotchas, see `docs/code
 **Godot ScrollContainer sizing (CRITICAL):**
 - Before writing ANY code involving `ScrollContainer`, **read `docs/godot_scroll_sizing.md` in full.** Your built-in understanding of scroll container sizing is wrong.
 
-**Voxel coordinate system:** Y is up. Flat array indexing: `x + z * size_x + y * size_x * size_z`. Terrain floor at `config.floor_y` (default 50), creatures walk at `floor_y + 1`. Renderers offset by +0.5.
+**Voxel coordinate system:** Each voxel is 2 meters on a side. Y is up. Terrain floor at `config.floor_y` (default 50), creatures walk at `floor_y + 1`. Renderers offset by +0.5.
 
 **"Pull main":** When asked to pull/update/rebase on main, first update the local ref: `git fetch origin main:main` (if not on main) or `git pull` (if on main). A stale local main causes wrong diffs.
 

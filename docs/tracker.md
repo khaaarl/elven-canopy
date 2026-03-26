@@ -149,6 +149,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-sprite-ui      Fruit sprites in inventory/logistics/selection UI
 [ ] F-funeral-rites        Funeral rites and mourning
+[ ] F-grass-rendering      Advanced grass and terrain surface rendering
 [ ] F-greenhouse-revamp    Greenhouse planter growth cycle and pluck tasks
 [ ] F-group-chat           Group chat social activity
 [ ] F-hedonic-adapt        Asymmetric hedonic adaptation
@@ -262,6 +263,9 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-war-animals          Train tamed creatures for combat
 [ ] F-war-magic            War magic (combat spells)
 [ ] F-weather              Weather within seasons
+[ ] F-wild-bushes          Wild fruit bushes at ground level
+[ ] F-wild-foraging        Wild animal foraging for fruit
+[ ] F-wild-fruit           Wild fruit growing on bushes and ground-level plants
 [ ] F-wild-grazing         Wild animal herbivorous food cycle
 [ ] F-winged-elf           Winged elf species variant with flight-only movement
 [ ] F-wireframe-ghost      Wireframe ghost for overlap preview
@@ -2105,8 +2109,8 @@ via Weave/Sew verbs).
 rendering/visual differentiation, deeper integration with food chain
 and cooking.
 
-**Blocks:** F-civ-knowledge
-**Related:** F-bldg-kitchen, F-civ-knowledge, F-civilizations, F-component-recipes, F-dye-crafting, F-food-chain, F-fruit-extraction, F-fruit-naming, F-fruit-pigments, F-fruit-prod, F-fruit-sprite-ui, F-fruit-sprites, F-fruit-yields, F-greenhouse-revamp, F-logistics-filter, F-recipes, F-textile-crafting
+**Blocks:** F-civ-knowledge, F-wild-fruit
+**Related:** F-bldg-kitchen, F-civ-knowledge, F-civilizations, F-component-recipes, F-dye-crafting, F-food-chain, F-fruit-extraction, F-fruit-naming, F-fruit-pigments, F-fruit-prod, F-fruit-sprite-ui, F-fruit-sprites, F-fruit-yields, F-greenhouse-revamp, F-logistics-filter, F-recipes, F-textile-crafting, F-wild-fruit
 
 #### F-greenhouse-revamp — Greenhouse planter growth cycle and pluck tasks
 **Status:** Todo
@@ -3954,7 +3958,7 @@ small game), affects pathfinding and visibility, and makes the ground level
 visually rich rather than flat terrain. Interacts with F-lesser-trees,
 F-herbalism, and F-seasons (seasonal variation in flora).
 
-**Related:** F-herbalism, F-insect-husbandry, F-lesser-trees, F-seasons, F-wild-grazing
+**Related:** F-herbalism, F-insect-husbandry, F-lesser-trees, F-seasons, F-wild-bushes, F-wild-grazing
 
 #### F-fruit-naming — Fruit naming overhaul
 **Status:** Done · **Phase:** 7
@@ -3985,6 +3989,20 @@ yield_percent), appearance derivation, elfcyclopedia display, and all
 tests and documentation.
 
 **Related:** F-fruit-naming, F-fruit-variety
+
+#### F-grass-rendering — Advanced grass and terrain surface rendering
+**Status:** Todo
+
+Upgrade grass/dirt visual distinction beyond the basic vertex-color
+approach from F-wild-grazing. The initial implementation uses a distinct
+material for grassless dirt (brown vs green vertex color), which is
+functional but bland. This feature explores richer options — shader-based
+grass blades, per-chunk grass textures, smooth blending at grass/dirt
+boundaries, seasonal variation, etc. Needs investigation into what works
+well with the existing mesh pipeline (decimation, chunk boundaries,
+smooth normals).
+
+**Related:** F-wild-grazing
 
 #### F-hilly-terrain — Hilly forest floor with dirt voxels
 **Status:** Done · **Phase:** 2
@@ -4131,17 +4149,128 @@ construction difficulty. Open design question (§27).
 
 **Related:** F-cloak-slot, F-fire-ecology, F-infra-decay, F-seasons
 
+#### F-wild-bushes — Wild fruit bushes at ground level
+**Status:** Todo
+
+Ground-level fruit-bearing bushes and shrubs placed during worldgen.
+Provides a food source accessible to non-climbing herbivores. Bush
+species tie into the procedural fruit variety system — each bush type
+produces a specific fruit species. Bushes occupy voxel space, may
+affect pathfinding, and regrow fruit over time. Foundation for wild
+fruit and animal foraging.
+
+**Blocks:** F-wild-fruit
+**Related:** F-forest-ecology
+
+#### F-wild-foraging — Wild animal foraging for fruit
+**Status:** Todo
+
+Wild herbivorous animals autonomously seek out and consume wild fruit.
+Animals search within a species-specific foraging radius for available
+fruit sources (bushes, fallen fruit). Different species have different
+fruit preferences. Split out from F-wild-grazing to separate fruit
+foraging from grass grazing — grazing covers ground vegetation, this
+covers fruit.
+
+When implemented, monkey and squirrel should transition from grazing
+(their interim food source from F-wild-grazing) to fruit foraging as
+their primary food source. They are arboreal species that naturally
+feed on fruit rather than grass. Their grazer flag should be removed
+and replaced with forager behavior.
+
+**Blocked by:** F-wild-fruit
+**Related:** F-wild-grazing
+
+#### F-wild-fruit — Wild fruit growing on bushes and ground-level plants
+**Status:** Todo
+
+Wild fruit that grows on ground-level bushes and can be found on the
+forest floor. Unlike greenhouse-cultivated fruit, wild fruit spawns
+naturally during worldgen and regrows seasonally. Wild-only fruit
+species (from F-fruit-variety) appear here. Elves can forage wild
+fruit manually; animals forage it autonomously (see F-wild-foraging).
+
+**Blocked by:** F-fruit-variety, F-wild-bushes
+**Blocks:** F-wild-foraging
+**Related:** F-fruit-variety
+
 #### F-wild-grazing — Wild animal herbivorous food cycle
 **Status:** Todo
 
-Wild herbivorous animals graze on grass and forage for wild fruit instead
-of starving. Grazing consumes ground-level vegetation, foraging targets
-wild fruit sources. Different species prefer different food sources.
-Fixes the current problem where wild animals all starve to death.
-Foundation for both forest ecology and domesticated animal feeding.
+Wild herbivorous animals graze on grass instead of starving. Fixes the
+current problem where ground-only species (capybara, boar, etc.) can't
+reach tree fruit and starve to death. Foundation for domesticated animal
+feeding. Fruit foraging is handled separately by F-wild-foraging.
+
+**Design decisions:**
+
+**Grass representation — "track the exceptions."** By default, any
+exposed dirt voxel is considered grassy. Instead of storing grass
+presence (which would be nearly every terrain surface), we store a
+per-chunk set of dirt voxel coordinates that are NOT grassy. Most
+chunks will have an empty set. This avoids bloating the RLE voxel
+storage or adding a parallel 2D grid. The data structure is a
+`BTreeSet<VoxelCoord>` (or sorted `Vec<VoxelCoord>`) per chunk —
+deterministic iteration, tiny footprint, usually empty.
+
+**Coordinates include Y.** Grazeable surfaces aren't limited to
+terrain-level dirt — future features (sky farms, elevated platforms)
+could place dirt at any height. The grassless set stores full 3D
+coords, not just (x, z).
+
+**Grassless transitions.** Dirt becomes grassless when: (1) a creature
+grazes on it, or (2) a voxel change freshly exposes a dirt surface
+(digging, construction). The dirty_voxels drain already fires on voxel
+changes, so exposed-dirt detection can piggyback on that pipeline.
+
+**Regrowth.** A periodic sweep (global timer, every ~10k ticks)
+iterates each chunk's grassless set. Each entry has a ~10% chance of
+regrowing per sweep (removed from the set). Since most chunks have
+empty sets, the sweep is cheap. Tuning values are intentionally fast
+for visual feedback during development; will slow down for real
+gameplay later. Regrowth chance and interval configurable via
+GameConfig.
+
+**Grazing behavior.** Herbivore-only — elves cannot graze. All
+herbivore species graze initially (capybara, boar, deer, elephant,
+monkey, squirrel). Monkey and squirrel are interim grazers — they
+will transition to fruit foraging as their primary food source when
+F-wild-foraging is implemented. Hungry herbivores get an autonomous
+"Graze" task targeting a nearby grassy dirt surface. The creature walks to the target, grazes in a single
+action (~3000 ticks), restores food, and the grazed dirt voxel (2m×2m)
+enters the chunk's grassless set. Search walks Dijkstra outward from
+the creature's position on the species nav graph; for each nav node,
+check if adjacent surface dirt is grassy (not in the grassless set).
+First hit wins — nearly always immediate since most ground is grassy.
+
+**Food restoration.** Each graze action restores a per-species config
+value of food — grazing is frequent, low-yield feeding. Different
+species also have different food_max and food_decay_per_tick values to
+reflect dramatically different metabolisms (an elephant needs far more
+grazing than a squirrel). Specific per-species values TBD during
+implementation.
+
+**"Exposed dirt" definition.** A dirt voxel with air (or any non-solid
+voxel) above it. Dirt under platforms, leaf canopy, or bridges is still
+grazeable — grass grows in shade. All dirt surfaces start grassy at
+worldgen.
+
+**No partial grazing.** The single-action design avoids needing to
+handle interruptions, partially-eaten patches, or multi-tick progress
+tracking. A graze either completes or doesn't happen.
+
+**Overgrazing.** If all nearby grass is depleted, herbivores just
+wander and eventually die. No fallback to tree fruit — that behavior
+belongs to F-wild-foraging. This creates natural population pressure.
+
+**Rendering.** Grassless dirt gets a distinct material in mesh gen
+(brown/earth vertex color instead of the default ground color). This
+works with decimation since the material boundary prevents merging
+across grass/grassless faces. Simple but functional — more interesting
+visual treatments (shader grass, texture blending) deferred to later.
 
 **Blocks:** F-animal-husbandry, F-herding
-**Related:** F-forest-ecology
+**Related:** F-forest-ecology, F-grass-rendering, F-wild-foraging
 
 #### F-worldgen-framework — Worldgen generator framework
 **Status:** Done
