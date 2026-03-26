@@ -219,6 +219,7 @@ func _ready() -> void:
 
 	var furnishing_types := [
 		["Concert Hall", "ConcertHall"],
+		["Dance Hall", "DanceHall"],
 		["Dining Hall", "DiningHall"],
 		["Dormitory", "Dormitory"],
 		["Greenhouse", "Greenhouse"],
@@ -655,6 +656,9 @@ func _update_info(info: Dictionary) -> void:
 				"Furnishing: %s (%d/%d %s)"
 				% [furnishing, furniture_count, planned_furniture_count, furniture_noun]
 			)
+		elif planned_furniture_count == 0:
+			# Furniture-less furnishings (e.g. Dance Hall) — show name only.
+			_furnish_label.text = furnishing
 		else:
 			_furnish_label.text = "%s (%d %s)" % [furnishing, furniture_count, furniture_noun]
 		_furnish_label.visible = true

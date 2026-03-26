@@ -1233,18 +1233,12 @@ impl SimBridge {
         });
     }
 
-    /// Create a debug Dance activity at the given location. Idle elves will
-    /// discover it, volunteer, assemble, and dance for a while — proof-of-concept
-    /// for the group activity system.
+    /// Start a debug Dance activity in an existing dance hall. The sim picks
+    /// the first available dance hall, creates the activity linked to it, and
+    /// idle elves will discover, volunteer, assemble, and dance.
     #[func]
-    fn start_debug_dance(&mut self, x: i32, y: i32, z: i32) {
-        self.apply_or_send(SimAction::CreateActivity {
-            kind: elven_canopy_sim::types::ActivityKind::Dance,
-            location: VoxelCoord::new(x, y, z),
-            min_count: Some(3),
-            desired_count: Some(3),
-            origin: elven_canopy_sim::task::TaskOrigin::PlayerDirected,
-        });
+    fn start_debug_dance(&mut self) {
+        self.apply_or_send(SimAction::StartDebugDance);
     }
 
     /// Send a specific creature to a location. Creates a GoTo task and
@@ -4034,20 +4028,33 @@ impl SimBridge {
         for i in 0..active_ids.len() {
             let id_val = active_ids[i] as u64;
             let comp_id = elven_canopy_sim::types::CompositionId(id_val);
-            // Check if the composition's blueprint is still actively building.
-            // Find the blueprint that references this composition.
+
+            // Check blueprints first (construction music).
             let bp = sim
                 .db
                 .blueprints
                 .iter_all()
                 .find(|b| b.composition_id == Some(comp_id));
-            let should_stop = match bp {
-                None => true, // Blueprint gone (cancelled) — stop.
-                Some(b) => b.state == elven_canopy_sim::blueprint::BlueprintState::Complete,
-            };
-            if should_stop {
+            if let Some(b) = bp {
+                if b.state == elven_canopy_sim::blueprint::BlueprintState::Complete {
+                    finished.push(id_val as i64);
+                }
+                continue;
+            }
+
+            // Check dance activities (dance music). The composition is
+            // "finished" when its owning activity is gone (completed or
+            // cancelled — both delete the ActivityDanceData row).
+            let dance_owns = sim
+                .db
+                .activity_dance_data
+                .iter_all()
+                .any(|d| d.composition_id == Some(comp_id));
+            if !dance_owns {
+                // Neither blueprint nor dance owns it — orphaned, stop.
                 finished.push(id_val as i64);
             }
+            // Dance still active — keep playing.
         }
         finished
     }
@@ -6133,6 +6140,7 @@ impl SimBridge {
     ) {
         let ft = match furnishing_type.to_string().as_str() {
             "ConcertHall" => FurnishingType::ConcertHall,
+            "DanceHall" => FurnishingType::DanceHall,
             "DiningHall" => FurnishingType::DiningHall,
             "Dormitory" => FurnishingType::Dormitory,
             "Greenhouse" => FurnishingType::Greenhouse,

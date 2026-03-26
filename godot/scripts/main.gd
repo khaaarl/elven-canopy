@@ -886,6 +886,8 @@ func _setup_common(bridge: SimBridge) -> void:
 				bridge.send_debug_notification(
 					"Test notification at tick %d" % bridge.current_tick()
 				)
+			elif action == "DebugDance":
+				bridge.start_debug_dance()
 			elif action == "TriggerRaid":
 				bridge.trigger_raid()
 			elif action == "ExportMesh":

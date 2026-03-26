@@ -9278,6 +9278,7 @@ fn display_name_all_furnishing_types() {
     let mut rng = GameRng::new(42);
     let types_and_names = [
         (FurnishingType::ConcertHall, "Concert Hall #0"),
+        (FurnishingType::DanceHall, "Dance Hall #0"),
         (FurnishingType::DiningHall, "Dining Hall #0"),
         (FurnishingType::Dormitory, "Dormitory #0"),
         (FurnishingType::Home, "Home #0"),
@@ -9344,6 +9345,63 @@ fn furnish_structure_workshop() {
         structure.display_name(),
         format!("Workshop #{}", structure_id.0)
     );
+}
+
+// -----------------------------------------------------------------------
+// Dance hall tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn furnish_dance_hall_no_furniture_no_task() {
+    let mut sim = test_sim(42);
+    let anchor = find_building_site(&sim);
+    let structure_id = insert_completed_building(&mut sim, anchor);
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::FurnishStructure {
+            structure_id,
+            furnishing_type: FurnishingType::DanceHall,
+            greenhouse_species: None,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+
+    // Should have furnishing set.
+    let structure = sim.db.structures.get(&structure_id).unwrap();
+    assert_eq!(structure.furnishing, Some(FurnishingType::DanceHall));
+
+    // Should have zero furniture rows.
+    let furniture_count = sim
+        .db
+        .furniture
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .len();
+    assert_eq!(furniture_count, 0, "Dance halls should have no furniture");
+
+    // Should have created no Furnish task.
+    let furnish_tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Furnish)
+        .collect();
+    assert!(
+        furnish_tasks.is_empty(),
+        "Dance halls should not create a Furnish task"
+    );
+
+    // Display name should use "Dance Hall".
+    assert_eq!(
+        structure.display_name(),
+        format!("Dance Hall #{}", structure_id.0)
+    );
+}
+
+#[test]
+fn dance_hall_display_str() {
+    assert_eq!(FurnishingType::DanceHall.display_str(), "Dance Hall");
 }
 
 // -----------------------------------------------------------------------
@@ -45348,7 +45406,8 @@ fn activity_creation_sets_phase_and_defaults() {
     assert_eq!(activity.min_count, Some(3));
     assert_eq!(activity.desired_count, Some(3));
     assert_eq!(activity.progress, 0);
-    assert!(activity.total_cost > 0);
+    // total_cost starts at 0; set to plan.total_ticks when entering Executing.
+    assert_eq!(activity.total_cost, 0);
     assert_eq!(activity.location, location);
 }
 
@@ -45529,7 +45588,7 @@ fn arrival_transitions_to_executing() {
 }
 
 #[test]
-fn dance_execution_advances_progress_and_adds_thoughts() {
+fn dance_execution_generates_plan_and_adds_thoughts() {
     let mut sim = test_sim(42);
     let location = VoxelCoord::new(32, 1, 32);
     let activity_id = create_debug_dance(&mut sim, location);
@@ -45549,13 +45608,24 @@ fn dance_execution_advances_progress_and_adds_thoughts() {
         sim.on_activity_participant_arrived(activity_id, elves[i], &mut events);
     }
 
-    // Execute one activation for one creature.
-    let progress_before = sim.db.activities.get(&activity_id).unwrap().progress;
-    sim.execute_activity_behavior(elves[0], activity_id, &mut events);
-    let progress_after = sim.db.activities.get(&activity_id).unwrap().progress;
-    assert_eq!(progress_after, progress_before + 1);
+    // After entering Executing, a DancePlan should have been generated.
+    assert!(
+        sim.db.activity_dance_data.get(&activity_id).is_some(),
+        "DancePlan should be generated on Executing transition"
+    );
 
-    // EnjoyingDance thought should have been added.
+    // Participants should have dance slots assigned.
+    for i in 0..3 {
+        let p = sim
+            .db
+            .activity_participants
+            .get(&(activity_id, elves[i]))
+            .unwrap();
+        assert!(p.dance_slot.is_some(), "elf {i} should have a dance slot");
+    }
+
+    // Execute one activation — EnjoyingDance thought should be added.
+    sim.execute_activity_behavior(elves[0], activity_id, &mut events);
     let thoughts = sim
         .db
         .thoughts
@@ -45568,11 +45638,10 @@ fn dance_execution_advances_progress_and_adds_thoughts() {
 }
 
 #[test]
-fn dance_completes_with_mood_bonus_and_cleanup() {
+fn dance_waypoints_move_creatures() {
     let mut sim = test_sim(42);
     let location = VoxelCoord::new(32, 1, 32);
     let activity_id = create_debug_dance(&mut sim, location);
-    let total_cost = sim.db.activities.get(&activity_id).unwrap().total_cost;
     let elves = spawn_test_elves(&mut sim, 5);
 
     for eid in &elves {
@@ -45589,12 +45658,94 @@ fn dance_completes_with_mood_bonus_and_cleanup() {
         sim.on_activity_participant_arrived(activity_id, elves[i], &mut events);
     }
 
-    // Advance progress to just below completion.
-    let _ = sim.db.activities.modify_unchecked(&activity_id, |a| {
-        a.progress = total_cost - 1;
-    });
+    // Get the dance plan and find the first waypoint for slot 0.
+    let dance_data = sim.db.activity_dance_data.get(&activity_id).unwrap();
+    let slot0_waypoints = &dance_data.plan.slot_waypoints[0];
+    if slot0_waypoints.is_empty() {
+        return; // Cramped formation with no movement — valid.
+    }
 
-    // One more activation should trigger completion.
+    let first_wp = slot0_waypoints[0].clone();
+    let elf0_pos_before = sim.db.creatures.get(&elves[0]).unwrap().position;
+
+    // First activation: creature should set up a Move action toward the
+    // first waypoint, arriving at first_wp.tick.
+    let next_tick = sim.execute_activity_behavior(elves[0], activity_id, &mut events);
+    assert_eq!(
+        next_tick,
+        Some(first_wp.tick),
+        "should schedule reactivation at first waypoint tick"
+    );
+
+    // A MoveAction should exist pointing from old pos to first waypoint.
+    let move_action = sim.db.move_actions.get(&elves[0]);
+    assert!(
+        move_action.is_some(),
+        "MoveAction should exist for interpolation"
+    );
+    let ma = move_action.unwrap();
+    assert_eq!(ma.move_from, elf0_pos_before);
+    assert_eq!(ma.move_to, first_wp.position);
+
+    // Creature's sim position should already be at the target (sim truth).
+    let elf0_pos_after = sim.db.creatures.get(&elves[0]).unwrap().position;
+    assert_eq!(elf0_pos_after, first_wp.position);
+
+    // Creature should be in Move action state.
+    let creature = sim.db.creatures.get(&elves[0]).unwrap();
+    assert_eq!(creature.action_kind, crate::db::ActionKind::Move);
+
+    // Cursor should have advanced past the first waypoint.
+    let p = sim
+        .db
+        .activity_participants
+        .get(&(activity_id, elves[0]))
+        .unwrap();
+    assert!(p.waypoint_cursor >= 1, "cursor should have advanced");
+}
+
+#[test]
+fn dance_completes_with_mood_bonus_and_cleanup() {
+    let mut sim = test_sim(42);
+    let location = VoxelCoord::new(32, 1, 32);
+    let activity_id = create_debug_dance(&mut sim, location);
+    let elves = spawn_test_elves(&mut sim, 5);
+
+    for eid in &elves {
+        let mut c = sim.db.creatures.get(eid).unwrap();
+        c.current_task = None;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let mut events = Vec::new();
+    for i in 0..3 {
+        sim.volunteer_for_activity(activity_id, elves[i], &mut events);
+    }
+    for i in 0..3 {
+        sim.on_activity_participant_arrived(activity_id, elves[i], &mut events);
+    }
+
+    // The plan should exist and have a total_ticks value.
+    let plan_total = sim
+        .db
+        .activity_dance_data
+        .get(&activity_id)
+        .unwrap()
+        .plan
+        .total_ticks;
+    assert!(plan_total > 0);
+
+    // Advance sim.tick past the plan's total_ticks to trigger completion.
+    let execution_start = sim
+        .db
+        .activities
+        .get(&activity_id)
+        .unwrap()
+        .execution_start_tick
+        .unwrap();
+    sim.tick = execution_start + plan_total;
+
+    // One activation should trigger completion.
     sim.execute_activity_behavior(elves[0], activity_id, &mut events);
 
     // Activity should be deleted.
@@ -45991,9 +46142,6 @@ fn end_to_end_dance_via_command_and_activation() {
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position;
 
-    // Set a low total_cost so the dance completes quickly.
-    sim.config.activity.debug_dance_total_cost = 5;
-
     // Issue CreateActivity command.
     let cmd = SimCommand {
         player_name: String::new(),
@@ -46033,20 +46181,26 @@ fn end_to_end_dance_via_command_and_activation() {
         ActivityPhase::Executing
     );
 
-    // Run execution activations until completion.
-    // Each activation adds 1 progress. 3 creatures × N activations = total_cost.
-    let total_cost = sim.db.activities.get(&activity_id).unwrap().total_cost;
-    let mut activations = 0;
-    while sim.db.activities.get(&activity_id).is_some() {
-        for i in 0..3 {
-            if sim.db.activities.get(&activity_id).is_none() {
-                break;
-            }
-            sim.execute_activity_behavior(elves[i], activity_id, &mut events);
-            activations += 1;
-        }
-        assert!(activations <= total_cost as usize + 10, "runaway loop");
-    }
+    // A dance plan should have been generated.
+    let plan_total = sim
+        .db
+        .activity_dance_data
+        .get(&activity_id)
+        .unwrap()
+        .plan
+        .total_ticks;
+    assert!(plan_total > 0);
+
+    // Advance sim tick past the plan duration and run one activation.
+    let execution_start = sim
+        .db
+        .activities
+        .get(&activity_id)
+        .unwrap()
+        .execution_start_tick
+        .unwrap();
+    sim.tick = execution_start + plan_total;
+    sim.execute_activity_behavior(elves[0], activity_id, &mut events);
 
     // Activity should be done.
     assert!(sim.db.activities.get(&activity_id).is_none());
@@ -46334,7 +46488,6 @@ fn no_double_reactivation_on_activity_completion() {
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position;
 
-    sim.config.activity.debug_dance_total_cost = 1; // Completes on first execution.
     let activity_id = create_debug_dance(&mut sim, location);
 
     let mut events = Vec::new();
@@ -46344,6 +46497,23 @@ fn no_double_reactivation_on_activity_completion() {
     for i in 0..3 {
         sim.on_activity_participant_arrived(activity_id, elves[i], &mut events);
     }
+
+    // Advance tick past plan duration so the next activation triggers completion.
+    let plan_total = sim
+        .db
+        .activity_dance_data
+        .get(&activity_id)
+        .unwrap()
+        .plan
+        .total_ticks;
+    let execution_start = sim
+        .db
+        .activities
+        .get(&activity_id)
+        .unwrap()
+        .execution_start_tick
+        .unwrap();
+    sim.tick = execution_start + plan_total;
 
     // Clear pending activations.
     for i in 0..3 {
@@ -47461,11 +47631,12 @@ fn activity_serde_roundtrip_preserves_executing_state() {
         sim.on_activity_participant_arrived(activity_id, elves[i], &mut events);
     }
 
-    // Advance progress partway.
+    // Run a couple activations — dance behavior should execute without error.
     sim.execute_activity_behavior(elves[0], activity_id, &mut events);
     sim.execute_activity_behavior(elves[1], activity_id, &mut events);
-    let progress_before = sim.db.activities.get(&activity_id).unwrap().progress;
-    assert!(progress_before > 0);
+
+    // A dance plan should have been generated.
+    assert!(sim.db.activity_dance_data.get(&activity_id).is_some());
 
     // Roundtrip.
     let json = serde_json::to_string(&sim).unwrap();
@@ -47474,8 +47645,10 @@ fn activity_serde_roundtrip_preserves_executing_state() {
     // Activity preserved.
     let activity = restored.db.activities.get(&activity_id).unwrap();
     assert_eq!(activity.phase, ActivityPhase::Executing);
-    assert_eq!(activity.progress, progress_before);
     assert_eq!(activity.kind, ActivityKind::Dance);
+
+    // Dance data preserved.
+    assert!(restored.db.activity_dance_data.get(&activity_id).is_some());
 
     // Participants preserved.
     for i in 0..3 {
@@ -47505,7 +47678,6 @@ fn activity_config_serde_backward_compat() {
 
     let restored: crate::config::GameConfig = serde_json::from_str(&stripped).unwrap();
     // Should get defaults.
-    assert_eq!(restored.activity.debug_dance_total_cost, 1000);
     assert_eq!(restored.activity.volunteer_search_radius, 30);
     assert_eq!(restored.activity.assembly_timeout_ticks, 300_000);
     assert_eq!(restored.activity.pause_timeout_ticks, 60_000);
@@ -48269,6 +48441,154 @@ fn assign_path_command_serde_roundtrip() {
     assert_eq!(json, serde_json::to_string(&restored).unwrap());
 }
 
+// -----------------------------------------------------------------------
+// StartDebugDance integration tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn start_debug_dance_no_hall_does_nothing() {
+    let mut sim = test_sim(42);
+
+    // No dance hall exists — StartDebugDance should be a no-op.
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::StartDebugDance,
+    };
+    sim.step(&[cmd], sim.tick + 1);
+
+    // No activity should have been created.
+    let dances: Vec<_> = sim
+        .db
+        .activities
+        .iter_all()
+        .filter(|a| a.kind == ActivityKind::Dance)
+        .collect();
+    assert!(
+        dances.is_empty(),
+        "no dance activity should be created without a dance hall"
+    );
+}
+
+#[test]
+fn start_debug_dance_creates_activity_linked_to_hall() {
+    let mut sim = test_sim(42);
+    let anchor = find_building_site(&sim);
+    let structure_id = insert_completed_building(&mut sim, anchor);
+
+    // Furnish as a dance hall.
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::FurnishStructure {
+            structure_id,
+            furnishing_type: FurnishingType::DanceHall,
+            greenhouse_species: None,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+
+    // Now start a debug dance.
+    let cmd2 = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::StartDebugDance,
+    };
+    sim.step(&[cmd2], sim.tick + 1);
+
+    // A dance activity should exist.
+    let dances: Vec<_> = sim
+        .db
+        .activities
+        .iter_all()
+        .filter(|a| a.kind == ActivityKind::Dance)
+        .collect();
+    assert_eq!(dances.len(), 1);
+    let activity_id = dances[0].id;
+
+    // ActivityStructureRef should link it to the dance hall.
+    let refs = sim
+        .db
+        .activity_structure_refs
+        .by_activity_id(&activity_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(refs.len(), 1);
+    assert_eq!(refs[0].structure_id, structure_id);
+    assert_eq!(refs[0].role, crate::db::ActivityStructureRole::DanceVenue);
+}
+
+#[test]
+fn dance_completion_cleans_up_dance_data() {
+    let mut sim = test_sim(42);
+    let location = VoxelCoord::new(32, 1, 32);
+    let activity_id = create_debug_dance(&mut sim, location);
+    let elves = spawn_test_elves(&mut sim, 5);
+
+    for eid in &elves {
+        let mut c = sim.db.creatures.get(eid).unwrap();
+        c.current_task = None;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let mut events = Vec::new();
+    for i in 0..3 {
+        sim.volunteer_for_activity(activity_id, elves[i], &mut events);
+    }
+    for i in 0..3 {
+        sim.on_activity_participant_arrived(activity_id, elves[i], &mut events);
+    }
+
+    // Verify dance data exists with a composition.
+    let dance_data = sim.db.activity_dance_data.get(&activity_id).unwrap();
+    let comp_id = dance_data
+        .composition_id
+        .expect("dance should have a music composition");
+    assert!(
+        sim.db.music_compositions.get(&comp_id).is_some(),
+        "composition should exist in the DB"
+    );
+
+    // Advance past plan duration and trigger completion.
+    let plan_total = sim
+        .db
+        .activity_dance_data
+        .get(&activity_id)
+        .unwrap()
+        .plan
+        .total_ticks;
+    let execution_start = sim
+        .db
+        .activities
+        .get(&activity_id)
+        .unwrap()
+        .execution_start_tick
+        .unwrap();
+    sim.tick = execution_start + plan_total;
+    sim.execute_activity_behavior(elves[0], activity_id, &mut events);
+
+    // Activity and dance data should both be cleaned up via cascade delete.
+    assert!(sim.db.activities.get(&activity_id).is_none());
+    assert!(
+        sim.db.activity_dance_data.get(&activity_id).is_none(),
+        "ActivityDanceData should be cascade-deleted with the activity"
+    );
+    assert!(
+        sim.db.music_compositions.get(&comp_id).is_none(),
+        "music composition should be cleaned up when dance completes"
+    );
+}
+
+#[test]
+fn start_debug_dance_command_serde_roundtrip() {
+    let cmd = SimCommand {
+        player_name: "test".to_string(),
+        tick: 42,
+        action: SimAction::StartDebugDance,
+    };
+    let json = serde_json::to_string(&cmd).unwrap();
+    let restored: SimCommand = serde_json::from_str(&json).unwrap();
+    assert_eq!(json, serde_json::to_string(&restored).unwrap());
+}
+
 #[test]
 fn path_skill_cap_blocks_default_but_allows_path_cap() {
     let mut sim = test_sim(42);
@@ -48656,4 +48976,132 @@ fn path_id_short_name() {
             path_id.display_name()
         );
     }
+}
+
+#[test]
+fn activity_participant_dance_fields_backward_compat() {
+    // Deserializing an ActivityParticipant without dance_slot/waypoint_cursor
+    // (old save format) should succeed with defaults.
+    let json = r#"{"activity_id":"00000000-0000-0000-0000-000000000001","creature_id":"00000000-0000-0000-0000-000000000002","role":"Member","status":"Arrived","assigned_position":{"x":10,"y":51,"z":20},"travel_task":null}"#;
+    let p: crate::db::ActivityParticipant = serde_json::from_str(json).unwrap();
+    assert_eq!(p.dance_slot, None);
+    assert_eq!(p.waypoint_cursor, 0);
+}
+
+#[test]
+fn activity_structure_role_serde_roundtrip() {
+    let role = crate::db::ActivityStructureRole::DanceVenue;
+    let json = serde_json::to_string(&role).unwrap();
+    let restored: crate::db::ActivityStructureRole = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored, role);
+}
+
+#[test]
+fn cancel_executing_dance_cleans_up_plan_and_composition() {
+    let mut sim = test_sim(42);
+    let location = VoxelCoord::new(32, 1, 32);
+    let activity_id = create_debug_dance(&mut sim, location);
+    let elves = spawn_test_elves(&mut sim, 5);
+
+    for eid in &elves {
+        let mut c = sim.db.creatures.get(eid).unwrap();
+        c.current_task = None;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let mut events = Vec::new();
+    for i in 0..3 {
+        sim.volunteer_for_activity(activity_id, elves[i], &mut events);
+    }
+    for i in 0..3 {
+        sim.on_activity_participant_arrived(activity_id, elves[i], &mut events);
+    }
+
+    // Dance should be Executing with a plan and composition.
+    assert_eq!(
+        sim.db.activities.get(&activity_id).unwrap().phase,
+        ActivityPhase::Executing
+    );
+    let comp_id = sim
+        .db
+        .activity_dance_data
+        .get(&activity_id)
+        .unwrap()
+        .composition_id
+        .expect("should have composition");
+    assert!(sim.db.music_compositions.get(&comp_id).is_some());
+
+    // Cancel the activity while executing.
+    sim.cancel_activity(activity_id, &mut events);
+
+    // Everything should be cleaned up.
+    assert!(sim.db.activities.get(&activity_id).is_none());
+    assert!(sim.db.activity_dance_data.get(&activity_id).is_none());
+    assert!(
+        sim.db.music_compositions.get(&comp_id).is_none(),
+        "composition should be removed on cancel"
+    );
+}
+
+#[test]
+fn dance_config_backward_compat_dance_duration_secs() {
+    // Deserializing an ActivityConfig without dance_duration_secs should
+    // use the default value (24.0).
+    let config = test_config();
+    let json = serde_json::to_string(&config.activity).unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    value.as_object_mut().unwrap().remove("dance_duration_secs");
+    let stripped = serde_json::to_string(&value).unwrap();
+    let restored: crate::config::ActivityConfig = serde_json::from_str(&stripped).unwrap();
+    assert!(
+        (restored.dance_duration_secs - 24.0).abs() < 0.01,
+        "dance_duration_secs should default to 24.0, got {}",
+        restored.dance_duration_secs
+    );
+}
+
+#[test]
+fn serde_roundtrip_preserves_dance_slot_and_cursor() {
+    let mut sim = test_sim(42);
+    let location = VoxelCoord::new(32, 1, 32);
+    let activity_id = create_debug_dance(&mut sim, location);
+    let elves = spawn_test_elves(&mut sim, 5);
+
+    for eid in &elves {
+        let mut c = sim.db.creatures.get(eid).unwrap();
+        c.current_task = None;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let mut events = Vec::new();
+    for i in 0..3 {
+        sim.volunteer_for_activity(activity_id, elves[i], &mut events);
+    }
+    for i in 0..3 {
+        sim.on_activity_participant_arrived(activity_id, elves[i], &mut events);
+    }
+
+    // Run one dance activation to advance the cursor.
+    sim.execute_activity_behavior(elves[0], activity_id, &mut events);
+    let p_before = sim
+        .db
+        .activity_participants
+        .get(&(activity_id, elves[0]))
+        .unwrap();
+    let slot_before = p_before.dance_slot;
+    let cursor_before = p_before.waypoint_cursor;
+    assert!(slot_before.is_some());
+    assert!(cursor_before > 0, "cursor should have advanced");
+
+    // Roundtrip.
+    let json = serde_json::to_string(&sim).unwrap();
+    let restored: SimState = serde_json::from_str(&json).unwrap();
+
+    let p_after = restored
+        .db
+        .activity_participants
+        .get(&(activity_id, elves[0]))
+        .unwrap();
+    assert_eq!(p_after.dance_slot, slot_before);
+    assert_eq!(p_after.waypoint_cursor, cursor_before);
 }

@@ -412,6 +412,10 @@ pub enum SimAction {
         creature_id: CreatureId,
         path_id: PathId,
     },
+    /// Start a debug dance in an existing dance hall. The sim picks the first
+    /// available dance hall, creates a Dance activity linked to it via
+    /// `ActivityStructureRef`, and places the activity at the hall's interior.
+    StartDebugDance,
 }
 
 #[cfg(test)]

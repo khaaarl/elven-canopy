@@ -1186,6 +1186,9 @@ impl SimState {
             } => {
                 self.assign_path(*creature_id, *path_id, events);
             }
+            SimAction::StartDebugDance => {
+                self.handle_start_debug_dance(events);
+            }
         }
     }
 

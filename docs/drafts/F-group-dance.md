@@ -18,9 +18,10 @@ The group activity framework is implemented (`activity.rs`). `ActivityKind::Danc
 - Open recruitment (idle elves volunteer), player-civ + elf-only eligibility
 - `DeparturePolicy::Continue` (dance keeps going if someone leaves)
 - Late join allowed
-- Stub execution: each activation tick adds 1 progress, `EnjoyingDance` thought; completes at `debug_dance_total_cost` (default 1000)
+- V1 choreographed execution: dance plan generated on Executing transition, creatures move via timed Move actions synchronized to music beats
+- Composed music accompaniment via the music composition system
 - Completion awards `DancedInGroup` thought to all participants
-- Debug Dance button in F12 toolbar enters placement mode; click creates a dance activity at a voxel location
+- Debug Dance button in F12 toolbar picks an existing dance hall and creates a linked dance activity
 
 **What this feature replaces:** The stub execution with actual choreography — elves moving in coordinated patterns instead of standing in place accumulating progress ticks.
 

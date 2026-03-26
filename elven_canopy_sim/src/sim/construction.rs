@@ -1322,6 +1322,14 @@ impl SimState {
             return;
         }
 
+        // DanceHall: no furniture, no task — just set the furnishing and return.
+        if furnishing_type == FurnishingType::DanceHall {
+            let mut structure = self.db.structures.get(&structure_id).unwrap();
+            structure.furnishing = Some(FurnishingType::DanceHall);
+            let _ = self.db.structures.update_no_fk(structure);
+            return;
+        }
+
         // Greenhouse-specific validation: species must exist and be cultivable.
         if furnishing_type == FurnishingType::Greenhouse {
             let species_id = match greenhouse_species {

@@ -212,6 +212,13 @@ pub enum TaskStructureRole {
     CraftAt,
 }
 
+/// Role of an activity-to-structure reference. Determines why an activity
+/// references a particular structure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum ActivityStructureRole {
+    DanceVenue,
+}
+
 /// Role of a task-to-voxel reference. Determines why a task references
 /// a particular voxel position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -831,6 +838,7 @@ impl CompletedStructure {
             crate::types::FurnishingType::Kitchen | crate::types::FurnishingType::Storehouse => 3,
             crate::types::FurnishingType::DiningHall | crate::types::FurnishingType::Workshop => 4,
             crate::types::FurnishingType::Greenhouse => 2,
+            crate::types::FurnishingType::DanceHall => return Vec::new(),
             crate::types::FurnishingType::Home => unreachable!(),
         };
 
@@ -1152,6 +1160,51 @@ pub struct ActivityParticipant {
     /// The GoTo task driving movement during assembly (Traveling status only).
     /// Cleared when the creature arrives or the activity transitions.
     pub travel_task: Option<TaskId>,
+
+    /// For dance activities: which slot in the DancePlan this participant
+    /// occupies (index into `DancePlan.formation.positions`). `None` for
+    /// non-dance activities or late joiners without a choreographed slot.
+    #[serde(default)]
+    pub dance_slot: Option<u16>,
+
+    /// For dance activities: cursor into `DancePlan.slot_waypoints[slot]`.
+    /// Points to the next waypoint to execute. Advances monotonically.
+    #[serde(default)]
+    pub waypoint_cursor: u32,
+}
+
+/// Dance-specific extension data (1:1 with Activity, PK = activity_id).
+///
+/// Stores the precomputed choreography plan generated when a dance activity
+/// enters `Executing` phase. The plan is consulted each activation tick to
+/// determine creature movements.
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct ActivityDanceData {
+    #[primary_key]
+    pub activity_id: ActivityId,
+    pub plan: crate::dance::DancePlan,
+    /// The music composition accompanying this dance. Created when the
+    /// activity enters Executing, generated asynchronously by the rendering
+    /// layer. `None` if music generation is not available.
+    #[serde(default)]
+    pub composition_id: Option<CompositionId>,
+}
+
+/// Activity-to-structure reference with role discriminant.
+///
+/// Mirrors `TaskStructureRef` for the activity system. Links an activity
+/// to relevant structures (e.g., a dance activity to its dance hall).
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+#[primary_key("activity_id", "seq")]
+pub struct ActivityStructureRef {
+    #[indexed]
+    pub activity_id: ActivityId,
+    #[auto_increment]
+    #[serde(rename = "id")]
+    pub seq: u64,
+    #[indexed]
+    pub structure_id: StructureId,
+    pub role: ActivityStructureRole,
 }
 
 // ---------------------------------------------------------------------------
@@ -1557,6 +1610,15 @@ pub struct SimDb {
             fks(activity_id = "activities" on_delete cascade,
                 creature_id = "creatures" on_delete cascade))]
     pub activity_participants: ActivityParticipantTable,
+
+    #[table(singular = "activity_dance_data",
+            fks(activity_id = "activities" pk on_delete cascade))]
+    pub activity_dance_data: ActivityDanceDataTable,
+
+    #[table(singular = "activity_structure_ref",
+            fks(activity_id = "activities" on_delete cascade,
+                structure_id = "structures"))]
+    pub activity_structure_refs: ActivityStructureRefTable,
 
     #[table(singular = "music_composition", auto)]
     pub music_compositions: MusicCompositionTable,

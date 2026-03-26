@@ -52,7 +52,6 @@ This reduces merge conflicts when parallel work streams add items.
 [~] F-enemy-ai             Hostile creature AI (goblin/orc/troll behavior)
 [~] F-face-tint            Directional face tinting by normal (top warm, bottom cool)
 [~] F-fruit-variety        Procedural fruit variety and processing
-[~] F-group-dance          Group dance and social singing activities
 [~] F-multiplayer          Relay-coordinator multiplayer networking
 [~] F-notifications        Player-visible event notifications
 [~] F-parallel-dedup       Radix-partitioned parallel dedup (elven_canopy_utils)
@@ -112,6 +111,10 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-controls-config-C    Controls settings screen with rebinding UI
 [ ] F-creature-control     Temporary allegiance change and AI override
 [ ] F-cultural-drift       Inter-tree cultural divergence
+[ ] F-dance-choreo         Refine dance figure choreography
+[ ] F-dance-movespeed      Dance movement paced to creature walk speed
+[ ] F-dance-scaling        Support more than 3 dancers
+[ ] F-dance-self-org       Elves self-organize dances
 [ ] F-dappled-light        Dappled light effect via scrolling noise on ground shader
 [ ] F-day-night            Day/night cycle and pacing
 [ ] F-day-night-color      Color grading shift by time of day
@@ -362,6 +365,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-giant-hornet         Giant hornet hostile flying creature
 [x] F-godot-setup          Godot 4 project setup
 [x] F-group-activity       Multi-worker activity coordination layer
+[x] F-group-dance          Group dance and social singing activities
 [x] F-hauling              Item hauling task type
 [x] F-hilly-terrain        Hilly forest floor with dirt voxels
 [x] F-home-camera          Home key to center camera on tree
@@ -2646,7 +2650,7 @@ and F-social-graph (close relationships = deeper grief).
 **Unblocked by:** F-group-activity
 
 #### F-group-dance — Group dance and social singing activities
-**Status:** In Progress
+**Status:** Done
 
 Procedural dance generator for group dance activities. Elves on a
 rectangular voxel-grid floor perform coordinated figures (chains, ring
@@ -2658,7 +2662,7 @@ geometric patterns. Module within elven_canopy_sim.
 **Draft:** docs/drafts/F-group-dance.md
 
 **Unblocked by:** F-group-activity
-**Related:** F-bldg-concert, F-music-runtime
+**Related:** F-bldg-concert, F-dance-choreo, F-dance-movespeed, F-dance-scaling, F-dance-self-org, F-music-runtime
 
 #### F-hedonic-adapt — Asymmetric hedonic adaptation
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
@@ -2909,6 +2913,34 @@ effectiveness.
 
 **Blocked by:** F-buff-system
 **Related:** F-buff-system, F-choir-build, F-choir-harmony, F-group-activity
+
+#### F-dance-choreo — Refine dance figure choreography
+**Status:** Todo
+
+Refine the dance figure vocabulary and choreography. Current figures (advance/retire, ring rotation, swap, set-in-place) are basic. Improvements: advance-and-retire should move lines toward each other (not all +z), add Grid formation for odd-count groups, add do-si-do and chain/grand-chain figures, variable-length set-in-place (2-4 steps), and better figure selection weighting for visual variety.
+
+**Related:** F-group-dance
+
+#### F-dance-movespeed — Dance movement paced to creature walk speed
+**Status:** Todo
+
+Dance waypoint timing currently ignores creature walk speed — elves teleport to positions at beat-aligned ticks regardless of distance. Movement duration should be plausible relative to the creature's actual walk speed, with the beat grid informing when moves START rather than dictating impossible speeds.
+
+**Related:** F-group-dance
+
+#### F-dance-scaling — Support more than 3 dancers
+**Status:** Todo
+
+Scale dance activities beyond the current 3-elf minimum/desired count. Larger dance halls should attract more dancers, formations should adapt to participant count, and the choreography should remain visually interesting at 6-12+ participants.
+
+**Related:** F-group-dance
+
+#### F-dance-self-org — Elves self-organize dances
+**Status:** Todo
+
+Idle elves autonomously discover dance halls and organize dances without player intervention via the Debug Dance button. Includes choosing when to dance (mood/social need triggers), recruiting other elves, and naturally ending dances. Open question: how many elves should a dance recruit? Currently hardcoded min=3 desired=6 in the debug dance path.
+
+**Related:** F-group-dance
 
 #### F-elf-names — Elf name generation from conlang rules
 **Status:** Done · **Phase:** 6 · **Refs:** §20

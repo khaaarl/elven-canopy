@@ -853,6 +853,7 @@ pub enum LadderKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum FurnishingType {
     ConcertHall,
+    DanceHall,
     DiningHall,
     Dormitory,
     Greenhouse,
@@ -864,9 +865,13 @@ pub enum FurnishingType {
 
 impl FurnishingType {
     /// The kind of furniture placed in a room of this type.
+    ///
+    /// DanceHall has no furniture — this method should never be called for it
+    /// in the furniture pipeline (furnish_structure early-exits). Returns Bench
+    /// as a harmless default for exhaustive matching.
     pub fn furniture_kind(self) -> FurnitureKind {
         match self {
-            FurnishingType::ConcertHall => FurnitureKind::Bench,
+            FurnishingType::ConcertHall | FurnishingType::DanceHall => FurnitureKind::Bench,
             FurnishingType::DiningHall => FurnitureKind::Table,
             FurnishingType::Dormitory | FurnishingType::Home => FurnitureKind::Bed,
             FurnishingType::Greenhouse => FurnitureKind::Planter,
@@ -880,6 +885,7 @@ impl FurnishingType {
     pub fn display_str(self) -> &'static str {
         match self {
             FurnishingType::ConcertHall => "Concert Hall",
+            FurnishingType::DanceHall => "Dance Hall",
             FurnishingType::DiningHall => "Dining Hall",
             FurnishingType::Dormitory => "Dormitory",
             FurnishingType::Greenhouse => "Greenhouse",
@@ -1817,6 +1823,8 @@ mod tests {
             status: ParticipantStatus::Volunteered,
             assigned_position: VoxelCoord::new(10, 51, 20),
             travel_task: None,
+            dance_slot: None,
+            waypoint_cursor: 0,
         };
         let json = serde_json::to_string(&participant).unwrap();
         let restored: ActivityParticipant = serde_json::from_str(&json).unwrap();

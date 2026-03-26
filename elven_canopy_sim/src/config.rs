@@ -554,12 +554,14 @@ pub struct ActivityConfig {
     /// participant leaves and wait for a replacement.
     pub pause_timeout_ticks: u64,
 
-    // --- Debug dance (temporary hard-coded values for proof-of-concept) ---
-    /// Total progress units needed to complete a debug dance. Each creature
-    /// activation during execution contributes 1 unit, so this is roughly
-    /// (duration_in_ticks / activation_interval) * participant_count.
-    /// TEMPORARY: hard-coded for debug dance proof-of-concept.
-    pub debug_dance_total_cost: i64,
+    /// Target duration for a dance activity in seconds. Determines the
+    /// number of music sections and dance figures generated.
+    #[serde(default = "default_dance_duration_secs")]
+    pub dance_duration_secs: f32,
+}
+
+fn default_dance_duration_secs() -> f32 {
+    24.0
 }
 
 impl Default for ActivityConfig {
@@ -571,10 +573,8 @@ impl Default for ActivityConfig {
             volunteer_search_radius: 30,
             // ~1 min real time before cancelling a paused activity.
             pause_timeout_ticks: 60_000,
-            // ~1000 progress units. With 3 elves each contributing 1 per
-            // activation (~every 1000 ticks), that's ~333 activations ≈
-            // 333 sim-seconds ≈ ~33 seconds real time.
-            debug_dance_total_cost: 1000,
+            // ~24 seconds — fits a 1-section composition comfortably.
+            dance_duration_secs: default_dance_duration_secs(),
         }
     }
 }

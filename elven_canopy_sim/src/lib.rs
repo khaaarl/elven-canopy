@@ -54,6 +54,7 @@ pub mod building;
 pub mod checksum;
 pub mod command;
 pub mod config;
+pub mod dance;
 pub mod db;
 pub mod event;
 pub mod flight_pathfinding;

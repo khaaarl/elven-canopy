@@ -412,7 +412,8 @@ impl SimState {
             let phase = self.db.activities.get(&activity_id).map(|a| a.phase);
             match phase {
                 Some(crate::types::ActivityPhase::Executing) => {
-                    self.execute_activity_behavior(creature_id, activity_id, events);
+                    let next_tick =
+                        self.execute_activity_behavior(creature_id, activity_id, events);
                     // If the activity completed during execution, complete_activity
                     // already scheduled reactivation. Only schedule if the creature
                     // is still in the activity (not yet completed).
@@ -422,7 +423,16 @@ impl SimState {
                         .get(&creature_id)
                         .is_some_and(|c| c.current_activity.is_some())
                     {
-                        self.schedule_reactivation(creature_id);
+                        if let Some(tick) = next_tick {
+                            // Activity requested a specific reactivation time
+                            // (e.g., dance move completing on a beat).
+                            self.event_queue.schedule(
+                                tick,
+                                ScheduledEventKind::CreatureActivation { creature_id },
+                            );
+                        } else {
+                            self.schedule_reactivation(creature_id);
+                        }
                     }
                 }
                 Some(crate::types::ActivityPhase::Paused) => {

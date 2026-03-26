@@ -49,15 +49,13 @@ impl SimState {
         desired_count: Option<u16>,
         origin: crate::task::TaskOrigin,
         _events: &mut Vec<SimEvent>,
-    ) {
+    ) -> ActivityId {
         let activity_id = ActivityId::new(&mut self.rng);
         let departure_policy = default_departure_policy(kind, &self.config.activity);
         let allows_late_join = default_allows_late_join(kind);
         let recruitment = default_recruitment_mode(kind);
-        let total_cost = match kind {
-            ActivityKind::Dance => self.config.activity.debug_dance_total_cost,
-            _ => 0, // Other kinds will set their own cost when implemented.
-        };
+        // Dance total_cost is set later by generate_dance_plan (plan.total_ticks).
+        let total_cost = 0;
 
         // Per-kind eligibility defaults. Dance is restricted to the player's
         // elf civ; other kinds will get their own rules when implemented.
@@ -85,6 +83,46 @@ impl SimState {
             pause_started_tick: None,
         };
         self.db.activities.insert_no_fk(activity).unwrap();
+        activity_id
+    }
+
+    /// Handle `SimAction::StartDebugDance` — find a dance hall and create a
+    /// Dance activity linked to it.
+    pub(crate) fn handle_start_debug_dance(&mut self, events: &mut Vec<SimEvent>) {
+        // Find the first dance-hall-furnished building.
+        let dance_hall = self
+            .db
+            .structures
+            .iter_all()
+            .find(|s| s.furnishing == Some(crate::types::FurnishingType::DanceHall));
+        let structure = match dance_hall {
+            Some(s) => s.clone(),
+            None => return, // No dance hall — do nothing.
+        };
+
+        // Use the first interior floor position as the activity location.
+        let interior = structure.floor_interior_positions();
+        let location = interior.first().copied().unwrap_or(structure.anchor);
+
+        // Create the activity.
+        let activity_id = self.handle_create_activity(
+            ActivityKind::Dance,
+            location,
+            Some(3),
+            Some(6),
+            crate::task::TaskOrigin::PlayerDirected,
+            events,
+        );
+
+        // Link the activity to the dance hall via ActivityStructureRef.
+        let _ = self.db.activity_structure_refs.insert_auto_no_fk(|seq| {
+            crate::db::ActivityStructureRef {
+                activity_id,
+                seq,
+                structure_id: structure.id,
+                role: crate::db::ActivityStructureRole::DanceVenue,
+            }
+        });
     }
 
     /// Handle `SimAction::CancelActivity` — cancel and clean up an activity.
@@ -147,6 +185,8 @@ impl SimState {
             status: ParticipantStatus::Traveling,
             assigned_position: activity.location,
             travel_task: None,
+            dance_slot: None,
+            waypoint_cursor: 0,
         };
         self.db
             .activity_participants
@@ -257,6 +297,8 @@ impl SimState {
             status: ParticipantStatus::Volunteered,
             assigned_position: activity.location,
             travel_task: None,
+            dance_slot: None,
+            waypoint_cursor: 0,
         };
         self.db
             .activity_participants
@@ -400,52 +442,304 @@ impl SimState {
             a.phase = ActivityPhase::Executing;
             a.execution_start_tick = Some(self.tick);
             let _ = self.db.activities.update_no_fk(a);
+
+            // Dance-specific: generate the choreography plan.
+            if activity.kind == ActivityKind::Dance {
+                self.generate_dance_plan(activity_id);
+            }
         }
     }
 
     /// Execute one activation tick of activity behavior for a creature.
     /// Called from the activation loop when a creature has `current_activity`
     /// set and the activity is in `Executing` phase.
+    /// Returns an optional reactivation tick. If `Some(tick)`, the creature
+    /// should not be reactivated until that tick (e.g., waiting for a dance
+    /// move to finish). If `None`, reactivate next tick as usual.
     pub(crate) fn execute_activity_behavior(
         &mut self,
         creature_id: CreatureId,
         activity_id: ActivityId,
         events: &mut Vec<SimEvent>,
-    ) {
+    ) -> Option<u64> {
+        let activity = match self.db.activities.get(&activity_id) {
+            Some(a) => a.clone(),
+            None => return None,
+        };
+
+        if activity.kind == ActivityKind::Dance {
+            return self.execute_dance_behavior(creature_id, activity_id, &activity, events);
+        }
+        // Other activity kinds will be implemented by their respective features.
+        None
+    }
+
+    /// Generate a dance plan when a dance activity enters Executing phase.
+    ///
+    /// Reads the dance hall's dimensions from the linked `ActivityStructureRef`,
+    /// assigns dance slots to arrived participants, generates the choreography
+    /// plan, and stores it in `ActivityDanceData`.
+    fn generate_dance_plan(&mut self, activity_id: ActivityId) {
         let activity = match self.db.activities.get(&activity_id) {
             Some(a) => a.clone(),
             None => return,
         };
+        let execution_start_tick = match activity.execution_start_tick {
+            Some(t) => t,
+            None => return,
+        };
 
-        if activity.kind == ActivityKind::Dance {
-            self.execute_dance_behavior(creature_id, activity_id, &activity, events);
+        // Find the dance hall via ActivityStructureRef.
+        let structure_refs = self
+            .db
+            .activity_structure_refs
+            .by_activity_id(&activity_id, tabulosity::QueryOpts::ASC);
+        let venue_ref = structure_refs
+            .iter()
+            .find(|r| r.role == crate::db::ActivityStructureRole::DanceVenue);
+
+        // Get floor dimensions from the dance hall structure.
+        let (anchor_x, anchor_z, floor_y, width, depth) = if let Some(sr) = venue_ref {
+            if let Some(structure) = self.db.structures.get(&sr.structure_id) {
+                (
+                    structure.anchor.x,
+                    structure.anchor.z,
+                    structure.anchor.y,
+                    structure.width,
+                    structure.depth,
+                )
+            } else {
+                // Structure deleted — fall back to activity location.
+                (
+                    activity.location.x - 1,
+                    activity.location.z - 1,
+                    activity.location.y,
+                    3,
+                    3,
+                )
+            }
+        } else {
+            // No structure ref (e.g., old debug dance) — use a small default floor
+            // centered on the activity location.
+            (
+                activity.location.x - 1,
+                activity.location.z - 1,
+                activity.location.y,
+                3,
+                3,
+            )
+        };
+
+        // Assign dance slots to arrived participants.
+        let participants = self
+            .db
+            .activity_participants
+            .by_activity_id(&activity_id, tabulosity::QueryOpts::ASC);
+        let arrived: Vec<_> = participants
+            .iter()
+            .filter(|p| p.status == ParticipantStatus::Arrived)
+            .collect();
+        let participant_count = arrived.len();
+
+        for (slot, p) in arrived.iter().enumerate() {
+            let _ = self.db.activity_participants.modify_unchecked(
+                &(p.activity_id, p.creature_id),
+                |ap| {
+                    ap.dance_slot = Some(slot as u16);
+                    ap.waypoint_cursor = 0;
+                },
+            );
         }
-        // Other activity kinds will be implemented by their respective features.
+
+        // Create a music composition for the dance.
+        //
+        // The dance duration determines the composition's target_duration_ms,
+        // which the rendering layer uses to adjust the generated music's BPM
+        // to match. We pick a target dance duration (in seconds), derive the
+        // beat count from it using the same TYPICAL_BEATS table as construction,
+        // and create both the composition and the dance plan.
+        let dance_duration_secs = self.config.activity.dance_duration_secs;
+        let ticks_per_second = 1000 / self.config.tick_duration_ms as u64;
+        let target_duration_ms = (dance_duration_secs * 1000.0) as u32;
+
+        // Pick section count so ideal BPM is near 78 (middle of Palestrina range).
+        const TYPICAL_BEATS: &[(u8, f32)] = &[(1, 55.0), (2, 125.0), (3, 195.0), (4, 270.0)];
+        let mut best_sections = 1u8;
+        let mut best_dist = f32::MAX;
+        for &(s, beats) in TYPICAL_BEATS {
+            let ideal_bpm = beats * 30.0 / dance_duration_secs;
+            let dist = (ideal_bpm - 78.0).abs();
+            if dist < best_dist {
+                best_dist = dist;
+                best_sections = s;
+            }
+        }
+
+        // Compute estimated beat count from section count.
+        let estimated_beats = match best_sections {
+            1 => 55_u64,
+            2 => 125,
+            3 => 195,
+            _ => 270,
+        };
+
+        let composition_id = self.create_composition_for_dance(best_sections, target_duration_ms);
+        // Mark build_started immediately — dance music plays as soon as
+        // the rendering layer finishes generating it.
+        let _ = self
+            .db
+            .music_compositions
+            .modify_unchecked(&composition_id, |c| {
+                c.build_started = true;
+            });
+
+        let tempo_multiplier = 1_u64;
+        let tempo_bpm = 78_u64; // Ideal BPM; actual playback BPM is adjusted by renderer.
+
+        let plan = crate::dance::generate_dance_plan(
+            &crate::dance::DancePlanParams {
+                anchor_x,
+                anchor_z,
+                floor_y,
+                width,
+                depth,
+                participant_count,
+                song_length_beats: estimated_beats,
+                tempo_multiplier,
+                execution_start_tick,
+                ticks_per_second,
+                tempo_bpm,
+            },
+            &mut self.rng,
+        );
+
+        // Store total_ticks as total_cost on the activity for progress display.
+        let total_ticks = plan.total_ticks as i64;
+        let _ = self.db.activities.modify_unchecked(&activity_id, |a| {
+            a.total_cost = total_ticks;
+        });
+
+        // Store the plan and composition link.
+        let dance_data = crate::db::ActivityDanceData {
+            activity_id,
+            plan,
+            composition_id: Some(composition_id),
+        };
+        let _ = self.db.activity_dance_data.insert_no_fk(dance_data);
     }
 
-    /// Dance-specific execution behavior. Each activation contributes 1 unit
-    /// of progress and adds an EnjoyingDance thought. When progress reaches
-    /// total_cost, the dance completes.
-    /// TEMPORARY: Hard-coded for debug dance proof-of-concept.
+    /// Dance-specific execution behavior.
+    ///
+    /// Each creature operates on its own activation schedule: when activated,
+    /// it looks up the next waypoint in the dance plan and initiates a Move
+    /// action timed to arrive on the beat. Returns `Some(tick)` to schedule
+    /// reactivation at that tick (when the move completes), or `None` to
+    /// reactivate next tick.
     fn execute_dance_behavior(
         &mut self,
         creature_id: CreatureId,
         activity_id: ActivityId,
         activity: &crate::db::Activity,
         events: &mut Vec<SimEvent>,
-    ) {
-        // Contribute progress.
-        let _ = self.db.activities.modify_unchecked(&activity_id, |a| {
-            a.progress += 1;
-        });
+    ) -> Option<u64> {
+        let execution_start = activity.execution_start_tick?;
 
-        // Add small mood boost (dedup prevents spam).
+        // Look up this creature's dance slot and cursor.
+        let participant = match self
+            .db
+            .activity_participants
+            .get(&(activity_id, creature_id))
+        {
+            Some(p) => p.clone(),
+            None => return None,
+        };
+        let slot = match participant.dance_slot {
+            Some(s) => s as usize,
+            None => {
+                // Late joiner without a choreographed slot — stand in place
+                // and sleep until the dance ends to avoid per-tick reactivation.
+                self.add_creature_thought(creature_id, crate::types::ThoughtKind::EnjoyingDance);
+                let end_tick = self
+                    .db
+                    .activity_dance_data
+                    .get(&activity_id)
+                    .map(|d| execution_start + d.plan.total_ticks)
+                    .unwrap_or(self.tick + 1);
+                return Some(end_tick);
+            }
+        };
+
+        // Look up the dance plan.
+        let dance_data = match self.db.activity_dance_data.get(&activity_id) {
+            Some(d) => d.clone(),
+            None => return None,
+        };
+        let plan = &dance_data.plan;
+
+        // Add mood boost.
         self.add_creature_thought(creature_id, crate::types::ThoughtKind::EnjoyingDance);
 
-        // Check completion.
-        let updated = self.db.activities.get(&activity_id).unwrap().clone();
-        if updated.progress >= activity.total_cost {
+        // Check completion: elapsed ticks >= total_ticks.
+        let elapsed = self.tick.saturating_sub(execution_start);
+        if elapsed >= plan.total_ticks {
             self.complete_activity(activity_id, events);
+            return None; // complete_activity schedules reactivation.
+        }
+
+        // Find the next waypoint for this creature's slot.
+        if slot >= plan.slot_waypoints.len() {
+            return None;
+        }
+        let waypoints = &plan.slot_waypoints[slot];
+        let cursor = participant.waypoint_cursor as usize;
+
+        // Skip any waypoints that are already past (catch-up after lag).
+        let mut next_cursor = cursor;
+        while next_cursor < waypoints.len() && waypoints[next_cursor].tick <= self.tick {
+            next_cursor += 1;
+        }
+
+        if next_cursor < waypoints.len() {
+            // There's a future waypoint — set up a Move action to arrive
+            // at it on its tick (the beat).
+            let target_wp = &waypoints[next_cursor];
+            let old_pos = self.db.creatures.get(&creature_id).unwrap().position;
+            let new_pos = target_wp.position;
+            let arrival_tick = target_wp.tick;
+
+            let tick = self.tick;
+            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+                c.position = new_pos;
+                c.action_kind = crate::db::ActionKind::Move;
+                c.next_available_tick = Some(arrival_tick);
+            });
+
+            // Create MoveAction for render interpolation.
+            let _ = self.db.move_actions.remove_no_fk(&creature_id);
+            self.db
+                .move_actions
+                .insert_no_fk(crate::db::MoveAction {
+                    creature_id,
+                    move_from: old_pos,
+                    move_to: new_pos,
+                    move_start_tick: tick,
+                })
+                .unwrap();
+
+            // Advance cursor past all waypoints up to and including this one.
+            let _ =
+                self.db
+                    .activity_participants
+                    .modify_unchecked(&(activity_id, creature_id), |ap| {
+                        ap.waypoint_cursor = (next_cursor + 1) as u32;
+                    });
+
+            // Reactivate when the move completes (on the beat).
+            Some(arrival_tick)
+        } else {
+            // No more waypoints — hold position until the dance ends.
+            let end_tick = execution_start + plan.total_ticks;
+            Some(end_tick)
         }
     }
 
@@ -482,7 +776,14 @@ impl SimState {
             self.schedule_reactivation(*cid);
         }
 
-        // Delete activity (cascade removes participants).
+        // Drop the dance composition if present.
+        if let Some(dance_data) = self.db.activity_dance_data.get(&activity_id)
+            && let Some(comp_id) = dance_data.composition_id
+        {
+            let _ = self.db.music_compositions.remove_no_fk(&comp_id);
+        }
+
+        // Delete activity (cascade removes participants + dance data).
         let _ = self.db.remove_activity(&activity_id);
     }
 
@@ -515,7 +816,14 @@ impl SimState {
             }
         }
 
-        // Delete activity (cascade removes participants).
+        // Drop the dance composition if present.
+        if let Some(dance_data) = self.db.activity_dance_data.get(&activity_id)
+            && let Some(comp_id) = dance_data.composition_id
+        {
+            let _ = self.db.music_compositions.remove_no_fk(&comp_id);
+        }
+
+        // Delete activity (cascade removes participants + dance data).
         let _ = self.db.remove_activity(&activity_id);
 
         // Schedule reactivation for all released creatures. Cancel existing

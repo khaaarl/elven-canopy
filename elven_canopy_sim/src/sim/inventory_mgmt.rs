@@ -88,6 +88,43 @@ impl SimState {
             .unwrap()
     }
 
+    /// Create a music composition for a dance activity.
+    ///
+    /// Similar to `create_composition` but takes an explicit section count
+    /// (pre-computed by the dance plan generator) and target duration.
+    pub(crate) fn create_composition_for_dance(
+        &mut self,
+        sections: u8,
+        target_duration_ms: u32,
+    ) -> CompositionId {
+        use crate::db::{CompositionStatus, MusicComposition};
+
+        let seed = self.rng.next_u64();
+        let mode_index = (self.rng.next_u64() % 6) as u8;
+        let brightness = 0.2 + (self.rng.next_u64() % 600) as f32 / 1000.0;
+        let sa_iterations = match sections {
+            1 => 2000,
+            2 => 3000,
+            _ => 5000,
+        };
+
+        self.db
+            .music_compositions
+            .insert_auto_no_fk(|id| MusicComposition {
+                id,
+                seed,
+                sections,
+                mode_index,
+                brightness,
+                sa_iterations,
+                target_duration_ms,
+                requested_tick: self.tick,
+                build_started: false,
+                status: CompositionStatus::Pending,
+            })
+            .unwrap()
+    }
+
     /// Add items to an inventory. Inserts a new stack, then calls
     /// `inv_normalize` to consolidate with any existing matching stacks.
     #[allow(clippy::too_many_arguments)]
