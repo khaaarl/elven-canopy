@@ -56,6 +56,7 @@ This reduces merge conflicts when parallel work streams add items.
 [~] F-notifications        Player-visible event notifications
 [~] F-parallel-dedup       Radix-partitioned parallel dedup (elven_canopy_utils)
 [~] F-path-ui              Path management UI and notifications
+[~] F-taming               Tame neutral creatures via Scout-path elves
 ```
 
 ### Todo
@@ -238,7 +239,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tab-joins            Join iterators across tables
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
 [ ] F-tame-aggro           Taming failure can aggro the target animal
-[ ] F-taming               Tame neutral creatures via Scout-path elves
 [ ] F-task-assign-opt      Event-driven bidirectional task assignment
 [ ] F-task-panel-sprites   Creature sprites in tasks panel and activity cards
 [ ] F-task-priority        Priority queue and auto-assignment
@@ -1677,7 +1677,7 @@ mechanic.
 **Related:** F-aggro-fauna, F-taming
 
 #### F-taming — Tame neutral creatures via Scout-path elves
-**Status:** Todo
+**Status:** In Progress
 
 Scout-path elves can tame neutral creatures. Toggle a "Tame" button on
 a neutral creature's detail panel to create an open task for any
@@ -1688,6 +1688,8 @@ button cancels the task.
 
 Post-taming: creature gets the player's civ_id, default wander behavior,
 appears in a Pets/Animals section of the units panel.
+
+**Draft:** docs/drafts/F-taming.md
 
 **Blocks:** F-civ-pets
 **Related:** F-creature-skills, F-tame-aggro, F-task-tags
