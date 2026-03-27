@@ -83,9 +83,8 @@ impl SimState {
                     moved += take;
                 }
             }
-            // Clear reservation on picked-up items (reservation was for the
-            // source inventory; items are now carried by the creature).
-            self.inv_clear_reservations(creature_inv, task_id);
+            // Keep reservation on picked-up items so dropoff/cleanup can
+            // identify exactly which stacks belong to this haul task.
             moved
         } else {
             0
@@ -157,29 +156,20 @@ impl SimState {
             Some(t) => t,
             None => return false,
         };
-        let haul = match self.task_haul_data(task_id) {
-            Some(h) => h,
-            None => return false,
-        };
+        if self.task_haul_data(task_id).is_none() {
+            return false;
+        }
         let destination =
             match self.task_structure_ref(task_id, crate::db::TaskStructureRole::HaulDestination) {
                 Some(d) => d,
                 None => return false,
             };
-        let item_kind = haul.item_kind;
-        let quantity = haul.quantity;
-
-        // Deposit items into destination building, preserving all properties.
-        let material = haul.hauled_material;
+        // Deposit only the items reserved by this task into the destination.
+        // Reservations are cleared on arrival so the items can merge with
+        // existing stacks and become available for use.
         let creature_inv = self.creature_inv(creature_id);
         let dst_inv = self.structure_inv(destination);
-        self.inv_move_items(
-            creature_inv,
-            dst_inv,
-            Some(item_kind),
-            Some(material),
-            Some(quantity),
-        );
+        self.inv_move_reserved_items(creature_inv, dst_inv, task_id);
         self.complete_task(task_id);
         true
     }
@@ -197,8 +187,6 @@ impl SimState {
             Some(s) => s,
             None => return,
         };
-        let item_kind = haul.item_kind;
-        let quantity = haul.quantity;
         let phase = haul.phase;
 
         match phase {
@@ -224,20 +212,16 @@ impl SimState {
                 }
             }
             task::HaulPhase::GoingToDestination => {
-                // Creature is carrying items — drop as ground pile at current position.
-                let material = haul.hauled_material;
+                // Creature is carrying reserved items — drop them as a ground
+                // pile at current position. Only items reserved by this task
+                // are moved; personal belongings stay in the creature's
+                // inventory.
                 if let Some(creature) = self.db.creatures.get(&creature_id) {
                     let pos = creature.position;
                     let creature_inv = creature.inventory_id;
                     let pile_id = self.ensure_ground_pile(pos);
                     let pile_inv = self.db.ground_piles.get(&pile_id).unwrap().inventory_id;
-                    self.inv_move_items(
-                        creature_inv,
-                        pile_inv,
-                        Some(item_kind),
-                        Some(material),
-                        Some(quantity),
-                    );
+                    self.inv_move_reserved_items(creature_inv, pile_inv, task_id);
                 }
             }
         }

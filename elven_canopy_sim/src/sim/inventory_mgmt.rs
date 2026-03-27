@@ -833,6 +833,34 @@ impl SimState {
         moved
     }
 
+    /// Move items reserved by a specific task from `src` to `dst`, clearing
+    /// the reservation on arrival. Only stacks with `reserved_by == task_id`
+    /// are moved. Returns the total number of items moved.
+    pub(crate) fn inv_move_reserved_items(
+        &mut self,
+        src: InventoryId,
+        dst: InventoryId,
+        task_id: TaskId,
+    ) -> u32 {
+        let stacks: Vec<crate::db::ItemStack> = self
+            .db
+            .item_stacks
+            .by_inventory_id(&src, tabulosity::QueryOpts::ASC);
+        let mut moved = 0u32;
+        for stack in &stacks {
+            if stack.reserved_by != Some(task_id) {
+                continue;
+            }
+            let qty = stack.quantity;
+            self.inv_move_stack(stack.id, qty, dst);
+            moved += qty;
+        }
+        // Clear reservation on moved items and re-normalize so they can
+        // merge with any existing matching stacks in the destination.
+        self.inv_clear_reservations(dst, task_id);
+        moved
+    }
+
     /// Query the item equipped in a specific slot of an inventory.
     /// Uses the filtered unique compound index `equipped_inv_slot` for O(1) lookup.
     pub(crate) fn inv_equipped_in_slot(

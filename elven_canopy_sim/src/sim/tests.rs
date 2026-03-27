@@ -53114,3 +53114,850 @@ fn elf_resumes_activation_after_dining() {
         "Elf should have moved after dining (not frozen). pos={pos_after_dining:?}"
     );
 }
+
+// ── Logistics ownership leak tests ──────────────────────────────────────────
+
+#[test]
+fn haul_dropoff_does_not_move_owned_bread_into_building() {
+    // An elf carrying 3 personally-owned bread + 5 reserved-for-haul bread
+    // resolves a dropoff. Only the 5 reserved items should land in the
+    // building; the 3 owned bread must stay in the elf's inventory.
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bread = 0;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let elf_id = spawn_elf(&mut sim);
+    let creature_inv = sim.creature_inv(elf_id);
+
+    // Destination building.
+    let building_anchor = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
+    let dest_sid = insert_building(
+        &mut sim,
+        building_anchor,
+        Some(5),
+        vec![crate::building::LogisticsWant {
+            item_kind: crate::inventory::ItemKind::Bread,
+            material_filter: crate::inventory::MaterialFilter::Any,
+            target_quantity: 10,
+        }],
+    );
+    let dest_inv = sim.db.structures.get(&dest_sid).unwrap().inventory_id;
+
+    // Dummy source pile position (not actually used by dropoff).
+    let pile_pos = tree_pos;
+
+    // Create the haul task in GoingToDestination phase.
+    let task_id = TaskId::new(&mut sim.rng);
+    let haul_task = Task {
+        id: task_id,
+        kind: TaskKind::Haul {
+            item_kind: crate::inventory::ItemKind::Bread,
+            quantity: 5,
+            source: task::HaulSource::GroundPile(pile_pos),
+            destination: dest_sid,
+            phase: task::HaulPhase::GoingToDestination,
+            destination_coord: building_anchor,
+        },
+        state: TaskState::InProgress,
+        location: building_anchor,
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::Automated,
+        target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
+        required_civ_id: None,
+    };
+    sim.insert_task(haul_task);
+    // Fix phase to GoingToDestination (insert_task sets from the kind).
+    {
+        let mut h = sim.db.task_haul_data.get(&task_id).unwrap();
+        h.phase = crate::task::HaulPhase::GoingToDestination;
+        sim.db.task_haul_data.update_no_fk(h).unwrap();
+    }
+
+    // Give elf 3 personally owned bread.
+    sim.inv_add_simple_item(
+        creature_inv,
+        crate::inventory::ItemKind::Bread,
+        3,
+        Some(elf_id),
+        None,
+    );
+
+    // Give elf 5 bread reserved by the haul task (simulating post-pickup).
+    sim.inv_add_simple_item(
+        creature_inv,
+        crate::inventory::ItemKind::Bread,
+        5,
+        None,
+        Some(task_id),
+    );
+
+    // Assign task to elf.
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        sim.db.creatures.update_no_fk(c).unwrap();
+    }
+
+    // Resolve the dropoff.
+    sim.resolve_dropoff_action(elf_id);
+
+    // Building should have exactly 5 unowned bread.
+    let building_stacks: Vec<_> = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&dest_inv, tabulosity::QueryOpts::ASC);
+    let building_bread: u32 = building_stacks
+        .iter()
+        .filter(|s| s.kind == crate::inventory::ItemKind::Bread)
+        .map(|s| s.quantity)
+        .sum();
+    assert_eq!(building_bread, 5, "Building should have exactly 5 bread");
+    for stack in &building_stacks {
+        assert_eq!(stack.owner, None, "All bread in building should be unowned");
+        assert_eq!(
+            stack.reserved_by, None,
+            "Deposited bread should not be reserved"
+        );
+    }
+
+    // Elf should still have 3 owned bread.
+    let elf_stacks: Vec<_> = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&creature_inv, tabulosity::QueryOpts::ASC);
+    let elf_bread: u32 = elf_stacks
+        .iter()
+        .filter(|s| s.kind == crate::inventory::ItemKind::Bread)
+        .map(|s| s.quantity)
+        .sum();
+    assert_eq!(elf_bread, 3, "Elf should still have 3 owned bread");
+}
+
+#[test]
+fn haul_pickup_preserves_reservation_on_carried_items() {
+    // After pickup, the hauled items in the creature's inventory must
+    // retain reserved_by == task_id so that dropoff can identify them.
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bread = 0;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let elf_id = spawn_elf(&mut sim);
+    let creature_inv = sim.creature_inv(elf_id);
+
+    // Give elf 3 personally owned bread (pre-existing in inventory).
+    sim.inv_add_simple_item(
+        creature_inv,
+        crate::inventory::ItemKind::Bread,
+        3,
+        Some(elf_id),
+        None,
+    );
+
+    // Ground pile with 5 bread reserved by the haul task.
+    let pile_pos = tree_pos;
+    let pile_id = sim.ensure_ground_pile(pile_pos);
+    let pile_inv = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
+
+    let task_id = TaskId::new(&mut sim.rng);
+    sim.inv_add_simple_item(
+        pile_inv,
+        crate::inventory::ItemKind::Bread,
+        5,
+        None,
+        Some(task_id),
+    );
+
+    // Create the haul task in GoingToSource phase.
+    let building_anchor = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
+    let dest_sid = insert_building(&mut sim, building_anchor, Some(5), Vec::new());
+    let haul_task = Task {
+        id: task_id,
+        kind: TaskKind::Haul {
+            item_kind: crate::inventory::ItemKind::Bread,
+            quantity: 5,
+            source: task::HaulSource::GroundPile(pile_pos),
+            destination: dest_sid,
+            phase: task::HaulPhase::GoingToSource,
+            destination_coord: building_anchor,
+        },
+        state: TaskState::InProgress,
+        location: pile_pos,
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::Automated,
+        target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
+        required_civ_id: None,
+    };
+    sim.insert_task(haul_task);
+
+    // Assign task to elf.
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        sim.db.creatures.update_no_fk(c).unwrap();
+    }
+
+    // Resolve pickup.
+    sim.resolve_pickup_action(elf_id);
+
+    // Elf should now have 3 owned + 5 reserved bread.
+    let elf_stacks: Vec<_> = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&creature_inv, tabulosity::QueryOpts::ASC);
+    let owned_bread: u32 = elf_stacks
+        .iter()
+        .filter(|s| s.kind == crate::inventory::ItemKind::Bread && s.owner == Some(elf_id))
+        .map(|s| s.quantity)
+        .sum();
+    assert_eq!(owned_bread, 3, "Elf should still have 3 owned bread");
+
+    let reserved_bread: u32 = elf_stacks
+        .iter()
+        .filter(|s| s.kind == crate::inventory::ItemKind::Bread && s.reserved_by == Some(task_id))
+        .map(|s| s.quantity)
+        .sum();
+    assert_eq!(
+        reserved_bread, 5,
+        "Hauled bread must stay reserved_by the task after pickup"
+    );
+}
+
+#[test]
+fn haul_cleanup_going_to_dest_drops_only_reserved_items() {
+    // When a haul task is abandoned in GoingToDestination phase, only the
+    // items reserved by that task should be dropped. The creature's
+    // personally owned items must stay in their inventory.
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bread = 0;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let elf_id = spawn_elf(&mut sim);
+    let creature_inv = sim.creature_inv(elf_id);
+
+    // Destination building.
+    let building_anchor = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
+    let dest_sid = insert_building(&mut sim, building_anchor, Some(5), Vec::new());
+
+    // Create haul task in GoingToDestination phase.
+    let pile_pos = tree_pos;
+    let task_id = TaskId::new(&mut sim.rng);
+    let haul_task = Task {
+        id: task_id,
+        kind: TaskKind::Haul {
+            item_kind: crate::inventory::ItemKind::Bread,
+            quantity: 5,
+            source: task::HaulSource::GroundPile(pile_pos),
+            destination: dest_sid,
+            phase: task::HaulPhase::GoingToDestination,
+            destination_coord: building_anchor,
+        },
+        state: TaskState::InProgress,
+        location: building_anchor,
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::Automated,
+        target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
+        required_civ_id: None,
+    };
+    sim.insert_task(haul_task);
+    {
+        let mut h = sim.db.task_haul_data.get(&task_id).unwrap();
+        h.phase = crate::task::HaulPhase::GoingToDestination;
+        sim.db.task_haul_data.update_no_fk(h).unwrap();
+    }
+
+    // Give elf 3 owned bread + 5 reserved-by-task bread.
+    sim.inv_add_simple_item(
+        creature_inv,
+        crate::inventory::ItemKind::Bread,
+        3,
+        Some(elf_id),
+        None,
+    );
+    sim.inv_add_simple_item(
+        creature_inv,
+        crate::inventory::ItemKind::Bread,
+        5,
+        None,
+        Some(task_id),
+    );
+
+    // Assign task to elf.
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        sim.db.creatures.update_no_fk(c).unwrap();
+    }
+
+    // Abandon the haul.
+    sim.cleanup_haul_task(elf_id, task_id);
+
+    // Elf should still have 3 owned bread.
+    let elf_stacks: Vec<_> = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&creature_inv, tabulosity::QueryOpts::ASC);
+    let elf_bread: u32 = elf_stacks
+        .iter()
+        .filter(|s| s.kind == crate::inventory::ItemKind::Bread)
+        .map(|s| s.quantity)
+        .sum();
+    assert_eq!(
+        elf_bread, 3,
+        "Elf should still have 3 owned bread after haul cleanup"
+    );
+
+    // Ground pile should have 5 unowned, unreserved bread.
+    // The pile may be at a slightly different Y than the elf (surface vs
+    // walk position), so find any pile near the elf's XZ.
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let pile = sim
+        .db
+        .ground_piles
+        .iter_all()
+        .find(|p| p.position.x == elf_pos.x && p.position.z == elf_pos.z)
+        .expect("Ground pile should exist near elf after haul cleanup");
+    let pile_stacks: Vec<_> = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&pile.inventory_id, tabulosity::QueryOpts::ASC);
+    let pile_bread: u32 = pile_stacks
+        .iter()
+        .filter(|s| s.kind == crate::inventory::ItemKind::Bread)
+        .map(|s| s.quantity)
+        .sum();
+    assert_eq!(pile_bread, 5, "Ground pile should have 5 dropped bread");
+    for stack in &pile_stacks {
+        assert_eq!(stack.owner, None, "Dropped bread should be unowned");
+        assert_eq!(
+            stack.reserved_by, None,
+            "Dropped bread should be unreserved"
+        );
+    }
+}
+
+#[test]
+fn haul_cleanup_going_to_source_clears_reservation_at_source() {
+    // When a haul task is abandoned in GoingToSource phase, the reserved
+    // items at the source must be unreserved so they become available for
+    // other tasks.
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bread = 0;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let elf_id = spawn_elf(&mut sim);
+
+    // Ground pile with 5 bread, to be reserved by the haul task.
+    let pile_pos = tree_pos;
+    let pile_id = sim.ensure_ground_pile(pile_pos);
+    let pile_inv = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
+
+    let task_id = TaskId::new(&mut sim.rng);
+    sim.inv_add_simple_item(
+        pile_inv,
+        crate::inventory::ItemKind::Bread,
+        5,
+        None,
+        Some(task_id),
+    );
+
+    // Create haul task in GoingToSource phase.
+    let building_anchor = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
+    let dest_sid = insert_building(&mut sim, building_anchor, Some(5), Vec::new());
+    let haul_task = Task {
+        id: task_id,
+        kind: TaskKind::Haul {
+            item_kind: crate::inventory::ItemKind::Bread,
+            quantity: 5,
+            source: task::HaulSource::GroundPile(pile_pos),
+            destination: dest_sid,
+            phase: task::HaulPhase::GoingToSource,
+            destination_coord: building_anchor,
+        },
+        state: TaskState::InProgress,
+        location: pile_pos,
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::Automated,
+        target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
+        required_civ_id: None,
+    };
+    sim.insert_task(haul_task);
+
+    // Assign task to elf.
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        sim.db.creatures.update_no_fk(c).unwrap();
+    }
+
+    // Abandon the haul.
+    sim.cleanup_haul_task(elf_id, task_id);
+
+    // All 5 bread in the pile should now be unreserved.
+    let pile_stacks: Vec<_> = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&pile_inv, tabulosity::QueryOpts::ASC);
+    let total_bread: u32 = pile_stacks
+        .iter()
+        .filter(|s| s.kind == crate::inventory::ItemKind::Bread)
+        .map(|s| s.quantity)
+        .sum();
+    assert_eq!(total_bread, 5, "Pile should still have 5 bread");
+    for stack in &pile_stacks {
+        assert_eq!(
+            stack.reserved_by, None,
+            "All bread in pile should be unreserved after cleanup"
+        );
+    }
+}
+
+#[test]
+fn inv_move_reserved_items_no_matching_stacks_returns_zero() {
+    // When no stacks in the source are reserved by the given task,
+    // inv_move_reserved_items should return 0 and leave everything intact.
+    let mut sim = test_sim(42);
+    let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+
+    // Add unreserved bread to source.
+    sim.inv_add_simple_item(src, crate::inventory::ItemKind::Bread, 5, None, None);
+
+    let fake_task_id = TaskId::new(&mut sim.rng);
+    let moved = sim.inv_move_reserved_items(src, dst, fake_task_id);
+    assert_eq!(moved, 0, "Should move nothing when no stacks match");
+
+    // Source should still have 5 bread.
+    let src_bread: u32 = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&src, tabulosity::QueryOpts::ASC)
+        .iter()
+        .filter(|s| s.kind == crate::inventory::ItemKind::Bread)
+        .map(|s| s.quantity)
+        .sum();
+    assert_eq!(src_bread, 5, "Source bread should be unchanged");
+
+    // Destination should be empty.
+    let dst_stacks: Vec<_> = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&dst, tabulosity::QueryOpts::ASC);
+    assert!(dst_stacks.is_empty(), "Destination should be empty");
+}
+
+#[test]
+fn inv_move_reserved_items_clears_reservation_and_merges_at_dest() {
+    // After inv_move_reserved_items deposits items, the reservation should
+    // be cleared and the items should merge with any existing matching
+    // unreserved stacks at the destination.
+    let mut sim = test_sim(42);
+    let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+
+    let task_id = TaskId::new(&mut sim.rng);
+
+    // Destination already has 3 unreserved bread.
+    sim.inv_add_simple_item(dst, crate::inventory::ItemKind::Bread, 3, None, None);
+
+    // Source has 5 bread reserved by the task.
+    sim.inv_add_simple_item(
+        src,
+        crate::inventory::ItemKind::Bread,
+        5,
+        None,
+        Some(task_id),
+    );
+
+    let moved = sim.inv_move_reserved_items(src, dst, task_id);
+    assert_eq!(moved, 5, "Should move all 5 reserved bread");
+
+    // Destination should have 8 unreserved bread in a single merged stack.
+    let dst_stacks: Vec<_> = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&dst, tabulosity::QueryOpts::ASC);
+    let bread_stacks: Vec<_> = dst_stacks
+        .iter()
+        .filter(|s| s.kind == crate::inventory::ItemKind::Bread)
+        .collect();
+    assert_eq!(bread_stacks.len(), 1, "Should merge into a single stack");
+    assert_eq!(bread_stacks[0].quantity, 8, "Should be 3 + 5 = 8 bread");
+    assert_eq!(
+        bread_stacks[0].reserved_by, None,
+        "Merged stack should be unreserved"
+    );
+}
+
+#[test]
+fn two_concurrent_haul_tasks_dropoff_only_moves_own_reserved_items() {
+    // Two elves each carry bread reserved by their own haul task. When
+    // elf A drops off, only task A's items should move — elf B's reserved
+    // items (in a different inventory) are unaffected.
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bread = 0;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let elf_a = spawn_elf(&mut sim);
+    let elf_b = spawn_elf(&mut sim);
+    let inv_a = sim.creature_inv(elf_a);
+    let inv_b = sim.creature_inv(elf_b);
+
+    // Two destination buildings.
+    let anchor_a = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
+    let anchor_b = VoxelCoord::new(tree_pos.x + 6, tree_pos.y, tree_pos.z);
+    let dest_a = insert_building(&mut sim, anchor_a, Some(5), Vec::new());
+    let dest_b = insert_building(&mut sim, anchor_b, Some(5), Vec::new());
+    let dest_inv_a = sim.db.structures.get(&dest_a).unwrap().inventory_id;
+    let dest_inv_b = sim.db.structures.get(&dest_b).unwrap().inventory_id;
+
+    // Task A: elf A carries 4 reserved bread.
+    let task_a = TaskId::new(&mut sim.rng);
+    let pile_pos = tree_pos;
+    let haul_a = Task {
+        id: task_a,
+        kind: TaskKind::Haul {
+            item_kind: crate::inventory::ItemKind::Bread,
+            quantity: 4,
+            source: task::HaulSource::GroundPile(pile_pos),
+            destination: dest_a,
+            phase: task::HaulPhase::GoingToDestination,
+            destination_coord: anchor_a,
+        },
+        state: TaskState::InProgress,
+        location: anchor_a,
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::Automated,
+        target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
+        required_civ_id: None,
+    };
+    sim.insert_task(haul_a);
+    {
+        let mut h = sim.db.task_haul_data.get(&task_a).unwrap();
+        h.phase = crate::task::HaulPhase::GoingToDestination;
+        sim.db.task_haul_data.update_no_fk(h).unwrap();
+    }
+    sim.inv_add_simple_item(
+        inv_a,
+        crate::inventory::ItemKind::Bread,
+        4,
+        None,
+        Some(task_a),
+    );
+    {
+        let mut c = sim.db.creatures.get(&elf_a).unwrap();
+        c.current_task = Some(task_a);
+        sim.db.creatures.update_no_fk(c).unwrap();
+    }
+
+    // Task B: elf B carries 3 reserved bread.
+    let task_b = TaskId::new(&mut sim.rng);
+    let haul_b = Task {
+        id: task_b,
+        kind: TaskKind::Haul {
+            item_kind: crate::inventory::ItemKind::Bread,
+            quantity: 3,
+            source: task::HaulSource::GroundPile(pile_pos),
+            destination: dest_b,
+            phase: task::HaulPhase::GoingToDestination,
+            destination_coord: anchor_b,
+        },
+        state: TaskState::InProgress,
+        location: anchor_b,
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::Automated,
+        target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
+        required_civ_id: None,
+    };
+    sim.insert_task(haul_b);
+    {
+        let mut h = sim.db.task_haul_data.get(&task_b).unwrap();
+        h.phase = crate::task::HaulPhase::GoingToDestination;
+        sim.db.task_haul_data.update_no_fk(h).unwrap();
+    }
+    sim.inv_add_simple_item(
+        inv_b,
+        crate::inventory::ItemKind::Bread,
+        3,
+        None,
+        Some(task_b),
+    );
+    {
+        let mut c = sim.db.creatures.get(&elf_b).unwrap();
+        c.current_task = Some(task_b);
+        sim.db.creatures.update_no_fk(c).unwrap();
+    }
+
+    // Drop off task A only.
+    sim.resolve_dropoff_action(elf_a);
+
+    // Building A should have 4 bread.
+    let a_bread: u32 = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&dest_inv_a, tabulosity::QueryOpts::ASC)
+        .iter()
+        .filter(|s| s.kind == crate::inventory::ItemKind::Bread)
+        .map(|s| s.quantity)
+        .sum();
+    assert_eq!(a_bread, 4, "Building A should have 4 bread from task A");
+
+    // Building B should still be empty.
+    let b_bread: u32 = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&dest_inv_b, tabulosity::QueryOpts::ASC)
+        .iter()
+        .filter(|s| s.kind == crate::inventory::ItemKind::Bread)
+        .map(|s| s.quantity)
+        .sum();
+    assert_eq!(
+        b_bread, 0,
+        "Building B should be empty — task B not dropped off yet"
+    );
+
+    // Elf B should still have 3 reserved bread.
+    let b_reserved: u32 = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_b, tabulosity::QueryOpts::ASC)
+        .iter()
+        .filter(|s| s.kind == crate::inventory::ItemKind::Bread && s.reserved_by == Some(task_b))
+        .map(|s| s.quantity)
+        .sum();
+    assert_eq!(b_reserved, 3, "Elf B's reserved bread should be untouched");
+}
+
+#[test]
+fn death_during_haul_drops_all_items_unreserved_and_unowned() {
+    // An elf carrying 3 owned bread + 5 reserved (hauled) bread dies.
+    // All 8 bread should end up in a ground pile, unowned and unreserved.
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bread = 0;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let elf_id = spawn_elf(&mut sim);
+    let creature_inv = sim.creature_inv(elf_id);
+
+    // Destination building.
+    let building_anchor = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
+    let dest_sid = insert_building(&mut sim, building_anchor, Some(5), Vec::new());
+
+    // Create haul task in GoingToDestination phase.
+    let pile_pos = tree_pos;
+    let task_id = TaskId::new(&mut sim.rng);
+    let haul_task = Task {
+        id: task_id,
+        kind: TaskKind::Haul {
+            item_kind: crate::inventory::ItemKind::Bread,
+            quantity: 5,
+            source: task::HaulSource::GroundPile(pile_pos),
+            destination: dest_sid,
+            phase: task::HaulPhase::GoingToDestination,
+            destination_coord: building_anchor,
+        },
+        state: TaskState::InProgress,
+        location: building_anchor,
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::Automated,
+        target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
+        required_civ_id: None,
+    };
+    sim.insert_task(haul_task);
+    {
+        let mut h = sim.db.task_haul_data.get(&task_id).unwrap();
+        h.phase = crate::task::HaulPhase::GoingToDestination;
+        sim.db.task_haul_data.update_no_fk(h).unwrap();
+    }
+
+    // Give elf 3 owned bread + 5 reserved bread.
+    sim.inv_add_simple_item(
+        creature_inv,
+        crate::inventory::ItemKind::Bread,
+        3,
+        Some(elf_id),
+        None,
+    );
+    sim.inv_add_simple_item(
+        creature_inv,
+        crate::inventory::ItemKind::Bread,
+        5,
+        None,
+        Some(task_id),
+    );
+
+    // Assign task to elf.
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        sim.db.creatures.update_no_fk(c).unwrap();
+    }
+
+    // Kill the elf.
+    let mut events = Vec::new();
+    sim.handle_creature_death(elf_id, crate::types::DeathCause::Debug, &mut events);
+
+    // Find any ground piles near the elf's death position.
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let all_bread_in_piles: Vec<_> = sim
+        .db
+        .ground_piles
+        .iter_all()
+        .filter(|p| p.position.x == elf_pos.x && p.position.z == elf_pos.z)
+        .flat_map(|p| {
+            sim.db
+                .item_stacks
+                .by_inventory_id(&p.inventory_id, tabulosity::QueryOpts::ASC)
+        })
+        .filter(|s| s.kind == crate::inventory::ItemKind::Bread)
+        .collect();
+
+    let total_bread: u32 = all_bread_in_piles.iter().map(|s| s.quantity).sum();
+    assert_eq!(total_bread, 8, "All 8 bread should be in ground pile(s)");
+
+    for stack in &all_bread_in_piles {
+        assert_eq!(stack.owner, None, "All dropped bread should be unowned");
+        assert_eq!(
+            stack.reserved_by, None,
+            "All dropped bread should be unreserved"
+        );
+    }
+
+    // Elf's inventory should be empty.
+    let elf_stacks: Vec<_> = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&creature_inv, tabulosity::QueryOpts::ASC);
+    assert!(
+        elf_stacks.is_empty(),
+        "Dead elf's inventory should be empty"
+    );
+}
+
+#[test]
+fn haul_dropoff_does_not_affect_other_item_kinds_in_inventory() {
+    // An elf carrying a personally-owned spear + reserved bread drops off
+    // the bread. The spear must remain in the elf's inventory.
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bread = 0;
+    sim.config.elf_starting_bows = 0;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let elf_id = spawn_elf(&mut sim);
+    let creature_inv = sim.creature_inv(elf_id);
+
+    // Destination building.
+    let building_anchor = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
+    let dest_sid = insert_building(&mut sim, building_anchor, Some(5), Vec::new());
+    let dest_inv = sim.db.structures.get(&dest_sid).unwrap().inventory_id;
+
+    // Create haul task.
+    let pile_pos = tree_pos;
+    let task_id = TaskId::new(&mut sim.rng);
+    let haul_task = Task {
+        id: task_id,
+        kind: TaskKind::Haul {
+            item_kind: crate::inventory::ItemKind::Bread,
+            quantity: 5,
+            source: task::HaulSource::GroundPile(pile_pos),
+            destination: dest_sid,
+            phase: task::HaulPhase::GoingToDestination,
+            destination_coord: building_anchor,
+        },
+        state: TaskState::InProgress,
+        location: building_anchor,
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::Automated,
+        target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
+        required_civ_id: None,
+    };
+    sim.insert_task(haul_task);
+    {
+        let mut h = sim.db.task_haul_data.get(&task_id).unwrap();
+        h.phase = crate::task::HaulPhase::GoingToDestination;
+        sim.db.task_haul_data.update_no_fk(h).unwrap();
+    }
+
+    // Give elf a personally-owned spear + reserved bread.
+    sim.inv_add_simple_item(
+        creature_inv,
+        crate::inventory::ItemKind::Spear,
+        1,
+        Some(elf_id),
+        None,
+    );
+    sim.inv_add_simple_item(
+        creature_inv,
+        crate::inventory::ItemKind::Bread,
+        5,
+        None,
+        Some(task_id),
+    );
+
+    // Assign task.
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        sim.db.creatures.update_no_fk(c).unwrap();
+    }
+
+    // Drop off.
+    sim.resolve_dropoff_action(elf_id);
+
+    // Building should have exactly 5 bread.
+    let building_bread: u32 = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&dest_inv, tabulosity::QueryOpts::ASC)
+        .iter()
+        .filter(|s| s.kind == crate::inventory::ItemKind::Bread)
+        .map(|s| s.quantity)
+        .sum();
+    assert_eq!(building_bread, 5, "Building should have 5 bread");
+
+    // Building should have no spears.
+    let building_spears: u32 = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&dest_inv, tabulosity::QueryOpts::ASC)
+        .iter()
+        .filter(|s| s.kind == crate::inventory::ItemKind::Spear)
+        .map(|s| s.quantity)
+        .sum();
+    assert_eq!(building_spears, 0, "Building should have no spears");
+
+    // Elf should still have the spear.
+    let elf_spears: u32 = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&creature_inv, tabulosity::QueryOpts::ASC)
+        .iter()
+        .filter(|s| s.kind == crate::inventory::ItemKind::Spear)
+        .map(|s| s.quantity)
+        .sum();
+    assert_eq!(elf_spears, 1, "Elf should still have their spear");
+}
