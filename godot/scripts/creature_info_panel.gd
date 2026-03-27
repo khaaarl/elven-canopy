@@ -60,6 +60,8 @@ var _path_index_to_id: Array[String] = []
 ## Suppress signal when programmatically updating the OptionButton.
 var _updating_path: bool = false
 var _mood_label: Label
+var _tame_button: Button
+var _tame_designated: bool = false
 var _stat_labels: Dictionary = {}
 var _skill_labels: Dictionary = {}
 var _thoughts_container: VBoxContainer
@@ -314,6 +316,13 @@ func _build_status_tab(parent: VBoxContainer) -> ScrollContainer:
 	_mood_label.text = "Mood: Neutral (0)"
 	vbox.add_child(_mood_label)
 
+	# Tame toggle button (F-taming). Hidden for untameable or non-wild creatures.
+	_tame_button = Button.new()
+	_tame_button.text = "\u2717 Tame"
+	_tame_button.visible = false
+	_tame_button.pressed.connect(_on_tame_pressed)
+	vbox.add_child(_tame_button)
+
 	# Ability scores grid (4 rows × 2 columns).
 	vbox.add_child(HSeparator.new())
 	_build_stats_grid(vbox)
@@ -554,6 +563,7 @@ func show_creature(creature_id: String, info: Dictionary) -> void:
 	_update_food(info)
 	_update_rest(info)
 	_update_mood(info)
+	_update_tame(info)
 	_update_stats(info)
 	_update_skills(info)
 	_update_thoughts(info)
@@ -576,6 +586,7 @@ func update_info(info: Dictionary) -> void:
 	_update_food(info)
 	_update_rest(info)
 	_update_mood(info)
+	_update_tame(info)
 	_update_stats(info)
 	_update_skills(info)
 	_update_thoughts(info)
@@ -658,6 +669,33 @@ func _update_mood(info: Dictionary) -> void:
 	var score: int = info.get("mood_score", 0)
 	var sign: String = "+" if score >= 0 else ""
 	_mood_label.text = "Mood: %s (%s%d)" % [tier, sign, score]
+
+
+## Update the Tame toggle button visibility and label (F-taming).
+func _update_tame(info: Dictionary) -> void:
+	var is_tameable: bool = info.get("is_tameable", false)
+	var is_wild: bool = info.get("is_wild", false)
+	var is_alive: bool = info.get("vital_status", "Alive") == "Alive"
+	var show_tame: bool = is_tameable and is_wild and is_alive
+	_tame_button.visible = show_tame
+	if show_tame:
+		_tame_designated = info.get("tame_designated", false)
+		if _tame_designated:
+			_tame_button.text = "\u2713 Tame"
+		else:
+			_tame_button.text = "\u2717 Tame"
+
+
+func _on_tame_pressed() -> void:
+	if _selected_creature_id.is_empty():
+		return
+	var sim: Node = get_node("/root/Main/SimBridge")
+	if sim == null:
+		return
+	if _tame_designated:
+		sim.cancel_tame_designation(_selected_creature_id)
+	else:
+		sim.designate_tame(_selected_creature_id)
 
 
 func _update_stats(info: Dictionary) -> void:

@@ -399,6 +399,15 @@ impl SimState {
                         source_kind,
                     });
             }
+            task::TaskKind::Tame { target } => {
+                let _ = self
+                    .db
+                    .task_tame_data
+                    .insert_no_fk(crate::db::TaskTameData {
+                        task_id,
+                        target: *target,
+                    });
+            }
             // AttackMove — extension data inserted by the command handler
             // (command_attack_move) since the destination VoxelCoord is not
             // carried in the TaskKind variant.

@@ -6,7 +6,7 @@
 //
 // ## Table layout
 //
-// The database has 41 tables organized in four tiers:
+// The database has 45 tables organized in four tiers:
 //
 // **Player tables:** `players` — human operators identified by username string.
 // One entry per connected human player; persisted in save files.
@@ -124,6 +124,8 @@ pub enum ActionKind {
     Shoot = 14,
     /// Picking up items for military group equipment (no ownership transfer).
     AcquireMilitaryEquipment = 15,
+    /// One taming attempt on a neutral creature (F-taming).
+    TameAttempt = 16,
 }
 
 // ---------------------------------------------------------------------------
@@ -149,6 +151,7 @@ pub enum TaskKindTag {
     Haul,
     Mope,
     Sleep,
+    Tame,
 }
 
 impl TaskKindTag {
@@ -175,6 +178,7 @@ impl TaskKindTag {
             Self::Haul => "Haul",
             Self::Mope => "Moping",
             Self::Sleep => "Sleep",
+            Self::Tame => "Tame",
         }
     }
 
@@ -196,6 +200,7 @@ impl TaskKindTag {
             TaskKind::Haul { .. } => Self::Haul,
             TaskKind::Mope => Self::Mope,
             TaskKind::Sleep { .. } => Self::Sleep,
+            TaskKind::Tame { .. } => Self::Tame,
         }
     }
 }
@@ -440,6 +445,21 @@ pub struct PathAssignment {
     #[primary_key]
     pub creature_id: CreatureId,
     pub path_id: PathId,
+}
+
+/// Creatures the player has marked for taming via the UI toggle (F-taming).
+/// Presence in this table = "an open taming task should exist." Separate from
+/// the `Task` table because designations represent persistent player intent
+/// that survives task lifecycle changes (preemption, re-claiming). Also gives
+/// the UI a single O(1) lookup for the toggle button state.
+/// No FK to `creatures` — orphaned entries (dead creatures) are harmless and
+/// cleaned up lazily at activation time.
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct TameDesignation {
+    #[primary_key]
+    pub creature_id: CreatureId,
+    /// Tick when designation was created (for UI display, task ordering).
+    pub designated_tick: u64,
 }
 
 /// A player-visible notification. Persists across saves so the notification
@@ -1288,6 +1308,18 @@ pub struct TaskAttackTargetData {
     pub path_failures: u32,
 }
 
+/// Tame task extension data — stores the target creature to tame. The target
+/// is a plain `CreatureId`, not an FK — the task polls the target's
+/// vital_status each activation and completes if dead. See also
+/// `TameDesignation`, which tracks the player's persistent intent.
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct TaskTameData {
+    #[primary_key]
+    pub task_id: TaskId,
+    /// Target creature to tame. Plain ID, not FK — checked each tick.
+    pub target: CreatureId,
+}
+
 /// AttackMove task extension data — stores the destination voxel that the
 /// creature walks toward when not engaged with a hostile. The transient combat
 /// target is tracked on the base `Task.target_creature` field.
@@ -1613,6 +1645,13 @@ pub struct SimDb {
     #[table(singular = "task_attack_move_data",
             fks(task_id = "tasks" pk on_delete cascade))]
     pub task_attack_move_data: TaskAttackMoveDataTable,
+
+    #[table(singular = "task_tame_data",
+            fks(task_id = "tasks" pk on_delete cascade))]
+    pub task_tame_data: TaskTameDataTable,
+
+    #[table(singular = "tame_designation")]
+    pub tame_designations: TameDesignationTable,
 
     #[table(singular = "activity")]
     pub activities: ActivityTable,

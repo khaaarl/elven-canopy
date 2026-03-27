@@ -968,7 +968,9 @@ impl SimState {
             }
             // Resumable tasks: return to Available for another creature.
             // unassign_creature_from_task handles reverting InProgress → Available.
-            crate::db::TaskKindTag::Build | crate::db::TaskKindTag::Furnish => {}
+            crate::db::TaskKindTag::Build
+            | crate::db::TaskKindTag::Furnish
+            | crate::db::TaskKindTag::Tame => {}
             // No-cleanup tasks: mark Complete so they aren't re-claimed.
             crate::db::TaskKindTag::GoTo
             | crate::db::TaskKindTag::EatBread

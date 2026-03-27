@@ -305,6 +305,13 @@ pub struct SpeciesData {
     /// `TriggerRaid` command to size the raiding party. Default 1.
     #[serde(default = "default_raid_size")]
     pub raid_size: u32,
+
+    /// Taming difficulty threshold (F-taming). `None` = untameable (sapient
+    /// species). `Some(n)` = the tamer needs
+    /// `(WIL + CHA + Beastcraft) + quasi_normal(rng, 50) >= n` to succeed
+    /// on each attempt. Higher values require more stat/skill investment.
+    #[serde(default)]
+    pub tame_difficulty: Option<i64>,
 }
 
 /// Species-specific distribution parameters for a single creature stat.

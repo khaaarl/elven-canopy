@@ -378,6 +378,18 @@ fn build_creature_info_dict(
         dict.set("path_name", GString::from(""));
     }
 
+    // Taming info (F-taming).
+    let is_tame_designated = sim.db.tame_designations.get(&c.id).is_some();
+    dict.set("tame_designated", is_tame_designated);
+    let is_tameable = sim
+        .config
+        .species
+        .get(&c.species)
+        .and_then(|sd| sd.tame_difficulty)
+        .is_some();
+    dict.set("is_tameable", is_tameable);
+    dict.set("is_wild", c.civ_id.is_none());
+
     // Creature stats (ability scores).
     for tk in elven_canopy_sim::stats::STAT_TRAIT_KINDS {
         let val = sim
@@ -3972,6 +3984,30 @@ impl SimBridge {
             "Scout" => GString::from(elven_canopy_sim::types::PathId::Scout.display_name()),
             _ => GString::from(""),
         }
+    }
+
+    // -------------------------------------------------------------------
+    // Taming (F-taming)
+    // -------------------------------------------------------------------
+
+    /// Designate a wild creature for taming. Creates a tame designation and
+    /// an open Tame task for any available Scout-path elf to claim.
+    #[func]
+    fn designate_tame(&mut self, target_uuid: GString) {
+        let Some(target_id) = parse_creature_id(&target_uuid.to_string()) else {
+            return;
+        };
+        self.apply_or_send(SimAction::DesignateTame { target_id });
+    }
+
+    /// Cancel a tame designation. Removes the designation and cancels any
+    /// in-progress taming task on that creature.
+    #[func]
+    fn cancel_tame_designation(&mut self, target_uuid: GString) {
+        let Some(target_id) = parse_creature_id(&target_uuid.to_string()) else {
+            return;
+        };
+        self.apply_or_send(SimAction::CancelTameDesignation { target_id });
     }
 
     // -------------------------------------------------------------------

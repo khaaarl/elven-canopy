@@ -416,6 +416,14 @@ pub enum SimAction {
     /// available dance hall, creates a Dance activity linked to it via
     /// `ActivityStructureRef`, and places the activity at the hall's interior.
     StartDebugDance,
+
+    // --- Taming commands (F-taming) ---
+    /// Mark a neutral creature for taming. Creates a `TameDesignation` entry
+    /// and an open `Tame` task. Any idle Scout-path elf can claim it.
+    DesignateTame { target_id: CreatureId },
+    /// Cancel a tame designation. Removes the `TameDesignation` entry and
+    /// cancels any in-progress taming task on that creature.
+    CancelTameDesignation { target_id: CreatureId },
 }
 
 #[cfg(test)]
@@ -500,5 +508,32 @@ mod tests {
         let json4 = serde_json::to_string(&cmd4).unwrap();
         let restored4: SimCommand = serde_json::from_str(&json4).unwrap();
         assert_eq!(json4, serde_json::to_string(&restored4).unwrap());
+    }
+
+    #[test]
+    fn taming_command_serialization_roundtrip() {
+        let creature_id = CreatureId::new(&mut crate::prng::GameRng::new(42));
+
+        let cmd1 = SimCommand {
+            player_name: "test".to_string(),
+            tick: 1,
+            action: SimAction::DesignateTame {
+                target_id: creature_id,
+            },
+        };
+        let json1 = serde_json::to_string(&cmd1).unwrap();
+        let restored1: SimCommand = serde_json::from_str(&json1).unwrap();
+        assert_eq!(json1, serde_json::to_string(&restored1).unwrap());
+
+        let cmd2 = SimCommand {
+            player_name: "test".to_string(),
+            tick: 2,
+            action: SimAction::CancelTameDesignation {
+                target_id: creature_id,
+            },
+        };
+        let json2 = serde_json::to_string(&cmd2).unwrap();
+        let restored2: SimCommand = serde_json::from_str(&json2).unwrap();
+        assert_eq!(json2, serde_json::to_string(&restored2).unwrap());
     }
 }

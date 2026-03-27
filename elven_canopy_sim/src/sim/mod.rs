@@ -551,6 +551,7 @@ mod needs;
 mod paths;
 mod raid;
 mod skills;
+mod taming;
 mod task_helpers;
 
 impl SimState {
@@ -1188,6 +1189,12 @@ impl SimState {
             }
             SimAction::StartDebugDance => {
                 self.handle_start_debug_dance(events);
+            }
+            SimAction::DesignateTame { target_id } => {
+                self.handle_designate_tame(*target_id, events);
+            }
+            SimAction::CancelTameDesignation { target_id } => {
+                self.handle_cancel_tame_designation(*target_id);
             }
         }
     }

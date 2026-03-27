@@ -56,7 +56,6 @@ This reduces merge conflicts when parallel work streams add items.
 [~] F-notifications        Player-visible event notifications
 [~] F-parallel-dedup       Radix-partitioned parallel dedup (elven_canopy_utils)
 [~] F-path-ui              Path management UI and notifications
-[~] F-taming               Tame neutral creatures via Scout-path elves
 ```
 
 ### Todo
@@ -191,6 +190,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-path-stuck           Deep commitment personality drift and refusal
 [ ] F-patrol               Patrol command for military groups
 [ ] F-personality          Personality axes affecting behavior
+[ ] F-pet-names            Named tamed animals
 [ ] F-phased-archery       Phased archery (nock/draw/loose) with skill-gated mobility
 [ ] F-poetry-reading       Social gatherings and poetry readings
 [ ] F-population           Natural population growth/immigration
@@ -477,6 +477,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-tab-query-opts       Query options struct for index queries
 [x] F-tab-schema-ver       Schema versioning fundamentals
 [x] F-tab-unique-idx       Unique index enforcement
+[x] F-taming               Tame neutral creatures via Scout-path elves
 [x] F-task-interruption    Unified task interruption and cleanup
 [x] F-task-panel-groups    Task panel grouped by origin + creature names
 [x] F-task-proximity       Proximity-based task assignment (Dijkstra nearest)
@@ -1390,8 +1391,8 @@ Encompasses: elf-animal bonds/relationships, war training, mounting and
 cavalry, animal needs (food, shelter), breeding, labor assignment panel
 for controlling which creatures do which tasks.
 
-**Blocked by:** F-taming
-**Related:** F-animal-bonds, F-animal-breeding, F-animal-husbandry, F-cavalry, F-civilizations, F-herding, F-labor-panel, F-pack-animals, F-task-tags, F-war-animals
+**Unblocked by:** F-taming
+**Related:** F-animal-bonds, F-animal-breeding, F-animal-husbandry, F-cavalry, F-civilizations, F-herding, F-labor-panel, F-pack-animals, F-pet-names, F-task-tags, F-war-animals
 
 #### F-creature-actions — Creature action system: typed duration-bearing actions
 **Status:** Done
@@ -1613,6 +1614,16 @@ Creatures glide between nav nodes instead of teleporting. Each creature
 stores `move_from`/`move_to`/`move_start_tick`/`move_end_tick` as rendering
 metadata. `interpolated_position()` lerps based on `render_tick`.
 
+#### F-pet-names — Named tamed animals
+**Status:** Todo
+
+Tamed animals receive names upon joining the player's civilization.
+Name generation could use the Vaelith conlang system (like elf names)
+or a separate animal naming scheme. Names appear in the creature info
+panel, units panel, and notifications.
+
+**Related:** F-civ-pets, F-taming
+
 #### F-population — Natural population growth/immigration
 **Status:** Todo · **Phase:** 3 · **Refs:** §13, §15
 
@@ -1684,7 +1695,7 @@ mechanic.
 **Related:** F-aggro-fauna, F-taming
 
 #### F-taming — Tame neutral creatures via Scout-path elves
-**Status:** In Progress
+**Status:** Done
 
 Scout-path elves can tame neutral creatures. Toggle a "Tame" button on
 a neutral creature's detail panel to create an open task for any
@@ -1698,8 +1709,8 @@ appears in a Pets/Animals section of the units panel.
 
 **Draft:** docs/drafts/F-taming.md
 
-**Blocks:** F-civ-pets
-**Related:** F-creature-skills, F-tame-aggro, F-task-tags
+**Unblocked:** F-civ-pets
+**Related:** F-creature-skills, F-pet-names, F-tame-aggro, F-task-tags
 
 #### F-task-interruption — Unified task interruption and cleanup
 **Status:** Done

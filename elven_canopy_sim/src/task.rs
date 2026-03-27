@@ -242,6 +242,11 @@ pub enum TaskKind {
         item_kind: ItemKind,
         quantity: u32,
     },
+    /// Tame a neutral creature (F-taming). Scout-path elf walks to the target
+    /// and makes repeated taming attempts. Each attempt is an independent
+    /// probabilistic roll — no progress bar. The task completes when a roll
+    /// succeeds or the target dies. Extension data in `TaskTameData`.
+    Tame { target: CreatureId },
 }
 
 /// Where a task originated — used by the UI to group tasks into sections.
@@ -765,5 +770,40 @@ mod tests {
         let task: Task = serde_json::from_str(json).unwrap();
         assert_eq!(task.restrict_to_creature_id, None);
         assert_eq!(task.prerequisite_task_id, None);
+    }
+
+    #[test]
+    fn tame_task_serialization_roundtrip() {
+        let mut rng = GameRng::new(42);
+        let task_id = TaskId::new(&mut rng);
+        let target_id = crate::types::CreatureId::new(&mut rng);
+        let location = VoxelCoord::new(10, 51, 10);
+
+        let task = Task {
+            id: task_id,
+            kind: TaskKind::Tame { target: target_id },
+            state: TaskState::Available,
+            location,
+            progress: 0,
+            total_cost: 0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::PlayerDirected,
+            target_creature: Some(target_id),
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
+            required_civ_id: None,
+        };
+
+        let json = serde_json::to_string(&task).unwrap();
+        let restored: Task = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.id, task_id);
+        match &restored.kind {
+            TaskKind::Tame { target } => assert_eq!(*target, target_id),
+            other => panic!("Expected Tame task, got {:?}", other),
+        }
+        assert_eq!(restored.total_cost, 0);
+        assert_eq!(restored.required_species, Some(Species::Elf));
+        assert_eq!(restored.target_creature, Some(target_id));
     }
 }

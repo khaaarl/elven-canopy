@@ -312,6 +312,11 @@ pub enum SimEventKind {
         creature_id: CreatureId,
         path_id: PathId,
     },
+    /// A creature was successfully tamed and joined the player's civ (F-taming).
+    CreatureTamed {
+        creature_id: CreatureId,
+        tamer_id: CreatureId,
+    },
 }
 
 #[cfg(test)]

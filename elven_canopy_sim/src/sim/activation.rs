@@ -286,6 +286,26 @@ impl SimState {
             }
         }
 
+        // Resolve taming attempts (needs events for CreatureTamed).
+        if action_kind == ActionKind::TameAttempt {
+            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+                c.action_kind = ActionKind::NoAction;
+                c.next_available_tick = None;
+            });
+            let completed = self.resolve_tame_attempt(creature_id, events);
+            if !completed {
+                let task_id = self
+                    .db
+                    .creatures
+                    .get(&creature_id)
+                    .and_then(|c| c.current_task);
+                if let Some(task_id) = task_id {
+                    self.execute_task_behavior(creature_id, task_id, current_node, events);
+                    return;
+                }
+            }
+        }
+
         // Resolve simple work actions (shared).
         if matches!(
             action_kind,
@@ -547,6 +567,13 @@ impl SimState {
                         .is_none_or(|pt| pt.state == task::TaskState::Complete);
                     if !prereq_complete {
                         return false;
+                    }
+                }
+                // Tame tasks: only Scout-path elves can claim.
+                if t.kind_tag == crate::db::TaskKindTag::Tame {
+                    match self.creature_path(creature_id) {
+                        Some(crate::types::PathId::Scout) => {} // allowed
+                        _ => return false,
                     }
                 }
                 // Build/Furnish: nonmagical creatures cannot claim, magical need mana.
@@ -965,6 +992,10 @@ impl SimState {
             }
             crate::db::TaskKindTag::AttackMove => {
                 // Handled in execute_task_behavior before reaching here.
+                return;
+            }
+            crate::db::TaskKindTag::Tame => {
+                self.execute_tame_at_location(creature_id, task_id, events);
                 return;
             }
         }

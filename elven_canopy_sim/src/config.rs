@@ -2025,6 +2025,14 @@ impl Default for FruitConfig {
     }
 }
 
+fn default_tame_attempt_ticks() -> u64 {
+    3000
+}
+
+fn default_tame_skill_advance_probability() -> u32 {
+    50
+}
+
 // ---------------------------------------------------------------------------
 // Top-level game config
 // ---------------------------------------------------------------------------
@@ -2473,6 +2481,18 @@ pub struct GameConfig {
     /// this field use defaults (Outcast/Warrior/Scout with standard bonuses).
     #[serde(default)]
     pub paths: PathConfig,
+
+    // -- Taming (F-taming) --
+    /// Duration of each taming attempt in sim ticks. At 1000 ticks/sec,
+    /// 3000 = 3 seconds per attempt.
+    #[serde(default = "default_tame_attempt_ticks")]
+    pub tame_attempt_ticks: u64,
+
+    /// Base probability (permille, i.e. parts per thousand) for Beastcraft
+    /// skill advancement per taming attempt. Lower than construction (1000)
+    /// and crafting (800) because taming attempts are fast and repeated.
+    #[serde(default = "default_tame_skill_advance_probability")]
+    pub tame_skill_advance_probability: u32,
 }
 
 /// Configuration for the creature skill advancement system (F-creature-skills).
@@ -2796,6 +2816,7 @@ impl Default for GameConfig {
                     (TraitKind::Charisma, 30, 40),
                 ]),
                 raid_size: 1,
+                tame_difficulty: None, // sapient — untameable
             },
         );
         species.insert(
@@ -2839,6 +2860,7 @@ impl Default for GameConfig {
                     (TraitKind::Charisma, 150, 40),
                 ]),
                 raid_size: 1,
+                tame_difficulty: Some(100), // easy
             },
         );
         species.insert(
@@ -2882,6 +2904,7 @@ impl Default for GameConfig {
                     (TraitKind::Charisma, -100, 40),
                 ]),
                 raid_size: 1,
+                tame_difficulty: Some(200), // hard — aggressive temperament
             },
         );
         species.insert(
@@ -2925,6 +2948,7 @@ impl Default for GameConfig {
                     (TraitKind::Charisma, 0, 40),
                 ]),
                 raid_size: 1,
+                tame_difficulty: Some(150), // moderate — skittish
             },
         );
         species.insert(
@@ -2968,6 +2992,7 @@ impl Default for GameConfig {
                     (TraitKind::Charisma, 50, 50),
                 ]),
                 raid_size: 1,
+                tame_difficulty: Some(250), // very hard — strong-willed
             },
         );
         species.insert(
@@ -3016,6 +3041,7 @@ impl Default for GameConfig {
                     (TraitKind::Charisma, -50, 40),
                 ]),
                 raid_size: 6,
+                tame_difficulty: None, // sapient — untameable
             },
         );
         species.insert(
@@ -3059,6 +3085,7 @@ impl Default for GameConfig {
                     (TraitKind::Charisma, 50, 40),
                 ]),
                 raid_size: 1,
+                tame_difficulty: Some(150), // moderate — clever, evasive
             },
         );
         species.insert(
@@ -3107,6 +3134,7 @@ impl Default for GameConfig {
                     (TraitKind::Charisma, -50, 40),
                 ]),
                 raid_size: 3,
+                tame_difficulty: None, // sapient — untameable
             },
         );
         species.insert(
@@ -3150,6 +3178,7 @@ impl Default for GameConfig {
                     (TraitKind::Charisma, 30, 40),
                 ]),
                 raid_size: 1,
+                tame_difficulty: Some(100), // easy — small, docile
             },
         );
         species.insert(
@@ -3198,6 +3227,7 @@ impl Default for GameConfig {
                     (TraitKind::Charisma, -100, 50),
                 ]),
                 raid_size: 2,
+                tame_difficulty: None, // sapient — untameable
             },
         );
         species.insert(
@@ -3246,6 +3276,7 @@ impl Default for GameConfig {
                     (TraitKind::Charisma, -150, 30),
                 ]),
                 raid_size: 1,
+                tame_difficulty: Some(350), // extreme — dangerous, alien mind
             },
         );
         species.insert(
@@ -3294,6 +3325,7 @@ impl Default for GameConfig {
                     (TraitKind::Charisma, -150, 40),
                 ]),
                 raid_size: 1,
+                tame_difficulty: Some(350), // extreme — apex predator
             },
         );
 
@@ -3590,6 +3622,8 @@ impl Default for GameConfig {
             evasion_dodge_advance_permille: default_evasion_dodge_advance_permille(),
             skills: SkillConfig::default(),
             paths: PathConfig::default(),
+            tame_attempt_ticks: default_tame_attempt_ticks(),
+            tame_skill_advance_probability: default_tame_skill_advance_probability(),
         }
     }
 }

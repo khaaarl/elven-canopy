@@ -262,6 +262,75 @@ func test_path_tab_dropdown_syncs_with_path_id() -> void:
 	assert_eq(_panel._path_tab_option.selected, scout_idx)
 
 
+# -- Tame button (F-taming) --------------------------------------------------
+
+
+func test_tame_button_visible_for_wild_tameable() -> void:
+	var info := _minimal_info()
+	info["species"] = "Capybara"
+	info["is_tameable"] = true
+	info["is_wild"] = true
+	info["vital_status"] = "Alive"
+	info["tame_designated"] = false
+	_panel.show_creature("capy-1", info)
+	assert_true(_panel._tame_button.visible)
+	assert_string_contains(_panel._tame_button.text, "Tame")
+
+
+func test_tame_button_hidden_for_untameable() -> void:
+	var info := _minimal_info()
+	info["species"] = "Goblin"
+	info["is_tameable"] = false
+	info["is_wild"] = true
+	info["vital_status"] = "Alive"
+	_panel.show_creature("goblin-1", info)
+	assert_false(_panel._tame_button.visible)
+
+
+func test_tame_button_hidden_for_tamed_creature() -> void:
+	var info := _minimal_info()
+	info["species"] = "Capybara"
+	info["is_tameable"] = true
+	info["is_wild"] = false  # already tamed (has civ_id)
+	info["vital_status"] = "Alive"
+	_panel.show_creature("capy-1", info)
+	assert_false(_panel._tame_button.visible)
+
+
+func test_tame_button_shows_checkmark_when_designated() -> void:
+	var info := _minimal_info()
+	info["species"] = "Capybara"
+	info["is_tameable"] = true
+	info["is_wild"] = true
+	info["vital_status"] = "Alive"
+	info["tame_designated"] = true
+	_panel.show_creature("capy-1", info)
+	assert_true(_panel._tame_button.visible)
+	assert_string_contains(_panel._tame_button.text, "\u2713")
+
+
+func test_tame_button_shows_cross_when_not_designated() -> void:
+	var info := _minimal_info()
+	info["species"] = "Capybara"
+	info["is_tameable"] = true
+	info["is_wild"] = true
+	info["vital_status"] = "Alive"
+	info["tame_designated"] = false
+	_panel.show_creature("capy-1", info)
+	assert_true(_panel._tame_button.visible)
+	assert_string_contains(_panel._tame_button.text, "\u2717")
+
+
+func test_tame_button_hidden_for_dead_creature() -> void:
+	var info := _minimal_info()
+	info["species"] = "Capybara"
+	info["is_tameable"] = true
+	info["is_wild"] = true
+	info["vital_status"] = "Dead"
+	_panel.show_creature("capy-1", info)
+	assert_false(_panel._tame_button.visible)
+
+
 # -- Helpers -----------------------------------------------------------------
 
 

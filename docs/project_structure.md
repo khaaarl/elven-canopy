@@ -34,8 +34,9 @@ elven-canopy/
 │       │   ├── paths.rs       #   Elf path assignment, skill cap/roll queries, backfill
 │       │   ├── raid.rs         #   Raid triggering (hostile civ raiding parties)
 │       │   ├── skills.rs      #   Probabilistic skill advancement (try_advance_skill)
+│       │   ├── taming.rs      #   Creature taming (F-taming): designation, roll, civ change
 │       │   └── task_helpers.rs #   Task extension table accessors, insert_task
-│       ├── db.rs               # SimDb — tabulosity relational store (38 tables, all entities)
+│       ├── db.rs               # SimDb — tabulosity relational store (45 tables, all entities)
 │       ├── mesh_gen.rs         # Chunk-based voxel mesh generation with smooth surface rendering
 │       ├── smooth_mesh.rs      # Smooth mesh pipeline: subdivision, anchoring, chamfer, smoothing
 │       ├── mesh_decimation.rs  # QEM edge-collapse decimation + coplanar retri + collinear collapse
