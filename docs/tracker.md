@@ -120,7 +120,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-day-night-color      Color grading shift by time of day
 [ ] F-defense-struct       Defensive structures (ballista, wards)
 [ ] F-demolish             Structure demolition
-[ ] F-distance-fog         Depth-based atmospheric fog/haze
 [ ] F-dwarf-fort-gen       Underground dwarf fortress generation
 [ ] F-dye-application      Apply dye to equipment at workshop
 [ ] F-dye-mixing           Dye color mixing recipes
@@ -338,6 +337,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-dance-self-org       Elves self-organize dances
 [x] F-dblclick-select      Double-click to select all of same military group
 [x] F-debug-menu           Move spawn/summon into debug menu
+[x] F-distance-fog         Depth-based atmospheric fog/haze
 [x] F-dye-crafting         Dye pressing from pigmented fruit components
 [x] F-dynamic-pursuit      Dynamic repathfinding for moving-target tasks
 [x] F-elf-acquire          Elf personal item acquisition
@@ -4941,7 +4941,7 @@ The debug menu should be easy to hide entirely for non-dev builds later.
 **Related:** F-spawn-toolbar
 
 #### F-distance-fog — Depth-based atmospheric fog/haze
-**Status:** Todo
+**Status:** Done
 
 Depth-based fog that fades distant geometry toward a sky/haze color. Can use Godot's built-in Environment fog or a simple shader-based depth fade. Hides LOD transitions (relevant for F-megachunk draw distance), gives depth cues, makes the forest feel large. Essentially free — per-fragment lerp based on depth.
 

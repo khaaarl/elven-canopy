@@ -40,6 +40,9 @@ func test_defaults_when_no_file() -> void:
 	assert_eq(_config.get_setting("player_name"), "")
 	assert_eq(_config.get_setting("start_paused_on_load"), false)
 	assert_eq(_config.get_setting("draw_distance"), 50)
+	assert_eq(_config.get_setting("fog_enabled"), true)
+	assert_eq(_config.get_setting("fog_begin"), 40)
+	assert_eq(_config.get_setting("fog_end"), 80)
 
 
 ## Settings can be changed and read back.
@@ -218,3 +221,31 @@ func test_override_not_written_to_disk() -> void:
 	var raw: Dictionary = JSON.parse_string(file.get_as_text())
 	file.close()
 	assert_eq(raw.get("player_name"), "OnDisk")
+
+
+## Fog settings survive a save/load roundtrip with correct types.
+func test_fog_save_load_roundtrip() -> void:
+	_config.set_setting("fog_enabled", false)
+	_config.set_setting("fog_begin", 25)
+	_config.set_setting("fog_end", 60)
+
+	var config2 := Node.new()
+	config2.set_script(GameConfigScript)
+	config2.config_path = TEST_CONFIG_PATH
+	config2.load_config()
+
+	assert_eq(config2.get_setting("fog_enabled"), false)
+	assert_eq(config2.get_setting("fog_begin"), 25)
+	assert_eq(config2.get_setting("fog_end"), 60)
+	config2.free()
+
+
+## Stale fog_density key from a previous version is erased on load.
+func test_stale_fog_density_erased_on_load() -> void:
+	var data := {"fog_density": 0.0015, "fog_enabled": true}
+	var file := FileAccess.open(TEST_CONFIG_PATH, FileAccess.WRITE)
+	file.store_string(JSON.stringify(data))
+	file.close()
+
+	_config.load_config()
+	assert_null(_config.get_setting("fog_density"))

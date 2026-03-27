@@ -183,6 +183,119 @@ func test_draw_distance_clamped() -> void:
 	assert_eq(_panel.get_draw_distance_value(), 0)
 
 
+## Panel populates fog enabled from config on open.
+func test_open_populates_fog_enabled() -> void:
+	_config.set_setting("fog_enabled", false)
+	_panel.open(_config)
+	assert_false(_panel.get_fog_enabled())
+
+
+## Save writes fog enabled to config.
+func test_save_writes_fog_enabled() -> void:
+	_panel.set_fog_enabled(false)
+	_panel.save_and_close()
+	assert_eq(_config.get_setting("fog_enabled"), false)
+
+
+## Cancel discards fog enabled changes.
+func test_cancel_discards_fog_enabled() -> void:
+	_config.set_setting("fog_enabled", true)
+	_panel.open(_config)
+	_panel.set_fog_enabled(false)
+	_panel.cancel_and_close()
+	assert_eq(_config.get_setting("fog_enabled"), true)
+
+
+## Panel populates fog begin from config on open.
+func test_open_populates_fog_begin() -> void:
+	_config.set_setting("fog_begin", 60)
+	_panel.open(_config)
+	assert_eq(_panel.get_fog_begin_value(), 60)
+
+
+## Save writes fog begin to config.
+func test_save_writes_fog_begin() -> void:
+	_panel.set_fog_begin_value(30)
+	_panel.save_and_close()
+	assert_eq(_config.get_setting("fog_begin"), 30)
+
+
+## Cancel discards fog begin changes.
+func test_cancel_discards_fog_begin() -> void:
+	_config.set_setting("fog_begin", 50)
+	_panel.open(_config)
+	_panel.set_fog_begin_value(20)
+	_panel.cancel_and_close()
+	assert_eq(_config.get_setting("fog_begin"), 50)
+
+
+## Fog begin defaults to 40.
+func test_fog_begin_default() -> void:
+	assert_eq(_panel.get_fog_begin_value(), 40)
+
+
+## Invalid fog begin text falls back to current config value.
+func test_fog_begin_invalid_text_keeps_config() -> void:
+	_config.set_setting("fog_begin", 35)
+	_panel.open(_config)
+	_panel._fog_begin_input.text = "not a number"
+	_panel.save_and_close()
+	assert_eq(_config.get_setting("fog_begin"), 35)
+
+
+## Fog begin is clamped to 0–500.
+func test_fog_begin_clamped() -> void:
+	_panel._fog_begin_input.text = "999"
+	assert_eq(_panel.get_fog_begin_value(), 500)
+	_panel._fog_begin_input.text = "-10"
+	assert_eq(_panel.get_fog_begin_value(), 0)
+
+
+## Panel populates fog end from config on open.
+func test_open_populates_fog_end() -> void:
+	_config.set_setting("fog_end", 100)
+	_panel.open(_config)
+	assert_eq(_panel.get_fog_end_value(), 100)
+
+
+## Save writes fog end to config.
+func test_save_writes_fog_end() -> void:
+	_panel.set_fog_end_value(90)
+	_panel.save_and_close()
+	assert_eq(_config.get_setting("fog_end"), 90)
+
+
+## Cancel discards fog end changes.
+func test_cancel_discards_fog_end() -> void:
+	_config.set_setting("fog_end", 70)
+	_panel.open(_config)
+	_panel.set_fog_end_value(120)
+	_panel.cancel_and_close()
+	assert_eq(_config.get_setting("fog_end"), 70)
+
+
+## Fog end defaults to 80.
+func test_fog_end_default() -> void:
+	assert_eq(_panel.get_fog_end_value(), 80)
+
+
+## Invalid fog end text falls back to current config value.
+func test_fog_end_invalid_text_keeps_config() -> void:
+	_config.set_setting("fog_end", 75)
+	_panel.open(_config)
+	_panel._fog_end_input.text = "not a number"
+	_panel.save_and_close()
+	assert_eq(_config.get_setting("fog_end"), 75)
+
+
+## Fog end is clamped to 0–500.
+func test_fog_end_clamped() -> void:
+	_panel._fog_end_input.text = "999"
+	assert_eq(_panel.get_fog_end_value(), 500)
+	_panel._fog_end_input.text = "-10"
+	assert_eq(_panel.get_fog_end_value(), 0)
+
+
 ## Panel runs with PROCESS_MODE_ALWAYS (required for escape menu paused tree).
 func test_process_mode_always() -> void:
 	assert_eq(

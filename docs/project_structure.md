@@ -174,7 +174,8 @@ elven-canopy/
 │       ├── main_menu.gd        # Main menu UI
 │       ├── new_game_menu.gd    # New game screen with tree parameter sliders
 │       ├── escape_menu.gd      # In-game escape menu overlay (ESC)
-│       ├── settings_panel.gd    # Modal settings overlay (player name, paused-on-load)
+│       ├── settings_panel.gd    # Modal settings overlay (general + visual settings)
+│       ├── fog_controller.gd   # Distance fog (FOG_MODE_DEPTH on WorldEnvironment)
 │       ├── save_dialog.gd      # Modal save-game dialog (name input)
 │       ├── load_dialog.gd      # Modal load-game dialog (file list)
 │       ├── orbital_camera.gd   # Camera controls (orbit, follow, vertical snap)

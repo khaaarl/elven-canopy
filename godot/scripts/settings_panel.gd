@@ -8,6 +8,9 @@
 ##   - Player name (LineEdit, max 32 chars)
 ##   - Start paused on load (toggle button)
 ##   - Draw distance (LineEdit, 0–500 voxels, 0 = unlimited)
+##   - Fog enabled (toggle button)
+##   - Fog begin (LineEdit, voxels)
+##   - Fog end (LineEdit, voxels)
 ##
 ## On open, reads current values from the provided GameConfig instance.
 ## Save writes values back to GameConfig and closes. Cancel discards edits.
@@ -30,8 +33,12 @@ var _config: Node  ## GameConfig (or test stand-in)
 var _name_input: LineEdit
 var _paused_toggle: Button
 var _draw_distance_input: LineEdit
+var _fog_toggle: Button
+var _fog_begin_input: LineEdit
+var _fog_end_input: LineEdit
 var _save_btn: Button
 var _paused_value: bool = false
+var _fog_enabled_value: bool = true
 
 
 func _ready() -> void:
@@ -124,6 +131,71 @@ func _ready() -> void:
 	draw_dist_unit.text = "voxels"
 	draw_dist_row.add_child(draw_dist_unit)
 
+	# --- Visual section ---
+	var visual_label := Label.new()
+	visual_label.text = "Visual"
+	visual_label.add_theme_font_size_override("font_size", 18)
+	outer_vbox.add_child(visual_label)
+
+	var visual_vbox := VBoxContainer.new()
+	visual_vbox.add_theme_constant_override("separation", 10)
+	outer_vbox.add_child(visual_vbox)
+
+	# Fog enabled row.
+	var fog_row := HBoxContainer.new()
+	fog_row.add_theme_constant_override("separation", 10)
+	visual_vbox.add_child(fog_row)
+
+	var fog_label := Label.new()
+	fog_label.text = "Distance Fog"
+	fog_label.custom_minimum_size = Vector2(160, 0)
+	fog_row.add_child(fog_label)
+
+	_fog_toggle = Button.new()
+	_fog_toggle.custom_minimum_size = Vector2(120, 0)
+	_fog_toggle.pressed.connect(_toggle_fog)
+	fog_row.add_child(_fog_toggle)
+
+	# Fog begin row.
+	var fog_begin_row := HBoxContainer.new()
+	fog_begin_row.add_theme_constant_override("separation", 10)
+	visual_vbox.add_child(fog_begin_row)
+
+	var fog_begin_label := Label.new()
+	fog_begin_label.text = "Fog Begin"
+	fog_begin_label.custom_minimum_size = Vector2(160, 0)
+	fog_begin_row.add_child(fog_begin_label)
+
+	_fog_begin_input = LineEdit.new()
+	_fog_begin_input.custom_minimum_size = Vector2(120, 0)
+	_fog_begin_input.placeholder_text = "0–500"
+	_fog_begin_input.tooltip_text = "Distance (voxels) where fog starts"
+	fog_begin_row.add_child(_fog_begin_input)
+
+	var fog_begin_unit := Label.new()
+	fog_begin_unit.text = "voxels"
+	fog_begin_row.add_child(fog_begin_unit)
+
+	# Fog end row.
+	var fog_end_row := HBoxContainer.new()
+	fog_end_row.add_theme_constant_override("separation", 10)
+	visual_vbox.add_child(fog_end_row)
+
+	var fog_end_label := Label.new()
+	fog_end_label.text = "Fog End"
+	fog_end_label.custom_minimum_size = Vector2(160, 0)
+	fog_end_row.add_child(fog_end_label)
+
+	_fog_end_input = LineEdit.new()
+	_fog_end_input.custom_minimum_size = Vector2(120, 0)
+	_fog_end_input.placeholder_text = "0–500"
+	_fog_end_input.tooltip_text = "Distance (voxels) where fog is fully opaque"
+	fog_end_row.add_child(_fog_end_input)
+
+	var fog_end_unit := Label.new()
+	fog_end_unit.text = "voxels"
+	fog_end_row.add_child(fog_end_unit)
+
 	# --- Button row ---
 	var spacer := Control.new()
 	spacer.custom_minimum_size = Vector2(0, 8)
@@ -163,12 +235,39 @@ func _update_paused_label() -> void:
 	_paused_toggle.text = "\u2713 ENABLED" if _paused_value else "\u2717 DISABLED"
 
 
+func _toggle_fog() -> void:
+	_fog_enabled_value = not _fog_enabled_value
+	_update_fog_label()
+
+
+func _update_fog_label() -> void:
+	_fog_toggle.text = "\u2713 ENABLED" if _fog_enabled_value else "\u2717 DISABLED"
+
+
 ## Parse draw distance text to a clamped int (0–500). Invalid input returns
 ## the current config value (or the default 50 if no config is set).
 func _parse_draw_distance() -> int:
 	var text := _draw_distance_input.text.strip_edges()
 	if not text.is_valid_int():
 		return _config.get_setting("draw_distance") if _config else 50
+	return clampi(text.to_int(), 0, 500)
+
+
+## Parse fog begin text to a clamped int (0–500). Invalid input returns
+## the current config value (or default 40).
+func _parse_fog_begin() -> int:
+	var text := _fog_begin_input.text.strip_edges()
+	if not text.is_valid_int():
+		return _config.get_setting("fog_begin") if _config else 40
+	return clampi(text.to_int(), 0, 500)
+
+
+## Parse fog end text to a clamped int (0–500). Invalid input returns
+## the current config value (or default 80).
+func _parse_fog_end() -> int:
+	var text := _fog_end_input.text.strip_edges()
+	if not text.is_valid_int():
+		return _config.get_setting("fog_end") if _config else 80
 	return clampi(text.to_int(), 0, 500)
 
 
@@ -179,6 +278,10 @@ func open(config: Node) -> void:
 	_paused_value = config.get_setting("start_paused_on_load")
 	_update_paused_label()
 	_draw_distance_input.text = str(config.get_setting("draw_distance"))
+	_fog_enabled_value = config.get_setting("fog_enabled")
+	_update_fog_label()
+	_fog_begin_input.text = str(config.get_setting("fog_begin"))
+	_fog_end_input.text = str(config.get_setting("fog_end"))
 	_save_btn.disabled = _name_input.text.strip_edges().is_empty()
 
 
@@ -189,6 +292,9 @@ func save_and_close() -> void:
 		_config.set_setting("player_name", name_text)
 	_config.set_setting("start_paused_on_load", _paused_value)
 	_config.set_setting("draw_distance", _parse_draw_distance())
+	_config.set_setting("fog_enabled", _fog_enabled_value)
+	_config.set_setting("fog_begin", _parse_fog_begin())
+	_config.set_setting("fog_end", _parse_fog_end())
 	closed.emit()
 	queue_free()
 
@@ -235,3 +341,28 @@ func get_draw_distance_value() -> int:
 
 func set_draw_distance_value(value: int) -> void:
 	_draw_distance_input.text = str(value)
+
+
+func get_fog_enabled() -> bool:
+	return _fog_enabled_value
+
+
+func set_fog_enabled(value: bool) -> void:
+	_fog_enabled_value = value
+	_update_fog_label()
+
+
+func get_fog_begin_value() -> int:
+	return _parse_fog_begin()
+
+
+func set_fog_begin_value(value: int) -> void:
+	_fog_begin_input.text = str(value)
+
+
+func get_fog_end_value() -> int:
+	return _parse_fog_end()
+
+
+func set_fog_end_value(value: int) -> void:
+	_fog_end_input.text = str(value)

@@ -8,6 +8,9 @@
 ##   player_name: String = ""         — persistent player display name
 ##   start_paused_on_load: bool = false — pause sim immediately after loading a save
 ##   draw_distance: int = 50          — chunk draw distance in voxels (0 = unlimited)
+##   fog_enabled: bool = true         — depth-based atmospheric fog
+##   fog_begin: int = 40              — distance (voxels) where fog starts
+##   fog_end: int = 80                — distance (voxels) where fog is fully opaque
 ##
 ## Unknown keys in the JSON file are preserved across load/save (forward
 ## compatibility — a newer version's settings won't be lost if an older
@@ -29,6 +32,9 @@ const DEFAULTS := {
 	"player_name": "",
 	"start_paused_on_load": false,
 	"draw_distance": 50,
+	"fog_enabled": true,
+	"fog_begin": 40,
+	"fog_end": 80,
 }
 
 ## File path for the config JSON. Tests can override this to use a temp path.
@@ -69,6 +75,8 @@ func load_config() -> void:
 			if parsed[key] == null and DEFAULTS.has(key):
 				continue
 			_data[key] = parsed[key]
+		# Remove stale keys from previous versions.
+		_data.erase("fog_density")
 	else:
 		push_warning("GameConfig: %s is not a JSON object, using defaults" % config_path)
 
