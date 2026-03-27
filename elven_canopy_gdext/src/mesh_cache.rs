@@ -51,10 +51,13 @@
 // GDScript rendering side.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::mpsc;
 use std::time::Instant;
 
+use elven_canopy_sim::chunk_neighborhood::ChunkNeighborhood;
 use elven_canopy_sim::mesh_gen::{
-    CHUNK_SIZE, ChunkCoord, ChunkMesh, generate_chunk_mesh, produces_geometry, voxel_to_chunk,
+    CHUNK_SIZE, ChunkCoord, ChunkMesh, generate_chunk_mesh, generate_chunk_mesh_from_world,
+    produces_geometry, voxel_to_chunk,
 };
 use elven_canopy_sim::texture_gen::TilingCache;
 use elven_canopy_sim::types::VoxelCoord;
@@ -492,8 +495,21 @@ impl PerfStats {
 // MeshCache
 // ---------------------------------------------------------------------------
 
+/// Result from a background mesh generation worker.
+struct MeshWorkResult {
+    coord: ChunkCoord,
+    sim_tick: u64,
+    mesh: ChunkMesh,
+    gen_us: u32,
+}
+
 /// Caches chunk meshes with MegaChunk spatial hierarchy, draw-distance
 /// culling, frustum culling, lazy mesh generation, and LRU eviction.
+///
+/// Mesh generation is fully asynchronous: chunks are submitted to rayon
+/// background workers via `rayon::spawn()`, and completed meshes are
+/// drained from an mpsc channel each frame. The main thread only does
+/// fast `ChunkNeighborhood` extraction (copying ~8K voxels) and culling.
 ///
 /// Also supports an optional Y cutoff for the height-hiding feature.
 pub struct MeshCache {
@@ -568,10 +584,24 @@ pub struct MeshCache {
 
     /// Accumulated performance timing samples.
     pub perf: PerfStats,
+
+    // -- Async mesh generation --
+    /// Sender for submitting completed meshes from background workers.
+    /// Cloned into each `rayon::spawn` closure.
+    mesh_tx: mpsc::Sender<MeshWorkResult>,
+    /// Receiver for draining completed meshes on the main thread.
+    mesh_rx: mpsc::Receiver<MeshWorkResult>,
+    /// Chunks currently being generated in the background. Prevents
+    /// duplicate submissions.
+    in_flight: BTreeSet<ChunkCoord>,
+    /// Sim tick at which each cached chunk was generated. Used for
+    /// freshness checks when two results for the same chunk race.
+    cached_ticks: BTreeMap<ChunkCoord, u64>,
 }
 
 impl MeshCache {
     pub fn new() -> Self {
+        let (mesh_tx, mesh_rx) = mpsc::channel();
         Self {
             chunks: BTreeMap::new(),
             dirty: BTreeSet::new(),
@@ -601,6 +631,10 @@ impl MeshCache {
             max_gen_per_frame: 64,
             light_direction: None,
             perf: PerfStats::new(),
+            mesh_tx,
+            mesh_rx,
+            in_flight: BTreeSet::new(),
+            cached_ticks: BTreeMap::new(),
         }
     }
 
@@ -617,6 +651,50 @@ impl MeshCache {
     #[cfg(test)]
     pub fn set_max_gen_per_frame(&mut self, n: usize) {
         self.max_gen_per_frame = n;
+    }
+
+    /// Block until all in-flight background mesh generations complete,
+    /// then drain their results into the cache. Test-only convenience
+    /// method to make async generation synchronous in tests.
+    #[cfg(test)]
+    pub fn flush_in_flight(&mut self) {
+        while !self.in_flight.is_empty() {
+            // Block for one result, then drain any others that arrived.
+            if let Ok(result) = self.mesh_rx.recv() {
+                self.handle_completed_result(result);
+            }
+            // Non-blocking drain of any additional results.
+            while let Ok(result) = self.mesh_rx.try_recv() {
+                self.handle_completed_result(result);
+            }
+        }
+    }
+
+    /// Block until all in-flight background mesh generations complete,
+    /// then re-queue results on the channel so that the next
+    /// `drain_completed()` (called at the start of `update_visibility()`)
+    /// picks them up and populates `chunks_generated` at the right time.
+    /// Use this instead of `flush_in_flight()` when the test needs to
+    /// verify delta lists (`chunks_to_show`, `chunks_to_shadow`, etc.)
+    /// that depend on `chunks_generated` being populated during the
+    /// `update_visibility()` diff phase.
+    #[cfg(test)]
+    pub fn await_in_flight(&mut self) {
+        let mut buffered = Vec::new();
+        while !self.in_flight.is_empty() {
+            if let Ok(result) = self.mesh_rx.recv() {
+                self.in_flight.remove(&result.coord);
+                buffered.push(result);
+            }
+            while let Ok(result) = self.mesh_rx.try_recv() {
+                self.in_flight.remove(&result.coord);
+                buffered.push(result);
+            }
+        }
+        // Re-send results so drain_completed can pick them up.
+        for result in buffered {
+            let _ = self.mesh_tx.send(result);
+        }
     }
 
     pub fn set_light_direction(&mut self, dir: Option<[f32; 3]>) {
@@ -649,6 +727,10 @@ impl MeshCache {
         self.lru_stamps.clear();
         self.chunk_bytes.clear();
         self.total_cached_bytes = 0;
+        self.in_flight.clear();
+        self.cached_ticks.clear();
+        // Drain and discard any in-flight results from a previous scan.
+        while self.mesh_rx.try_recv().is_ok() {}
 
         let cx_max = (world.size_x as i32 + CHUNK_SIZE - 1) / CHUNK_SIZE;
         let cy_max = (world.size_y as i32 + CHUNK_SIZE - 1) / CHUNK_SIZE;
@@ -725,7 +807,7 @@ impl MeshCache {
             .flat_map(|mc| mc.chunks.iter().copied())
             .collect();
         for coord in all_chunks {
-            let mesh = generate_chunk_mesh(world, coord, self.y_cutoff, grassless);
+            let mesh = generate_chunk_mesh_from_world(world, coord, self.y_cutoff, grassless);
             if !mesh.is_empty() {
                 let bytes = mesh.estimate_byte_size();
                 self.total_cached_bytes += bytes;
@@ -734,6 +816,103 @@ impl MeshCache {
                 self.chunks.insert(coord, mesh);
                 self.visible_set.insert(coord);
             }
+        }
+    }
+
+    // -- Async mesh generation --
+
+    /// Submit a chunk for background mesh generation.
+    /// Extracts a `ChunkNeighborhood` from the world (fast) and spawns
+    /// a rayon task to generate the mesh.
+    fn submit_chunk(
+        &mut self,
+        world: &VoxelWorld,
+        coord: ChunkCoord,
+        grassless: &std::collections::BTreeSet<VoxelCoord>,
+    ) {
+        if self.in_flight.contains(&coord) {
+            return;
+        }
+        let neighborhood =
+            ChunkNeighborhood::extract(world, coord, self.y_cutoff, grassless);
+        let tx = self.mesh_tx.clone();
+        self.in_flight.insert(coord);
+        rayon::spawn(move || {
+            let t = Instant::now();
+            let mesh = generate_chunk_mesh(&neighborhood);
+            let gen_us = t.elapsed().as_micros() as u32;
+            // If the receiver is dropped (MeshCache destroyed), the send
+            // silently fails — that's fine.
+            let _ = tx.send(MeshWorkResult {
+                coord: neighborhood.chunk,
+                sim_tick: neighborhood.sim_tick,
+                mesh,
+                gen_us,
+            });
+        });
+    }
+
+    /// Drain completed mesh results from background workers and insert
+    /// them into the cache. Returns the number of meshes inserted.
+    ///
+    /// For each result:
+    /// - Removes the chunk from `in_flight`.
+    /// - Discards stale results (sim_tick older than the cached version).
+    /// - Inserts the mesh into the cache and adds to `chunks_generated`.
+    pub fn drain_completed(&mut self) -> usize {
+        let mut count = 0;
+        while let Ok(result) = self.mesh_rx.try_recv() {
+            if self.handle_completed_result(result) {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// Process a single completed mesh result. Returns true if a non-empty
+    /// mesh was inserted into the cache.
+    fn handle_completed_result(&mut self, result: MeshWorkResult) -> bool {
+        self.in_flight.remove(&result.coord);
+        self.perf.gen_single_chunk_us.push(result.gen_us);
+
+        // Freshness check: discard if a newer version is already cached.
+        if let Some(&cached_tick) = self.cached_ticks.get(&result.coord) {
+            if result.sim_tick < cached_tick {
+                return false;
+            }
+        }
+
+        let coord = result.coord;
+        if result.mesh.is_empty() {
+            // Chunk produces no geometry — remember it so we don't
+            // regenerate every frame.
+            self.chunks.remove(&coord);
+            self.lru_stamps.remove(&coord);
+            if let Some(bytes) = self.chunk_bytes.remove(&coord) {
+                self.total_cached_bytes = self.total_cached_bytes.saturating_sub(bytes);
+            }
+            self.cached_ticks.remove(&coord);
+            self.empty_chunks.insert(coord);
+            self.visible_set.remove(&coord);
+            self.shadow_set.remove(&coord);
+            let mega_coord = chunk_to_mega(coord);
+            if let Some(mc) = self.megachunks.get_mut(&mega_coord) {
+                mc.remove_chunk(&coord);
+            }
+            false
+        } else {
+            // Remove old byte count before inserting the new mesh.
+            if let Some(old_bytes) = self.chunk_bytes.remove(&coord) {
+                self.total_cached_bytes = self.total_cached_bytes.saturating_sub(old_bytes);
+            }
+            let bytes = result.mesh.estimate_byte_size();
+            self.total_cached_bytes += bytes;
+            self.chunk_bytes.insert(coord, bytes);
+            self.lru_stamps.insert(coord, self.frame_counter);
+            self.chunks.insert(coord, result.mesh);
+            self.cached_ticks.insert(coord, result.sim_tick);
+            self.chunks_generated.push(coord);
+            true
         }
     }
 
@@ -762,6 +941,10 @@ impl MeshCache {
         self.chunks_generated.clear();
         self.chunks_evicted.clear();
 
+        // Drain completed meshes from background workers before culling,
+        // so freshly completed chunks are available for the delta lists.
+        let gen_count = self.drain_completed();
+
         let draw_dist_sq = if self.draw_distance_voxels > 0.0 {
             self.draw_distance_voxels * self.draw_distance_voxels
         } else {
@@ -770,7 +953,6 @@ impl MeshCache {
 
         let mut new_visible: BTreeSet<ChunkCoord> = BTreeSet::new();
         let mut new_shadow: BTreeSet<ChunkCoord> = BTreeSet::new();
-        let mut gen_count: usize = 0;
 
         // Build shadow volume planes (once per frame).
         let shadow_planes: Vec<[f32; 4]> = match self.light_direction {
@@ -844,7 +1026,7 @@ impl MeshCache {
                 // Ensure mesh exists (both visible and shadow-only need meshes).
                 if self.chunks.contains_key(&chunk_coord) {
                     self.lru_stamps.insert(chunk_coord, self.frame_counter);
-                } else {
+                } else if !self.in_flight.contains(&chunk_coord) {
                     pending_this_frame.insert(chunk_coord);
                 }
             }
@@ -857,8 +1039,9 @@ impl MeshCache {
             new_visible.len() as u32,
         );
 
-        // Generate pending meshes up to the per-frame cap.
-        // Prioritise chunks that are closest to the camera (sort by distance).
+        // Submit pending chunks for background mesh generation.
+        // Nearest-to-camera chunks submitted first so rayon's LIFO
+        // work-stealing tends to complete them earliest.
         let mut pending_sorted: Vec<ChunkCoord> = pending_this_frame.iter().copied().collect();
         pending_sorted.sort_by(|a, b| {
             let da = chunk_distance_sq(*a, cam_pos);
@@ -866,65 +1049,16 @@ impl MeshCache {
             da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        // Split pending into this-frame batch (up to cap) and deferred.
         self.pending_gen.clear();
-        let mut batch = Vec::new();
+        let mut submit_count = 0usize;
         for coord in pending_sorted {
             if !new_visible.contains(&coord) && !new_shadow.contains(&coord) {
                 continue;
             }
-            if batch.len() >= self.max_gen_per_frame {
-                self.pending_gen.insert(coord);
-                continue;
-            }
-            batch.push(coord);
+            self.submit_chunk(world, coord, grassless);
+            submit_count += 1;
         }
-
-        // -- Mesh generation pass (timed) --
-        let batch_len = batch.len();
-        let t_gen = Instant::now();
-
-        // Generate meshes in parallel with rayon.
-        let y_cutoff = self.y_cutoff;
-        let results: Vec<(ChunkCoord, ChunkMesh, u32)> = {
-            use rayon::prelude::*;
-            batch
-                .par_iter()
-                .map(|&coord| {
-                    let t = Instant::now();
-                    let mesh = generate_chunk_mesh(world, coord, y_cutoff, grassless);
-                    let us = t.elapsed().as_micros() as u32;
-                    (coord, mesh, us)
-                })
-                .collect()
-        };
-
-        if batch_len > 0 {
-            let gen_us = t_gen.elapsed().as_micros() as u32;
-            PerfStats::record_us(&mut self.perf.gen_batch_us, gen_us);
-        }
-        PerfStats::record_us(&mut self.perf.gen_chunk_counts, batch_len as u32);
-
-        // Insert results back into the cache (single-threaded).
-        for (coord, mesh, chunk_us) in results {
-            self.perf.gen_single_chunk_us.push(chunk_us);
-            self.dirty.remove(&coord);
-            if !mesh.is_empty() {
-                let bytes = mesh.estimate_byte_size();
-                self.total_cached_bytes += bytes;
-                self.chunk_bytes.insert(coord, bytes);
-                self.lru_stamps.insert(coord, self.frame_counter);
-                self.chunks.insert(coord, mesh);
-                self.chunks_generated.push(coord);
-                gen_count += 1;
-            } else {
-                // Remember that this chunk produces no geometry so we don't
-                // regenerate it every frame.
-                self.empty_chunks.insert(coord);
-                new_visible.remove(&coord);
-                new_shadow.remove(&coord);
-            }
-        }
+        PerfStats::record_us(&mut self.perf.gen_chunk_counts, submit_count as u32);
 
         // Diff: compute show/hide/shadow delta lists.
         //
@@ -1135,20 +1269,28 @@ impl MeshCache {
         }
     }
 
-    /// Regenerate dirty chunks that are in the visible set. Returns the number
-    /// of chunks updated. Non-visible dirty chunks remain dirty and will be
-    /// rebuilt when they enter visibility.
+    /// Submit dirty visible/shadow chunks for background regeneration.
+    /// Returns the number of chunks submitted. Non-visible dirty chunks
+    /// remain dirty and will be submitted when they enter visibility.
+    ///
+    /// Dirty flags are cleared at submission time (not at completion),
+    /// so new dirty marks arriving while a chunk is in-flight are preserved
+    /// and will trigger another regeneration.
     pub fn update_dirty(
         &mut self,
         world: &VoxelWorld,
         grassless: &std::collections::BTreeSet<VoxelCoord>,
     ) -> usize {
-        // Only process dirty chunks that are currently visible or shadow-only.
+        // Only process dirty chunks that are currently visible or shadow-only
+        // and not already in-flight.
         let visible_dirty: Vec<ChunkCoord> = self
             .dirty
             .iter()
             .copied()
-            .filter(|c| self.visible_set.contains(c) || self.shadow_set.contains(c))
+            .filter(|c| {
+                !self.in_flight.contains(c)
+                    && (self.visible_set.contains(c) || self.shadow_set.contains(c))
+            })
             .collect();
         if visible_dirty.is_empty() {
             self.last_updated.clear();
@@ -1157,57 +1299,21 @@ impl MeshCache {
 
         let t_dirty = Instant::now();
 
+        // Clear dirty flags at submission time.
         for &coord in &visible_dirty {
             self.dirty.remove(&coord);
         }
         self.last_updated.clear();
 
-        // Remove old byte counts before regeneration.
-        for coord in &visible_dirty {
-            if let Some(old_bytes) = self.chunk_bytes.remove(coord) {
-                self.total_cached_bytes = self.total_cached_bytes.saturating_sub(old_bytes);
-            }
-        }
-
-        // Generate meshes in parallel.
-        let y_cutoff = self.y_cutoff;
-        let results: Vec<(ChunkCoord, ChunkMesh)> = {
-            use rayon::prelude::*;
-            visible_dirty
-                .par_iter()
-                .map(|&coord| {
-                    let mesh = generate_chunk_mesh(world, coord, y_cutoff, grassless);
-                    (coord, mesh)
-                })
-                .collect()
-        };
-
-        // Insert results (single-threaded).
-        for (coord, mesh) in results {
-            if mesh.is_empty() {
-                self.chunks.remove(&coord);
-                self.lru_stamps.remove(&coord);
-                self.visible_set.remove(&coord);
-                self.shadow_set.remove(&coord);
-                self.empty_chunks.insert(coord);
-                let mega_coord = chunk_to_mega(coord);
-                if let Some(mc) = self.megachunks.get_mut(&mega_coord) {
-                    mc.remove_chunk(&coord);
-                }
-            } else {
-                let bytes = mesh.estimate_byte_size();
-                self.total_cached_bytes += bytes;
-                self.chunk_bytes.insert(coord, bytes);
-                self.lru_stamps.insert(coord, self.frame_counter);
-                self.chunks.insert(coord, mesh);
-            }
-            self.last_updated.push(coord);
+        // Submit each dirty chunk for background generation.
+        for &coord in &visible_dirty {
+            self.submit_chunk(world, coord, grassless);
         }
 
         let dirty_us = t_dirty.elapsed().as_micros() as u32;
         PerfStats::record_us(&mut self.perf.dirty_update_us, dirty_us);
 
-        self.last_updated.len()
+        visible_dirty.len()
     }
 
     // -- Accessors (existing API, preserved) --
@@ -1679,14 +1785,14 @@ mod tests {
 
         assert!(cache.chunks.is_empty()); // No meshes yet.
 
-        let gen_count = cache.update_visibility(
+        cache.update_visibility(
             &world,
             [8.0, 8.0, 8.0],
             &open_frustum(),
             &std::collections::BTreeSet::new(),
         );
+        cache.flush_in_flight();
 
-        assert_eq!(gen_count, 1);
         assert!(cache.chunks.contains_key(&ChunkCoord::new(0, 0, 0)));
         assert_eq!(cache.chunks_generated.len(), 1);
     }
@@ -1694,7 +1800,9 @@ mod tests {
     // -- max_gen_per_frame --
 
     #[test]
-    fn visibility_respects_max_gen_per_frame() {
+    fn visibility_submits_all_chunks_without_cap() {
+        // With async mesh generation, all visible chunks are submitted in a
+        // single frame (no per-frame cap). Verify all 3 chunks get generated.
         let mut world = VoxelWorld::new(48, 16, 16);
         // 3 chunks with geometry.
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
@@ -1703,25 +1811,19 @@ mod tests {
 
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
-        cache.set_max_gen_per_frame(2); // Only 2 per frame.
+        cache.set_max_gen_per_frame(100);
 
-        let gen1 = cache.update_visibility(
+        cache.update_visibility(
             &world,
             [24.0, 8.0, 8.0],
             &open_frustum(),
             &std::collections::BTreeSet::new(),
         );
-        assert_eq!(gen1, 2);
-        assert_eq!(cache.pending_gen.len(), 1); // 1 left pending.
+        cache.flush_in_flight();
 
-        let gen2 = cache.update_visibility(
-            &world,
-            [24.0, 8.0, 8.0],
-            &open_frustum(),
-            &std::collections::BTreeSet::new(),
-        );
-        assert_eq!(gen2, 1);
-        assert!(cache.pending_gen.is_empty());
+        // All 3 chunks should have been generated.
+        assert_eq!(cache.chunks_generated.len(), 3);
+        assert_eq!(cache.chunks.len(), 3);
     }
 
     // -- show/hide deltas --
@@ -1737,7 +1839,18 @@ mod tests {
         cache.set_draw_distance(50.0);
         cache.set_max_gen_per_frame(100);
 
-        // Frame 1: camera near chunk 0.
+        // Frame 1: camera near chunk 0. Submits async work.
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
+        // Wait for rayon to complete, then let the next update_visibility
+        // drain results via drain_completed (which populates chunks_generated
+        // and feeds the diff phase).
+        cache.await_in_flight();
+        // Frame 2: drain completed results. chunks_generated feeds chunks_to_show.
         cache.update_visibility(
             &world,
             [8.0, 8.0, 8.0],
@@ -1747,15 +1860,24 @@ mod tests {
         assert_eq!(cache.chunks_to_show.len(), 1);
         assert!(cache.chunks_to_hide.is_empty());
 
-        // Frame 2: camera moves to chunk 12.
+        // Frame 3: camera moves to chunk 12. Chunk 0 leaves visibility (hide
+        // delta fires immediately since mesh exists). Chunk 12 submitted async.
         cache.update_visibility(
             &world,
             [200.0, 8.0, 8.0],
             &open_frustum(),
             &std::collections::BTreeSet::new(),
         );
-        // Chunk 0 should hide, chunk 12 should show.
         assert!(cache.chunks_to_hide.contains(&ChunkCoord::new(0, 0, 0)));
+
+        cache.await_in_flight();
+        // Frame 4: drain chunk 12's mesh. Show delta fires via chunks_generated.
+        cache.update_visibility(
+            &world,
+            [200.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
         assert!(cache.chunks_to_show.contains(&ChunkCoord::new(12, 0, 0)));
     }
 
@@ -1773,6 +1895,14 @@ mod tests {
         cache.set_max_gen_per_frame(100);
 
         // Generate all.
+        cache.update_visibility(
+            &world,
+            [100.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
+        cache.flush_in_flight();
+        // Drain completed into cache.
         cache.update_visibility(
             &world,
             [100.0, 8.0, 8.0],
@@ -1821,6 +1951,14 @@ mod tests {
             &open_frustum(),
             &std::collections::BTreeSet::new(),
         );
+        cache.flush_in_flight();
+        // Drain completed into cache and run eviction.
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
 
         // The only chunk is visible — must not be evicted despite budget.
         assert!(cache.chunks_evicted.is_empty());
@@ -1843,12 +1981,14 @@ mod tests {
             &open_frustum(),
             &std::collections::BTreeSet::new(),
         );
+        cache.flush_in_flight();
 
         // Mark dirty and add a voxel.
         world.set(VoxelCoord::new(9, 8, 8), VoxelType::Trunk);
         cache.mark_dirty_voxels(&[VoxelCoord::new(9, 8, 8)]);
 
         let updated = cache.update_dirty(&world, &std::collections::BTreeSet::new());
+        cache.flush_in_flight();
         assert_eq!(updated, 1);
     }
 
@@ -1896,6 +2036,7 @@ mod tests {
             &open_frustum(),
             &std::collections::BTreeSet::new(),
         );
+        cache.flush_in_flight();
 
         // Dirty chunk 12 (not visible) and modify the world.
         world.set(VoxelCoord::new(201, 8, 8), VoxelType::Trunk);
@@ -1908,11 +2049,16 @@ mod tests {
             &open_frustum(),
             &std::collections::BTreeSet::new(),
         );
+        cache.flush_in_flight();
 
-        // update_visibility generated the mesh fresh (dirty chunk is removed
-        // from dirty set during on-demand generation).
+        // update_visibility submitted the chunk for async generation, and
+        // flush_in_flight completed it. The chunk is now visible with an
+        // up-to-date mesh.
         assert!(cache.visible_set.contains(&ChunkCoord::new(12, 0, 0)));
-        assert!(!cache.dirty.contains(&ChunkCoord::new(12, 0, 0)));
+        assert!(
+            cache.chunks.contains_key(&ChunkCoord::new(12, 0, 0)),
+            "dirty chunk entering visibility should get mesh generated"
+        );
     }
 
     // -- LRU eviction ordering --
@@ -1929,7 +2075,15 @@ mod tests {
         cache.set_draw_distance(0.0);
         cache.set_max_gen_per_frame(100);
 
-        // Frame 1: all visible (generates all 3).
+        // Frame 1: all visible (submits all 3 for async gen).
+        cache.update_visibility(
+            &world,
+            [100.0, 8.0, 100.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
+        cache.flush_in_flight();
+        // Drain completed into cache.
         cache.update_visibility(
             &world,
             [100.0, 8.0, 100.0],
@@ -1938,7 +2092,7 @@ mod tests {
         );
         assert_eq!(cache.chunks.len(), 3);
 
-        // Frame 2: touch chunk (12,0,0) by keeping it visible.
+        // Frame 3: touch chunk (12,0,0) by keeping it visible.
         // Move camera so only chunk (12,0,0) is visible.
         cache.set_draw_distance(50.0);
         cache.update_visibility(
@@ -1983,6 +2137,7 @@ mod tests {
             &open_frustum(),
             &std::collections::BTreeSet::new(),
         );
+        cache.flush_in_flight();
 
         assert!(cache.visible_set.contains(&ChunkCoord::new(0, 0, 0)));
 
@@ -1990,6 +2145,7 @@ mod tests {
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Air);
         cache.mark_dirty_voxels(&[VoxelCoord::new(8, 8, 8)]);
         cache.update_dirty(&world, &std::collections::BTreeSet::new());
+        cache.flush_in_flight();
 
         // Chunk should be gone from visible_set, chunks, lru, and bytes.
         assert!(!cache.visible_set.contains(&ChunkCoord::new(0, 0, 0)));
@@ -2014,6 +2170,7 @@ mod tests {
             &open_frustum(),
             &std::collections::BTreeSet::new(),
         );
+        cache.flush_in_flight();
 
         let bytes_before = cache.total_cached_bytes;
         assert!(bytes_before > 0);
@@ -2022,6 +2179,7 @@ mod tests {
         world.set(VoxelCoord::new(9, 8, 8), VoxelType::Trunk);
         cache.mark_dirty_voxels(&[VoxelCoord::new(9, 8, 8)]);
         cache.update_dirty(&world, &std::collections::BTreeSet::new());
+        cache.flush_in_flight();
 
         // total_cached_bytes should reflect the new (larger) mesh.
         let bytes_after = cache.total_cached_bytes;
@@ -2057,28 +2215,31 @@ mod tests {
     // -- pending gen dropped when no longer visible --
 
     #[test]
-    fn pending_gen_dropped_when_leaving_visibility() {
+    fn in_flight_results_for_hidden_chunks_not_shown() {
+        // With async mesh generation, all chunks are submitted immediately.
+        // If a chunk leaves visibility before its mesh completes, the
+        // completed mesh should still be cached but not added to
+        // chunks_to_show.
         let mut world = VoxelWorld::new(256, 16, 16);
-        // 3 chunks.
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
-        world.set(VoxelCoord::new(24, 8, 8), VoxelType::Trunk);
-        world.set(VoxelCoord::new(40, 8, 8), VoxelType::Trunk);
+        world.set(VoxelCoord::new(200, 8, 8), VoxelType::Trunk);
 
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
-        cache.set_max_gen_per_frame(1);
+        cache.set_max_gen_per_frame(100);
 
-        // Frame 1: all visible, but only 1 generated.
+        // Frame 1: all visible, submits both chunks.
         cache.update_visibility(
             &world,
-            [24.0, 8.0, 8.0],
+            [100.0, 8.0, 8.0],
             &open_frustum(),
             &std::collections::BTreeSet::new(),
         );
-        assert_eq!(cache.pending_gen.len(), 2);
+        cache.flush_in_flight();
 
-        // Frame 2: move camera so only chunk (0,0,0) is visible.
-        cache.set_draw_distance(20.0);
+        // Frame 2: restrict visibility to chunk 0 only. Drain will pick up
+        // completed meshes but chunk 12 is no longer visible.
+        cache.set_draw_distance(50.0);
         cache.update_visibility(
             &world,
             [8.0, 8.0, 8.0],
@@ -2086,11 +2247,9 @@ mod tests {
             &std::collections::BTreeSet::new(),
         );
 
-        // Pending chunks for (1,0,0) and (2,0,0) should be dropped since
-        // they're no longer visible.
-        for &coord in &cache.pending_gen {
-            assert!(cache.visible_set.contains(&coord));
-        }
+        // Only chunk 0 should be visible.
+        assert!(cache.visible_set.contains(&ChunkCoord::new(0, 0, 0)));
+        assert!(!cache.visible_set.contains(&ChunkCoord::new(12, 0, 0)));
     }
 
     // -- scan with y_cutoff interaction --
@@ -2110,6 +2269,14 @@ mod tests {
 
         // But update_visibility should handle the empty mesh gracefully.
         cache.set_max_gen_per_frame(100);
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
+        cache.flush_in_flight();
+        // Drain completed so empty mesh result is processed.
         cache.update_visibility(
             &world,
             [8.0, 8.0, 8.0],
@@ -2199,6 +2366,14 @@ mod tests {
             &open_frustum(),
             &std::collections::BTreeSet::new(),
         );
+        cache.flush_in_flight();
+        // Drain completed into cache.
+        cache.update_visibility(
+            &world,
+            [8.0, 20.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
         assert!(
             cache.visible_set.contains(&ChunkCoord::new(0, 0, 0)),
             "Low chunk should be visible initially"
@@ -2212,6 +2387,7 @@ mod tests {
         // and gets removed from visible_set and megachunks.
         cache.set_y_cutoff(Some(20));
         cache.update_dirty(&world, &std::collections::BTreeSet::new());
+        cache.flush_in_flight();
         // The high chunk's mesh is now empty, so update_dirty removed it from
         // visible_set and megachunks.
         assert!(
@@ -2224,8 +2400,17 @@ mod tests {
 
         // Step 4: Run update_dirty to process the dirty chunks.
         cache.update_dirty(&world, &std::collections::BTreeSet::new());
+        cache.flush_in_flight();
 
         // Step 5: Run update_visibility — the high chunk should reappear.
+        cache.update_visibility(
+            &world,
+            [8.0, 20.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
+        cache.flush_in_flight();
+        // Drain completed into cache.
         cache.update_visibility(
             &world,
             [8.0, 20.0, 8.0],
@@ -2265,18 +2450,34 @@ mod tests {
             &open_frustum(),
             &std::collections::BTreeSet::new(),
         );
+        cache.flush_in_flight();
+        cache.update_visibility(
+            &world,
+            [8.0, 30.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
         assert!(cache.visible_set.contains(&ChunkCoord::new(0, 2, 0)));
         assert!(cache.visible_set.contains(&ChunkCoord::new(0, 3, 0)));
 
         // Set cutoff low — hides chunks cy=2 and cy=3.
         cache.set_y_cutoff(Some(20));
         cache.update_dirty(&world, &std::collections::BTreeSet::new());
+        cache.flush_in_flight();
         assert!(!cache.visible_set.contains(&ChunkCoord::new(0, 2, 0)));
         assert!(!cache.visible_set.contains(&ChunkCoord::new(0, 3, 0)));
 
         // Raise cutoff to reveal chunk cy=2 but keep cy=3 hidden.
         cache.set_y_cutoff(Some(48));
         cache.update_dirty(&world, &std::collections::BTreeSet::new());
+        cache.flush_in_flight();
+        cache.update_visibility(
+            &world,
+            [8.0, 30.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
+        cache.flush_in_flight();
         cache.update_visibility(
             &world,
             [8.0, 30.0, 8.0],
@@ -2352,14 +2553,14 @@ mod tests {
         cache.set_draw_distance(0.0);
         cache.set_max_gen_per_frame(1000);
 
-        // Frame 1: generates all chunks, interior ones produce empty meshes.
-        let gen1 = cache.update_visibility(
+        // Frame 1: submits all chunks for async generation.
+        cache.update_visibility(
             &world,
             [24.0, 24.0, 24.0],
             &open_frustum(),
             &std::collections::BTreeSet::new(),
         );
-        assert!(gen1 > 0);
+        cache.flush_in_flight();
         assert!(
             !cache.empty_chunks.is_empty(),
             "Interior chunks should be in empty_chunks"
@@ -2369,14 +2570,17 @@ mod tests {
             "Fully interior chunk (1,1,1) should be in empty_chunks"
         );
 
-        // Frame 2: no new chunks should be generated (all cached or empty).
-        let gen2 = cache.update_visibility(
+        // Frame 2: no new chunks should be submitted (all cached or empty).
+        cache.update_visibility(
             &world,
             [24.0, 24.0, 24.0],
             &open_frustum(),
             &std::collections::BTreeSet::new(),
         );
-        assert_eq!(gen2, 0, "No chunks should be generated on second frame");
+        assert!(
+            cache.in_flight.is_empty(),
+            "No chunks should be submitted on second frame"
+        );
     }
 
     #[test]
@@ -2401,6 +2605,7 @@ mod tests {
             &open_frustum(),
             &std::collections::BTreeSet::new(),
         );
+        cache.flush_in_flight();
         assert!(cache.empty_chunks.contains(&ChunkCoord::new(1, 1, 1)));
 
         // Clear a voxel inside the interior chunk — should remove from empty_chunks.
@@ -2433,6 +2638,7 @@ mod tests {
             &open_frustum(),
             &std::collections::BTreeSet::new(),
         );
+        cache.flush_in_flight();
         assert!(cache.empty_chunks.contains(&ChunkCoord::new(1, 1, 1)));
 
         // Edit a voxel at the boundary of chunk (0,1,1) at local_x=15.
@@ -2463,6 +2669,7 @@ mod tests {
             &open_frustum(),
             &std::collections::BTreeSet::new(),
         );
+        cache.flush_in_flight();
         assert!(
             cache.empty_chunks.contains(&ChunkCoord::new(0, 0, 0)),
             "Chunk below cutoff should be in empty_chunks"
@@ -2498,6 +2705,7 @@ mod tests {
             &open_frustum(),
             &std::collections::BTreeSet::new(),
         );
+        cache.flush_in_flight();
         assert!(!cache.empty_chunks.is_empty());
 
         // Re-scanning should clear the empty_chunks set.
@@ -2522,6 +2730,7 @@ mod tests {
             &open_frustum(),
             &std::collections::BTreeSet::new(),
         );
+        cache.flush_in_flight();
 
         assert!(cache.chunks.contains_key(&ChunkCoord::new(0, 0, 0)));
 
@@ -2529,6 +2738,7 @@ mod tests {
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Air);
         cache.mark_dirty_voxels(&[VoxelCoord::new(8, 8, 8)]);
         cache.update_dirty(&world, &std::collections::BTreeSet::new());
+        cache.flush_in_flight();
 
         // The chunk should now be in empty_chunks.
         assert!(
@@ -2682,6 +2892,16 @@ mod tests {
             [0.0, -1.0, 0.0, 10.0],  // bottom: inside when y > -10
         ];
 
+        // Frame 1: submit async work.
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &frustum,
+            &std::collections::BTreeSet::new(),
+        );
+        // Wait for rayon to complete.
+        cache.await_in_flight();
+        // Frame 2: drain completed results. chunks_generated feeds delta lists.
         cache.update_visibility(
             &world,
             [8.0, 8.0, 8.0],
@@ -2697,7 +2917,7 @@ mod tests {
             cache.shadow_set.contains(&ChunkCoord::new(0, 3, 0)),
             "chunk at Y=3 should be shadow-only (above frustum, upstream of downward light)"
         );
-        // The shadow chunk should be in chunks_to_shadow (first frame).
+        // The shadow chunk should be in chunks_to_shadow (mesh arrived this frame).
         assert!(
             cache.chunks_to_shadow().contains(&ChunkCoord::new(0, 3, 0)),
             "chunk at Y=3 should be in chunks_to_shadow"
@@ -2768,9 +2988,10 @@ mod tests {
             &narrow_frustum,
             &std::collections::BTreeSet::new(),
         );
+        cache.flush_in_flight();
         assert!(cache.shadow_set.contains(&ChunkCoord::new(0, 3, 0)));
 
-        // Frame 2: frustum includes Y=3 → visible.
+        // Frame 2: frustum includes Y=3 → visible. Drain picks up mesh.
         cache.update_visibility(
             &world,
             [8.0, 8.0, 8.0],
@@ -2908,6 +3129,7 @@ mod tests {
             &open_frustum(),
             &std::collections::BTreeSet::new(),
         );
+        cache.flush_in_flight();
         assert!(cache.visible_set.contains(&ChunkCoord::new(0, 0, 0)));
 
         // Frame 2: frustum high above → chunk below is hidden (not shadow).
@@ -2955,7 +3177,7 @@ mod tests {
             [0.0, -1.0, 0.0, 10.0],
         ];
 
-        // Frame 1: enters shadow.
+        // Frame 1: enters shadow (submits async).
         cache.update_visibility(
             &world,
             [8.0, 8.0, 8.0],
@@ -2963,9 +3185,19 @@ mod tests {
             &std::collections::BTreeSet::new(),
         );
         assert!(cache.shadow_set.contains(&ChunkCoord::new(0, 3, 0)));
+        // Wait for rayon to complete.
+        cache.await_in_flight();
+
+        // Frame 2: drain picks up completed mesh, chunk enters shadow with delta.
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &narrow_frustum,
+            &std::collections::BTreeSet::new(),
+        );
         assert!(!cache.chunks_to_shadow().is_empty());
 
-        // Frame 2: same state → no delta.
+        // Frame 3: same state → no delta.
         cache.update_visibility(
             &world,
             [8.0, 8.0, 8.0],
@@ -3042,6 +3274,7 @@ mod tests {
             &narrow_frustum,
             &std::collections::BTreeSet::new(),
         );
+        cache.flush_in_flight();
 
         // The shadow-only chunk should have been generated (mesh exists).
         assert!(
