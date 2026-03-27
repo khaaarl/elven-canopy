@@ -387,6 +387,11 @@ pub struct Creature {
     /// abandons the current task.
     #[serde(default)]
     pub wasted_action_count: u32,
+    /// Tick at which this creature last participated in a completed dance.
+    /// Used for per-creature cooldown in spontaneous dance organization.
+    /// 0 = never danced.
+    #[serde(default)]
+    pub last_dance_tick: u64,
 }
 
 /// A timestamped thought belonging to a creature.
@@ -730,6 +735,11 @@ pub struct CompletedStructure {
     /// production without a dedicated scheduled event.
     #[serde(default)]
     pub greenhouse_last_production_tick: u64,
+    /// Tick at which the last dance completed at this structure (dance halls
+    /// only). Used for hall cooldown in spontaneous dance organization.
+    /// 0 = no dance has ever completed here (triggers first-dance nudge).
+    #[serde(default)]
+    pub last_dance_completed_tick: u64,
 }
 
 impl CompletedStructure {
@@ -758,6 +768,7 @@ impl CompletedStructure {
             greenhouse_species: None,
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
+            last_dance_completed_tick: 0,
         }
     }
 

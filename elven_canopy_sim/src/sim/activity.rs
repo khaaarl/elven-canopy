@@ -27,6 +27,15 @@
 // directly (skipping `Volunteered`), setting `current_activity` and creating
 // GoTo tasks immediately.
 //
+// ## Spontaneous organization (F-dance-self-org)
+//
+// Idle elves near furnished dance halls can autonomously organize dances via
+// `try_organize_spontaneous_dance()`, called from the activation loop. Gated
+// by per-hall cooldown, per-elf cooldown, venue exclusivity (no two dances
+// on the same hall), and a probability roll. Newly-furnished halls bypass
+// the hall cooldown (first-dance nudge). The organizer creates an Autonomous
+// Open-recruitment dance and becomes the first participant with Organizer role.
+//
 // See also: `activation.rs` for the activation loop integration,
 // `preemption.rs` for activity preemption levels, `db.rs` for the `Activity`
 // and `ActivityParticipant` tables, `types.rs` for enums.
@@ -89,15 +98,14 @@ impl SimState {
     /// Handle `SimAction::StartDebugDance` — find a dance hall and create a
     /// Dance activity linked to it.
     pub(crate) fn handle_start_debug_dance(&mut self, events: &mut Vec<SimEvent>) {
-        // Find the first dance-hall-furnished building.
-        let dance_hall = self
-            .db
-            .structures
-            .iter_all()
-            .find(|s| s.furnishing == Some(crate::types::FurnishingType::DanceHall));
+        // Find the first dance-hall-furnished building without an active dance.
+        let dance_hall = self.db.structures.iter_all().find(|s| {
+            s.furnishing == Some(crate::types::FurnishingType::DanceHall)
+                && !self.hall_has_active_dance(s.id)
+        });
         let structure = match dance_hall {
             Some(s) => s.clone(),
-            None => return, // No dance hall — do nothing.
+            None => return, // No available dance hall — do nothing.
         };
 
         // Use the first interior floor position as the activity location.
@@ -344,6 +352,18 @@ impl SimState {
                 None => false,
             };
             if !available {
+                // Preserve living organizers who are temporarily busy (have a
+                // task like eating/moping). Dead organizers should be pruned
+                // so they don't count toward quorum.
+                if p.role == ParticipantRole::Organizer
+                    && self
+                        .db
+                        .creatures
+                        .get(&p.creature_id)
+                        .is_some_and(|c| c.vital_status == VitalStatus::Alive)
+                {
+                    continue;
+                }
                 to_remove.push(p.creature_id);
             }
         }
@@ -762,6 +782,26 @@ impl SimState {
             for cid in &participant_ids {
                 self.add_creature_thought(*cid, crate::types::ThoughtKind::DancedInGroup);
             }
+
+            // Update per-creature dance cooldown tracking.
+            for cid in &participant_ids {
+                let _ = self.db.creatures.modify_unchecked(cid, |c| {
+                    c.last_dance_tick = self.tick;
+                });
+            }
+
+            // Update per-hall dance cooldown tracking.
+            let structure_refs = self
+                .db
+                .activity_structure_refs
+                .by_activity_id(&activity_id, tabulosity::QueryOpts::ASC);
+            for sr in &structure_refs {
+                if sr.role == crate::db::ActivityStructureRole::DanceVenue {
+                    let _ = self.db.structures.modify_unchecked(&sr.structure_id, |s| {
+                        s.last_dance_completed_tick = self.tick;
+                    });
+                }
+            }
         }
 
         // Release all participants and schedule reactivation so they resume
@@ -968,14 +1008,15 @@ impl SimState {
     /// Prune any stale `Volunteered` participant rows for an idle creature.
     /// Called before activity discovery so that creatures who volunteered but
     /// then picked up a task (eating, sleeping, moping) can re-volunteer once
-    /// they become idle again.
+    /// they become idle again. Preserves `Organizer` rows — the organizer of
+    /// a spontaneous dance should not lose their role between activation cycles.
     pub(crate) fn prune_stale_volunteer_rows(&mut self, creature_id: CreatureId) {
         let participations = self
             .db
             .activity_participants
             .by_creature_id(&creature_id, tabulosity::QueryOpts::ASC);
         for p in &participations {
-            if p.status == ParticipantStatus::Volunteered {
+            if p.status == ParticipantStatus::Volunteered && p.role != ParticipantRole::Organizer {
                 let _ = self
                     .db
                     .remove_activity_participant(&(p.activity_id, creature_id));
@@ -1025,6 +1066,16 @@ impl SimState {
 
             // Check civ and species eligibility.
             if !self.creature_eligible_for_activity(activity, creature_id) {
+                continue;
+            }
+
+            // Per-elf cooldown for dances — recently-danced elves should not
+            // volunteer for new dances. Matches the "organize or join" spec.
+            if activity.kind == ActivityKind::Dance
+                && creature.last_dance_tick > 0
+                && self.tick.saturating_sub(creature.last_dance_tick)
+                    < self.config.activity.dance_elf_cooldown_ticks
+            {
                 continue;
             }
 
@@ -1147,6 +1198,165 @@ impl SimState {
             a.phase = phase;
             let _ = self.db.activities.update_no_fk(a);
         }
+    }
+
+    /// Try to have an idle creature spontaneously organize a dance at a nearby
+    /// dance hall. Returns `true` if a dance was organized.
+    ///
+    /// Checks: creature is alive and idle, elf cooldown, nearby dance halls
+    /// with hall cooldown / first-dance nudge / venue exclusivity, then rolls
+    /// the organize probability.
+    pub(crate) fn try_organize_spontaneous_dance(
+        &mut self,
+        creature_id: CreatureId,
+        events: &mut Vec<SimEvent>,
+    ) -> bool {
+        let creature = match self.db.creatures.get(&creature_id) {
+            Some(c) => c.clone(),
+            None => return false,
+        };
+        // Must be alive, idle, and an elf.
+        if creature.vital_status != VitalStatus::Alive {
+            return false;
+        }
+        if creature.current_task.is_some() || creature.current_activity.is_some() {
+            return false;
+        }
+        if creature.species != Species::Elf {
+            return false;
+        }
+
+        // Elf cooldown.
+        if creature.last_dance_tick > 0
+            && self.tick.saturating_sub(creature.last_dance_tick)
+                < self.config.activity.dance_elf_cooldown_ticks
+        {
+            return false;
+        }
+
+        // Already a participant/volunteer in any activity — skip.
+        let existing = self
+            .db
+            .activity_participants
+            .by_creature_id(&creature_id, tabulosity::QueryOpts::ASC);
+        if !existing.is_empty() {
+            return false;
+        }
+
+        // Find nearby dance halls.
+        let search_radius = self.config.activity.volunteer_search_radius.max(0) as u32;
+        let pos = creature.position;
+
+        let mut candidate_hall: Option<(crate::types::StructureId, u32)> = None;
+
+        for structure in self.db.structures.iter_all() {
+            if structure.furnishing != Some(crate::types::FurnishingType::DanceHall) {
+                continue;
+            }
+
+            // Distance check.
+            let dist = pos.manhattan_distance(structure.anchor);
+            if dist > search_radius {
+                continue;
+            }
+
+            // Venue exclusivity.
+            if self.hall_has_active_dance(structure.id) {
+                continue;
+            }
+
+            // Hall cooldown (skipped for first-dance nudge).
+            if structure.last_dance_completed_tick > 0 {
+                let elapsed = self
+                    .tick
+                    .saturating_sub(structure.last_dance_completed_tick);
+                if elapsed < self.config.activity.dance_hall_cooldown_ticks {
+                    continue;
+                }
+            }
+
+            // Pick closest hall.
+            if candidate_hall.is_none() || dist < candidate_hall.unwrap().1 {
+                candidate_hall = Some((structure.id, dist));
+            }
+        }
+
+        let (hall_id, _) = match candidate_hall {
+            Some(h) => h,
+            None => return false,
+        };
+
+        // Probability roll.
+        // Integer PPM comparison for determinism (matches greenhouse pattern).
+        if self.rng.next_u32() % 1_000_000 >= self.config.activity.dance_organize_chance_ppm {
+            return false;
+        }
+
+        // Organize the dance.
+        let structure = self.db.structures.get(&hall_id).unwrap().clone();
+        let interior = structure.floor_interior_positions();
+        let location = interior.first().copied().unwrap_or(structure.anchor);
+
+        let activity_id = self.handle_create_activity(
+            ActivityKind::Dance,
+            location,
+            Some(3),
+            Some(6),
+            crate::task::TaskOrigin::Autonomous,
+            events,
+        );
+
+        // Link activity to the dance hall.
+        let _ = self.db.activity_structure_refs.insert_auto_no_fk(|seq| {
+            crate::db::ActivityStructureRef {
+                activity_id,
+                seq,
+                structure_id: hall_id,
+                role: crate::db::ActivityStructureRole::DanceVenue,
+            }
+        });
+
+        // The organizer becomes the first participant with Organizer role.
+        let participant = crate::db::ActivityParticipant {
+            activity_id,
+            creature_id,
+            role: ParticipantRole::Organizer,
+            status: ParticipantStatus::Volunteered,
+            assigned_position: location,
+            travel_task: None,
+            dance_slot: None,
+            waypoint_cursor: 0,
+        };
+        self.db
+            .activity_participants
+            .insert_no_fk(participant)
+            .unwrap();
+
+        true
+    }
+
+    /// Check whether a dance hall structure currently has an active (non-complete,
+    /// non-cancelled) dance activity linked to it. Used for venue exclusivity —
+    /// no two dances may run on the same hall simultaneously.
+    pub(crate) fn hall_has_active_dance(&self, structure_id: crate::types::StructureId) -> bool {
+        let refs = self
+            .db
+            .activity_structure_refs
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC);
+        for r in &refs {
+            if r.role != crate::db::ActivityStructureRole::DanceVenue {
+                continue;
+            }
+            if let Some(activity) = self.db.activities.get(&r.activity_id)
+                && !matches!(
+                    activity.phase,
+                    ActivityPhase::Complete | ActivityPhase::Cancelled
+                )
+            {
+                return true;
+            }
+        }
+        false
     }
 
     /// Check whether a creature is eligible for an activity based on its

@@ -126,6 +126,7 @@ impl SimState {
             mp: mp_max,
             mp_max,
             wasted_action_count: 0,
+            last_dance_tick: 0,
         };
 
         self.db.creatures.insert_no_fk(creature).unwrap();

@@ -116,7 +116,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-dance-choreo         Refine dance figure choreography
 [ ] F-dance-movespeed      Dance movement paced to creature walk speed
 [ ] F-dance-scaling        Support more than 3 dancers
-[ ] F-dance-self-org       Elves self-organize dances
 [ ] F-dappled-light        Dappled light effect via scrolling noise on ground shader
 [ ] F-day-night            Day/night cycle and pacing
 [ ] F-day-night-color      Color grading shift by time of day
@@ -336,6 +335,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-creature-info        Creature info panel with follow button
 [x] F-creature-stats       Creature stats (str/agi/dex/con/wil/int/per/cha)
 [x] F-creature-tooltip     Hover tooltips for world objects
+[x] F-dance-self-org       Elves self-organize dances
 [x] F-dblclick-select      Double-click to select all of same military group
 [x] F-debug-menu           Move spawn/summon into debug menu
 [x] F-dye-crafting         Dye pressing from pigmented fruit components
@@ -2948,7 +2948,7 @@ Scale dance activities beyond the current 3-elf minimum/desired count. Larger da
 **Related:** F-group-dance
 
 #### F-dance-self-org — Elves self-organize dances
-**Status:** Todo
+**Status:** Done
 
 Idle elves autonomously organize dances at furnished dance halls. This is the first autonomous activity — dances should be both player-created and spontaneous.
 

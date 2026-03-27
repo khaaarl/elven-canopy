@@ -558,10 +558,41 @@ pub struct ActivityConfig {
     /// number of music sections and dance figures generated.
     #[serde(default = "default_dance_duration_secs")]
     pub dance_duration_secs: f32,
+
+    /// Minimum ticks between dances at the same dance hall. Prevents
+    /// constant dancing at the same venue. A newly-furnished hall (one that
+    /// has never hosted a completed dance) bypasses this cooldown so the
+    /// player sees a dance shortly after building the hall.
+    #[serde(default = "default_dance_hall_cooldown_ticks")]
+    pub dance_hall_cooldown_ticks: u64,
+
+    /// Minimum ticks before a creature can organize or join another
+    /// spontaneous dance. Spreads participation across the population.
+    #[serde(default = "default_dance_elf_cooldown_ticks")]
+    pub dance_elf_cooldown_ticks: u64,
+
+    /// Probability per idle activation (parts per million, 0–1_000_000) that
+    /// an eligible creature near a dance hall spontaneously organizes a dance.
+    /// Kept low to avoid disrupting production. Uses integer PPM to stay
+    /// consistent with the sim's integer-only probability convention.
+    #[serde(default = "default_dance_organize_chance_ppm")]
+    pub dance_organize_chance_ppm: u32,
 }
 
 fn default_dance_duration_secs() -> f32 {
     24.0
+}
+
+fn default_dance_hall_cooldown_ticks() -> u64 {
+    300_000 // ~5 min real time
+}
+
+fn default_dance_elf_cooldown_ticks() -> u64 {
+    180_000 // ~3 min real time
+}
+
+fn default_dance_organize_chance_ppm() -> u32 {
+    20_000 // 2% = 20_000 / 1_000_000
 }
 
 impl Default for ActivityConfig {
@@ -575,6 +606,12 @@ impl Default for ActivityConfig {
             pause_timeout_ticks: 60_000,
             // ~24 seconds — fits a 1-section composition comfortably.
             dance_duration_secs: default_dance_duration_secs(),
+            // ~5 min real time between dances at the same hall.
+            dance_hall_cooldown_ticks: default_dance_hall_cooldown_ticks(),
+            // ~3 min real time before an elf can organize/join again.
+            dance_elf_cooldown_ticks: default_dance_elf_cooldown_ticks(),
+            // 2% chance per idle activation (20_000 PPM).
+            dance_organize_chance_ppm: default_dance_organize_chance_ppm(),
         }
     }
 }

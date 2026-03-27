@@ -474,7 +474,11 @@ impl SimState {
             // left over from a previous activation cycle (e.g., creature
             // volunteered, then picked up an Eat task, now idle again).
             self.prune_stale_volunteer_rows(creature_id);
-            if let Some(activity_id) = self.find_open_activity_for_creature(creature_id) {
+            if self.try_organize_spontaneous_dance(creature_id, events) {
+                // Elf organized a new dance — schedule reactivation so they
+                // can volunteer for it on the next cycle.
+                self.schedule_reactivation(creature_id);
+            } else if let Some(activity_id) = self.find_open_activity_for_creature(creature_id) {
                 // Idle creature discovers an Open-recruitment activity and volunteers.
                 self.volunteer_for_activity(activity_id, creature_id, events);
                 self.schedule_reactivation(creature_id);

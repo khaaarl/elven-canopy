@@ -3730,6 +3730,7 @@ fn find_nearest_bed_excludes_occupied() {
             greenhouse_species: None,
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
+            last_dance_completed_tick: 0,
         })
         .unwrap();
     let _ = sim
@@ -3851,6 +3852,7 @@ fn tired_elf_sleeps_and_rest_increases() {
             greenhouse_species: None,
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
+            last_dance_completed_tick: 0,
         })
         .unwrap();
     let _ = sim
@@ -3937,6 +3939,7 @@ fn make_interp_creature(
         mp: 0,
         mp_max: 0,
         wasted_action_count: 0,
+        last_dance_tick: 0,
     }
 }
 
@@ -8625,6 +8628,7 @@ fn insert_completed_building(sim: &mut SimState, anchor: VoxelCoord) -> Structur
         greenhouse_species: None,
         greenhouse_enabled: false,
         greenhouse_last_production_tick: 0,
+        last_dance_completed_tick: 0,
     };
     sim.db.structures.insert_no_fk(structure).unwrap();
 
@@ -8671,6 +8675,7 @@ fn compute_furniture_positions_3x3_dormitory() {
         greenhouse_species: None,
         greenhouse_enabled: false,
         greenhouse_last_production_tick: 0,
+        last_dance_completed_tick: 0,
     };
 
     let items = structure.compute_furniture_positions(FurnishingType::Dormitory, &mut rng);
@@ -8707,6 +8712,7 @@ fn compute_furniture_positions_5x5_dormitory() {
         greenhouse_species: None,
         greenhouse_enabled: false,
         greenhouse_last_production_tick: 0,
+        last_dance_completed_tick: 0,
     };
 
     let items = structure.compute_furniture_positions(FurnishingType::Dormitory, &mut rng);
@@ -8769,6 +8775,7 @@ fn display_name_dormitory_when_furnished() {
         greenhouse_species: None,
         greenhouse_enabled: false,
         greenhouse_last_production_tick: 0,
+        last_dance_completed_tick: 0,
     };
 
     assert_eq!(structure.display_name(), "Dormitory #7");
@@ -8794,6 +8801,7 @@ fn display_name_custom_overrides_dormitory() {
         greenhouse_species: None,
         greenhouse_enabled: false,
         greenhouse_last_production_tick: 0,
+        last_dance_completed_tick: 0,
     };
 
     assert_eq!(structure.display_name(), "Starlight Hall");
@@ -8951,6 +8959,7 @@ fn furnish_rejects_non_building() {
         greenhouse_species: None,
         greenhouse_enabled: false,
         greenhouse_last_production_tick: 0,
+        last_dance_completed_tick: 0,
     };
     sim.db.structures.insert_no_fk(structure).unwrap();
 
@@ -9227,6 +9236,7 @@ fn compute_furniture_positions_home_single_item() {
         greenhouse_species: None,
         greenhouse_enabled: false,
         greenhouse_last_production_tick: 0,
+        last_dance_completed_tick: 0,
     };
 
     let items = structure.compute_furniture_positions(FurnishingType::Home, &mut rng);
@@ -9256,6 +9266,7 @@ fn compute_furniture_positions_dining_hall_density() {
         greenhouse_species: None,
         greenhouse_enabled: false,
         greenhouse_last_production_tick: 0,
+        last_dance_completed_tick: 0,
     };
 
     let items = structure.compute_furniture_positions(FurnishingType::DiningHall, &mut rng);
@@ -9304,6 +9315,7 @@ fn display_name_all_furnishing_types() {
             greenhouse_species: None,
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
+            last_dance_completed_tick: 0,
         };
         assert_eq!(
             structure.display_name(),
@@ -10724,6 +10736,7 @@ fn dormitory_sleep_generates_thought() {
             greenhouse_species: None,
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
+            last_dance_completed_tick: 0,
         })
         .unwrap();
     let _ = sim
@@ -10877,6 +10890,7 @@ fn home_sleep_generates_thought() {
             greenhouse_species: None,
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
+            last_dance_completed_tick: 0,
         })
         .unwrap();
     let _ = sim
@@ -10997,6 +11011,7 @@ fn low_ceiling_generates_thought() {
             greenhouse_species: None,
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
+            last_dance_completed_tick: 0,
         })
         .unwrap();
     let _ = sim
@@ -11250,6 +11265,7 @@ fn insert_building(
             greenhouse_species: None,
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
+            last_dance_completed_tick: 0,
         })
         .unwrap();
     sim.set_inv_wants(inv_id, &wants);
@@ -14679,6 +14695,7 @@ fn completed_structure_serde_backward_compat_crafting() {
         greenhouse_species: None,
         greenhouse_enabled: false,
         greenhouse_last_production_tick: 0,
+        last_dance_completed_tick: 0,
     };
     let json = serde_json::to_string(&structure).unwrap();
     // Remove crafting_enabled to simulate old save.
@@ -50111,4 +50128,855 @@ fn serde_roundtrip_preserves_dance_slot_and_cursor() {
         .unwrap();
     assert_eq!(p_after.dance_slot, slot_before);
     assert_eq!(p_after.waypoint_cursor, cursor_before);
+}
+
+// ---------------------------------------------------------------------------
+// F-dance-self-org: Venue exclusivity
+// ---------------------------------------------------------------------------
+
+#[test]
+fn debug_dance_blocked_when_hall_has_active_dance() {
+    let mut sim = test_sim(42);
+    let anchor = find_building_site(&sim);
+    let structure_id = insert_completed_building(&mut sim, anchor);
+
+    // Furnish as a dance hall.
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::FurnishStructure {
+            structure_id,
+            furnishing_type: FurnishingType::DanceHall,
+            greenhouse_species: None,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+
+    // Start first debug dance — should succeed.
+    let cmd1 = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::StartDebugDance,
+    };
+    sim.step(&[cmd1], sim.tick + 1);
+
+    let dance_count_1 = sim
+        .db
+        .activities
+        .iter_all()
+        .filter(|a| a.kind == ActivityKind::Dance)
+        .count();
+    assert_eq!(dance_count_1, 1, "first debug dance should be created");
+
+    // Start second debug dance on the same hall — should be blocked.
+    let cmd2 = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::StartDebugDance,
+    };
+    sim.step(&[cmd2], sim.tick + 1);
+
+    let dance_count_2 = sim
+        .db
+        .activities
+        .iter_all()
+        .filter(|a| a.kind == ActivityKind::Dance)
+        .count();
+    assert_eq!(
+        dance_count_2, 1,
+        "second debug dance should be blocked — hall already has an active dance"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// F-dance-self-org: Spontaneous dance organization
+// ---------------------------------------------------------------------------
+
+/// Helper: create a furnished dance hall and return its structure ID.
+fn create_dance_hall(sim: &mut SimState) -> StructureId {
+    let anchor = find_building_site(sim);
+    let structure_id = insert_completed_building(sim, anchor);
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::FurnishStructure {
+            structure_id,
+            furnishing_type: FurnishingType::DanceHall,
+            greenhouse_species: None,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+    structure_id
+}
+
+#[test]
+fn idle_elf_near_dance_hall_organizes_spontaneous_dance() {
+    let mut sim = test_sim(42);
+    let structure_id = create_dance_hall(&mut sim);
+
+    // Set organize chance to 100% so it always triggers.
+    sim.config.activity.dance_organize_chance_ppm = 1_000_000;
+    // Zero cooldowns for this test.
+    sim.config.activity.dance_hall_cooldown_ticks = 0;
+    sim.config.activity.dance_elf_cooldown_ticks = 0;
+
+    // Spawn an elf near the dance hall.
+    let hall = sim.db.structures.get(&structure_id).unwrap().clone();
+    let elf_pos = hall.anchor;
+    let mut events = Vec::new();
+    let elf_id = sim
+        .spawn_creature(Species::Elf, elf_pos, &mut events)
+        .unwrap();
+
+    // Make the elf idle (no task, no activity).
+    if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+        c.current_task = None;
+        c.current_activity = None;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Try to organize a spontaneous dance.
+    let organized = sim.try_organize_spontaneous_dance(elf_id, &mut events);
+
+    assert!(organized, "idle elf near hall should organize a dance");
+
+    // A dance activity should exist with Autonomous origin.
+    let dances: Vec<_> = sim
+        .db
+        .activities
+        .iter_all()
+        .filter(|a| a.kind == ActivityKind::Dance)
+        .collect();
+    assert_eq!(dances.len(), 1);
+    assert_eq!(dances[0].origin, TaskOrigin::Autonomous);
+
+    // The elf should be the organizer participant.
+    let participant = sim
+        .db
+        .activity_participants
+        .get(&(dances[0].id, elf_id))
+        .expect("organizer should be a participant");
+    assert_eq!(participant.role, ParticipantRole::Organizer);
+}
+
+#[test]
+fn hall_cooldown_prevents_spontaneous_dance() {
+    let mut sim = test_sim(42);
+    let structure_id = create_dance_hall(&mut sim);
+
+    sim.config.activity.dance_organize_chance_ppm = 1_000_000;
+    sim.config.activity.dance_hall_cooldown_ticks = 100_000;
+    sim.config.activity.dance_elf_cooldown_ticks = 0;
+
+    // Mark the hall as having had a recent dance.
+    let _ = sim.db.structures.modify_unchecked(&structure_id, |s| {
+        s.last_dance_completed_tick = sim.tick;
+    });
+
+    let hall = sim.db.structures.get(&structure_id).unwrap().clone();
+    let mut events = Vec::new();
+    let elf_id = sim
+        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .unwrap();
+    if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+        c.current_task = None;
+        c.current_activity = None;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let organized = sim.try_organize_spontaneous_dance(elf_id, &mut events);
+    assert!(
+        !organized,
+        "hall cooldown should prevent organizing a dance"
+    );
+}
+
+#[test]
+fn elf_cooldown_prevents_spontaneous_dance() {
+    let mut sim = test_sim(42);
+    let _structure_id = create_dance_hall(&mut sim);
+
+    sim.config.activity.dance_organize_chance_ppm = 1_000_000;
+    sim.config.activity.dance_hall_cooldown_ticks = 0;
+    sim.config.activity.dance_elf_cooldown_ticks = 100_000;
+
+    let hall = sim.db.structures.iter_all().next().unwrap().clone();
+    let mut events = Vec::new();
+    let elf_id = sim
+        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .unwrap();
+    if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+        c.current_task = None;
+        c.current_activity = None;
+        c.last_dance_tick = sim.tick; // Just danced.
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let organized = sim.try_organize_spontaneous_dance(elf_id, &mut events);
+    assert!(!organized, "elf cooldown should prevent organizing a dance");
+}
+
+#[test]
+fn first_dance_nudge_skips_hall_cooldown() {
+    let mut sim = test_sim(42);
+    let structure_id = create_dance_hall(&mut sim);
+
+    sim.config.activity.dance_organize_chance_ppm = 1_000_000;
+    // Large hall cooldown that would normally block.
+    sim.config.activity.dance_hall_cooldown_ticks = 999_999;
+    sim.config.activity.dance_elf_cooldown_ticks = 0;
+
+    // last_dance_completed_tick is 0 (default) = never hosted a dance.
+    let hall = sim.db.structures.get(&structure_id).unwrap().clone();
+    assert_eq!(
+        hall.last_dance_completed_tick, 0,
+        "new hall should have no dance history"
+    );
+
+    let mut events = Vec::new();
+    let elf_id = sim
+        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .unwrap();
+    if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+        c.current_task = None;
+        c.current_activity = None;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let organized = sim.try_organize_spontaneous_dance(elf_id, &mut events);
+    assert!(
+        organized,
+        "first-dance nudge should skip hall cooldown for new halls"
+    );
+}
+
+#[test]
+fn venue_exclusivity_blocks_spontaneous_dance() {
+    let mut sim = test_sim(42);
+    let structure_id = create_dance_hall(&mut sim);
+
+    sim.config.activity.dance_organize_chance_ppm = 1_000_000;
+    sim.config.activity.dance_hall_cooldown_ticks = 0;
+    sim.config.activity.dance_elf_cooldown_ticks = 0;
+
+    // Start a debug dance (occupies the hall).
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::StartDebugDance,
+    };
+    sim.step(&[cmd], sim.tick + 1);
+
+    assert!(
+        sim.hall_has_active_dance(structure_id),
+        "hall should have an active dance"
+    );
+
+    let hall = sim.db.structures.get(&structure_id).unwrap().clone();
+    let mut events = Vec::new();
+    let elf_id = sim
+        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .unwrap();
+    if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+        c.current_task = None;
+        c.current_activity = None;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let organized = sim.try_organize_spontaneous_dance(elf_id, &mut events);
+    assert!(
+        !organized,
+        "venue exclusivity should block spontaneous dance when hall is occupied"
+    );
+}
+
+#[test]
+fn dance_completion_sets_tracking_ticks() {
+    let mut sim = test_sim(42);
+    let structure_id = create_dance_hall(&mut sim);
+    let elves = spawn_test_elves(&mut sim, 5);
+
+    // Start a debug dance linked to the hall.
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::StartDebugDance,
+    };
+    sim.step(&[cmd], sim.tick + 1);
+
+    let activity_id = sim
+        .db
+        .activities
+        .iter_all()
+        .find(|a| a.kind == ActivityKind::Dance)
+        .unwrap()
+        .id;
+
+    // Clear tasks so elves can volunteer.
+    for eid in &elves {
+        if let Some(mut c) = sim.db.creatures.get(eid) {
+            c.current_task = None;
+            let _ = sim.db.creatures.update_no_fk(c);
+        }
+    }
+
+    // Volunteer and arrive 3 elves.
+    let mut events = Vec::new();
+    for i in 0..3 {
+        sim.volunteer_for_activity(activity_id, elves[i], &mut events);
+    }
+    for i in 0..3 {
+        sim.on_activity_participant_arrived(activity_id, elves[i], &mut events);
+    }
+
+    // Fast-forward to after dance completion.
+    let dance_data = sim.db.activity_dance_data.get(&activity_id).unwrap();
+    let exec_start = sim
+        .db
+        .activities
+        .get(&activity_id)
+        .unwrap()
+        .execution_start_tick
+        .unwrap();
+    let end_tick = exec_start + dance_data.plan.total_ticks + 1;
+    sim.tick = end_tick;
+
+    // Trigger completion by executing the dance behavior for one participant.
+    sim.execute_activity_behavior(elves[0], activity_id, &mut events);
+
+    // Activity should be completed (deleted).
+    assert!(
+        sim.db.activities.get(&activity_id).is_none(),
+        "activity should be cleaned up after completion"
+    );
+
+    // Structure should have last_dance_completed_tick set.
+    let hall = sim.db.structures.get(&structure_id).unwrap();
+    assert_eq!(
+        hall.last_dance_completed_tick, end_tick,
+        "hall should record when last dance completed"
+    );
+
+    // Participating elves should have last_dance_tick set.
+    for i in 0..3 {
+        let creature = sim.db.creatures.get(&elves[i]).unwrap();
+        assert_eq!(
+            creature.last_dance_tick, end_tick,
+            "elf {} should record when they last danced",
+            i
+        );
+    }
+}
+
+#[test]
+fn zero_chance_prevents_spontaneous_dance() {
+    let mut sim = test_sim(42);
+    let _structure_id = create_dance_hall(&mut sim);
+
+    sim.config.activity.dance_organize_chance_ppm = 0;
+    sim.config.activity.dance_hall_cooldown_ticks = 0;
+    sim.config.activity.dance_elf_cooldown_ticks = 0;
+
+    let hall = sim.db.structures.iter_all().next().unwrap().clone();
+    let mut events = Vec::new();
+    let elf_id = sim
+        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .unwrap();
+    if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+        c.current_task = None;
+        c.current_activity = None;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Try many times — with 0% chance, none should succeed.
+    let mut any_organized = false;
+    for _ in 0..100 {
+        if sim.try_organize_spontaneous_dance(elf_id, &mut events) {
+            any_organized = true;
+            break;
+        }
+    }
+    assert!(
+        !any_organized,
+        "zero organize chance should never trigger a dance"
+    );
+}
+
+#[test]
+fn non_elf_cannot_organize_spontaneous_dance() {
+    let mut sim = test_sim(42);
+    let _structure_id = create_dance_hall(&mut sim);
+
+    sim.config.activity.dance_organize_chance_ppm = 1_000_000;
+    sim.config.activity.dance_hall_cooldown_ticks = 0;
+    sim.config.activity.dance_elf_cooldown_ticks = 0;
+
+    let hall = sim.db.structures.iter_all().next().unwrap().clone();
+    let mut events = Vec::new();
+    // Spawn a capybara instead of an elf.
+    let capybara_id = sim
+        .spawn_creature(Species::Capybara, hall.anchor, &mut events)
+        .unwrap();
+    if let Some(mut c) = sim.db.creatures.get(&capybara_id) {
+        c.current_task = None;
+        c.current_activity = None;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let organized = sim.try_organize_spontaneous_dance(capybara_id, &mut events);
+    assert!(!organized, "non-elf creatures should not organize dances");
+}
+
+#[test]
+fn busy_elf_cannot_organize_spontaneous_dance() {
+    let mut sim = test_sim(42);
+    let _structure_id = create_dance_hall(&mut sim);
+
+    sim.config.activity.dance_organize_chance_ppm = 1_000_000;
+    sim.config.activity.dance_hall_cooldown_ticks = 0;
+    sim.config.activity.dance_elf_cooldown_ticks = 0;
+
+    let hall = sim.db.structures.iter_all().next().unwrap().clone();
+    let mut events = Vec::new();
+    let elf_id = sim
+        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .unwrap();
+
+    // Elf has a task — should not organize.
+    // Give it a dummy task reference via the sim's RNG.
+    let dummy_task_id = crate::types::TaskId::new(&mut sim.rng);
+    if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+        c.current_task = Some(dummy_task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let organized = sim.try_organize_spontaneous_dance(elf_id, &mut events);
+    assert!(
+        !organized,
+        "elf with a current task should not organize a dance"
+    );
+}
+
+#[test]
+fn serde_roundtrip_preserves_last_dance_tick() {
+    let mut sim = test_sim(42);
+    let elves = spawn_test_elves(&mut sim, 1);
+    let elf_id = elves[0];
+
+    // Set last_dance_tick.
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.last_dance_tick = 12345;
+    });
+
+    let json = serde_json::to_string(&sim).unwrap();
+    let restored: SimState = serde_json::from_str(&json).unwrap();
+
+    let creature = restored.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(creature.last_dance_tick, 12345);
+}
+
+#[test]
+fn serde_roundtrip_preserves_last_dance_completed_tick() {
+    let mut sim = test_sim(42);
+    let structure_id = create_dance_hall(&mut sim);
+
+    let _ = sim.db.structures.modify_unchecked(&structure_id, |s| {
+        s.last_dance_completed_tick = 67890;
+    });
+
+    let json = serde_json::to_string(&sim).unwrap();
+    let restored: SimState = serde_json::from_str(&json).unwrap();
+
+    let structure = restored.db.structures.get(&structure_id).unwrap();
+    assert_eq!(structure.last_dance_completed_tick, 67890);
+}
+
+#[test]
+fn spontaneous_dance_config_backward_compat() {
+    // Old saves without the new config fields should deserialize with defaults.
+    let json = r#"{
+        "assembly_timeout_ticks": 300000,
+        "volunteer_search_radius": 30,
+        "pause_timeout_ticks": 60000
+    }"#;
+    let config: crate::config::ActivityConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(config.dance_hall_cooldown_ticks, 300_000);
+    assert_eq!(config.dance_elf_cooldown_ticks, 180_000);
+    assert_eq!(config.dance_organize_chance_ppm, 20_000);
+}
+
+#[test]
+fn organizer_retains_role_after_reactivation() {
+    let mut sim = test_sim(42);
+    let structure_id = create_dance_hall(&mut sim);
+
+    sim.config.activity.dance_organize_chance_ppm = 1_000_000;
+    sim.config.activity.dance_hall_cooldown_ticks = 0;
+    sim.config.activity.dance_elf_cooldown_ticks = 0;
+
+    let hall = sim.db.structures.get(&structure_id).unwrap().clone();
+    let mut events = Vec::new();
+    let elf_id = sim
+        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .unwrap();
+    if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+        c.current_task = None;
+        c.current_activity = None;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let organized = sim.try_organize_spontaneous_dance(elf_id, &mut events);
+    assert!(organized);
+
+    let activity_id = sim
+        .db
+        .activities
+        .iter_all()
+        .find(|a| a.kind == ActivityKind::Dance)
+        .unwrap()
+        .id;
+
+    // Simulate what the activation loop does: prune stale rows.
+    sim.prune_stale_volunteer_rows(elf_id);
+
+    // The organizer's participant row should survive pruning.
+    let participant = sim
+        .db
+        .activity_participants
+        .get(&(activity_id, elf_id))
+        .expect("organizer participant row should survive pruning");
+    assert_eq!(
+        participant.role,
+        ParticipantRole::Organizer,
+        "organizer role should be preserved"
+    );
+}
+
+#[test]
+fn dead_elf_cannot_organize_spontaneous_dance() {
+    let mut sim = test_sim(42);
+    let _structure_id = create_dance_hall(&mut sim);
+
+    sim.config.activity.dance_organize_chance_ppm = 1_000_000;
+    sim.config.activity.dance_hall_cooldown_ticks = 0;
+    sim.config.activity.dance_elf_cooldown_ticks = 0;
+
+    let hall = sim.db.structures.iter_all().next().unwrap().clone();
+    let mut events = Vec::new();
+    let elf_id = sim
+        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .unwrap();
+
+    // Kill the elf.
+    if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+        c.vital_status = VitalStatus::Dead;
+        c.current_task = None;
+        c.current_activity = None;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let organized = sim.try_organize_spontaneous_dance(elf_id, &mut events);
+    assert!(!organized, "dead elf should not organize a dance");
+}
+
+#[test]
+fn elf_with_current_activity_cannot_organize() {
+    let mut sim = test_sim(42);
+    let structure_id = create_dance_hall(&mut sim);
+
+    sim.config.activity.dance_organize_chance_ppm = 1_000_000;
+    sim.config.activity.dance_hall_cooldown_ticks = 0;
+    sim.config.activity.dance_elf_cooldown_ticks = 0;
+
+    let hall = sim.db.structures.get(&structure_id).unwrap().clone();
+    let mut events = Vec::new();
+    let elf_id = sim
+        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .unwrap();
+
+    // Elf is committed to some activity.
+    let dummy_activity_id = ActivityId::new(&mut sim.rng);
+    if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+        c.current_task = None;
+        c.current_activity = Some(dummy_activity_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let organized = sim.try_organize_spontaneous_dance(elf_id, &mut events);
+    assert!(
+        !organized,
+        "elf with current_activity should not organize a dance"
+    );
+}
+
+#[test]
+fn elf_already_volunteer_cannot_organize() {
+    let mut sim = test_sim(42);
+    let structure_id = create_dance_hall(&mut sim);
+
+    sim.config.activity.dance_organize_chance_ppm = 1_000_000;
+    sim.config.activity.dance_hall_cooldown_ticks = 0;
+    sim.config.activity.dance_elf_cooldown_ticks = 0;
+
+    let hall = sim.db.structures.get(&structure_id).unwrap().clone();
+    let location = hall.anchor;
+    let mut events = Vec::new();
+    let elf_id = sim
+        .spawn_creature(Species::Elf, location, &mut events)
+        .unwrap();
+    if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+        c.current_task = None;
+        c.current_activity = None;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Create an existing activity and make the elf a volunteer.
+    let activity_id = sim.handle_create_activity(
+        ActivityKind::Dance,
+        location,
+        Some(3),
+        Some(6),
+        TaskOrigin::PlayerDirected,
+        &mut events,
+    );
+    let participant = crate::db::ActivityParticipant {
+        activity_id,
+        creature_id: elf_id,
+        role: ParticipantRole::Member,
+        status: ParticipantStatus::Volunteered,
+        assigned_position: location,
+        travel_task: None,
+        dance_slot: None,
+        waypoint_cursor: 0,
+    };
+    sim.db
+        .activity_participants
+        .insert_no_fk(participant)
+        .unwrap();
+
+    // Should not organize because the elf has a participant row.
+    let organized = sim.try_organize_spontaneous_dance(elf_id, &mut events);
+    assert!(
+        !organized,
+        "elf with existing participant row should not organize a new dance"
+    );
+}
+
+#[test]
+fn dance_hall_out_of_range_prevents_organizing() {
+    let mut sim = test_sim(42);
+    let _structure_id = create_dance_hall(&mut sim);
+
+    sim.config.activity.dance_organize_chance_ppm = 1_000_000;
+    sim.config.activity.dance_hall_cooldown_ticks = 0;
+    sim.config.activity.dance_elf_cooldown_ticks = 0;
+    sim.config.activity.volunteer_search_radius = 5;
+
+    // Spawn elf near the hall, then move it far away.
+    let hall = sim.db.structures.iter_all().next().unwrap().clone();
+    let mut events = Vec::new();
+    let elf_id = sim
+        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .unwrap();
+    // Teleport elf far from the hall (beyond search radius).
+    let far_pos = VoxelCoord::new(hall.anchor.x + 100, hall.anchor.y, hall.anchor.z + 100);
+    if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+        c.position = far_pos;
+        c.current_task = None;
+        c.current_activity = None;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let organized = sim.try_organize_spontaneous_dance(elf_id, &mut events);
+    assert!(
+        !organized,
+        "elf far from dance hall should not organize a dance"
+    );
+}
+
+#[test]
+fn elf_cooldown_prevents_volunteering_for_dance() {
+    let mut sim = test_sim(42);
+    let _structure_id = create_dance_hall(&mut sim);
+
+    sim.config.activity.dance_elf_cooldown_ticks = 100_000;
+
+    let hall = sim.db.structures.iter_all().next().unwrap().clone();
+    let location = hall.anchor;
+
+    // Create a recruiting dance activity.
+    let mut events = Vec::new();
+    let activity_id = sim.handle_create_activity(
+        ActivityKind::Dance,
+        location,
+        Some(3),
+        Some(6),
+        TaskOrigin::PlayerDirected,
+        &mut events,
+    );
+
+    // Spawn elf nearby who recently danced.
+    let elf_id = sim
+        .spawn_creature(Species::Elf, location, &mut events)
+        .unwrap();
+    if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+        c.current_task = None;
+        c.current_activity = None;
+        c.last_dance_tick = sim.tick; // Just danced.
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // The elf should not discover this dance activity.
+    let found = sim.find_open_activity_for_creature(elf_id);
+    assert!(
+        found.is_none(),
+        "elf on cooldown should not discover dance activities"
+    );
+
+    // Advance tick past cooldown — now should discover it.
+    sim.tick += 100_001;
+    let found_after = sim.find_open_activity_for_creature(elf_id);
+    assert_eq!(
+        found_after,
+        Some(activity_id),
+        "elf past cooldown should discover dance activities"
+    );
+}
+
+#[test]
+fn organizer_survives_quorum_prune_when_busy() {
+    let mut sim = test_sim(42);
+    let structure_id = create_dance_hall(&mut sim);
+
+    sim.config.activity.dance_organize_chance_ppm = 1_000_000;
+    sim.config.activity.dance_hall_cooldown_ticks = 0;
+    sim.config.activity.dance_elf_cooldown_ticks = 0;
+
+    let hall = sim.db.structures.get(&structure_id).unwrap().clone();
+    let mut events = Vec::new();
+    let organizer_id = sim
+        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .unwrap();
+    if let Some(mut c) = sim.db.creatures.get(&organizer_id) {
+        c.current_task = None;
+        c.current_activity = None;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Organizer creates a spontaneous dance.
+    let organized = sim.try_organize_spontaneous_dance(organizer_id, &mut events);
+    assert!(organized);
+
+    let activity_id = sim
+        .db
+        .activities
+        .iter_all()
+        .find(|a| a.kind == ActivityKind::Dance)
+        .unwrap()
+        .id;
+
+    // Organizer picks up a task (e.g., eating) before quorum is reached.
+    let dummy_task_id = crate::types::TaskId::new(&mut sim.rng);
+    if let Some(mut c) = sim.db.creatures.get(&organizer_id) {
+        c.current_task = Some(dummy_task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Another elf volunteers, triggering quorum check.
+    let other_elf = sim
+        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .unwrap();
+    if let Some(mut c) = sim.db.creatures.get(&other_elf) {
+        c.current_task = None;
+        c.current_activity = None;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+    sim.volunteer_for_activity(activity_id, other_elf, &mut events);
+
+    // The organizer's participant row should survive the quorum prune.
+    let organizer_row = sim
+        .db
+        .activity_participants
+        .get(&(activity_id, organizer_id));
+    assert!(
+        organizer_row.is_some(),
+        "living organizer with a task should survive quorum prune"
+    );
+    assert_eq!(organizer_row.unwrap().role, ParticipantRole::Organizer);
+}
+
+#[test]
+fn hall_cooldown_expires_allows_new_dance() {
+    let mut sim = test_sim(42);
+    let structure_id = create_dance_hall(&mut sim);
+
+    sim.config.activity.dance_organize_chance_ppm = 1_000_000;
+    sim.config.activity.dance_hall_cooldown_ticks = 100;
+    sim.config.activity.dance_elf_cooldown_ticks = 0;
+
+    // Mark hall as having had a dance recently.
+    let _ = sim.db.structures.modify_unchecked(&structure_id, |s| {
+        s.last_dance_completed_tick = 1000;
+    });
+
+    let hall = sim.db.structures.get(&structure_id).unwrap().clone();
+    let mut events = Vec::new();
+    let elf_id = sim
+        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .unwrap();
+    if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+        c.current_task = None;
+        c.current_activity = None;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // At tick 1099: elapsed=99 < 100, should be blocked.
+    sim.tick = 1099;
+    assert!(
+        !sim.try_organize_spontaneous_dance(elf_id, &mut events),
+        "hall cooldown should still block at tick 1099"
+    );
+
+    // At tick 1100: elapsed=100 >= 100, should pass.
+    sim.tick = 1100;
+    assert!(
+        sim.try_organize_spontaneous_dance(elf_id, &mut events),
+        "hall cooldown should expire at tick 1100"
+    );
+}
+
+#[test]
+fn elf_cooldown_expires_allows_organizing() {
+    let mut sim = test_sim(42);
+    let _structure_id = create_dance_hall(&mut sim);
+
+    sim.config.activity.dance_organize_chance_ppm = 1_000_000;
+    sim.config.activity.dance_hall_cooldown_ticks = 0;
+    sim.config.activity.dance_elf_cooldown_ticks = 100;
+
+    let hall = sim.db.structures.iter_all().next().unwrap().clone();
+    let mut events = Vec::new();
+    let elf_id = sim
+        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .unwrap();
+    if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+        c.current_task = None;
+        c.current_activity = None;
+        c.last_dance_tick = 1000;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // At tick 1099: elapsed=99 < 100, should be blocked.
+    sim.tick = 1099;
+    assert!(
+        !sim.try_organize_spontaneous_dance(elf_id, &mut events),
+        "elf cooldown should still block at tick 1099"
+    );
+
+    // At tick 1100: elapsed=100 >= 100, should pass.
+    sim.tick = 1100;
+    assert!(
+        sim.try_organize_spontaneous_dance(elf_id, &mut events),
+        "elf cooldown should expire at tick 1100"
+    );
 }
