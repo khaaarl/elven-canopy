@@ -68,6 +68,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fragile-tests        Audit and harden tests against PRNG stream shifts and worldgen changes
 [ ] B-start-paused-ui      start_paused_on_load UI desync and missing new-game support
+[ ] B-unsafe-db-calls      Replace _no_fk and modify_unchecked calls with safe database-level methods
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
 [ ] F-adventure-mode       Control individual elf (RPG-like)
@@ -5987,7 +5988,7 @@ All mutations go through SimCommand for determinism and future multiplayer.
 
 #### F-sim-db-impl — Tabulosity typed in-memory relational store
 **Status:** Done
-**Design:** `docs/tabulosity.md` (old drafts: `docs/drafts/sim_db_v9.md`, `docs/drafts/tabulosity_advanced_indexes_v5.md`)
+**Design:** `docs/drafts/tabulosity_design_reference.md` (old drafts: `docs/drafts/sim_db_v9.md`, `docs/drafts/tabulosity_advanced_indexes_v5.md`)
 **Schema:** `docs/drafts/sim_db_schema_v4.md`
 
 Typed in-memory relational database library (`tabulosity` + `tabulosity_derive`)
@@ -6029,6 +6030,11 @@ type priority prevents overwrites.
 
 #### B-tab-serde-tests — Fix tabulosity test compilation under feature unification
 **Status:** Done
+
+#### B-unsafe-db-calls — Replace _no_fk and modify_unchecked calls with safe database-level methods
+**Status:** Todo
+
+Audit all `_no_fk` and `modify_unchecked` call sites in `elven_canopy_sim` and convert them to safe database-level methods (`db.update_foo()`, `db.insert_foo()`, etc.) where possible. As of writing there are ~271 `modify_unchecked` uses and widespread `update_no_fk` / `insert_no_fk` usage. Each remaining unchecked call site should have a comment justifying why it cannot use the safe API (e.g., profiled hot path, field guaranteed non-indexed). See `tabulosity/README.md` for the safe mutation API guide.
 
 #### F-child-table-pks — Convert child tables to natural compound primary keys
 **Status:** Done
@@ -6120,7 +6126,7 @@ the full table each frame. Medium complexity.
 
 #### F-tab-compound-idx — Compound indexes with prefix queries
 **Status:** Done
-**Design:** `docs/tabulosity.md` (old draft: `docs/drafts/tabulosity_advanced_indexes_v5.md`)
+**Design:** `docs/drafts/tabulosity_design_reference.md` (old draft: `docs/drafts/tabulosity_advanced_indexes_v5.md`)
 
 `BTreeSet<(F1, F2, ..., PK)>` compound indexes supporting prefix queries
 (e.g., query by first field, or first two fields). Unified `#[index(...)]`
@@ -6133,7 +6139,7 @@ field tuples.
 
 #### F-tab-filter-idx — Filtered/partial indexes
 **Status:** Done
-**Design:** `docs/tabulosity.md` (old draft: `docs/drafts/tabulosity_advanced_indexes_v5.md`)
+**Design:** `docs/drafts/tabulosity_design_reference.md` (old draft: `docs/drafts/tabulosity_advanced_indexes_v5.md`)
 
 Index only rows matching a predicate (e.g., only active tasks). Composes
 with compound indexes via unified `#[index(name, fields, filter)]`

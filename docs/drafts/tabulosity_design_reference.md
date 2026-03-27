@@ -1,12 +1,13 @@
-# Tabulosity -- Design and Reference
+# Tabulosity -- Design and Reference (Historical)
 
-Authoritative reference for tabulosity's design, current implementation, and
-roadmap. **Supersedes** the older draft documents:
-- `docs/drafts/sim_db_v9.md` -- implementation errata from the initial build
-- `docs/drafts/tabulosity_advanced_indexes_v5.md` -- compound/filtered index design
+> **Note:** This document was the original design and implementation reference,
+> written during tabulosity's initial build. It has been moved to `docs/drafts/`
+> and is retained as a historical artifact. For a practical user guide, see
+> `tabulosity/README.md`.
 
-Those drafts are retained as historical artifacts but should not be consulted
-for current behavior. This document is the single source of truth.
+Original companion drafts (also in `docs/drafts/`):
+- `sim_db_v9.md` -- implementation errata from the initial build
+- `tabulosity_advanced_indexes_v5.md` -- compound/filtered index design
 
 ## Table of Contents
 

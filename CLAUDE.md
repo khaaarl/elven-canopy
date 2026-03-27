@@ -26,7 +26,7 @@ For detailed per-feature status, see `docs/implementation_status.md` and `docs/t
 
 ## Project Structure
 
-Top-level crates: `elven_canopy_sim` (pure Rust sim), `elven_canopy_gdext` (GDExtension bridge), `elven_canopy_sprites` (procedural sprite generation, pure Rust RGBA8 buffers), `elven_canopy_music` (polyphonic music generator), `elven_canopy_lang` (Vaelith conlang), `elven_canopy_prng` (shared PRNG), `elven_canopy_utils` (shared utilities: fixed-point math, parallel dedup), `elven_canopy_protocol` (multiplayer wire protocol), `elven_canopy_relay` (multiplayer relay server + client), `multiplayer_tests` (integration tests for relay pipeline), `tabulosity`/`tabulosity_derive` (in-memory relational store). Godot project in `godot/` (scenes + scripts). Data files in `data/`. Python offline tools in `python/`. Docs in `docs/`. Build scripts in `scripts/`.
+Top-level crates: `elven_canopy_sim` (pure Rust sim), `elven_canopy_gdext` (GDExtension bridge), `elven_canopy_sprites` (procedural sprite generation, pure Rust RGBA8 buffers), `elven_canopy_music` (polyphonic music generator), `elven_canopy_lang` (Vaelith conlang), `elven_canopy_prng` (shared PRNG), `elven_canopy_utils` (shared utilities: fixed-point math, parallel dedup), `elven_canopy_protocol` (multiplayer wire protocol), `elven_canopy_relay` (multiplayer relay server + client), `multiplayer_tests` (integration tests for relay pipeline), `tabulosity`/`tabulosity_derive` (in-memory relational store; see `tabulosity/README.md` for user guide). Godot project in `godot/` (scenes + scripts). Data files in `data/`. Python offline tools in `python/`. Docs in `docs/`. Build scripts in `scripts/`.
 
 For the full annotated directory tree, see `docs/project_structure.md`.
 
@@ -103,6 +103,9 @@ For the full list of codebase patterns, conventions, and gotchas, see `docs/code
 
 **Godot ScrollContainer sizing (CRITICAL):**
 - Before writing ANY code involving `ScrollContainer`, **read `docs/godot_scroll_sizing.md` in full.** Your built-in understanding of scroll container sizing is wrong.
+
+**Tabulosity safe mutations (CRITICAL):**
+- **Do not use `_no_fk` or `modify_unchecked` methods in new code without explicit user approval.** Use database-level methods (`db.update_foo()`, etc.) instead. See `tabulosity/README.md`.
 
 **Voxel coordinate system:** Each voxel is 2 meters on a side. Y is up. Terrain floor at `config.floor_y` (default 50), creatures walk at `floor_y + 1`. Renderers offset by +0.5.
 
