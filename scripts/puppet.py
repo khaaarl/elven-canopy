@@ -143,7 +143,7 @@ def rpc_call(port: int, method: str, args: list | None = None,
 
 
 # ---------------------------------------------------------------------------
-# Godot binary discovery (mirrors build.sh logic)
+# Godot binary discovery (mirrors build.py logic)
 # ---------------------------------------------------------------------------
 
 

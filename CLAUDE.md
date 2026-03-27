@@ -32,17 +32,17 @@ For the full annotated directory tree, see `docs/project_structure.md`.
 
 ## Building and Running
 
-Use `scripts/build.sh` for all build operations. It ensures the `godot/target` symlink exists before compiling.
+Use `scripts/build.py` for all build operations. It ensures the `godot/target` symlink exists before compiling.
 
 ```bash
-scripts/build.sh            # Debug build
-scripts/build.sh release    # Release build
-scripts/build.sh test       # Run all crate tests
-scripts/build.sh quicktest  # Test only changed code vs main (includes Rust and GDScript)
-scripts/build.sh gdtest     # Run GDScript unit tests (GUT)
-scripts/build.sh relay      # Optimized standalone relay binary (LTO, stripped)
-scripts/build.sh run        # Debug build, then launch the game
-scripts/build.sh run-branch NAME  # Fetch, checkout branch, sync to remote, build+run
+scripts/build.py            # Debug build
+scripts/build.py release    # Release build
+scripts/build.py test       # Run all crate tests
+scripts/build.py quicktest  # Test only changed code vs main (includes Rust and GDScript)
+scripts/build.py gdtest     # Run GDScript unit tests (GUT)
+scripts/build.py relay      # Optimized standalone relay binary (LTO, stripped)
+scripts/build.py run        # Debug build, then launch the game
+scripts/build.py run-branch NAME  # Fetch, checkout branch, sync to remote, build+run
 ```
 
 Individual crate tests: `cargo test -p elven_canopy_sim`, `cargo test -p elven_canopy_lang`, `cargo test -p elven_canopy_music`, `cargo test -p tabulosity -p tabulosity_derive`. Tabulosity serde tests: `cargo test -p tabulosity --features serde --test serde`. Music CLI: `cargo run -p elven_canopy_music -- --help`.
@@ -67,7 +67,7 @@ When upgrading the `godot` crate, check for a matching `api-4-x` feature flag. T
 
 ## Code Quality Tools
 
-`cargo fmt`, `cargo clippy`, `cargo test`, `gdformat`, and `gdlint` are all enforced in CI via `.github/workflows/ci.yml`. Run all checks locally with `scripts/build.sh check`. Workspace lint config lives in the root `Cargo.toml` under `[workspace.lints.clippy]`. GDScript uses gdtoolkit (`gdformat`/`gdlint`); `.gdlintrc` at repo root configures gdlint.
+`cargo fmt`, `cargo clippy`, `cargo test`, `gdformat`, and `gdlint` are all enforced in CI via `.github/workflows/ci.yml`. Run all checks locally with `scripts/build.py check`. Workspace lint config lives in the root `Cargo.toml` under `[workspace.lints.clippy]`. GDScript uses gdtoolkit (`gdformat`/`gdlint`); `.gdlintrc` at repo root configures gdlint.
 
 ## Running Commands
 
@@ -75,7 +75,7 @@ The repo's `.claude/settings.json` sets `CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DI
 
 **Keep Bash commands simple.** Do not use `source`, command substitution (`$(...)` or backticks), heredocs (`<<EOF`), shell variables, or other shell tricks. These trigger unnecessary permission prompts. Also avoid putting flag names inside quotes (e.g., `git show --stat "--format="` can trigger a "quoted flag names" permission check) — keep flags as bare arguments. Use the dedicated Read/Write/Edit tools for file operations. For `git commit`, always use the `.tmp/commit-msg.txt` + `git commit -F` approach described in the "Committing Code" section.
 
-**Preserve slow command output.** Commands that compile, test, format, lint, or are otherwise slow must capture output via `tee` to `.tmp/` (e.g., `scripts/build.sh check 2>&1 | tee .tmp/check.txt | grep error`). Grep or read the file afterward instead of re-running the command.
+**Preserve slow command output.** Commands that compile, test, format, lint, or are otherwise slow must capture output via `tee` to `.tmp/` (e.g., `scripts/build.py check 2>&1 | tee .tmp/check.txt | grep error`). Grep or read the file afterward instead of re-running the command.
 
 ## Scratch Files
 
@@ -127,7 +127,7 @@ ALWAYS ASK FOR PERMISSION BEFORE COMMITTING TO MAIN/MASTER, BUT COMMITTING TO FE
 
 **Remote testing (CRITICAL):** The user tests on a different machine. Any time you tell the user to build, run, or test something, you MUST commit and push first. Code that isn't pushed doesn't exist from the user's perspective.
 
-**Pre-commit checks (CRITICAL):** Before every commit that includes code changes (Rust or GDScript), run `scripts/build.sh check` and fix any issues. Do NOT commit code that fails formatting or linting. For commits that change code, also run `scripts/build.sh quicktest` and ensure all tests pass (`quicktest` automatically detects which crates and GDScript files changed and runs the appropriate tests). Non-code changes (e.g., docs, config, CLAUDE.md) can skip these steps.
+**Pre-commit checks (CRITICAL):** Before every commit that includes code changes (Rust or GDScript), run `scripts/build.py check` and fix any issues. Do NOT commit code that fails formatting or linting. For commits that change code, also run `scripts/build.py quicktest` and ensure all tests pass (`quicktest` automatically detects which crates and GDScript files changed and runs the appropriate tests). Non-code changes (e.g., docs, config, CLAUDE.md) can skip these steps.
 
 **Commit message procedure:** Always write the commit message to `.tmp/commit-msg.txt` using the Write tool, then commit with `-F`:
 
@@ -203,13 +203,13 @@ When tests fail unexpectedly, diagnose the root cause. Do not bypass, skip, or w
 
 ## GDScript: Unit Testing with GUT
 
-GDScript unit tests use the [GUT](https://github.com/bitwes/Gut) (Godot Unit Test) framework. Tests live in `godot/test/test_*.gd` and extend `GutTest`. Run them with `scripts/build.sh gdtest`.
+GDScript unit tests use the [GUT](https://github.com/bitwes/Gut) (Godot Unit Test) framework. Tests live in `godot/test/test_*.gd` and extend `GutTest`. Run them with `scripts/build.py gdtest`.
 
 **GDScript work requires unit tests.** When adding or modifying GDScript logic, write tests for any behavior that can be tested without a running game — coordinate math, UI state machines, formatting helpers, selection logic, input mode transitions, data transformations. If testable logic is embedded in scene-dependent code, extract it into a utility class (e.g., `geometry_utils.gd`) so it can be tested in isolation. The bar is the same as for Rust: if you're adding behavior, prove it works with a test.
 
 **Test file naming:** `godot/test/test_<module>.gd` — mirrors the source file in `godot/scripts/`.
 
-**Pre-commit:** For commits that change `.gd` files, `scripts/build.sh check` already covers formatting and linting. `scripts/build.sh quicktest` automatically runs GDScript unit tests when `.gd` files are in the changeset, so no separate `gdtest` run is needed.
+**Pre-commit:** For commits that change `.gd` files, `scripts/build.py check` already covers formatting and linting. `scripts/build.py quicktest` automatically runs GDScript unit tests when `.gd` files are in the changeset, so no separate `gdtest` run is needed.
 
 ## Project Tracker (`docs/tracker.md`)
 

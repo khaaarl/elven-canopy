@@ -229,7 +229,7 @@ elven-canopy/
 │   ├── design/                 # Approved/in-progress design documents
 │   └── drafts/                 # Working design documents
 ├── scripts/
-│   ├── build.sh                # Build, test, and run script
+│   ├── build.py                # Build, test, and run script (cross-platform)
 │   ├── puppet.py               # CLI for puppet remote game control (launch/kill/RPC)
 │   └── tracker.py              # CLI tool for docs/tracker.md queries and mutations
 └── default_config.json         # Default GameConfig values

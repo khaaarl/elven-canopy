@@ -13,7 +13,7 @@
 ## `multiplayer_mode` to decide between single-player and multiplayer startup.
 ##
 ## Also sets the window title — appending branch and commit info for
-## debug builds (read from .build_info, written by scripts/build.sh).
+## debug builds (read from .build_info, written by scripts/build.py).
 ##
 ## Also creates a temporary SimBridge to trigger the global elfcyclopedia
 ## HTTP server (runs on localhost, persists for the lifetime of the process).
@@ -78,7 +78,7 @@ func _ready() -> void:
 	get_tree().set_auto_accept_quit(false)
 
 	# Set window title. Debug builds on non-main branches get a .build_info
-	# file written by scripts/build.sh containing "branch @ shorthash".
+	# file written by scripts/build.py containing "branch @ shorthash".
 	# Release/exported builds won't have this file, so the title stays plain.
 	# Deferred because Godot applies project.godot's config/name as the window
 	# title after autoload _ready() runs, which would overwrite our custom title.

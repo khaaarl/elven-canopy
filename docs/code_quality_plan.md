@@ -28,7 +28,7 @@ codebase.
    ```
    Each crate's `Cargo.toml` inherits with `[lints] workspace = true`.
 4. **Run `cargo clippy --workspace`**, fix all warnings, and commit.
-5. **Add a `check` mode to `build.sh`** that runs:
+5. **Add a `check` mode to `build.py`** that runs:
    ```
    cargo fmt --all --check
    cargo clippy --workspace -- -D warnings
@@ -51,7 +51,7 @@ codebase.
    programmatic-UI-in-`_ready()` pattern.
 3. **Run `gdformat` on all `.gd` files** once — single mechanical commit.
 4. **Run `gdlint`**, fix warnings, commit.
-5. **Extend the `check` mode in `build.sh`** (or the CI lint job) to also run:
+5. **Extend the `check` mode in `build.py`** (or the CI lint job) to also run:
    ```
    gdformat --check godot/scripts/*.gd
    gdlint godot/scripts/*.gd
@@ -138,7 +138,7 @@ like:
 
 `cargo fmt` and `cargo clippy` are enforced in CI. Run locally:
 
-    scripts/build.sh check    # fmt --check + clippy
+    scripts/build.py check    # fmt --check + clippy
 
 Workspace lint config lives in the root `Cargo.toml` under
 `[workspace.lints]`. Each crate inherits via `[lints] workspace = true`.
@@ -156,7 +156,7 @@ Run:
     gdformat --check godot/scripts/*.gd
     gdlint godot/scripts/*.gd
 
-Both checks also run in CI and via `scripts/build.sh check`.
+Both checks also run in CI and via `scripts/build.py check`.
 ```
 
 Note: the Python venv in `python/` serves double duty — `requirements.txt` for
@@ -173,7 +173,7 @@ recommended order within a tier:
 1. Add config files and `requirements-dev.txt` (no code changes)
 2. Mechanical formatting commits (`cargo fmt`, `gdformat`)
 3. Lint fixes
-4. CI / build.sh integration
+4. CI / build.py integration
 5. CLAUDE.md updates
 
 Tiers should be done sequentially (Tier 1 fully landed before starting

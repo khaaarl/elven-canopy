@@ -74,7 +74,7 @@ RPC method names mirror the helpers in `test_harness_integration.gd`. The helper
 - Bridge methods return Godot variant types (`VarArray`, `VarDictionary`). RPC handlers must convert these to JSON-serializable dicts/arrays before sending responses.
 - RPCs that fail (missing panel, no matching button, off-screen click) return `{"error": "..."}` with a descriptive message. `puppet.py` prints errors to stderr and exits non-zero.
 - `puppet.py` is stdlib-only (`socket`, `json`, `argparse`, `subprocess`). No external deps.
-- `puppet.py launch` handles everything: picks a free port, sets `PUPPET_SERVER=<port>`, launches the game under `xvfb-run` (same xvfb approach as `build.sh gdtest`), writes `.tmp/puppet-<id>.json` (port, PID), polls until ready. `-g <id>` names the session (default `a`). Multiple games coexist for multiplayer testing.
+- `puppet.py launch` handles everything: picks a free port, sets `PUPPET_SERVER=<port>`, launches the game under `xvfb-run` (same xvfb approach as `build.py gdtest`), writes `.tmp/puppet-<id>.json` (port, PID), polls until ready. `-g <id>` names the session (default `a`). Multiple games coexist for multiplayer testing.
 - The puppet autoload is registered in `project.godot`, ordered after `GameSession`. It reads `PUPPET_SERVER` on startup. If unset, the autoload is inert (no server, no overhead). If set, listens on that port.
 - Max message size: 1 MB (far more than any realistic RPC; prevents runaway allocations).
 - **Orphan guard:** When the puppet server is active, if no RPC is received for ~10 minutes (configurable via `PUPPET_TIMEOUT_SECS`), the game shuts itself down. Prevents abandoned headless processes.

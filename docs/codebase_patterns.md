@@ -63,7 +63,7 @@ Things that are non-obvious or surprising about the Elven Canopy codebase. Read 
 
 ## Code Quality Tools
 
-All checks can be run together via `scripts/build.sh check`, but individual tools are useful for debugging CI failures:
+All checks can be run together via `scripts/build.py check`, but individual tools are useful for debugging CI failures:
 
 ### Rust
 
@@ -77,7 +77,7 @@ cargo fmt --all               # auto-format
 
 ### GDScript
 
-GDScript files are checked with **gdformat** (formatter) and **gdlint** (linter) from the [gdtoolkit](https://github.com/Scony/godot-gdscript-toolkit) package. `scripts/build.sh check` auto-creates the venv and installs gdtoolkit if missing.
+GDScript files are checked with **gdformat** (formatter) and **gdlint** (linter) from the [gdtoolkit](https://github.com/Scony/godot-gdscript-toolkit) package. `scripts/build.py check` auto-creates the venv and installs gdtoolkit if missing.
 
 ```bash
 python/.venv/bin/gdformat --check --line-length 100 godot/scripts/*.gd

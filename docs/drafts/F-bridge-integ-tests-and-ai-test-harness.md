@@ -770,7 +770,7 @@ assigning members, and seeing the results in the panel.
 
 ## Build target and CI
 
-These tests run alongside existing GDScript tests via `scripts/build.sh
+These tests run alongside existing GDScript tests via `scripts/build.py
 gdtest`. The test file follows the `test_` prefix convention and lives in
 `godot/test/`, so GUT auto-discovers it via `.gutconfig.json`.
 
@@ -779,11 +779,11 @@ pure-logic unit tests. Each test that instantiates `main.tscn` initializes
 a sim (including tree generation), sets up all renderers, and creates the
 full UI hierarchy. Expect 3-8 seconds per scene-loading test vs <1 second
 for unit tests. The existing 60-second GUT timeout (`GUT_TIMEOUT` in
-`build.sh`) should be sufficient for 5 scene tests + 1 standalone test,
+`build.py`) should be sufficient for 5 scene tests + 1 standalone test,
 but this needs monitoring. If the full suite approaches the timeout, we
 can:
 - Increase `GUT_TIMEOUT`
-- Split scene tests into a separate `build.sh` target
+- Split scene tests into a separate `build.py` target
 - Share a single loaded scene across multiple test methods (load once in
   `before_all`, run multiple assertions)
 
@@ -844,7 +844,7 @@ everything in one file for simplicity.
 - Implement Test 1 (startup) and Test 5 (sprites) as proof of concept
 - Validate: does `PackedScene.instantiate()` work with GUT? Does
   `unproject_position` work under headless xvfb?
-- Verify they run in CI via `build.sh gdtest`
+- Verify they run in CI via `build.py gdtest`
 
 **Phase 2: Selection and interaction**
 - Implement Test 2 (creature selection)

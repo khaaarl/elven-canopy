@@ -69,6 +69,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fragile-tests        Audit and harden tests against PRNG stream shifts and worldgen changes
 [ ] B-start-paused-ui      start_paused_on_load UI desync and missing new-game support
+[ ] B-win-freeze           Periodic ~3s freezes on Windows (debug build)
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
 [ ] F-adventure-mode       Control individual elf (RPG-like)
@@ -267,6 +268,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-wild-foraging        Wild animal foraging for fruit
 [ ] F-wild-fruit           Wild fruit growing on bushes and ground-level plants
 [ ] F-wild-grazing         Wild animal herbivorous food cycle
+[ ] F-windows-compat       Windows compatibility for dev tooling
 [ ] F-winged-elf           Winged elf species variant with flight-only movement
 [ ] F-wireframe-ghost      Wireframe ghost for overlap preview
 [ ] F-wood-stats           Wood-type material variation for crafted items
@@ -6466,7 +6468,7 @@ protocol).
 **Status:** Done · **Phase:** 8
 
 Build the `elven_canopy_relay` crate as a standalone headless binary
-with a release profile. Add a `scripts/build.sh relay` (or similar)
+with a release profile. Add a `scripts/build.py relay` (or similar)
 target that produces an optimized, stripped binary suitable for
 deployment on a dedicated server. Include any necessary Cargo profile
 tuning (LTO, codegen-units=1, strip=true) for minimal binary size and
@@ -6600,7 +6602,7 @@ running Godot instance. These catch type mismatches at the FFI boundary
 (e.g. Array<GString> vs VarArray), argument passing bugs, and
 GDScript-to-Rust round-trip issues that pure Rust tests can't detect.
 Heavier than unit tests — requires launching Godot headless. Add a CI
-job and a `scripts/build.sh integtest` target. Motivated by the
+job and a `scripts/build.py integtest` target. Motivated by the
 F-move-spread segfault where an Array type mismatch crashed at runtime.
 
 **Draft:** docs/drafts/F-bridge-integ-tests-and-ai-test-harness.md
@@ -6613,7 +6615,7 @@ F-move-spread segfault where an Array type mismatch crashed at runtime.
 Set up a lightweight GDScript unit testing framework (GUT or Godot 4.6's
 built-in test runner). Cover pure GDScript logic: UI state machines,
 coordinate math, selection helpers, input mode transitions. Add a
-`scripts/build.sh gdtest` target and a CI job. These tests don't need
+`scripts/build.py gdtest` target and a CI job. These tests don't need
 the sim or bridge — just GDScript in isolation.
 
 **Related:** F-ai-test-harness, F-bridge-integ-tests
@@ -6623,13 +6625,20 @@ the sim or bridge — just GDScript in isolation.
 
 Audit test suite for slow tests and add per-test timing visibility.
 
-**Rust:** Install `cargo-nextest` (`cargo install cargo-nextest`) and wire it into `build.sh`. Drop-in replacement for `cargo test` that shows per-test durations. Alternatively, the built-in `--report-time` flag works on nightly (`cargo test -- -Z unstable-options --report-time`).
+**Rust:** Install `cargo-nextest` (`cargo install cargo-nextest`) and wire it into `build.py`. Drop-in replacement for `cargo test` that shows per-test durations. Alternatively, the built-in `--report-time` flag works on nightly (`cargo test -- -Z unstable-options --report-time`).
 
 **GDScript/GUT:** GUT already tracks `time_taken` per test internally but doesn't print it to console. Two options: (1) enable JUnit XML export via `"junit_xml_file"` in `.gutconfig.json` — each `<testcase>` gets a `time` attribute; (2) patch GUT's `logger.gd` or `summary.gd` to print `time_taken` inline.
 
 **Goal:** Identify slow tests, decide which should be `#[ignore]`d or optimized, and make timing a routine part of test output.
 
 ### Platform
+
+#### B-win-freeze — Periodic ~3s freezes on Windows (debug build)
+**Status:** Todo
+
+Game freezes for a noticeable duration roughly every 3 seconds on Windows, even while paused. Observed on a debug build running on a powerful system, so unlikely to be raw performance. Possible causes: GC/allocator stutter, vsync/swap chain issue, debug build overhead, or something Windows-specific in the rendering or sim tick path.
+
+Repro: run `scripts/build.py run` on Windows, observe periodic hitches.
 
 #### F-mobile-support — Mobile/touch platform support
 **Status:** Todo · **Phase:** 9
@@ -6643,4 +6652,16 @@ simplified HUD). No keyboard hotkeys — all actions need touch-accessible
 equivalents (toolbars, radial menus, gesture shortcuts).
 
 **Draft:** `docs/drafts/mobile_support.md`
+
+#### F-windows-compat — Windows compatibility for dev tooling
+**Status:** Todo
+
+Ensure all dev tooling works on Windows, not just `scripts/build.py` (done on the `feature/build-py` branch).
+
+Remaining items:
+- `scripts/wait-for-ci.sh` → translate to Python or make cross-platform
+- CLAUDE.md instructions that assume bash (e.g., commit procedure, shell command examples)
+- `.claude/commands/` custom commands — audit for bash-isms
+- `scripts/tracker.py` — likely already fine (pure Python) but verify
+- `scripts/puppet.py` — uses `xvfb-run`, needs Windows path; verify other OS-specific bits
 

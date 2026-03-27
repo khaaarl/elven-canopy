@@ -20,7 +20,7 @@
 ## test rather than creating a new one — the per-test overhead is almost entirely
 ## scene loading, so "load once, verify many things" scales much better.  If the
 ## suite grows past ~40s, consider splitting integration tests into a separate
-## build.sh target or sharing a single loaded scene across test methods via
+## build.py target or sharing a single loaded scene across test methods via
 ## before_all (see the design doc's "Timeout consideration" section).
 ##
 ## Test-local helpers (_generate_save, _load_game_scene, _wait_for, _step_ticks,
