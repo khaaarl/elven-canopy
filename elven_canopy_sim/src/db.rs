@@ -126,6 +126,8 @@ pub enum ActionKind {
     AcquireMilitaryEquipment = 15,
     /// One taming attempt on a neutral creature (F-taming).
     TameAttempt = 16,
+    /// Grazing on a grassy dirt surface (herbivore feeding).
+    Graze = 17,
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +149,7 @@ pub enum TaskKindTag {
     EatFruit,
     Furnish,
     GoTo,
+    Graze,
     Harvest,
     Haul,
     Mope,
@@ -174,6 +177,7 @@ impl TaskKindTag {
             Self::EatFruit => "EatFruit",
             Self::Furnish => "Furnish",
             Self::GoTo => "GoTo",
+            Self::Graze => "Graze",
             Self::Harvest => "Harvest",
             Self::Haul => "Haul",
             Self::Mope => "Moping",
@@ -196,6 +200,7 @@ impl TaskKindTag {
             TaskKind::EatFruit { .. } => Self::EatFruit,
             TaskKind::Furnish { .. } => Self::Furnish,
             TaskKind::GoTo => Self::GoTo,
+            TaskKind::Graze { .. } => Self::Graze,
             TaskKind::Harvest { .. } => Self::Harvest,
             TaskKind::Haul { .. } => Self::Haul,
             TaskKind::Mope => Self::Mope,
@@ -232,6 +237,7 @@ pub enum TaskVoxelRole {
     BedPosition,
     HaulSourcePile,
     AcquireSourcePile,
+    GrazeTarget,
 }
 
 /// Discriminant for haul/acquire source type. Indicates whether the source

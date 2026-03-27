@@ -711,7 +711,11 @@ impl MeshCache {
     /// eagerly. Use `scan_nonempty_chunks()` + `update_visibility()` for the
     /// lazy pipeline instead.
     #[cfg(test)]
-    pub fn build_all(&mut self, world: &VoxelWorld) {
+    pub fn build_all(
+        &mut self,
+        world: &VoxelWorld,
+        grassless: &std::collections::BTreeSet<VoxelCoord>,
+    ) {
         self.scan_nonempty_chunks(world);
 
         // Generate all meshes eagerly (no visibility filtering).
@@ -721,7 +725,7 @@ impl MeshCache {
             .flat_map(|mc| mc.chunks.iter().copied())
             .collect();
         for coord in all_chunks {
-            let mesh = generate_chunk_mesh(world, coord, self.y_cutoff);
+            let mesh = generate_chunk_mesh(world, coord, self.y_cutoff, grassless);
             if !mesh.is_empty() {
                 let bytes = mesh.estimate_byte_size();
                 self.total_cached_bytes += bytes;
@@ -746,6 +750,7 @@ impl MeshCache {
         world: &VoxelWorld,
         cam_pos: [f32; 3],
         frustum_planes: &[[f32; 4]],
+        grassless: &std::collections::BTreeSet<VoxelCoord>,
     ) -> usize {
         let t_total = Instant::now();
 
@@ -887,7 +892,7 @@ impl MeshCache {
                 .par_iter()
                 .map(|&coord| {
                     let t = Instant::now();
-                    let mesh = generate_chunk_mesh(world, coord, y_cutoff);
+                    let mesh = generate_chunk_mesh(world, coord, y_cutoff, grassless);
                     let us = t.elapsed().as_micros() as u32;
                     (coord, mesh, us)
                 })
@@ -1133,7 +1138,11 @@ impl MeshCache {
     /// Regenerate dirty chunks that are in the visible set. Returns the number
     /// of chunks updated. Non-visible dirty chunks remain dirty and will be
     /// rebuilt when they enter visibility.
-    pub fn update_dirty(&mut self, world: &VoxelWorld) -> usize {
+    pub fn update_dirty(
+        &mut self,
+        world: &VoxelWorld,
+        grassless: &std::collections::BTreeSet<VoxelCoord>,
+    ) -> usize {
         // Only process dirty chunks that are currently visible or shadow-only.
         let visible_dirty: Vec<ChunkCoord> = self
             .dirty
@@ -1167,7 +1176,7 @@ impl MeshCache {
             visible_dirty
                 .par_iter()
                 .map(|&coord| {
-                    let mesh = generate_chunk_mesh(world, coord, y_cutoff);
+                    let mesh = generate_chunk_mesh(world, coord, y_cutoff, grassless);
                     (coord, mesh)
                 })
                 .collect()
@@ -1567,7 +1576,7 @@ mod tests {
         let mut world = VoxelWorld::new(16, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
         let mut cache = MeshCache::new();
-        cache.build_all(&world);
+        cache.build_all(&world, &std::collections::BTreeSet::new());
 
         assert!(cache.total_cached_bytes > 0);
         let coord = ChunkCoord::new(0, 0, 0);
@@ -1591,7 +1600,12 @@ mod tests {
         cache.set_max_gen_per_frame(100);
 
         let cam_pos = [8.0, 8.0, 8.0];
-        cache.update_visibility(&world, cam_pos, &open_frustum());
+        cache.update_visibility(
+            &world,
+            cam_pos,
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
 
         assert!(cache.visible_set.contains(&ChunkCoord::new(0, 0, 0)));
         assert!(!cache.visible_set.contains(&ChunkCoord::new(12, 0, 0)));
@@ -1609,7 +1623,12 @@ mod tests {
         cache.set_max_gen_per_frame(100);
 
         let cam_pos = [8.0, 8.0, 8.0];
-        cache.update_visibility(&world, cam_pos, &open_frustum());
+        cache.update_visibility(
+            &world,
+            cam_pos,
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
 
         assert!(cache.visible_set.contains(&ChunkCoord::new(0, 0, 0)));
         assert!(cache.visible_set.contains(&ChunkCoord::new(12, 0, 0)));
@@ -1639,7 +1658,7 @@ mod tests {
             [0.0, 0.0, -1.0, -100.0], // outward -Z: culls z < 100
         ];
         let cam_pos = [128.0, 8.0, 128.0];
-        cache.update_visibility(&world, cam_pos, &planes);
+        cache.update_visibility(&world, cam_pos, &planes, &std::collections::BTreeSet::new());
 
         // Chunk (0,0,0) has z range [0,16] — entirely behind z=100.
         assert!(!cache.visible_set.contains(&ChunkCoord::new(0, 0, 0)));
@@ -1660,7 +1679,12 @@ mod tests {
 
         assert!(cache.chunks.is_empty()); // No meshes yet.
 
-        let gen_count = cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum());
+        let gen_count = cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
 
         assert_eq!(gen_count, 1);
         assert!(cache.chunks.contains_key(&ChunkCoord::new(0, 0, 0)));
@@ -1681,11 +1705,21 @@ mod tests {
         cache.scan_nonempty_chunks(&world);
         cache.set_max_gen_per_frame(2); // Only 2 per frame.
 
-        let gen1 = cache.update_visibility(&world, [24.0, 8.0, 8.0], &open_frustum());
+        let gen1 = cache.update_visibility(
+            &world,
+            [24.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
         assert_eq!(gen1, 2);
         assert_eq!(cache.pending_gen.len(), 1); // 1 left pending.
 
-        let gen2 = cache.update_visibility(&world, [24.0, 8.0, 8.0], &open_frustum());
+        let gen2 = cache.update_visibility(
+            &world,
+            [24.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
         assert_eq!(gen2, 1);
         assert!(cache.pending_gen.is_empty());
     }
@@ -1704,12 +1738,22 @@ mod tests {
         cache.set_max_gen_per_frame(100);
 
         // Frame 1: camera near chunk 0.
-        cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
         assert_eq!(cache.chunks_to_show.len(), 1);
         assert!(cache.chunks_to_hide.is_empty());
 
         // Frame 2: camera moves to chunk 12.
-        cache.update_visibility(&world, [200.0, 8.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [200.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
         // Chunk 0 should hide, chunk 12 should show.
         assert!(cache.chunks_to_hide.contains(&ChunkCoord::new(0, 0, 0)));
         assert!(cache.chunks_to_show.contains(&ChunkCoord::new(12, 0, 0)));
@@ -1729,18 +1773,33 @@ mod tests {
         cache.set_max_gen_per_frame(100);
 
         // Generate all.
-        cache.update_visibility(&world, [100.0, 8.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [100.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
         assert_eq!(cache.chunks.len(), 2);
         let total = cache.total_cached_bytes;
 
         // Set budget to roughly half — but both are visible, so no eviction.
         cache.set_memory_budget(total / 2);
-        cache.update_visibility(&world, [100.0, 8.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [100.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
         assert!(cache.chunks_evicted.is_empty()); // Can't evict visible chunks.
 
         // Now make only chunk 0 visible (move camera close to it).
         cache.set_draw_distance(50.0);
-        cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
         // Chunk 12 is hidden and budget is tight — should be evicted.
         assert!(cache.chunks_evicted.contains(&ChunkCoord::new(12, 0, 0)));
         assert!(!cache.chunks.contains_key(&ChunkCoord::new(12, 0, 0)));
@@ -1756,7 +1815,12 @@ mod tests {
         cache.set_max_gen_per_frame(100);
         cache.set_memory_budget(1); // Tiny budget.
 
-        cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
 
         // The only chunk is visible — must not be evicted despite budget.
         assert!(cache.chunks_evicted.is_empty());
@@ -1773,13 +1837,18 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_max_gen_per_frame(100);
-        cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
 
         // Mark dirty and add a voxel.
         world.set(VoxelCoord::new(9, 8, 8), VoxelType::Trunk);
         cache.mark_dirty_voxels(&[VoxelCoord::new(9, 8, 8)]);
 
-        let updated = cache.update_dirty(&world);
+        let updated = cache.update_dirty(&world, &std::collections::BTreeSet::new());
         assert_eq!(updated, 1);
     }
 
@@ -1795,11 +1864,16 @@ mod tests {
         cache.set_max_gen_per_frame(100);
 
         // Only chunk 0 visible.
-        cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
 
         // Dirty chunk 12 (not visible).
         cache.mark_dirty_voxels(&[VoxelCoord::new(200, 8, 8)]);
-        let updated = cache.update_dirty(&world);
+        let updated = cache.update_dirty(&world, &std::collections::BTreeSet::new());
         assert_eq!(updated, 0); // Deferred — not rebuilt.
         assert!(cache.dirty.contains(&ChunkCoord::new(12, 0, 0)));
     }
@@ -1816,14 +1890,24 @@ mod tests {
         cache.set_max_gen_per_frame(100);
 
         // Only chunk 0 visible.
-        cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
 
         // Dirty chunk 12 (not visible) and modify the world.
         world.set(VoxelCoord::new(201, 8, 8), VoxelType::Trunk);
         cache.mark_dirty_voxels(&[VoxelCoord::new(201, 8, 8)]);
 
         // Now move camera to chunk 12.
-        cache.update_visibility(&world, [200.0, 8.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [200.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
 
         // update_visibility generated the mesh fresh (dirty chunk is removed
         // from dirty set during on-demand generation).
@@ -1846,13 +1930,23 @@ mod tests {
         cache.set_max_gen_per_frame(100);
 
         // Frame 1: all visible (generates all 3).
-        cache.update_visibility(&world, [100.0, 8.0, 100.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [100.0, 8.0, 100.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
         assert_eq!(cache.chunks.len(), 3);
 
         // Frame 2: touch chunk (12,0,0) by keeping it visible.
         // Move camera so only chunk (12,0,0) is visible.
         cache.set_draw_distance(50.0);
-        cache.update_visibility(&world, [200.0, 8.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [200.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
 
         // Now set tight budget — should evict (0,0,0) before (0,0,12) because
         // (0,0,0) was last touched on frame 1, (0,0,12) was also frame 1, but
@@ -1860,7 +1954,12 @@ mod tests {
         let total = cache.total_cached_bytes;
         cache.set_memory_budget(total / 2);
         // Re-run visibility to trigger eviction.
-        cache.update_visibility(&world, [200.0, 8.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [200.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
 
         // At least one non-visible chunk should be evicted.
         assert!(!cache.chunks_evicted.is_empty());
@@ -1878,14 +1977,19 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_max_gen_per_frame(100);
-        cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
 
         assert!(cache.visible_set.contains(&ChunkCoord::new(0, 0, 0)));
 
         // Remove the voxel and mark dirty.
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Air);
         cache.mark_dirty_voxels(&[VoxelCoord::new(8, 8, 8)]);
-        cache.update_dirty(&world);
+        cache.update_dirty(&world, &std::collections::BTreeSet::new());
 
         // Chunk should be gone from visible_set, chunks, lru, and bytes.
         assert!(!cache.visible_set.contains(&ChunkCoord::new(0, 0, 0)));
@@ -1904,7 +2008,12 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_max_gen_per_frame(100);
-        cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
 
         let bytes_before = cache.total_cached_bytes;
         assert!(bytes_before > 0);
@@ -1912,7 +2021,7 @@ mod tests {
         // Add another voxel — mesh gets bigger.
         world.set(VoxelCoord::new(9, 8, 8), VoxelType::Trunk);
         cache.mark_dirty_voxels(&[VoxelCoord::new(9, 8, 8)]);
-        cache.update_dirty(&world);
+        cache.update_dirty(&world, &std::collections::BTreeSet::new());
 
         // total_cached_bytes should reflect the new (larger) mesh.
         let bytes_after = cache.total_cached_bytes;
@@ -1960,12 +2069,22 @@ mod tests {
         cache.set_max_gen_per_frame(1);
 
         // Frame 1: all visible, but only 1 generated.
-        cache.update_visibility(&world, [24.0, 8.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [24.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
         assert_eq!(cache.pending_gen.len(), 2);
 
         // Frame 2: move camera so only chunk (0,0,0) is visible.
         cache.set_draw_distance(20.0);
-        cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
 
         // Pending chunks for (1,0,0) and (2,0,0) should be dropped since
         // they're no longer visible.
@@ -1991,7 +2110,12 @@ mod tests {
 
         // But update_visibility should handle the empty mesh gracefully.
         cache.set_max_gen_per_frame(100);
-        cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
 
         // Chunk was scanned as non-empty but y_cutoff hides all geometry.
         // It should NOT be in visible_set (removed when mesh gen returns empty).
@@ -2021,7 +2145,12 @@ mod tests {
         cache.set_max_gen_per_frame(1);
 
         // Frame 1: generate 1.
-        cache.update_visibility(&world, [24.0, 8.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [24.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
         for &c in &cache.chunks_generated {
             assert!(
                 cache.chunks_to_show.contains(&c),
@@ -2031,7 +2160,12 @@ mod tests {
         }
 
         // Frame 2: generate another (carry-over pending).
-        cache.update_visibility(&world, [24.0, 8.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [24.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
         for &c in &cache.chunks_generated {
             assert!(
                 cache.chunks_to_show.contains(&c),
@@ -2059,7 +2193,12 @@ mod tests {
         cache.set_max_gen_per_frame(100);
 
         // Step 1: No cutoff — both chunks should be visible.
-        cache.update_visibility(&world, [8.0, 20.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [8.0, 20.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
         assert!(
             cache.visible_set.contains(&ChunkCoord::new(0, 0, 0)),
             "Low chunk should be visible initially"
@@ -2072,7 +2211,7 @@ mod tests {
         // Step 2: Set cutoff below the high chunk — it generates an empty mesh
         // and gets removed from visible_set and megachunks.
         cache.set_y_cutoff(Some(20));
-        cache.update_dirty(&world);
+        cache.update_dirty(&world, &std::collections::BTreeSet::new());
         // The high chunk's mesh is now empty, so update_dirty removed it from
         // visible_set and megachunks.
         assert!(
@@ -2084,10 +2223,15 @@ mod tests {
         cache.set_y_cutoff(None);
 
         // Step 4: Run update_dirty to process the dirty chunks.
-        cache.update_dirty(&world);
+        cache.update_dirty(&world, &std::collections::BTreeSet::new());
 
         // Step 5: Run update_visibility — the high chunk should reappear.
-        cache.update_visibility(&world, [8.0, 20.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [8.0, 20.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
 
         // BUG: The high chunk was removed from megachunks in step 2, and
         // set_y_cutoff (step 3) only added it to the dirty set, NOT back
@@ -2115,20 +2259,30 @@ mod tests {
         cache.set_max_gen_per_frame(100);
 
         // Initial: all visible.
-        cache.update_visibility(&world, [8.0, 30.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [8.0, 30.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
         assert!(cache.visible_set.contains(&ChunkCoord::new(0, 2, 0)));
         assert!(cache.visible_set.contains(&ChunkCoord::new(0, 3, 0)));
 
         // Set cutoff low — hides chunks cy=2 and cy=3.
         cache.set_y_cutoff(Some(20));
-        cache.update_dirty(&world);
+        cache.update_dirty(&world, &std::collections::BTreeSet::new());
         assert!(!cache.visible_set.contains(&ChunkCoord::new(0, 2, 0)));
         assert!(!cache.visible_set.contains(&ChunkCoord::new(0, 3, 0)));
 
         // Raise cutoff to reveal chunk cy=2 but keep cy=3 hidden.
         cache.set_y_cutoff(Some(48));
-        cache.update_dirty(&world);
-        cache.update_visibility(&world, [8.0, 30.0, 8.0], &open_frustum());
+        cache.update_dirty(&world, &std::collections::BTreeSet::new());
+        cache.update_visibility(
+            &world,
+            [8.0, 30.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
 
         // BUG: chunk (0,2,0) was removed from megachunks and never re-added.
         assert!(
@@ -2149,12 +2303,22 @@ mod tests {
         cache.set_max_gen_per_frame(100);
 
         // Generate both.
-        cache.update_visibility(&world, [100.0, 8.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [100.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
 
         // Tight budget and restrict visibility.
         cache.set_memory_budget(1);
         cache.set_draw_distance(50.0);
-        cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
 
         // No chunk should appear in both lists.
         for c in &cache.chunks_evicted {
@@ -2189,7 +2353,12 @@ mod tests {
         cache.set_max_gen_per_frame(1000);
 
         // Frame 1: generates all chunks, interior ones produce empty meshes.
-        let gen1 = cache.update_visibility(&world, [24.0, 24.0, 24.0], &open_frustum());
+        let gen1 = cache.update_visibility(
+            &world,
+            [24.0, 24.0, 24.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
         assert!(gen1 > 0);
         assert!(
             !cache.empty_chunks.is_empty(),
@@ -2201,7 +2370,12 @@ mod tests {
         );
 
         // Frame 2: no new chunks should be generated (all cached or empty).
-        let gen2 = cache.update_visibility(&world, [24.0, 24.0, 24.0], &open_frustum());
+        let gen2 = cache.update_visibility(
+            &world,
+            [24.0, 24.0, 24.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
         assert_eq!(gen2, 0, "No chunks should be generated on second frame");
     }
 
@@ -2221,7 +2395,12 @@ mod tests {
         cache.set_draw_distance(0.0);
         cache.set_max_gen_per_frame(1000);
 
-        cache.update_visibility(&world, [24.0, 24.0, 24.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [24.0, 24.0, 24.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
         assert!(cache.empty_chunks.contains(&ChunkCoord::new(1, 1, 1)));
 
         // Clear a voxel inside the interior chunk — should remove from empty_chunks.
@@ -2248,7 +2427,12 @@ mod tests {
         cache.set_draw_distance(0.0);
         cache.set_max_gen_per_frame(1000);
 
-        cache.update_visibility(&world, [24.0, 24.0, 24.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [24.0, 24.0, 24.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
         assert!(cache.empty_chunks.contains(&ChunkCoord::new(1, 1, 1)));
 
         // Edit a voxel at the boundary of chunk (0,1,1) at local_x=15.
@@ -2273,7 +2457,12 @@ mod tests {
 
         // Set cutoff below the voxel — chunk generates empty mesh.
         cache.set_y_cutoff(Some(2));
-        cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
         assert!(
             cache.empty_chunks.contains(&ChunkCoord::new(0, 0, 0)),
             "Chunk below cutoff should be in empty_chunks"
@@ -2303,7 +2492,12 @@ mod tests {
         cache.set_draw_distance(0.0);
         cache.set_max_gen_per_frame(1000);
 
-        cache.update_visibility(&world, [24.0, 24.0, 24.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [24.0, 24.0, 24.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
         assert!(!cache.empty_chunks.is_empty());
 
         // Re-scanning should clear the empty_chunks set.
@@ -2322,14 +2516,19 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_max_gen_per_frame(100);
-        cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
 
         assert!(cache.chunks.contains_key(&ChunkCoord::new(0, 0, 0)));
 
         // Remove the voxel and mark dirty.
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Air);
         cache.mark_dirty_voxels(&[VoxelCoord::new(8, 8, 8)]);
-        cache.update_dirty(&world);
+        cache.update_dirty(&world, &std::collections::BTreeSet::new());
 
         // The chunk should now be in empty_chunks.
         assert!(
@@ -2483,7 +2682,12 @@ mod tests {
             [0.0, -1.0, 0.0, 10.0],  // bottom: inside when y > -10
         ];
 
-        cache.update_visibility(&world, [8.0, 8.0, 8.0], &frustum);
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &frustum,
+            &std::collections::BTreeSet::new(),
+        );
 
         assert!(
             cache.visible_set.contains(&ChunkCoord::new(0, 0, 0)),
@@ -2521,7 +2725,12 @@ mod tests {
             [0.0, -1.0, 0.0, 10.0],
         ];
 
-        cache.update_visibility(&world, [8.0, 8.0, 8.0], &frustum);
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &frustum,
+            &std::collections::BTreeSet::new(),
+        );
 
         assert!(
             cache.shadow_set.is_empty(),
@@ -2553,11 +2762,21 @@ mod tests {
             [0.0, 1.0, 0.0, 20.0],
             [0.0, -1.0, 0.0, 10.0],
         ];
-        cache.update_visibility(&world, [8.0, 8.0, 8.0], &narrow_frustum);
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &narrow_frustum,
+            &std::collections::BTreeSet::new(),
+        );
         assert!(cache.shadow_set.contains(&ChunkCoord::new(0, 3, 0)));
 
         // Frame 2: frustum includes Y=3 → visible.
-        cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
         assert!(
             cache.visible_set.contains(&ChunkCoord::new(0, 3, 0)),
             "chunk should transition to visible"
@@ -2592,12 +2811,22 @@ mod tests {
             [0.0, 1.0, 0.0, 20.0],
             [0.0, -1.0, 0.0, 10.0],
         ];
-        cache.update_visibility(&world, [8.0, 8.0, 8.0], &narrow_frustum);
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &narrow_frustum,
+            &std::collections::BTreeSet::new(),
+        );
         assert!(cache.shadow_set.contains(&ChunkCoord::new(0, 3, 0)));
 
         // Frame 2: disable light direction → shadow→hidden.
         cache.set_light_direction(None);
-        cache.update_visibility(&world, [8.0, 8.0, 8.0], &narrow_frustum);
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &narrow_frustum,
+            &std::collections::BTreeSet::new(),
+        );
         assert!(cache.shadow_set.is_empty());
         assert!(
             cache
@@ -2619,7 +2848,12 @@ mod tests {
         cache.set_light_direction(Some([0.0, -1.0, 0.0]));
 
         // Frame 1: open frustum → chunk is visible.
-        cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
         assert!(cache.visible_set.contains(&ChunkCoord::new(0, 3, 0)));
         assert!(!cache.shadow_set.contains(&ChunkCoord::new(0, 3, 0)));
 
@@ -2632,7 +2866,12 @@ mod tests {
             [0.0, 1.0, 0.0, 20.0],
             [0.0, -1.0, 0.0, 10.0],
         ];
-        cache.update_visibility(&world, [8.0, 8.0, 8.0], &narrow_frustum);
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &narrow_frustum,
+            &std::collections::BTreeSet::new(),
+        );
         assert!(
             !cache.visible_set.contains(&ChunkCoord::new(0, 3, 0)),
             "chunk should leave visible set"
@@ -2663,7 +2902,12 @@ mod tests {
         cache.set_light_direction(Some([0.0, -1.0, 0.0]));
 
         // Frame 1: open frustum → visible.
-        cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum());
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
         assert!(cache.visible_set.contains(&ChunkCoord::new(0, 0, 0)));
 
         // Frame 2: frustum high above → chunk below is hidden (not shadow).
@@ -2675,7 +2919,12 @@ mod tests {
             [0.0, 1.0, 0.0, 500.0],
             [0.0, -1.0, 0.0, -100.0], // bottom: inside when y > 100
         ];
-        cache.update_visibility(&world, [8.0, 200.0, 8.0], &high_frustum);
+        cache.update_visibility(
+            &world,
+            [8.0, 200.0, 8.0],
+            &high_frustum,
+            &std::collections::BTreeSet::new(),
+        );
         assert!(
             cache.chunks_to_hide().contains(&ChunkCoord::new(0, 0, 0)),
             "chunk below camera with downward light should go to hide, not shadow"
@@ -2707,12 +2956,22 @@ mod tests {
         ];
 
         // Frame 1: enters shadow.
-        cache.update_visibility(&world, [8.0, 8.0, 8.0], &narrow_frustum);
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &narrow_frustum,
+            &std::collections::BTreeSet::new(),
+        );
         assert!(cache.shadow_set.contains(&ChunkCoord::new(0, 3, 0)));
         assert!(!cache.chunks_to_shadow().is_empty());
 
         // Frame 2: same state → no delta.
-        cache.update_visibility(&world, [8.0, 8.0, 8.0], &narrow_frustum);
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &narrow_frustum,
+            &std::collections::BTreeSet::new(),
+        );
         assert!(cache.shadow_set.contains(&ChunkCoord::new(0, 3, 0)));
         assert!(
             cache.chunks_to_shadow().is_empty(),
@@ -2744,7 +3003,12 @@ mod tests {
             [0.0, 1.0, 0.0, 20.0],
             [0.0, -1.0, 0.0, 10.0],
         ];
-        cache.update_visibility(&world, [8.0, 8.0, 8.0], &narrow_frustum);
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &narrow_frustum,
+            &std::collections::BTreeSet::new(),
+        );
 
         assert!(
             !cache.shadow_set.contains(&ChunkCoord::new(12, 3, 0)),
@@ -2772,7 +3036,12 @@ mod tests {
             [0.0, 1.0, 0.0, 20.0],
             [0.0, -1.0, 0.0, 10.0],
         ];
-        cache.update_visibility(&world, [8.0, 8.0, 8.0], &narrow_frustum);
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &narrow_frustum,
+            &std::collections::BTreeSet::new(),
+        );
 
         // The shadow-only chunk should have been generated (mesh exists).
         assert!(

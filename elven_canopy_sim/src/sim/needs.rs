@@ -93,7 +93,7 @@ impl SimState {
 
         // Remove fruit from world, tree's fruit_positions, and species map.
         if self.world.get(fruit_pos) == VoxelType::Fruit {
-            self.world.set(fruit_pos, VoxelType::Air);
+            self.set_voxel(fruit_pos, VoxelType::Air);
         }
         self.fruit_voxel_species.remove(&fruit_pos);
         self.fruit_voxel_species_list
@@ -126,7 +126,7 @@ impl SimState {
             let material = species_id.map(inventory::Material::FruitSpecies);
 
             // Remove fruit from world and tree's fruit_positions list.
-            self.world.set(fruit_pos, VoxelType::Air);
+            self.set_voxel(fruit_pos, VoxelType::Air);
             self.remove_fruit_from_trees(fruit_pos);
 
             // Create ground pile at creature's position with species material.

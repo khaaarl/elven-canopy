@@ -5046,7 +5046,7 @@ impl SimBridge {
         if !dirty.is_empty() {
             cache.mark_dirty_voxels(&dirty);
         }
-        cache.update_dirty(&sim.world) as i32
+        cache.update_dirty(&sim.world, &sim.grassless) as i32
     }
 
     /// Set the Y cutoff for height hiding. Voxels at or above this Y level
@@ -5434,7 +5434,13 @@ impl SimBridge {
         let cz = (world_z as i32).div_euclid(CHUNK_SIZE);
         let chunk = ChunkCoord::new(cx, cy, cz);
 
-        let mesh = generate_chunk_mesh_with_decimation(&sim.world, chunk, None, with_decimation);
+        let mesh = generate_chunk_mesh_with_decimation(
+            &sim.world,
+            chunk,
+            None,
+            with_decimation,
+            &sim.grassless,
+        );
         let obj = chunk_mesh_to_obj(&mesh);
 
         GString::from(obj.as_str())
@@ -5463,7 +5469,7 @@ impl SimBridge {
             .chunks_exact(4)
             .map(|c| [c[0], c[1], c[2], c[3]])
             .collect();
-        cache.update_visibility(&sim.world, cam_pos, &planes) as i32
+        cache.update_visibility(&sim.world, cam_pos, &planes, &sim.grassless) as i32
     }
 
     /// Return chunks that should become visible this frame (set .visible=true).

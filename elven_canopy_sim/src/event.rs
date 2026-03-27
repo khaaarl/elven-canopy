@@ -92,6 +92,10 @@ pub enum ScheduledEventKind {
     /// self-reschedules for tick+1 while projectiles remain. Stops when the
     /// table is empty.
     ProjectileTick,
+    /// Periodic grass regrowth sweep. Iterates all grassless dirt voxels and
+    /// probabilistically regrows each one (removes from the grassless set).
+    /// Self-reschedules at `tick + grass_regrowth_interval_ticks`.
+    GrassRegrowth,
 }
 
 // We want a min-heap: lowest (tick, sequence) fires first.
@@ -166,6 +170,12 @@ impl EventQueue {
 
     pub fn is_empty(&self) -> bool {
         self.heap.is_empty()
+    }
+
+    /// Iterate over all pending events (unordered). Used for backfill checks
+    /// that need to detect whether a particular event kind is already scheduled.
+    pub fn iter(&self) -> impl Iterator<Item = &ScheduledEvent> {
+        self.heap.iter()
     }
 
     /// Remove all pending `CreatureActivation` events for a specific creature.

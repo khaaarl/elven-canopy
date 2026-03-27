@@ -975,6 +975,7 @@ impl SimState {
             crate::db::TaskKindTag::GoTo
             | crate::db::TaskKindTag::EatBread
             | crate::db::TaskKindTag::EatFruit
+            | crate::db::TaskKindTag::Graze
             | crate::db::TaskKindTag::Sleep
             | crate::db::TaskKindTag::Mope
             | crate::db::TaskKindTag::AttackTarget

@@ -667,6 +667,16 @@ impl VoxelWorld {
         }
     }
 
+    /// Mark a voxel coordinate as dirty for mesh cache regeneration without
+    /// changing the voxel type. Used when a voxel's visual appearance changes
+    /// due to external state (e.g., grass/grassless transitions) rather than
+    /// a voxel type change.
+    pub fn mark_dirty(&mut self, coord: VoxelCoord) {
+        if self.in_bounds(coord) {
+            self.dirty_voxels.push(coord);
+        }
+    }
+
     /// Initialize a column with a single Dirt span from y=0 to `top_y`
     /// (inclusive). The column must be in its initial empty state (fresh world).
     /// Does not track dirty voxels (used during worldgen before mesh cache).

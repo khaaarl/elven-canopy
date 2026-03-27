@@ -412,6 +412,17 @@ impl SimState {
             // (command_attack_move) since the destination VoxelCoord is not
             // carried in the TaskKind variant.
             task::TaskKind::AttackMove => {}
+            task::TaskKind::Graze { grass_pos } => {
+                let _ = self
+                    .db
+                    .task_voxel_refs
+                    .insert_auto_no_fk(|seq| crate::db::TaskVoxelRef {
+                        seq,
+                        task_id,
+                        coord: *grass_pos,
+                        role: crate::db::TaskVoxelRole::GrazeTarget,
+                    });
+            }
             // GoTo, EatBread, Mope — no extra data.
             task::TaskKind::GoTo | task::TaskKind::EatBread | task::TaskKind::Mope => {}
         }

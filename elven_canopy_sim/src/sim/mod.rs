@@ -296,7 +296,7 @@ use crate::types::*;
 use crate::world::VoxelWorld;
 use elven_canopy_lang::Lexicon;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Serde helper: serialize `BTreeMap<VoxelCoord, V>` with string keys `"x,y,z"`
 /// so JSON output has valid string keys (JSON objects require string keys).
@@ -431,6 +431,16 @@ pub struct SimState {
     /// floating blue swirl sprites.
     #[serde(skip)]
     pub mana_wasted_positions: Vec<VoxelCoord>,
+
+    /// Set of dirt voxel coordinates that are NOT grassy. By default, any
+    /// exposed dirt voxel is considered grassy. This set stores the exceptions.
+    /// Dirt becomes grassless when: (1) a creature grazes on it, or (2) a voxel
+    /// change freshly exposes dirt. Grassless dirt regrows periodically via the
+    /// `GrassRegrowth` scheduled event. Used by mesh generation to color
+    /// grassless dirt brown instead of green. `BTreeSet` for deterministic
+    /// iteration (regrowth sweep).
+    #[serde(default)]
+    pub grassless: BTreeSet<VoxelCoord>,
 }
 
 /// A creature's current path through the nav graph.
@@ -543,6 +553,7 @@ mod combat;
 mod construction;
 mod crafting;
 mod creature;
+mod grazing;
 mod greenhouse;
 mod inventory_mgmt;
 mod logistics;
@@ -641,6 +652,7 @@ impl SimState {
             fruit_voxel_species_list: Vec::new(),
             fruit_voxel_species: BTreeMap::new(),
             mana_wasted_positions: Vec::new(),
+            grassless: BTreeSet::new(),
         };
 
         // The world rebuild above produces thousands of set() calls that
@@ -671,6 +683,12 @@ impl SimState {
         state
             .event_queue
             .schedule(logistics_interval, ScheduledEventKind::LogisticsHeartbeat);
+
+        // Schedule the first grass regrowth sweep.
+        let grass_interval = state.config.grass_regrowth_interval_ticks;
+        state
+            .event_queue
+            .schedule(grass_interval, ScheduledEventKind::GrassRegrowth);
 
         state
     }
@@ -1384,9 +1402,51 @@ impl SimState {
                     }
                 }
 
-                // Fall back to seeking fruit if no bread was available.
+                // Herbivores try grazing before fruit. If grass is depleted,
+                // herbivores do NOT fall back to fruit — they wander and starve.
+                // Fruit fallback is only for non-herbivore species.
+                let is_herbivore = self
+                    .db
+                    .creatures
+                    .get(&creature_id)
+                    .map(|c| self.species_table[&c.species].is_herbivore)
+                    .unwrap_or(false);
+                let mut started_grazing = false;
                 if should_seek_food
                     && !ate_bread
+                    && is_herbivore
+                    && let Some((grass_pos, _nav_node)) = self.find_nearest_grass(creature_id)
+                {
+                    let task_id = TaskId::new(&mut self.rng);
+                    let new_task = task::Task {
+                        id: task_id,
+                        kind: task::TaskKind::Graze { grass_pos },
+                        state: task::TaskState::InProgress,
+                        location: grass_pos,
+                        progress: 0,
+                        total_cost: 0,
+                        required_species: None,
+                        origin: task::TaskOrigin::Autonomous,
+                        target_creature: None,
+                        restrict_to_creature_id: None,
+                        prerequisite_task_id: None,
+                        required_civ_id: None,
+                    };
+                    self.insert_task(new_task);
+                    if let Some(mut creature) = self.db.creatures.get(&creature_id) {
+                        creature.current_task = Some(task_id);
+                        let _ = self.db.creatures.update_no_fk(creature);
+                    }
+                    started_grazing = true;
+                }
+
+                // Fall back to seeking fruit if no bread was available.
+                // Herbivores do NOT eat fruit — they only graze. Fruit
+                // foraging for herbivores belongs to F-wild-foraging.
+                if should_seek_food
+                    && !ate_bread
+                    && !started_grazing
+                    && !is_herbivore
                     && let Some((fruit_pos, _nav_node)) = self.find_nearest_fruit(creature_id)
                 {
                     let task_id = TaskId::new(&mut self.rng);
@@ -1528,6 +1588,12 @@ impl SimState {
             ScheduledEventKind::ProjectileTick => {
                 self.process_projectile_tick(events);
             }
+            ScheduledEventKind::GrassRegrowth => {
+                self.process_grass_regrowth();
+                let next_tick = self.tick + self.config.grass_regrowth_interval_ticks;
+                self.event_queue
+                    .schedule(next_tick, ScheduledEventKind::GrassRegrowth);
+            }
         }
     }
 
@@ -1643,11 +1709,21 @@ impl SimState {
                     Some(crate::db::TaskKindTag::EatFruit) => {
                         let fruit_pos = self
                             .task_voxel_ref(tid, crate::db::TaskVoxelRole::FruitTarget)
-                            .unwrap_or(VoxelCoord::new(0, 0, 0));
+                            .expect("EatFruit task missing FruitTarget voxel ref");
                         self.resolve_eat_fruit_action(creature_id, tid, fruit_pos)
                     }
                     _ => self.resolve_eat_bread_action(creature_id, tid),
                 }
+            }
+            ActionKind::Graze => {
+                let tid = match task_id {
+                    Some(t) => t,
+                    None => return false,
+                };
+                let grass_pos = self
+                    .task_voxel_ref(tid, crate::db::TaskVoxelRole::GrazeTarget)
+                    .expect("Graze task missing GrazeTarget voxel ref");
+                self.resolve_graze_action(creature_id, tid, grass_pos)
             }
             ActionKind::Harvest => {
                 let tid = match task_id {
@@ -1656,7 +1732,7 @@ impl SimState {
                 };
                 let fruit_pos = self
                     .task_voxel_ref(tid, crate::db::TaskVoxelRole::FruitTarget)
-                    .unwrap_or(VoxelCoord::new(0, 0, 0));
+                    .expect("Harvest task missing FruitTarget voxel ref");
                 self.resolve_harvest_action(creature_id, tid, fruit_pos)
             }
             ActionKind::AcquireItem => {
@@ -2081,6 +2157,8 @@ impl SimState {
         // Backfill Outcast path for elves from old saves that predate the
         // path system (F-path-core).
         state.backfill_outcast_paths();
+        // Backfill GrassRegrowth event for saves that predate F-wild-grazing.
+        state.backfill_grass_regrowth_event();
         Ok(state)
     }
 

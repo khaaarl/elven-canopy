@@ -770,7 +770,7 @@ impl SimState {
                 if self.world.get(coord) == VoxelType::Air
                     && let Some(&original) = original_map.get(&coord)
                 {
-                    self.world.set(coord, original);
+                    self.set_voxel(coord, original);
                     any_reverted = true;
                 }
             }
@@ -781,7 +781,7 @@ impl SimState {
             for &coord in &bp_voxels {
                 if self.world.get(coord) != VoxelType::Air {
                     let revert_to = original_map.get(&coord).copied().unwrap_or(VoxelType::Air);
-                    self.world.set(coord, revert_to);
+                    self.set_voxel(coord, revert_to);
                     any_reverted = true;
                 }
             }
@@ -1150,7 +1150,7 @@ impl SimState {
         };
 
         // Place the voxel.
-        self.world.set(chosen, voxel_type);
+        self.set_voxel(chosen, voxel_type);
         self.placed_voxels.push((chosen, voxel_type));
 
         // For buildings and ladders, copy face data from the blueprint into sim state.
@@ -1238,7 +1238,7 @@ impl SimState {
         let chosen = still_solid[idx];
 
         // Set to Air.
-        self.world.set(chosen, VoxelType::Air);
+        self.set_voxel(chosen, VoxelType::Air);
         self.carved_voxels.push(chosen);
 
         // Nav update: the algorithm is state-based and works for both

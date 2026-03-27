@@ -265,7 +265,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-wild-bushes          Wild fruit bushes at ground level
 [ ] F-wild-foraging        Wild animal foraging for fruit
 [ ] F-wild-fruit           Wild fruit growing on bushes and ground-level plants
-[ ] F-wild-grazing         Wild animal herbivorous food cycle
 [ ] F-windows-compat       Windows compatibility for dev tooling
 [ ] F-winged-elf           Winged elf species variant with flight-only movement
 [ ] F-wireframe-ghost      Wireframe ghost for overlap preview
@@ -495,6 +494,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-voxel-exclusion      Creatures cannot enter voxels occupied by hostile creatures
 [x] F-voxel-fem            Voxel FEM structural analysis
 [x] F-voxel-textures       Per-face Perlin noise voxel textures
+[x] F-wild-grazing         Wild animal herbivorous food cycle
 [x] F-worldgen-framework   Worldgen generator framework
 [x] F-wyvern               Wyvern hostile flying creature (2×2×2)
 [x] F-zlevel-vis           Z-level visibility (cutaway/toggle)
@@ -1360,7 +1360,7 @@ filling), shelter (stables, pens), health (injury treatment, disease).
 Animals have needs that must be met or they become unhappy, unhealthy,
 or revert to wild. Elves with Beastcraft skill perform husbandry tasks.
 
-**Blocked by:** F-wild-grazing
+**Unblocked by:** F-wild-grazing
 **Related:** F-animal-breeding, F-civ-pets
 
 #### F-bread — Bread items and elf food management
@@ -2168,7 +2168,7 @@ Manage groups of tamed animals — designate pastures and pens, assign
 animals to grazing areas, herd movement between zones. Prevents animals
 from wandering off. Elves with Beastcraft skill perform herding tasks.
 
-**Blocked by:** F-wild-grazing
+**Unblocked by:** F-wild-grazing
 **Related:** F-civ-pets
 
 #### F-insect-husbandry — Beekeeping and insect husbandry
@@ -4208,7 +4208,7 @@ fruit manually; animals forage it autonomously (see F-wild-foraging).
 **Related:** F-fruit-variety
 
 #### F-wild-grazing — Wild animal herbivorous food cycle
-**Status:** Todo
+**Status:** Done
 
 Wild herbivorous animals graze on grass instead of starving. Fixes the
 current problem where ground-only species (capybara, boar, etc.) can't
@@ -4282,7 +4282,7 @@ works with decimation since the material boundary prevents merging
 across grass/grassless faces. Simple but functional — more interesting
 visual treatments (shader grass, texture blending) deferred to later.
 
-**Blocks:** F-animal-husbandry, F-herding
+**Unblocked:** F-animal-husbandry, F-herding
 **Related:** F-forest-ecology, F-grass-rendering, F-wild-foraging
 
 #### F-worldgen-framework — Worldgen generator framework

@@ -27,6 +27,7 @@ elven-canopy/
 │       │   ├── crafting.rs     #   Recipe execution, active recipe management, cooking
 │       │   ├── creature.rs     #   Spawning, surface placement, pile gravity, task cleanup
 │       │   ├── greenhouse.rs   #   Fruit spawning, harvest monitoring
+│       │   ├── grazing.rs      #   Wild herbivore grazing: grass search, graze resolution, regrowth
 │       │   ├── inventory_mgmt.rs #  Item stack ops, reservations, equipment, durability
 │       │   ├── logistics.rs    #   Hauling, harvesting, pickup/dropoff, logistics heartbeat
 │       │   ├── movement.rs     #   GoTo commands, unit spreading, step execution, wandering, command queue

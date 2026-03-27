@@ -247,6 +247,12 @@ pub enum TaskKind {
     /// probabilistic roll — no progress bar. The task completes when a roll
     /// succeeds or the target dies. Extension data in `TaskTameData`.
     Tame { target: CreatureId },
+    /// Graze on a grassy dirt surface. Herbivore-only autonomous task. The
+    /// creature walks to the target voxel, grazes in a single action
+    /// (~3000 ticks), restores food, and the grazed dirt voxel enters the
+    /// chunk's grassless set. Created by the heartbeat hunger check for
+    /// herbivore species when hungry.
+    Graze { grass_pos: VoxelCoord },
 }
 
 /// Where a task originated — used by the UI to group tasks into sections.

@@ -2168,6 +2168,20 @@ pub struct GameConfig {
     #[serde(default = "default_mope_action_ticks")]
     pub mope_action_ticks: u64,
 
+    /// Duration of one Graze action in ticks (default 3000 = 3s).
+    #[serde(default = "default_graze_action_ticks")]
+    pub graze_action_ticks: u64,
+
+    /// Interval in ticks between grass regrowth sweeps (default 10_000 = 10s).
+    /// Each sweep iterates all grassless dirt and probabilistically regrows.
+    #[serde(default = "default_grass_regrowth_interval_ticks")]
+    pub grass_regrowth_interval_ticks: u64,
+
+    /// Percentage chance (0–100) that each grassless dirt voxel regrows per
+    /// sweep. Default 10 (10% per sweep). Intentionally fast for development.
+    #[serde(default = "default_grass_regrowth_chance_pct")]
+    pub grass_regrowth_chance_pct: u32,
+
     /// Tree generation parameters — energy-based recursive growth profile.
     pub tree_profile: TreeProfile,
 
@@ -2755,6 +2769,18 @@ fn default_mope_action_ticks() -> u64 {
     1000
 }
 
+fn default_graze_action_ticks() -> u64 {
+    3000
+}
+
+fn default_grass_regrowth_interval_ticks() -> u64 {
+    10_000
+}
+
+fn default_grass_regrowth_chance_pct() -> u32 {
+    10
+}
+
 fn default_extract_work_ticks() -> u64 {
     3000
 }
@@ -2817,6 +2843,8 @@ impl Default for GameConfig {
                 ]),
                 raid_size: 1,
                 tame_difficulty: None, // sapient — untameable
+                is_herbivore: false,
+                graze_food_restore_pct: 15,
             },
         );
         species.insert(
@@ -2861,6 +2889,8 @@ impl Default for GameConfig {
                 ]),
                 raid_size: 1,
                 tame_difficulty: Some(100), // easy
+                is_herbivore: true,
+                graze_food_restore_pct: 15,
             },
         );
         species.insert(
@@ -2905,6 +2935,8 @@ impl Default for GameConfig {
                 ]),
                 raid_size: 1,
                 tame_difficulty: Some(200), // hard — aggressive temperament
+                is_herbivore: true,
+                graze_food_restore_pct: 15,
             },
         );
         species.insert(
@@ -2949,6 +2981,8 @@ impl Default for GameConfig {
                 ]),
                 raid_size: 1,
                 tame_difficulty: Some(150), // moderate — skittish
+                is_herbivore: true,
+                graze_food_restore_pct: 15,
             },
         );
         species.insert(
@@ -2993,6 +3027,8 @@ impl Default for GameConfig {
                 ]),
                 raid_size: 1,
                 tame_difficulty: Some(250), // very hard — strong-willed
+                is_herbivore: true,
+                graze_food_restore_pct: 10,
             },
         );
         species.insert(
@@ -3042,6 +3078,8 @@ impl Default for GameConfig {
                 ]),
                 raid_size: 6,
                 tame_difficulty: None, // sapient — untameable
+                is_herbivore: false,
+                graze_food_restore_pct: 15,
             },
         );
         species.insert(
@@ -3086,6 +3124,8 @@ impl Default for GameConfig {
                 ]),
                 raid_size: 1,
                 tame_difficulty: Some(150), // moderate — clever, evasive
+                is_herbivore: true,
+                graze_food_restore_pct: 15,
             },
         );
         species.insert(
@@ -3135,6 +3175,8 @@ impl Default for GameConfig {
                 ]),
                 raid_size: 3,
                 tame_difficulty: None, // sapient — untameable
+                is_herbivore: false,
+                graze_food_restore_pct: 15,
             },
         );
         species.insert(
@@ -3179,6 +3221,8 @@ impl Default for GameConfig {
                 ]),
                 raid_size: 1,
                 tame_difficulty: Some(100), // easy — small, docile
+                is_herbivore: true,
+                graze_food_restore_pct: 20,
             },
         );
         species.insert(
@@ -3228,6 +3272,8 @@ impl Default for GameConfig {
                 ]),
                 raid_size: 2,
                 tame_difficulty: None, // sapient — untameable
+                is_herbivore: false,
+                graze_food_restore_pct: 15,
             },
         );
         species.insert(
@@ -3277,6 +3323,8 @@ impl Default for GameConfig {
                 ]),
                 raid_size: 1,
                 tame_difficulty: Some(350), // extreme — dangerous, alien mind
+                is_herbivore: false,
+                graze_food_restore_pct: 15,
             },
         );
         species.insert(
@@ -3326,6 +3374,8 @@ impl Default for GameConfig {
                 ]),
                 raid_size: 1,
                 tame_difficulty: Some(350), // extreme — apex predator
+                is_herbivore: false,
+                graze_food_restore_pct: 15,
             },
         );
 
@@ -3357,6 +3407,9 @@ impl Default for GameConfig {
             haul_pickup_action_ticks: 1000,
             haul_dropoff_action_ticks: 1000,
             mope_action_ticks: 1000,
+            graze_action_ticks: 3000,
+            grass_regrowth_interval_ticks: 10_000,
+            grass_regrowth_chance_pct: 10,
             tree_profile: TreeProfile::fantasy_mega(),
             lesser_trees: LesserTreeConfig::default(),
             species,
@@ -3437,7 +3490,7 @@ impl Default for GameConfig {
                     species: Species::Capybara,
                     count: 5,
                     spawn_position: VoxelCoord::new(512, 51, 512),
-                    food_pcts: vec![],
+                    food_pcts: vec![100, 75, 50, 35, 20],
                     rest_pcts: vec![],
                     bread_counts: vec![],
                     initial_equipment: vec![],
@@ -3446,7 +3499,7 @@ impl Default for GameConfig {
                     species: Species::Boar,
                     count: 3,
                     spawn_position: VoxelCoord::new(512, 51, 512),
-                    food_pcts: vec![],
+                    food_pcts: vec![90, 55, 25],
                     rest_pcts: vec![],
                     bread_counts: vec![],
                     initial_equipment: vec![],
@@ -3455,7 +3508,7 @@ impl Default for GameConfig {
                     species: Species::Deer,
                     count: 3,
                     spawn_position: VoxelCoord::new(512, 51, 512),
-                    food_pcts: vec![],
+                    food_pcts: vec![80, 45, 20],
                     rest_pcts: vec![],
                     bread_counts: vec![],
                     initial_equipment: vec![],
@@ -3464,7 +3517,7 @@ impl Default for GameConfig {
                     species: Species::Squirrel,
                     count: 3,
                     spawn_position: VoxelCoord::new(512, 51, 512),
-                    food_pcts: vec![],
+                    food_pcts: vec![95, 60, 30],
                     rest_pcts: vec![],
                     bread_counts: vec![],
                     initial_equipment: vec![],

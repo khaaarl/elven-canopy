@@ -312,6 +312,18 @@ pub struct SpeciesData {
     /// on each attempt. Higher values require more stat/skill investment.
     #[serde(default)]
     pub tame_difficulty: Option<i64>,
+
+    /// Whether this species is a herbivore that grazes on grass. Herbivores
+    /// autonomously seek grassy dirt surfaces when hungry (before falling back
+    /// to fruit). Default false.
+    #[serde(default)]
+    pub is_herbivore: bool,
+
+    /// Percentage of `food_max` restored per graze action. Grazing is frequent
+    /// and low-yield — a single graze restores less than eating fruit.
+    /// Default 15 (15% of food_max per graze).
+    #[serde(default = "default_graze_food_restore_pct")]
+    pub graze_food_restore_pct: i64,
 }
 
 /// Species-specific distribution parameters for a single creature stat.
@@ -381,4 +393,8 @@ fn default_rest_per_sleep_tick() -> i64 {
 
 fn default_raid_size() -> u32 {
     1
+}
+
+fn default_graze_food_restore_pct() -> i64 {
+    15
 }

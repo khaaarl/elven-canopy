@@ -118,7 +118,7 @@ impl SimState {
         }
 
         // Place the fruit and record its species.
-        self.world.set(fruit_pos, VoxelType::Fruit);
+        self.set_voxel(fruit_pos, VoxelType::Fruit);
         let species_id = tree.fruit_species_id;
         let _ = self.db.trees.modify_unchecked(&tree_id, |t| {
             t.fruit_positions.push(fruit_pos);

@@ -313,6 +313,7 @@ impl SimState {
                 | ActionKind::Craft
                 | ActionKind::Sleep
                 | ActionKind::Eat
+                | ActionKind::Graze
                 | ActionKind::Harvest
                 | ActionKind::AcquireItem
                 | ActionKind::AcquireMilitaryEquipment
@@ -921,6 +922,14 @@ impl SimState {
                     creature_id,
                     ActionKind::Eat,
                     self.config.eat_action_ticks,
+                );
+                return;
+            }
+            crate::db::TaskKindTag::Graze => {
+                self.start_simple_action(
+                    creature_id,
+                    ActionKind::Graze,
+                    self.config.graze_action_ticks,
                 );
                 return;
             }
