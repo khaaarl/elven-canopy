@@ -69,7 +69,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fragile-tests        Audit and harden tests against PRNG stream shifts and worldgen changes
 [ ] B-start-paused-ui      start_paused_on_load UI desync and missing new-game support
-[ ] B-win-freeze           Periodic ~3s freezes on Windows (debug build)
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
 [ ] F-adventure-mode       Control individual elf (RPG-like)
@@ -296,6 +295,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-sim-floats           Remaining f32/f64 in sim logic threaten determinism
 [x] B-tab-serde-tests      Fix tabulosity test compilation under feature unification
 [x] B-task-civ-filter      Tasks lack civilization-level eligibility filtering
+[x] B-win-freeze           Periodic ~3s freezes on Windows (debug build)
 [x] F-ai-test-harness      Remote game control for AI-driven testing (Puppet)
 [x] F-alt-deselect         Alt+click to remove from selection
 [x] F-armor                Wearable armor system
@@ -6634,7 +6634,7 @@ Audit test suite for slow tests and add per-test timing visibility.
 ### Platform
 
 #### B-win-freeze — Periodic ~3s freezes on Windows (debug build)
-**Status:** Todo
+**Status:** Done
 
 Game freezes for a noticeable duration roughly every 3 seconds on Windows, even while paused. Observed on a debug build running on a powerful system, so unlikely to be raw performance. Possible causes: GC/allocator stutter, vsync/swap chain issue, debug build overhead, or something Windows-specific in the rendering or sim tick path.
 

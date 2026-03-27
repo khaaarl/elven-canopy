@@ -96,3 +96,52 @@ func test_center_uses_world_center_when_tree_mode() -> void:
 	# Even with a camera pivot, tree mode centers on world center.
 	var center: Vector2 = _map._get_center()
 	assert_eq(center, Vector2(128.0, 128.0))
+
+
+# -- Voxel coloring -------------------------------------------------------------
+
+
+func test_color_for_voxel_empty_returns_empty_color() -> void:
+	var color: Color = _map._color_for_voxel(0, 0, 128.0)
+	assert_eq(color, Minimap.COLOR_EMPTY)
+
+
+func test_color_for_voxel_dirt_returns_grass() -> void:
+	var color: Color = _map._color_for_voxel(5, Minimap.VTYPE_DIRT, 128.0)
+	assert_eq(color, Minimap.COLOR_GRASS)
+
+
+func test_color_for_voxel_leaf_returns_leaf_lerp() -> void:
+	var color: Color = _map._color_for_voxel(64, Minimap.VTYPE_LEAF, 128.0)
+	# t = 64/128 = 0.5 -> midpoint between LEAF_LOW and LEAF_HIGH.
+	var expected: Color = Minimap.COLOR_LEAF_LOW.lerp(Minimap.COLOR_LEAF_HIGH, 0.5)
+	assert_almost_eq(color.r, expected.r, 0.01)
+	assert_almost_eq(color.g, expected.g, 0.01)
+	assert_almost_eq(color.b, expected.b, 0.01)
+
+
+func test_color_for_voxel_trunk_returns_wood_lerp() -> void:
+	var color: Color = _map._color_for_voxel(64, Minimap.VTYPE_TRUNK, 128.0)
+	var expected: Color = Minimap.COLOR_WOOD_LOW.lerp(Minimap.COLOR_WOOD_HIGH, 0.5)
+	assert_almost_eq(color.r, expected.r, 0.01)
+	assert_almost_eq(color.g, expected.g, 0.01)
+	assert_almost_eq(color.b, expected.b, 0.01)
+
+
+func test_color_for_voxel_fruit_returns_fruit_color() -> void:
+	var color: Color = _map._color_for_voxel(20, Minimap.VTYPE_FRUIT, 128.0)
+	assert_eq(color, Minimap.COLOR_FRUIT)
+
+
+func test_color_for_voxel_grown_returns_grown_color() -> void:
+	var color: Color = _map._color_for_voxel(30, Minimap.VTYPE_GROWN_PLATFORM, 128.0)
+	assert_eq(color, Minimap.COLOR_GROWN)
+
+
+func test_color_for_voxel_unknown_type_uses_wood_fallback() -> void:
+	# Unknown vtype 255 should use the wood lerp fallback.
+	var color: Color = _map._color_for_voxel(64, 255, 128.0)
+	var expected: Color = Minimap.COLOR_WOOD_LOW.lerp(Minimap.COLOR_WOOD_HIGH, 0.5)
+	assert_almost_eq(color.r, expected.r, 0.01)
+	assert_almost_eq(color.g, expected.g, 0.01)
+	assert_almost_eq(color.b, expected.b, 0.01)

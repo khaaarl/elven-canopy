@@ -17,9 +17,10 @@
 // Full group repacks happen only when the free tail is exhausted.
 //
 // Also provides `raycast_hits_solid()` (3D DDA, Amanatides & Woo),
-// `has_los()` (LOS with transparent Leaf/Fruit), `heightmap()` (top-down
-// max-solid-Y), and `has_solid_face_neighbor()` / `has_face_neighbor_of_type()`
-// for adjacency queries. All use `get()` internally.
+// `has_los()` (LOS with transparent Leaf/Fruit), `heightmap()` (full-world
+// top-down max-solid-Y for tests), `heightmap_tile()` / `heightmap_tiles_batch()`
+// (per-chunk-column heightmaps for the minimap), and `has_solid_face_neighbor()`
+// / `has_face_neighbor_of_type()` for adjacency queries.
 //
 // The world is serialized using a compact binary pack format (see `pack()`/
 // `unpack()`) for efficient save/load. After worldgen, call `repack_all()` to
@@ -35,6 +36,8 @@
 // **Critical constraint: determinism.** All world modifications must go
 // through deterministic sim logic. No concurrent mutation, no random
 // access from rendering threads.
+
+use std::collections::BTreeSet;
 
 use crate::types::{VoxelCoord, VoxelType};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -584,6 +587,10 @@ pub struct VoxelWorld {
     /// custom `pack()`/`unpack()` methods skip this field; after load, the
     /// mesh cache does a full rebuild anyway).
     dirty_voxels: Vec<VoxelCoord>,
+    /// Chunk-column coordinates `(cx, cz)` whose heightmap has changed since
+    /// the last drain. Used by the minimap to know which tiles to re-fetch.
+    /// Excluded from serialization (minimap does a full rebuild on load).
+    dirty_heightmap_tiles: BTreeSet<(i32, i32)>,
 }
 
 impl VoxelWorld {
@@ -604,6 +611,7 @@ impl VoxelWorld {
             groups_z,
             groups: (0..num_groups).map(|_| ColumnGroup::default()).collect(),
             dirty_voxels: Vec::new(),
+            dirty_heightmap_tiles: BTreeSet::new(),
         }
     }
 
@@ -654,6 +662,8 @@ impl VoxelWorld {
         let max_y = (self.size_y - 1) as u8;
         if self.groups[gi].set_in_col(col, coord.y as u8, voxel, max_y) {
             self.dirty_voxels.push(coord);
+            self.dirty_heightmap_tiles
+                .insert((coord.x >> 4, coord.z >> 4));
         }
     }
 
@@ -722,6 +732,74 @@ impl VoxelWorld {
     /// cache will do a full rebuild anyway, so the dirty entries are not needed.
     pub fn clear_dirty_voxels(&mut self) {
         self.dirty_voxels.clear();
+        self.dirty_heightmap_tiles.clear();
+    }
+
+    /// Drain all dirty heightmap tile coordinates accumulated since the last
+    /// drain. Returns the set of `(cx, cz)` chunk-column coords that changed,
+    /// and clears the internal buffer. The minimap calls this once per frame
+    /// to discover which tiles need re-fetching.
+    pub fn drain_dirty_heightmap_tiles(&mut self) -> Vec<(i32, i32)> {
+        std::mem::take(&mut self.dirty_heightmap_tiles)
+            .into_iter()
+            .collect()
+    }
+
+    /// Compute the 16×16 heightmap for a single chunk-column at `(cx, cz)`.
+    /// Returns 512 bytes: interleaved `(height, voxel_type)` pairs for each
+    /// column, row-major with local X varying fastest.
+    /// `index = (local_x + local_z * 16) * 2` for height,
+    /// `index = (local_x + local_z * 16) * 2 + 1` for voxel type.
+    /// Height is the maximum solid Y (0 if all air); voxel type is the
+    /// `VoxelType` discriminant (`#[repr(u8)]`) of that topmost solid voxel.
+    ///
+    /// Efficient: walks each column's RLE spans in reverse, so the cost is
+    /// O(1) per column for typical terrain (the last span is the highest).
+    // Could be parallelized with rayon in the future if batch computation
+    // becomes a bottleneck (e.g., during rapid zoom-out).
+    pub fn heightmap_tile(&self, cx: i32, cz: i32) -> [u8; 512] {
+        let mut tile = [0u8; 512];
+        let base_x = cx * 16;
+        let base_z = cz * 16;
+        for lz in 0..16 {
+            let wz = base_z + lz;
+            if wz < 0 || wz >= self.size_z as i32 {
+                continue;
+            }
+            for lx in 0..16 {
+                let wx = base_x + lx;
+                if wx < 0 || wx >= self.size_x as i32 {
+                    continue;
+                }
+                let coord = VoxelCoord::new(wx, 0, wz);
+                let (gi, col) = self.group_and_col(coord);
+                let spans = self.groups[gi].col_spans(col);
+                // Walk spans in reverse — last solid span has the highest top_y.
+                for span in spans.iter().rev() {
+                    if VoxelType::from_u8(span.voxel_type).is_solid() {
+                        let idx = (lx + lz * 16) as usize * 2;
+                        tile[idx] = span.top_y;
+                        tile[idx + 1] = span.voxel_type;
+                        break;
+                    }
+                }
+            }
+        }
+        tile
+    }
+
+    /// Compute heightmap tiles for a batch of chunk-columns. Returns a flat
+    /// `Vec<u8>` with 512 bytes per tile (interleaved height+type pairs),
+    /// concatenated in request order. Single bridge call avoids per-tile
+    /// GDExtension marshalling overhead.
+    // Could be parallelized with rayon in the future if batch computation
+    // becomes a bottleneck (e.g., during rapid zoom-out).
+    pub fn heightmap_tiles_batch(&self, coords: &[(i32, i32)]) -> Vec<u8> {
+        let mut result = Vec::with_capacity(coords.len() * 512);
+        for &(cx, cz) in coords {
+            result.extend_from_slice(&self.heightmap_tile(cx, cz));
+        }
+        result
     }
 
     /// Compact all column groups, eliminating dead space and fragmentation.
@@ -839,6 +917,7 @@ impl VoxelWorld {
             groups_z,
             groups,
             dirty_voxels: Vec::new(),
+            dirty_heightmap_tiles: BTreeSet::new(),
         })
     }
 }
@@ -2176,5 +2255,266 @@ mod tests {
                 );
             }
         }
+    }
+
+    // --- Minimap heightmap tile tests ---
+    //
+    // Tiles are 512 bytes: interleaved (height, voxel_type) pairs for 16×16
+    // columns. Helper to read height at a local (lx, lz) position:
+    fn tile_height(tile: &[u8; 512], lx: usize, lz: usize) -> u8 {
+        tile[(lx + lz * 16) * 2]
+    }
+    fn tile_vtype(tile: &[u8; 512], lx: usize, lz: usize) -> u8 {
+        tile[(lx + lz * 16) * 2 + 1]
+    }
+
+    #[test]
+    fn heightmap_tile_empty_world() {
+        let world = VoxelWorld::new(32, 16, 32);
+        let tile = world.heightmap_tile(0, 0);
+        assert!(tile.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn heightmap_tile_known_voxels() {
+        let mut world = VoxelWorld::new(32, 16, 32);
+        world.set(VoxelCoord::new(0, 5, 0), VoxelType::Dirt);
+        world.set(VoxelCoord::new(3, 10, 7), VoxelType::Trunk);
+        world.set(VoxelCoord::new(15, 2, 15), VoxelType::Branch);
+        let tile = world.heightmap_tile(0, 0);
+        assert_eq!(tile_height(&tile, 0, 0), 5);
+        assert_eq!(tile_vtype(&tile, 0, 0), VoxelType::Dirt as u8);
+        assert_eq!(tile_height(&tile, 3, 7), 10);
+        assert_eq!(tile_vtype(&tile, 3, 7), VoxelType::Trunk as u8);
+        assert_eq!(tile_height(&tile, 15, 15), 2);
+        assert_eq!(tile_vtype(&tile, 15, 15), VoxelType::Branch as u8);
+        // Unset column should be 0 height, 0 (Air) type.
+        assert_eq!(tile_height(&tile, 1, 0), 0);
+        assert_eq!(tile_vtype(&tile, 1, 0), 0);
+    }
+
+    #[test]
+    fn heightmap_tile_different_chunk_columns() {
+        let mut world = VoxelWorld::new(48, 16, 48);
+        world.set(VoxelCoord::new(20, 8, 35), VoxelType::Trunk);
+        let tile = world.heightmap_tile(1, 2);
+        assert_eq!(tile_height(&tile, 4, 3), 8);
+        assert_eq!(tile_vtype(&tile, 4, 3), VoxelType::Trunk as u8);
+        let tile0 = world.heightmap_tile(0, 0);
+        assert!(tile0.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn heightmap_tile_returns_highest_solid() {
+        let mut world = VoxelWorld::new(32, 64, 32);
+        world.set(VoxelCoord::new(5, 3, 5), VoxelType::Dirt);
+        world.set(VoxelCoord::new(5, 10, 5), VoxelType::Trunk);
+        world.set(VoxelCoord::new(5, 40, 5), VoxelType::Branch);
+        let tile = world.heightmap_tile(0, 0);
+        assert_eq!(tile_height(&tile, 5, 5), 40);
+        assert_eq!(tile_vtype(&tile, 5, 5), VoxelType::Branch as u8);
+    }
+
+    #[test]
+    fn heightmap_tiles_batch_concatenates() {
+        let mut world = VoxelWorld::new(48, 16, 48);
+        world.set(VoxelCoord::new(5, 7, 5), VoxelType::Trunk);
+        world.set(VoxelCoord::new(20, 3, 35), VoxelType::Dirt);
+        let result = world.heightmap_tiles_batch(&[(0, 0), (1, 2)]);
+        assert_eq!(result.len(), 1024); // 2 tiles × 512 bytes
+        // First tile: (0,0) local (5,5) -> y=7, Trunk.
+        assert_eq!(result[(5 + 5 * 16) * 2], 7);
+        assert_eq!(result[(5 + 5 * 16) * 2 + 1], VoxelType::Trunk as u8);
+        // Second tile: (1,2) local (4,3) -> y=3, Dirt.
+        assert_eq!(result[512 + (4 + 3 * 16) * 2], 3);
+        assert_eq!(result[512 + (4 + 3 * 16) * 2 + 1], VoxelType::Dirt as u8);
+    }
+
+    #[test]
+    fn heightmap_tiles_batch_empty_coords() {
+        let world = VoxelWorld::new(32, 16, 32);
+        let result = world.heightmap_tiles_batch(&[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn drain_dirty_heightmap_tiles_tracks_set() {
+        let mut world = VoxelWorld::new(48, 16, 48);
+        assert!(world.drain_dirty_heightmap_tiles().is_empty());
+
+        // Two voxels in the same chunk-column (0, 0).
+        world.set(VoxelCoord::new(1, 2, 3), VoxelType::Trunk);
+        world.set(VoxelCoord::new(5, 6, 7), VoxelType::Branch);
+        // One voxel in chunk-column (1, 2).
+        world.set(VoxelCoord::new(20, 3, 35), VoxelType::Dirt);
+
+        let dirty = world.drain_dirty_heightmap_tiles();
+        assert_eq!(dirty.len(), 2);
+        assert!(dirty.contains(&(0, 0)));
+        assert!(dirty.contains(&(1, 2)));
+
+        // Second drain is empty.
+        assert!(world.drain_dirty_heightmap_tiles().is_empty());
+    }
+
+    #[test]
+    fn drain_dirty_heightmap_tiles_not_dirtied_by_noop_set() {
+        let mut world = VoxelWorld::new(32, 16, 32);
+        world.set(VoxelCoord::new(0, 0, 0), VoxelType::Dirt);
+        world.drain_dirty_heightmap_tiles();
+        // Setting same value again — no-op, should not dirty.
+        world.set(VoxelCoord::new(0, 0, 0), VoxelType::Dirt);
+        assert!(world.drain_dirty_heightmap_tiles().is_empty());
+    }
+
+    #[test]
+    fn clear_dirty_voxels_also_clears_dirty_heightmap_tiles() {
+        let mut world = VoxelWorld::new(32, 16, 32);
+        world.set(VoxelCoord::new(5, 5, 5), VoxelType::Trunk);
+        assert!(!world.drain_dirty_heightmap_tiles().is_empty());
+
+        world.set(VoxelCoord::new(10, 3, 10), VoxelType::Dirt);
+        world.clear_dirty_voxels();
+        assert!(world.drain_dirty_heightmap_tiles().is_empty());
+    }
+
+    #[test]
+    fn heightmap_tile_reflects_voxel_changes() {
+        let mut world = VoxelWorld::new(32, 32, 32);
+        world.set(VoxelCoord::new(5, 10, 5), VoxelType::Trunk);
+        let tile = world.heightmap_tile(0, 0);
+        assert_eq!(tile_height(&tile, 5, 5), 10);
+        assert_eq!(tile_vtype(&tile, 5, 5), VoxelType::Trunk as u8);
+
+        // Add a higher voxel in the same column.
+        world.set(VoxelCoord::new(5, 20, 5), VoxelType::Branch);
+        let tile = world.heightmap_tile(0, 0);
+        assert_eq!(tile_height(&tile, 5, 5), 20);
+        assert_eq!(tile_vtype(&tile, 5, 5), VoxelType::Branch as u8);
+
+        // Remove the higher voxel — should fall back to Trunk at 10.
+        world.set(VoxelCoord::new(5, 20, 5), VoxelType::Air);
+        let tile = world.heightmap_tile(0, 0);
+        assert_eq!(tile_height(&tile, 5, 5), 10);
+        assert_eq!(tile_vtype(&tile, 5, 5), VoxelType::Trunk as u8);
+    }
+
+    #[test]
+    fn heightmap_tile_ignores_non_solid_voxels() {
+        let mut world = VoxelWorld::new(32, 32, 32);
+        world.set(VoxelCoord::new(3, 5, 3), VoxelType::Trunk);
+        world.set(VoxelCoord::new(3, 10, 3), VoxelType::WoodLadder);
+        world.set(VoxelCoord::new(3, 15, 3), VoxelType::RopeLadder);
+        world.set(VoxelCoord::new(3, 20, 3), VoxelType::BuildingInterior);
+        let tile = world.heightmap_tile(0, 0);
+        assert_eq!(tile_height(&tile, 3, 3), 5);
+        assert_eq!(tile_vtype(&tile, 3, 3), VoxelType::Trunk as u8);
+    }
+
+    #[test]
+    fn heightmap_tile_out_of_bounds_chunk() {
+        let world = VoxelWorld::new(32, 16, 32);
+        let tile_neg = world.heightmap_tile(-1, 0);
+        assert!(tile_neg.iter().all(|&b| b == 0));
+        let tile_far = world.heightmap_tile(100, 100);
+        assert!(tile_far.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn heightmap_tile_partial_edge_chunk() {
+        let mut world = VoxelWorld::new(20, 16, 20);
+        world.set(VoxelCoord::new(18, 7, 18), VoxelType::Dirt);
+        let tile = world.heightmap_tile(1, 1);
+        assert_eq!(tile_height(&tile, 2, 2), 7);
+        assert_eq!(tile_vtype(&tile, 2, 2), VoxelType::Dirt as u8);
+        // Out of bounds column should be 0.
+        assert_eq!(tile_height(&tile, 5, 5), 0);
+    }
+
+    #[test]
+    fn heightmap_tiles_batch_duplicate_coords() {
+        let mut world = VoxelWorld::new(32, 16, 32);
+        world.set(VoxelCoord::new(5, 7, 5), VoxelType::Trunk);
+        let result = world.heightmap_tiles_batch(&[(0, 0), (0, 0)]);
+        assert_eq!(result.len(), 1024);
+        assert_eq!(&result[..512], &result[512..]);
+        assert_eq!(result[(5 + 5 * 16) * 2], 7);
+    }
+
+    #[test]
+    fn init_terrain_column_does_not_dirty_heightmap_tiles() {
+        let mut world = VoxelWorld::new(32, 16, 32);
+        world.init_terrain_column(5, 5, 3);
+        assert!(world.drain_dirty_heightmap_tiles().is_empty());
+    }
+
+    #[test]
+    fn heightmap_tile_agrees_with_full_heightmap() {
+        let mut world = VoxelWorld::new(48, 32, 48);
+        world.set(VoxelCoord::new(5, 10, 5), VoxelType::Trunk);
+        world.set(VoxelCoord::new(20, 15, 35), VoxelType::Branch);
+        world.set(VoxelCoord::new(40, 3, 10), VoxelType::Dirt);
+        let full = world.heightmap();
+        let sx = world.size_x as usize;
+        let tiles_x = (world.size_x as i32 + 15) / 16;
+        let tiles_z = (world.size_z as i32 + 15) / 16;
+        for cz in 0..tiles_z {
+            for cx in 0..tiles_x {
+                let tile = world.heightmap_tile(cx, cz);
+                for lz in 0..16 {
+                    let wz = cz * 16 + lz;
+                    if wz >= world.size_z as i32 {
+                        continue;
+                    }
+                    for lx in 0..16 {
+                        let wx = cx * 16 + lx;
+                        if wx >= world.size_x as i32 {
+                            continue;
+                        }
+                        assert_eq!(
+                            tile[(lx + lz * 16) as usize * 2],
+                            full[wx as usize + wz as usize * sx],
+                            "Height mismatch at chunk ({cx},{cz}) local ({lx},{lz})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn heightmap_tile_leaf_and_fruit_report_correct_type() {
+        let mut world = VoxelWorld::new(32, 32, 32);
+        world.set(VoxelCoord::new(2, 15, 3), VoxelType::Leaf);
+        world.set(VoxelCoord::new(7, 10, 8), VoxelType::Fruit);
+        let tile = world.heightmap_tile(0, 0);
+        assert_eq!(tile_height(&tile, 2, 3), 15);
+        assert_eq!(tile_vtype(&tile, 2, 3), VoxelType::Leaf as u8);
+        assert_eq!(tile_height(&tile, 7, 8), 10);
+        assert_eq!(tile_vtype(&tile, 7, 8), VoxelType::Fruit as u8);
+    }
+
+    /// Guard test: assert VoxelType discriminants match the hardcoded constants
+    /// in `minimap.gd`. If the Rust enum is reordered, this test fails and
+    /// signals that the GDScript constants need updating.
+    #[test]
+    fn voxel_type_discriminants_match_minimap_constants() {
+        assert_eq!(VoxelType::Trunk as u8, 1);
+        assert_eq!(VoxelType::Branch as u8, 2);
+        assert_eq!(VoxelType::GrownPlatform as u8, 3);
+        assert_eq!(VoxelType::GrownWall as u8, 4);
+        assert_eq!(VoxelType::Dirt as u8, 8);
+        assert_eq!(VoxelType::Leaf as u8, 9);
+        assert_eq!(VoxelType::Fruit as u8, 10);
+        assert_eq!(VoxelType::Root as u8, 11);
+        assert_eq!(VoxelType::Strut as u8, 15);
+    }
+
+    #[test]
+    fn init_terrain_parallel_does_not_dirty_heightmap_tiles() {
+        let mut world = VoxelWorld::new(32, 16, 32);
+        let heights: Vec<i32> = (0..32 * 32).map(|i| (i % 5) as i32).collect();
+        world.init_terrain_parallel(&heights);
+        assert!(world.drain_dirty_heightmap_tiles().is_empty());
     }
 }

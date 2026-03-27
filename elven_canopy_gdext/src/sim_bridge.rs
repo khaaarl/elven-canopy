@@ -1919,15 +1919,40 @@ impl SimBridge {
         sim.auto_ladder_orientation(x, y, z, height) as i32
     }
 
-    /// Return a top-down heightmap for minimap rendering. Each byte is the
-    /// max solid Y for that (x, z) column. Row-major, X varies fastest.
-    /// Size is `world_size.x * world_size.z` bytes.
+    /// Return chunk-column coords `[cx0, cz0, cx1, cz1, ...]` whose terrain
+    /// heightmap changed since the last call. The minimap calls this once per
+    /// frame to discover which tiles need re-fetching. Drains and clears the
+    /// internal dirty set.
     #[func]
-    fn get_terrain_heightmap(&self) -> PackedByteArray {
+    fn drain_dirty_minimap_tiles(&mut self) -> PackedInt32Array {
+        let Some(sim) = &mut self.session.sim else {
+            return PackedInt32Array::new();
+        };
+        let dirty = sim.world.drain_dirty_heightmap_tiles();
+        let mut result = PackedInt32Array::new();
+        result.resize(dirty.len() * 2);
+        for (i, (cx, cz)) in dirty.iter().enumerate() {
+            result[i * 2] = *cx;
+            result[i * 2 + 1] = *cz;
+        }
+        result
+    }
+
+    /// Return heightmap data for a batch of chunk-columns. `coords` is a flat
+    /// array of `[cx0, cz0, cx1, cz1, ...]` pairs. Returns 512 bytes per
+    /// tile: interleaved `(height, voxel_type)` pairs for 16×16 columns,
+    /// row-major X-fastest. Concatenated in request order.
+    #[func]
+    fn get_minimap_tiles(&self, coords: PackedInt32Array) -> PackedByteArray {
         let Some(sim) = &self.session.sim else {
             return PackedByteArray::new();
         };
-        PackedByteArray::from(sim.world.heightmap().as_slice())
+        let n = coords.len() / 2;
+        let mut pairs = Vec::with_capacity(n);
+        for i in 0..n {
+            pairs.push((coords[i * 2], coords[i * 2 + 1]));
+        }
+        PackedByteArray::from(sim.world.heightmap_tiles_batch(&pairs).as_slice())
     }
 
     /// Return the world dimensions as `Vector3i(size_x, size_y, size_z)`.

@@ -9,17 +9,21 @@
 ## minimap) or +/- icon buttons. Follow mode: toggleable — follow camera
 ## focal point or center on main tree.
 ##
-## Terrain texture is regenerated only when voxels change (tree growth,
-## construction). Creature dots are redrawn every frame (cheap — just points
-## on a small canvas). Z-levels above camera focal height are rendered at
-## reduced opacity (ghostly).
+## Terrain is rendered via chunk-column tiles (16×16 voxel heightmaps). Only
+## tiles visible at the current zoom/pan are fetched from the sim, and only
+## tiles that actually changed (voxel mutation) are re-fetched. This makes
+## steady-state cost near zero — no work when the world isn't changing.
+##
+## Creature dots are redrawn every frame (cheap — just points on a small
+## canvas). Z-levels above camera focal height are rendered at reduced opacity
+## (ghostly).
 ##
 ## Architecture: the drawing logic is kept generic (map-rendering code) to
 ## enable future reuse for a full-screen map, side-view panel, etc.
 ##
 ## See also: main.gd for wiring and per-frame updates, orbital_camera.gd for
-## camera position and focus, sim_bridge.rs for get_terrain_heightmap() and
-## creature position queries.
+## camera position and focus, sim_bridge.rs for drain_dirty_minimap_tiles()
+## and get_minimap_tiles().
 
 extends PanelContainer
 
@@ -39,12 +43,27 @@ const ZOOM_LEVELS: Array[float] = [32.0, 64.0, 128.0, 256.0, 512.0]
 ## Default zoom index (show 64 world units across the minimap).
 const DEFAULT_ZOOM_INDEX := 1
 
-## Colors for terrain height shading.
-const COLOR_GROUND := Color(0.22, 0.35, 0.15)
-const COLOR_TREE_LOW := Color(0.35, 0.25, 0.15)
-const COLOR_TREE_HIGH := Color(0.55, 0.45, 0.25)
+## Colors for terrain by voxel type. Height adds brightness variation.
+const COLOR_GRASS := Color(0.18, 0.30, 0.08)
+const COLOR_WOOD_LOW := Color(0.30, 0.20, 0.10)
+const COLOR_WOOD_HIGH := Color(0.50, 0.38, 0.20)
+const COLOR_LEAF_LOW := Color(0.15, 0.35, 0.20)
+const COLOR_LEAF_HIGH := Color(0.25, 0.50, 0.35)
+const COLOR_FRUIT := Color(0.55, 0.20, 0.25)
+const COLOR_GROWN := Color(0.40, 0.35, 0.25)
 ## Color for empty columns (no solid voxel).
 const COLOR_EMPTY := Color(0.08, 0.08, 0.08, 0.6)
+
+## VoxelType discriminants (must match elven_canopy_sim/src/types.rs).
+const VTYPE_TRUNK := 1
+const VTYPE_BRANCH := 2
+const VTYPE_GROWN_PLATFORM := 3
+const VTYPE_GROWN_WALL := 4
+const VTYPE_DIRT := 8
+const VTYPE_LEAF := 9
+const VTYPE_FRUIT := 10
+const VTYPE_ROOT := 11
+const VTYPE_STRUT := 15
 ## Camera frustum outline color.
 const COLOR_FRUSTUM := Color(1.0, 1.0, 1.0, 0.7)
 ## Creature dot colors by faction — matches selection_highlight.gd ring colors.
@@ -54,8 +73,8 @@ const COLOR_HOSTILE := Color(1.0, 0.2, 0.2)
 ## Selected creature highlight — brighter white so it stands out over any faction.
 const COLOR_SELECTED := Color(1.0, 1.0, 1.0)
 
-## Throttle terrain regeneration to avoid per-frame heightmap queries.
-const TERRAIN_UPDATE_INTERVAL := 1.0
+## Chunk tile size in voxels (must match CHUNK_SIZE on the Rust side).
+const TILE_SIZE := 16
 
 ## Button size for minimap toolbar icons.
 const BTN_SIZE := 16
@@ -76,13 +95,16 @@ var _follow_camera: bool = true
 ## The draw area control (child of this PanelContainer).
 var _draw_area: Control
 
-## Cached terrain heightmap (flat array, size_x * size_z, row-major X-fastest).
-var _heightmap := PackedByteArray()
-## Cached terrain image for drawing.
+## Terrain tile cache. The terrain image covers the full world in chunk-column
+## resolution. Individual 16×16 tiles are written into it on demand. A
+## Dictionary of Vector2i(cx,cz) -> true tracks which tiles are already
+## rendered into the image.
 var _terrain_image: Image
 var _terrain_texture: ImageTexture
-## Timer for terrain update throttling.
-var _terrain_timer: float = 0.0
+var _tile_cache: Dictionary = {}
+## Number of chunk-columns in each XZ dimension.
+var _tiles_x: int = 0
+var _tiles_z: int = 0
 
 ## Buttons.
 var _zoom_in_btn: Button
@@ -106,7 +128,19 @@ func setup(bridge: SimBridge, camera_pivot: Node3D, selector: Node3D) -> void:
 	_camera_pivot = camera_pivot
 	_selector = selector
 	_world_size = bridge.get_world_size()
-	_rebuild_terrain()
+	_tiles_x = ceili(float(_world_size.x) / TILE_SIZE)
+	_tiles_z = ceili(float(_world_size.z) / TILE_SIZE)
+	# Create an image covering the full world at 1:1 voxel-to-pixel scale.
+	# Individual tiles are rendered into it on demand — not all at once.
+	_terrain_image = Image.create(
+		_tiles_x * TILE_SIZE, _tiles_z * TILE_SIZE, false, Image.FORMAT_RGBA8
+	)
+	_terrain_image.fill(COLOR_EMPTY)
+	_terrain_texture = ImageTexture.create_from_image(_terrain_image)
+	# Drain any initial dirty tiles (from worldgen) so they don't accumulate.
+	_bridge.drain_dirty_minimap_tiles()
+	# Fetch tiles visible at the initial view.
+	_update_terrain_tiles()
 
 
 func set_render_tick(tick: float) -> void:
@@ -176,15 +210,12 @@ func _ready() -> void:
 	_update_size()
 
 
-func _process(delta: float) -> void:
+func _process(_delta: float) -> void:
 	_update_size()
 
-	# Periodically refresh the terrain texture.
+	# Update terrain tiles: drain dirty, fetch any needed visible tiles.
 	if _bridge:
-		_terrain_timer += delta
-		if _terrain_timer >= TERRAIN_UPDATE_INTERVAL:
-			_terrain_timer = 0.0
-			_rebuild_terrain()
+		_update_terrain_tiles()
 
 	# Request redraw every frame for creature dots and camera frustum.
 	if _draw_area:
@@ -310,31 +341,86 @@ func _update_follow_button() -> void:
 		icon_node.queue_redraw()
 
 
-## Rebuild the cached terrain texture from the heightmap.
-func _rebuild_terrain() -> void:
+## Update terrain tiles: invalidate dirty ones and fetch any visible tiles
+## not yet in the cache. Called every frame but typically does zero work
+## (no dirty tiles, visible set unchanged).
+func _update_terrain_tiles() -> void:
 	if not _bridge or _world_size.x <= 0 or _world_size.z <= 0:
 		return
-	_heightmap = _bridge.get_terrain_heightmap()
-	var w: int = _world_size.x
-	var h: int = _world_size.z
-	_terrain_image = Image.create(w, h, false, Image.FORMAT_RGBA8)
+
+	# 1. Drain dirty tiles from the sim and invalidate them in our cache.
+	var dirty: PackedInt32Array = _bridge.drain_dirty_minimap_tiles()
+	for i in range(dirty.size() / 2):
+		var key := Vector2i(dirty[i * 2], dirty[i * 2 + 1])
+		_tile_cache.erase(key)
+
+	# 2. Determine which chunk-columns are visible at the current zoom/center.
+	var center := _get_center()
+	var span: float = ZOOM_LEVELS[_zoom_index]
+	var half_span: float = span * 0.5
+	var cx_min: int = maxi(floori((center.x - half_span) / TILE_SIZE), 0)
+	var cx_max: int = mini(floori((center.x + half_span) / TILE_SIZE), _tiles_x - 1)
+	var cz_min: int = maxi(floori((center.y - half_span) / TILE_SIZE), 0)
+	var cz_max: int = mini(floori((center.y + half_span) / TILE_SIZE), _tiles_z - 1)
+
+	# 3. Collect visible tiles that need fetching (not in cache).
+	var needed: PackedInt32Array = PackedInt32Array()
+	var needed_keys: Array[Vector2i] = []
+	for cz in range(cz_min, cz_max + 1):
+		for cx in range(cx_min, cx_max + 1):
+			var key := Vector2i(cx, cz)
+			if not _tile_cache.has(key):
+				needed.append(cx)
+				needed.append(cz)
+				needed_keys.append(key)
+
+	if needed_keys.is_empty():
+		return
+
+	# 4. Batch-fetch all needed tiles in a single bridge call.
+	# Each tile is 512 bytes: interleaved (height, voxel_type) pairs.
+	var tile_data: PackedByteArray = _bridge.get_minimap_tiles(needed)
 	var max_y: float = _world_size.y
-	for z in range(h):
-		for x in range(w):
-			var height: int = _heightmap[x + z * w]
-			if height == 0:
-				_terrain_image.set_pixel(x, z, COLOR_EMPTY)
-			else:
-				var t: float = float(height) / max_y
-				var color: Color
-				if height <= 1:
-					# Ground level.
-					color = COLOR_GROUND
-				else:
-					# Tree / construction — lerp from low brown to high tan.
-					color = COLOR_TREE_LOW.lerp(COLOR_TREE_HIGH, t)
-				_terrain_image.set_pixel(x, z, color)
-	_terrain_texture = ImageTexture.create_from_image(_terrain_image)
+
+	# 5. Write each tile's 16×16 pixels into the terrain image.
+	for ti in range(needed_keys.size()):
+		var key: Vector2i = needed_keys[ti]
+		var base_offset: int = ti * 512
+		var img_x: int = key.x * TILE_SIZE
+		var img_z: int = key.y * TILE_SIZE
+		for lz in range(TILE_SIZE):
+			for lx in range(TILE_SIZE):
+				var idx: int = base_offset + (lx + lz * TILE_SIZE) * 2
+				var height: int = tile_data[idx]
+				var vtype: int = tile_data[idx + 1]
+				_terrain_image.set_pixel(
+					img_x + lx, img_z + lz, _color_for_voxel(height, vtype, max_y)
+				)
+		_tile_cache[key] = true
+
+	# 6. Update the GPU texture from the modified image.
+	_terrain_texture.update(_terrain_image)
+
+
+## Map a (height, voxel_type) pair to a minimap color.
+func _color_for_voxel(height: int, vtype: int, max_y: float) -> Color:
+	if height == 0:
+		return COLOR_EMPTY
+	var t: float = float(height) / max_y
+	match vtype:
+		VTYPE_DIRT:
+			return COLOR_GRASS
+		VTYPE_LEAF:
+			return COLOR_LEAF_LOW.lerp(COLOR_LEAF_HIGH, t)
+		VTYPE_FRUIT:
+			return COLOR_FRUIT
+		VTYPE_TRUNK, VTYPE_BRANCH, VTYPE_ROOT:
+			return COLOR_WOOD_LOW.lerp(COLOR_WOOD_HIGH, t)
+		VTYPE_GROWN_PLATFORM, VTYPE_GROWN_WALL, VTYPE_STRUT:
+			return COLOR_GROWN
+		_:
+			# Fallback for unknown types.
+			return COLOR_WOOD_LOW.lerp(COLOR_WOOD_HIGH, t)
 
 
 ## Main draw callback — terrain, creatures, frustum.
