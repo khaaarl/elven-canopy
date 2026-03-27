@@ -1240,9 +1240,13 @@ impl SimState {
                 // Movement is driven by CreatureActivation, not heartbeats.
 
                 // Phase 1: apply food and rest decay, read state for need checks.
-                let (should_seek_food, should_seek_sleep, starved) = if let Some(mut creature) =
-                    self.db.creatures.get(&creature_id)
-                {
+                let (
+                    should_seek_dining,
+                    should_preempt_for_dining,
+                    should_seek_food,
+                    should_seek_sleep,
+                    starved,
+                ) = if let Some(mut creature) = self.db.creatures.get(&creature_id) {
                     let species = creature.species;
                     let species_data = &self.species_table[&species];
                     let interval = species_data.heartbeat_interval_ticks;
@@ -1286,15 +1290,20 @@ impl SimState {
 
                     let is_starving = creature.food == 0;
 
-                    let food_threshold =
+                    let dining_threshold =
+                        species_data.food_max * species_data.food_dining_threshold_pct / 100;
+                    let emergency_threshold =
                         species_data.food_max * species_data.food_hunger_threshold_pct / 100;
-                    let is_hungry = creature.food < food_threshold;
+                    let wants_dining =
+                        creature.food < dining_threshold && creature.food >= emergency_threshold;
+                    let is_hungry = creature.food < emergency_threshold;
 
                     let rest_threshold =
                         species_data.rest_max * species_data.rest_tired_threshold_pct / 100;
                     let is_tired = creature.rest < rest_threshold;
 
                     let is_idle = creature.current_task.is_none();
+                    let current_task_id = creature.current_task;
 
                     // Write back mutated fields.
                     let _ = self.db.creatures.update_no_fk(creature);
@@ -1341,13 +1350,35 @@ impl SimState {
                         ScheduledEventKind::CreatureHeartbeat { creature_id },
                     );
 
-                    // Hunger takes priority over tiredness.
+                    // Hunger takes priority over tiredness. Dining hunger
+                    // also takes priority over tiredness (elf prefers dining
+                    // hall meal over sleeping when both apply).
+                    //
+                    // Dining can preempt lower-priority tasks (Autonomous)
+                    // because it's Survival-level. Without this, elves busy
+                    // hauling would skip the entire dining window and fall
+                    // through to emergency eating.
+                    let can_preempt_for_dining = wants_dining
+                        && !is_idle
+                        && current_task_id.is_some_and(|tid| {
+                            self.db.tasks.get(&tid).is_some_and(|t| {
+                                crate::preemption::preemption_level(t.kind_tag, t.origin).level()
+                                    < crate::preemption::PreemptionLevel::Survival.level()
+                            })
+                        });
+                    let seek_dining = wants_dining && (is_idle || can_preempt_for_dining);
                     let seek_food = is_hungry && is_idle;
-                    let seek_sleep = is_tired && is_idle && !is_hungry;
+                    let seek_sleep = is_tired && is_idle && !is_hungry && !wants_dining;
 
-                    (seek_food, seek_sleep, is_starving)
+                    (
+                        seek_dining,
+                        can_preempt_for_dining,
+                        seek_food,
+                        seek_sleep,
+                        is_starving,
+                    )
                 } else {
-                    (false, false, false)
+                    (false, false, false, false, false)
                 };
 
                 // Starvation death: food reached zero.
@@ -1356,8 +1387,81 @@ impl SimState {
                     return;
                 }
 
-                // Phase 2a: if hungry and idle, eat bread from inventory
-                // (instant, no travel) or fall back to seeking fruit.
+                // Phase 2a-dining: if moderately hungry, seek a dining hall
+                // with a free seat and stocked food. Preempts lower-priority
+                // tasks (e.g., hauling) since dining is Survival-level.
+                if should_seek_dining
+                    && let Some((table_coord, _nav_node, structure_id)) =
+                        self.find_nearest_dining_hall(creature_id)
+                {
+                    let task_id = TaskId::new(&mut self.rng);
+                    // Reserve one edible food item in the dining hall.
+                    let mut food_reserved = false;
+                    if let Some(structure) = self.db.structures.get(&structure_id) {
+                        let inv_id = structure.inventory_id;
+                        for kind in inventory::ItemKind::EDIBLE_KINDS {
+                            let reserved = self.inv_reserve_unowned_items(
+                                inv_id,
+                                *kind,
+                                inventory::MaterialFilter::Any,
+                                1,
+                                task_id,
+                            );
+                            if reserved > 0 {
+                                food_reserved = true;
+                                break;
+                            }
+                        }
+                    }
+                    // Only create the task (and preempt the old one) if food
+                    // was successfully reserved. Preemption must happen AFTER
+                    // confirming reservation — otherwise a failed reservation
+                    // leaves the elf taskless with the old task already gone.
+                    if food_reserved {
+                        if should_preempt_for_dining
+                            && let Some(tid) = self
+                                .db
+                                .creatures
+                                .get(&creature_id)
+                                .and_then(|c| c.current_task)
+                        {
+                            self.preempt_task(creature_id, tid);
+                        }
+                        let new_task = task::Task {
+                            id: task_id,
+                            kind: task::TaskKind::DineAtHall { structure_id },
+                            state: task::TaskState::InProgress,
+                            location: table_coord,
+                            progress: 0,
+                            total_cost: 0,
+                            required_species: None,
+                            origin: task::TaskOrigin::Autonomous,
+                            target_creature: None,
+                            restrict_to_creature_id: None,
+                            prerequisite_task_id: None,
+                            required_civ_id: None,
+                        };
+                        self.insert_task(new_task);
+                        // Insert DiningSeat voxel ref for seat reservation.
+                        let _ = self.db.task_voxel_refs.insert_auto_no_fk(|seq| {
+                            crate::db::TaskVoxelRef {
+                                seq,
+                                task_id,
+                                coord: table_coord,
+                                role: crate::db::TaskVoxelRole::DiningSeat,
+                            }
+                        });
+                        if let Some(mut creature) = self.db.creatures.get(&creature_id) {
+                            creature.current_task = Some(task_id);
+                            let _ = self.db.creatures.update_no_fk(creature);
+                        }
+                    }
+                }
+                // If no dining hall available, elf remains idle until
+                // next heartbeat or until food drops to emergency threshold.
+
+                // Phase 2a-emergency: if emergency-hungry and idle, eat bread
+                // from inventory (instant, no travel) or fall back to seeking fruit.
                 let mut ate_bread = false;
                 if should_seek_food {
                     // Check for owned bread in inventory.
@@ -1705,6 +1809,8 @@ impl SimState {
                     Some(t) => t,
                     None => return false,
                 };
+                // DineAtHall resolves instantly on arrival (in activation),
+                // so it never reaches here.
                 match task_kind_tag {
                     Some(crate::db::TaskKindTag::EatFruit) => {
                         let fruit_pos = self

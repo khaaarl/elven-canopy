@@ -86,7 +86,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-batch-craft          Workstation-driven batch crafting with time discount
 [ ] F-binding-conflicts    Binding conflict detection
 [ ] F-bldg-concert         Concert hall
-[ ] F-bldg-dining          Dining hall
 [ ] F-bldg-library         Magic learning building (library/spire)
 [ ] F-bldg-storehouse      Storehouse (item storage)
 [ ] F-blueprint-mode       Layer-based blueprint selection UI
@@ -304,6 +303,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-attack-task          AttackCreature task (player-directed target pursuit)
 [x] F-audio-synth          Waveform synthesis for audio rendering
 [x] F-bigger-world         Larger playable area
+[x] F-bldg-dining          Dining hall
 [x] F-bldg-dormitory       Dormitory (unassigned elf sleep)
 [x] F-bldg-home            Home (single elf dwelling)
 [x] F-bldg-kitchen         Kitchen (cooking from ingredients)
@@ -546,7 +546,7 @@ Details to be worked out in a design doc.
 **Related:** F-bldg-dining, F-group-dance, F-music-runtime
 
 #### F-bldg-dining — Dining hall
-**Status:** Todo · **Phase:** 4
+**Status:** Done · **Phase:** 4
 
 Communal dining building where elves eat meals. Two hunger thresholds:
 food_dining_threshold_pct (new, higher) triggers dining hall seek;

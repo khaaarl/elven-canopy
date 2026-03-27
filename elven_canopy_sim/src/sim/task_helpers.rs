@@ -164,6 +164,18 @@ impl SimState {
                     }
                 });
             }
+            task::TaskKind::DineAtHall { structure_id } => {
+                let _ = self.db.task_structure_refs.insert_auto_no_fk(|seq| {
+                    crate::db::TaskStructureRef {
+                        seq,
+                        task_id,
+                        structure_id: *structure_id,
+                        role: crate::db::TaskStructureRole::DineAt,
+                    }
+                });
+                // DiningSeat voxel ref is inserted at task creation site (heartbeat),
+                // since the table position is determined during find_nearest_dining_hall.
+            }
             task::TaskKind::EatFruit { fruit_pos } | task::TaskKind::Harvest { fruit_pos } => {
                 let _ = self
                     .db

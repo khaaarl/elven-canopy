@@ -99,13 +99,15 @@ pub fn preemption_level(kind: TaskKindTag, origin: TaskOrigin) -> PreemptionLeve
         },
 
         // Self-care — Survival(3).
-        TaskKindTag::EatBread | TaskKindTag::EatFruit | TaskKindTag::Graze | TaskKindTag::Sleep => {
-            match origin {
-                TaskOrigin::PlayerDirected | TaskOrigin::Autonomous | TaskOrigin::Automated => {
-                    PreemptionLevel::Survival
-                }
+        TaskKindTag::DineAtHall
+        | TaskKindTag::EatBread
+        | TaskKindTag::EatFruit
+        | TaskKindTag::Graze
+        | TaskKindTag::Sleep => match origin {
+            TaskOrigin::PlayerDirected | TaskOrigin::Autonomous | TaskOrigin::Automated => {
+                PreemptionLevel::Survival
             }
-        }
+        },
 
         // Mood crisis — Mood(4).
         TaskKindTag::Mope => match origin {
@@ -263,6 +265,7 @@ mod tests {
     #[test]
     fn self_care_maps_to_survival() {
         for kind in [
+            TaskKindTag::DineAtHall,
             TaskKindTag::EatBread,
             TaskKindTag::EatFruit,
             TaskKindTag::Sleep,

@@ -971,6 +971,9 @@ impl SimState {
             crate::db::TaskKindTag::Build
             | crate::db::TaskKindTag::Furnish
             | crate::db::TaskKindTag::Tame => {}
+            crate::db::TaskKindTag::DineAtHall => {
+                self.cleanup_dine_at_hall_task(task_id);
+            }
             // No-cleanup tasks: mark Complete so they aren't re-claimed.
             crate::db::TaskKindTag::GoTo
             | crate::db::TaskKindTag::EatBread

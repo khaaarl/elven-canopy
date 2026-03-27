@@ -917,6 +917,13 @@ impl SimState {
                     self.on_activity_participant_arrived(activity_id, creature_id, events);
                 }
             }
+            crate::db::TaskKindTag::DineAtHall => {
+                // Dining is instant on arrival: consume food, restore hunger,
+                // generate thought, and complete the task immediately. No
+                // animation delay — slow eating is deferred to F-slow-eating.
+                // Falls through to schedule next activation (like GoTo).
+                self.resolve_dine_at_hall_action(creature_id, task_id);
+            }
             crate::db::TaskKindTag::EatBread | crate::db::TaskKindTag::EatFruit => {
                 self.start_simple_action(
                     creature_id,

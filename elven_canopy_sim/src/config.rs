@@ -292,7 +292,10 @@ pub struct ThoughtConfig {
     pub dedup_slept_home_ticks: u64,
     pub dedup_slept_dormitory_ticks: u64,
     pub dedup_slept_ground_ticks: u64,
-    pub dedup_ate_meal_ticks: u64,
+    #[serde(alias = "dedup_ate_meal_ticks")]
+    pub dedup_ate_dining_ticks: u64,
+    #[serde(default = "default_dedup_ate_alone_ticks")]
+    pub dedup_ate_alone_ticks: u64,
     pub dedup_low_ceiling_ticks: u64,
     #[serde(default = "default_dedup_enjoying_dance")]
     pub dedup_enjoying_dance_ticks: u64,
@@ -303,7 +306,10 @@ pub struct ThoughtConfig {
     pub expiry_slept_home_ticks: u64,
     pub expiry_slept_dormitory_ticks: u64,
     pub expiry_slept_ground_ticks: u64,
-    pub expiry_ate_meal_ticks: u64,
+    #[serde(alias = "expiry_ate_meal_ticks")]
+    pub expiry_ate_dining_ticks: u64,
+    #[serde(default = "default_expiry_ate_alone_ticks")]
+    pub expiry_ate_alone_ticks: u64,
     pub expiry_low_ceiling_ticks: u64,
     #[serde(default = "default_expiry_enjoying_dance")]
     pub expiry_enjoying_dance_ticks: u64,
@@ -337,7 +343,8 @@ impl ThoughtConfig {
             ThoughtKind::SleptInOwnHome(_) => self.dedup_slept_home_ticks,
             ThoughtKind::SleptInDormitory(_) => self.dedup_slept_dormitory_ticks,
             ThoughtKind::SleptOnGround => self.dedup_slept_ground_ticks,
-            ThoughtKind::AteMeal => self.dedup_ate_meal_ticks,
+            ThoughtKind::AteDining => self.dedup_ate_dining_ticks,
+            ThoughtKind::AteAlone => self.dedup_ate_alone_ticks,
             ThoughtKind::LowCeiling(_) => self.dedup_low_ceiling_ticks,
             ThoughtKind::EnjoyingDance => self.dedup_enjoying_dance_ticks,
             ThoughtKind::DancedInGroup => self.dedup_danced_in_group_ticks,
@@ -350,7 +357,8 @@ impl ThoughtConfig {
             ThoughtKind::SleptInOwnHome(_) => self.expiry_slept_home_ticks,
             ThoughtKind::SleptInDormitory(_) => self.expiry_slept_dormitory_ticks,
             ThoughtKind::SleptOnGround => self.expiry_slept_ground_ticks,
-            ThoughtKind::AteMeal => self.expiry_ate_meal_ticks,
+            ThoughtKind::AteDining => self.expiry_ate_dining_ticks,
+            ThoughtKind::AteAlone => self.expiry_ate_alone_ticks,
             ThoughtKind::LowCeiling(_) => self.expiry_low_ceiling_ticks,
             ThoughtKind::EnjoyingDance => self.expiry_enjoying_dance_ticks,
             ThoughtKind::DancedInGroup => self.expiry_danced_in_group_ticks,
@@ -366,7 +374,8 @@ impl Default for ThoughtConfig {
             dedup_slept_home_ticks: 150_000,
             dedup_slept_dormitory_ticks: 150_000,
             dedup_slept_ground_ticks: 150_000,
-            dedup_ate_meal_ticks: 150_000,
+            dedup_ate_dining_ticks: 150_000,
+            dedup_ate_alone_ticks: 150_000,
             // Low ceiling: reminder each visit (~30 sim-seconds).
             dedup_low_ceiling_ticks: 30_000,
             // Dance: small mood trickle during execution (~30 sim-seconds dedup).
@@ -378,7 +387,8 @@ impl Default for ThoughtConfig {
             expiry_slept_dormitory_ticks: 600_000,
             expiry_slept_ground_ticks: 600_000,
             // Shorter expiry (~2.5 min real time).
-            expiry_ate_meal_ticks: 150_000,
+            expiry_ate_dining_ticks: 150_000,
+            expiry_ate_alone_ticks: 150_000,
             expiry_low_ceiling_ticks: 150_000,
             // Dance thoughts: enjoying fades quickly, completion lasts longer.
             expiry_enjoying_dance_ticks: 60_000,
@@ -402,8 +412,12 @@ pub struct MoodConfig {
     pub weight_slept_dormitory: i32,
     /// Weight for SleptOnGround thoughts.
     pub weight_slept_ground: i32,
-    /// Weight for AteMeal thoughts.
-    pub weight_ate_meal: i32,
+    /// Weight for AteDining thoughts (positive — dining hall meal).
+    #[serde(alias = "weight_ate_meal")]
+    pub weight_ate_dining: i32,
+    /// Weight for AteAlone thoughts (negative — eating without dining hall).
+    #[serde(default = "default_weight_ate_alone")]
+    pub weight_ate_alone: i32,
     /// Weight for LowCeiling thoughts.
     pub weight_low_ceiling: i32,
     /// Weight for EnjoyingDance thoughts (small, recurring during dance).
@@ -434,7 +448,8 @@ impl MoodConfig {
             ThoughtKind::SleptInOwnHome(_) => self.weight_slept_home,
             ThoughtKind::SleptInDormitory(_) => self.weight_slept_dormitory,
             ThoughtKind::SleptOnGround => self.weight_slept_ground,
-            ThoughtKind::AteMeal => self.weight_ate_meal,
+            ThoughtKind::AteDining => self.weight_ate_dining,
+            ThoughtKind::AteAlone => self.weight_ate_alone,
             ThoughtKind::LowCeiling(_) => self.weight_low_ceiling,
             ThoughtKind::EnjoyingDance => self.weight_enjoying_dance,
             ThoughtKind::DancedInGroup => self.weight_danced_in_group,
@@ -467,7 +482,8 @@ impl Default for MoodConfig {
             weight_slept_home: 80,
             weight_slept_dormitory: 30,
             weight_slept_ground: -100,
-            weight_ate_meal: 60,
+            weight_ate_dining: 60,
+            weight_ate_alone: -15,
             weight_low_ceiling: -50,
             weight_enjoying_dance: 15,
             weight_danced_in_group: 60,
@@ -2148,6 +2164,15 @@ pub struct GameConfig {
     #[serde(default = "default_eat_action_ticks")]
     pub eat_action_ticks: u64,
 
+    /// Number of implicit dining seats per table in a dining hall.
+    /// Total dining capacity = tables × this value.
+    #[serde(default = "default_dining_seats_per_table")]
+    pub dining_seats_per_table: u32,
+
+    /// Default logistics priority for newly furnished dining halls.
+    #[serde(default = "default_dining_hall_default_priority")]
+    pub dining_hall_default_priority: u8,
+
     /// Duration of one Harvest action in ticks (default 1500 = 1.5s).
     #[serde(default = "default_harvest_action_ticks")]
     pub harvest_action_ticks: u64,
@@ -2749,6 +2774,26 @@ fn default_eat_action_ticks() -> u64 {
     1500
 }
 
+fn default_dining_seats_per_table() -> u32 {
+    4
+}
+
+fn default_dining_hall_default_priority() -> u8 {
+    8
+}
+
+fn default_dedup_ate_alone_ticks() -> u64 {
+    150_000
+}
+
+fn default_expiry_ate_alone_ticks() -> u64 {
+    150_000
+}
+
+fn default_weight_ate_alone() -> i32 {
+    -15
+}
+
 fn default_harvest_action_ticks() -> u64 {
     1500
 }
@@ -2809,7 +2854,8 @@ impl Default for GameConfig {
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 333_333_333,
-                food_hunger_threshold_pct: 50,
+                food_dining_threshold_pct: 60,
+                food_hunger_threshold_pct: 40,
                 food_restore_pct: 40,
                 bread_restore_pct: 30,
                 footprint: [1, 1, 1],
@@ -2860,7 +2906,8 @@ impl Default for GameConfig {
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 333_333_333,
-                food_hunger_threshold_pct: 50,
+                food_dining_threshold_pct: 60,
+                food_hunger_threshold_pct: 40,
                 food_restore_pct: 40,
                 bread_restore_pct: 30,
                 footprint: [1, 1, 1],
@@ -2906,7 +2953,8 @@ impl Default for GameConfig {
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 333_333_333,
-                food_hunger_threshold_pct: 50,
+                food_dining_threshold_pct: 60,
+                food_hunger_threshold_pct: 40,
                 food_restore_pct: 40,
                 bread_restore_pct: 30,
                 footprint: [1, 1, 1],
@@ -2952,7 +3000,8 @@ impl Default for GameConfig {
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 333_333_333,
-                food_hunger_threshold_pct: 50,
+                food_dining_threshold_pct: 60,
+                food_hunger_threshold_pct: 40,
                 food_restore_pct: 40,
                 bread_restore_pct: 30,
                 footprint: [1, 1, 1],
@@ -2998,7 +3047,8 @@ impl Default for GameConfig {
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 333_333_333,
-                food_hunger_threshold_pct: 50,
+                food_dining_threshold_pct: 60,
+                food_hunger_threshold_pct: 40,
                 food_restore_pct: 40,
                 bread_restore_pct: 30,
                 footprint: [2, 2, 2],
@@ -3044,7 +3094,8 @@ impl Default for GameConfig {
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 0,
-                food_hunger_threshold_pct: 50,
+                food_dining_threshold_pct: 60,
+                food_hunger_threshold_pct: 40,
                 food_restore_pct: 40,
                 bread_restore_pct: 30,
                 footprint: [1, 1, 1],
@@ -3095,7 +3146,8 @@ impl Default for GameConfig {
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 333_333_333,
-                food_hunger_threshold_pct: 50,
+                food_dining_threshold_pct: 60,
+                food_hunger_threshold_pct: 40,
                 food_restore_pct: 40,
                 bread_restore_pct: 30,
                 footprint: [1, 1, 1],
@@ -3141,7 +3193,8 @@ impl Default for GameConfig {
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 0,
-                food_hunger_threshold_pct: 50,
+                food_dining_threshold_pct: 60,
+                food_hunger_threshold_pct: 40,
                 food_restore_pct: 40,
                 bread_restore_pct: 30,
                 footprint: [1, 1, 1],
@@ -3192,7 +3245,8 @@ impl Default for GameConfig {
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 333_333_333,
-                food_hunger_threshold_pct: 50,
+                food_dining_threshold_pct: 60,
+                food_hunger_threshold_pct: 40,
                 food_restore_pct: 40,
                 bread_restore_pct: 30,
                 footprint: [1, 1, 1],
@@ -3238,7 +3292,8 @@ impl Default for GameConfig {
                 ticks_per_hp_regen: 500, // 2 HP/sec at 1000 ticks/sec
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 0,
-                food_hunger_threshold_pct: 50,
+                food_dining_threshold_pct: 60,
+                food_hunger_threshold_pct: 40,
                 food_restore_pct: 0, // don't eat fruit
                 bread_restore_pct: 0,
                 footprint: [2, 2, 2],
@@ -3289,7 +3344,8 @@ impl Default for GameConfig {
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 0,
-                food_hunger_threshold_pct: 50,
+                food_dining_threshold_pct: 60,
+                food_hunger_threshold_pct: 40,
                 food_restore_pct: 0,
                 bread_restore_pct: 0,
                 footprint: [1, 1, 1],
@@ -3340,7 +3396,8 @@ impl Default for GameConfig {
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 0,
-                food_hunger_threshold_pct: 50,
+                food_dining_threshold_pct: 60,
+                food_hunger_threshold_pct: 40,
                 food_restore_pct: 0,
                 bread_restore_pct: 0,
                 footprint: [2, 2, 2],
@@ -3402,6 +3459,8 @@ impl Default for GameConfig {
             sleep_ticks_ground: 20_000,
             sleep_action_ticks: 1000,
             eat_action_ticks: 1500,
+            dining_seats_per_table: 4,
+            dining_hall_default_priority: 8,
             harvest_action_ticks: 1500,
             acquire_item_action_ticks: 1000,
             haul_pickup_action_ticks: 1000,
@@ -3864,7 +3923,8 @@ mod tests {
             "food_decay_per_tick": 3333333333
         }"#;
         let data: SpeciesData = serde_json::from_str(json).unwrap();
-        assert_eq!(data.food_hunger_threshold_pct, 50);
+        assert_eq!(data.food_dining_threshold_pct, 60);
+        assert_eq!(data.food_hunger_threshold_pct, 40);
         assert_eq!(data.food_restore_pct, 40);
     }
 

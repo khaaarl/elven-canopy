@@ -1,6 +1,6 @@
 # F-bldg-dining: Dining Hall
 
-**Status:** Draft
+**Status:** Implemented
 **Depends on:** F-furnish (done), F-logistics (done)
 **Related:** F-food-quality-mood, F-bldg-kitchen, F-food-chain, F-slow-eating
 

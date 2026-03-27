@@ -28,8 +28,11 @@
 //   floating-point determinism issues.
 // - `food_decay_per_tick` — food subtracted per sim tick, batch-applied at
 //   heartbeat time as `decay_per_tick * heartbeat_interval_ticks`.
+// - `food_dining_threshold_pct` — percentage of `food_max` below which an
+//   idle creature will seek a dining hall (default 60). Falls through to
+//   emergency eating if no dining hall is available.
 // - `food_hunger_threshold_pct` — percentage of `food_max` below which an
-//   idle creature will seek fruit (default 50).
+//   idle creature will eat carried food or forage (default 40).
 // - `food_restore_pct` — percentage of `food_max` restored when eating
 //   fruit (default 40).
 // - `bread_restore_pct` — percentage of `food_max` restored when eating
@@ -185,8 +188,16 @@ pub struct SpeciesData {
     #[serde(default = "default_food_decay_per_tick")]
     pub food_decay_per_tick: i64,
 
-    /// Food percentage below which an idle creature will seek fruit.
-    /// E.g. 50 means the creature gets hungry at 50% food.
+    /// Food percentage below which an idle creature will seek a dining hall.
+    /// E.g. 60 means the creature prefers communal dining at 60% food.
+    /// If no dining hall is available, the creature waits until hitting the
+    /// lower `food_hunger_threshold_pct` to eat carried food or forage.
+    #[serde(default = "default_food_dining_threshold_pct")]
+    pub food_dining_threshold_pct: i64,
+
+    /// Food percentage below which an idle creature will eat carried food or
+    /// forage for fruit (emergency eating). Lower than dining threshold.
+    /// E.g. 40 means the creature resorts to non-dining eating at 40% food.
     #[serde(default = "default_food_hunger_threshold_pct")]
     pub food_hunger_threshold_pct: i64,
 
@@ -338,8 +349,12 @@ fn default_footprint() -> [u8; 3] {
     [1, 1, 1]
 }
 
+fn default_food_dining_threshold_pct() -> i64 {
+    60
+}
+
 fn default_food_hunger_threshold_pct() -> i64 {
-    50
+    40
 }
 
 fn default_food_restore_pct() -> i64 {

@@ -1551,7 +1551,7 @@ fn old_save_format_backward_compat_for_converted_tables() {
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     // Insert a thought to populate the thoughts table.
     sim.tick = 1000;
-    sim.add_creature_thought(elf_id, ThoughtKind::AteMeal);
+    sim.add_creature_thought(elf_id, ThoughtKind::AteDining);
 
     let json = serde_json::to_string(&sim).unwrap();
     let mut parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -1621,7 +1621,7 @@ fn old_save_format_backward_compat_for_converted_tables() {
         .thoughts
         .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC);
     assert_eq!(thoughts.len(), 1);
-    assert_eq!(thoughts[0].kind, ThoughtKind::AteMeal);
+    assert_eq!(thoughts[0].kind, ThoughtKind::AteDining);
 }
 
 #[test]
@@ -1629,7 +1629,7 @@ fn thought_insert_after_roundtrip_continues_seq() {
     let mut sim = test_sim(42);
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     sim.tick = 1000;
-    sim.add_creature_thought(elf_id, ThoughtKind::AteMeal);
+    sim.add_creature_thought(elf_id, ThoughtKind::AteDining);
     sim.tick = 2000;
     sim.add_creature_thought(elf_id, ThoughtKind::SleptOnGround);
 
@@ -1640,7 +1640,7 @@ fn thought_insert_after_roundtrip_continues_seq() {
     // Insert a new thought after roundtrip — seq counter must continue.
     // Use a large tick gap to exceed the 150_000-tick dedup cooldown.
     restored.tick = 200_000;
-    restored.add_creature_thought(elf_id, ThoughtKind::AteMeal);
+    restored.add_creature_thought(elf_id, ThoughtKind::AteDining);
 
     let thoughts = restored
         .db
@@ -1671,7 +1671,7 @@ fn thought_seq_counter_survives_old_format_roundtrip() {
     let mut sim = test_sim(42);
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     sim.tick = 1000;
-    sim.add_creature_thought(elf_id, ThoughtKind::AteMeal);
+    sim.add_creature_thought(elf_id, ThoughtKind::AteDining);
 
     let json = serde_json::to_string(&sim).unwrap();
     let mut parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -6932,18 +6932,14 @@ fn eat_bread_generates_thought() {
             .thoughts
             .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
             .iter()
-            .any(|t| t.kind == ThoughtKind::AteMeal),
-        "Eating bread should generate AteMeal thought"
+            .any(|t| t.kind == ThoughtKind::AteAlone),
+        "Eating bread should generate AteAlone thought"
     );
-    // Piggyback: mood should reflect the AteMeal thought.
-    let (score, tier) = sim.mood_for_creature(elf_id);
+    // Piggyback: mood should reflect the AteAlone thought (small penalty).
+    let (score, _tier) = sim.mood_for_creature(elf_id);
     assert!(
-        score > 0,
-        "AteMeal should produce positive mood score, got {score}"
-    );
-    assert!(
-        tier == MoodTier::Content || tier == MoodTier::Happy || tier == MoodTier::Elated,
-        "AteMeal should produce at least Content tier, got {tier:?}"
+        score < 0,
+        "AteAlone should produce negative mood score, got {score}"
     );
 }
 
@@ -10312,9 +10308,9 @@ fn sim_with_elf_for_thoughts() -> (SimState, CreatureId) {
 fn thought_dedup_within_cooldown() {
     let (mut sim, cid) = sim_with_elf_for_thoughts();
     sim.tick = 1000;
-    sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+    sim.add_creature_thought(cid, ThoughtKind::AteDining);
     sim.tick = 1001;
-    sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+    sim.add_creature_thought(cid, ThoughtKind::AteDining);
     let thoughts = sim
         .db
         .thoughts
@@ -10325,11 +10321,11 @@ fn thought_dedup_within_cooldown() {
 #[test]
 fn thought_dedup_allows_after_cooldown() {
     let (mut sim, cid) = sim_with_elf_for_thoughts();
-    let cooldown = sim.config.thoughts.dedup_ate_meal_ticks;
+    let cooldown = sim.config.thoughts.dedup_ate_dining_ticks;
     sim.tick = 1000;
-    sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+    sim.add_creature_thought(cid, ThoughtKind::AteDining);
     sim.tick = 1000 + cooldown;
-    sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+    sim.add_creature_thought(cid, ThoughtKind::AteDining);
     let thoughts = sim
         .db
         .thoughts
@@ -10359,10 +10355,10 @@ fn thought_dedup_distinguishes_structure_ids() {
 fn thought_cap_enforced() {
     let (mut sim, cid) = sim_with_elf_for_thoughts();
     sim.config.thoughts.cap = 5;
-    sim.config.thoughts.dedup_ate_meal_ticks = 0; // Disable dedup.
+    sim.config.thoughts.dedup_ate_dining_ticks = 0; // Disable dedup.
     for i in 0..7 {
         sim.tick = i * 1000;
-        sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+        sim.add_creature_thought(cid, ThoughtKind::AteDining);
     }
     let thoughts = sim
         .db
@@ -10376,9 +10372,9 @@ fn thought_cap_enforced() {
 #[test]
 fn thought_expiry() {
     let (mut sim, cid) = sim_with_elf_for_thoughts();
-    let expiry = sim.config.thoughts.expiry_ate_meal_ticks;
+    let expiry = sim.config.thoughts.expiry_ate_dining_ticks;
     sim.tick = 1000;
-    sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+    sim.add_creature_thought(cid, ThoughtKind::AteDining);
     // Before expiry: should remain.
     sim.tick = 1000 + expiry - 1;
     sim.expire_creature_thoughts(cid);
@@ -10403,7 +10399,7 @@ fn thought_serde_roundtrip_via_simstate() {
     sim.tick = 5000;
     sim.add_creature_thought(cid, ThoughtKind::SleptOnGround);
     sim.tick = 6000;
-    sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+    sim.add_creature_thought(cid, ThoughtKind::AteDining);
 
     let json = serde_json::to_string(&sim).unwrap();
     let restored: SimState = serde_json::from_str(&json).unwrap();
@@ -10413,7 +10409,7 @@ fn thought_serde_roundtrip_via_simstate() {
         .by_creature_id(&cid, tabulosity::QueryOpts::ASC);
     assert_eq!(thoughts.len(), 2);
     assert_eq!(thoughts[0].kind, ThoughtKind::SleptOnGround);
-    assert_eq!(thoughts[1].kind, ThoughtKind::AteMeal);
+    assert_eq!(thoughts[1].kind, ThoughtKind::AteDining);
 }
 
 // -----------------------------------------------------------------------
@@ -10432,7 +10428,7 @@ fn mood_empty_thoughts_is_zero() {
 fn mood_single_positive_thought() {
     let (mut sim, cid) = sim_with_elf_for_thoughts();
     sim.tick = 1000;
-    sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+    sim.add_creature_thought(cid, ThoughtKind::AteDining);
     let (score, tier) = sim.mood_for_creature(cid);
     assert_eq!(score, 60);
     assert_eq!(tier, MoodTier::Content);
@@ -10464,13 +10460,13 @@ fn mood_mixed_thoughts() {
 #[test]
 fn mood_stacking_same_kind() {
     let (mut sim, cid) = sim_with_elf_for_thoughts();
-    sim.config.thoughts.dedup_ate_meal_ticks = 0; // Disable dedup.
+    sim.config.thoughts.dedup_ate_dining_ticks = 0; // Disable dedup.
     sim.tick = 1000;
-    sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+    sim.add_creature_thought(cid, ThoughtKind::AteDining);
     sim.tick = 2000;
-    sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+    sim.add_creature_thought(cid, ThoughtKind::AteDining);
     sim.tick = 3000;
-    sim.add_creature_thought(cid, ThoughtKind::AteMeal);
+    sim.add_creature_thought(cid, ThoughtKind::AteDining);
     let (score, tier) = sim.mood_for_creature(cid);
     // 3 * 60 = 180
     assert_eq!(score, 180);
@@ -10502,8 +10498,8 @@ fn mood_tier_boundaries() {
 fn mood_custom_config_weights() {
     let (mut sim, cid) = sim_with_elf_for_thoughts();
     sim.tick = 1000;
-    sim.add_creature_thought(cid, ThoughtKind::AteMeal);
-    sim.config.mood.weight_ate_meal = 200;
+    sim.add_creature_thought(cid, ThoughtKind::AteDining);
+    sim.config.mood.weight_ate_dining = 200;
     let (score, _) = sim.mood_for_creature(cid);
     assert_eq!(score, 200);
 }
@@ -10513,7 +10509,7 @@ fn mood_config_serde_roundtrip() {
     let cfg = crate::config::MoodConfig::default();
     let json = serde_json::to_string(&cfg).unwrap();
     let restored: crate::config::MoodConfig = serde_json::from_str(&json).unwrap();
-    assert_eq!(restored.weight_ate_meal, cfg.weight_ate_meal);
+    assert_eq!(restored.weight_ate_dining, cfg.weight_ate_dining);
     assert_eq!(restored.tier_elated_above, cfg.tier_elated_above);
 }
 
@@ -10531,8 +10527,8 @@ fn mood_config_backward_compat() {
     let stripped = serde_json::to_string(&val).unwrap();
     let restored: SimState = serde_json::from_str(&stripped).unwrap();
     assert_eq!(
-        restored.config.mood.weight_ate_meal,
-        crate::config::MoodConfig::default().weight_ate_meal
+        restored.config.mood.weight_ate_dining,
+        crate::config::MoodConfig::default().weight_ate_dining
     );
 }
 
@@ -10607,7 +10603,7 @@ fn ground_sleep_generates_thought() {
 
 #[test]
 fn eating_generates_thought() {
-    // Integration test: elf eats fruit → has AteMeal thought.
+    // Integration test: elf eats fruit → has AteAlone thought.
     let mut sim = test_sim(42);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -10651,15 +10647,15 @@ fn eating_generates_thought() {
     let target_tick = 1 + heartbeat_interval + 50_000;
     sim.step(&[], target_tick);
 
-    // Elf should have an AteMeal thought.
+    // Elf should have an AteAlone thought (no dining hall, so emergency eating).
     let _elf = sim.db.creatures.get(&elf_id).unwrap();
     assert!(
         sim.db
             .thoughts
             .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
             .iter()
-            .any(|t| t.kind == ThoughtKind::AteMeal),
-        "Elf should have AteMeal thought after eating. thoughts={:?}",
+            .any(|t| t.kind == ThoughtKind::AteAlone),
+        "Elf should have AteAlone thought after eating. thoughts={:?}",
         sim.db
             .thoughts
             .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
@@ -13584,7 +13580,7 @@ fn unhappy_elf_eventually_mopes() {
 fn content_elf_never_mopes() {
     // Give elf positive thoughts → Content/Happy tier. Mean=0 → never mopes.
     let cfg = crate::config::MoodConsequencesConfig::default();
-    let (mut sim, elf_id) = mope_test_setup(cfg, &[ThoughtKind::AteMeal, ThoughtKind::AteMeal]);
+    let (mut sim, elf_id) = mope_test_setup(cfg, &[ThoughtKind::AteDining, ThoughtKind::AteDining]);
 
     let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
     sim.step(&[], sim.tick + interval * 50);
@@ -49908,6 +49904,139 @@ fn backfill_outcast_paths_includes_incapacitated() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Dining hall tests
+// ---------------------------------------------------------------------------
+
+/// Helper: create a furnished dining hall at `pos` with one table and stock
+/// `food_count` bread items. Returns the structure ID.
+fn create_dining_hall(sim: &mut SimState, pos: VoxelCoord, food_count: u32) -> StructureId {
+    let structure_id = StructureId(900);
+    let project_id = ProjectId::new(&mut sim.rng);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.db
+        .structures
+        .insert_no_fk(CompletedStructure {
+            id: structure_id,
+            project_id,
+            build_type: BuildType::Building,
+            anchor: pos,
+            width: 3,
+            depth: 3,
+            height: 3,
+            completed_tick: 0,
+            name: None,
+            furnishing: Some(FurnishingType::DiningHall),
+            inventory_id: inv_id,
+            logistics_priority: None,
+            crafting_enabled: false,
+            greenhouse_species: None,
+            greenhouse_enabled: false,
+            greenhouse_last_production_tick: 0,
+            last_dance_completed_tick: 0,
+        })
+        .unwrap();
+    // Place one table.
+    let _ = sim
+        .db
+        .furniture
+        .insert_auto_no_fk(|id| crate::db::Furniture {
+            id,
+            structure_id,
+            coord: pos,
+            placed: true,
+        });
+    // Stock food.
+    if food_count > 0 {
+        sim.inv_add_simple_item(inv_id, ItemKind::Bread, food_count, None, None);
+    }
+    structure_id
+}
+
+#[test]
+fn find_nearest_dining_hall_returns_hall_with_food() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let graph = sim.graph_for_species(Species::Elf);
+    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_pos = graph.node(table_node).position;
+
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    create_dining_hall(&mut sim, table_pos, 3);
+
+    let result = sim.find_nearest_dining_hall(elf_id);
+    assert!(result.is_some(), "Should find dining hall with food");
+    let (coord, _nav, sid) = result.unwrap();
+    assert_eq!(coord, table_pos);
+    assert_eq!(sid, StructureId(900));
+}
+
+#[test]
+fn find_nearest_dining_hall_returns_none_when_no_food() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let graph = sim.graph_for_species(Species::Elf);
+    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_pos = graph.node(table_node).position;
+
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    create_dining_hall(&mut sim, table_pos, 0);
+
+    let result = sim.find_nearest_dining_hall(elf_id);
+    assert!(result.is_none(), "Should not find dining hall without food");
+}
+
+#[test]
+fn find_nearest_dining_hall_returns_none_when_seats_full() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let graph = sim.graph_for_species(Species::Elf);
+    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_pos = graph.node(table_node).position;
+
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    create_dining_hall(&mut sim, table_pos, 10);
+
+    // Fill all seats (dining_seats_per_table = 4 by default).
+    let seats = sim.config.dining_seats_per_table;
+    for _ in 0..seats {
+        let fake_task_id = TaskId::new(&mut sim.rng);
+        // Create a fake task so the voxel ref has something to reference.
+        let fake_task = Task {
+            id: fake_task_id,
+            kind: TaskKind::DineAtHall {
+                structure_id: StructureId(900),
+            },
+            state: TaskState::InProgress,
+            location: table_pos,
+            progress: 0,
+            total_cost: 0,
+            required_species: None,
+            origin: TaskOrigin::Autonomous,
+            target_creature: None,
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
+            required_civ_id: None,
+        };
+        sim.insert_task(fake_task);
+        let _ = sim
+            .db
+            .task_voxel_refs
+            .insert_auto_no_fk(|seq| crate::db::TaskVoxelRef {
+                seq,
+                task_id: fake_task_id,
+                coord: table_pos,
+                role: crate::db::TaskVoxelRole::DiningSeat,
+            });
+    }
+
+    let result = sim.find_nearest_dining_hall(elf_id);
+    assert!(
+        result.is_none(),
+        "Should not find dining hall when all seats occupied"
+    );
+}
+
 #[test]
 fn backfill_outcast_paths_skips_dead_elves() {
     let mut sim = test_sim(42);
@@ -50067,6 +50196,106 @@ fn cancel_executing_dance_cleans_up_plan_and_composition() {
     assert!(
         sim.db.music_compositions.get(&comp_id).is_none(),
         "composition should be removed on cancel"
+    );
+}
+
+#[test]
+fn elf_seeks_dining_hall_at_dining_threshold() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let graph = sim.graph_for_species(Species::Elf);
+    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_pos = graph.node(table_node).position;
+
+    let food_max = sim.species_table[&Species::Elf].food_max;
+    let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    create_dining_hall(&mut sim, table_pos, 5);
+
+    // Set food to 50% — below dining threshold (60%) but above emergency (40%).
+    let _ = sim
+        .db
+        .creatures
+        .modify_unchecked(&elf_id, |c| c.food = food_max * 50 / 100);
+
+    // Advance one heartbeat.
+    sim.step(&[], 1 + heartbeat);
+
+    // Elf should have a DineAtHall task.
+    let creature = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        creature.current_task.is_some(),
+        "Elf should have a task after heartbeat"
+    );
+    let task = sim.db.tasks.get(&creature.current_task.unwrap()).unwrap();
+    assert_eq!(
+        task.kind_tag,
+        TaskKindTag::DineAtHall,
+        "Elf should have DineAtHall task, got {:?}",
+        task.kind_tag
+    );
+}
+
+#[test]
+fn elf_eats_emergency_food_below_hunger_threshold() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let food_max = sim.species_table[&Species::Elf].food_max;
+    let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+
+    // Give bread and set food to 10% — well below emergency threshold (40%).
+    sim.inv_add_simple_item(
+        sim.creature_inv(elf_id),
+        ItemKind::Bread,
+        1,
+        Some(elf_id),
+        None,
+    );
+    let _ = sim
+        .db
+        .creatures
+        .modify_unchecked(&elf_id, |c| c.food = food_max * 10 / 100);
+
+    // Advance one heartbeat.
+    sim.step(&[], 1 + heartbeat);
+
+    // Elf should have an EatBread task (emergency eating, no dining hall needed).
+    let creature = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(creature.current_task.is_some());
+    let task = sim.db.tasks.get(&creature.current_task.unwrap()).unwrap();
+    assert_eq!(
+        task.kind_tag,
+        TaskKindTag::EatBread,
+        "Elf should eat bread at emergency hunger, got {:?}",
+        task.kind_tag
+    );
+}
+
+#[test]
+fn elf_stays_idle_at_dining_threshold_without_hall() {
+    let mut sim = test_sim(42);
+    let food_max = sim.species_table[&Species::Elf].food_max;
+    let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+
+    // Set food to 50% — below dining threshold but above emergency. No dining hall.
+    let _ = sim
+        .db
+        .creatures
+        .modify_unchecked(&elf_id, |c| c.food = food_max * 50 / 100);
+
+    // Advance one heartbeat.
+    sim.step(&[], 1 + heartbeat);
+
+    // Elf should remain idle (no dining hall available, not emergency-hungry).
+    let creature = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        creature.current_task.is_none(),
+        "Elf should stay idle at dining threshold without dining hall"
     );
 }
 
@@ -52150,4 +52379,738 @@ fn set_voxel_non_dirt_below_no_effect() {
     sim.set_voxel(coord, VoxelType::Air);
     // Trunk below should NOT be added to grassless.
     assert!(!sim.grassless.contains(&VoxelCoord::new(10, 0, 10)));
+}
+
+// ---------------------------------------------------------------------------
+// Dining hall tests (appended after grazing)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dine_at_hall_reserves_seat_and_food() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let graph = sim.graph_for_species(Species::Elf);
+    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_pos = graph.node(table_node).position;
+
+    let food_max = sim.species_table[&Species::Elf].food_max;
+    let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    let structure_id = create_dining_hall(&mut sim, table_pos, 2);
+
+    // Set food to 50%.
+    let _ = sim
+        .db
+        .creatures
+        .modify_unchecked(&elf_id, |c| c.food = food_max * 50 / 100);
+
+    sim.step(&[], 1 + heartbeat);
+
+    let creature = sim.db.creatures.get(&elf_id).unwrap();
+    let task_id = creature.current_task.unwrap();
+
+    // Check DiningSeat voxel ref exists.
+    let seat_refs: Vec<_> = sim
+        .db
+        .task_voxel_refs
+        .by_task_id(&task_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .filter(|r| r.role == crate::db::TaskVoxelRole::DiningSeat)
+        .collect();
+    assert_eq!(seat_refs.len(), 1, "Should have 1 DiningSeat voxel ref");
+
+    // Check DineAt structure ref exists.
+    let structure_refs: Vec<_> = sim
+        .db
+        .task_structure_refs
+        .by_task_id(&task_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .filter(|r| r.role == crate::db::TaskStructureRole::DineAt)
+        .collect();
+    assert_eq!(
+        structure_refs.len(),
+        1,
+        "Should have 1 DineAt structure ref"
+    );
+    assert_eq!(structure_refs[0].structure_id, structure_id);
+
+    // Check food reservation.
+    let inv_id = sim.db.structures.get(&structure_id).unwrap().inventory_id;
+    let reserved: Vec<_> = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .filter(|s| s.reserved_by == Some(task_id))
+        .collect();
+    assert!(!reserved.is_empty(), "Should have reserved food item");
+}
+
+#[test]
+fn dine_at_hall_completion_restores_food_and_generates_thought() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let graph = sim.graph_for_species(Species::Elf);
+    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_pos = graph.node(table_node).position;
+
+    let food_max = sim.species_table[&Species::Elf].food_max;
+    let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    let food_restore = food_max * sim.species_table[&Species::Elf].food_restore_pct / 100;
+
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    create_dining_hall(&mut sim, table_pos, 3);
+
+    // Set food to 50% — below dining threshold (60%) but above emergency (40%).
+    let initial_food = food_max * 50 / 100;
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.food = initial_food;
+    });
+
+    // Advance enough ticks for: heartbeat → DineAtHall task → walk to table →
+    // eat animation → completion. Give plenty of time for pathing.
+    sim.step(&[], 1 + heartbeat + 50_000);
+
+    // Food should have been restored (initial_food + restore - decay > initial_food
+    // because the restore amount is large relative to the decay over the test window).
+    let creature = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        creature.food > initial_food,
+        "Food should have increased after dining. food={}, initial={}",
+        creature.food,
+        initial_food,
+    );
+
+    // Should have AteDining thought.
+    assert!(
+        sim.db
+            .thoughts
+            .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .any(|t| t.kind == crate::types::ThoughtKind::AteDining),
+        "Should have AteDining thought after dining hall meal"
+    );
+
+    // Food should have been consumed from dining hall.
+    let structure_id = StructureId(900);
+    let inv_id = sim.db.structures.get(&structure_id).unwrap().inventory_id;
+    let remaining = sim.inv_count_unowned_unreserved(
+        inv_id,
+        ItemKind::Bread,
+        crate::inventory::MaterialFilter::Any,
+    );
+    assert_eq!(
+        remaining, 2,
+        "Dining hall should have exactly 2 bread after 1 meal (started with 3)"
+    );
+}
+
+#[test]
+fn dine_at_hall_cleanup_releases_reservations() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let graph = sim.graph_for_species(Species::Elf);
+    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_pos = graph.node(table_node).position;
+
+    let food_max = sim.species_table[&Species::Elf].food_max;
+    let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    let structure_id = create_dining_hall(&mut sim, table_pos, 2);
+
+    // Set food to 50%.
+    let _ = sim
+        .db
+        .creatures
+        .modify_unchecked(&elf_id, |c| c.food = food_max * 50 / 100);
+
+    sim.step(&[], 1 + heartbeat);
+
+    let task_id = sim.db.creatures.get(&elf_id).unwrap().current_task.unwrap();
+
+    // Manually interrupt the task (simulating combat preemption).
+    sim.cleanup_and_unassign_task(elf_id, task_id);
+
+    // Food reservation should be cleared.
+    let inv_id = sim.db.structures.get(&structure_id).unwrap().inventory_id;
+    let reserved: Vec<_> = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .filter(|s| s.reserved_by.is_some())
+        .collect();
+    assert!(
+        reserved.is_empty(),
+        "Food reservations should be cleared after task cleanup"
+    );
+
+    // Creature should have no task.
+    let creature = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        creature.current_task.is_none(),
+        "Creature should have no task after cleanup"
+    );
+}
+
+#[test]
+fn ate_meal_deserializes_to_ate_dining() {
+    // Backward compat: old saves with "AteMeal" should deserialize to AteDining.
+    let json = r#""AteMeal""#;
+    let kind: crate::types::ThoughtKind = serde_json::from_str(json).unwrap();
+    assert_eq!(kind, crate::types::ThoughtKind::AteDining);
+}
+
+#[test]
+fn ate_alone_serde_roundtrip() {
+    let json = serde_json::to_string(&crate::types::ThoughtKind::AteAlone).unwrap();
+    let roundtrip: crate::types::ThoughtKind = serde_json::from_str(&json).unwrap();
+    assert_eq!(roundtrip, crate::types::ThoughtKind::AteAlone);
+}
+
+#[test]
+fn dine_at_hall_task_serde_roundtrip() {
+    let kind = TaskKind::DineAtHall {
+        structure_id: StructureId(42),
+    };
+    let json = serde_json::to_string(&kind).unwrap();
+    let roundtrip: TaskKind = serde_json::from_str(&json).unwrap();
+    match roundtrip {
+        TaskKind::DineAtHall { structure_id } => assert_eq!(structure_id, StructureId(42)),
+        other => panic!("Expected DineAtHall, got {other:?}"),
+    }
+}
+
+#[test]
+fn old_save_mood_config_missing_ate_alone_field() {
+    // Old save with mood section but no weight_ate_alone — must not crash.
+    let json = r#"{
+        "weight_slept_home": 80,
+        "weight_slept_dormitory": 30,
+        "weight_slept_ground": -100,
+        "weight_ate_meal": 60,
+        "weight_low_ceiling": -50,
+        "tier_devastated_below": -300,
+        "tier_miserable_below": -150,
+        "tier_unhappy_below": -30,
+        "tier_content_above": 30,
+        "tier_happy_above": 150,
+        "tier_elated_above": 300
+    }"#;
+    let config: crate::config::MoodConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(config.weight_ate_dining, 60); // via alias
+    assert_eq!(config.weight_ate_alone, -15); // via serde default
+}
+
+#[test]
+fn old_save_thought_config_missing_ate_alone_fields() {
+    // Old save with thoughts section but no ate_alone fields — must not crash.
+    let json = r#"{
+        "cap": 200,
+        "dedup_slept_home_ticks": 150000,
+        "dedup_slept_dormitory_ticks": 150000,
+        "dedup_slept_ground_ticks": 150000,
+        "dedup_ate_meal_ticks": 150000,
+        "dedup_low_ceiling_ticks": 30000,
+        "expiry_slept_home_ticks": 600000,
+        "expiry_slept_dormitory_ticks": 600000,
+        "expiry_slept_ground_ticks": 600000,
+        "expiry_ate_meal_ticks": 150000,
+        "expiry_low_ceiling_ticks": 150000
+    }"#;
+    let config: crate::config::ThoughtConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(config.dedup_ate_dining_ticks, 150000); // via alias
+    assert_eq!(config.dedup_ate_alone_ticks, 150000); // via serde default
+    assert_eq!(config.expiry_ate_dining_ticks, 150000); // via alias
+    assert_eq!(config.expiry_ate_alone_ticks, 150000); // via serde default
+}
+
+#[test]
+fn dining_hall_with_fruit_only() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let graph = sim.graph_for_species(Species::Elf);
+    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_pos = graph.node(table_node).position;
+
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+
+    // Create dining hall with fruit instead of bread.
+    let structure_id = StructureId(900);
+    let project_id = ProjectId::new(&mut sim.rng);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.db
+        .structures
+        .insert_no_fk(CompletedStructure {
+            id: structure_id,
+            project_id,
+            build_type: BuildType::Building,
+            anchor: table_pos,
+            width: 3,
+            depth: 3,
+            height: 3,
+            completed_tick: 0,
+            name: None,
+            furnishing: Some(FurnishingType::DiningHall),
+            inventory_id: inv_id,
+            logistics_priority: None,
+            crafting_enabled: false,
+            greenhouse_species: None,
+            greenhouse_enabled: false,
+            greenhouse_last_production_tick: 0,
+            last_dance_completed_tick: 0,
+        })
+        .unwrap();
+    let _ = sim
+        .db
+        .furniture
+        .insert_auto_no_fk(|id| crate::db::Furniture {
+            id,
+            structure_id,
+            coord: table_pos,
+            placed: true,
+        });
+    // Stock fruit, not bread.
+    sim.inv_add_simple_item(inv_id, ItemKind::Fruit, 3, None, None);
+
+    let result = sim.find_nearest_dining_hall(elf_id);
+    assert!(result.is_some(), "Should find dining hall with fruit");
+}
+
+#[test]
+fn dine_at_hall_instant_on_arrival() {
+    // Verify dining resolves instantly on arrival (no animation delay).
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let graph = sim.graph_for_species(Species::Elf);
+    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_pos = graph.node(table_node).position;
+
+    let food_max = sim.species_table[&Species::Elf].food_max;
+    let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    create_dining_hall(&mut sim, table_pos, 3);
+
+    // Place elf at table and set food to 50%.
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.food = food_max * 50 / 100;
+        c.position = table_pos;
+    });
+
+    // Step past heartbeat + enough for walk + activation. The key test is
+    // that completion happens WITHOUT needing eat_action_ticks of delay.
+    // With the old (non-instant) flow, the task would still be active at
+    // heartbeat + walk_time + 500 because eat_action_ticks = 1500.
+    let walk_tpv = sim.species_table[&Species::Elf].walk_ticks_per_voxel as u64;
+    sim.step(&[], 1 + heartbeat + walk_tpv * 10 + 500);
+
+    // Task should be complete well before eat_action_ticks would have elapsed.
+    let creature = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        creature.current_task.is_none(),
+        "DineAtHall should complete instantly on arrival, not wait for eat animation"
+    );
+    // Should have AteDining thought proving it resolved.
+    assert!(
+        sim.db
+            .thoughts
+            .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .any(|t| t.kind == crate::types::ThoughtKind::AteDining),
+        "Should have AteDining thought"
+    );
+}
+
+#[test]
+fn edible_kinds_list_is_consistent() {
+    // Ensure every item in EDIBLE_KINDS would be considered edible, and
+    // that the list isn't accidentally empty.
+    assert!(
+        !ItemKind::EDIBLE_KINDS.is_empty(),
+        "EDIBLE_KINDS must not be empty"
+    );
+    assert!(ItemKind::EDIBLE_KINDS.contains(&ItemKind::Bread));
+    assert!(ItemKind::EDIBLE_KINDS.contains(&ItemKind::Fruit));
+}
+
+#[test]
+fn furnish_dining_hall_enables_logistics() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    // Build a shell structure.
+    let structure_id = StructureId(901);
+    let project_id = ProjectId::new(&mut sim.rng);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.db
+        .structures
+        .insert_no_fk(CompletedStructure {
+            id: structure_id,
+            project_id,
+            build_type: BuildType::Building,
+            anchor: tree_pos,
+            width: 4,
+            depth: 4,
+            height: 3,
+            completed_tick: 0,
+            name: None,
+            furnishing: None,
+            inventory_id: inv_id,
+            logistics_priority: None,
+            crafting_enabled: false,
+            greenhouse_species: None,
+            greenhouse_enabled: false,
+            greenhouse_last_production_tick: 0,
+            last_dance_completed_tick: 0,
+        })
+        .unwrap();
+
+    // Furnish as dining hall via command.
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::FurnishStructure {
+            structure_id,
+            furnishing_type: FurnishingType::DiningHall,
+            greenhouse_species: None,
+        },
+    };
+    sim.step(&[cmd], 2);
+
+    let structure = sim.db.structures.get(&structure_id).unwrap();
+    assert_eq!(
+        structure.furnishing,
+        Some(FurnishingType::DiningHall),
+        "Should be furnished as DiningHall"
+    );
+    assert_eq!(
+        structure.logistics_priority,
+        Some(8),
+        "Dining hall should start with logistics priority 8"
+    );
+}
+
+#[test]
+fn dining_preempts_autonomous_task() {
+    // An elf busy hauling should be preempted for dining when in the
+    // dining hunger band.
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let graph = sim.graph_for_species(Species::Elf);
+    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_pos = graph.node(table_node).position;
+
+    let food_max = sim.species_table[&Species::Elf].food_max;
+    let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    create_dining_hall(&mut sim, table_pos, 5);
+
+    // Give the elf a fake autonomous task (simulating hauling).
+    let haul_task_id = TaskId::new(&mut sim.rng);
+    let haul_task = Task {
+        id: haul_task_id,
+        kind: TaskKind::GoTo, // GoTo is PlayerDirected, use a simpler approach
+        state: TaskState::InProgress,
+        location: VoxelCoord::new(10, 1, 10),
+        progress: 0,
+        total_cost: 0,
+        required_species: None,
+        origin: TaskOrigin::Autonomous, // Autonomous origin → Autonomous level
+        target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
+        required_civ_id: None,
+    };
+    sim.insert_task(haul_task);
+    // Set food into the dining band.
+    let _ = sim
+        .db
+        .creatures
+        .modify_unchecked(&elf_id, |c| c.food = food_max * 50 / 100);
+    // Assign the task (indexed field — must use full update).
+    if let Some(mut c) = sim.db.creatures.get(&elf_id) {
+        c.current_task = Some(haul_task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Advance enough for heartbeat(s) to fire. The elf was spawned at tick ~2,
+    // so its first heartbeat is at ~2 + heartbeat. Give enough for several.
+    sim.step(&[], sim.tick + heartbeat * 3);
+
+    // The elf should have had the autonomous task preempted and received
+    // a DineAtHall task, or already completed it (instant on arrival).
+    // Check for AteDining thought as proof that dining happened.
+    let has_dining_thought = sim
+        .db
+        .thoughts
+        .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+        .iter()
+        .any(|t| t.kind == crate::types::ThoughtKind::AteDining);
+    let has_dining_task = sim
+        .db
+        .creatures
+        .get(&elf_id)
+        .and_then(|c| c.current_task)
+        .and_then(|tid| sim.db.tasks.get(&tid))
+        .is_some_and(|t| t.kind_tag == TaskKindTag::DineAtHall);
+    assert!(
+        has_dining_thought || has_dining_task,
+        "Elf should have dined (AteDining thought) or be dining (DineAtHall task) \
+         after preempting autonomous task"
+    );
+}
+
+#[test]
+fn find_dining_hall_with_realistic_building() {
+    // Use the real building pipeline (voxels + nav graph rebuild + furnish
+    // command) to verify find_nearest_dining_hall works with a properly
+    // constructed building, not just manually inserted DB rows.
+    let mut sim = test_sim(42);
+    let anchor = find_building_site(&sim);
+    let structure_id = insert_completed_building(&mut sim, anchor);
+
+    // Furnish as dining hall.
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::FurnishStructure {
+            structure_id,
+            furnishing_type: FurnishingType::DiningHall,
+            greenhouse_species: None,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+
+    // Manually place all furniture (skip the furnish task animation).
+    for furn in sim
+        .db
+        .furniture
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+    {
+        if !furn.placed {
+            let _ = sim
+                .db
+                .furniture
+                .modify_unchecked(&furn.id, |f| f.placed = true);
+        }
+    }
+    let placed_count = sim
+        .db
+        .furniture
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .filter(|f| f.placed)
+        .count();
+    assert!(placed_count > 0, "Dining hall should have placed furniture");
+
+    // Stock food.
+    let inv_id = sim.db.structures.get(&structure_id).unwrap().inventory_id;
+    sim.inv_add_simple_item(inv_id, ItemKind::Bread, 5, None, None);
+
+    // Spawn an elf and check if find_nearest_dining_hall works.
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    let result = sim.find_nearest_dining_hall(elf_id);
+    assert!(
+        result.is_some(),
+        "find_nearest_dining_hall should find a realistically-built dining hall. \
+         placed_furniture={placed_count}, structure_id={structure_id:?}"
+    );
+}
+
+#[test]
+fn end_to_end_dining_hall() {
+    // Full pipeline: fresh world → build → furnish → stock food via
+    // logistics → elf gets hungry → self-assigns dining → eats → AteDining.
+    let mut sim = test_sim(42);
+    let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    let food_max = sim.species_table[&Species::Elf].food_max;
+
+    // Build and furnish a dining hall.
+    let anchor = find_building_site(&sim);
+    let structure_id = insert_completed_building(&mut sim, anchor);
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::FurnishStructure {
+            structure_id,
+            furnishing_type: FurnishingType::DiningHall,
+            greenhouse_species: None,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+
+    // Manually mark all furniture as placed (skip furnish task animation).
+    for furn in sim
+        .db
+        .furniture
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+    {
+        if !furn.placed {
+            let _ = sim
+                .db
+                .furniture
+                .modify_unchecked(&furn.id, |f| f.placed = true);
+        }
+    }
+
+    // Stock food directly in the dining hall inventory (simulating completed haul).
+    let inv_id = sim.db.structures.get(&structure_id).unwrap().inventory_id;
+    sim.inv_add_simple_item(inv_id, ItemKind::Bread, 10, None, None);
+
+    // Spawn an elf and set food to 50% (in the dining band).
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    let _ = sim
+        .db
+        .creatures
+        .modify_unchecked(&elf_id, |c| c.food = food_max * 50 / 100);
+
+    // Verify every single prerequisite for dining to work.
+    // If any of these fail, we know EXACTLY where the problem is.
+
+    // 1. Structure is furnished as DiningHall.
+    let structure = sim.db.structures.get(&structure_id).unwrap();
+    assert_eq!(structure.furnishing, Some(FurnishingType::DiningHall));
+
+    // 2. Structure has placed furniture.
+    let placed: Vec<_> = sim
+        .db
+        .furniture
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .filter(|f| f.placed)
+        .collect();
+    assert!(!placed.is_empty(), "Dining hall must have placed furniture");
+
+    // 3. Food in inventory is unowned and unreserved.
+    let inv_stacks: Vec<_> = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .filter(|s| s.kind == ItemKind::Bread)
+        .collect();
+    assert!(!inv_stacks.is_empty(), "Must have bread stacks");
+    for stack in &inv_stacks {
+        assert!(
+            stack.owner.is_none(),
+            "Bread in dining hall must be unowned, got owner={:?}",
+            stack.owner
+        );
+        assert!(
+            stack.reserved_by.is_none(),
+            "Bread must be unreserved, got reserved_by={:?}",
+            stack.reserved_by
+        );
+    }
+
+    // 4. Elf is at a valid nav node.
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let graph = sim.graph_for_species(Species::Elf);
+    assert!(
+        graph.node_at(elf_pos).is_some(),
+        "Elf must be at a valid nav node, pos={elf_pos:?}"
+    );
+
+    // 5. Verify the dining threshold math.
+    let species_data = &sim.species_table[&Species::Elf];
+    let dining_thresh = species_data.food_max * species_data.food_dining_threshold_pct / 100;
+    let emergency_thresh = species_data.food_max * species_data.food_hunger_threshold_pct / 100;
+    let elf_food = sim.db.creatures.get(&elf_id).unwrap().food;
+    assert!(
+        elf_food < dining_thresh && elf_food >= emergency_thresh,
+        "Elf food {elf_food} should be in dining band [{emergency_thresh}, {dining_thresh})"
+    );
+
+    // Verify find_nearest_dining_hall works.
+    let find_result = sim.find_nearest_dining_hall(elf_id);
+    assert!(
+        find_result.is_some(),
+        "find_nearest_dining_hall should succeed"
+    );
+
+    // Run for enough time for the elf to walk and eat, but not so long
+    // that thoughts expire (expiry_ate_dining_ticks = 150k).
+    sim.step(&[], sim.tick + 100_000);
+
+    // Check for AteDining thought.
+    let has_dining_thought = sim
+        .db
+        .thoughts
+        .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+        .iter()
+        .any(|t| t.kind == crate::types::ThoughtKind::AteDining);
+    assert!(
+        has_dining_thought,
+        "Elf should have AteDining thought after end-to-end dining. \
+         food={}, thoughts={:?}",
+        sim.db.creatures.get(&elf_id).map(|c| c.food).unwrap_or(-1),
+        sim.db
+            .thoughts
+            .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .map(|t| t.kind)
+            .collect::<Vec<_>>()
+    );
+
+    // Dining hall should have consumed at least one bread.
+    let remaining = sim.inv_count_unowned_unreserved(
+        inv_id,
+        ItemKind::Bread,
+        crate::inventory::MaterialFilter::Any,
+    );
+    assert!(
+        remaining < 10,
+        "Dining hall should have fewer items. remaining={remaining}"
+    );
+}
+
+#[test]
+fn elf_resumes_activation_after_dining() {
+    // After eating at a dining hall, the elf should resume normal activation
+    // (wandering, picking up tasks, etc.) — not freeze in place.
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let graph = sim.graph_for_species(Species::Elf);
+    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_pos = graph.node(table_node).position;
+
+    let food_max = sim.species_table[&Species::Elf].food_max;
+    let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    create_dining_hall(&mut sim, table_pos, 5);
+
+    // Set food to 50% (dining band) and place elf near table.
+    let _ = sim
+        .db
+        .creatures
+        .modify_unchecked(&elf_id, |c| c.food = food_max * 50 / 100);
+
+    // Advance enough for: heartbeat → DineAtHall task → walk → instant eat.
+    sim.step(&[], sim.tick + heartbeat + 50_000);
+
+    // Confirm dining happened.
+    let has_dining_thought = sim
+        .db
+        .thoughts
+        .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+        .iter()
+        .any(|t| t.kind == crate::types::ThoughtKind::AteDining);
+    assert!(has_dining_thought, "Elf should have dined first");
+
+    // Record position after dining.
+    let pos_after_dining = sim.db.creatures.get(&elf_id).unwrap().position;
+
+    // Advance more ticks — elf should wander (change position).
+    sim.step(&[], sim.tick + 20_000);
+
+    let pos_later = sim.db.creatures.get(&elf_id).unwrap().position;
+    assert_ne!(
+        pos_after_dining, pos_later,
+        "Elf should have moved after dining (not frozen). pos={pos_after_dining:?}"
+    );
 }

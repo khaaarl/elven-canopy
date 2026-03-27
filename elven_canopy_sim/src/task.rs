@@ -43,6 +43,13 @@
 //   work. Each activation adds 1 to progress; every
 //   `build_work_ticks_per_voxel` units, one blueprint voxel materializes.
 //   Linked to a `Blueprint` via `project_id`. See `sim/construction.rs` `do_build_work()`.
+// - `DineAtHall { structure_id }` — eat at a dining hall. Created
+//   automatically when a creature's food drops below
+//   `food_dining_threshold_pct` and a dining hall with a free seat and
+//   stocked food is reachable. Walks to the table, then instantly consumes
+//   one food item from the building inventory, restores `food_restore_pct`%
+//   of `food_max`, and generates an `AteDining` thought. Reserves a seat
+//   (DiningSeat voxel ref) and a food item (reserved_by on ItemStack).
 // - `EatBread` — eat bread from inventory, restoring food. Created
 //   automatically by the heartbeat hunger check when a creature has owned
 //   bread. Completes instantly at the creature's current node (no travel).
@@ -152,6 +159,12 @@ pub enum TaskKind {
     /// then does work over multiple activations, materializing one voxel
     /// per `build_work_ticks_per_voxel` units of progress.
     Build { project_id: ProjectId },
+    /// Eat at a dining hall. Created automatically when a creature's food drops
+    /// below `food_dining_threshold_pct` and a dining hall with a free seat and
+    /// stocked food is reachable. The creature walks to the table, consumes one
+    /// food item from the building inventory, and restores `food_restore_pct`%
+    /// of `food_max`. Generates an `AteDining` thought (positive mood).
+    DineAtHall { structure_id: StructureId },
     /// Eat bread from inventory. Created automatically by the heartbeat hunger
     /// check when a creature has owned bread and is hungry. Completes instantly
     /// at the creature's current location (no travel needed). Removes 1 bread

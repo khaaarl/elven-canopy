@@ -1,11 +1,11 @@
 // Creature needs — eating, sleeping, moping, item acquisition, and military equipment.
 //
-// Handles the creature want system: hunger (eat fruit or bread), tiredness
-// (find bed and sleep), mood consequences (moping when unhappy), personal
-// item acquisition (fetching items to satisfy inventory wants), and military
-// equipment acquisition (fetching items for group equipment wants without
-// changing ownership). These are triggered by the creature heartbeat in
-// `process_event`.
+// Handles the creature want system: hunger (dining hall meals, emergency
+// fruit/bread eating), tiredness (find bed and sleep), mood consequences
+// (moping when unhappy), personal item acquisition (fetching items to satisfy
+// inventory wants), and military equipment acquisition (fetching items for
+// group equipment wants without changing ownership). These are triggered by
+// the creature heartbeat in `process_event`.
 //
 // See also: `activation.rs` (`check_creature_wants`, `check_mope`,
 // `military_equipment_drop`, `check_military_equipment_wants`),
@@ -100,8 +100,8 @@ impl SimState {
             .retain(|(pos, _)| *pos != fruit_pos);
         self.remove_fruit_from_trees(fruit_pos);
 
-        // Generate AteMeal thought.
-        self.add_creature_thought(creature_id, ThoughtKind::AteMeal);
+        // Generate AteAlone thought (eating outside a dining hall).
+        self.add_creature_thought(creature_id, ThoughtKind::AteAlone);
 
         self.complete_task(task_id);
         true
@@ -435,11 +435,84 @@ impl SimState {
             });
         }
 
-        // Generate AteMeal thought.
-        self.add_creature_thought(creature_id, ThoughtKind::AteMeal);
+        // Generate AteAlone thought (eating outside a dining hall).
+        self.add_creature_thought(creature_id, ThoughtKind::AteAlone);
 
         self.complete_task(task_id);
         true
+    }
+
+    /// Resolve a completed DineAtHall action: remove reserved food from the
+    /// dining hall inventory, restore food, generate AteDining thought, complete
+    /// the task. Always returns true.
+    pub(crate) fn resolve_dine_at_hall_action(
+        &mut self,
+        creature_id: CreatureId,
+        task_id: TaskId,
+    ) -> bool {
+        // Look up structure from task_structure_refs.
+        let structure_id = self
+            .db
+            .task_structure_refs
+            .by_task_id(&task_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|r| r.role == crate::db::TaskStructureRole::DineAt)
+            .map(|r| r.structure_id);
+
+        // Remove reserved food and restore hunger.
+        if let Some(sid) = structure_id
+            && let Some(structure) = self.db.structures.get(&sid)
+        {
+            // Remove 1 reserved edible item.
+            for kind in inventory::ItemKind::EDIBLE_KINDS {
+                let removed =
+                    self.inv_remove_reserved_items(structure.inventory_id, *kind, 1, task_id);
+                if removed > 0 {
+                    break;
+                }
+            }
+        }
+
+        // Restore food.
+        if let Some(creature) = self.db.creatures.get(&creature_id) {
+            let species_data = &self.species_table[&creature.species];
+            let restore = species_data.food_max * species_data.food_restore_pct / 100;
+            let food_max = species_data.food_max;
+            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+                c.food = (c.food + restore).min(food_max);
+            });
+        }
+
+        // Generate AteDining thought.
+        self.add_creature_thought(creature_id, ThoughtKind::AteDining);
+
+        self.complete_task(task_id);
+        true
+    }
+
+    /// Clean up a DineAtHall task on interruption: release food reservation
+    /// and mark the task complete. The DiningSeat voxel ref and DineAt structure
+    /// ref are cleaned up by the standard task completion path.
+    pub(crate) fn cleanup_dine_at_hall_task(&mut self, task_id: TaskId) {
+        // Find the dining hall structure and clear food reservations.
+        let structure_id = self
+            .db
+            .task_structure_refs
+            .by_task_id(&task_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|r| r.role == crate::db::TaskStructureRole::DineAt)
+            .map(|r| r.structure_id);
+        if let Some(sid) = structure_id
+            && let Some(structure) = self.db.structures.get(&sid)
+        {
+            self.inv_clear_reservations(structure.inventory_id, task_id);
+        }
+
+        // Mark task complete so it isn't re-claimed.
+        if let Some(mut t) = self.db.tasks.get(&task_id) {
+            t.state = crate::task::TaskState::Complete;
+            let _ = self.db.tasks.update_no_fk(t);
+        }
     }
 
     /// Find the bed in the creature's assigned home, if any.
@@ -541,6 +614,100 @@ impl SimState {
         let (_, bed_pos, structure_id) = nav_to_bed.iter().find(|(n, _, _)| *n == nearest_node)?;
 
         Some((*bed_pos, nearest_node, *structure_id))
+    }
+
+    /// Find the nearest dining hall with at least one free seat and one
+    /// unreserved edible food item. Returns `(table_coord, nav_node,
+    /// structure_id)` or `None` if no valid dining hall is reachable.
+    ///
+    /// Follows the same multi-target Dijkstra pattern as `find_nearest_bed()`.
+    /// Capacity per table is `config.dining_seats_per_table`; occupied seats
+    /// are counted from active `DiningSeat` task voxel refs.
+    pub(crate) fn find_nearest_dining_hall(
+        &self,
+        creature_id: CreatureId,
+    ) -> Option<(VoxelCoord, NavNodeId, StructureId)> {
+        let creature = self.db.creatures.get(&creature_id)?;
+        let start_node = self
+            .graph_for_species(creature.species)
+            .node_at(creature.position)?;
+        let species_data = &self.species_table[&creature.species];
+        let graph = self.graph_for_species(creature.species);
+        let seats_per_table = self.config.dining_seats_per_table;
+
+        // Count occupied dining seats per table coord from active DineAtHall tasks.
+        let mut occupied_seats: std::collections::BTreeMap<VoxelCoord, u32> =
+            std::collections::BTreeMap::new();
+        for r in self.db.task_voxel_refs.iter_all() {
+            if r.role == crate::db::TaskVoxelRole::DiningSeat
+                && self
+                    .db
+                    .tasks
+                    .get(&r.task_id)
+                    .is_some_and(|t| t.state != task::TaskState::Complete)
+            {
+                *occupied_seats.entry(r.coord).or_insert(0) += 1;
+            }
+        }
+
+        // Collect tables with free seats in dining halls that have stocked food.
+        let mut nav_to_table: Vec<(NavNodeId, VoxelCoord, StructureId)> = Vec::new();
+        let mut target_nodes: Vec<NavNodeId> = Vec::new();
+        for structure in self.db.structures.iter_all() {
+            if structure.furnishing != Some(FurnishingType::DiningHall) {
+                continue;
+            }
+            // Check for unreserved edible food in this building's inventory.
+            let has_food = inventory::ItemKind::EDIBLE_KINDS.iter().any(|kind| {
+                self.inv_unreserved_item_count(
+                    structure.inventory_id,
+                    *kind,
+                    inventory::MaterialFilter::Any,
+                ) > 0
+            });
+            if !has_food {
+                continue;
+            }
+
+            // Check tables for free seats.
+            for furn in self
+                .db
+                .furniture
+                .by_structure_id(&structure.id, tabulosity::QueryOpts::ASC)
+            {
+                if !furn.placed {
+                    continue;
+                }
+                let occupied = occupied_seats.get(&furn.coord).copied().unwrap_or(0);
+                if occupied >= seats_per_table {
+                    continue;
+                }
+                if let Some(nav_node) = graph.find_nearest_node(furn.coord) {
+                    target_nodes.push(nav_node);
+                    nav_to_table.push((nav_node, furn.coord, structure.id));
+                }
+            }
+        }
+
+        if target_nodes.is_empty() {
+            return None;
+        }
+
+        let nearest_node = pathfinding::dijkstra_nearest(
+            graph,
+            start_node,
+            &target_nodes,
+            species_data.walk_ticks_per_voxel,
+            species_data.climb_ticks_per_voxel,
+            species_data.wood_ladder_tpv,
+            species_data.rope_ladder_tpv,
+            species_data.allowed_edge_types.as_deref(),
+        )?;
+
+        let (_, table_coord, structure_id) =
+            nav_to_table.iter().find(|(n, _, _)| *n == nearest_node)?;
+
+        Some((*table_coord, nearest_node, *structure_id))
     }
 
     /// Start a Sleep action: set action kind and schedule next activation

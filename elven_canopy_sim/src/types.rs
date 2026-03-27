@@ -981,7 +981,12 @@ pub enum ThoughtKind {
     SleptInOwnHome(StructureId),
     SleptInDormitory(StructureId),
     SleptOnGround,
-    AteMeal,
+    /// Ate a meal in a dining hall. Provides a small mood boost.
+    /// `AteMeal` from old saves deserializes to this variant.
+    #[serde(alias = "AteMeal")]
+    AteDining,
+    /// Ate alone (carried food or foraging). Small mood penalty.
+    AteAlone,
     LowCeiling(StructureId),
     /// Recurring small mood boost while participating in a group dance.
     EnjoyingDance,
@@ -996,7 +1001,8 @@ impl ThoughtKind {
             ThoughtKind::SleptInOwnHome(_) => "Slept in own home",
             ThoughtKind::SleptInDormitory(_) => "Slept in a dormitory",
             ThoughtKind::SleptOnGround => "Slept on the ground",
-            ThoughtKind::AteMeal => "Ate a meal",
+            ThoughtKind::AteDining => "Ate in a dining hall",
+            ThoughtKind::AteAlone => "Ate alone",
             ThoughtKind::LowCeiling(_) => "Bothered by a low ceiling",
             ThoughtKind::EnjoyingDance => "Enjoying a group dance",
             ThoughtKind::DancedInGroup => "Danced with friends",
@@ -1913,7 +1919,8 @@ mod tests {
             ThoughtKind::SleptOnGround.description(),
             "Slept on the ground"
         );
-        assert_eq!(ThoughtKind::AteMeal.description(), "Ate a meal");
+        assert_eq!(ThoughtKind::AteDining.description(), "Ate in a dining hall");
+        assert_eq!(ThoughtKind::AteAlone.description(), "Ate alone");
         assert_eq!(
             ThoughtKind::LowCeiling(StructureId(2)).description(),
             "Bothered by a low ceiling"
@@ -1933,7 +1940,7 @@ mod tests {
             ThoughtKind::SleptInOwnHome(StructureId(2))
         );
         // Different variants → not equal.
-        assert_ne!(ThoughtKind::SleptOnGround, ThoughtKind::AteMeal);
+        assert_ne!(ThoughtKind::SleptOnGround, ThoughtKind::AteDining);
     }
 
     #[test]

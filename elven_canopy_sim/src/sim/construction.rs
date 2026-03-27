@@ -1400,6 +1400,10 @@ impl SimState {
                 // No explicit wants — auto-logistics handles recipe inputs.
                 Vec::new()
             }
+            FurnishingType::DiningHall => {
+                structure.logistics_priority = Some(self.config.dining_hall_default_priority);
+                Vec::new()
+            }
             FurnishingType::Greenhouse => {
                 structure.logistics_priority = Some(self.config.greenhouse_default_priority);
                 structure.greenhouse_species = greenhouse_species;

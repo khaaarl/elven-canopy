@@ -131,6 +131,10 @@ impl ItemKind {
         }
     }
 
+    /// Edible item kinds — used by dining hall food checks and reservation.
+    /// Kept as a const array so callers can iterate without hardcoding the list.
+    pub const EDIBLE_KINDS: &'static [ItemKind] = &[ItemKind::Bread, ItemKind::Fruit];
+
     /// Whether this item kind is an extracted fruit component.
     pub fn is_extracted_component(self) -> bool {
         matches!(
