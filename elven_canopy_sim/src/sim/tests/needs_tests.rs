@@ -1046,89 +1046,6 @@ fn hungry_elf_with_unowned_bread_seeks_fruit() {
         task.kind_tag
     );
 }
-
-#[test]
-fn eat_bread_generates_thought() {
-    let mut sim = test_sim(42);
-    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let food_max = sim.species_table[&Species::Elf].food_max;
-
-    // Spawn an elf.
-    let cmd = SimCommand {
-        player_name: String::new(),
-        tick: 1,
-        action: SimAction::SpawnCreature {
-            species: Species::Elf,
-            position: tree_pos,
-        },
-    };
-    sim.step(&[cmd], 1);
-
-    let elf_id = sim
-        .db
-        .creatures
-        .iter_all()
-        .find(|c| c.species == Species::Elf)
-        .unwrap()
-        .id;
-    let elf_node = creature_node(&sim, elf_id);
-
-    // Give bread and set food low.
-    sim.inv_add_simple_item(
-        sim.creature_inv(elf_id),
-        inventory::ItemKind::Bread,
-        1,
-        Some(elf_id),
-        None,
-    );
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&elf_id, |c| c.food = food_max / 10);
-
-    // Create EatBread task at current node.
-    let task_id = TaskId::new(&mut sim.rng);
-    let eat_task = Task {
-        id: task_id,
-        kind: TaskKind::EatBread,
-        state: TaskState::InProgress,
-        location: sim.nav_graph.node(elf_node).position,
-        progress: 0,
-        total_cost: 0,
-        required_species: None,
-        origin: TaskOrigin::Autonomous,
-        target_creature: None,
-        restrict_to_creature_id: None,
-        prerequisite_task_id: None,
-        required_civ_id: None,
-    };
-    sim.insert_task(eat_task);
-    {
-        let mut c = sim.db.creatures.get(&elf_id).unwrap();
-        c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
-    }
-
-    // Advance enough to start and complete the Eat action.
-    sim.step(&[], sim.tick + sim.config.eat_action_ticks + 10);
-
-    let _elf = sim.db.creatures.get(&elf_id).unwrap();
-    assert!(
-        sim.db
-            .thoughts
-            .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
-            .iter()
-            .any(|t| t.kind == ThoughtKind::AteAlone),
-        "Eating bread should generate AteAlone thought"
-    );
-    // Piggyback: mood should reflect the AteAlone thought (small penalty).
-    let (score, _tier) = sim.mood_for_creature(elf_id);
-    assert!(
-        score < 0,
-        "AteAlone should produce negative mood score, got {score}"
-    );
-}
-
 // -----------------------------------------------------------------------
 // Home assignment tests
 // -----------------------------------------------------------------------
@@ -2049,67 +1966,6 @@ fn elf_stays_idle_at_dining_threshold_without_hall() {
 // Herbivore grazing tests
 // -----------------------------------------------------------------------
 
-#[test]
-fn hungry_herbivore_creates_graze_task() {
-    let mut sim = test_sim(42);
-    let capybara_id = spawn_creature(&mut sim, Species::Capybara);
-
-    // Set food just below the hunger threshold so the heartbeat triggers
-    // hunger-seeking without risking starvation death.
-    let species_data = sim.species_table[&Species::Capybara].clone();
-    let threshold = species_data.food_max * species_data.food_hunger_threshold_pct / 100;
-    if let Some(mut c) = sim.db.creatures.get(&capybara_id) {
-        c.food = threshold / 2; // Well below threshold but not starving.
-        c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
-    }
-
-    // Advance enough ticks for the heartbeat to fire.
-    let target_tick = sim.tick + species_data.heartbeat_interval_ticks + 100;
-    sim.step(&[], target_tick);
-
-    // Verify a Graze task exists in the task table (it may already be
-    // InProgress or Complete depending on timing).
-    let has_graze_task = sim
-        .db
-        .tasks
-        .iter_all()
-        .any(|t| t.kind_tag == TaskKindTag::Graze);
-    assert!(
-        has_graze_task,
-        "A Graze task should have been created for the hungry herbivore"
-    );
-}
-
-#[test]
-fn hungry_elf_does_not_create_graze_task() {
-    let mut sim = test_sim(42);
-    let elf_id = spawn_creature(&mut sim, Species::Elf);
-
-    // Make the elf hungry.
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.food = 1;
-        c.current_task = None;
-    });
-
-    let species_data = sim.species_table[&Species::Elf].clone();
-    let target_tick = sim.tick + species_data.heartbeat_interval_ticks + 100;
-    sim.step(&[], target_tick);
-
-    // Check that any task assigned is NOT a Graze task.
-    let creature = sim.db.creatures.get(&elf_id);
-    if let Some(c) = creature {
-        if let Some(task_id) = c.current_task {
-            let task = sim.db.tasks.get(&task_id).unwrap();
-            assert_ne!(
-                task.kind_tag,
-                TaskKindTag::Graze,
-                "Elf should not get a Graze task"
-            );
-        }
-    }
-}
-
 // -----------------------------------------------------------------------
 // DineAtHall task tests
 // -----------------------------------------------------------------------
@@ -2904,4 +2760,457 @@ fn dine_at_hall_no_food_completes_speculative_task() {
         !has_dine_task,
         "Elf should not have a DineAtHall task when no food could be reserved"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Tests migrated from commands_tests.rs
+// ---------------------------------------------------------------------------
+
+#[test]
+fn food_decreases_over_heartbeats() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    let food_max = sim.species_table[&Species::Elf].food_max;
+    let decay_per_tick = sim.species_table[&Species::Elf].food_decay_per_tick;
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // Verify food starts at food_max.
+    let elf = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap();
+    assert_eq!(elf.food, food_max);
+
+    // Advance past 3 heartbeats.
+    let target_tick = 1 + heartbeat_interval * 3 + 1;
+    sim.step(&[], target_tick);
+
+    let elf = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap();
+    let expected_decay = decay_per_tick * heartbeat_interval as i64 * 3;
+    assert_eq!(elf.food, food_max - expected_decay);
+}
+
+#[test]
+fn food_does_not_go_below_zero() {
+    // Use a custom config with aggressive decay so food depletes quickly.
+    let mut config = test_config();
+    config
+        .species
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 1_000_000_000_000_000; // Depletes in 1 tick
+    let mut sim = SimState::with_config(42, config);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // Advance well past full depletion (many heartbeats).
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    let target_tick = 1 + heartbeat_interval * 5;
+    sim.step(&[], target_tick);
+
+    let elf = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap();
+    assert_eq!(elf.food, 0);
+}
+
+#[test]
+fn creature_dies_when_food_reaches_zero() {
+    // Use aggressive decay so food depletes in one heartbeat.
+    let mut config = test_config();
+    config
+        .species
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 1_000_000_000_000_000;
+    let mut sim = SimState::with_config(42, config);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Advance past 2 heartbeats — first depletes food, creature dies.
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    let target_tick = 1 + heartbeat_interval * 2 + 1;
+    let result = sim.step(&[], target_tick);
+
+    // Creature should be dead.
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(elf.vital_status, VitalStatus::Dead);
+
+    // Should have emitted a CreatureDied event with Starvation cause.
+    let died_event = result
+        .events
+        .iter()
+        .find(|e| matches!(e.kind, SimEventKind::CreatureDied { .. }));
+    assert!(died_event.is_some(), "Expected a CreatureDied event");
+    if let SimEventKind::CreatureDied { cause, .. } = &died_event.unwrap().kind {
+        assert_eq!(*cause, DeathCause::Starvation);
+    }
+}
+
+#[test]
+fn starvation_death_notification_mentions_starvation() {
+    // Aggressive decay to trigger starvation quickly.
+    let mut config = test_config();
+    config
+        .species
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 1_000_000_000_000_000;
+    let mut sim = SimState::with_config(42, config);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // Advance past depletion.
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    let target_tick = 1 + heartbeat_interval * 2 + 1;
+    sim.step(&[], target_tick);
+
+    // Check notification mentions starvation.
+    let starvation_notif = sim
+        .db
+        .notifications
+        .iter_all()
+        .any(|n| n.message.contains("starvation"));
+    assert!(
+        starvation_notif,
+        "Expected notification mentioning starvation"
+    );
+}
+
+#[test]
+fn no_heartbeat_after_starvation_death() {
+    // Verify dead creatures don't get further heartbeats processed.
+    let mut config = test_config();
+    config
+        .species
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 1_000_000_000_000_000;
+    let mut sim = SimState::with_config(42, config);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Advance well past death.
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    let target_tick = 1 + heartbeat_interval * 10;
+    sim.step(&[], target_tick);
+
+    // Creature should still be dead (not resurrected or erroring).
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(elf.vital_status, VitalStatus::Dead);
+}
+
+#[test]
+fn creature_with_food_remaining_does_not_starve() {
+    // Default config — food_max is large, decay is slow. Creature should
+    // survive a few heartbeats without issue.
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Advance past 3 heartbeats — food should still be positive.
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    let target_tick = 1 + heartbeat_interval * 3 + 1;
+    sim.step(&[], target_tick);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(elf.vital_status, VitalStatus::Alive);
+    assert!(elf.food > 0);
+}
+
+// -----------------------------------------------------------------------
+// Rest/sleep tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn rest_decreases_over_heartbeats() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    let rest_max = sim.species_table[&Species::Elf].rest_max;
+    let decay_per_tick = sim.species_table[&Species::Elf].rest_decay_per_tick;
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // Verify rest starts at rest_max.
+    let elf = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap();
+    assert_eq!(elf.rest, rest_max);
+
+    // Advance past 3 heartbeats.
+    let target_tick = 1 + heartbeat_interval * 3 + 1;
+    sim.step(&[], target_tick);
+
+    let elf = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap();
+    let expected_decay = decay_per_tick * heartbeat_interval as i64 * 3;
+    assert_eq!(elf.rest, rest_max - expected_decay);
+}
+
+#[test]
+fn rest_does_not_go_below_zero() {
+    let mut config = test_config();
+    let elf = config.species.get_mut(&Species::Elf).unwrap();
+    elf.rest_decay_per_tick = 1_000_000_000_000_000; // Depletes in 1 tick
+    elf.rest_per_sleep_tick = 0; // Prevent sleep from restoring rest.
+    let mut sim = SimState::with_config(42, config);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    let target_tick = 1 + heartbeat_interval * 5;
+    sim.step(&[], target_tick);
+
+    let elf = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap();
+    assert_eq!(elf.rest, 0);
+}
+
+#[test]
+fn tired_idle_elf_creates_sleep_task() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let rest_max = sim.species_table[&Species::Elf].rest_max;
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    // Spawn an elf.
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Set rest below threshold (50%) and food well above threshold.
+    let food_max_val = sim.species_table[&Species::Elf].food_max;
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.rest = rest_max * 30 / 100;
+        c.food = food_max_val;
+    });
+
+    // Advance past the next heartbeat.
+    let target_tick = 1 + heartbeat_interval + 1;
+    sim.step(&[], target_tick);
+
+    // The elf should now have a Sleep task.
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        elf.current_task.is_some(),
+        "Tired idle elf should have been assigned a Sleep task"
+    );
+    let task = sim.db.tasks.get(&elf.current_task.unwrap()).unwrap();
+    assert!(
+        task.kind_tag == TaskKindTag::Sleep,
+        "Task should be Sleep, got {:?}",
+        task.kind_tag
+    );
+}
+
+#[test]
+fn rested_elf_does_not_create_sleep_task() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    // Spawn an elf — starts at full rest.
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // Advance past the heartbeat.
+    let target_tick = 1 + heartbeat_interval + 1;
+    sim.step(&[], target_tick);
+
+    // No Sleep task should exist.
+    let has_sleep_task = sim
+        .db
+        .tasks
+        .iter_all()
+        .any(|t| t.kind_tag == TaskKindTag::Sleep);
+    assert!(
+        !has_sleep_task,
+        "Well-rested elf should not create a Sleep task"
+    );
+}
+
+// -----------------------------------------------------------------------
+// 15.10 New SimAction variants (SetCreatureFood, SetCreatureRest,
+//       AddCreatureItem, AddGroundPileItem)
+// -----------------------------------------------------------------------
+
+#[test]
+fn set_creature_food() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::SetCreatureFood {
+            creature_id: elf_id,
+            food: 42_000,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+
+    assert_eq!(sim.db.creatures.get(&elf_id).unwrap().food, 42_000);
+}
+
+#[test]
+fn set_creature_rest() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::SetCreatureRest {
+            creature_id: elf_id,
+            rest: 99_000,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+
+    assert_eq!(sim.db.creatures.get(&elf_id).unwrap().rest, 99_000);
 }

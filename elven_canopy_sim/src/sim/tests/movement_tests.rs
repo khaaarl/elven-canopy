@@ -3,45 +3,12 @@
 //! position interpolation, flying creature movement, and task proximity.
 //! Corresponds to `sim/movement.rs`.
 
+use super::combat_tests::{give_spear, setup_aggressive_elf, setup_frozen_hornet};
 use super::*;
 
 // ===================================================================
 // Elf wander (basic ground movement)
 // ===================================================================
-
-#[test]
-fn elf_wanders_after_spawn() {
-    let mut sim = test_sim(42);
-    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-
-    // Spawn elf.
-    let spawn_cmd = SimCommand {
-        player_name: String::new(),
-        tick: 1,
-        action: SimAction::SpawnCreature {
-            species: Species::Elf,
-            position: tree_pos,
-        },
-    };
-    sim.step(&[spawn_cmd], 2);
-
-    // Step far enough for many activations (each ground edge costs ~500
-    // ticks at walk_ticks_per_voxel=500).
-    sim.step(&[], 50000);
-
-    assert_eq!(sim.creature_count(Species::Elf), 1);
-    let elf = sim
-        .db
-        .creatures
-        .iter_all()
-        .find(|c| c.species == Species::Elf)
-        .unwrap();
-    let elf_nav = sim.nav_graph.node_at(elf.position);
-    assert!(elf_nav.is_some());
-    // Verify position matches current node.
-    let node_pos = sim.nav_graph.node(elf_nav.unwrap()).position;
-    assert_eq!(elf.position, node_pos);
-}
 
 // ===================================================================
 // Position interpolation
@@ -808,135 +775,6 @@ fn find_available_task_respects_species_filter_with_proximity() {
         "capybara should not be assigned an elf-only task"
     );
 }
-
-#[test]
-fn find_available_task_respects_civ_filter() {
-    let mut sim = test_sim(42);
-    let hostile_civ = ensure_hostile_civ(&mut sim);
-    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let player_civ = sim.player_civ_id.unwrap();
-
-    // Spawn a goblin belonging to the hostile civ.
-    let mut events = Vec::new();
-    let goblin_id = sim
-        .spawn_creature_with_civ(Species::Goblin, tree_pos, Some(hostile_civ), &mut events)
-        .expect("should spawn goblin");
-    let _ = sim.db.creatures.modify_unchecked(&goblin_id, |c| {
-        c.current_task = None;
-    });
-
-    let task_node = sim
-        .nav_graph
-        .live_nodes()
-        .next()
-        .expect("should have nodes")
-        .id;
-
-    // Create a task restricted to the player's civ — hostile goblin should NOT see it.
-    let task_id = TaskId::new(&mut sim.rng);
-    let task = crate::db::Task {
-        id: task_id,
-        kind_tag: TaskKindTag::GoTo,
-        state: TaskState::Available,
-        location: sim.nav_graph.node(task_node).position,
-        progress: 0,
-        total_cost: 1,
-        required_species: None, // no species filter — only civ filter
-        origin: TaskOrigin::PlayerDirected,
-        target_creature: None,
-        restrict_to_creature_id: None,
-        prerequisite_task_id: None,
-        required_civ_id: Some(player_civ),
-    };
-    sim.db.tasks.insert_no_fk(task).unwrap();
-
-    let chosen = sim.find_available_task(goblin_id);
-    assert_eq!(
-        chosen, None,
-        "hostile-civ goblin should not be assigned a player-civ task"
-    );
-
-    // Spawn an elf (player civ) — it SHOULD see the task.
-    let elf_id = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
-        .expect("should spawn elf");
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.current_task = None;
-    });
-
-    let chosen = sim.find_available_task(elf_id);
-    assert_eq!(
-        chosen,
-        Some(task_id),
-        "player-civ elf should be assigned the player-civ task"
-    );
-}
-
-#[test]
-fn find_available_task_unaffiliated_creature_blocked_by_civ_filter() {
-    // A creature with civ_id = None (wild/unaffiliated) cannot claim a
-    // player-civ task. This is the same filter path as hostile creatures,
-    // but exercises the None vs Some comparison.
-    let mut sim = test_sim(42);
-    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let player_civ = sim.player_civ_id.unwrap();
-
-    // Spawn a capybara (civ_id = None by default for non-elves).
-    let cmd = SimCommand {
-        player_name: String::new(),
-        tick: 1,
-        action: SimAction::SpawnCreature {
-            species: Species::Capybara,
-            position: tree_pos,
-        },
-    };
-    sim.step(&[cmd], 2);
-
-    let capy = sim
-        .db
-        .creatures
-        .iter_all()
-        .find(|c| c.species == Species::Capybara)
-        .expect("capybara should exist");
-    let capy_id = capy.id;
-    assert_eq!(capy.civ_id, None, "capybara should be unaffiliated");
-
-    let _ = sim.db.creatures.modify_unchecked(&capy_id, |c| {
-        c.current_task = None;
-    });
-
-    let task_node = sim
-        .nav_graph
-        .live_nodes()
-        .next()
-        .expect("should have nodes")
-        .id;
-
-    // Create a player-civ task — unaffiliated capybara should NOT see it.
-    let task_id = TaskId::new(&mut sim.rng);
-    let task = crate::db::Task {
-        id: task_id,
-        kind_tag: TaskKindTag::GoTo,
-        state: TaskState::Available,
-        location: sim.nav_graph.node(task_node).position,
-        progress: 0,
-        total_cost: 1,
-        required_species: None,
-        origin: TaskOrigin::PlayerDirected,
-        target_creature: None,
-        restrict_to_creature_id: None,
-        prerequisite_task_id: None,
-        required_civ_id: Some(player_civ),
-    };
-    sim.db.tasks.insert_no_fk(task).unwrap();
-
-    let chosen = sim.find_available_task(capy_id);
-    assert_eq!(
-        chosen, None,
-        "unaffiliated creature should not claim a player-civ task"
-    );
-}
-
 // ===================================================================
 // Troll cross-graph pursuit
 // ===================================================================
@@ -2154,47 +1992,6 @@ fn cached_path_reroutes_when_nav_node_destroyed() {
 // Hornet/wyvern combat movement
 // ===================================================================
 
-/// Helper: spawn elf, make it aggressive (military group), zero stats (predictable damage),
-/// and return (elf_id, elf_position).
-fn setup_aggressive_elf(sim: &mut SimState) -> (CreatureId, VoxelCoord) {
-    let elf_id = spawn_elf(sim);
-    zero_creature_stats(sim, elf_id);
-    let soldiers = soldiers_group(sim);
-    set_military_group(sim, elf_id, Some(soldiers.id));
-    // force_idle but keep activations — the elf needs to act autonomously.
-    force_idle(sim, elf_id);
-    let pos = sim.db.creatures.get(&elf_id).unwrap().position;
-    (elf_id, pos)
-}
-
-/// Helper: spawn a hornet at a specific position and freeze it (force idle, cancel
-/// activations) so it stays put and we can test elf behavior in isolation.
-fn setup_frozen_hornet(sim: &mut SimState, pos: VoxelCoord) -> CreatureId {
-    let mut events = Vec::new();
-    let hornet_id = sim
-        .spawn_creature(Species::Hornet, pos, &mut events)
-        .expect("hornet should spawn");
-    zero_creature_stats(sim, hornet_id);
-    force_idle_and_cancel_activations(sim, hornet_id);
-    hornet_id
-}
-
-/// Helper: give a creature a spear (Oak, quality 0).
-fn give_spear(sim: &mut SimState, creature_id: CreatureId) {
-    let inv_id = sim.db.creatures.get(&creature_id).unwrap().inventory_id;
-    sim.inv_add_item(
-        inv_id,
-        ItemKind::Spear,
-        1,
-        None,
-        None,
-        Some(Material::Oak),
-        0,
-        None,
-        None,
-    );
-}
-
 #[test]
 fn hornet_pursues_and_damages_elf() {
     let mut sim = test_sim(42);
@@ -3195,33 +2992,6 @@ fn flying_creature_attack_move_reaches_destination() {
         dest
     );
 }
-
-/// maybe_arrow_chase should create an AttackMove task for a flying creature
-/// hit by an arrow from outside detection range (B-flying-arrow-chase).
-#[test]
-fn arrow_chase_creates_task_for_flying_creature() {
-    let mut sim = test_sim(42);
-    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let air_pos = VoxelCoord::new(tree_pos.x + 10, tree_pos.y + 30, tree_pos.z);
-    let hornet = spawn_hornet_at(&mut sim, air_pos);
-    force_idle_and_cancel_activations(&mut sim, hornet);
-
-    // Arrow origin far outside detection range.
-    let hornet_pos = sim.db.creatures.get(&hornet).unwrap().position;
-    let origin = VoxelCoord::new(hornet_pos.x + 50, hornet_pos.y, hornet_pos.z);
-
-    sim.maybe_arrow_chase(hornet, origin);
-
-    let creature = sim.db.creatures.get(&hornet).unwrap();
-    assert!(
-        creature.current_task.is_some(),
-        "Flying creature should get an AttackMove task from arrow chase"
-    );
-    let task = sim.db.tasks.get(&creature.current_task.unwrap()).unwrap();
-    assert_eq!(task.kind_tag, crate::db::TaskKindTag::AttackMove);
-    assert_eq!(task.origin, TaskOrigin::Autonomous);
-}
-
 /// A flying creature's autonomous combat should preempt a low-priority
 /// task when hostiles are detected.
 #[test]
@@ -3607,5 +3377,872 @@ fn flying_creature_pursue_closest_target() {
     assert_ne!(
         new_pos, hornet_pos,
         "Hornet should have moved toward target"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Tests migrated from commands_tests.rs
+// ---------------------------------------------------------------------------
+
+#[test]
+fn capybara_wanders_on_ground() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Capybara,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 2);
+
+    // Step far enough for heartbeat + movement.
+    sim.step(&[], 50000);
+
+    assert_eq!(sim.creature_count(Species::Capybara), 1);
+    let capybara = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Capybara)
+        .unwrap();
+    let capybara_nav = sim.nav_graph.node_at(capybara.position);
+    assert!(capybara_nav.is_some());
+    let node_pos = sim.nav_graph.node(capybara_nav.unwrap()).position;
+    assert_eq!(capybara.position, node_pos);
+}
+
+#[test]
+fn capybara_stays_on_ground() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Capybara,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 2);
+
+    // Run for many ticks — capybara must never leave y=1 (air above terrain).
+    for target in (10000..100000).step_by(10000) {
+        sim.step(&[], target);
+        let capybara = sim
+            .db
+            .creatures
+            .iter_all()
+            .find(|c| c.species == Species::Capybara)
+            .unwrap();
+        assert_eq!(
+            capybara.position.y, 1,
+            "Capybara left ground at tick {target}: pos={:?}",
+            capybara.position
+        );
+    }
+}
+
+#[test]
+fn determinism_with_capybara() {
+    let mut sim_a = test_sim(42);
+    let mut sim_b = test_sim(42);
+
+    let tree_pos = sim_a.db.trees.get(&sim_a.player_tree_id).unwrap().position;
+
+    let spawn = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Capybara,
+            position: tree_pos,
+        },
+    };
+
+    sim_a.step(std::slice::from_ref(&spawn), 1000);
+    sim_b.step(std::slice::from_ref(&spawn), 1000);
+
+    assert_eq!(sim_a.db.creatures.len(), sim_b.db.creatures.len());
+    for creature_a in sim_a.db.creatures.iter_all() {
+        let creature_b = sim_b.db.creatures.get(&creature_a.id).unwrap();
+        assert_eq!(creature_a.position, creature_b.position);
+    }
+    assert_eq!(sim_a.rng.next_u64(), sim_b.rng.next_u64());
+}
+
+#[test]
+fn wandering_creature_stays_on_nav_graph() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 2);
+
+    // Run for many ticks, periodically checking node validity.
+    for target in (10000..100000).step_by(10000) {
+        sim.step(&[], target);
+        let elf = sim
+            .db
+            .creatures
+            .iter_all()
+            .find(|c| c.species == Species::Elf)
+            .unwrap();
+        let node = sim
+            .nav_graph
+            .node_at(elf.position)
+            .expect("Elf should always have a nav node at its position");
+        assert!(
+            (node.0 as usize) < sim.nav_graph.node_count(),
+            "Node ID {} out of range at tick {}",
+            node.0,
+            target
+        );
+        let node_pos = sim.nav_graph.node(node).position;
+        assert_eq!(
+            elf.position, node_pos,
+            "Position mismatch at tick {}",
+            target
+        );
+    }
+}
+
+#[test]
+fn wander_sets_movement_metadata() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    // Spawn an elf at tick 1, step only to tick 1 so the first activation
+    // (scheduled at tick 2) hasn't fired yet.
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap()
+        .id;
+
+    // Before the first activation, the elf should have no action.
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(elf.action_kind, ActionKind::NoAction);
+    assert!(elf.next_available_tick.is_none());
+    assert!(sim.db.move_actions.get(&elf_id).is_none());
+
+    let initial_pos = elf.position;
+
+    // Step to tick 2 — the first activation fires and the elf wanders.
+    sim.step(&[], 2);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(
+        elf.action_kind,
+        ActionKind::Move,
+        "action_kind should be Move after wander"
+    );
+    assert!(
+        elf.next_available_tick.is_some(),
+        "next_available_tick should be set after wander"
+    );
+
+    let ma = sim
+        .db
+        .move_actions
+        .get(&elf_id)
+        .expect("MoveAction should exist after wander");
+    assert_eq!(
+        ma.move_from, initial_pos,
+        "move_from should be the spawn position"
+    );
+    assert_eq!(
+        ma.move_to, elf.position,
+        "move_to should be the new position"
+    );
+    assert_eq!(
+        ma.move_start_tick, 2,
+        "move_start_tick should be the activation tick"
+    );
+    assert!(
+        elf.next_available_tick.unwrap() > ma.move_start_tick,
+        "next_available_tick should be after start"
+    );
+}
+
+#[test]
+fn boar_stays_on_ground() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Boar,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 2);
+
+    // Run for many ticks — boar must never leave y=1 (ground-only).
+    for target in (10000..100000).step_by(10000) {
+        sim.step(&[], target);
+        let boar = sim
+            .db
+            .creatures
+            .iter_all()
+            .find(|c| c.species == Species::Boar)
+            .unwrap();
+        assert_eq!(
+            boar.position.y, 1,
+            "Boar left ground at tick {target}: pos={:?}",
+            boar.position
+        );
+    }
+}
+
+#[test]
+fn deer_stays_on_ground() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Deer,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 2);
+
+    for target in (10000..100000).step_by(10000) {
+        sim.step(&[], target);
+        let deer = sim
+            .db
+            .creatures
+            .iter_all()
+            .find(|c| c.species == Species::Deer)
+            .unwrap();
+        assert_eq!(
+            deer.position.y, 1,
+            "Deer left ground at tick {target}: pos={:?}",
+            deer.position
+        );
+    }
+}
+
+#[test]
+fn monkey_can_climb() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Monkey,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 2);
+
+    // Run for enough ticks that a climbing species should have left ground.
+    sim.step(&[], 100000);
+
+    let monkey = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Monkey)
+        .unwrap();
+    // Monkey is not ground_only, so it should be able to reach y > 1
+    // (trunk/branch surfaces). This verifies the species config allows
+    // climbing edges. The monkey may still be at y=1 if the PRNG led it
+    // only to ground neighbors, so we just verify it has a valid nav node.
+    assert!(sim.nav_graph.node_at(monkey.position).is_some());
+}
+
+#[test]
+fn squirrel_can_climb() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Squirrel,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 2);
+
+    sim.step(&[], 100000);
+
+    let squirrel = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Squirrel)
+        .unwrap();
+    assert!(sim.nav_graph.node_at(squirrel.position).is_some());
+}
+
+// -----------------------------------------------------------------------
+// DirectedGoTo command tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn directed_goto_creates_task_for_specific_creature() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    force_idle(&mut sim, elf);
+
+    // Pick a target position.
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let target_pos = VoxelCoord::new(tree_pos.x + 3, 1, tree_pos.z);
+
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: target_pos,
+            queue: false,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    let creature = sim.db.creatures.get(&elf).unwrap();
+    assert!(
+        creature.current_task.is_some(),
+        "Elf should have a GoTo task"
+    );
+    let task = sim.db.tasks.get(&creature.current_task.unwrap()).unwrap();
+    assert_eq!(task.kind_tag, crate::db::TaskKindTag::GoTo);
+    assert_eq!(task.state, TaskState::InProgress);
+    assert_eq!(task.origin, TaskOrigin::PlayerDirected);
+}
+
+#[test]
+fn directed_goto_replaces_player_directed_task() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+
+    // Give elf a PlayerDirected GoTo task (PlayerDirected level 2).
+    let task_id = TaskId::new(&mut sim.rng);
+    let dest_node = sim.nav_graph.live_nodes().last().map(|n| n.id).unwrap();
+    let task = Task {
+        id: task_id,
+        kind: TaskKind::GoTo,
+        state: TaskState::InProgress,
+        location: sim.nav_graph.node(dest_node).position,
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
+        required_civ_id: None,
+    };
+    sim.insert_task(task);
+    sim.claim_task(elf, task_id);
+
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let target_pos = VoxelCoord::new(tree_pos.x + 2, 1, tree_pos.z);
+
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: target_pos,
+            queue: false,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    // Old task should be interrupted (Complete).
+    let old_task = sim.db.tasks.get(&task_id).unwrap();
+    assert_eq!(old_task.state, TaskState::Complete);
+
+    // Elf should have the new GoTo task.
+    let creature = sim.db.creatures.get(&elf).unwrap();
+    let new_task_id = creature.current_task.unwrap();
+    assert_ne!(new_task_id, task_id);
+    let new_task = sim.db.tasks.get(&new_task_id).unwrap();
+    assert_eq!(new_task.kind_tag, crate::db::TaskKindTag::GoTo);
+}
+
+#[test]
+fn directed_goto_preempts_autonomous_task() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+
+    // Give elf an autonomous Harvest task (Autonomous level 1).
+    let task_id = TaskId::new(&mut sim.rng);
+    let dest_node = sim.nav_graph.live_nodes().last().map(|n| n.id).unwrap();
+    let fruit_pos = VoxelCoord::new(0, 0, 0);
+    let task = Task {
+        id: task_id,
+        kind: TaskKind::Harvest { fruit_pos },
+        state: TaskState::InProgress,
+        location: sim.nav_graph.node(dest_node).position,
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::Autonomous,
+        target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
+        required_civ_id: None,
+    };
+    sim.insert_task(task);
+    sim.claim_task(elf, task_id);
+
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let target_pos = VoxelCoord::new(tree_pos.x + 2, 1, tree_pos.z);
+
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: target_pos,
+            queue: false,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    // Old autonomous task should be interrupted (Complete).
+    let old_task = sim.db.tasks.get(&task_id).unwrap();
+    assert_eq!(old_task.state, TaskState::Complete);
+
+    // Elf should have the new GoTo task.
+    let creature = sim.db.creatures.get(&elf).unwrap();
+    let new_task_id = creature.current_task.unwrap();
+    assert_ne!(new_task_id, task_id);
+    let new_task = sim.db.tasks.get(&new_task_id).unwrap();
+    assert_eq!(new_task.kind_tag, crate::db::TaskKindTag::GoTo);
+}
+
+#[test]
+fn directed_goto_does_not_abort_mid_walk_action() {
+    // B-erratic-movement: issuing a DirectedGoTo while a creature is
+    // mid-walk should NOT abort the in-progress Move action. The action
+    // should complete naturally, then the creature picks up the new task.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    force_idle_and_cancel_activations(&mut sim, elf);
+
+    // Issue a first DirectedGoTo to start the elf walking.
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let target_a = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+    let tick = sim.tick;
+    let cmd_a = SimCommand {
+        player_name: String::new(),
+        tick: tick + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: target_a,
+            queue: false,
+        },
+    };
+    sim.step(&[cmd_a], tick + 2);
+
+    // Advance until the elf is mid-walk (action_kind == Move).
+    let mut mid_walk = false;
+    for t in (sim.tick + 1)..=(sim.tick + 50) {
+        sim.step(&[], t);
+        let c = sim.db.creatures.get(&elf).unwrap();
+        if c.action_kind == ActionKind::Move && c.next_available_tick.is_some() {
+            mid_walk = true;
+            break;
+        }
+    }
+    assert!(mid_walk, "Elf should be mid-walk after advancing ticks");
+
+    let c = sim.db.creatures.get(&elf).unwrap();
+    let action_before = c.action_kind;
+    let nat_before = c.next_available_tick;
+    let first_task_id = c.current_task.unwrap();
+
+    // Issue a second DirectedGoTo while mid-walk.
+    let target_b = VoxelCoord::new(tree_pos.x - 3, 1, tree_pos.z);
+    let tick2 = sim.tick;
+    let cmd_b = SimCommand {
+        player_name: String::new(),
+        tick: tick2 + 1,
+        action: SimAction::DirectedGoTo {
+            creature_id: elf,
+            position: target_b,
+            queue: false,
+        },
+    };
+    sim.step(&[cmd_b], tick2 + 2);
+
+    // The in-progress Move action should NOT have been aborted.
+    let c = sim.db.creatures.get(&elf).unwrap();
+    assert_eq!(
+        c.action_kind, action_before,
+        "Move action should not be aborted by task preemption"
+    );
+    assert_eq!(
+        c.next_available_tick, nat_before,
+        "next_available_tick should be unchanged"
+    );
+
+    // The task should have changed to the new GoTo.
+    let new_task_id = c.current_task.unwrap();
+    assert_ne!(new_task_id, first_task_id, "Task should have been swapped");
+    let new_task = sim.db.tasks.get(&new_task_id).unwrap();
+    assert_eq!(new_task.kind_tag, crate::db::TaskKindTag::GoTo);
+
+    // Old task should be completed.
+    let old_task = sim.db.tasks.get(&first_task_id).unwrap();
+    assert_eq!(old_task.state, TaskState::Complete);
+
+    // Advance past the original next_available_tick — the elf should
+    // resolve the Move action normally and then follow the new task.
+    let completion_tick = nat_before.unwrap();
+    let target_tick = completion_tick.max(sim.tick) + 1;
+    sim.step(&[], target_tick);
+
+    // After the original move resolves, the creature should have picked
+    // up the new GoTo task (it may have started a new Move step toward
+    // the new destination, which is fine — the key is it's using the
+    // new task, not the old one).
+    let c = sim.db.creatures.get(&elf).unwrap();
+    assert_eq!(
+        c.current_task,
+        Some(new_task_id),
+        "Creature should still be on the new GoTo task"
+    );
+}
+
+#[test]
+fn directed_goto_mid_action_command_does_not_schedule_extra_activation() {
+    // B-erratic-movement: issuing a DirectedGoTo while a creature is
+    // mid-action should NOT schedule an extra CreatureActivation. The
+    // existing activation (from the in-progress action) is sufficient.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    force_idle_and_cancel_activations(&mut sim, elf);
+
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let target_a = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+
+    // Issue first DirectedGoTo and advance until mid-walk.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DirectedGoTo {
+                creature_id: elf,
+                position: target_a,
+                queue: false,
+            },
+        }],
+        tick + 2,
+    );
+    for t in (sim.tick + 1)..=(sim.tick + 50) {
+        sim.step(&[], t);
+        if sim
+            .db
+            .creatures
+            .get(&elf)
+            .is_some_and(|c| c.action_kind == ActionKind::Move)
+        {
+            break;
+        }
+    }
+    assert!(
+        sim.db
+            .creatures
+            .get(&elf)
+            .is_some_and(|c| c.action_kind == ActionKind::Move),
+        "Elf should be mid-walk"
+    );
+
+    // Count activations before issuing the second command.
+    let activations_before = sim.count_pending_activations_for(elf);
+    assert_eq!(
+        activations_before, 1,
+        "Should have exactly 1 pending activation before redirect"
+    );
+
+    // Issue a second DirectedGoTo while mid-walk — should NOT add an
+    // extra activation event.
+    let target_b = VoxelCoord::new(tree_pos.x - 3, 1, tree_pos.z);
+    let tick2 = sim.tick;
+    // Process the command on this tick without advancing further, so no
+    // events fire between the command and our assertion.
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick2 + 1,
+            action: SimAction::DirectedGoTo {
+                creature_id: elf,
+                position: target_b,
+                queue: false,
+            },
+        }],
+        tick2 + 1,
+    );
+
+    let activations_after = sim.count_pending_activations_for(elf);
+    assert_eq!(
+        activations_after, 1,
+        "Should still have exactly 1 pending activation after redirect (was {activations_after})"
+    );
+}
+
+#[test]
+fn group_goto_spreads_creatures_to_different_nodes() {
+    // Three elves given a GroupGoTo to the same destination should each
+    // end up with a GoTo task at a different nav node.
+    let mut sim = test_sim(42);
+    let elf_a = spawn_elf(&mut sim);
+    let elf_b = spawn_elf(&mut sim);
+    let elf_c = spawn_elf(&mut sim);
+    force_idle_and_cancel_activations(&mut sim, elf_a);
+    force_idle_and_cancel_activations(&mut sim, elf_b);
+    force_idle_and_cancel_activations(&mut sim, elf_c);
+
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let dest = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::GroupGoTo {
+                creature_ids: vec![elf_a, elf_b, elf_c],
+                position: dest,
+                queue: false,
+            },
+        }],
+        tick + 2,
+    );
+
+    // All three should have GoTo tasks.
+    let task_a = sim.db.creatures.get(&elf_a).unwrap().current_task.unwrap();
+    let task_b = sim.db.creatures.get(&elf_b).unwrap().current_task.unwrap();
+    let task_c = sim.db.creatures.get(&elf_c).unwrap().current_task.unwrap();
+    let loc_a = sim.db.tasks.get(&task_a).unwrap().location;
+    let loc_b = sim.db.tasks.get(&task_b).unwrap().location;
+    let loc_c = sim.db.tasks.get(&task_c).unwrap().location;
+
+    // At least two of the three should have different locations (spread).
+    let locs = [loc_a, loc_b, loc_c];
+    let unique: std::collections::BTreeSet<_> = locs.iter().collect();
+    assert!(
+        unique.len() >= 2,
+        "GroupGoTo should spread creatures to different nav nodes, got {:?}",
+        locs
+    );
+}
+
+#[test]
+fn group_goto_single_creature_delegates_to_normal() {
+    // A single-element GroupGoTo should work identically to DirectedGoTo.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    force_idle_and_cancel_activations(&mut sim, elf);
+
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let dest = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::GroupGoTo {
+                creature_ids: vec![elf],
+                position: dest,
+                queue: false,
+            },
+        }],
+        tick + 2,
+    );
+
+    let task_id = sim.db.creatures.get(&elf).unwrap().current_task.unwrap();
+    let task = sim.db.tasks.get(&task_id).unwrap();
+    assert!(task.kind_tag == TaskKindTag::GoTo);
+}
+
+#[test]
+fn group_goto_empty_list_is_noop() {
+    let mut sim = test_sim(42);
+    let tick = sim.tick;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let dest = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+
+    // Should not panic or create any tasks.
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::GroupGoTo {
+                creature_ids: vec![],
+                position: dest,
+                queue: false,
+            },
+        }],
+        tick + 2,
+    );
+}
+
+#[test]
+fn group_goto_skips_dead_creatures() {
+    // Dead creatures in the list should be silently skipped.
+    let mut sim = test_sim(42);
+    let elf_alive = spawn_elf(&mut sim);
+    let elf_dead = spawn_elf(&mut sim);
+    force_idle_and_cancel_activations(&mut sim, elf_alive);
+    force_idle_and_cancel_activations(&mut sim, elf_dead);
+
+    // Kill one elf.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: elf_dead,
+            },
+        }],
+        tick + 2,
+    );
+
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let dest = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+
+    let tick2 = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick2 + 1,
+            action: SimAction::GroupGoTo {
+                creature_ids: vec![elf_alive, elf_dead],
+                position: dest,
+                queue: false,
+            },
+        }],
+        tick2 + 2,
+    );
+
+    // Only the alive elf should have a task.
+    assert!(
+        sim.db
+            .creatures
+            .get(&elf_alive)
+            .unwrap()
+            .current_task
+            .is_some()
+    );
+}
+
+#[test]
+fn group_goto_serialization_roundtrip() {
+    let mut rng = crate::prng::GameRng::new(42);
+    let cmd = SimCommand {
+        player_name: "test_player".to_string(),
+        tick: 100,
+        action: SimAction::GroupGoTo {
+            creature_ids: vec![CreatureId::new(&mut rng), CreatureId::new(&mut rng)],
+            position: VoxelCoord::new(10, 1, 5),
+            queue: false,
+        },
+    };
+
+    let json = serde_json::to_string(&cmd).unwrap();
+    let restored: SimCommand = serde_json::from_str(&json).unwrap();
+    assert_eq!(json, serde_json::to_string(&restored).unwrap());
+}
+
+/// Verify that a creature with a cached path containing a position where no
+/// nav node exists (e.g., because the node was destroyed) handles it gracefully
+/// — no panic, creature stays alive and valid.
+#[test]
+fn path_resolution_nav_node_destroyed_no_panic() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+
+    // Find a connected pair so the elf has a valid starting node.
+    let (node_a, node_b) = find_connected_pair(&sim);
+    force_to_node(&mut sim, elf, node_a);
+    force_idle(&mut sim, elf);
+
+    // Give the elf a GoTo task at node_b so it has reason to move.
+    let task_id = insert_goto_task(&mut sim, node_b);
+    if let Some(mut t) = sim.db.tasks.get(&task_id) {
+        t.state = TaskState::InProgress;
+        let _ = sim.db.tasks.update_no_fk(t);
+    }
+    if let Some(mut c) = sim.db.creatures.get(&elf) {
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Assign a cached path through a position that has NO nav node.
+    // Use a coordinate far from the world (no node will exist there).
+    let bogus_pos = VoxelCoord::new(63, 63, 63);
+    assert!(
+        sim.nav_graph.node_at(bogus_pos).is_none(),
+        "Test setup: bogus position should have no nav node"
+    );
+
+    let real_dest = sim.nav_graph.node(node_b).position;
+    let _ = sim.db.creatures.modify_unchecked(&elf, |c| {
+        c.path = Some(CreaturePath {
+            remaining_positions: vec![bogus_pos, real_dest],
+        });
+    });
+
+    // Schedule the elf to activate and step forward. The movement code should
+    // detect the missing nav node and repath (not panic).
+    sim.event_queue.cancel_creature_activations(elf);
+    sim.event_queue.schedule(
+        sim.tick + 1,
+        ScheduledEventKind::CreatureActivation { creature_id: elf },
+    );
+    sim.step(&[], sim.tick + 200);
+
+    // Creature should still be alive and at a valid position.
+    let creature = sim
+        .db
+        .creatures
+        .get(&elf)
+        .expect("Creature should still exist after path resolution failure");
+    assert!(
+        creature.hp > 0,
+        "Creature should be alive after graceful repath"
     );
 }

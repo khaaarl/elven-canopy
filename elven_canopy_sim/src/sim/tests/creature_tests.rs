@@ -1254,56 +1254,6 @@ fn hornet_spawn_in_leaf_succeeds() {
         .expect("hornet should spawn in leaf voxel");
     assert_eq!(sim.db.creatures.get(&id).unwrap().position, leaf_pos);
 }
-
-#[test]
-fn hornet_pursues_and_damages_elf() {
-    let mut sim = test_sim(42);
-    let elf_id = spawn_creature(&mut sim, Species::Elf);
-    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
-    let elf_hp_before = sim.db.creatures.get(&elf_id).unwrap().hp;
-
-    // Spawn hornet 3 voxels above the elf (within detection range, likely
-    // out of melee range). Let the sim run — the hornet should fly down,
-    // get adjacent, and melee the elf.
-    let hornet_pos = VoxelCoord::new(elf_pos.x, elf_pos.y + 3, elf_pos.z);
-    let hornet_id = spawn_hornet_at(&mut sim, hornet_pos);
-    force_guaranteed_hits(&mut sim, hornet_id);
-
-    // Run the sim for a generous number of ticks to allow pursuit + melee.
-    let target_tick = sim.tick + 5000;
-    sim.step(&[], target_tick);
-
-    // The elf should have taken damage (hornet melee_damage = 20).
-    let elf = sim.db.creatures.get(&elf_id).unwrap();
-    assert!(
-        elf.hp < elf_hp_before,
-        "elf should have taken damage from hornet: hp {} vs before {}",
-        elf.hp,
-        elf_hp_before
-    );
-
-    // The hornet should still be alive (elf might fight back, but with
-    // 60 HP and passive default engagement the elf likely didn't kill it).
-    let hornet = sim.db.creatures.get(&hornet_id).unwrap();
-    // Just verify it participated (was alive at some point and moved).
-    assert_ne!(hornet.position, hornet_pos, "hornet should have moved");
-}
-
-#[test]
-fn hornet_wanders_when_alone() {
-    let mut sim = test_sim(42);
-    // Spawn hornet far from any creatures.
-    let pos = VoxelCoord::new(5, 50, 5);
-    let hornet_id = spawn_hornet_at(&mut sim, pos);
-
-    // Run a few ticks — hornet should wander (position should change).
-    let target_tick = sim.tick + 3000;
-    sim.step(&[], target_tick);
-
-    let hornet = sim.db.creatures.get(&hornet_id).unwrap();
-    assert_ne!(hornet.position, pos, "hornet should have wandered");
-}
-
 #[test]
 fn flight_pathfinding_corner_cost_matches_scaled_distance() {
     use crate::nav::scaled_distance;
@@ -1321,275 +1271,6 @@ fn flight_pathfinding_corner_cost_matches_scaled_distance() {
 // -----------------------------------------------------------------------
 // B-hostile-detect-nav: elf vs flying hornet at various heights
 // -----------------------------------------------------------------------
-
-/// Helper: spawn elf, make it aggressive (military group), zero stats (predictable damage),
-/// and return (elf_id, elf_position).
-fn setup_aggressive_elf(sim: &mut SimState) -> (CreatureId, VoxelCoord) {
-    let elf_id = spawn_elf(sim);
-    zero_creature_stats(sim, elf_id);
-    let soldiers = soldiers_group(sim);
-    set_military_group(sim, elf_id, Some(soldiers.id));
-    // force_idle but keep activations — the elf needs to act autonomously.
-    force_idle(sim, elf_id);
-    let pos = sim.db.creatures.get(&elf_id).unwrap().position;
-    (elf_id, pos)
-}
-
-/// Helper: spawn a hornet at a specific position and freeze it (force idle, cancel
-/// activations) so it stays put and we can test elf behavior in isolation.
-fn setup_frozen_hornet(sim: &mut SimState, pos: VoxelCoord) -> CreatureId {
-    let mut events = Vec::new();
-    let hornet_id = sim
-        .spawn_creature(Species::Hornet, pos, &mut events)
-        .expect("hornet should spawn");
-    zero_creature_stats(sim, hornet_id);
-    force_idle_and_cancel_activations(sim, hornet_id);
-    hornet_id
-}
-
-/// Helper: give a creature a spear (Oak, quality 0).
-fn give_spear(sim: &mut SimState, creature_id: CreatureId) {
-    let inv_id = sim.db.creatures.get(&creature_id).unwrap().inventory_id;
-    sim.inv_add_item(
-        inv_id,
-        ItemKind::Spear,
-        1,
-        None,
-        None,
-        Some(Material::Oak),
-        0,
-        None,
-        None,
-    );
-}
-
-/// Test matrix: aggressive elf (autonomous pursuit) vs hornet at various heights.
-///
-/// Heights are measured as voxel delta from the elf's walking level. With 1x1x1
-/// footprints, the AABB gap in Y is `dy - 1` (elf occupies [y, y+1), hornet
-/// occupies [y+dy, y+dy+1)). Melee range is squared gap distance:
-/// - dy=0: gap=0, dist_sq=0 (same level, definitely in range)
-/// - dy=1: gap=0, dist_sq=0 (adjacent, no gap — elf top meets hornet bottom)
-/// - dy=2: gap=1, dist_sq=1 ≤ 3 (bare hands reach)
-/// - dy=3: gap=2, dist_sq=4 > 3 (bare hands can't, spear_range_sq=8 can)
-/// - dy=10: gap=9, dist_sq=81 (way above, nobody can reach)
-///
-/// For each height, we test bare-handed and spear-armed elves.
-#[test]
-fn aggressive_elf_vs_hornet_at_heights() {
-    struct Case {
-        dy: i32,
-        has_spear: bool,
-        expect_damage: bool,
-        label: &'static str,
-    }
-
-    let cases = [
-        Case {
-            dy: 0,
-            has_spear: false,
-            expect_damage: true,
-            label: "dy=0, bare hands",
-        },
-        Case {
-            dy: 0,
-            has_spear: true,
-            expect_damage: true,
-            label: "dy=0, spear",
-        },
-        Case {
-            dy: 1,
-            has_spear: false,
-            expect_damage: true,
-            label: "dy=1, bare hands",
-        },
-        Case {
-            dy: 1,
-            has_spear: true,
-            expect_damage: true,
-            label: "dy=1, spear",
-        },
-        Case {
-            dy: 2,
-            has_spear: false,
-            expect_damage: true,
-            label: "dy=2, bare hands (gap=1, in range)",
-        },
-        Case {
-            dy: 2,
-            has_spear: true,
-            expect_damage: true,
-            label: "dy=2, spear",
-        },
-        // dy=10+: hornet is way above the tree canopy. Even climbing, the elf
-        // can't get within melee range. The elf should give up.
-        Case {
-            dy: 20,
-            has_spear: false,
-            expect_damage: false,
-            label: "dy=20, bare hands (way above)",
-        },
-        Case {
-            dy: 20,
-            has_spear: true,
-            expect_damage: false,
-            label: "dy=20, spear (way above)",
-        },
-    ];
-
-    for case in &cases {
-        let mut sim = test_sim(42);
-        let (elf_id, elf_pos) = setup_aggressive_elf(&mut sim);
-
-        if case.has_spear {
-            give_spear(&mut sim, elf_id);
-        }
-
-        let hornet_pos = VoxelCoord::new(elf_pos.x, elf_pos.y + case.dy, elf_pos.z);
-        let hornet_id = setup_frozen_hornet(&mut sim, hornet_pos);
-        let hornet_hp_before = sim.db.creatures.get(&hornet_id).unwrap().hp;
-
-        // Let the elf act for enough ticks to walk + strike.
-        let target_tick = sim.tick + 8000;
-        sim.step(&[], target_tick);
-
-        let hornet = sim.db.creatures.get(&hornet_id).unwrap();
-        if case.expect_damage {
-            assert!(
-                hornet.hp < hornet_hp_before,
-                "[{}] hornet should have taken damage (hp {} vs before {})",
-                case.label,
-                hornet.hp,
-                hornet_hp_before
-            );
-        } else {
-            assert_eq!(
-                hornet.hp, hornet_hp_before,
-                "[{}] hornet should NOT have taken damage",
-                case.label
-            );
-        }
-    }
-}
-
-/// Test matrix: passive elf ordered to attack hornet at various heights.
-///
-/// Same height cases as above, but the elf is a civilian (passive initiative)
-/// given a player-directed AttackCreature command. The elf should pursue the
-/// target if a nav-graph path gets it within melee range. If not reachable,
-/// the attack task should eventually cancel (path_failures >= retry limit).
-#[test]
-fn ordered_elf_vs_hornet_at_heights() {
-    struct Case {
-        dy: i32,
-        has_spear: bool,
-        expect_damage: bool,
-        label: &'static str,
-    }
-
-    let cases = [
-        Case {
-            dy: 0,
-            has_spear: false,
-            expect_damage: true,
-            label: "dy=0, bare hands",
-        },
-        Case {
-            dy: 0,
-            has_spear: true,
-            expect_damage: true,
-            label: "dy=0, spear",
-        },
-        Case {
-            dy: 1,
-            has_spear: false,
-            expect_damage: true,
-            label: "dy=1, bare hands",
-        },
-        Case {
-            dy: 1,
-            has_spear: true,
-            expect_damage: true,
-            label: "dy=1, spear",
-        },
-        Case {
-            dy: 2,
-            has_spear: false,
-            expect_damage: true,
-            label: "dy=2, bare hands (gap=1)",
-        },
-        Case {
-            dy: 2,
-            has_spear: true,
-            expect_damage: true,
-            label: "dy=2, spear",
-        },
-        Case {
-            dy: 20,
-            has_spear: false,
-            expect_damage: false,
-            label: "dy=20, bare hands (way above)",
-        },
-        Case {
-            dy: 20,
-            has_spear: true,
-            expect_damage: false,
-            label: "dy=20, spear (way above)",
-        },
-    ];
-
-    for case in &cases {
-        let mut sim = test_sim(42);
-        let elf_id = spawn_elf(&mut sim);
-        zero_creature_stats(&mut sim, elf_id);
-        // Elf stays civilian (passive) — won't pursue autonomously.
-        force_idle_and_cancel_activations(&mut sim, elf_id);
-
-        if case.has_spear {
-            give_spear(&mut sim, elf_id);
-        }
-
-        let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
-        let hornet_pos = VoxelCoord::new(elf_pos.x, elf_pos.y + case.dy, elf_pos.z);
-        let hornet_id = setup_frozen_hornet(&mut sim, hornet_pos);
-        let hornet_hp_before = sim.db.creatures.get(&hornet_id).unwrap().hp;
-
-        // Issue player-directed attack command.
-        let tick = sim.tick + 1;
-        let cmd = SimCommand {
-            player_name: String::new(),
-            tick,
-            action: SimAction::AttackCreature {
-                attacker_id: elf_id,
-                target_id: hornet_id,
-                queue: false,
-            },
-        };
-        sim.step(&[cmd], tick + 8000);
-
-        let hornet = sim.db.creatures.get(&hornet_id).unwrap();
-        if case.expect_damage {
-            assert!(
-                hornet.hp < hornet_hp_before,
-                "[ordered, {}] hornet should have taken damage (hp {} vs before {})",
-                case.label,
-                hornet.hp,
-                hornet_hp_before
-            );
-        } else {
-            assert_eq!(
-                hornet.hp, hornet_hp_before,
-                "[ordered, {}] hornet should NOT have taken damage",
-                case.label
-            );
-
-            // NOTE: ideally the elf should give up the attack task when the
-            // target is unreachable, but the current path_failures mechanism
-            // only triggers on pathfinding failure, not "arrived but can't
-            // melee." This is a known limitation tracked separately.
-        }
-    }
-}
 
 // -----------------------------------------------------------------------
 // F-flying-nav-big + F-wyvern tests
@@ -1673,32 +1354,436 @@ fn wyvern_is_hostile_to_elves() {
     assert!(!targets.is_empty(), "wyvern should detect the elf");
 }
 
+// ---------------------------------------------------------------------------
+// Tests migrated from commands_tests.rs
+// ---------------------------------------------------------------------------
+
 #[test]
-fn wyvern_pursues_and_damages_elf() {
+fn spawn_capybara_command() {
     let mut sim = test_sim(42);
-    let elf_id = spawn_creature(&mut sim, Species::Elf);
-    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
-    let elf_hp_before = sim.db.creatures.get(&elf_id).unwrap().hp;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
-    let wyvern_pos = VoxelCoord::new(elf_pos.x - 1, elf_pos.y + 4, elf_pos.z - 1);
-    let mut events = Vec::new();
-    let wyvern_id = sim
-        .spawn_creature(Species::Wyvern, wyvern_pos, &mut events)
-        .expect("wyvern should spawn");
-    force_guaranteed_hits(&mut sim, wyvern_id);
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Capybara,
+            position: tree_pos,
+        },
+    };
 
-    // Wyvern is fast (flight_tpv=200) but needs time to detect, path, and strike.
-    let target_tick = sim.tick + 15000;
-    sim.step(&[], target_tick);
+    let result = sim.step(&[cmd], 2);
+    assert_eq!(sim.creature_count(Species::Capybara), 1);
+    assert!(result.events.iter().any(|e| matches!(
+        e.kind,
+        SimEventKind::CreatureArrived {
+            species: Species::Capybara,
+            ..
+        }
+    )));
 
-    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    // Capybara should be at a ground-level node (y=1, air above terrain).
+    let capybara = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Capybara)
+        .unwrap();
+    assert_eq!(capybara.position.y, 1);
+    assert!(sim.nav_graph.node_at(capybara.position).is_some());
+}
+
+#[test]
+fn species_data_loaded_from_config() {
+    let sim = test_sim(42);
+    assert_eq!(sim.species_table.len(), 12);
+    assert!(sim.species_table.contains_key(&Species::Elf));
+    assert!(sim.species_table.contains_key(&Species::Capybara));
+    assert!(sim.species_table.contains_key(&Species::Boar));
+    assert!(sim.species_table.contains_key(&Species::Deer));
+    assert!(sim.species_table.contains_key(&Species::Elephant));
+    assert!(sim.species_table.contains_key(&Species::Wyvern));
+    assert!(sim.species_table.contains_key(&Species::Hornet));
+    assert!(sim.species_table.contains_key(&Species::Goblin));
+    assert!(sim.species_table.contains_key(&Species::Monkey));
+    assert!(sim.species_table.contains_key(&Species::Orc));
+    assert!(sim.species_table.contains_key(&Species::Squirrel));
+    assert!(sim.species_table.contains_key(&Species::Troll));
+
+    let elf_data = &sim.species_table[&Species::Elf];
+    assert!(!elf_data.ground_only);
+    assert!(elf_data.allowed_edge_types.is_none());
+
+    let capy_data = &sim.species_table[&Species::Capybara];
+    assert!(capy_data.ground_only);
+    assert!(capy_data.allowed_edge_types.is_some());
+
+    let boar_data = &sim.species_table[&Species::Boar];
+    assert!(boar_data.ground_only);
+    assert_eq!(boar_data.walk_ticks_per_voxel, 500); // uniform base
+
+    let deer_data = &sim.species_table[&Species::Deer];
+    assert!(deer_data.ground_only);
+    assert_eq!(deer_data.walk_ticks_per_voxel, 500); // uniform base
+
+    let monkey_data = &sim.species_table[&Species::Monkey];
+    assert!(!monkey_data.ground_only);
+    assert_eq!(monkey_data.climb_ticks_per_voxel, Some(800));
+
+    let squirrel_data = &sim.species_table[&Species::Squirrel];
+    assert!(!squirrel_data.ground_only);
+    assert_eq!(squirrel_data.climb_ticks_per_voxel, Some(600));
+
+    // Troll has HP regeneration; most species default to 0.
+    let troll_data = &sim.species_table[&Species::Troll];
+    assert_eq!(troll_data.ticks_per_hp_regen, 500);
+    assert_eq!(elf_data.ticks_per_hp_regen, 0);
+}
+
+#[test]
+fn graph_for_species_dispatch() {
+    let sim = test_sim(42);
+
+    // Elf (1x1x1) → standard graph.
+    let elf_graph = sim.graph_for_species(Species::Elf) as *const _;
+    let standard = &sim.nav_graph as *const _;
+    assert_eq!(elf_graph, standard, "Elf should use standard nav graph");
+
+    // Elephant (2x2x2) → large graph.
+    let elephant_graph = sim.graph_for_species(Species::Elephant) as *const _;
+    let large = &sim.large_nav_graph as *const _;
+    assert_eq!(elephant_graph, large, "Elephant should use large nav graph");
+}
+
+#[test]
+fn new_sim_has_large_nav_graph() {
+    let sim = test_sim(42);
     assert!(
-        elf.hp < elf_hp_before,
-        "elf should have taken damage from wyvern: hp {} vs before {}",
-        elf.hp,
-        elf_hp_before
+        sim.large_nav_graph.live_nodes().count() > 0,
+        "Large nav graph should have nodes after construction",
     );
+}
 
-    let wyvern = sim.db.creatures.get(&wyvern_id).unwrap();
-    assert_ne!(wyvern.position, wyvern_pos, "wyvern should have moved");
+#[test]
+fn elephant_spawns_on_large_graph() {
+    let mut sim = test_sim(42);
+    let mut events = Vec::new();
+    let spawn_pos = VoxelCoord::new(10, 1, 10);
+    sim.spawn_creature(Species::Elephant, spawn_pos, &mut events);
+
+    // There should be exactly one elephant.
+    let elephants: Vec<&crate::db::Creature> = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.species == Species::Elephant)
+        .collect();
+    assert_eq!(elephants.len(), 1, "Should have spawned one elephant");
+
+    // Its position should map to a node in the large nav graph.
+    let elephant = elephants[0];
+    let node_id = sim
+        .large_nav_graph
+        .node_at(elephant.position)
+        .expect("Elephant should have a nav node in the large graph");
+    let node = sim.large_nav_graph.node(node_id);
+    assert_eq!(
+        node.position, elephant.position,
+        "Elephant position should match its large graph node",
+    );
+}
+
+#[test]
+fn troll_spawns_on_large_graph() {
+    let mut sim = test_sim(42);
+    let mut events = Vec::new();
+    let spawn_pos = VoxelCoord::new(10, 1, 10);
+    sim.spawn_creature(Species::Troll, spawn_pos, &mut events);
+
+    let trolls: Vec<&crate::db::Creature> = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.species == Species::Troll)
+        .collect();
+    assert_eq!(trolls.len(), 1, "Should have spawned one troll");
+
+    let troll = trolls[0];
+    let node_id = sim
+        .large_nav_graph
+        .node_at(troll.position)
+        .expect("Troll should have a nav node in the large graph");
+    let node = sim.large_nav_graph.node(node_id);
+    assert_eq!(
+        node.position, troll.position,
+        "Troll position should match its large graph node",
+    );
+}
+
+#[test]
+fn creature_species_preserved() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    // Spawn one elf and one capybara.
+    let cmds = vec![
+        SimCommand {
+            player_name: String::new(),
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elf,
+                position: tree_pos,
+            },
+        },
+        SimCommand {
+            player_name: String::new(),
+            tick: 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Capybara,
+                position: tree_pos,
+            },
+        },
+    ];
+    sim.step(&cmds, 2);
+
+    assert_eq!(sim.creature_count(Species::Elf), 1);
+    assert_eq!(sim.creature_count(Species::Capybara), 1);
+    assert_eq!(sim.db.creatures.len(), 2);
+
+    // Verify species are correctly stored.
+    let elf = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf)
+        .unwrap();
+    assert_eq!(elf.species, Species::Elf);
+
+    let capy = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Capybara)
+        .unwrap();
+    assert_eq!(capy.species, Species::Capybara);
+}
+
+// -----------------------------------------------------------------------
+// New species tests (Boar, Deer, Monkey, Squirrel)
+// -----------------------------------------------------------------------
+
+#[test]
+fn spawn_boar_command() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Boar,
+            position: tree_pos,
+        },
+    };
+
+    let result = sim.step(&[cmd], 2);
+    assert_eq!(sim.creature_count(Species::Boar), 1);
+    assert!(result.events.iter().any(|e| matches!(
+        e.kind,
+        SimEventKind::CreatureArrived {
+            species: Species::Boar,
+            ..
+        }
+    )));
+
+    // Boar is ground-only — should be at y=1.
+    let boar = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Boar)
+        .unwrap();
+    assert_eq!(boar.position.y, 1);
+}
+
+#[test]
+fn spawn_deer_command() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Deer,
+            position: tree_pos,
+        },
+    };
+
+    let result = sim.step(&[cmd], 2);
+    assert_eq!(sim.creature_count(Species::Deer), 1);
+    assert!(result.events.iter().any(|e| matches!(
+        e.kind,
+        SimEventKind::CreatureArrived {
+            species: Species::Deer,
+            ..
+        }
+    )));
+
+    // Deer is ground-only — should be at y=1.
+    let deer = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Deer)
+        .unwrap();
+    assert_eq!(deer.position.y, 1);
+}
+
+#[test]
+fn spawn_monkey_command() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Monkey,
+            position: tree_pos,
+        },
+    };
+
+    let result = sim.step(&[cmd], 2);
+    assert_eq!(sim.creature_count(Species::Monkey), 1);
+    assert!(result.events.iter().any(|e| matches!(
+        e.kind,
+        SimEventKind::CreatureArrived {
+            species: Species::Monkey,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn spawn_squirrel_command() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Squirrel,
+            position: tree_pos,
+        },
+    };
+
+    let result = sim.step(&[cmd], 2);
+    assert_eq!(sim.creature_count(Species::Squirrel), 1);
+    assert!(result.events.iter().any(|e| matches!(
+        e.kind,
+        SimEventKind::CreatureArrived {
+            species: Species::Squirrel,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn all_small_species_spawn_and_coexist() {
+    let mut sim = test_sim(300);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    // Only non-hostile species — hostile species (Goblin, Orc) would fight
+    // and kill friendlies during the 50k-tick coexistence window, especially
+    // with expanded melee ranges (range_sq=3 covers 3D diagonals).
+    let species_list = [
+        Species::Elf,
+        Species::Capybara,
+        Species::Boar,
+        Species::Deer,
+        Species::Monkey,
+        Species::Squirrel,
+    ];
+    let mut tick = 1;
+    for &species in &species_list {
+        let cmd = SimCommand {
+            player_name: String::new(),
+            tick,
+            action: SimAction::SpawnCreature {
+                species,
+                position: tree_pos,
+            },
+        };
+        sim.step(&[cmd], tick + 1);
+        tick = sim.tick + 1;
+    }
+
+    assert_eq!(sim.db.creatures.len(), 6);
+    for &species in &species_list {
+        assert_eq!(sim.creature_count(species), 1, "Expected 1 {:?}", species);
+    }
+
+    // Run for a while — all should remain alive with valid nodes.
+    sim.step(&[], 50000);
+    assert_eq!(sim.db.creatures.len(), 6);
+    for creature in sim.db.creatures.iter_all() {
+        assert!(
+            sim.graph_for_species(creature.species)
+                .node_at(creature.position)
+                .is_some(),
+            "{:?} has no nav node at its position",
+            creature.species
+        );
+    }
+}
+
+#[test]
+fn spawn_creature_with_civ_sets_civ_id() {
+    let mut sim = test_sim(42);
+    let hostile_civ = ensure_hostile_civ(&mut sim);
+    let mut events = Vec::new();
+
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let creature_id = sim
+        .spawn_creature_with_civ(Species::Goblin, tree_pos, Some(hostile_civ), &mut events)
+        .expect("should spawn goblin");
+
+    let creature = sim.db.creatures.get(&creature_id).unwrap();
+    assert_eq!(creature.civ_id, Some(hostile_civ));
+    assert_eq!(creature.species, Species::Goblin);
+}
+
+#[test]
+fn species_config_backward_compat_ticks_per_hp_regen() {
+    // Old save files won't have ticks_per_hp_regen. Verify it defaults to 0.
+    let config = GameConfig::default();
+    let troll_data = &config.species[&Species::Troll];
+    let json = serde_json::to_string(troll_data).unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let obj = value.as_object_mut().unwrap();
+    obj.remove("ticks_per_hp_regen");
+    let stripped = serde_json::to_string(&value).unwrap();
+
+    let restored: crate::species::SpeciesData = serde_json::from_str(&stripped).unwrap();
+    assert_eq!(
+        restored.ticks_per_hp_regen, 0,
+        "ticks_per_hp_regen should default to 0"
+    );
+}
+
+#[test]
+fn all_civ_species_with_to_species_have_species_table_entry() {
+    // Every CivSpecies that maps to a Species via to_species() must have
+    // a corresponding entry in the default species table.
+    let config = GameConfig::default();
+    for civ_species in CivSpecies::ALL {
+        if let Some(species) = civ_species.to_species() {
+            assert!(
+                config.species.contains_key(&species),
+                "{civ_species:?} maps to {species:?} but species table has no entry"
+            );
+        }
+    }
 }

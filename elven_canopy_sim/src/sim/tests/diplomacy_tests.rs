@@ -726,3 +726,74 @@ fn civ_species_to_species_conversion() {
     assert_eq!(CivSpecies::Human.to_species(), None);
     assert_eq!(CivSpecies::Dwarf.to_species(), None);
 }
+
+// ---------------------------------------------------------------------------
+// Tests migrated from commands_tests.rs
+// ---------------------------------------------------------------------------
+
+/// Verify CivRelationship compound PK operations: get, contains, modify_unchecked.
+#[test]
+fn civ_relationship_compound_pk_operations() {
+    let mut sim = test_sim(42);
+
+    let civ_a = CivId(0);
+    // Find a target civ that exists.
+    let civ_b = sim
+        .db
+        .civilizations
+        .iter_all()
+        .find(|c| c.id != civ_a)
+        .map(|c| c.id);
+    let civ_b = match civ_b {
+        Some(id) => id,
+        None => return, // Only one civ in this seed, skip.
+    };
+
+    // Remove any existing relationship so we start clean.
+    let _ = sim.db.civ_relationships.remove_no_fk(&(civ_a, civ_b));
+
+    // Insert a new relationship.
+    sim.db
+        .civ_relationships
+        .insert_no_fk(crate::db::CivRelationship {
+            from_civ: civ_a,
+            to_civ: civ_b,
+            opinion: CivOpinion::Neutral,
+        })
+        .unwrap();
+
+    // get() returns the relationship.
+    let rel = sim.db.civ_relationships.get(&(civ_a, civ_b)).unwrap();
+    assert_eq!(rel.opinion, CivOpinion::Neutral);
+
+    // contains() works.
+    assert!(sim.db.civ_relationships.contains(&(civ_a, civ_b)));
+    assert!(!sim.db.civ_relationships.contains(&(civ_b, CivId(999))));
+
+    // modify_unchecked() changes opinion.
+    let _ = sim
+        .db
+        .civ_relationships
+        .modify_unchecked(&(civ_a, civ_b), |r| {
+            r.opinion = CivOpinion::Hostile;
+        });
+    assert_eq!(
+        sim.db
+            .civ_relationships
+            .get(&(civ_a, civ_b))
+            .unwrap()
+            .opinion,
+        CivOpinion::Hostile
+    );
+
+    // Duplicate insert fails.
+    let err = sim
+        .db
+        .civ_relationships
+        .insert_no_fk(crate::db::CivRelationship {
+            from_civ: civ_a,
+            to_civ: civ_b,
+            opinion: CivOpinion::Friendly,
+        });
+    assert!(err.is_err());
+}
