@@ -174,6 +174,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mass-conserve        Wood mass tracking and conservation
 [ ] F-megachunk            MegaChunk spatial hierarchy with draw distance and frustum culling
 [ ] F-mesh-cache-lru       LRU cache for chunk meshes at different Y cutoffs
+[ ] F-mesh-pipeline-perf   Mesh pipeline performance optimization (mesh gen, chamfer, decimation)
 [ ] F-military-campaign    Send elves on world expeditions
 [ ] F-military-org         Squad management and organization
 [ ] F-mobile-support       Mobile/touch platform support
@@ -783,6 +784,71 @@ produces it. Conservation of mass prevents infinite building.
 
 **Related:** F-branch-growth, F-mana-system
 
+#### F-mesh-pipeline-perf — Mesh pipeline performance optimization (mesh gen, chamfer, decimation)
+**Status:** Todo
+
+Pure code-level single-threaded performance optimization of the chunk mesh pipeline: mesh generation, chamfering, and decimation. Bit-fiddling optimization work — algorithmic structure stays the same, but inner loops get faster. Each chunk is already processed on its own thread (F-mesh-par); this work targets the per-chunk cost. No rayon or intra-chunk parallelism.
+
+**Phase 1 — Snapshot regression harness and benchmarks:**
+
+Build a test harness that captures mesh pipeline outputs (vertices, normals, indices, colors) as snapshots, then compares them before and after code changes to verify output equivalence within floating-point tolerance (~1e-5). Also create criterion benchmarks for the mesh pipeline (none exist yet in `elven_canopy_sim`) so that Phase 2 agents can measure performance impact.
+
+Snapshot sources:
+- Hand-built test chunks: single voxel, flat slab, L-shape, staircase, diagonal adjacency, mixed material, fully solid, fully empty, thin wall, overhang.
+- Building chunks: chunks containing constructed buildings (walls, floors, platforms, dormitories, etc.) — buildings introduce novel constraints on mesh construction (thin walls, multi-material junctions, interior/exterior face adjacency).
+- World-generated chunks: run worldgen with a fixed seed, extract a representative sample of `ChunkNeighborhood`s (surface-heavy, underground, canopy, trunk-adjacent, sparse, building-containing) and freeze them as test fixtures.
+
+What's captured per snapshot:
+- Raw mesh output (positions, normals, colors, indices) from mesh generation.
+- Post-chamfer `SmoothMesh` output.
+- Post-decimation `SmoothMesh` output.
+- Vertex count, triangle count, and bounding box as quick-check metadata.
+
+Comparison: position/normal components with configurable epsilon (default 1e-5), index buffers exactly, color values exactly. Quick-check metadata compared first for fast failure.
+
+**Phase 2 — Iterative agent-driven optimization:**
+
+Each optimization attempt is performed by a fresh agent in a loop. The agents share a persistent optimization diary at `.tmp/mesh-perf-diary.md` that records every attempt — idea, rationale, result, and whether the change was kept or reverted.
+
+**Agent loop procedure:**
+
+Each agent:
+1. Reads the optimization diary and the current codebase to understand what has been tried before.
+2. Devises a novel optimization idea that hasn't been attempted, or revisits a previously-failed idea only if enough subsequent code changes have landed that the context is materially different.
+3. Appends the idea and rationale to the diary before starting work.
+4. Implements the optimization.
+5. Runs the snapshot regression harness to verify correctness (identical output within epsilon).
+6. Runs criterion benchmarks to measure performance impact.
+7. **If the optimization improves performance and passes correctness:** commits and pushes the change.
+8. Waits for CI via `scripts/wait-for-ci.sh`. If CI fails, investigates and attempts to fix (which may require re-running benchmarks to confirm the fix doesn't regress performance). If unrecoverable, treats this as a failure — reverts the commit and records the failure reason in the diary.
+9. **If CI passes:** records the improvement in the diary (benchmark numbers before/after).
+10. **If it doesn't improve performance or breaks correctness:** reverts all changes and records the failure reason in the diary.
+11. The agent terminates.
+
+The next agent spawns and repeats from step 1. This continues until the user stops or **10 consecutive agent attempts fail**, whichever comes first. The loop can plausibly run for hours (e.g., overnight).
+
+A "failure" is any of: no measurable performance improvement, correctness regression (snapshots don't match), CI failure that can't be fixed, or a revert for any other reason. Only a committed, pushed, CI-green optimization with measured improvement counts as success and resets the consecutive failure counter.
+
+**Optimization search space (non-exhaustive):**
+
+The agents are not limited to the suggestions below — any single-threaded optimization is fair game:
+- Mesh gen: face visibility checks, neighbor lookups via the dense voxel array, vertex/normal/color construction, RLE column span iteration, memory allocation patterns.
+- Chamfer: vertex displacement toward anchored-neighbor centroids, saddle-skip heuristic for diagonal neighbors, the solid-then-leaf two-phase pass, adjacency queries on the `SmoothMesh` connectivity graph.
+- Decimation: the full pipeline is coplanar region re-triangulation → collinear boundary vertex collapse → QEM edge collapse. Targets include QEM matrix operations, edge collapse candidate selection, priority queue overhead, topology bookkeeping, boundary/color/anchor preservation checks. Only the final mesh output needs snapshot verification — intermediate sub-pass outputs don't need to be frozen.
+- Lookup tables, branchless logic, branch elimination in hot loops.
+- Cache-friendly data layouts, struct-of-arrays vs array-of-structs.
+- SIMD intrinsics for vector/matrix operations (QEM matrices, vertex displacement, normal computation).
+- Alternative data structures (e.g., spatial hashing, flat arrays replacing tree structures, arena allocation).
+- Reduced allocations, buffer pooling, scratch space reuse.
+- Algorithmic micro-optimizations (early exits, tighter bounds, redundant-work elimination).
+- Inlining hints, cold/hot path separation.
+
+**Correctness gate:** Every optimization must pass the snapshot regression harness — identical output within tolerance on all test chunks, both hand-built and world-generated.
+
+**Note:** B-qem-deformation and B-chamfer-nonmfld are known bugs in the chamfer/decimation pipeline. If either gets fixed, the expected snapshot outputs will change and the frozen comparisons will need to be regenerated.
+
+**Related:** F-smooth-perf
+
 #### F-no-bp-overlap — Reject overlapping blueprint designations
 **Status:** Done · **Phase:** 2
 
@@ -861,7 +927,7 @@ Potential optimizations:
 - Profile chamfer/smoothing cost per chunk and optimize hot loops.
 - Consider reducing smooth mesh border from 2 to 1 voxel if chamfer-only (no smoothing iterations) is the default.
 
-**Related:** F-visual-smooth
+**Related:** F-mesh-pipeline-perf, F-visual-smooth
 
 #### F-smooth-ycutoff — Post-smoothing Y-cutoff with cap faces
 **Status:** Todo
