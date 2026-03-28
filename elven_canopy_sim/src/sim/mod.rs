@@ -864,6 +864,7 @@ impl SimState {
         }
 
         self.tick = target_tick;
+        self.world.sim_tick = self.tick;
         StepResult { events }
     }
 

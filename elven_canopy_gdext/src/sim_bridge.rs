@@ -5088,23 +5088,6 @@ impl SimBridge {
         arr
     }
 
-    /// Return chunk coordinates that were updated in the last
-    /// `update_world_mesh()` call, as a flat PackedInt32Array of (cx,cy,cz)
-    /// triples.
-    #[func]
-    fn get_dirty_chunk_coords(&self) -> PackedInt32Array {
-        let Some(cache) = &self.mesh_cache else {
-            return PackedInt32Array::new();
-        };
-        let mut arr = PackedInt32Array::new();
-        for c in cache.last_updated_coords() {
-            arr.push(c.cx);
-            arr.push(c.cy);
-            arr.push(c.cz);
-        }
-        arr
-    }
-
     /// Build a Godot ArrayMesh for the given chunk. Returns an ArrayMesh with
     /// exactly 3 surfaces: surface 0 = bark, surface 1 = ground, surface 2 =
     /// leaf. Empty surfaces get a minimal single-triangle degenerate surface

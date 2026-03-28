@@ -79,6 +79,16 @@ fn step_advances_tick() {
 }
 
 #[test]
+fn step_updates_world_sim_tick() {
+    let mut sim = test_sim(42);
+    assert_eq!(sim.world.sim_tick, 0);
+    sim.step(&[], 10);
+    assert_eq!(sim.world.sim_tick, 10);
+    sim.step(&[], 25);
+    assert_eq!(sim.world.sim_tick, 25);
+}
+
+#[test]
 fn tree_heartbeat_reschedules() {
     let mut sim = test_sim(42);
     let heartbeat_interval = sim.config.tree_heartbeat_interval_ticks;

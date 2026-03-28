@@ -6,6 +6,11 @@
 ## draw-distance filtering and frustum culling — only nearby, visible chunks
 ## have MeshInstance3D nodes.
 ##
+## Mesh generation is fully asynchronous: chunk meshes are generated on
+## background rayon workers and completed results are drained each frame.
+## This prevents frame stuttering at long draw distances. Chunks may take
+## 1-2 frames to appear after entering visibility.
+##
 ## The Rust sim generates per-chunk ArrayMesh data with up to three surfaces:
 ## - Surface 0 (bark): Trunk, Branch, Root, and construction voxels. Uses the
 ##   smooth mesh pipeline: each face is subdivided into 8 triangles, chamfered,
@@ -90,17 +95,17 @@ func setup(bridge: SimBridge, camera: Camera3D, sun: DirectionalLight3D) -> void
 	_refresh_fruit()
 
 
-## Perform the first visibility pass to populate initial chunks.
+## Perform the first visibility pass to submit initial chunks for generation.
 ## Skips frustum culling (empty plane list) because the camera may not have
 ## a valid frustum yet during setup — the viewport hasn't rendered a frame.
-## All chunks within draw distance are generated, up to the per-frame cap.
+## Chunks are submitted to background workers; they appear on subsequent frames.
 func _do_initial_visibility() -> void:
 	var cam_pos := _camera.global_position
 	var empty_frustum := PackedFloat32Array()
 	_bridge.update_visibility(cam_pos.x, cam_pos.y, cam_pos.z, empty_frustum)
 	_process_generated_chunks()
-	# The per-frame cap means not all chunks may be generated on the first call.
-	# Subsequent refresh() calls will generate the rest via _update_chunk_visibility.
+	# Chunks are generated asynchronously. On the first frame, no results are
+	# ready yet. Subsequent refresh() calls drain completed meshes.
 
 
 ## Read draw distance from GameConfig and apply to the bridge if changed.
@@ -111,24 +116,21 @@ func _apply_draw_distance() -> void:
 		_bridge.set_draw_distance(float(dist))
 
 
-## Rebuild dirty chunks, update visibility, and refresh fruit.
-## Called every frame by main.gd.
+## Submit dirty chunks for background regeneration, update visibility, and
+## refresh fruit. Called every frame by main.gd.
+##
+## Mesh generation is fully asynchronous: update_world_mesh() and
+## update_visibility() submit chunks to background workers. Completed meshes
+## are drained at the start of update_visibility() and appear in the
+## chunks_generated delta list, which _process_generated_chunks() handles.
 func refresh() -> void:
-	var updated := _bridge.update_world_mesh()
-	if updated > 0:
-		var dirty := _bridge.get_dirty_chunk_coords()
-		var count := dirty.size() / 3
-		for i in count:
-			var idx := i * 3
-			var cx := dirty[idx]
-			var cy := dirty[idx + 1]
-			var cz := dirty[idx + 2]
-			_rebuild_chunk(cx, cy, cz)
+	_bridge.update_world_mesh()
 
 	# Apply draw distance if changed (e.g. via settings panel).
 	_apply_draw_distance()
 
-	# Visibility update: send camera state to Rust, process deltas.
+	# Visibility update: send camera state to Rust, drain completed meshes,
+	# process show/hide/shadow/generate/evict delta lists.
 	_update_chunk_visibility()
 
 	_refresh_fruit()

@@ -62,6 +62,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::chunk_neighborhood::ChunkNeighborhood;
 use crate::smooth_mesh::{SmoothMesh, TAG_BARK, TAG_GROUND, TAG_LEAF};
 use crate::types::{VoxelCoord, VoxelType};
 use crate::world::VoxelWorld;
@@ -277,10 +278,12 @@ pub fn chunk_mesh_to_obj(mesh: &ChunkMesh) -> String {
 /// Generate a chunk mesh with decimation explicitly enabled or disabled,
 /// regardless of the global toggle. Restores the global state afterward.
 ///
-/// NOT THREAD-SAFE: temporarily mutates the global `DECIMATION_ENABLED`
-/// atomic. Must only be called from the main thread. If mesh generation
-/// is ever parallelized (F-mesh-par), this must be refactored to pass
-/// the flag through as a parameter instead of mutating global state.
+/// **NOT THREAD-SAFE:** temporarily mutates the global `DECIMATION_ENABLED`
+/// atomic. Must only be called from the main thread (or when no background
+/// mesh workers are running). Background workers in the async mesh pipeline
+/// read `DECIMATION_ENABLED` — calling this concurrently could cause them
+/// to generate meshes with the wrong decimation setting. Currently only
+/// used by the debug OBJ export (`export_chunk_obj`).
 pub fn generate_chunk_mesh_with_decimation(
     world: &VoxelWorld,
     chunk: ChunkCoord,
@@ -290,9 +293,22 @@ pub fn generate_chunk_mesh_with_decimation(
 ) -> ChunkMesh {
     let was_enabled = decimation_enabled();
     set_decimation_enabled(decimate);
-    let mesh = generate_chunk_mesh(world, chunk, y_cutoff, grassless);
+    let mesh = generate_chunk_mesh_from_world(world, chunk, y_cutoff, grassless);
     set_decimation_enabled(was_enabled);
     mesh
+}
+
+/// Convenience wrapper: extracts a `ChunkNeighborhood` from the world and
+/// generates the mesh. Use this when you have a `&VoxelWorld` and don't need
+/// to decouple extraction from generation (tests, synchronous callers).
+pub fn generate_chunk_mesh_from_world(
+    world: &VoxelWorld,
+    chunk: ChunkCoord,
+    y_cutoff: Option<i32>,
+    grassless: &std::collections::BTreeSet<VoxelCoord>,
+) -> ChunkMesh {
+    let neighborhood = ChunkNeighborhood::extract(world, chunk, y_cutoff, grassless);
+    generate_chunk_mesh(&neighborhood)
 }
 
 /// Vertex color for grassless (grazed) dirt — earthy brown instead of the
@@ -335,7 +351,8 @@ pub fn produces_geometry(vt: VoxelType) -> bool {
 /// Border radius (in voxels) around each chunk for the smooth mesh pipeline.
 /// Provides context for face culling, anchoring, and smoothing passes so that
 /// boundary vertices get the same smoothing result in adjacent chunks.
-const SMOOTH_BORDER: i32 = 2;
+/// Also used by `ChunkNeighborhood::extract` to determine the capture region.
+pub const SMOOTH_BORDER: i32 = 2;
 
 /// The 6 face directions as (dx, dy, dz) offsets and their outward normals.
 const FACES: [(i32, i32, i32); 6] = [
@@ -438,12 +455,14 @@ fn is_smooth_opaque(vt: VoxelType) -> bool {
 ///
 /// See `smooth_mesh.rs` for the smoothing pipeline and
 /// `docs/drafts/visual_smooth.md` for the full design.
-pub fn generate_chunk_mesh(
-    world: &VoxelWorld,
-    chunk: ChunkCoord,
-    y_cutoff: Option<i32>,
-    grassless: &std::collections::BTreeSet<VoxelCoord>,
-) -> ChunkMesh {
+/// Generate a chunk mesh from a pre-extracted neighborhood snapshot.
+///
+/// This is the core mesh generation entry point for the async pipeline:
+/// the neighborhood is extracted on the main thread (fast), then this
+/// function runs on a background worker with no world access.
+pub fn generate_chunk_mesh(nh: &ChunkNeighborhood) -> ChunkMesh {
+    let chunk = nh.chunk;
+    let y_cutoff = nh.y_cutoff;
     let mut mesh = ChunkMesh::default();
 
     let base_x = chunk.cx * CHUNK_SIZE;
@@ -472,11 +491,11 @@ pub fn generate_chunk_mesh(
 
     let border = SMOOTH_BORDER;
     let smooth_min_x = (base_x - border).max(0);
-    let smooth_max_x = (base_x + CHUNK_SIZE + border).min(world.size_x as i32);
+    let smooth_max_x = (base_x + CHUNK_SIZE + border).min(nh.world_size_x as i32);
     let smooth_min_y = (base_y - border).max(0);
-    let smooth_max_y_unbounded = (base_y + CHUNK_SIZE + border).min(world.size_y as i32);
+    let smooth_max_y_unbounded = (base_y + CHUNK_SIZE + border).min(nh.world_size_y as i32);
     let smooth_min_z = (base_z - border).max(0);
-    let smooth_max_z = (base_z + CHUNK_SIZE + border).min(world.size_z as i32);
+    let smooth_max_z = (base_z + CHUNK_SIZE + border).min(nh.world_size_z as i32);
 
     // Effective Y ceiling for smooth mesh includes the border.
     let smooth_effective_y_end = match y_cutoff {
@@ -486,7 +505,7 @@ pub fn generate_chunk_mesh(
 
     for wz in smooth_min_z..smooth_max_z {
         for wx in smooth_min_x..smooth_max_x {
-            for (vt, y_start, y_end) in world.column_spans(wx as u32, wz as u32) {
+            for (vt, y_start, y_end) in nh.column_spans(wx as u32, wz as u32) {
                 if !is_smooth_voxel(vt) {
                     continue;
                 }
@@ -512,7 +531,7 @@ pub fn generate_chunk_mesh(
                     // For dirt voxels, check grassless status per-voxel.
                     let color = if is_dirt {
                         let coord = VoxelCoord::new(wx, wy, wz);
-                        if grassless.contains(&coord) {
+                        if nh.grassless.contains(&coord) {
                             GRASSLESS_DIRT_COLOR
                         } else {
                             base_color
@@ -523,7 +542,7 @@ pub fn generate_chunk_mesh(
 
                     for (face_idx, &(dx, dy, dz)) in FACES.iter().enumerate() {
                         let ny = wy + dy;
-                        let neighbor = world.get(VoxelCoord::new(wx + dx, ny, wz + dz));
+                        let neighbor = nh.get(VoxelCoord::new(wx + dx, ny, wz + dz));
 
                         // Face culling rules:
                         // - solid→solid: cull (both opaque)
@@ -638,7 +657,8 @@ mod tests {
     #[test]
     fn empty_chunk_produces_empty_mesh() {
         let world = one_chunk_world();
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh =
+            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
         assert!(mesh.is_empty());
     }
 
@@ -646,7 +666,8 @@ mod tests {
     fn single_trunk_voxel_produces_smooth_mesh() {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh =
+            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
 
         // Smooth mesh: 6 faces × 8 triangles = 48 triangles.
         // Per-triangle colors mean 3 verts per triangle = 144 output vertices.
@@ -663,7 +684,8 @@ mod tests {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
         world.set(VoxelCoord::new(9, 8, 8), VoxelType::Branch);
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh =
+            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
 
         // Each voxel has 5 visible faces (shared face culled).
         // 10 faces × 8 triangles = 80 triangles × 3 verts = 240 output verts.
@@ -677,7 +699,8 @@ mod tests {
         // Place Dirt and a trunk voxel above it.
         world.set(VoxelCoord::new(8, 0, 8), VoxelType::Dirt);
         world.set(VoxelCoord::new(8, 1, 8), VoxelType::Trunk);
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh =
+            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
 
         // Both are opaque: the shared face is culled.
         // Trunk = 5 visible faces (bark), Dirt = 5 visible faces (ground).
@@ -691,7 +714,8 @@ mod tests {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Leaf);
         world.set(VoxelCoord::new(9, 8, 8), VoxelType::Leaf);
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh =
+            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
 
         // Leaves are now shell-only: leaf↔leaf shared face is culled.
         // Each leaf has 5 visible faces → 10 faces × 8 tri × 3 verts.
@@ -704,7 +728,8 @@ mod tests {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Leaf);
         world.set(VoxelCoord::new(9, 8, 8), VoxelType::Trunk);
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh =
+            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
 
         // Leaf: 5 faces (face toward trunk culled). Smooth mesh.
         assert_eq!(mesh.leaf.indices.len(), 5 * 8 * 3);
@@ -721,8 +746,10 @@ mod tests {
         world.set(VoxelCoord::new(15, 8, 8), VoxelType::Trunk); // last voxel in chunk 0
         world.set(VoxelCoord::new(16, 8, 8), VoxelType::Trunk); // first voxel in chunk 1
 
-        let mesh0 = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
-        let mesh1 = generate_chunk_mesh(&world, ChunkCoord::new(1, 0, 0), None, &no_grassless());
+        let mesh0 =
+            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh1 =
+            generate_chunk_mesh_from_world(&world, ChunkCoord::new(1, 0, 0), None, &no_grassless());
 
         // Each should have 5 faces (shared face culled across chunk boundary).
         // With smooth mesh and border, both chunks see the other voxel and
@@ -775,7 +802,8 @@ mod tests {
     fn construction_voxels_produce_geometry() {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::GrownPlatform);
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh =
+            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
         // Smooth mesh: 6 faces × 8 triangles = 48 triangles.
         assert_eq!(mesh.bark.indices.len(), 48 * 3);
     }
@@ -784,7 +812,8 @@ mod tests {
     fn vertex_colors_match_voxel_type() {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh =
+            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
 
         // Check first vertex color is trunk color.
         let expected = voxel_color(VoxelType::Trunk);
@@ -798,7 +827,8 @@ mod tests {
     fn dirt_goes_to_ground_surface() {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Dirt);
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh =
+            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
 
         // Dirt should be on the ground surface, not bark.
         assert!(mesh.bark.is_empty());
@@ -814,7 +844,8 @@ mod tests {
         // Leaf now uses procedural noise shader — no UVs needed.
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Leaf);
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh =
+            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
         assert!(mesh.leaf.uvs.is_empty());
         // Should have smooth mesh geometry: 6 faces × 8 tri × 3 verts.
         assert_eq!(mesh.leaf.indices.len(), 6 * 8 * 3);
@@ -824,7 +855,8 @@ mod tests {
     fn fruit_does_not_produce_geometry() {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Fruit);
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh =
+            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
         assert!(mesh.is_empty());
     }
 
@@ -832,7 +864,8 @@ mod tests {
     fn building_interior_does_not_produce_geometry() {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::BuildingInterior);
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh =
+            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
         assert!(mesh.is_empty());
     }
 
@@ -845,7 +878,12 @@ mod tests {
         world.set(VoxelCoord::new(8, 10, 8), VoxelType::Trunk);
 
         // Cutoff at y=8: voxel at y=5 visible, voxel at y=10 hidden.
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), Some(8), &no_grassless());
+        let mesh = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            Some(8),
+            &no_grassless(),
+        );
         // Only the y=5 voxel should produce geometry (6 faces, smooth).
         assert_eq!(mesh.bark.indices.len(), 48 * 3);
     }
@@ -859,12 +897,16 @@ mod tests {
 
         // Without cutoff: shared +Y/-Y face is culled → 10 faces total.
         let mesh_no_cutoff =
-            generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
         assert_eq!(mesh_no_cutoff.bark.indices.len(), 10 * 8 * 3);
 
         // With cutoff at y=8: upper voxel hidden, lower voxel's +Y face exposed.
-        let mesh_cutoff =
-            generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), Some(8), &no_grassless());
+        let mesh_cutoff = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            Some(8),
+            &no_grassless(),
+        );
         // Lower voxel now has all 6 faces visible (upper neighbor treated as air).
         assert_eq!(mesh_cutoff.bark.indices.len(), 6 * 8 * 3);
     }
@@ -875,9 +917,13 @@ mod tests {
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
 
         let mesh_none =
-            generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
-        let mesh_some =
-            generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), Some(100), &no_grassless());
+            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh_some = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            Some(100),
+            &no_grassless(),
+        );
 
         assert_eq!(mesh_none.bark.vertex_count(), mesh_some.bark.vertex_count());
     }
@@ -888,7 +934,12 @@ mod tests {
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
 
         // Cutoff exactly at voxel Y — the voxel is at the cutoff, so hidden.
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), Some(8), &no_grassless());
+        let mesh = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            Some(8),
+            &no_grassless(),
+        );
         assert!(mesh.is_empty());
     }
 
@@ -898,7 +949,12 @@ mod tests {
         world.set(VoxelCoord::new(8, 5, 8), VoxelType::Leaf);
         world.set(VoxelCoord::new(8, 10, 8), VoxelType::Leaf);
 
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), Some(8), &no_grassless());
+        let mesh = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            Some(8),
+            &no_grassless(),
+        );
         // Only y=5 leaf visible (6 faces, smooth mesh).
         assert_eq!(mesh.leaf.indices.len(), 6 * 8 * 3);
         assert!(mesh.bark.is_empty());
@@ -916,8 +972,10 @@ mod tests {
             world.set(VoxelCoord::new(4, y, 4), VoxelType::Trunk);
         }
 
-        let mesh0 = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
-        let mesh1 = generate_chunk_mesh(&world, ChunkCoord::new(0, 1, 0), None, &no_grassless());
+        let mesh0 =
+            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh1 =
+            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 1, 0), None, &no_grassless());
 
         // Both chunks should produce non-empty bark geometry. With smooth mesh
         // and the border, exact counts depend on deduplication across the
@@ -938,7 +996,8 @@ mod tests {
         world.set(VoxelCoord::new(8, 0, 8), VoxelType::Trunk);
 
         // Chunk at y=64..79 should be empty.
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 4, 0), None, &no_grassless());
+        let mesh =
+            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 4, 0), None, &no_grassless());
         assert!(mesh.is_empty());
     }
 
@@ -949,7 +1008,12 @@ mod tests {
 
         // Cutoff at y=0 means every voxel in chunk 0 (y=0..15) is at or above
         // the cutoff. The early-return optimization should produce an empty mesh.
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), Some(0), &no_grassless());
+        let mesh = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            Some(0),
+            &no_grassless(),
+        );
         assert!(mesh.is_empty());
     }
 
@@ -957,7 +1021,8 @@ mod tests {
     fn strut_voxel_produces_geometry() {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Strut);
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh =
+            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
         // 6 faces × 8 triangles (smooth mesh).
         assert_eq!(mesh.bark.indices.len(), 48 * 3);
     }
@@ -969,7 +1034,8 @@ mod tests {
         set_decimation_enabled(false);
         let mut world = VoxelWorld::new(8, 16, 8);
         world.set(VoxelCoord::new(4, 4, 4), VoxelType::Trunk);
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh =
+            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
         assert_eq!(mesh.bark.indices.len(), 48 * 3); // 6 faces smooth
     }
 
@@ -981,7 +1047,12 @@ mod tests {
         for y in 0..10 {
             world.set(VoxelCoord::new(8, y, 8), VoxelType::Trunk);
         }
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), Some(5), &no_grassless());
+        let mesh = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            Some(5),
+            &no_grassless(),
+        );
 
         // 5 visible voxels (y=0..4). Internal ±Y faces are culled.
         // - 4 side faces × 5 = 20 side faces
@@ -994,7 +1065,12 @@ mod tests {
     #[test]
     fn negative_chunk_coords_produce_empty_mesh() {
         let world = one_chunk_world();
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(-1, 0, 0), None, &no_grassless());
+        let mesh = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(-1, 0, 0),
+            None,
+            &no_grassless(),
+        );
         assert!(mesh.is_empty());
     }
 
@@ -1008,7 +1084,8 @@ mod tests {
     fn estimate_byte_size_single_voxel() {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
-        let mesh = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh =
+            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
         let size = mesh.estimate_byte_size();
         // Smooth mesh: 26 verts, 48 triangles.
         // vertices: 26*3*4=312, normals: 312, indices: 144*4=576,
@@ -1060,8 +1137,10 @@ mod tests {
             }
         }
 
-        let mesh0 = generate_chunk_mesh(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
-        let mesh1 = generate_chunk_mesh(&world, ChunkCoord::new(1, 0, 0), None, &no_grassless());
+        let mesh0 =
+            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh1 =
+            generate_chunk_mesh_from_world(&world, ChunkCoord::new(1, 0, 0), None, &no_grassless());
 
         assert!(!mesh0.ground.is_empty(), "chunk 0 should have ground");
         assert!(!mesh1.ground.is_empty(), "chunk 1 should have ground");

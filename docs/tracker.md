@@ -63,7 +63,10 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [ ] B-assembly-timeout     Activity assembly timeout not enforced
+[ ] B-carve-dirt           Carving pure dirt voxels rejected as nothing to carve
+[ ] B-carve-perf           Carving dirt causes severe CPU stall, possibly structural checks
 [ ] B-chamfer-nonmfld      Chamfer produces non-manifold edges for diagonally-adjacent voxels
+[ ] B-dead-max-gen         Remove vestigial max_gen_per_frame field and ~40 test calls
 [ ] B-dead-owner-items     Dead creature items retain ownership, becoming invisible to all systems
 [ ] B-dine-orphan-task     DineAtHall speculative task leaves orphaned Complete rows
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
@@ -123,6 +126,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-day-night-color      Color grading shift by time of day
 [ ] F-defense-struct       Defensive structures (ballista, wards)
 [ ] F-demolish             Structure demolition
+[ ] F-docs-overhaul        Reorganize and consolidate docs/ directory
 [ ] F-dwarf-fort-gen       Underground dwarf fortress generation
 [ ] F-dye-application      Apply dye to equipment at workshop
 [ ] F-dye-mixing           Dye color mixing recipes
@@ -171,7 +175,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mass-conserve        Wood mass tracking and conservation
 [ ] F-megachunk            MegaChunk spatial hierarchy with draw distance and frustum culling
 [ ] F-mesh-cache-lru       LRU cache for chunk meshes at different Y cutoffs
-[ ] F-mesh-par             Parallel off-main-thread chunk mesh generation with camera-priority
 [ ] F-military-campaign    Send elves on world expeditions
 [ ] F-military-org         Squad management and organization
 [ ] F-mobile-support       Mobile/touch platform support
@@ -405,6 +408,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-melee-action         Melee attack action
 [x] F-mesh-gen-rle         RLE-aware chunk mesh generation
 [x] F-mesh-lod             Mesh level-of-detail for distant chunks
+[x] F-mesh-par             Parallel off-main-thread chunk mesh generation with camera-priority
 [x] F-military-armor       Military equipment auto-equip and slot validation
 [x] F-military-equip       Military group equipment acquisition
 [x] F-military-groups      Military group data model and configuration
@@ -513,6 +517,12 @@ Full descriptions grouped by area. Each item includes design doc references,
 draft docs, and blocking relationships where relevant.
 
 ### Construction
+
+#### B-carve-dirt — Carving pure dirt voxels rejected as nothing to carve
+**Status:** Todo
+
+#### B-carve-perf — Carving dirt causes severe CPU stall, possibly structural checks
+**Status:** Todo
 
 #### F-batch-blueprint — Batch blueprinting with dependency order
 **Status:** Todo · **Phase:** 3 · **Refs:** §12
@@ -5231,7 +5241,7 @@ F-rle-voxels.
 **Related:** B-chamfer-nonmfld, B-qem-deformation, F-boundary-decim, F-distance-fog, F-megachunk, F-mesh-cache-lru, F-visual-smooth
 
 #### F-mesh-par — Parallel off-main-thread chunk mesh generation with camera-priority
-**Status:** Todo
+**Status:** Done
 
 Move chunk mesh generation off the main thread onto the rayon worker pool. Currently mesh gen blocks the main thread; parallelizing it across rayon workers would reduce frame hitches when many chunks need rebuilding (e.g., after construction, tree growth, or camera movement). Chunks visible to the camera should be prioritized (submitted last to exploit rayon's LIFO work-stealing, or split into a high-priority batch that completes before speculative work begins). Ideally also speculatively generate meshes for chunks near the camera or within its frustum, since the camera could pan there at any moment. Relates to F-megachunk (spatial hierarchy) and F-mesh-cache-lru (caching).
 
@@ -5678,6 +5688,9 @@ The chamfer pass in `smooth_mesh.rs` produces non-manifold edges (edges shared b
 GrownStairs, Bridge (VoxelType), and Stairs, Bridge (BuildType) exist in code but there is no way to produce them in-game. They are not planned for implementation in the foreseeable future. Remove all code referencing these variants — enum definitions, match arms, trait impls, tests, and any other references.
 
 Additionally, add explicit integer discriminants to all serializable enums (at minimum VoxelType and BuildType) so that inserting or removing variants in the future does not silently change the serialized representation of existing variants.
+
+#### B-dead-max-gen — Remove vestigial max_gen_per_frame field and ~40 test calls
+**Status:** Todo
 
 #### B-sim-floats — Remaining f32/f64 in sim logic threaten determinism
 **Status:** Done
@@ -6700,6 +6713,9 @@ Audit test suite for slow tests and add per-test timing visibility.
 Game freezes for a noticeable duration roughly every 3 seconds on Windows, even while paused. Observed on a debug build running on a powerful system, so unlikely to be raw performance. Possible causes: GC/allocator stutter, vsync/swap chain issue, debug build overhead, or something Windows-specific in the rendering or sim tick path.
 
 Repro: run `scripts/build.py run` on Windows, observe periodic hitches.
+
+#### F-docs-overhaul — Reorganize and consolidate docs/ directory
+**Status:** Todo
 
 #### F-mobile-support — Mobile/touch platform support
 **Status:** Todo · **Phase:** 9

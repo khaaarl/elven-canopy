@@ -591,6 +591,11 @@ pub struct VoxelWorld {
     /// the last drain. Used by the minimap to know which tiles to re-fetch.
     /// Excluded from serialization (minimap does a full rebuild on load).
     dirty_heightmap_tiles: BTreeSet<(i32, i32)>,
+    /// The sim tick at the time of the last sim advance. Render-only metadata
+    /// used by the async mesh pipeline to detect stale results — excluded from
+    /// serialization (reset to 0 on load; the mesh cache does a full rebuild).
+    /// Set by `SimState::step()` after advancing.
+    pub sim_tick: u64,
 }
 
 impl VoxelWorld {
@@ -612,6 +617,7 @@ impl VoxelWorld {
             groups: (0..num_groups).map(|_| ColumnGroup::default()).collect(),
             dirty_voxels: Vec::new(),
             dirty_heightmap_tiles: BTreeSet::new(),
+            sim_tick: 0,
         }
     }
 
@@ -928,6 +934,7 @@ impl VoxelWorld {
             groups,
             dirty_voxels: Vec::new(),
             dirty_heightmap_tiles: BTreeSet::new(),
+            sim_tick: 0,
         })
     }
 }

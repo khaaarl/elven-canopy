@@ -39,6 +39,7 @@ elven-canopy/
 │       │   ├── task_helpers.rs #   Task extension table accessors, insert_task
 │       │   └── tests/           #   Per-domain test modules (split from monolithic tests.rs)
 │       ├── db.rs               # SimDb — tabulosity relational store (45 tables, all entities)
+│       ├── chunk_neighborhood.rs # ChunkNeighborhood: lightweight voxel snapshot for off-thread mesh gen
 │       ├── mesh_gen.rs         # Chunk-based voxel mesh generation with smooth surface rendering
 │       ├── smooth_mesh.rs      # Smooth mesh pipeline: subdivision, anchoring, chamfer, smoothing
 │       ├── mesh_decimation.rs  # QEM edge-collapse decimation + coplanar retri + collinear collapse

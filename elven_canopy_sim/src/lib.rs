@@ -52,6 +52,7 @@
 pub mod blueprint;
 pub mod building;
 pub mod checksum;
+pub mod chunk_neighborhood;
 pub mod command;
 pub mod config;
 pub mod dance;
