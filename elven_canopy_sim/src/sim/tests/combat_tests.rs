@@ -141,7 +141,7 @@ fn spawn_hornet_at(sim: &mut SimState, pos: VoxelCoord) -> CreatureId {
 
 /// Helper: spawn elf, make it aggressive (military group), zero stats (predictable damage),
 /// and return (elf_id, elf_position).
-fn setup_aggressive_elf(sim: &mut SimState) -> (CreatureId, VoxelCoord) {
+pub(super) fn setup_aggressive_elf(sim: &mut SimState) -> (CreatureId, VoxelCoord) {
     let elf_id = spawn_elf(sim);
     zero_creature_stats(sim, elf_id);
     let soldiers = soldiers_group(sim);
@@ -154,7 +154,7 @@ fn setup_aggressive_elf(sim: &mut SimState) -> (CreatureId, VoxelCoord) {
 
 /// Helper: spawn a hornet at a specific position and freeze it (force idle, cancel
 /// activations) so it stays put and we can test elf behavior in isolation.
-fn setup_frozen_hornet(sim: &mut SimState, pos: VoxelCoord) -> CreatureId {
+pub(super) fn setup_frozen_hornet(sim: &mut SimState, pos: VoxelCoord) -> CreatureId {
     let mut events = Vec::new();
     let hornet_id = sim
         .spawn_creature(Species::Hornet, pos, &mut events)
@@ -165,7 +165,7 @@ fn setup_frozen_hornet(sim: &mut SimState, pos: VoxelCoord) -> CreatureId {
 }
 
 /// Helper: give a creature a spear (Oak, quality 0).
-fn give_spear(sim: &mut SimState, creature_id: CreatureId) {
+pub(super) fn give_spear(sim: &mut SimState, creature_id: CreatureId) {
     let inv_id = sim.db.creatures.get(&creature_id).unwrap().inventory_id;
     sim.inv_add_item(
         inv_id,
@@ -5243,5 +5243,1733 @@ fn test_melee_weapon_no_degrade_on_miss() {
     assert_eq!(
         spear_hp_after, spear_hp_before,
         "weapon should not degrade on miss"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Tests migrated from commands_tests.rs
+// ---------------------------------------------------------------------------
+
+// -----------------------------------------------------------------------
+// Hostile AI tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn engagement_style_config() {
+    use crate::species::EngagementInitiative;
+    let sim = test_sim(42);
+    // Aggressive species.
+    assert_eq!(
+        sim.species_table[&Species::Goblin]
+            .engagement_style
+            .initiative,
+        EngagementInitiative::Aggressive
+    );
+    assert_eq!(
+        sim.species_table[&Species::Orc].engagement_style.initiative,
+        EngagementInitiative::Aggressive
+    );
+    assert_eq!(
+        sim.species_table[&Species::Troll]
+            .engagement_style
+            .initiative,
+        EngagementInitiative::Aggressive
+    );
+    // Passive species.
+    assert_eq!(
+        sim.species_table[&Species::Capybara]
+            .engagement_style
+            .initiative,
+        EngagementInitiative::Passive
+    );
+    assert_eq!(
+        sim.species_table[&Species::Deer]
+            .engagement_style
+            .initiative,
+        EngagementInitiative::Passive
+    );
+    assert_eq!(
+        sim.species_table[&Species::Boar]
+            .engagement_style
+            .initiative,
+        EngagementInitiative::Passive
+    );
+    assert_eq!(
+        sim.species_table[&Species::Monkey]
+            .engagement_style
+            .initiative,
+        EngagementInitiative::Passive
+    );
+    assert_eq!(
+        sim.species_table[&Species::Squirrel]
+            .engagement_style
+            .initiative,
+        EngagementInitiative::Passive
+    );
+    assert_eq!(
+        sim.species_table[&Species::Elephant]
+            .engagement_style
+            .initiative,
+        EngagementInitiative::Passive
+    );
+    // Elf: defensive with 100% disengage.
+    assert_eq!(
+        sim.species_table[&Species::Elf].engagement_style.initiative,
+        EngagementInitiative::Defensive
+    );
+    assert_eq!(
+        sim.species_table[&Species::Elf]
+            .engagement_style
+            .disengage_threshold_pct,
+        100
+    );
+    // Detection ranges are set for aggressive and flee-capable species.
+    assert!(sim.species_table[&Species::Goblin].hostile_detection_range_sq > 0);
+    assert!(sim.species_table[&Species::Orc].hostile_detection_range_sq > 0);
+    assert!(sim.species_table[&Species::Troll].hostile_detection_range_sq > 0);
+    // Elves have detection range for flee behavior.
+    assert!(sim.species_table[&Species::Elf].hostile_detection_range_sq > 0);
+    assert_eq!(
+        sim.species_table[&Species::Capybara].hostile_detection_range_sq,
+        0
+    );
+}
+
+#[test]
+fn hostile_creature_pursues_and_attacks_elf() {
+    let mut sim = test_sim(300);
+    let elf_id = spawn_species(&mut sim, Species::Elf);
+    let goblin_id = spawn_species(&mut sim, Species::Goblin);
+    force_guaranteed_hits(&mut sim, goblin_id);
+
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let goblin_start = sim.db.creatures.get(&goblin_id).unwrap().position;
+
+    assert_ne!(
+        elf_pos, goblin_start,
+        "Elf and goblin spawned at same position — adjust test seed"
+    );
+
+    let elf_hp_before = sim.db.creatures.get(&elf_id).unwrap().hp;
+
+    sim.step(&[], sim.tick + 10_000);
+
+    let elf_hp_after = sim.db.creatures.get(&elf_id).unwrap().hp;
+    let goblin_pos = sim.db.creatures.get(&goblin_id).unwrap().position;
+    let elf_current_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let new_dist = goblin_pos.manhattan_distance(elf_current_pos);
+    let initial_dist = goblin_start.manhattan_distance(elf_pos);
+
+    // The goblin should have either moved closer to the elf's current
+    // position, or dealt damage (meaning it reached and attacked).
+    let moved_closer = new_dist < initial_dist;
+    let dealt_damage = elf_hp_after < elf_hp_before;
+    assert!(
+        moved_closer || dealt_damage,
+        "Goblin should pursue or attack elf: initial dist={initial_dist}, \
+             new dist={new_dist}, elf hp {elf_hp_before} -> {elf_hp_after}"
+    );
+}
+
+#[test]
+fn hostile_creature_wanders_without_elves() {
+    let mut sim = test_sim(99);
+    let goblin_id = spawn_species(&mut sim, Species::Goblin);
+
+    // Place goblin on a nav node with neighbors so it can wander.
+    let walkable = sim
+        .nav_graph
+        .live_nodes()
+        .find(|n| !n.edge_indices.is_empty())
+        .map(|n| n.position)
+        .expect("should have a walkable nav node with neighbors");
+    force_position(&mut sim, goblin_id, walkable);
+    force_idle(&mut sim, goblin_id);
+
+    let goblin_start = sim.db.creatures.get(&goblin_id).unwrap().position;
+
+    sim.step(&[], sim.tick + 10_000);
+
+    let goblin_pos = sim.db.creatures.get(&goblin_id).unwrap().position;
+    assert_ne!(
+        goblin_start, goblin_pos,
+        "Goblin should wander even without elves to pursue"
+    );
+}
+
+#[test]
+fn hostile_creature_attacks_adjacent_elf() {
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+    force_guaranteed_hits(&mut sim, goblin);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    // Place goblin adjacent to elf.
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, goblin);
+
+    // Schedule an activation so the goblin enters the decision cascade.
+    let tick = sim.tick;
+    sim.event_queue.schedule(
+        tick + 1,
+        ScheduledEventKind::CreatureActivation {
+            creature_id: goblin,
+        },
+    );
+
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+
+    // Run one activation cycle — the goblin should melee the elf.
+    sim.step(&[], tick + 2);
+
+    let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+    let goblin_damage = sim.species_table[&Species::Goblin].melee_damage;
+    assert_eq!(
+        elf_hp_after,
+        elf_hp_before - goblin_damage,
+        "Adjacent hostile should automatically melee-strike the elf"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Projectile system tests (F-projectiles)
+// -----------------------------------------------------------------------
+
+#[test]
+fn spawn_projectile_creates_entity_and_inventory() {
+    let mut sim = test_sim(42);
+    let origin = VoxelCoord::new(40, 5, 40);
+    let target = VoxelCoord::new(50, 5, 40);
+
+    sim.spawn_projectile(origin, target, None);
+
+    assert_eq!(sim.db.projectiles.len(), 1);
+    let proj = sim.db.projectiles.iter_all().next().unwrap();
+    assert_eq!(proj.shooter, None);
+    assert_eq!(proj.prev_voxel, origin);
+    // Should have an inventory with 1 arrow.
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&proj.inventory_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(stacks.len(), 1);
+    assert_eq!(stacks[0].kind, inventory::ItemKind::Arrow);
+    assert_eq!(stacks[0].quantity, 1);
+}
+
+#[test]
+fn spawn_projectile_schedules_tick_event() {
+    let mut sim = test_sim(42);
+    let initial_events = sim.event_queue.len();
+    sim.spawn_projectile(VoxelCoord::new(40, 5, 40), VoxelCoord::new(50, 5, 40), None);
+    // Should have scheduled exactly one ProjectileTick.
+    assert_eq!(sim.event_queue.len(), initial_events + 1);
+}
+
+#[test]
+fn second_spawn_does_not_duplicate_tick_event() {
+    let mut sim = test_sim(42);
+    let initial_events = sim.event_queue.len();
+    sim.spawn_projectile(VoxelCoord::new(40, 5, 40), VoxelCoord::new(50, 5, 40), None);
+    sim.spawn_projectile(VoxelCoord::new(40, 5, 40), VoxelCoord::new(45, 5, 40), None);
+    // Only one extra event (from first spawn), not two.
+    assert_eq!(sim.event_queue.len(), initial_events + 1);
+}
+
+#[test]
+fn projectile_hits_solid_voxel_and_creates_ground_pile() {
+    let mut sim = test_sim(42);
+    // Place a solid wall at x=45.
+    for y in 1..=5 {
+        sim.world
+            .set(VoxelCoord::new(45, y, 40), VoxelType::GrownPlatform);
+    }
+
+    // Spawn projectile heading +x toward the wall (flat, no gravity).
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+    sim.spawn_projectile(VoxelCoord::new(40, 3, 40), VoxelCoord::new(45, 3, 40), None);
+
+    // Run until the projectile resolves (max 500 ticks).
+    for _ in 0..500 {
+        if sim.db.projectiles.is_empty() {
+            break;
+        }
+        sim.tick += 1;
+        let mut events = Vec::new();
+        sim.process_projectile_tick(&mut events);
+        if !sim.db.projectiles.is_empty() {
+            sim.event_queue
+                .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+        }
+    }
+
+    assert_eq!(sim.db.projectiles.len(), 0, "Projectile should be resolved");
+
+    // Should have a ground pile with an arrow in it near x=44 (prev_voxel).
+    let mut found_arrow = false;
+    for pile in sim.db.ground_piles.iter_all() {
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&pile.inventory_id, tabulosity::QueryOpts::ASC);
+        for s in &stacks {
+            if s.kind == inventory::ItemKind::Arrow {
+                found_arrow = true;
+            }
+        }
+    }
+    assert!(found_arrow, "Arrow should land as ground pile");
+}
+
+#[test]
+fn projectile_hits_creature_and_deals_damage() {
+    use crate::db::CreatureTrait;
+    use crate::types::TraitValue;
+    let mut sim = test_sim(42);
+    // Spawn a goblin at a known position.
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, goblin);
+    // Set evasion deeply negative so shooter-less projectile always hits.
+    let _ = sim.db.creature_traits.insert_no_fk(CreatureTrait {
+        creature_id: goblin,
+        trait_kind: TraitKind::Evasion,
+        value: TraitValue::Int(-500),
+    });
+    let _ = sim
+        .db
+        .creature_traits
+        .modify_unchecked(&(goblin, TraitKind::Agility), |t| {
+            t.value = TraitValue::Int(-500);
+        });
+    sim.config.evasion_crit_threshold = 100_000;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_hp_before = sim.db.creatures.get(&goblin).unwrap().hp;
+
+    // Spawn projectile aimed at the goblin (no gravity for predictability).
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+    let origin = VoxelCoord::new(goblin_pos.x - 10, goblin_pos.y, goblin_pos.z);
+    sim.spawn_projectile(origin, goblin_pos, None);
+
+    // Run until resolved.
+    let mut hit_events = Vec::new();
+    for _ in 0..500 {
+        if sim.db.projectiles.is_empty() {
+            break;
+        }
+        sim.tick += 1;
+        let mut events = Vec::new();
+        sim.process_projectile_tick(&mut events);
+        for e in &events {
+            if matches!(e.kind, SimEventKind::ProjectileHitCreature { .. }) {
+                hit_events.push(e.clone());
+            }
+        }
+        if !sim.db.projectiles.is_empty() {
+            sim.event_queue
+                .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+        }
+    }
+
+    assert_eq!(sim.db.projectiles.len(), 0, "Projectile should be resolved");
+    assert!(!hit_events.is_empty(), "Should have hit the creature");
+
+    let goblin_hp_after = sim.db.creatures.get(&goblin).unwrap().hp;
+    assert!(
+        goblin_hp_after < goblin_hp_before,
+        "Goblin should have taken damage: {goblin_hp_before} -> {goblin_hp_after}"
+    );
+}
+
+#[test]
+fn projectile_out_of_bounds_despawns_silently() {
+    let mut sim = test_sim(42);
+    // Shoot a projectile off the edge of the world.
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 5; // very fast
+
+    sim.spawn_projectile(
+        VoxelCoord::new(250, 5, 128),
+        VoxelCoord::new(260, 5, 128), // target is beyond world bounds
+        None,
+    );
+
+    // Run until resolved.
+    for _ in 0..2000 {
+        if sim.db.projectiles.is_empty() {
+            break;
+        }
+        sim.tick += 1;
+        let mut events = Vec::new();
+        sim.process_projectile_tick(&mut events);
+        // No surface hit or creature hit events expected.
+        for e in &events {
+            assert!(
+                !matches!(e.kind, SimEventKind::ProjectileHitSurface { .. }),
+                "Should not hit surface"
+            );
+        }
+        if !sim.db.projectiles.is_empty() {
+            sim.event_queue
+                .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+        }
+    }
+
+    assert_eq!(
+        sim.db.projectiles.len(),
+        0,
+        "Projectile should have despawned"
+    );
+}
+
+#[test]
+fn projectile_does_not_hit_shooter() {
+    let mut sim = test_sim(42);
+    // Spawn an elf and shoot from their position.
+    let elf = spawn_species(&mut sim, Species::Elf);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+
+    // Shoot from the elf's own position toward a distant target.
+    sim.spawn_projectile(
+        elf_pos,
+        VoxelCoord::new(elf_pos.x + 20, elf_pos.y, elf_pos.z),
+        Some(elf),
+    );
+
+    // Run a few ticks — the projectile should pass through the shooter.
+    for _ in 0..50 {
+        if sim.db.projectiles.is_empty() {
+            break;
+        }
+        sim.tick += 1;
+        let mut events = Vec::new();
+        sim.process_projectile_tick(&mut events);
+        if !sim.db.projectiles.is_empty() {
+            sim.event_queue
+                .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+        }
+    }
+
+    // Elf should not have taken any damage.
+    let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+    assert_eq!(
+        elf_hp_after, elf_hp_before,
+        "Shooter should not be hit by their own arrow"
+    );
+}
+
+#[test]
+fn hostile_creature_wanders_after_killing_elf() {
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    // Place goblin adjacent to elf.
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, goblin);
+
+    // Kill the elf.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature { creature_id: elf },
+        }],
+        tick + 1,
+    );
+    assert_eq!(
+        sim.db.creatures.get(&elf).unwrap().vital_status,
+        VitalStatus::Dead,
+    );
+
+    // With no living elves, the goblin should fall back to random wander.
+    sim.step(&[], sim.tick + 10_000);
+    let goblin_final = sim.db.creatures.get(&goblin).unwrap().position;
+    assert_ne!(
+        goblin_final, goblin_pos,
+        "Goblin should wander after elf is dead"
+    );
+}
+
+#[test]
+fn projectile_skips_origin_voxel_creatures() {
+    let mut sim = test_sim(42);
+    // Spawn shooter and bystander at the same position.
+    let shooter = spawn_species(&mut sim, Species::Elf);
+    let shooter_pos = sim.db.creatures.get(&shooter).unwrap().position;
+    let shooter_hp = sim.db.creatures.get(&shooter).unwrap().hp;
+
+    let bystander = spawn_species(&mut sim, Species::Elf);
+    // Move bystander to the same position as the shooter.
+    if let Some(mut c) = sim.db.creatures.get(&bystander) {
+        c.position = shooter_pos;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+    sim.rebuild_spatial_index();
+    let bystander_hp = sim.db.creatures.get(&bystander).unwrap().hp;
+
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+
+    // Shoot from the shared position toward a distant target.
+    sim.spawn_projectile(
+        shooter_pos,
+        VoxelCoord::new(shooter_pos.x + 20, shooter_pos.y, shooter_pos.z),
+        Some(shooter),
+    );
+
+    // Run ticks until projectile is consumed or max iterations.
+    for _ in 0..50 {
+        if sim.db.projectiles.is_empty() {
+            break;
+        }
+        sim.tick += 1;
+        let mut events = Vec::new();
+        sim.process_projectile_tick(&mut events);
+        if !sim.db.projectiles.is_empty() {
+            sim.event_queue
+                .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+        }
+    }
+
+    // Neither the shooter nor the bystander in the origin voxel should
+    // have been hit — projectiles skip the entire launch voxel.
+    let shooter_hp_after = sim.db.creatures.get(&shooter).unwrap().hp;
+    assert_eq!(
+        shooter_hp_after, shooter_hp,
+        "Shooter should not be hit by their own arrow"
+    );
+
+    let bystander_hp_after = sim.db.creatures.get(&bystander).unwrap().hp;
+    assert_eq!(
+        bystander_hp_after, bystander_hp,
+        "Bystander in origin voxel should not be hit (hp: {} -> {})",
+        bystander_hp, bystander_hp_after,
+    );
+}
+
+#[test]
+fn hostile_waits_on_cooldown_near_elf() {
+    // When a hostile is in melee range but on cooldown, it should not
+    // wander away — it should wait and re-strike when the cooldown expires.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, goblin);
+
+    // First strike via command puts goblin on cooldown.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugMeleeAttack {
+                attacker_id: goblin,
+                target_id: elf,
+            },
+        }],
+        tick + 1,
+    );
+    assert_eq!(
+        sim.db.creatures.get(&goblin).unwrap().action_kind,
+        ActionKind::MeleeStrike,
+    );
+
+    // Advance past cooldown. Goblin should stay near elf and strike again,
+    // NOT wander away.
+    let interval = sim.species_table[&Species::Goblin].melee_interval_ticks;
+    sim.step(&[], sim.tick + interval + 100);
+
+    let goblin_final = sim.db.creatures.get(&goblin).unwrap().position;
+    let dist = goblin_final.manhattan_distance(elf_pos);
+    // Should still be within melee range (manhattan dist ≤ 2 for range_sq=3).
+    assert!(
+        dist <= 2,
+        "Goblin should stay near elf on cooldown, not wander away (dist={dist})"
+    );
+}
+
+#[test]
+fn hostile_ignores_elf_outside_detection_range() {
+    // A goblin with detection_range_sq=225 (15 voxels) should NOT pursue
+    // an elf that is >15 voxels away in euclidean distance.
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+
+    // Place elf far from goblin — 20 voxels away on X axis (20² = 400 >> 225).
+    // Stay within the 64x64 world at ground level (y=1, solid terrain at y=0)
+    // so the elf has a valid nav node and won't fall due to creature gravity.
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let far_x = (goblin_pos.x + 20).min(62);
+    let far_pos = VoxelCoord::new(far_x, 1, goblin_pos.z);
+    force_position(&mut sim, elf, far_pos);
+
+    // Schedule activation.
+    let tick = sim.tick;
+    sim.event_queue.schedule(
+        tick + 1,
+        ScheduledEventKind::CreatureActivation {
+            creature_id: goblin,
+        },
+    );
+    force_idle(&mut sim, goblin);
+
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+
+    // Run a short period — goblin should wander randomly, not pursue.
+    // Keep ticks low so random wander can't close the 20-voxel gap.
+    sim.step(&[], tick + 1000);
+
+    let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+    assert_eq!(
+        elf_hp_before, elf_hp_after,
+        "Goblin should not attack elf outside detection range"
+    );
+    // Goblin should have wandered but NOT moved closer to the elf.
+    // (It might have moved closer by random chance, so we just check
+    // it didn't deal damage — the key assertion.)
+}
+
+#[test]
+fn hostile_pursues_elf_within_detection_range() {
+    // A goblin with detection_range_sq=225 (15 voxels) SHOULD pursue
+    // an elf within 10 voxels (10² = 100 < 225).
+    let mut sim = test_sim(42);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+
+    // Place elf 5 voxels from goblin on X axis (5² = 25 < 225).
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let near_pos = VoxelCoord::new(goblin_pos.x + 5, goblin_pos.y, goblin_pos.z);
+    force_position(&mut sim, elf, near_pos);
+
+    // Schedule activation.
+    let tick = sim.tick;
+    sim.event_queue.schedule(
+        tick + 1,
+        ScheduledEventKind::CreatureActivation {
+            creature_id: goblin,
+        },
+    );
+    force_idle(&mut sim, goblin);
+
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+    let initial_dist = goblin_pos.manhattan_distance(near_pos);
+
+    sim.step(&[], tick + 10_000);
+
+    let goblin_final = sim.db.creatures.get(&goblin).unwrap().position;
+    let elf_current = sim.db.creatures.get(&elf).unwrap().position;
+    let new_dist = goblin_final.manhattan_distance(elf_current);
+    let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+
+    let moved_closer = new_dist < initial_dist;
+    let dealt_damage = elf_hp_after < elf_hp_before;
+    assert!(
+        moved_closer || dealt_damage,
+        "Goblin should pursue elf within detection range: \
+             initial dist={initial_dist}, new dist={new_dist}, \
+             elf hp {elf_hp_before} -> {elf_hp_after}"
+    );
+}
+
+#[test]
+fn hostile_does_not_attack_same_species() {
+    // Two non-civ goblins adjacent to each other should NOT attack.
+    let mut sim = test_sim(42);
+    let g1 = spawn_species(&mut sim, Species::Goblin);
+    let g2 = spawn_species(&mut sim, Species::Goblin);
+
+    // Place them adjacent.
+    let g1_pos = sim.db.creatures.get(&g1).unwrap().position;
+    let g2_pos = VoxelCoord::new(g1_pos.x + 1, g1_pos.y, g1_pos.z);
+    force_position(&mut sim, g2, g2_pos);
+    force_idle(&mut sim, g1);
+    force_idle(&mut sim, g2);
+
+    let tick = sim.tick;
+    sim.event_queue.schedule(
+        tick + 1,
+        ScheduledEventKind::CreatureActivation { creature_id: g1 },
+    );
+    sim.event_queue.schedule(
+        tick + 1,
+        ScheduledEventKind::CreatureActivation { creature_id: g2 },
+    );
+
+    let g1_hp_before = sim.db.creatures.get(&g1).unwrap().hp;
+    let g2_hp_before = sim.db.creatures.get(&g2).unwrap().hp;
+
+    sim.step(&[], tick + 3000);
+
+    let g1_hp_after = sim.db.creatures.get(&g1).unwrap().hp;
+    let g2_hp_after = sim.db.creatures.get(&g2).unwrap().hp;
+    assert_eq!(
+        g1_hp_before, g1_hp_after,
+        "Goblins should not attack same species"
+    );
+    assert_eq!(
+        g2_hp_before, g2_hp_after,
+        "Goblins should not attack same species"
+    );
+}
+
+#[test]
+fn all_hostile_species_pursue_elves() {
+    for &hostile_species in &[Species::Goblin, Species::Orc, Species::Troll] {
+        let mut sim = test_sim(99);
+        let elf_id = spawn_species(&mut sim, Species::Elf);
+        let hostile_id = spawn_species(&mut sim, hostile_species);
+
+        // Find two nav nodes that are a few voxels apart so the hostile
+        // has room to pursue without the elf immediately fleeing to safety.
+        let positions: Vec<_> = sim
+            .nav_graph
+            .live_nodes()
+            .filter(|n| !n.edge_indices.is_empty())
+            .map(|n| n.position)
+            .collect();
+        let (pos_a, pos_b) = positions
+            .iter()
+            .flat_map(|a| positions.iter().map(move |b| (*a, *b)))
+            .find(|(a, b)| {
+                let d = a.manhattan_distance(*b);
+                (3..=6).contains(&d)
+            })
+            .expect("should have nav nodes 3-6 apart");
+        force_position(&mut sim, elf_id, pos_a);
+        force_idle(&mut sim, elf_id);
+        force_position(&mut sim, hostile_id, pos_b);
+        force_idle(&mut sim, hostile_id);
+
+        let hostile_start = sim.db.creatures.get(&hostile_id).unwrap().position;
+        let elf_hp_before = sim.db.creatures.get(&elf_id).unwrap().hp;
+
+        sim.step(&[], sim.tick + 10_000);
+
+        let hostile_pos = sim.db.creatures.get(&hostile_id).unwrap().position;
+        let elf_hp_after = sim.db.creatures.get(&elf_id).unwrap().hp;
+
+        let moved = hostile_pos != hostile_start;
+        let dealt_damage = elf_hp_after < elf_hp_before;
+        assert!(
+            moved || dealt_damage,
+            "{hostile_species:?} should pursue elf: didn't move from {hostile_start:?} \
+                 and didn't deal damage (elf hp {elf_hp_before} -> {elf_hp_after})"
+        );
+    }
+}
+
+#[test]
+fn projectile_hits_creature_beyond_origin_voxel() {
+    use crate::db::CreatureTrait;
+    let mut sim = test_sim(42);
+    // Place a target creature a few voxels away from the origin.
+    let target = spawn_species(&mut sim, Species::Elf);
+    // Set target's evasion stats deeply negative so the no-shooter projectile
+    // (0 attack + quasi_normal) always exceeds defender_total and hits.
+    // Don't use zero_creature_stats to avoid altering walk speed / behavior.
+    // Evasion skill has no row at spawn (default 0), so use insert_no_fk.
+    let _ = sim.db.creature_traits.insert_no_fk(CreatureTrait {
+        creature_id: target,
+        trait_kind: TraitKind::Evasion,
+        value: TraitValue::Int(-500),
+    });
+    let _ = sim
+        .db
+        .creature_traits
+        .modify_unchecked(&(target, TraitKind::Agility), |t| {
+            t.value = TraitValue::Int(-500);
+        });
+    // Raise crit threshold to prevent the large margin from triggering crits.
+    sim.config.evasion_crit_threshold = 100_000;
+    let origin = VoxelCoord::new(40, 1, 40);
+    let target_pos = VoxelCoord::new(42, 1, 40);
+    if let Some(mut c) = sim.db.creatures.get(&target) {
+        c.position = target_pos;
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+    sim.rebuild_spatial_index();
+    let target_hp = sim.db.creatures.get(&target).unwrap().hp;
+
+    sim.config.arrow_gravity = 0;
+    sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+
+    // Shoot from origin toward the target (no shooter creature).
+    sim.spawn_projectile(origin, target_pos, None);
+
+    // Run ticks.
+    let mut hit = false;
+    for _ in 0..100 {
+        if sim.db.projectiles.is_empty() {
+            break;
+        }
+        sim.tick += 1;
+        let mut events = Vec::new();
+        sim.process_projectile_tick(&mut events);
+        for e in &events {
+            if let SimEventKind::ProjectileHitCreature { target_id, .. } = e.kind
+                && target_id == target
+            {
+                hit = true;
+            }
+        }
+        if !sim.db.projectiles.is_empty() {
+            sim.event_queue
+                .schedule(sim.tick + 1, ScheduledEventKind::ProjectileTick);
+        }
+    }
+
+    assert!(hit, "Projectile should hit creature beyond origin voxel");
+    let target_hp_after = sim.db.creatures.get(&target).unwrap().hp;
+    assert!(
+        target_hp_after < target_hp,
+        "Target should have taken damage (hp: {} -> {})",
+        target_hp,
+        target_hp_after,
+    );
+}
+
+#[test]
+fn projectile_cleanup_removes_inventory() {
+    let mut sim = test_sim(42);
+    sim.spawn_projectile(VoxelCoord::new(40, 5, 40), VoxelCoord::new(50, 5, 40), None);
+    let proj = sim.db.projectiles.iter_all().next().unwrap();
+    let inv_id = proj.inventory_id;
+    let proj_id = proj.id;
+
+    // Verify inventory exists.
+    assert!(sim.db.inventories.get(&inv_id).is_some());
+
+    sim.remove_projectile(proj_id);
+
+    // Projectile, inventory, and item stacks should all be gone.
+    assert_eq!(sim.db.projectiles.len(), 0);
+    assert!(sim.db.inventories.get(&inv_id).is_none());
+    assert!(
+        sim.db
+            .item_stacks
+            .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+            .is_empty()
+    );
+}
+
+#[test]
+fn projectile_serde_roundtrip() {
+    let mut sim = test_sim(42);
+    sim.spawn_projectile(VoxelCoord::new(40, 5, 40), VoxelCoord::new(50, 5, 40), None);
+
+    let json = sim.to_json().unwrap();
+    let sim2 = SimState::from_json(&json).unwrap();
+
+    assert_eq!(sim2.db.projectiles.len(), 1);
+    let proj = sim2.db.projectiles.iter_all().next().unwrap();
+    let stacks = sim2
+        .db
+        .item_stacks
+        .by_inventory_id(&proj.inventory_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(stacks.len(), 1);
+    assert_eq!(stacks[0].kind, inventory::ItemKind::Arrow);
+}
+
+#[test]
+fn debug_spawn_projectile_command() {
+    let mut sim = test_sim(42);
+    let origin = VoxelCoord::new(40, 5, 40);
+    let target = VoxelCoord::new(50, 5, 40);
+    let tick = sim.tick;
+
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugSpawnProjectile {
+                origin,
+                target,
+                shooter_id: None,
+            },
+        }],
+        tick + 1,
+    );
+
+    assert_eq!(sim.db.projectiles.len(), 1);
+}
+
+// -----------------------------------------------------------------------
+// F-attack-task: AttackTarget task tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn attack_creature_command_creates_task_and_assigns() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    // Place them nearby.
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, elf);
+
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: tick + 1,
+        action: SimAction::AttackCreature {
+            attacker_id: elf,
+            target_id: goblin,
+            queue: false,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    // Elf should have an AttackTarget task assigned.
+    let creature = sim.db.creatures.get(&elf).unwrap();
+    assert!(
+        creature.current_task.is_some(),
+        "Elf should have a task assigned"
+    );
+    let task = sim.db.tasks.get(&creature.current_task.unwrap()).unwrap();
+    assert_eq!(task.kind_tag, crate::db::TaskKindTag::AttackTarget);
+    assert_eq!(task.state, TaskState::InProgress);
+    assert_eq!(task.origin, TaskOrigin::PlayerDirected);
+    assert_eq!(task.target_creature, Some(goblin));
+
+    // Extension data should exist.
+    let attack_data = sim.task_attack_target_data(task.id).unwrap();
+    assert_eq!(attack_data.target, goblin);
+    assert_eq!(attack_data.path_failures, 0);
+}
+
+#[test]
+fn attack_target_task_pursues_and_strikes() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    // Place goblin within reach of elf.
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle(&mut sim, elf);
+
+    let goblin_hp_before = sim.db.creatures.get(&goblin).unwrap().hp;
+
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: tick + 1,
+        action: SimAction::AttackCreature {
+            attacker_id: elf,
+            target_id: goblin,
+            queue: false,
+        },
+    };
+    // Run for 10 seconds — enough time to walk there and attack.
+    sim.step(&[cmd], tick + 10_000);
+
+    let goblin_hp_after = sim.db.creatures.get(&goblin).unwrap().hp;
+    let elf_creature = sim.db.creatures.get(&elf).unwrap();
+    let final_dist = elf_creature.position.manhattan_distance(goblin_pos);
+
+    let moved_closer = final_dist < elf_pos.manhattan_distance(goblin_pos);
+    let dealt_damage = goblin_hp_after < goblin_hp_before;
+    assert!(
+        moved_closer || dealt_damage,
+        "Elf should pursue and/or damage goblin: initial_dist={}, final_dist={final_dist}, \
+             hp {goblin_hp_before} -> {goblin_hp_after}",
+        elf_pos.manhattan_distance(goblin_pos)
+    );
+}
+
+#[test]
+fn attack_target_completes_when_target_dies() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    // Place goblin adjacent to elf (instant melee range).
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let adjacent_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
+    force_position(&mut sim, goblin, adjacent_pos);
+    force_idle(&mut sim, elf);
+
+    // Give elf high melee damage to kill quickly.
+    // Just use commands to create the attack task and then kill the target.
+    let tick = sim.tick;
+    let attack_cmd = SimCommand {
+        player_name: String::new(),
+        tick: tick + 1,
+        action: SimAction::AttackCreature {
+            attacker_id: elf,
+            target_id: goblin,
+            queue: false,
+        },
+    };
+    sim.step(&[attack_cmd], tick + 2);
+
+    let task_id = sim.db.creatures.get(&elf).unwrap().current_task.unwrap();
+
+    // Kill the goblin.
+    let kill_cmd = SimCommand {
+        player_name: String::new(),
+        tick: tick + 3,
+        action: SimAction::DebugKillCreature {
+            creature_id: goblin,
+        },
+    };
+    // Step enough that the elf's activation runs after the kill.
+    sim.step(&[kill_cmd], tick + 5000);
+
+    // Task should be complete.
+    let task = sim.db.tasks.get(&task_id).unwrap();
+    assert_eq!(
+        task.state,
+        TaskState::Complete,
+        "Attack task should complete when target dies"
+    );
+    // Elf should be free.
+    let elf_creature = sim.db.creatures.get(&elf).unwrap();
+    assert!(
+        elf_creature.current_task.is_none(),
+        "Elf should have no task after target dies"
+    );
+}
+
+#[test]
+fn attack_target_preempts_lower_priority_task() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+
+    // Give elf a GoTo task (PlayerDirected level 2).
+    let far_node = sim.nav_graph.live_nodes().last().map(|n| n.id).unwrap();
+    let goto_task_id = insert_goto_task(&mut sim, far_node);
+    sim.claim_task(elf, goto_task_id);
+
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: tick + 1,
+        action: SimAction::AttackCreature {
+            attacker_id: elf,
+            target_id: goblin,
+            queue: false,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    // Old task should be completed/interrupted.
+    let old_task = sim.db.tasks.get(&goto_task_id).unwrap();
+    assert_eq!(
+        old_task.state,
+        TaskState::Complete,
+        "GoTo task should be interrupted by AttackCreature"
+    );
+
+    // Elf should have the attack task.
+    let elf_creature = sim.db.creatures.get(&elf).unwrap();
+    assert!(elf_creature.current_task.is_some());
+    let new_task = sim
+        .db
+        .tasks
+        .get(&elf_creature.current_task.unwrap())
+        .unwrap();
+    assert_eq!(new_task.kind_tag, crate::db::TaskKindTag::AttackTarget);
+}
+
+#[test]
+fn attack_target_cannot_attack_self() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    force_idle(&mut sim, elf);
+
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: tick + 1,
+        action: SimAction::AttackCreature {
+            attacker_id: elf,
+            target_id: elf,
+            queue: false,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    // Elf should NOT have an attack task.
+    let elf_creature = sim.db.creatures.get(&elf).unwrap();
+    assert!(
+        elf_creature.current_task.is_none(),
+        "Should not be able to attack self"
+    );
+}
+
+#[test]
+fn attack_target_cannot_attack_dead_creature() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    force_idle(&mut sim, elf);
+
+    // Kill goblin first.
+    let tick = sim.tick;
+    let kill_cmd = SimCommand {
+        player_name: String::new(),
+        tick: tick + 1,
+        action: SimAction::DebugKillCreature {
+            creature_id: goblin,
+        },
+    };
+    sim.step(&[kill_cmd], tick + 2);
+
+    // Try to attack.
+    let attack_cmd = SimCommand {
+        player_name: String::new(),
+        tick: tick + 3,
+        action: SimAction::AttackCreature {
+            attacker_id: elf,
+            target_id: goblin,
+            queue: false,
+        },
+    };
+    sim.step(&[attack_cmd], tick + 4);
+
+    let elf_creature = sim.db.creatures.get(&elf).unwrap();
+    assert!(
+        elf_creature.current_task.is_none(),
+        "Should not be able to attack dead creature"
+    );
+}
+
+#[test]
+fn attack_target_task_serde_roundtrip() {
+    let mut rng = GameRng::new(42);
+    let task_id = TaskId::new(&mut rng);
+    let target = CreatureId::new(&mut rng);
+    let location = VoxelCoord::new(5, 0, 0);
+
+    let task = Task {
+        id: task_id,
+        kind: TaskKind::AttackTarget { target },
+        state: TaskState::InProgress,
+        location,
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: Some(target),
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
+        required_civ_id: None,
+    };
+
+    let json = serde_json::to_string(&task).unwrap();
+    let restored: Task = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(restored.id, task_id);
+    match &restored.kind {
+        TaskKind::AttackTarget { target: t } => assert_eq!(*t, target),
+        other => panic!("Expected AttackTarget, got {:?}", other),
+    }
+    assert_eq!(restored.state, TaskState::InProgress);
+    assert_eq!(restored.origin, TaskOrigin::PlayerDirected);
+    assert_eq!(restored.target_creature, Some(target));
+}
+
+// -----------------------------------------------------------------------
+// AttackTarget preemption level tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn attack_target_preemption_is_player_combat() {
+    assert_eq!(
+        preemption::preemption_level(
+            crate::db::TaskKindTag::AttackTarget,
+            TaskOrigin::PlayerDirected
+        ),
+        preemption::PreemptionLevel::PlayerCombat,
+    );
+}
+
+#[test]
+fn worldgen_creates_default_military_groups() {
+    let sim = test_sim(42);
+    let civ_id = sim.player_civ_id.unwrap();
+    let groups = sim
+        .db
+        .military_groups
+        .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC);
+
+    assert!(
+        groups.len() >= 2,
+        "Should have at least 2 groups (Civilians + Soldiers)"
+    );
+
+    let civilians = groups.iter().filter(|g| g.is_default_civilian).count();
+    assert_eq!(civilians, 1, "Exactly one civilian group per civ");
+
+    let civilian = groups.iter().find(|g| g.is_default_civilian).unwrap();
+    assert_eq!(civilian.name, "Civilians");
+    assert_eq!(civilian.engagement_style.disengage_threshold_pct, 100);
+
+    let soldiers = groups.iter().find(|g| g.name == "Soldiers").unwrap();
+    assert!(!soldiers.is_default_civilian);
+    assert_eq!(
+        soldiers.engagement_style.initiative,
+        crate::species::EngagementInitiative::Aggressive
+    );
+}
+
+#[test]
+fn worldgen_all_civs_have_military_groups() {
+    let sim = test_sim(42);
+    for civ in sim.db.civilizations.iter_all() {
+        let groups = sim
+            .db
+            .military_groups
+            .by_civ_id(&civ.id, tabulosity::QueryOpts::ASC);
+        let civilian_count = groups.iter().filter(|g| g.is_default_civilian).count();
+        assert_eq!(
+            civilian_count, 1,
+            "Civ {:?} should have exactly 1 civilian group",
+            civ.id
+        );
+        assert!(
+            groups.len() >= 2,
+            "Civ {:?} should have at least Civilians + Soldiers",
+            civ.id
+        );
+    }
+}
+
+#[test]
+fn create_military_group_command() {
+    let mut sim = test_sim(42);
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::CreateMilitaryGroup {
+            name: "Archers".to_string(),
+        },
+    };
+    let result = sim.step(&[cmd], 1);
+
+    // Should emit MilitaryGroupCreated event.
+    assert!(
+        result
+            .events
+            .iter()
+            .any(|e| matches!(&e.kind, SimEventKind::MilitaryGroupCreated { .. })),
+        "Should emit MilitaryGroupCreated event"
+    );
+
+    // The new group should exist in the DB.
+    let civ_id = sim.player_civ_id.unwrap();
+    let groups = sim
+        .db
+        .military_groups
+        .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC);
+    let archers = groups.iter().find(|g| g.name == "Archers");
+    assert!(archers.is_some(), "Archers group should exist");
+    let archers = archers.unwrap();
+    assert!(!archers.is_default_civilian);
+    assert_eq!(
+        archers.engagement_style.initiative,
+        crate::species::EngagementInitiative::Aggressive,
+        "New groups default to Aggressive"
+    );
+}
+
+#[test]
+fn creature_reassignment_to_group_and_back() {
+    let mut sim = test_sim(42);
+    let mut events = Vec::new();
+
+    // Spawn an elf.
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let elf_id = sim
+        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .expect("should spawn elf");
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(elf.military_group, None, "Spawned elf is implicit civilian");
+
+    // Assign to soldiers.
+    let soldiers = soldiers_group(&sim);
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::ReassignMilitaryGroup {
+            creature_id: elf_id,
+            group_id: Some(soldiers.id),
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(
+        elf.military_group,
+        Some(soldiers.id),
+        "Elf should be in soldiers group"
+    );
+
+    // Reassign back to civilian (None).
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 2,
+        action: SimAction::ReassignMilitaryGroup {
+            creature_id: elf_id,
+            group_id: None,
+        },
+    };
+    sim.step(&[cmd], 2);
+
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(elf.military_group, None, "Elf should be back to civilian");
+}
+
+#[test]
+fn reassign_between_non_civilian_groups() {
+    let mut sim = test_sim(42);
+    let mut events = Vec::new();
+
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let elf_id = sim
+        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .expect("should spawn elf");
+
+    // Create a second group.
+    let create_cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::CreateMilitaryGroup {
+            name: "Archers".to_string(),
+        },
+    };
+    sim.step(&[create_cmd], 1);
+
+    let civ_id = sim.player_civ_id.unwrap();
+    let archers = sim
+        .db
+        .military_groups
+        .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|g| g.name == "Archers")
+        .unwrap();
+
+    // Assign to soldiers.
+    let soldiers = soldiers_group(&sim);
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 2,
+        action: SimAction::ReassignMilitaryGroup {
+            creature_id: elf_id,
+            group_id: Some(soldiers.id),
+        },
+    };
+    sim.step(&[cmd], 2);
+    assert_eq!(
+        sim.db.creatures.get(&elf_id).unwrap().military_group,
+        Some(soldiers.id)
+    );
+
+    // Reassign to archers.
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 3,
+        action: SimAction::ReassignMilitaryGroup {
+            creature_id: elf_id,
+            group_id: Some(archers.id),
+        },
+    };
+    sim.step(&[cmd], 3);
+    assert_eq!(
+        sim.db.creatures.get(&elf_id).unwrap().military_group,
+        Some(archers.id)
+    );
+}
+
+#[test]
+fn delete_military_group_nullifies_members() {
+    let mut sim = test_sim(42);
+    let mut events = Vec::new();
+
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let elf_id = sim
+        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .expect("should spawn elf");
+
+    // Create a new group and assign the elf to it.
+    let create_cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::CreateMilitaryGroup {
+            name: "Scouts".to_string(),
+        },
+    };
+    sim.step(&[create_cmd], 1);
+
+    let civ_id = sim.player_civ_id.unwrap();
+    let scouts = sim
+        .db
+        .military_groups
+        .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .find(|g| g.name == "Scouts")
+        .unwrap();
+
+    let assign_cmd = SimCommand {
+        player_name: String::new(),
+        tick: 2,
+        action: SimAction::ReassignMilitaryGroup {
+            creature_id: elf_id,
+            group_id: Some(scouts.id),
+        },
+    };
+    sim.step(&[assign_cmd], 2);
+    assert_eq!(
+        sim.db.creatures.get(&elf_id).unwrap().military_group,
+        Some(scouts.id)
+    );
+
+    // Delete the group.
+    let delete_cmd = SimCommand {
+        player_name: String::new(),
+        tick: 3,
+        action: SimAction::DeleteMilitaryGroup {
+            group_id: scouts.id,
+        },
+    };
+    let result = sim.step(&[delete_cmd], 3);
+
+    // Elf should be back to civilian (None).
+    assert_eq!(
+        sim.db.creatures.get(&elf_id).unwrap().military_group,
+        None,
+        "Deleted group should nullify creature.military_group"
+    );
+
+    // Group should be gone.
+    assert!(
+        sim.db.military_groups.get(&scouts.id).is_none(),
+        "Deleted group should be removed"
+    );
+
+    // Should emit MilitaryGroupDeleted event.
+    assert!(
+        result.events.iter().any(|e| matches!(
+            &e.kind,
+            SimEventKind::MilitaryGroupDeleted {
+                name, member_count, ..
+            } if name == "Scouts" && *member_count == 1
+        )),
+        "Should emit MilitaryGroupDeleted with correct name and count"
+    );
+}
+
+#[test]
+fn civilian_group_deletion_rejected() {
+    let mut sim = test_sim(42);
+    let civ_group = civilian_group(&sim);
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::DeleteMilitaryGroup {
+            group_id: civ_group.id,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // Civilian group should still exist.
+    assert!(
+        sim.db.military_groups.get(&civ_group.id).is_some(),
+        "Civilian group cannot be deleted"
+    );
+}
+
+#[test]
+fn dead_creature_not_counted_in_member_count() {
+    let mut sim = test_sim(42);
+    let mut events = Vec::new();
+
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let elf_a = sim
+        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .expect("spawn elf a");
+    let elf_b = sim
+        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .expect("spawn elf b");
+
+    // Assign both to soldiers.
+    let soldiers = soldiers_group(&sim);
+    for eid in [elf_a, elf_b] {
+        set_military_group(&mut sim, eid, Some(soldiers.id));
+    }
+
+    // Kill elf_b.
+    let kill_cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::DebugKillCreature { creature_id: elf_b },
+    };
+    sim.step(&[kill_cmd], 1);
+
+    // Count alive members.
+    let alive_count = sim
+        .db
+        .creatures
+        .by_military_group(&Some(soldiers.id), tabulosity::QueryOpts::ASC)
+        .iter()
+        .filter(|c| c.vital_status == VitalStatus::Alive)
+        .count();
+    assert_eq!(alive_count, 1, "Only elf_a should be alive in soldiers");
+
+    // Dead elf should still be assigned to soldiers.
+    let dead_elf = sim.db.creatures.get(&elf_b).unwrap();
+    assert_eq!(
+        dead_elf.military_group,
+        Some(soldiers.id),
+        "Dead creature preserves group assignment"
+    );
+    assert_eq!(dead_elf.vital_status, VitalStatus::Dead);
+}
+
+#[test]
+fn cross_civ_reassignment_rejected() {
+    let mut sim = test_sim(42);
+    let mut events = Vec::new();
+
+    // Get a non-player civ.
+    let ai_civ = sim
+        .db
+        .civilizations
+        .iter_all()
+        .find(|c| !c.player_controlled)
+        .expect("need an AI civ");
+    let ai_groups = sim
+        .db
+        .military_groups
+        .by_civ_id(&ai_civ.id, tabulosity::QueryOpts::ASC);
+    let ai_soldiers = ai_groups
+        .iter()
+        .find(|g| !g.is_default_civilian)
+        .expect("AI civ should have a non-civilian group");
+
+    // Spawn an elf (player civ).
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let elf_id = sim
+        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .expect("spawn elf");
+
+    // Try to assign elf to AI civ's group — should be rejected.
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::ReassignMilitaryGroup {
+            creature_id: elf_id,
+            group_id: Some(ai_soldiers.id),
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    assert_eq!(
+        sim.db.creatures.get(&elf_id).unwrap().military_group,
+        None,
+        "Cross-civ reassignment should be rejected"
+    );
+}
+
+#[test]
+fn non_civ_creature_reassignment_rejected() {
+    let mut sim = test_sim(42);
+    let mut events = Vec::new();
+
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let goblin_id = sim
+        .spawn_creature(Species::Goblin, tree_pos, &mut events)
+        .expect("spawn goblin");
+
+    let soldiers = soldiers_group(&sim);
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::ReassignMilitaryGroup {
+            creature_id: goblin_id,
+            group_id: Some(soldiers.id),
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    assert_eq!(
+        sim.db.creatures.get(&goblin_id).unwrap().military_group,
+        None,
+        "Non-civ creatures cannot be assigned to military groups"
+    );
+}
+
+#[test]
+fn rename_civilian_group() {
+    let mut sim = test_sim(42);
+    let civ_group = civilian_group(&sim);
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::RenameMilitaryGroup {
+            group_id: civ_group.id,
+            name: "Villagers".to_string(),
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let renamed = sim.db.military_groups.get(&civ_group.id).unwrap();
+    assert_eq!(renamed.name, "Villagers");
+}
+
+#[test]
+fn set_group_engagement_style() {
+    use crate::species::{
+        AmmoExhaustedBehavior, EngagementInitiative, EngagementStyle, WeaponPreference,
+    };
+    let mut sim = test_sim(42);
+    let civ_group = civilian_group(&sim);
+
+    // Change civilian group to aggressive.
+    let new_style = EngagementStyle {
+        weapon_preference: WeaponPreference::PreferMelee,
+        ammo_exhausted: AmmoExhaustedBehavior::SwitchToMelee,
+        initiative: EngagementInitiative::Aggressive,
+        disengage_threshold_pct: 0,
+    };
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SetGroupEngagementStyle {
+            group_id: civ_group.id,
+            engagement_style: new_style,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let updated = sim.db.military_groups.get(&civ_group.id).unwrap();
+    assert_eq!(
+        updated.engagement_style.initiative,
+        EngagementInitiative::Aggressive
+    );
+    assert_eq!(updated.engagement_style.disengage_threshold_pct, 0);
+}
+
+#[test]
+fn fk_cascade_civ_delete_removes_groups() {
+    let mut sim = test_sim(99);
+
+    // Find an AI civ (not the player civ, which might cause issues).
+    let ai_civ = sim
+        .db
+        .civilizations
+        .iter_all()
+        .find(|c| !c.player_controlled);
+    let Some(ai_civ) = ai_civ else {
+        // No AI civ in this seed — skip test.
+        return;
+    };
+    let ai_civ_id = ai_civ.id;
+
+    let groups_before = sim
+        .db
+        .military_groups
+        .by_civ_id(&ai_civ_id, tabulosity::QueryOpts::ASC);
+    assert!(
+        !groups_before.is_empty(),
+        "AI civ should have military groups"
+    );
+
+    // Delete the civ — groups should cascade.
+    let _ = sim.db.remove_civilization(&ai_civ_id);
+
+    let groups_after = sim
+        .db
+        .military_groups
+        .by_civ_id(&ai_civ_id, tabulosity::QueryOpts::ASC);
+    assert!(
+        groups_after.is_empty(),
+        "Deleting a civ should cascade-delete its military groups"
+    );
+}
+
+#[test]
+fn aggressive_group_civ_creature_auto_engages() {
+    // This test verifies that an aggressive-group civ creature will attempt to
+    // pursue hostiles via wander(), not just avoid them.
+    let mut sim = test_sim(42);
+    let mut events = Vec::new();
+
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let elf_id = sim
+        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .expect("spawn elf");
+
+    // Assign to soldiers (Aggressive).
+    let soldiers = soldiers_group(&sim);
+    set_military_group(&mut sim, elf_id, Some(soldiers.id));
+
+    // Verify resolve_engagement_style returns Aggressive.
+    let style = sim.resolve_engagement_style(elf_id);
+    assert_eq!(
+        style.initiative,
+        crate::species::EngagementInitiative::Aggressive,
+        "Soldiers group should resolve to Aggressive"
+    );
+}
+
+#[test]
+fn resolve_engagement_style_implicit_civilian() {
+    let mut sim = test_sim(42);
+    let mut events = Vec::new();
+
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let elf_id = sim
+        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .expect("spawn elf");
+
+    // Implicit civilian (military_group = None, civ_id = Some).
+    let style = sim.resolve_engagement_style(elf_id);
+    assert_eq!(
+        style.disengage_threshold_pct, 100,
+        "Implicit civilian should have 100% disengage threshold (always flee)"
+    );
+}
+
+#[test]
+fn resolve_engagement_style_non_civ_creature() {
+    let mut sim = test_sim(42);
+    let mut events = Vec::new();
+
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let goblin_id = sim
+        .spawn_creature(Species::Goblin, tree_pos, &mut events)
+        .expect("spawn goblin");
+
+    // Non-civ creature → species default (Aggressive for goblins).
+    let style = sim.resolve_engagement_style(goblin_id);
+    assert_eq!(
+        style.initiative,
+        crate::species::EngagementInitiative::Aggressive,
+        "Non-civ goblin should use species default (Aggressive)"
     );
 }

@@ -2223,3 +2223,125 @@ fn weapons_have_no_equip_slot() {
     assert!(ItemKind::Spear.equip_slot().is_none());
     assert!(ItemKind::Club.equip_slot().is_none());
 }
+
+// ---------------------------------------------------------------------------
+// Tests migrated from commands_tests.rs
+// ---------------------------------------------------------------------------
+
+// -----------------------------------------------------------------------
+// Caller durability-preservation tests (expose existing bugs)
+// -----------------------------------------------------------------------
+
+#[test]
+fn creature_death_drops_preserve_durability() {
+    // When a creature dies, its items should drop on the ground
+    // with all properties (durability, material, quality) preserved.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+
+    // Give the elf a bow with specific material and durability.
+    sim.inv_add_item_with_durability(
+        inv_id,
+        inventory::ItemKind::Bow,
+        1,
+        Some(elf),
+        None,
+        Some(inventory::Material::Yew),
+        5,  // quality
+        30, // current_hp (damaged)
+        50, // max_hp
+        None,
+        None,
+    );
+
+    // Kill the elf.
+    let mut events = Vec::new();
+    sim.apply_damage(elf, 9999, &mut events);
+
+    // Scan ALL ground piles for the Yew bow specifically (the elf also
+    // has a starting bow with material: None, so we need to match ours).
+    let mut bow_stack = None;
+    for pile in sim.db.ground_piles.iter_all() {
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&pile.inventory_id, tabulosity::QueryOpts::ASC);
+        if let Some(s) = stacks.iter().find(|s| {
+            s.kind == inventory::ItemKind::Bow && s.material == Some(inventory::Material::Yew)
+        }) {
+            bow_stack = Some(s.clone());
+            break;
+        }
+    }
+
+    let bow_stack = bow_stack.expect("Yew bow should be in some ground pile after death");
+    assert_eq!(
+        bow_stack.material,
+        Some(inventory::Material::Yew),
+        "Material must survive death drop"
+    );
+    assert_eq!(bow_stack.quality, 5, "Quality must survive death drop");
+    assert_eq!(
+        bow_stack.current_hp, 30,
+        "current_hp must survive death drop"
+    );
+    assert_eq!(bow_stack.max_hp, 50, "max_hp must survive death drop");
+    assert!(
+        bow_stack.owner.is_none(),
+        "Owner should be cleared on death"
+    );
+}
+
+#[test]
+fn creature_death_drops_clear_equipped_slot() {
+    // Equipped items should have equipped_slot cleared when dropped on death.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
+
+    // Give the elf an equipped hat.
+    sim.inv_add_item_with_durability(
+        inv_id,
+        inventory::ItemKind::Hat,
+        1,
+        Some(elf),
+        None,
+        Some(inventory::Material::FruitSpecies(
+            crate::fruit::FruitSpeciesId(0),
+        )),
+        0,
+        15, // current_hp
+        20, // max_hp
+        None,
+        Some(inventory::EquipSlot::Head),
+    );
+
+    // Kill the elf.
+    let mut events = Vec::new();
+    sim.apply_damage(elf, 9999, &mut events);
+
+    // Find the hat in ground piles.
+    let mut hat_stack = None;
+    for pile in sim.db.ground_piles.iter_all() {
+        let stacks = sim
+            .db
+            .item_stacks
+            .by_inventory_id(&pile.inventory_id, tabulosity::QueryOpts::ASC);
+        if let Some(s) = stacks
+            .iter()
+            .find(|s| s.kind == inventory::ItemKind::Hat && s.current_hp == 15)
+        {
+            hat_stack = Some(s.clone());
+            break;
+        }
+    }
+
+    let hat = hat_stack.expect("Hat should be in ground pile after death");
+    assert_eq!(
+        hat.equipped_slot, None,
+        "equipped_slot must be cleared on death drop"
+    );
+    assert_eq!(hat.current_hp, 15, "Durability must be preserved");
+    assert!(hat.owner.is_none(), "Owner must be cleared");
+}

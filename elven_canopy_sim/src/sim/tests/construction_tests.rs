@@ -343,25 +343,6 @@ fn find_strut_endpoints(sim: &SimState) -> (VoxelCoord, VoxelCoord) {
     }
     panic!("No suitable strut endpoints found");
 }
-
-/// Helper: get the first cultivable fruit species from the DB.
-fn first_cultivable_species(sim: &SimState) -> Option<FruitSpeciesId> {
-    sim.db
-        .fruit_species
-        .iter_all()
-        .find(|f| f.greenhouse_cultivable)
-        .map(|f| f.id)
-}
-
-/// Helper: get a non-cultivable fruit species from the DB.
-fn first_non_cultivable_species(sim: &SimState) -> Option<FruitSpeciesId> {
-    sim.db
-        .fruit_species
-        .iter_all()
-        .find(|f| !f.greenhouse_cultivable)
-        .map(|f| f.id)
-}
-
 // =======================================================================
 // DesignateBuild tests
 // =======================================================================
@@ -4092,124 +4073,6 @@ fn dance_hall_display_str() {
 // Greenhouse tests
 // =======================================================================
 
-#[test]
-fn furnish_greenhouse_sets_species_and_creates_task() {
-    let mut sim = test_sim(42);
-    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
-    let structure_id = insert_completed_building(&mut sim, anchor);
-
-    let species_id = first_cultivable_species(&sim)
-        .expect("worldgen should produce at least one cultivable fruit");
-
-    let cmd = SimCommand {
-        player_name: String::new(),
-        tick: sim.tick + 1,
-        action: SimAction::FurnishStructure {
-            structure_id,
-            furnishing_type: FurnishingType::Greenhouse,
-            greenhouse_species: Some(species_id),
-        },
-    };
-    sim.step(&[cmd], sim.tick + 1);
-
-    let structure = sim.db.structures.get(&structure_id).unwrap();
-    assert_eq!(structure.furnishing, Some(FurnishingType::Greenhouse));
-    assert_eq!(structure.greenhouse_species, Some(species_id));
-    assert!(structure.greenhouse_enabled);
-    assert_eq!(structure.greenhouse_last_production_tick, sim.tick);
-
-    // Should have created a Furnish task.
-    let furnish_tasks: Vec<_> = sim
-        .db
-        .tasks
-        .iter_all()
-        .filter(|t| t.kind_tag == crate::db::TaskKindTag::Furnish)
-        .collect();
-    assert_eq!(furnish_tasks.len(), 1);
-}
-
-#[test]
-fn furnish_greenhouse_rejects_non_cultivable_species() {
-    let mut sim = test_sim(42);
-    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
-    let structure_id = insert_completed_building(&mut sim, anchor);
-
-    let species_id = first_non_cultivable_species(&sim);
-    // If all species happen to be cultivable in this seed, skip.
-    if let Some(species_id) = species_id {
-        let cmd = SimCommand {
-            player_name: String::new(),
-            tick: sim.tick + 1,
-            action: SimAction::FurnishStructure {
-                structure_id,
-                furnishing_type: FurnishingType::Greenhouse,
-                greenhouse_species: Some(species_id),
-            },
-        };
-        sim.step(&[cmd], sim.tick + 1);
-
-        let structure = sim.db.structures.get(&structure_id).unwrap();
-        assert_eq!(
-            structure.furnishing, None,
-            "Non-cultivable species should be rejected"
-        );
-    }
-}
-
-#[test]
-fn furnish_greenhouse_rejects_missing_species() {
-    let mut sim = test_sim(42);
-    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
-    let structure_id = insert_completed_building(&mut sim, anchor);
-
-    // No greenhouse_species provided.
-    let cmd = SimCommand {
-        player_name: String::new(),
-        tick: sim.tick + 1,
-        action: SimAction::FurnishStructure {
-            structure_id,
-            furnishing_type: FurnishingType::Greenhouse,
-            greenhouse_species: None,
-        },
-    };
-    sim.step(&[cmd], sim.tick + 1);
-
-    let structure = sim.db.structures.get(&structure_id).unwrap();
-    assert_eq!(
-        structure.furnishing, None,
-        "Greenhouse without species should be rejected"
-    );
-}
-
-#[test]
-fn furnish_greenhouse_rejects_unknown_species() {
-    let mut sim = test_sim(42);
-    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
-    let structure_id = insert_completed_building(&mut sim, anchor);
-
-    let bogus_id = FruitSpeciesId(9999);
-    let cmd = SimCommand {
-        player_name: String::new(),
-        tick: sim.tick + 1,
-        action: SimAction::FurnishStructure {
-            structure_id,
-            furnishing_type: FurnishingType::Greenhouse,
-            greenhouse_species: Some(bogus_id),
-        },
-    };
-    sim.step(&[cmd], sim.tick + 1);
-
-    let structure = sim.db.structures.get(&structure_id).unwrap();
-    assert_eq!(
-        structure.furnishing, None,
-        "Unknown species should be rejected"
-    );
-}
-
 // =======================================================================
 // Raycast solid tests
 // =======================================================================
@@ -5588,64 +5451,6 @@ fn strut_save_load_roundtrip_with_completed_strut() {
 // Dining hall logistics
 // =======================================================================
 
-#[test]
-fn furnish_dining_hall_enables_logistics() {
-    let mut sim = test_sim(42);
-    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-
-    // Build a shell structure.
-    let structure_id = StructureId(901);
-    let project_id = ProjectId::new(&mut sim.rng);
-    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
-    insert_stub_blueprint(&mut sim, project_id);
-    sim.db
-        .structures
-        .insert_no_fk(CompletedStructure {
-            id: structure_id,
-            project_id,
-            build_type: BuildType::Building,
-            anchor: tree_pos,
-            width: 4,
-            depth: 4,
-            height: 3,
-            completed_tick: 0,
-            name: None,
-            furnishing: None,
-            inventory_id: inv_id,
-            logistics_priority: None,
-            crafting_enabled: false,
-            greenhouse_species: None,
-            greenhouse_enabled: false,
-            greenhouse_last_production_tick: 0,
-            last_dance_completed_tick: 0,
-        })
-        .unwrap();
-
-    // Furnish as dining hall via command.
-    let cmd = SimCommand {
-        player_name: String::new(),
-        tick: 1,
-        action: SimAction::FurnishStructure {
-            structure_id,
-            furnishing_type: FurnishingType::DiningHall,
-            greenhouse_species: None,
-        },
-    };
-    sim.step(&[cmd], 2);
-
-    let structure = sim.db.structures.get(&structure_id).unwrap();
-    assert_eq!(
-        structure.furnishing,
-        Some(FurnishingType::DiningHall),
-        "Should be furnished as DiningHall"
-    );
-    assert_eq!(
-        structure.logistics_priority,
-        Some(8),
-        "Dining hall should start with logistics priority 8"
-    );
-}
-
 // =======================================================================
 // cancel_build edge case
 // =======================================================================
@@ -5685,5 +5490,207 @@ fn cancel_build_with_no_task_cleans_up() {
     assert!(
         !sim.db.blueprints.contains(&project_id),
         "Blueprint should be removed after cancel"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Tests migrated from commands_tests.rs
+// ---------------------------------------------------------------------------
+
+#[test]
+fn designate_build_creates_blueprint() {
+    let mut sim = test_sim(42);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    let result = sim.step(&[cmd], 1);
+
+    assert_eq!(sim.db.blueprints.len(), 1);
+    let bp = sim.db.blueprints.iter_all().next().unwrap();
+    assert_eq!(bp.voxels, vec![air_coord]);
+    assert_eq!(bp.state, BlueprintState::Designated);
+    assert!(
+        result
+            .events
+            .iter()
+            .any(|e| matches!(e.kind, SimEventKind::BlueprintDesignated { .. }))
+    );
+}
+
+#[test]
+fn designate_build_creates_composition() {
+    let mut sim = test_sim(42);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // Blueprint should have a composition FK.
+    let bp = sim.db.blueprints.iter_all().next().unwrap();
+    assert!(
+        bp.composition_id.is_some(),
+        "Build blueprint should have a composition"
+    );
+
+    // The composition should exist in the DB with Pending status.
+    let comp_id = bp.composition_id.unwrap();
+    let comp = sim.db.music_compositions.get(&comp_id).unwrap();
+    assert_eq!(comp.status, crate::db::CompositionStatus::Pending);
+    assert!(!comp.build_started);
+    assert!(comp.seed != 0, "Composition should have a non-trivial seed");
+    assert!(comp.sections >= 1 && comp.sections <= 4);
+    assert!(comp.mode_index <= 5);
+    assert!(comp.brightness >= 0.2 && comp.brightness <= 0.8);
+    // 1 voxel × 1000 ticks/voxel = 1000ms target duration.
+    assert_eq!(comp.target_duration_ms, 1000);
+}
+
+#[test]
+fn composition_persists_across_serde_roundtrip() {
+    let mut sim = test_sim(42);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let bp = sim.db.blueprints.iter_all().next().unwrap();
+    let comp_id = bp.composition_id.unwrap();
+    let comp = sim.db.music_compositions.get(&comp_id).unwrap();
+    let orig_seed = comp.seed;
+    let orig_sections = comp.sections;
+    let orig_mode = comp.mode_index;
+
+    // Serialize and deserialize.
+    let json = serde_json::to_string(&sim).unwrap();
+    let restored: SimState = serde_json::from_str(&json).unwrap();
+
+    // Composition should survive roundtrip.
+    let comp = restored.db.music_compositions.get(&comp_id).unwrap();
+    assert_eq!(comp.seed, orig_seed);
+    assert_eq!(comp.sections, orig_sections);
+    assert_eq!(comp.mode_index, orig_mode);
+    assert_eq!(comp.status, crate::db::CompositionStatus::Pending);
+
+    // Blueprint FK should still point to it.
+    let bp = restored.db.blueprints.iter_all().next().unwrap();
+    assert_eq!(bp.composition_id, Some(comp_id));
+}
+
+#[test]
+fn designate_carve_has_no_composition() {
+    let mut sim = test_sim(42);
+
+    // Find a solid trunk voxel to carve.
+    let mut carve_coord = None;
+    for y in 1..sim.world.size_y as i32 {
+        for z in 0..sim.world.size_z as i32 {
+            for x in 0..sim.world.size_x as i32 {
+                let coord = VoxelCoord::new(x, y, z);
+                if sim.world.get(coord) == VoxelType::Trunk {
+                    carve_coord = Some(coord);
+                    break;
+                }
+            }
+            if carve_coord.is_some() {
+                break;
+            }
+        }
+        if carve_coord.is_some() {
+            break;
+        }
+    }
+    let carve_coord = carve_coord.expect("Should find a trunk voxel to carve");
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::DesignateCarve {
+            voxels: vec![carve_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    if !sim.db.blueprints.is_empty() {
+        let bp = sim.db.blueprints.iter_all().next().unwrap();
+        assert!(
+            bp.composition_id.is_none(),
+            "Carve blueprint should not have a composition"
+        );
+    }
+    // No compositions should have been created for carving.
+    assert_eq!(
+        sim.db.music_compositions.len(),
+        0,
+        "Carving should not create compositions"
+    );
+}
+
+#[test]
+fn build_work_sets_composition_build_started() {
+    let mut config = test_config();
+    config.build_work_ticks_per_voxel = 50000;
+    let mut sim = SimState::with_config(42, config);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    spawn_elf(&mut sim);
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::DesignateBuild {
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+
+    // Composition should not be started yet (no work done).
+    let bp = sim.db.blueprints.iter_all().next().unwrap();
+    let comp_id = bp.composition_id.unwrap();
+    assert!(
+        !sim.db
+            .music_compositions
+            .get(&comp_id)
+            .unwrap()
+            .build_started,
+        "Composition should not be started before any work"
+    );
+
+    // Run enough ticks for the elf to arrive and do at least one tick of work.
+    sim.step(&[], sim.tick + 100_000);
+
+    assert!(
+        sim.db
+            .music_compositions
+            .get(&comp_id)
+            .unwrap()
+            .build_started,
+        "Composition should be started after elf begins building"
     );
 }

@@ -660,3 +660,128 @@ fn config_backward_compat_missing_material_filter() {
     let want: building::LogisticsWant = serde_json::from_str(json).unwrap();
     assert_eq!(want.material_filter, inventory::MaterialFilter::Any);
 }
+
+// ---------------------------------------------------------------------------
+// Tests migrated from commands_tests.rs
+// ---------------------------------------------------------------------------
+
+// -----------------------------------------------------------------------
+// Save/load roundtrip tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn save_load_preserves_world_voxels() {
+    let sim = test_sim(42);
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
+
+    // Roundtrip through JSON (world is now serialized, not rebuilt).
+    let json = sim.to_json().unwrap();
+    let restored = SimState::from_json(&json).unwrap();
+
+    // Check trunk voxels survived serialization.
+    for coord in &tree.trunk_voxels {
+        assert_eq!(
+            restored.world.get(*coord),
+            VoxelType::Trunk,
+            "Restored world missing trunk voxel at {coord}"
+        );
+    }
+    // Check branch voxels.
+    for coord in &tree.branch_voxels {
+        assert_eq!(
+            restored.world.get(*coord),
+            VoxelType::Branch,
+            "Restored world missing branch voxel at {coord}"
+        );
+    }
+    // Check root voxels.
+    for coord in &tree.root_voxels {
+        assert_eq!(
+            restored.world.get(*coord),
+            VoxelType::Root,
+            "Restored world missing root voxel at {coord}"
+        );
+    }
+    // Check leaf voxels.
+    for coord in &tree.leaf_voxels {
+        assert_eq!(
+            restored.world.get(*coord),
+            VoxelType::Leaf,
+            "Restored world missing leaf voxel at {coord}"
+        );
+    }
+    // Check that a known solid voxel (first trunk) survived.
+    let first_trunk = tree.trunk_voxels[0];
+    assert_eq!(
+        restored.world.get(first_trunk),
+        VoxelType::Trunk,
+        "First trunk voxel should be present after roundtrip"
+    );
+}
+
+#[test]
+fn rebuild_transient_state_restores_nav_graph() {
+    let sim = test_sim(42);
+    let json = sim.to_json().unwrap();
+
+    // Deserialize — world is preserved but transient fields are default.
+    let mut restored: SimState = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        restored.nav_graph.node_count(),
+        0,
+        "Before rebuild, nav_graph should be empty"
+    );
+    // World is now serialized, so it should be present after deserialization.
+    assert_eq!(
+        restored.world.size_x, sim.world.size_x,
+        "After deserialization, world should be present"
+    );
+
+    // Rebuild transient state.
+    restored.rebuild_transient_state();
+    assert!(
+        restored.nav_graph.node_count() > 0,
+        "After rebuild, nav_graph should have nodes"
+    );
+    // Node count may differ very slightly because fruit voxels are placed
+    // after the initial nav graph build but before serialization, so the
+    // rebuilt world includes fruit while the original nav graph was built
+    // without them. Allow a small tolerance.
+    let diff =
+        (restored.nav_graph.node_count() as i64 - sim.nav_graph.node_count() as i64).unsigned_abs();
+    assert!(
+        diff <= 5,
+        "Rebuilt nav_graph node count ({}) should be close to original ({}), diff={}",
+        restored.nav_graph.node_count(),
+        sim.nav_graph.node_count(),
+        diff,
+    );
+}
+
+// -----------------------------------------------------------------------
+// find_surface_position
+// -----------------------------------------------------------------------
+
+#[test]
+fn find_surface_position_finds_air() {
+    let sim = test_sim(42);
+    let center = sim.world.size_x as i32 / 2;
+    let pos = sim.find_surface_position(center, center);
+
+    // The returned position should be Air (non-solid).
+    assert!(
+        !sim.world.get(pos).is_solid(),
+        "Surface position should be Air, got {:?}",
+        sim.world.get(pos)
+    );
+
+    // One below should be solid (the ground).
+    if pos.y > 0 {
+        let below = VoxelCoord::new(pos.x, pos.y - 1, pos.z);
+        assert!(
+            sim.world.get(below).is_solid(),
+            "Below surface should be solid, got {:?}",
+            sim.world.get(below)
+        );
+    }
+}

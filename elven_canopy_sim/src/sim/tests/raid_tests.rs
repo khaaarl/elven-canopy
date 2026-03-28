@@ -891,3 +891,72 @@ fn trigger_raid_elves_see_raiders_as_hostile() {
         "raiding civ should see player as hostile"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Tests migrated from commands_tests.rs
+// ---------------------------------------------------------------------------
+
+#[test]
+fn group_attack_move_spreads_creatures() {
+    // GroupAttackMove should create AttackMove tasks at spread destinations.
+    let mut sim = test_sim(42);
+    let elf_a = spawn_elf(&mut sim);
+    let elf_b = spawn_elf(&mut sim);
+    force_idle_and_cancel_activations(&mut sim, elf_a);
+    force_idle_and_cancel_activations(&mut sim, elf_b);
+
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let dest = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
+
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::GroupAttackMove {
+                creature_ids: vec![elf_a, elf_b],
+                destination: dest,
+                queue: false,
+            },
+        }],
+        tick + 2,
+    );
+
+    // Both should have AttackMove tasks.
+    let task_a = sim.db.creatures.get(&elf_a).unwrap().current_task.unwrap();
+    let task_b = sim.db.creatures.get(&elf_b).unwrap().current_task.unwrap();
+    assert_eq!(
+        sim.db.tasks.get(&task_a).unwrap().kind_tag,
+        TaskKindTag::AttackMove
+    );
+    assert_eq!(
+        sim.db.tasks.get(&task_b).unwrap().kind_tag,
+        TaskKindTag::AttackMove
+    );
+
+    // Their task locations should differ (spread).
+    let loc_a = sim.db.tasks.get(&task_a).unwrap().location;
+    let loc_b = sim.db.tasks.get(&task_b).unwrap().location;
+    assert_ne!(
+        loc_a, loc_b,
+        "GroupAttackMove should spread to different nav nodes"
+    );
+}
+
+#[test]
+fn group_attack_move_serialization_roundtrip() {
+    let mut rng = crate::prng::GameRng::new(42);
+    let cmd = SimCommand {
+        player_name: "test_player".to_string(),
+        tick: 100,
+        action: SimAction::GroupAttackMove {
+            creature_ids: vec![CreatureId::new(&mut rng), CreatureId::new(&mut rng)],
+            destination: VoxelCoord::new(10, 1, 5),
+            queue: false,
+        },
+    };
+
+    let json = serde_json::to_string(&cmd).unwrap();
+    let restored: SimCommand = serde_json::from_str(&json).unwrap();
+    assert_eq!(json, serde_json::to_string(&restored).unwrap());
+}

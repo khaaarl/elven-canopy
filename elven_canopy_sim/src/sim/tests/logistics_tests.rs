@@ -2867,40 +2867,6 @@ fn haul_dropoff_preserves_durability() {
 // Logistics heartbeat triggers creature gravity
 // =========================================================================
 
-#[test]
-fn logistics_heartbeat_triggers_creature_gravity() {
-    let mut sim = test_sim(42);
-    let platform_pos = VoxelCoord::new(10, 5, 10);
-    sim.world.set(platform_pos, VoxelType::GrownPlatform);
-    sim.rebuild_transient_state();
-
-    let mut events = Vec::new();
-    let elf_id = sim
-        .spawn_creature(Species::Elf, VoxelCoord::new(10, 6, 10), &mut events)
-        .expect("should spawn elf");
-    assert_eq!(sim.db.creatures.get(&elf_id).unwrap().position.y, 6);
-
-    // Remove the platform and rebuild nav.
-    sim.world.set(platform_pos, VoxelType::Air);
-    sim.rebuild_transient_state();
-
-    // Advance to a LogisticsHeartbeat tick — step forward enough ticks.
-    let interval = sim.config.logistics_heartbeat_interval_ticks;
-    let target = sim.tick + interval + 1;
-    let result = sim.step(&[], target);
-
-    // Elf should have fallen to ground.
-    let elf = sim.db.creatures.get(&elf_id).unwrap();
-    assert_eq!(elf.position.y, 1, "elf should fall via logistics heartbeat");
-
-    // Should have a CreatureFell event in the step output.
-    let fell_event = result
-        .events
-        .iter()
-        .any(|e| matches!(e.kind, SimEventKind::CreatureFell { .. }));
-    assert!(fell_event, "expected CreatureFell event from heartbeat");
-}
-
 // ── Logistics ownership leak tests ──────────────────────────────────────────
 
 #[test]
@@ -3749,4 +3715,397 @@ fn haul_dropoff_does_not_affect_other_item_kinds_in_inventory() {
         .map(|s| s.quantity)
         .sum();
     assert_eq!(elf_spears, 1, "Elf should still have their spear");
+}
+
+// ---------------------------------------------------------------------------
+// Tests migrated from commands_tests.rs
+// ---------------------------------------------------------------------------
+
+/// Verify that set_inv_wants correctly removes and re-inserts logistics want
+/// rows using the new compound PK (inventory_id, seq).
+#[test]
+fn logistics_want_row_remove_and_reinsert_with_compound_pk() {
+    let mut sim = test_sim(42);
+    let pos = VoxelCoord::new(10, 1, 20);
+    let pile_id = sim.ensure_ground_pile(pos);
+    let inv_id = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
+
+    // Set initial wants.
+    sim.set_inv_wants(
+        inv_id,
+        &[crate::building::LogisticsWant {
+            item_kind: inventory::ItemKind::Bread,
+            material_filter: inventory::MaterialFilter::Any,
+            target_quantity: 5,
+        }],
+    );
+    assert_eq!(sim.inv_wants(inv_id).len(), 1);
+    assert_eq!(sim.inv_wants(inv_id)[0].target_quantity, 5);
+
+    // Replace wants — old rows should be removed by compound PK, new ones inserted.
+    sim.set_inv_wants(
+        inv_id,
+        &[
+            crate::building::LogisticsWant {
+                item_kind: inventory::ItemKind::Bread,
+                material_filter: inventory::MaterialFilter::Any,
+                target_quantity: 10,
+            },
+            crate::building::LogisticsWant {
+                item_kind: inventory::ItemKind::Fruit,
+                material_filter: inventory::MaterialFilter::Any,
+                target_quantity: 3,
+            },
+        ],
+    );
+    let wants = sim.inv_wants(inv_id);
+    assert_eq!(wants.len(), 2);
+
+    // Clear all wants.
+    sim.set_inv_wants(inv_id, &[]);
+    assert_eq!(sim.inv_wants(inv_id).len(), 0);
+}
+
+// -----------------------------------------------------------------------
+// AcquireItem tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn acquire_item_picks_up_and_owns() {
+    let mut sim = test_sim(42);
+
+    // Create a ground pile with unowned bread.
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Bread, 3, None, None);
+    }
+
+    // Spawn elf, position at pile.
+    let elf_id = spawn_elf(&mut sim);
+    let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
+    let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
+    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+        c.position = pile_nav_pos;
+    });
+
+    // Create AcquireItem task with reservations.
+    let task_id = TaskId::new(&mut sim.rng);
+    let source = task::HaulSource::GroundPile(pile_pos);
+    let acquire_task = Task {
+        id: task_id,
+        kind: TaskKind::AcquireItem {
+            source,
+            item_kind: inventory::ItemKind::Bread,
+            quantity: 2,
+        },
+        state: TaskState::InProgress,
+        location: sim.nav_graph.node(pile_nav).position,
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::Autonomous,
+        target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
+        required_civ_id: None,
+    };
+    sim.insert_task(acquire_task);
+    {
+        let pile = sim
+            .db
+            .ground_piles
+            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
+        sim.inv_reserve_unowned_items(
+            pile.inventory_id,
+            inventory::ItemKind::Bread,
+            inventory::MaterialFilter::Any,
+            2,
+            task_id,
+        );
+    }
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    // Execute.
+    sim.resolve_acquire_item_action(elf_id, task_id);
+
+    // Assert: bread removed from ground pile (1 unreserved remains).
+    let pile = sim
+        .db
+        .ground_piles
+        .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .next()
+        .unwrap();
+    assert_eq!(
+        sim.inv_item_count(
+            pile.inventory_id,
+            inventory::ItemKind::Bread,
+            inventory::MaterialFilter::Any
+        ),
+        1,
+        "Ground pile should have 1 bread left"
+    );
+
+    // Assert: elf now has 2 bread owned by the elf (plus starting bread).
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    let owned_bread = sim.inv_count_owned(elf.inventory_id, inventory::ItemKind::Bread, elf_id);
+    // Elf gets starting bread (default 2) + acquired 2 = 4.
+    assert_eq!(
+        owned_bread, 4,
+        "Elf should own 4 bread (2 starting + 2 acquired)"
+    );
+
+    // Assert: task completed.
+    assert_eq!(
+        sim.db.tasks.get(&task_id).unwrap().state,
+        TaskState::Complete
+    );
+}
+
+#[test]
+fn idle_elf_below_want_target_acquires_item() {
+    let mut sim = test_sim(42);
+    // Disable hunger/tiredness so elf stays idle.
+    sim.config.elf_starting_bread = 0;
+    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
+        elf_data.food_decay_per_tick = 0;
+        elf_data.rest_decay_per_tick = 0;
+    }
+    sim.species_table = sim
+        .config
+        .species
+        .iter()
+        .map(|(k, v)| (*k, v.clone()))
+        .collect();
+
+    // Set elf wants = [Bread: 2].
+    sim.config.elf_default_wants = vec![building::LogisticsWant {
+        item_kind: inventory::ItemKind::Bread,
+        material_filter: inventory::MaterialFilter::Any,
+        target_quantity: 2,
+    }];
+
+    // Spawn elf (will have 0 bread, wants 2).
+    let elf_id = spawn_elf(&mut sim);
+
+    // Verify elf has 0 bread and wants set.
+    assert_eq!(
+        sim.inv_count_owned(sim.creature_inv(elf_id), inventory::ItemKind::Bread, elf_id),
+        0
+    );
+    assert_eq!(sim.inv_wants(sim.creature_inv(elf_id)).len(), 1);
+
+    // Create unowned bread in a ground pile near the elf.
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Bread, 5, None, None);
+    }
+
+    // Advance past a heartbeat (heartbeat interval is 3000 for elves).
+    sim.step(&[], sim.tick + 5000);
+
+    // Assert: elf should have an AcquireItem task created.
+    let has_acquire_task = sim.db.tasks.iter_all().any(|t| {
+        t.kind_tag == TaskKindTag::AcquireItem
+            && sim
+                .task_acquire_data(t.id)
+                .is_some_and(|a| a.item_kind == inventory::ItemKind::Bread)
+            && sim
+                .db
+                .creatures
+                .get(&elf_id)
+                .is_some_and(|c| c.current_task == Some(t.id))
+    });
+    // Either has an active task, or already completed one and picked up bread.
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    let elf_bread = sim.inv_count_owned(elf.inventory_id, inventory::ItemKind::Bread, elf_id);
+    assert!(
+        has_acquire_task || elf_bread > 0,
+        "Elf should have created an AcquireItem task or already acquired bread, \
+             has_task={has_acquire_task}, bread={elf_bread}"
+    );
+}
+
+#[test]
+fn acquire_item_reserves_prevent_double_claim() {
+    let mut sim = test_sim(42);
+    // Disable hunger/tiredness.
+    sim.config.elf_starting_bread = 0;
+    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
+        elf_data.food_decay_per_tick = 0;
+        elf_data.rest_decay_per_tick = 0;
+    }
+    sim.species_table = sim
+        .config
+        .species
+        .iter()
+        .map(|(k, v)| (*k, v.clone()))
+        .collect();
+
+    sim.config.elf_default_wants = vec![building::LogisticsWant {
+        item_kind: inventory::ItemKind::Bread,
+        material_filter: inventory::MaterialFilter::Any,
+        target_quantity: 2,
+    }];
+
+    // Create exactly 2 unowned bread.
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Bread, 2, None, None);
+    }
+
+    // Spawn 2 elves (each wants 2 bread, only 2 available total).
+    let elf1 = spawn_elf(&mut sim);
+    let spawn_pos = VoxelCoord::new(tree_pos.x + 1, 1, tree_pos.z);
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: spawn_pos,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+    let elf2 = sim
+        .db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf && c.id != elf1)
+        .unwrap()
+        .id;
+
+    // Run enough ticks for both heartbeats to fire and tasks to complete.
+    sim.step(&[], sim.tick + 50_000);
+
+    // Count total bread across both elves. Should be exactly 2 (no duplication).
+    let elf1_bread = sim.inv_count_owned(sim.creature_inv(elf1), inventory::ItemKind::Bread, elf1);
+    let elf2_bread = sim.inv_count_owned(sim.creature_inv(elf2), inventory::ItemKind::Bread, elf2);
+    assert_eq!(
+        elf1_bread + elf2_bread,
+        2,
+        "Total bread across both elves should be exactly 2 (no duplication), \
+             elf1={elf1_bread}, elf2={elf2_bread}"
+    );
+}
+
+#[test]
+fn elf_at_want_target_does_not_acquire() {
+    let mut sim = test_sim(42);
+    // Disable hunger/tiredness.
+    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
+        elf_data.food_decay_per_tick = 0;
+        elf_data.rest_decay_per_tick = 0;
+    }
+    sim.species_table = sim
+        .config
+        .species
+        .iter()
+        .map(|(k, v)| (*k, v.clone()))
+        .collect();
+
+    // Set wants = [Bread: 2], give elf 2 starting bread.
+    sim.config.elf_starting_bread = 2;
+    sim.config.elf_default_wants = vec![building::LogisticsWant {
+        item_kind: inventory::ItemKind::Bread,
+        material_filter: inventory::MaterialFilter::Any,
+        target_quantity: 2,
+    }];
+
+    let elf_id = spawn_elf(&mut sim);
+
+    // Verify elf has exactly 2 bread.
+    assert_eq!(
+        sim.inv_count_owned(sim.creature_inv(elf_id), inventory::ItemKind::Bread, elf_id),
+        2
+    );
+
+    // Add unowned bread to world.
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+    {
+        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile = sim.db.ground_piles.get(&pile_id).unwrap();
+        sim.inv_add_simple_item(
+            pile.inventory_id,
+            inventory::ItemKind::Bread,
+            10,
+            None,
+            None,
+        );
+    }
+
+    // Advance past heartbeat.
+    sim.step(&[], sim.tick + 5000);
+
+    // Assert: no AcquireItem task created (elf already has enough).
+    let has_acquire_task = sim.db.tasks.iter_all().any(|t| {
+        t.kind_tag == TaskKindTag::AcquireItem
+            && sim
+                .db
+                .creatures
+                .get(&elf_id)
+                .is_some_and(|c| c.current_task == Some(t.id))
+    });
+    assert!(
+        !has_acquire_task,
+        "Elf at want target should NOT create AcquireItem task"
+    );
+}
+
+#[test]
+fn logistics_want_serde_backward_compat() {
+    // Old format without material_filter should deserialize with default (Any).
+    let json = r#"{"item_kind":"Bread","target_quantity":5}"#;
+    let want: building::LogisticsWant = serde_json::from_str(json).unwrap();
+    assert_eq!(want.material_filter, inventory::MaterialFilter::Any);
+    assert_eq!(want.item_kind, inventory::ItemKind::Bread);
+    assert_eq!(want.target_quantity, 5);
+}
+
+#[test]
+fn set_inv_wants_deduplicates_by_kind_filter() {
+    let mut sim = test_sim(42);
+    let inv_id = sim
+        .db
+        .inventories
+        .insert_auto_no_fk(|id| crate::db::Inventory {
+            id,
+            owner_kind: crate::db::InventoryOwnerKind::Structure,
+        })
+        .unwrap();
+
+    let wants = vec![
+        building::LogisticsWant {
+            item_kind: inventory::ItemKind::Fruit,
+            material_filter: inventory::MaterialFilter::Any,
+            target_quantity: 5,
+        },
+        building::LogisticsWant {
+            item_kind: inventory::ItemKind::Fruit,
+            material_filter: inventory::MaterialFilter::Any,
+            target_quantity: 10,
+        },
+    ];
+    sim.set_inv_wants(inv_id, &wants);
+
+    // Should deduplicate: one want with max quantity.
+    let stored = sim.inv_wants(inv_id);
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].target_quantity, 10);
 }

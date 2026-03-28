@@ -231,65 +231,6 @@ fn ground_piles_serde_roundtrip() {
 // Reserve owned items
 // ---------------------------------------------------------------------------
 
-#[test]
-fn inv_reserve_owned_items_splits_stack_preserving_owner() {
-    // When reserving a partial owned stack, both the remaining and reserved
-    // halves should preserve the owner field.
-    let mut sim = test_sim(42);
-    let elf_id = spawn_elf(&mut sim);
-    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-
-    let pile_pos = VoxelCoord::new(tree_pos.x, tree_pos.y, tree_pos.z);
-    let pile_id = sim.ensure_ground_pile(pile_pos);
-    let pile = sim.db.ground_piles.get(&pile_id).unwrap();
-    sim.inv_add_simple_item(
-        pile.inventory_id,
-        inventory::ItemKind::Bread,
-        5,
-        Some(elf_id),
-        None,
-    );
-
-    let task_id = TaskId::new(&mut sim.rng);
-    insert_stub_task(&mut sim, task_id);
-    let material = sim.inv_reserve_owned_items(
-        pile.inventory_id,
-        inventory::ItemKind::Bread,
-        inventory::MaterialFilter::Any,
-        3,
-        task_id,
-        elf_id,
-    );
-
-    // Check stacks after split.
-    let stacks = sim
-        .db
-        .item_stacks
-        .by_inventory_id(&pile.inventory_id, tabulosity::QueryOpts::ASC);
-
-    let reserved: Vec<_> = stacks.iter().filter(|s| s.reserved_by.is_some()).collect();
-    let unreserved: Vec<_> = stacks.iter().filter(|s| s.reserved_by.is_none()).collect();
-
-    assert_eq!(reserved.len(), 1, "Should have one reserved stack");
-    assert_eq!(reserved[0].quantity, 3);
-    assert_eq!(
-        reserved[0].owner,
-        Some(elf_id),
-        "Reserved stack must keep owner"
-    );
-
-    assert_eq!(unreserved.len(), 1, "Should have one unreserved stack");
-    assert_eq!(unreserved[0].quantity, 2);
-    assert_eq!(
-        unreserved[0].owner,
-        Some(elf_id),
-        "Unreserved stack must keep owner"
-    );
-
-    // Return value should be the material (None for bread).
-    assert_eq!(material, None);
-}
-
 // ---------------------------------------------------------------------------
 // Item serde
 // ---------------------------------------------------------------------------
@@ -2968,14 +2909,6 @@ fn is_melee_weapon_classification() {
     assert!(!ItemKind::Bread.is_melee_weapon());
     assert!(!ItemKind::Helmet.is_melee_weapon());
 }
-
-/// Spear and Club have no equip slot (no dedicated weapon slot yet).
-#[test]
-fn weapons_have_no_equip_slot() {
-    assert!(ItemKind::Spear.equip_slot().is_none());
-    assert!(ItemKind::Club.equip_slot().is_none());
-}
-
 // ---------------------------------------------------------------------------
 // Footwear item kinds (sandals, shoes)
 // ---------------------------------------------------------------------------
@@ -3280,80 +3213,478 @@ fn starting_ground_pile_items_are_crude() {
 // inv_move_reserved_items
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Tests migrated from commands_tests.rs
+// ---------------------------------------------------------------------------
+
 #[test]
-fn inv_move_reserved_items_no_matching_stacks_returns_zero() {
-    // When no stacks in the source are reserved by the given task,
-    // inv_move_reserved_items should return 0 and leave everything intact.
-    let mut sim = test_sim(42);
-    let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
-    let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
-
-    // Add unreserved bread to source.
-    sim.inv_add_simple_item(src, crate::inventory::ItemKind::Bread, 5, None, None);
-
-    let fake_task_id = TaskId::new(&mut sim.rng);
-    let moved = sim.inv_move_reserved_items(src, dst, fake_task_id);
-    assert_eq!(moved, 0, "Should move nothing when no stacks match");
-
-    // Source should still have 5 bread.
-    let src_bread: u32 = sim
-        .db
-        .item_stacks
-        .by_inventory_id(&src, tabulosity::QueryOpts::ASC)
-        .iter()
-        .filter(|s| s.kind == crate::inventory::ItemKind::Bread)
-        .map(|s| s.quantity)
-        .sum();
-    assert_eq!(src_bread, 5, "Source bread should be unchanged");
-
-    // Destination should be empty.
-    let dst_stacks: Vec<_> = sim
-        .db
-        .item_stacks
-        .by_inventory_id(&dst, tabulosity::QueryOpts::ASC);
-    assert!(dst_stacks.is_empty(), "Destination should be empty");
+fn new_sim_has_initial_fruit() {
+    let sim = test_sim(42);
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
+    assert!(
+        !tree.fruit_positions.is_empty(),
+        "Tree should have some initial fruit (got 0)"
+    );
 }
 
 #[test]
-fn inv_move_reserved_items_clears_reservation_and_merges_at_dest() {
-    // After inv_move_reserved_items deposits items, the reservation should
-    // be cleared and the items should merge with any existing matching
-    // unreserved stacks at the destination.
-    let mut sim = test_sim(42);
-    let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
-    let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+fn fruit_hangs_below_leaf_voxels() {
+    let sim = test_sim(42);
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
+    for fruit_pos in &tree.fruit_positions {
+        // The leaf above the fruit should be in the tree's leaf_voxels.
+        let leaf_above = VoxelCoord::new(fruit_pos.x, fruit_pos.y + 1, fruit_pos.z);
+        assert!(
+            tree.leaf_voxels.contains(&leaf_above),
+            "Fruit at {} should hang below a leaf voxel, but no leaf at {}",
+            fruit_pos,
+            leaf_above
+        );
+    }
+}
 
-    let task_id = TaskId::new(&mut sim.rng);
-    insert_stub_task(&mut sim, task_id);
+#[test]
+fn fruit_set_in_world_grid() {
+    let sim = test_sim(42);
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
+    for fruit_pos in &tree.fruit_positions {
+        assert_eq!(
+            sim.world.get(*fruit_pos),
+            VoxelType::Fruit,
+            "World should have Fruit voxel at {}",
+            fruit_pos
+        );
+    }
+}
 
-    // Destination already has 3 unreserved bread.
-    sim.inv_add_simple_item(dst, crate::inventory::ItemKind::Bread, 3, None, None);
+#[test]
+fn fruit_grows_during_heartbeat() {
+    // Use a config with no initial fruit but high spawn rate so heartbeats produce fruit.
+    let mut config = test_config();
+    config.fruit_initial_attempts = 0;
+    config.fruit_production_rate_ppm = 1_000_000; // Always spawn
+    config.fruit_max_per_tree = 100;
+    let mut sim = SimState::with_config(42, config);
+    let tree_id = sim.player_tree_id;
 
-    // Source has 5 bread reserved by the task.
-    sim.inv_add_simple_item(
-        src,
-        crate::inventory::ItemKind::Bread,
-        5,
-        None,
-        Some(task_id),
+    assert!(
+        sim.db
+            .trees
+            .get(&tree_id)
+            .unwrap()
+            .fruit_positions
+            .is_empty(),
+        "Should start with no fruit when initial_attempts = 0"
     );
 
-    let moved = sim.inv_move_reserved_items(src, dst, task_id);
-    assert_eq!(moved, 5, "Should move all 5 reserved bread");
+    // Step past several heartbeats (interval = 10000 ticks).
+    sim.step(&[], 50000);
 
-    // Destination should have 8 unreserved bread in a single merged stack.
-    let dst_stacks: Vec<_> = sim
+    assert!(
+        !sim.db
+            .trees
+            .get(&tree_id)
+            .unwrap()
+            .fruit_positions
+            .is_empty(),
+        "Fruit should grow during tree heartbeats"
+    );
+}
+
+#[test]
+fn fruit_respects_max_count() {
+    let mut config = test_config();
+    config.fruit_max_per_tree = 3;
+    config.fruit_initial_attempts = 100; // Many attempts, but max is 3.
+    config.fruit_production_rate_ppm = 1_000_000;
+    let sim = SimState::with_config(42, config);
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
+
+    assert!(
+        tree.fruit_positions.len() <= 3,
+        "Fruit count {} should not exceed max 3",
+        tree.fruit_positions.len()
+    );
+}
+
+#[test]
+fn fruit_deterministic() {
+    let sim_a = test_sim(42);
+    let sim_b = test_sim(42);
+    let tree_a = sim_a.db.trees.get(&sim_a.player_tree_id).unwrap();
+    let tree_b = sim_b.db.trees.get(&sim_b.player_tree_id).unwrap();
+    assert_eq!(tree_a.fruit_positions, tree_b.fruit_positions);
+}
+
+#[test]
+fn tree_has_fruit_species_assigned() {
+    let sim = test_sim(42);
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
+    assert!(
+        tree.fruit_species_id.is_some(),
+        "Home tree should have a fruit species assigned during worldgen"
+    );
+    // The assigned species should exist in the world's species roster.
+    let species_id = tree.fruit_species_id.unwrap();
+    assert!(
+        sim.db.fruit_species.get(&species_id).is_some(),
+        "Tree's fruit species {:?} should be in the SimDb fruit_species table",
+        species_id
+    );
+}
+
+#[test]
+fn fruit_voxels_have_species_tracked() {
+    let sim = test_sim(42);
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
+    // Every fruit voxel should have a species entry in the map.
+    for &fruit_pos in &tree.fruit_positions {
+        assert!(
+            sim.fruit_voxel_species.contains_key(&fruit_pos),
+            "Fruit at {} should have a species tracked in fruit_voxel_species",
+            fruit_pos
+        );
+    }
+    // The tracked species should match the tree's assigned species.
+    if let Some(tree_species) = tree.fruit_species_id {
+        for &fruit_pos in &tree.fruit_positions {
+            let voxel_species = sim.fruit_voxel_species[&fruit_pos];
+            assert_eq!(
+                voxel_species, tree_species,
+                "Fruit voxel species should match tree species"
+            );
+        }
+    }
+}
+
+#[test]
+fn fruit_species_at_returns_species() {
+    let sim = test_sim(42);
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
+    if let Some(first_fruit) = tree.fruit_positions.first() {
+        let species = sim.fruit_species_at(*first_fruit);
+        assert!(
+            species.is_some(),
+            "fruit_species_at should return a species"
+        );
+        let species = species.unwrap();
+        assert!(
+            !species.vaelith_name.is_empty(),
+            "Fruit species should have a Vaelith name"
+        );
+        assert!(
+            !species.english_gloss.is_empty(),
+            "Fruit species should have an English gloss"
+        );
+    }
+}
+
+#[test]
+fn fruit_voxel_species_roundtrip() {
+    let sim = test_sim(42);
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
+    assert!(!tree.fruit_positions.is_empty(), "need fruit for this test");
+
+    let json = sim.to_json().unwrap();
+    let loaded = SimState::from_json(&json).unwrap();
+    let loaded_tree = loaded.db.trees.get(&loaded.player_tree_id).unwrap();
+
+    // Fruit voxel species map should survive roundtrip.
+    assert_eq!(
+        sim.fruit_voxel_species.len(),
+        loaded.fruit_voxel_species.len(),
+        "fruit_voxel_species count should survive roundtrip"
+    );
+    for (&pos, &species_id) in &sim.fruit_voxel_species {
+        assert_eq!(
+            loaded.fruit_voxel_species.get(&pos),
+            Some(&species_id),
+            "fruit_voxel_species entry at {} should survive roundtrip",
+            pos
+        );
+    }
+    // Tree's fruit species should survive too.
+    assert_eq!(
+        loaded_tree.fruit_species_id, tree.fruit_species_id,
+        "Tree fruit_species_id should survive roundtrip"
+    );
+}
+
+#[test]
+fn harvest_fruit_carries_species_material() {
+    let mut sim = test_sim(42);
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
+    let fruit_pos = tree.fruit_positions[0];
+    let tree_species = tree.fruit_species_id.unwrap();
+
+    // Spawn an elf near the fruit.
+    let elf_nav = sim.nav_graph.find_nearest_node(fruit_pos).unwrap();
+    let elf_pos = sim.nav_graph.node(elf_nav).position;
+    let mut events = Vec::new();
+    let elf_id = sim
+        .spawn_creature(Species::Elf, elf_pos, &mut events)
+        .unwrap();
+    sim.config.elf_starting_bread = 100; // Prevent hunger.
+
+    // Manually call do_harvest to test the material flow.
+    let task_id = TaskId::new(&mut sim.rng);
+    let task = task::Task {
+        id: task_id,
+        kind: task::TaskKind::Harvest { fruit_pos },
+        state: task::TaskState::InProgress,
+        location: elf_pos,
+        progress: 0,
+        total_cost: 0,
+        required_species: None,
+        origin: task::TaskOrigin::Automated,
+        target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
+        required_civ_id: None,
+    };
+    sim.insert_task(task);
+    sim.resolve_harvest_action(elf_id, task_id, fruit_pos);
+
+    // The fruit should be gone from world and species map.
+    assert_eq!(sim.world.get(fruit_pos), VoxelType::Air);
+    assert!(!sim.fruit_voxel_species.contains_key(&fruit_pos));
+
+    // Find the ground pile and check the item has fruit species material.
+    let pile_stacks: Vec<_> = sim
         .db
         .item_stacks
-        .by_inventory_id(&dst, tabulosity::QueryOpts::ASC);
-    let bread_stacks: Vec<_> = dst_stacks
-        .iter()
-        .filter(|s| s.kind == crate::inventory::ItemKind::Bread)
+        .iter_all()
+        .filter(|s| {
+            s.kind == inventory::ItemKind::Fruit
+                && s.material == Some(inventory::Material::FruitSpecies(tree_species))
+        })
         .collect();
-    assert_eq!(bread_stacks.len(), 1, "Should merge into a single stack");
-    assert_eq!(bread_stacks[0].quantity, 8, "Should be 3 + 5 = 8 bread");
-    assert_eq!(
-        bread_stacks[0].reserved_by, None,
-        "Merged stack should be unreserved"
+    assert!(
+        !pile_stacks.is_empty(),
+        "Harvested fruit should have Material::FruitSpecies({:?})",
+        tree_species
     );
+}
+
+#[test]
+fn fruit_heartbeat_tracks_species() {
+    // Fruit grown via heartbeat should also be tracked in species map.
+    let mut config = test_config();
+    config.fruit_initial_attempts = 0;
+    config.fruit_production_rate_ppm = 1_000_000;
+    config.fruit_max_per_tree = 100;
+    let mut sim = SimState::with_config(42, config);
+
+    assert!(
+        sim.fruit_voxel_species.is_empty(),
+        "Should start with no species entries"
+    );
+
+    // Step past heartbeats to grow fruit.
+    sim.step(&[], 50000);
+
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
+    assert!(
+        !tree.fruit_positions.is_empty(),
+        "Should have grown some fruit"
+    );
+    // Every fruit should have species tracked.
+    for &pos in &tree.fruit_positions {
+        assert!(
+            sim.fruit_voxel_species.contains_key(&pos),
+            "Heartbeat-grown fruit at {} should have species tracked",
+            pos
+        );
+    }
+}
+
+#[test]
+fn add_creature_item() {
+    let mut sim = test_sim(42);
+    sim.config.elf_starting_bread = 0;
+    let elf_id = spawn_elf(&mut sim);
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::AddCreatureItem {
+            creature_id: elf_id,
+            item_kind: crate::inventory::ItemKind::Bread,
+            quantity: 5,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+
+    let bread_count = sim.inv_item_count(
+        sim.creature_inv(elf_id),
+        crate::inventory::ItemKind::Bread,
+        crate::inventory::MaterialFilter::Any,
+    );
+    assert_eq!(bread_count, 5);
+}
+
+#[test]
+fn add_ground_pile_item() {
+    let mut sim = test_sim(42);
+    let pos = VoxelCoord::new(32, 1, 32);
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::AddGroundPileItem {
+            position: pos,
+            item_kind: crate::inventory::ItemKind::Bread,
+            quantity: 3,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+
+    let pile = sim
+        .db
+        .ground_piles
+        .by_position(&pos, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .next()
+        .expect("pile should exist");
+    let bread_count = sim.inv_item_count(
+        pile.inventory_id,
+        crate::inventory::ItemKind::Bread,
+        crate::inventory::MaterialFilter::Any,
+    );
+    assert_eq!(bread_count, 3);
+}
+
+// -----------------------------------------------------------------------
+// Material filter tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn material_filter_matches_any() {
+    use crate::inventory::{Material, MaterialFilter};
+    let any = MaterialFilter::Any;
+    assert!(any.matches(None));
+    assert!(any.matches(Some(Material::Oak)));
+    assert!(
+        any.matches(Some(Material::FruitSpecies(crate::fruit::FruitSpeciesId(
+            1
+        ))))
+    );
+}
+
+#[test]
+fn material_filter_matches_specific() {
+    use crate::inventory::{Material, MaterialFilter};
+    let specific = MaterialFilter::Specific(Material::Oak);
+    assert!(specific.matches(Some(Material::Oak)));
+    assert!(!specific.matches(None));
+    assert!(!specific.matches(Some(Material::Birch)));
+    assert!(
+        !specific.matches(Some(Material::FruitSpecies(crate::fruit::FruitSpeciesId(
+            1
+        ))))
+    );
+}
+
+#[test]
+fn material_filter_ord_deterministic() {
+    use crate::inventory::{Material, MaterialFilter};
+    // Any < Specific(*)
+    assert!(MaterialFilter::Any < MaterialFilter::Specific(Material::Oak));
+    // Specific variants ordered by Material's Ord
+    assert!(MaterialFilter::Specific(Material::Oak) < MaterialFilter::Specific(Material::Birch));
+}
+
+#[test]
+fn material_filter_serde_roundtrip() {
+    use crate::inventory::{Material, MaterialFilter};
+    for filter in [
+        MaterialFilter::Any,
+        MaterialFilter::Specific(Material::Oak),
+        MaterialFilter::Specific(Material::FruitSpecies(crate::fruit::FruitSpeciesId(42))),
+    ] {
+        let json = serde_json::to_string(&filter).unwrap();
+        let restored: MaterialFilter = serde_json::from_str(&json).unwrap();
+        assert_eq!(filter, restored, "roundtrip failed for {json}");
+    }
+}
+
+#[test]
+fn material_filter_default_is_any() {
+    use crate::inventory::MaterialFilter;
+    assert_eq!(MaterialFilter::default(), MaterialFilter::Any);
+}
+
+#[test]
+fn death_drop_preserves_preexisting_pile_items() {
+    // If a ground pile already exists at the death position with items
+    // from another source, those items must not be affected.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_inv = sim.db.creatures.get(&elf).unwrap().inventory_id;
+
+    // Pre-place arrows in a ground pile at the elf's position.
+    // Use a unique material (Willow) so they won't merge with the elf's
+    // starting arrows (which have material: None).
+    let pile_id = sim.ensure_ground_pile(elf_pos);
+    let pile_inv = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
+    let fake_task = TaskId::new(&mut sim.rng.clone());
+    insert_stub_task(&mut sim, fake_task);
+    sim.inv_add_item(
+        pile_inv,
+        inventory::ItemKind::Arrow,
+        10,
+        None,
+        Some(fake_task), // reserved by another task
+        Some(inventory::Material::Willow),
+        7, // distinctive quality
+        None,
+        None,
+    );
+
+    // Give the elf a bow (owned by elf, so death drop will clear its owner).
+    sim.inv_add_item(
+        elf_inv,
+        inventory::ItemKind::Bow,
+        1,
+        Some(elf),
+        None,
+        Some(inventory::Material::Yew),
+        0,
+        None,
+        None,
+    );
+
+    // Kill the elf.
+    let mut events = Vec::new();
+    sim.apply_damage(elf, 9999, &mut events);
+
+    // The pre-existing Willow arrows must still have their reservation.
+    let pile_stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&pile_inv, tabulosity::QueryOpts::ASC);
+    let arrow_stack = pile_stacks
+        .iter()
+        .find(|s| {
+            s.kind == inventory::ItemKind::Arrow
+                && s.material == Some(inventory::Material::Willow)
+                && s.quality == 7
+        })
+        .expect("Pre-existing Willow arrows should still be in pile");
+    assert_eq!(
+        arrow_stack.reserved_by,
+        Some(fake_task),
+        "Pre-existing reservation must not be cleared by death drop"
+    );
+    assert_eq!(arrow_stack.quantity, 10);
+
+    // The elf's bow should also be in the pile, unowned.
+    let bow_stack = pile_stacks
+        .iter()
+        .find(|s| {
+            s.kind == inventory::ItemKind::Bow && s.material == Some(inventory::Material::Yew)
+        })
+        .expect("Elf's bow should be in pile");
+    assert!(bow_stack.owner.is_none());
 }

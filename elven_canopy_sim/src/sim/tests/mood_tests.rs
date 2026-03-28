@@ -1551,3 +1551,121 @@ fn mope_interrupts_build_action() {
         "Mope should have triggered at least once during 200 heartbeats with P≈1.0"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Tests migrated from commands_tests.rs
+// ---------------------------------------------------------------------------
+
+#[test]
+fn unhappy_elf_eventually_mopes() {
+    // Give elf SleptOnGround thoughts (weight -100 each → Unhappy/-200 → actually Miserable).
+    // Use a high mope rate so it fires quickly.
+    let cfg = crate::config::MoodConsequencesConfig {
+        mope_mean_ticks_unhappy: 3000, // P ≈ 1.0 per heartbeat
+        mope_mean_ticks_miserable: 3000,
+        mope_mean_ticks_devastated: 3000,
+        mope_duration_ticks: 100,
+        ..Default::default()
+    };
+    let (mut sim, elf_id) = mope_test_setup(
+        cfg,
+        &[ThoughtKind::SleptOnGround, ThoughtKind::SleptOnGround],
+    );
+
+    let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    sim.step(&[], sim.tick + interval * 20);
+
+    let has_mope = sim.db.tasks.iter_all().any(|t| {
+        t.kind_tag == TaskKindTag::Mope
+            && sim
+                .db
+                .creatures
+                .get(&elf_id)
+                .is_some_and(|c| c.current_task == Some(t.id))
+    });
+    assert!(has_mope, "Unhappy elf should eventually get a Mope task");
+}
+
+#[test]
+fn content_elf_never_mopes() {
+    // Give elf positive thoughts → Content/Happy tier. Mean=0 → never mopes.
+    let cfg = crate::config::MoodConsequencesConfig::default();
+    let (mut sim, elf_id) = mope_test_setup(cfg, &[ThoughtKind::AteDining, ThoughtKind::AteDining]);
+
+    let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    sim.step(&[], sim.tick + interval * 50);
+
+    let has_mope = sim.db.tasks.iter_all().any(|t| {
+        t.kind_tag == TaskKindTag::Mope
+            && sim
+                .db
+                .creatures
+                .get(&elf_id)
+                .is_some_and(|c| c.current_task == Some(t.id))
+    });
+    assert!(!has_mope, "Content elf should never mope");
+}
+
+#[test]
+fn devastated_elf_interrupts_task_to_mope() {
+    // Give elf Devastated-tier thoughts + a GoTo task + high mope rate.
+    let cfg = crate::config::MoodConsequencesConfig {
+        mope_mean_ticks_unhappy: 3000,
+        mope_mean_ticks_miserable: 3000,
+        mope_mean_ticks_devastated: 3000,
+        mope_can_interrupt_task: true,
+        mope_duration_ticks: 100,
+    };
+    let (mut sim, elf_id) = mope_test_setup(
+        cfg,
+        // SleptOnGround has weight -100, three of them → -300 → Devastated
+        &[
+            ThoughtKind::SleptOnGround,
+            ThoughtKind::SleptOnGround,
+            ThoughtKind::SleptOnGround,
+        ],
+    );
+
+    // Assign a GoTo task to the elf so it's not idle.
+    // Find a distant node for the GoTo task.
+    let nav_count = sim.nav_graph.node_count();
+    let far_node = NavNodeId((nav_count / 2) as u32);
+    let task_id = TaskId::new(&mut sim.rng);
+    let goto_task = Task {
+        id: task_id,
+        kind: TaskKind::GoTo,
+        state: TaskState::InProgress,
+        location: sim.nav_graph.node(far_node).position,
+        progress: 0,
+        total_cost: 0,
+        required_species: None,
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: None,
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
+        required_civ_id: None,
+    };
+    sim.insert_task(goto_task);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = Some(task_id);
+        let _ = sim.db.creatures.update_no_fk(c);
+    }
+
+    let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    sim.step(&[], sim.tick + interval * 20);
+
+    // Elf should have abandoned GoTo and started moping.
+    let has_mope = sim.db.tasks.iter_all().any(|t| {
+        t.kind_tag == TaskKindTag::Mope
+            && sim
+                .db
+                .creatures
+                .get(&elf_id)
+                .is_some_and(|c| c.current_task == Some(t.id))
+    });
+    assert!(
+        has_mope,
+        "Miserable elf with mope_can_interrupt_task should interrupt GoTo and start moping"
+    );
+}

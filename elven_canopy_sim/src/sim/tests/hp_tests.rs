@@ -1413,3 +1413,416 @@ fn attack_target_continues_through_incapacitation_to_death() {
         elf_c.vital_status
     );
 }
+
+// ---------------------------------------------------------------------------
+// Tests migrated from commands_tests.rs
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dead_creature_heartbeat_does_not_reschedule() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let tick = sim.tick;
+
+    // Kill the elf.
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: elf_id,
+            },
+        }],
+        tick + 1,
+    );
+
+    // Run sim forward past several heartbeat intervals. Any pending
+    // heartbeat events for the dead elf should be no-ops (not reschedule).
+    let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    sim.step(&[], sim.tick + heartbeat_interval * 5);
+
+    // Drain the event queue and check no heartbeat for this creature.
+    let mut found_heartbeat = false;
+    while let Some(evt) = sim.event_queue.pop_if_ready(u64::MAX) {
+        if matches!(
+            evt.kind,
+            ScheduledEventKind::CreatureHeartbeat { creature_id } if creature_id == elf_id
+        ) {
+            found_heartbeat = true;
+        }
+    }
+    assert!(
+        !found_heartbeat,
+        "dead creature should not have pending heartbeats"
+    );
+}
+
+#[test]
+fn dead_creature_not_assigned_tasks() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let tick = sim.tick;
+
+    // Kill the elf.
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: elf_id,
+            },
+        }],
+        tick + 1,
+    );
+
+    // Create a GoTo task.
+    let pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let tick2 = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick2 + 1,
+            action: SimAction::CreateTask {
+                kind: TaskKind::GoTo,
+                position: pos,
+                required_species: Some(Species::Elf),
+            },
+        }],
+        tick2 + 1,
+    );
+
+    // Run several activations.
+    sim.step(&[], sim.tick + 10000);
+
+    // Dead creature should NOT have picked up the task.
+    let creature = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        creature.current_task.is_none(),
+        "dead creature should not claim tasks"
+    );
+}
+
+#[test]
+fn damage_dead_creature_is_noop() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let tick = sim.tick;
+
+    // Kill.
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: elf_id,
+            },
+        }],
+        tick + 1,
+    );
+
+    // Try to damage again.
+    let tick2 = sim.tick;
+    let result = sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick2 + 1,
+            action: SimAction::DamageCreature {
+                creature_id: elf_id,
+                amount: 50,
+            },
+        }],
+        tick2 + 1,
+    );
+
+    // Should not emit a second death event.
+    assert!(
+        !result
+            .events
+            .iter()
+            .any(|e| matches!(&e.kind, SimEventKind::CreatureDied { .. })),
+        "damaging dead creature should not emit another death event"
+    );
+}
+
+#[test]
+fn death_creates_notification() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let initial_notifications = sim.db.notifications.len();
+    let tick = sim.tick;
+
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: elf_id,
+            },
+        }],
+        tick + 1,
+    );
+
+    assert!(
+        sim.db.notifications.len() > initial_notifications,
+        "death should create a notification"
+    );
+    let last_notif = sim.db.notifications.iter_all().last().unwrap();
+    assert!(
+        last_notif.message.contains("died"),
+        "notification should mention death: {}",
+        last_notif.message
+    );
+}
+
+#[test]
+fn death_interrupts_current_task() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+
+    // Create and claim a GoTo task.
+    let pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::CreateTask {
+                kind: TaskKind::GoTo,
+                position: pos,
+                required_species: Some(Species::Elf),
+            },
+        }],
+        tick + 1,
+    );
+
+    // Run until the elf picks up the task.
+    sim.step(&[], sim.tick + 5000);
+    // Elf should have a task now (either the GoTo or something from heartbeat).
+
+    // Kill the elf.
+    let tick2 = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick2 + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: elf_id,
+            },
+        }],
+        tick2 + 1,
+    );
+
+    let creature = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        creature.current_task.is_none(),
+        "dead creature should have no task"
+    );
+    assert_eq!(creature.action_kind, ActionKind::NoAction);
+}
+
+#[test]
+fn kill_nonexistent_creature_is_noop() {
+    let mut sim = test_sim(42);
+    let mut rng = GameRng::new(999);
+    let fake_id = CreatureId::new(&mut rng);
+    let tick = sim.tick;
+
+    // Should not panic.
+    let result = sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: fake_id,
+            },
+        }],
+        tick + 1,
+    );
+
+    assert!(
+        !result
+            .events
+            .iter()
+            .any(|e| matches!(&e.kind, SimEventKind::CreatureDied { .. })),
+        "killing nonexistent creature should not emit event"
+    );
+}
+
+#[test]
+fn death_removes_from_spatial_index() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let pos = sim.db.creatures.get(&elf_id).unwrap().position;
+
+    // Elf should be in the spatial index before death.
+    assert!(
+        sim.spatial_index
+            .get(&pos)
+            .is_some_and(|v| v.contains(&elf_id)),
+        "living elf should be in spatial index"
+    );
+
+    // Kill the elf.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: elf_id,
+            },
+        }],
+        tick + 1,
+    );
+
+    // Elf should no longer be in the spatial index.
+    assert!(
+        !sim.spatial_index
+            .get(&pos)
+            .is_some_and(|v| v.contains(&elf_id)),
+        "dead elf should be removed from spatial index"
+    );
+}
+
+#[test]
+fn hp_death_serde_roundtrip() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, elf_id);
+    let tick = sim.tick;
+
+    // Damage elf to half HP.
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DamageCreature {
+                creature_id: elf_id,
+                amount: 50,
+            },
+        }],
+        tick + 1,
+    );
+
+    // Serialize and deserialize the DB.
+    let json = serde_json::to_string(&sim.db).unwrap();
+    let restored: SimDb = serde_json::from_str(&json).unwrap();
+    let creature = restored.creatures.get(&elf_id).unwrap();
+    assert_eq!(creature.hp, sim.db.creatures.get(&elf_id).unwrap().hp);
+    assert_eq!(creature.hp_max, sim.species_table[&Species::Elf].hp_max);
+    assert_eq!(creature.vital_status, VitalStatus::Alive);
+}
+
+#[test]
+fn hp_death_serde_roundtrip_dead() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let tick = sim.tick;
+
+    // Kill elf.
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DebugKillCreature {
+                creature_id: elf_id,
+            },
+        }],
+        tick + 1,
+    );
+
+    // Serialize and deserialize.
+    let json = serde_json::to_string(&sim.db).unwrap();
+    let restored: SimDb = serde_json::from_str(&json).unwrap();
+    let creature = restored.creatures.get(&elf_id).unwrap();
+    assert_eq!(creature.vital_status, VitalStatus::Dead);
+    assert_eq!(creature.hp, 0);
+}
+
+#[test]
+fn zero_and_negative_damage_is_noop() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let hp_before = sim.db.creatures.get(&elf_id).unwrap().hp;
+    let tick = sim.tick;
+
+    // Zero damage — should not change HP.
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DamageCreature {
+                creature_id: elf_id,
+                amount: 0,
+            },
+        }],
+        tick + 1,
+    );
+    assert_eq!(sim.db.creatures.get(&elf_id).unwrap().hp, hp_before);
+
+    // Negative damage — should not change HP.
+    let tick2 = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick2 + 1,
+            action: SimAction::DamageCreature {
+                creature_id: elf_id,
+                amount: -5,
+            },
+        }],
+        tick2 + 1,
+    );
+    assert_eq!(sim.db.creatures.get(&elf_id).unwrap().hp, hp_before);
+}
+
+#[test]
+fn zero_and_negative_heal_is_noop() {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    let tick = sim.tick;
+
+    // Damage first so there's room to heal.
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DamageCreature {
+                creature_id: elf_id,
+                amount: 30,
+            },
+        }],
+        tick + 1,
+    );
+    let hp_after_damage = sim.db.creatures.get(&elf_id).unwrap().hp;
+
+    // Zero heal — should not change HP.
+    let tick2 = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick2 + 1,
+            action: SimAction::HealCreature {
+                creature_id: elf_id,
+                amount: 0,
+            },
+        }],
+        tick2 + 1,
+    );
+    assert_eq!(sim.db.creatures.get(&elf_id).unwrap().hp, hp_after_damage);
+
+    // Negative heal — should not change HP.
+    let tick3 = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick3 + 1,
+            action: SimAction::HealCreature {
+                creature_id: elf_id,
+                amount: -10,
+            },
+        }],
+        tick3 + 1,
+    );
+    assert_eq!(sim.db.creatures.get(&elf_id).unwrap().hp, hp_after_damage);
+}
