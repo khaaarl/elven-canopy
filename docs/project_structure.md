@@ -35,6 +35,7 @@ elven-canopy/
 │       │   ├── paths.rs       #   Elf path assignment, skill cap/roll queries, backfill
 │       │   ├── raid.rs         #   Raid triggering (hostile civ raiding parties)
 │       │   ├── skills.rs      #   Probabilistic skill advancement (try_advance_skill)
+│       │   ├── social.rs      #   Social opinion system (F-social-opinions): skill checks, upsert, decay, bootstrap
 │       │   ├── taming.rs      #   Creature taming (F-taming): designation, roll, civ change
 │       │   ├── task_helpers.rs #   Task extension table accessors, insert_task
 │       │   └── tests/           #   Per-domain test modules (split from monolithic tests.rs)

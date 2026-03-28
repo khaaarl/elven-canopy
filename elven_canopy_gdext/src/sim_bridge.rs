@@ -185,8 +185,9 @@ use elven_canopy_sim::structural::{self, ValidationTier};
 use elven_canopy_sim::task::{TaskOrigin, TaskState};
 use elven_canopy_sim::types::{
     ActiveRecipeId, ActiveRecipeTargetId, BuildType, CreatureId, DiplomaticRelation, FaceDirection,
-    FruitSpeciesId, FurnishingType, FurnitureKind, ItemStackId, LadderKind, OverlapClassification,
-    Priority, SimUuid, Species, StructureId, TraitKind, VitalStatus, VoxelCoord, VoxelType,
+    FruitSpeciesId, FurnishingType, FurnitureKind, ItemStackId, LadderKind, OpinionKind,
+    OverlapClassification, Priority, SimUuid, Species, StructureId, TraitKind, VitalStatus,
+    VoxelCoord, VoxelType,
 };
 use godot::classes::ImageTexture;
 use godot::prelude::*;
@@ -441,6 +442,35 @@ fn build_creature_info_dict(
         };
         dict.set(key, val);
     }
+
+    // Social opinions (F-social-opinions).
+    let opinions = sim
+        .db
+        .creature_opinions
+        .by_creature_id(&c.id, elven_canopy_sim::tabulosity::QueryOpts::ASC);
+    let mut opinion_arr = godot::prelude::VarArray::new();
+    for op in &opinions {
+        let mut od = VarDictionary::new();
+        od.set("target_id", op.target_id.to_string().to_godot());
+        let target_name = sim
+            .db
+            .creatures
+            .get(&op.target_id)
+            .map(|tc| tc.name.clone())
+            .unwrap_or_default();
+        od.set("target_name", target_name.to_godot());
+        let kind_str = match op.kind {
+            OpinionKind::Friendliness => "Friendliness",
+            OpinionKind::Respect => "Respect",
+            OpinionKind::Fear => "Fear",
+            OpinionKind::Attraction => "Attraction",
+        };
+        od.set("kind", kind_str.to_godot());
+        od.set("intensity", op.intensity);
+        opinion_arr.push(&od.to_variant());
+    }
+    dict.set("social_opinions", opinion_arr.to_variant());
+
     dict
 }
 

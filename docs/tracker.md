@@ -221,7 +221,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-smooth-ycutoff       Post-smoothing Y-cutoff with cap faces
 [ ] F-social-dance         Dance integration with social opinions
 [ ] F-social-graph         Relationships and social contagion
-[ ] F-social-opinions      Interpersonal opinion table and social skill checks
 [ ] F-social-prefer        Social preference in group activity recruitment
 [ ] F-social-ui            Social tab on creature info panel
 [ ] F-soul-mech            Death, soul passage, resurrection
@@ -478,6 +477,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-sim-db-impl          Tabulosity typed in-memory relational store
 [x] F-sim-speed            Simulation speed controls UI
 [x] F-sim-tab-migrate      Migrate sim entity storage to tabulosity SimDb
+[x] F-social-opinions      Interpersonal opinion table and social skill checks
 [x] F-spatial-index        Creature spatial index for voxel-level position queries
 [x] F-spawn-toolbar        Spawn toolbar and placement UI
 [x] F-split-sim            Split monolithic sim.rs into domain sub-modules
@@ -2800,7 +2800,7 @@ Uses the social opinion system (F-social-opinions) — an elf's Friendliness
 toward their tamed hawk is a row in the same opinion table. A "bonded"
 threshold on opinion intensity triggers special bonded-pair behavior.
 
-**Blocked by:** F-social-opinions
+**Unblocked by:** F-social-opinions
 **Related:** F-casual-social, F-civ-pets, F-emotions, F-social-opinions
 
 #### F-apprentice — Skill transfer via proximity
@@ -2822,8 +2822,8 @@ These micro-interactions upsert social opinions (small Friendliness bumps,
 occasional Attraction rolls) and provide a baseline social fabric even
 when creatures aren't engaged in formal group activities.
 
-**Blocked by:** F-social-opinions
 **Blocks:** F-social-graph
+**Unblocked by:** F-social-opinions
 **Related:** F-animal-bonds, F-social-dance
 
 #### F-combat-opinions — Respect and fear from combat events
@@ -2835,8 +2835,8 @@ that creature. Fighting alongside someone bumps Friendliness. These use
 the social opinion table (F-social-opinions) — no new schema, just new
 triggers from combat events.
 
-**Blocked by:** F-social-opinions
 **Blocks:** F-social-graph
+**Unblocked by:** F-social-opinions
 
 #### F-dinner-party — Organized group dining social activity
 **Status:** Todo
@@ -2848,9 +2848,8 @@ together, and socialize — upserting Friendliness opinions between
 participants and providing mood boosts scaled by how much they like
 their dining companions.
 
-**Blocked by:** F-social-opinions
 **Blocks:** F-social-graph
-**Unblocked by:** F-group-activity
+**Unblocked by:** F-group-activity, F-social-opinions
 **Related:** F-social-dance, F-social-prefer
 
 #### F-emotions — Multi-dimensional emotional state
@@ -2918,9 +2917,8 @@ participants — upserts Friendliness using max(Influence, Culture) as the
 relevant skill check (you're either entertaining with stories or charming
 with social maneuvering, whichever you're better at).
 
-**Blocked by:** F-social-opinions
 **Blocks:** F-social-graph
-**Unblocked by:** F-group-activity
+**Unblocked by:** F-group-activity, F-social-opinions
 
 #### F-group-dance — Group dance and social singing activities
 **Status:** Done
@@ -3105,8 +3103,9 @@ Requires creature sex (F-creature-sex) to be implemented. Courtship
 behaviors interact with mood, social activities, and the social
 preference system.
 
-**Blocked by:** F-creature-sex, F-formal-bonds, F-social-opinions
+**Blocked by:** F-creature-sex, F-formal-bonds
 **Blocks:** F-social-graph
+**Unblocked by:** F-social-opinions
 **Related:** F-formal-bonds
 
 #### F-seasons — Seasonal visual and gameplay effects
@@ -3126,8 +3125,8 @@ upserts Friendliness opinions between dance partners, with intensity
 modulated by Culture skill and CHA. Joy gained from dancing is tweaked
 upward when dancing with creatures you already like.
 
-**Blocked by:** F-social-opinions
 **Blocks:** F-social-graph
+**Unblocked by:** F-social-opinions
 **Related:** F-casual-social, F-dinner-party, F-group-dance, F-social-prefer
 
 #### F-social-graph — Relationships and social contagion
@@ -3143,11 +3142,12 @@ pieces are done and integrated — including emotional contagion (mood
 spreading through social connections, weighted by relationship intensity)
 which requires F-emotions.
 
-**Blocked by:** F-casual-social, F-combat-opinions, F-dinner-party, F-emotions, F-formal-bonds, F-group-chat, F-romance, F-social-dance, F-social-opinions, F-social-prefer, F-social-ui
+**Blocked by:** F-casual-social, F-combat-opinions, F-dinner-party, F-emotions, F-formal-bonds, F-group-chat, F-romance, F-social-dance, F-social-prefer, F-social-ui
+**Unblocked by:** F-social-opinions
 **Related:** F-emotions, F-funeral-rites, F-personality
 
 #### F-social-opinions — Interpersonal opinion table and social skill checks
-**Status:** Todo · **Phase:** 4 · **Refs:** §18
+**Status:** Done · **Phase:** 4 · **Refs:** §18
 
 Asymmetric interpersonal opinion system. Each creature holds a child table
 of opinions about other creatures: (creature_id, kind, intensity, other_creature_id).
@@ -3176,7 +3176,7 @@ relationships not reinforced by continued interaction fade naturally.
 for a future tracker item — this item covers only informal interpersonal
 opinions.
 
-**Blocks:** F-animal-bonds, F-casual-social, F-combat-opinions, F-dinner-party, F-group-chat, F-romance, F-social-dance, F-social-graph, F-social-prefer, F-social-ui
+**Unblocked:** F-animal-bonds, F-casual-social, F-combat-opinions, F-dinner-party, F-group-chat, F-romance, F-social-dance, F-social-graph, F-social-prefer, F-social-ui
 **Related:** F-animal-bonds, F-creature-skills, F-personality
 
 #### F-social-prefer — Social preference in group activity recruitment
@@ -3189,8 +3189,8 @@ recruiting for a group activity, the organizer biases invitations toward
 creatures with higher Friendliness opinions. May also apply to seating
 choices, work crew preferences, and other social decisions.
 
-**Blocked by:** F-social-opinions
 **Blocks:** F-social-graph
+**Unblocked by:** F-social-opinions
 **Related:** F-dinner-party, F-social-dance
 
 #### F-social-ui — Social tab on creature info panel
@@ -3203,8 +3203,8 @@ above threshold B = "friend", negative = "disliked", etc.). In the future,
 also displays explicit bonds (marriage, parent-child, fiance) once those
 systems exist.
 
-**Blocked by:** F-social-opinions
 **Blocks:** F-social-graph
+**Unblocked by:** F-social-opinions
 **Related:** F-formal-bonds
 
 #### F-thoughts — Creature thoughts (DF-style event reactions)

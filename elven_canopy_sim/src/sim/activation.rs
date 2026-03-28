@@ -26,6 +26,7 @@ impl SimState {
     /// Spawn initial creatures and ground piles from `config.initial_creatures`
     /// and `config.initial_ground_piles`. Called once when a new game starts.
     pub fn spawn_initial_creatures(&mut self, events: &mut Vec<SimEvent>) {
+        let mut starting_elf_ids: Vec<CreatureId> = Vec::new();
         let specs = self.config.initial_creatures.clone();
         for spec in &specs {
             let species_data = match self.species_table.get(&spec.species) {
@@ -38,6 +39,10 @@ impl SimState {
                         Some(id) => id,
                         None => continue,
                     };
+
+                if spec.species == Species::Elf {
+                    starting_elf_ids.push(creature_id);
+                }
 
                 // Apply per-creature food override.
                 if let Some(&pct) = spec.food_pcts.get(i)
@@ -101,6 +106,12 @@ impl SimState {
                     }
                 }
             }
+        }
+
+        // Bootstrap social opinions between starting elves so they begin
+        // the game with existing relationships (F-social-opinions).
+        if starting_elf_ids.len() >= 2 {
+            self.bootstrap_social_opinions(&starting_elf_ids);
         }
 
         let pile_specs = self.config.initial_ground_piles.clone();

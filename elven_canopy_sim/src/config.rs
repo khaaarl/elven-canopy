@@ -633,6 +633,67 @@ impl Default for ActivityConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Social opinions (F-social-opinions)
+// ---------------------------------------------------------------------------
+
+/// Configuration for the interpersonal opinion system. Controls decay rate
+/// and pre-game relationship bootstrapping.
+///
+/// See also: `sim/social.rs` for the skill check and upsert logic,
+/// `db.rs::CreatureOpinion` for the opinion table schema.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SocialConfig {
+    /// Probability (PPM, 0–1_000_000) per creature heartbeat that each of
+    /// the creature's opinion rows decays by 1 toward zero. Rows reaching 0
+    /// are pruned. Elf heartbeats fire every 3 seconds.
+    #[serde(default = "default_opinion_decay_chance_ppm")]
+    pub opinion_decay_chance_ppm: u32,
+
+    /// Minimum number of simulated pre-game interactions per starting elf
+    /// pair (inclusive). Each pair gets a uniformly random count in
+    /// `[min, max]`.
+    #[serde(default = "default_bootstrap_interactions_min")]
+    pub bootstrap_interactions_min: u32,
+
+    /// Maximum number of simulated pre-game interactions per starting elf
+    /// pair (inclusive).
+    #[serde(default = "default_bootstrap_interactions_max")]
+    pub bootstrap_interactions_max: u32,
+
+    /// Probability (permille, 0–1000) per social interaction that the
+    /// acting creature advances their social skill (Influence or Culture).
+    #[serde(default = "default_social_skill_advance_probability")]
+    pub skill_advance_probability_permille: u32,
+}
+
+fn default_opinion_decay_chance_ppm() -> u32 {
+    10_000 // 1% per heartbeat (every 3s for elves)
+}
+
+fn default_bootstrap_interactions_min() -> u32 {
+    5
+}
+
+fn default_bootstrap_interactions_max() -> u32 {
+    30
+}
+
+fn default_social_skill_advance_probability() -> u32 {
+    50 // 5% per social interaction
+}
+
+impl Default for SocialConfig {
+    fn default() -> Self {
+        Self {
+            opinion_decay_chance_ppm: default_opinion_decay_chance_ppm(),
+            bootstrap_interactions_min: default_bootstrap_interactions_min(),
+            bootstrap_interactions_max: default_bootstrap_interactions_max(),
+            skill_advance_probability_permille: default_social_skill_advance_probability(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tree profile — nested parameter groups
 // ---------------------------------------------------------------------------
 
@@ -2256,6 +2317,11 @@ pub struct GameConfig {
     #[serde(default)]
     pub activity: ActivityConfig,
 
+    /// Interpersonal opinion system configuration (F-social-opinions).
+    /// Controls decay rate and pre-game relationship bootstrapping.
+    #[serde(default)]
+    pub social: SocialConfig,
+
     /// Ticks between logistics heartbeats that scan buildings for unmet wants
     /// and create haul tasks. Default 5000 = 5 sim-seconds.
     #[serde(default = "default_logistics_heartbeat_interval")]
@@ -3479,6 +3545,7 @@ impl Default for GameConfig {
             mood: MoodConfig::default(),
             mood_consequences: MoodConsequencesConfig::default(),
             activity: ActivityConfig::default(),
+            social: SocialConfig::default(),
             logistics_heartbeat_interval_ticks: 5000,
             max_haul_tasks_per_heartbeat: 5,
             elf_starting_bread: 2,

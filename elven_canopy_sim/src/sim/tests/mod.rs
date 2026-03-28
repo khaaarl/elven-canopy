@@ -46,6 +46,7 @@ mod needs_tests;
 mod paths_tests;
 mod raid_tests;
 mod skills_tests;
+mod social_tests;
 mod taming_tests;
 
 // =========================================================================

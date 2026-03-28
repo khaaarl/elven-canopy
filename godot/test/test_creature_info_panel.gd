@@ -27,6 +27,7 @@ func test_initial_tab_is_status() -> void:
 	assert_false(_panel._tab_contents[CreatureInfoPanel.TAB_INVENTORY].visible)
 	assert_false(_panel._tab_contents[CreatureInfoPanel.TAB_THOUGHTS].visible)
 	assert_false(_panel._tab_contents[CreatureInfoPanel.TAB_PATH].visible)
+	assert_false(_panel._tab_contents[CreatureInfoPanel.TAB_SOCIAL].visible)
 
 
 func test_switch_to_skills_tab() -> void:
@@ -329,6 +330,83 @@ func test_tame_button_hidden_for_dead_creature() -> void:
 	info["vital_status"] = "Dead"
 	_panel.show_creature("capy-1", info)
 	assert_false(_panel._tame_button.visible)
+
+
+# -- Social tab (F-social-opinions) ------------------------------------------
+
+
+func test_switch_to_social_tab() -> void:
+	_panel._switch_tab(CreatureInfoPanel.TAB_SOCIAL)
+	assert_eq(_panel._active_tab, CreatureInfoPanel.TAB_SOCIAL)
+	assert_false(_panel._tab_contents[CreatureInfoPanel.TAB_STATUS].visible)
+	assert_true(_panel._tab_contents[CreatureInfoPanel.TAB_SOCIAL].visible)
+
+
+func test_friendliness_label_friend() -> void:
+	assert_eq(CreatureInfoPanel.friendliness_label(15), "Friend")
+	assert_eq(CreatureInfoPanel.friendliness_label(30), "Friend")
+
+
+func test_friendliness_label_acquaintance() -> void:
+	assert_eq(CreatureInfoPanel.friendliness_label(5), "Acquaintance")
+	assert_eq(CreatureInfoPanel.friendliness_label(14), "Acquaintance")
+
+
+func test_friendliness_label_disliked() -> void:
+	assert_eq(CreatureInfoPanel.friendliness_label(-5), "Disliked")
+	assert_eq(CreatureInfoPanel.friendliness_label(-14), "Disliked")
+
+
+func test_friendliness_label_enemy() -> void:
+	assert_eq(CreatureInfoPanel.friendliness_label(-15), "Enemy")
+	assert_eq(CreatureInfoPanel.friendliness_label(-30), "Enemy")
+
+
+func test_friendliness_label_neutral() -> void:
+	assert_eq(CreatureInfoPanel.friendliness_label(0), "")
+	assert_eq(CreatureInfoPanel.friendliness_label(4), "")
+	assert_eq(CreatureInfoPanel.friendliness_label(-4), "")
+
+
+func test_social_tab_shows_opinions() -> void:
+	_panel._switch_tab(CreatureInfoPanel.TAB_SOCIAL)
+	var info := _minimal_info()
+	info["social_opinions"] = [
+		{"target_name": "Aelindra", "kind": "Friendliness", "intensity": 20},
+		{"target_name": "Thalion", "kind": "Respect", "intensity": 3},
+	]
+	_panel._update_social(info)
+	assert_eq(_panel._social_container.get_child_count(), 2)
+
+
+func test_social_tab_skips_rebuild_when_not_active() -> void:
+	# Stay on Status tab (not Social).
+	var info := _minimal_info()
+	info["social_opinions"] = [
+		{"target_name": "Aelindra", "kind": "Friendliness", "intensity": 20},
+	]
+	_panel._update_social(info)
+	assert_eq(_panel._social_container.get_child_count(), 0)
+
+
+func test_social_tab_respect_label_format() -> void:
+	_panel._switch_tab(CreatureInfoPanel.TAB_SOCIAL)
+	var info := _minimal_info()
+	info["social_opinions"] = [
+		{"target_name": "Thalion", "kind": "Respect", "intensity": 5},
+	]
+	_panel._update_social(info)
+	assert_eq(_panel._social_container.get_child_count(), 1)
+	assert_eq(_panel._social_container.get_child(0).text, "Thalion: Respect 5")
+
+
+func test_social_tab_empty_state() -> void:
+	_panel._switch_tab(CreatureInfoPanel.TAB_SOCIAL)
+	var info := _minimal_info()
+	info["social_opinions"] = []
+	_panel._update_social(info)
+	assert_eq(_panel._social_container.get_child_count(), 1)
+	assert_eq(_panel._social_container.get_child(0).text, "No opinions yet.")
 
 
 # -- Helpers -----------------------------------------------------------------

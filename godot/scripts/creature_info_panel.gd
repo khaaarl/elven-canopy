@@ -33,6 +33,7 @@ const TAB_SKILLS := 1
 const TAB_INVENTORY := 2
 const TAB_THOUGHTS := 3
 const TAB_PATH := 4
+const TAB_SOCIAL := 5
 
 var _species_label: Label
 var _name_label: Label
@@ -68,6 +69,7 @@ var _thoughts_container: VBoxContainer
 var _inventory_container: VBoxContainer
 var _inventory_empty_label: Label
 var _last_inventory: Array = []
+var _social_container: VBoxContainer
 var _follow_button: Button
 var _is_following: bool = false
 var _selected_creature_id: String = ""
@@ -106,7 +108,7 @@ func _ready() -> void:
 	tab_bar.add_theme_constant_override("separation", 4)
 	root_vbox.add_child(tab_bar)
 
-	for tab_name in ["Status", "Skills", "Inventory", "Thoughts", "Path"]:
+	for tab_name in ["Status", "Skills", "Inventory", "Thoughts", "Path", "Social"]:
 		var btn := Button.new()
 		btn.text = tab_name
 		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -122,6 +124,7 @@ func _ready() -> void:
 	_tab_contents.append(_build_inventory_tab(root_vbox))
 	_tab_contents.append(_build_thoughts_tab(root_vbox))
 	_tab_contents.append(_build_path_tab(root_vbox))
+	_tab_contents.append(_build_social_tab(root_vbox))
 
 	# -- Follow button (always visible) --
 	_follow_button = Button.new()
@@ -529,6 +532,20 @@ func _build_path_tab(parent: VBoxContainer) -> ScrollContainer:
 	return scroll
 
 
+func _build_social_tab(parent: VBoxContainer) -> ScrollContainer:
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	parent.add_child(scroll)
+
+	_social_container = VBoxContainer.new()
+	_social_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_social_container.add_theme_constant_override("separation", 4)
+	scroll.add_child(_social_container)
+
+	return scroll
+
+
 func _switch_tab(index: int) -> void:
 	_active_tab = index
 	for i in range(_tab_contents.size()):
@@ -570,6 +587,7 @@ func show_creature(creature_id: String, info: Dictionary) -> void:
 	_update_inventory(info)
 	_update_military_group(info)
 	_update_path(info)
+	_update_social(info)
 	if _is_following:
 		unfollow_requested.emit()
 	_is_following = false
@@ -593,6 +611,7 @@ func update_info(info: Dictionary) -> void:
 	_update_inventory(info)
 	_update_military_group(info)
 	_update_path(info)
+	_update_social(info)
 
 
 func hide_panel() -> void:
@@ -864,3 +883,51 @@ func _match_viewport_height() -> void:
 func _on_close_pressed() -> void:
 	hide_panel()
 	panel_closed.emit()
+
+
+## Map a Friendliness intensity to a human-readable label.
+static func friendliness_label(intensity: int) -> String:
+	if intensity >= 15:
+		return "Friend"
+	if intensity >= 5:
+		return "Acquaintance"
+	if intensity <= -15:
+		return "Enemy"
+	if intensity <= -5:
+		return "Disliked"
+	return ""
+
+
+func _update_social(info: Dictionary) -> void:
+	# Only rebuild when the Social tab is active — avoids per-frame churn.
+	if _active_tab != TAB_SOCIAL:
+		return
+
+	# Clear previous entries.
+	for child in _social_container.get_children():
+		child.queue_free()
+
+	var opinions: Array = info.get("social_opinions", [])
+	if opinions.is_empty():
+		var lbl := Label.new()
+		lbl.text = "No opinions yet."
+		lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+		_social_container.add_child(lbl)
+		return
+
+	for op in opinions:
+		var target_name: String = op.get("target_name", "???")
+		var kind: String = op.get("kind", "")
+		var intensity: int = op.get("intensity", 0)
+
+		var label_text := "%s: %s %d" % [target_name, kind, intensity]
+
+		# Add a relationship label for Friendliness.
+		if kind == "Friendliness":
+			var fl := friendliness_label(intensity)
+			if not fl.is_empty():
+				label_text = "%s: %s (%s, %d)" % [target_name, kind, fl, intensity]
+
+		var lbl := Label.new()
+		lbl.text = label_text
+		_social_container.add_child(lbl)

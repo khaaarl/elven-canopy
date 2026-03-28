@@ -562,6 +562,7 @@ mod needs;
 mod paths;
 mod raid;
 mod skills;
+pub(crate) mod social;
 mod taming;
 mod task_helpers;
 
@@ -1343,6 +1344,15 @@ impl SimState {
 
                     // Expire old thoughts.
                     self.expire_creature_thoughts(creature_id);
+
+                    // Social opinion decay: probabilistic per-heartbeat roll.
+                    let decay_ppm = self.config.social.opinion_decay_chance_ppm;
+                    if decay_ppm > 0 {
+                        let roll = self.rng.next_u64() % 1_000_000;
+                        if roll < decay_ppm as u64 {
+                            self.decay_opinions(creature_id);
+                        }
+                    }
 
                     // Reschedule the next heartbeat.
                     let next_tick = self.tick + interval;

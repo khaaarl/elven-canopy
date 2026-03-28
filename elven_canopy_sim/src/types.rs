@@ -540,6 +540,24 @@ impl TraitValue {
 }
 
 // ---------------------------------------------------------------------------
+// Social opinions (F-social-opinions)
+// ---------------------------------------------------------------------------
+
+/// The kind of interpersonal opinion one creature holds about another.
+/// Opinions are asymmetric — creature A's opinion of B can differ from B's
+/// opinion of A. Intensity is a signed integer: positive = favorable,
+/// negative = unfavorable (e.g., negative Friendliness = grudge/dislike).
+///
+/// See `db.rs::CreatureOpinion` for the table that stores these.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum OpinionKind {
+    Friendliness = 0,
+    Respect = 1,
+    Fear = 2,
+    Attraction = 3,
+}
+
+// ---------------------------------------------------------------------------
 // Elf paths — discipline a creature walks (F-path-core).
 // ---------------------------------------------------------------------------
 

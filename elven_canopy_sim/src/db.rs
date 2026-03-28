@@ -68,9 +68,9 @@ use crate::types::{
     ActiveRecipeId, ActiveRecipeTargetId, ActivityId, ActivityKind, ActivityPhase, BuildType,
     CivId, CivOpinion, CivSpecies, CompositionId, CreatureId, CultureTag, DeparturePolicy,
     EnchantmentId, FruitSpeciesId, FurnishingType, FurnitureId, GroundPileId, InventoryId,
-    ItemStackId, MilitaryGroupId, NotificationId, ParticipantRole, ParticipantStatus, PathId,
-    ProjectId, ProjectileId, RecruitmentMode, SelectionGroupId, Species, StructureId, StrutId,
-    TaskId, ThoughtKind, TraitKind, TraitValue, TreeId, VitalStatus, VoxelCoord,
+    ItemStackId, MilitaryGroupId, NotificationId, OpinionKind, ParticipantRole, ParticipantStatus,
+    PathId, ProjectId, ProjectileId, RecruitmentMode, SelectionGroupId, Species, StructureId,
+    StrutId, TaskId, ThoughtKind, TraitKind, TraitValue, TreeId, VitalStatus, VoxelCoord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -456,6 +456,27 @@ pub struct PathAssignment {
     #[primary_key]
     pub creature_id: CreatureId,
     pub path_id: PathId,
+}
+
+/// An asymmetric interpersonal opinion one creature holds about another
+/// (F-social-opinions). `creature_id` holds the opinion; `target_id` is the
+/// subject of the opinion. Compound PK `(creature_id, kind, target_id)` allows
+/// one row per opinion kind per directed pair.
+///
+/// Intensity is signed: positive = favorable, negative = unfavorable (e.g.,
+/// negative Friendliness = grudge/dislike). Rows with intensity 0 are pruned.
+///
+/// Both FKs cascade on delete — removing a creature cleans up opinions it holds
+/// and opinions others hold about it.
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+#[primary_key("creature_id", "kind", "target_id")]
+pub struct CreatureOpinion {
+    #[indexed]
+    pub creature_id: CreatureId,
+    pub kind: OpinionKind,
+    #[indexed]
+    pub target_id: CreatureId,
+    pub intensity: i64,
 }
 
 /// Creatures the player has marked for taming via the UI toggle (F-taming).
@@ -1608,6 +1629,11 @@ pub struct SimDb {
     #[table(singular = "path_assignment",
             fks(creature_id = "creatures" pk on_delete cascade))]
     pub path_assignments: PathAssignmentTable,
+
+    #[table(singular = "creature_opinion",
+            fks(creature_id = "creatures" on_delete cascade,
+                target_id = "creatures" on_delete cascade))]
+    pub creature_opinions: CreatureOpinionTable,
 
     #[table(singular = "task",
             fks(target_creature? = "creatures"))]
