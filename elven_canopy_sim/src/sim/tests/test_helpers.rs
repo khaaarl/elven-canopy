@@ -302,31 +302,10 @@ pub(super) fn insert_completed_building(sim: &mut SimState, anchor: VoxelCoord) 
     let interior_anchor = VoxelCoord::new(anchor.x, anchor.y + 1, anchor.z);
 
     let project_id = ProjectId::new(&mut sim.rng);
-    let structure = CompletedStructure {
-        id,
-        project_id,
-        build_type: BuildType::Building,
-        anchor: interior_anchor,
-        width: 3,
-        depth: 3,
-        height: 1,
-        completed_tick: sim.tick,
-        name: None,
-        furnishing: None,
-        inventory_id: sim.create_inventory(crate::db::InventoryOwnerKind::Structure),
-        logistics_priority: None,
-        crafting_enabled: false,
-        greenhouse_species: None,
-        greenhouse_enabled: false,
-        greenhouse_last_production_tick: 0,
-        last_dance_completed_tick: 0,
-    };
-    sim.db.structures.insert_no_fk(structure).unwrap();
 
-    // Insert a dummy blueprint so FK validation passes on deserialization.
+    // Insert blueprint first — structure FK (project_id) references it.
     sim.db
-        .blueprints
-        .insert_no_fk(crate::db::Blueprint {
+        .insert_blueprint(crate::db::Blueprint {
             id: project_id,
             build_type: BuildType::Building,
             voxels: Vec::new(),
@@ -337,6 +316,29 @@ pub(super) fn insert_completed_building(sim: &mut SimState, anchor: VoxelCoord) 
             face_layout: None,
             stress_warning: false,
             original_voxels: Vec::new(),
+        })
+        .unwrap();
+
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.db
+        .insert_structure(CompletedStructure {
+            id,
+            project_id,
+            build_type: BuildType::Building,
+            anchor: interior_anchor,
+            width: 3,
+            depth: 3,
+            height: 1,
+            completed_tick: sim.tick,
+            name: None,
+            furnishing: None,
+            inventory_id: inv_id,
+            logistics_priority: None,
+            crafting_enabled: false,
+            greenhouse_species: None,
+            greenhouse_enabled: false,
+            greenhouse_last_production_tick: 0,
+            last_dance_completed_tick: 0,
         })
         .unwrap();
 
@@ -397,41 +399,30 @@ pub(super) fn force_position(sim: &mut SimState, creature_id: CreatureId, new_po
         old_pos,
         footprint,
     );
-    let _ = sim.db.creatures.modify_unchecked(&creature_id, |c| {
-        c.position = new_pos;
-    });
+    let mut creature = sim.db.creatures.get(&creature_id).unwrap();
+    creature.position = new_pos;
+    sim.db.update_creature(creature).unwrap();
     SimState::register_creature_in_index(&mut sim.spatial_index, creature_id, new_pos, footprint);
 }
 
 /// Set a creature's trait to a specific value (insert or modify).
 pub(super) fn set_trait(sim: &mut SimState, creature_id: CreatureId, kind: TraitKind, value: i64) {
-    if sim.db.creature_traits.get(&(creature_id, kind)).is_some() {
-        let _ = sim
-            .db
-            .creature_traits
-            .modify_unchecked(&(creature_id, kind), |row| {
-                row.value = TraitValue::Int(value)
-            });
-    } else {
-        let _ = sim
-            .db
-            .creature_traits
-            .insert_no_fk(crate::db::CreatureTrait {
-                creature_id,
-                trait_kind: kind,
-                value: TraitValue::Int(value),
-            });
-    }
+    let trait_row = crate::db::CreatureTrait {
+        creature_id,
+        trait_kind: kind,
+        value: TraitValue::Int(value),
+    };
+    sim.db.upsert_creature_trait(trait_row).unwrap();
 }
 
 /// Make a creature idle (NoAction, no next_available_tick, no task).
 pub(super) fn force_idle(sim: &mut SimState, creature_id: CreatureId) {
-    let _ = sim.db.creatures.modify_unchecked(&creature_id, |c| {
-        c.action_kind = ActionKind::NoAction;
-        c.next_available_tick = None;
-        c.current_task = None;
-        c.path = None;
-    });
+    let mut creature = sim.db.creatures.get(&creature_id).unwrap();
+    creature.action_kind = ActionKind::NoAction;
+    creature.next_available_tick = None;
+    creature.current_task = None;
+    creature.path = None;
+    sim.db.update_creature(creature).unwrap();
 }
 
 /// Like `force_idle` but also cancels any pending activation events (e.g.
@@ -450,20 +441,17 @@ pub(super) fn zero_creature_stats(sim: &mut SimState, creature_id: CreatureId) {
     use crate::stats::STAT_TRAIT_KINDS;
     use crate::types::TraitValue;
     for kind in STAT_TRAIT_KINDS {
-        let _ = sim
-            .db
-            .creature_traits
-            .modify_unchecked(&(creature_id, kind), |t| {
-                t.value = TraitValue::Int(0);
-            });
+        let mut t = sim.db.creature_traits.get(&(creature_id, kind)).unwrap();
+        t.value = TraitValue::Int(0);
+        sim.db.update_creature_trait(t).unwrap();
     }
     // Reset HP to species base (undo CON modifier applied at spawn).
     let species = sim.db.creatures.get(&creature_id).unwrap().species;
     let base_hp = sim.species_table[&species].hp_max;
-    let _ = sim.db.creatures.modify_unchecked(&creature_id, |c| {
-        c.hp_max = base_hp;
-        c.hp = base_hp;
-    });
+    let mut creature = sim.db.creatures.get(&creature_id).unwrap();
+    creature.hp_max = base_hp;
+    creature.hp = base_hp;
+    sim.db.update_creature(creature).unwrap();
 }
 
 /// Give a creature a large attack advantage so melee/ranged attacks always
@@ -480,20 +468,13 @@ pub(super) fn force_guaranteed_hits(sim: &mut SimState, creature_id: CreatureId)
     // Even with DEX=0, min attacker_total = 500 + 0 + (-300) = 200 > 0, so
     // always hits.
     for skill in [TraitKind::Striking, TraitKind::Archery] {
-        if sim.db.creature_traits.get(&(creature_id, skill)).is_some() {
-            let _ = sim
-                .db
-                .creature_traits
-                .modify_unchecked(&(creature_id, skill), |t| {
-                    t.value = TraitValue::Int(500);
-                });
-        } else {
-            let _ = sim.db.creature_traits.insert_no_fk(CreatureTrait {
+        sim.db
+            .upsert_creature_trait(CreatureTrait {
                 creature_id,
                 trait_kind: skill,
                 value: TraitValue::Int(500),
-            });
-        }
+            })
+            .unwrap();
     }
     // Raise crit threshold so the large attack bonus guarantees a normal Hit,
     // not a CriticalHit (which would double damage and break assertions).
@@ -531,7 +512,7 @@ pub(super) fn set_military_group(
 ) {
     let mut creature = sim.db.creatures.get(&creature_id).unwrap();
     creature.military_group = group;
-    sim.db.creatures.update_no_fk(creature).unwrap();
+    sim.db.update_creature(creature).unwrap();
 }
 
 /// Helper: find the player civ's civilian group.
@@ -595,7 +576,7 @@ pub(super) fn remove_all_hostile_rels(sim: &mut SimState) {
         .map(|r| (r.from_civ, r.to_civ))
         .collect();
     for pk in forward_ids {
-        let _ = sim.db.civ_relationships.remove_no_fk(&pk);
+        sim.db.remove_civ_relationship(&pk).unwrap();
     }
     let reverse_ids: Vec<_> = sim
         .db
@@ -606,7 +587,7 @@ pub(super) fn remove_all_hostile_rels(sim: &mut SimState) {
         .map(|r| (r.from_civ, r.to_civ))
         .collect();
     for pk in reverse_ids {
-        let _ = sim.db.civ_relationships.remove_no_fk(&pk);
+        sim.db.remove_civ_relationship(&pk).unwrap();
     }
 }
 
@@ -623,8 +604,7 @@ pub(super) fn insert_building(
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     insert_stub_blueprint(sim, project_id);
     sim.db
-        .structures
-        .insert_no_fk(CompletedStructure {
+        .insert_structure(CompletedStructure {
             id: sid,
             project_id,
             build_type: BuildType::Building,
@@ -658,17 +638,16 @@ pub(super) fn insert_completed_home(sim: &mut SimState, anchor: VoxelCoord) -> S
 
     let mut structure = sim.db.structures.get(&structure_id).unwrap();
     structure.furnishing = Some(FurnishingType::Home);
-    let _ = sim.db.structures.update_no_fk(structure);
+    sim.db.update_structure(structure).unwrap();
 
-    let _ = sim
-        .db
-        .furniture
-        .insert_auto_no_fk(|id| crate::db::Furniture {
+    sim.db
+        .insert_furniture_auto(|id| crate::db::Furniture {
             id,
             structure_id,
             coord: bed_pos,
             placed: true,
-        });
+        })
+        .unwrap();
 
     structure_id
 }
@@ -802,7 +781,9 @@ pub(super) fn place_all_furniture(sim: &mut SimState, structure_id: StructureId)
         .map(|f| f.id)
         .collect();
     for fid in furn_ids {
-        let _ = sim.db.furniture.modify_unchecked(&fid, |f| f.placed = true);
+        let mut f = sim.db.furniture.get(&fid).unwrap();
+        f.placed = true;
+        sim.db.update_furniture(f).unwrap();
     }
 }
 
@@ -852,7 +833,7 @@ pub(super) fn insert_test_fruit_species(sim: &mut SimState) -> crate::fruit::Fru
             glows: false,
         },
     };
-    let _ = sim.db.fruit_species.insert_no_fk(species);
+    sim.db.insert_fruit_species(species).unwrap();
     id
 }
 
@@ -948,7 +929,7 @@ pub(super) fn insert_full_chain_fruit_species(sim: &mut SimState) -> crate::frui
             glows: false,
         },
     };
-    let _ = sim.db.fruit_species.insert_no_fk(species);
+    sim.db.insert_fruit_species(species).unwrap();
     id
 }
 
@@ -973,13 +954,9 @@ pub(super) fn add_recipe_with_targets(
         .db
         .active_recipe_targets
         .by_active_recipe_id(&ar_id, tabulosity::QueryOpts::ASC);
-    for target in &targets {
-        let _ = sim
-            .db
-            .active_recipe_targets
-            .modify_unchecked(&target.id, |t| {
-                t.target_quantity = target_qty;
-            });
+    for mut target in targets {
+        target.target_quantity = target_qty;
+        sim.db.update_active_recipe_target(target).unwrap();
     }
     ar_id
 }

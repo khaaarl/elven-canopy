@@ -44,10 +44,10 @@ fn mana_fields_serde_roundtrip() {
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
     // Drain some mana so mp != mp_max.
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.mp = c.mp_max / 2;
-        c.wasted_action_count = 2;
-    });
+    let mut c = sim.db.creatures.get(&elf_id).unwrap();
+    c.mp = c.mp_max / 2;
+    c.wasted_action_count = 2;
+    sim.db.update_creature(c).unwrap();
 
     let elf_mp_max = sim.db.creatures.get(&elf_id).unwrap().mp_max;
 
@@ -116,9 +116,9 @@ fn elf_mana_regenerates_on_heartbeat() {
     let elf_mp_max = sim.species_table[&Species::Elf].mp_max;
 
     // Drain the elf's mana to half.
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.mp = elf_mp_max / 2;
-    });
+    let mut c = sim.db.creatures.get(&elf_id).unwrap();
+    c.mp = elf_mp_max / 2;
+    sim.db.update_creature(c).unwrap();
     let mp_before = sim.db.creatures.get(&elf_id).unwrap().mp;
 
     // Advance past one heartbeat (elf heartbeat = 3000 ticks).
@@ -161,9 +161,9 @@ fn elf_mana_overflow_goes_to_tree() {
     assert_eq!(sim.db.creatures.get(&elf_id).unwrap().mp, elf_mp_max);
 
     // Set tree mana to 0 so we can measure what gets added.
-    let _ = sim.db.great_tree_infos.modify_unchecked(&tree_id, |info| {
-        info.mana_stored = 0;
-    });
+    let mut info = sim.db.great_tree_infos.get(&tree_id).unwrap();
+    info.mana_stored = 0;
+    sim.db.update_great_tree_info(info).unwrap();
 
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
     sim.step(&[], sim.tick + heartbeat + 1);
@@ -192,9 +192,9 @@ fn tree_mana_capped_at_capacity() {
 
     // Fill tree to capacity.
     let cap = sim.db.great_tree_infos.get(&tree_id).unwrap().mana_capacity;
-    let _ = sim.db.great_tree_infos.modify_unchecked(&tree_id, |info| {
-        info.mana_stored = cap;
-    });
+    let mut info = sim.db.great_tree_infos.get(&tree_id).unwrap();
+    info.mana_stored = cap;
+    sim.db.update_great_tree_info(info).unwrap();
 
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
     sim.step(&[], sim.tick + heartbeat + 1);
@@ -215,12 +215,12 @@ fn wild_creature_mana_overflow_is_lost() {
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     let mut elf = sim.db.creatures.get(&elf_id).unwrap();
     elf.civ_id = None;
-    let _ = sim.db.creatures.update_no_fk(elf);
+    sim.db.update_creature(elf).unwrap();
 
     // Set tree mana to 0.
-    let _ = sim.db.great_tree_infos.modify_unchecked(&tree_id, |info| {
-        info.mana_stored = 0;
-    });
+    let mut info = sim.db.great_tree_infos.get(&tree_id).unwrap();
+    info.mana_stored = 0;
+    sim.db.update_great_tree_info(info).unwrap();
 
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
     sim.step(&[], sim.tick + heartbeat + 1);
@@ -244,9 +244,9 @@ fn elf_mana_regen_scaled_by_wil_int_average() {
 
     // Drain the elf's mana to 0 so we can measure pure regen.
     let mp_max = sim.db.creatures.get(&elf_id).unwrap().mp_max;
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.mp = 0;
-    });
+    let mut c = sim.db.creatures.get(&elf_id).unwrap();
+    c.mp = 0;
+    sim.db.update_creature(c).unwrap();
 
     sim.step(&[], sim.tick + heartbeat + 1);
 
@@ -323,9 +323,9 @@ fn build_wasted_action_no_progress() {
     let elf_id = spawn_elf(&mut sim);
 
     // Drain all elf mana.
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.mp = 0;
-    });
+    let mut c = sim.db.creatures.get(&elf_id).unwrap();
+    c.mp = 0;
+    sim.db.update_creature(c).unwrap();
 
     // Designate and let the elf attempt to build.
     let cmd = SimCommand {
@@ -393,10 +393,10 @@ fn build_abandon_after_wasted_actions() {
     let mut elf = sim.db.creatures.get(&elf_id).unwrap();
     elf.current_task = Some(task_id);
     elf.mp = 0;
-    let _ = sim.db.creatures.update_no_fk(elf);
+    sim.db.update_creature(elf).unwrap();
     let mut task = sim.db.tasks.get(&task_id).unwrap();
     task.state = TaskState::InProgress;
-    let _ = sim.db.tasks.update_no_fk(task);
+    sim.db.update_task(task).unwrap();
 
     let cost = sim.mana_cost_per_action(Some(BuildType::Platform));
 
@@ -483,9 +483,9 @@ fn elf_with_no_mana_skips_build_task() {
     let elf_id = spawn_elf(&mut sim);
 
     // Drain all mana.
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.mp = 0;
-    });
+    let mut c = sim.db.creatures.get(&elf_id).unwrap();
+    c.mp = 0;
+    sim.db.update_creature(c).unwrap();
 
     // Insert a Build task at the elf's location.
     let project_id = ProjectId::new(&mut sim.rng);
@@ -554,9 +554,9 @@ fn successful_build_resets_wasted_counter() {
     let elf_id = spawn_elf(&mut sim);
 
     // Set a non-zero wasted count, but leave enough mana to build.
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.wasted_action_count = 2;
-    });
+    let mut c = sim.db.creatures.get(&elf_id).unwrap();
+    c.wasted_action_count = 2;
+    sim.db.update_creature(c).unwrap();
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -609,9 +609,9 @@ fn try_drain_mana_exact_boundary() {
     assert!(cost > 0);
 
     // Set mp to exactly the cost.
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.mp = cost;
-    });
+    let mut c = sim.db.creatures.get(&elf_id).unwrap();
+    c.mp = cost;
+    sim.db.update_creature(c).unwrap();
 
     // Give the elf a task so abandon logic has something to work with.
     let task_id = TaskId::new(&mut sim.rng);
@@ -633,7 +633,7 @@ fn try_drain_mana_exact_boundary() {
     sim.insert_task(task);
     let mut elf = sim.db.creatures.get(&elf_id).unwrap();
     elf.current_task = Some(task_id);
-    let _ = sim.db.creatures.update_no_fk(elf);
+    sim.db.update_creature(elf).unwrap();
 
     let result = sim.try_drain_mana(elf_id, cost);
     assert!(result, "should succeed when mp == cost exactly");
@@ -684,9 +684,9 @@ fn multiple_elves_overflow_to_same_tree() {
 
     // Zero tree mana, then advance two full heartbeat intervals to ensure
     // both elves get at least one heartbeat from this baseline.
-    let _ = sim.db.great_tree_infos.modify_unchecked(&tree_id, |info| {
-        info.mana_stored = 0;
-    });
+    let mut info = sim.db.great_tree_infos.get(&tree_id).unwrap();
+    info.mana_stored = 0;
+    sim.db.update_great_tree_info(info).unwrap();
 
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
     sim.step(&[], sim.tick + heartbeat * 2 + 1);
@@ -769,10 +769,14 @@ fn cleanup_early_exit_resets_wasted_action_count() {
     let mut elf = sim.db.creatures.get(&elf_id).unwrap();
     elf.current_task = Some(task_id);
     elf.wasted_action_count = 2;
-    let _ = sim.db.creatures.update_no_fk(elf);
+    sim.db.update_creature(elf).unwrap();
 
     // Delete the task to trigger the early-exit path.
-    let _ = sim.db.tasks.remove_no_fk(&task_id);
+    // Must clear current_task FK reference on the elf before removing the task.
+    let mut elf = sim.db.creatures.get(&elf_id).unwrap();
+    elf.current_task = None;
+    sim.db.update_creature(elf).unwrap();
+    sim.db.remove_task(&task_id).unwrap();
 
     // Now cleanup — should take the early-exit (task gone) and reset counter.
     sim.cleanup_and_unassign_task(elf_id, task_id);
@@ -812,9 +816,9 @@ fn drained_elf_can_still_claim_non_mana_tasks() {
     let elf_id = spawn_elf(&mut sim);
 
     // Drain all mana.
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.mp = 0;
-    });
+    let mut c = sim.db.creatures.get(&elf_id).unwrap();
+    c.mp = 0;
+    sim.db.update_creature(c).unwrap();
 
     // Insert a GoTo task (non-mana) at the elf's location.
     let elf_node = creature_node(&sim, elf_id);
@@ -860,7 +864,7 @@ fn mana_wasted_position_recorded_on_failed_drain() {
     let mut elf = sim.db.creatures.get(&elf_id).unwrap();
     elf.current_task = Some(task_id);
     elf.mp = 0;
-    let _ = sim.db.creatures.update_no_fk(elf);
+    sim.db.update_creature(elf).unwrap();
 
     assert!(sim.mana_wasted_positions.is_empty());
 
@@ -911,7 +915,7 @@ fn successful_drain_does_not_record_position() {
     sim.insert_task(task);
     let mut elf = sim.db.creatures.get(&elf_id).unwrap();
     elf.current_task = Some(task_id);
-    let _ = sim.db.creatures.update_no_fk(elf);
+    sim.db.update_creature(elf).unwrap();
 
     let cost = sim.mana_cost_per_action(Some(BuildType::Platform));
     let result = sim.try_drain_mana(elf_id, cost);
@@ -1063,9 +1067,9 @@ fn grow_with_zero_mana_wastes_actions_and_abandons() {
         .id;
 
     // Drain all elf mana.
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.mp = 0;
-    });
+    let mut c = sim.db.creatures.get(&elf_id).unwrap();
+    c.mp = 0;
+    sim.db.update_creature(c).unwrap();
 
     // Run enough for the elf to attempt and abandon.
     sim.step(&[], sim.tick + 20_000);
@@ -1170,9 +1174,9 @@ fn non_grow_craft_completes_with_zero_mana() {
         .id;
 
     // Drain all mana — non-Grow craft should still succeed.
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.mp = 0;
-    });
+    let mut c = sim.db.creatures.get(&elf_id).unwrap();
+    c.mp = 0;
+    sim.db.update_creature(c).unwrap();
 
     sim.step(&[], sim.tick + 20_000);
 
@@ -1246,9 +1250,9 @@ fn drained_elf_can_still_claim_non_grow_craft_task() {
         .id;
 
     // Drain all mana.
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.mp = 0;
-    });
+    let mut c = sim.db.creatures.get(&elf_id).unwrap();
+    c.mp = 0;
+    sim.db.update_creature(c).unwrap();
 
     // Elf with 0 mana should still find the non-Grow craft task.
     let found = sim.find_available_task(elf_id);
@@ -1307,9 +1311,9 @@ fn drained_elf_cannot_claim_grow_craft_task() {
         .id;
 
     // Set mp to 1 — below the grow cost (which is mp_max / 1000 * 20).
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.mp = 1;
-    });
+    let mut c = sim.db.creatures.get(&elf_id).unwrap();
+    c.mp = 1;
+    sim.db.update_creature(c).unwrap();
 
     let found = sim.find_available_task(elf_id);
     assert!(

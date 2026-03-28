@@ -11,9 +11,9 @@ fn create_dining_hall(sim: &mut SimState, pos: VoxelCoord, food_count: u32) -> S
     let structure_id = StructureId(900);
     let project_id = ProjectId::new(&mut sim.rng);
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    insert_stub_blueprint(sim, project_id);
     sim.db
-        .structures
-        .insert_no_fk(CompletedStructure {
+        .insert_structure(CompletedStructure {
             id: structure_id,
             project_id,
             build_type: BuildType::Building,
@@ -34,15 +34,14 @@ fn create_dining_hall(sim: &mut SimState, pos: VoxelCoord, food_count: u32) -> S
         })
         .unwrap();
     // Place one table.
-    let _ = sim
-        .db
-        .furniture
-        .insert_auto_no_fk(|id| crate::db::Furniture {
+    sim.db
+        .insert_furniture_auto(|id| crate::db::Furniture {
             id,
             structure_id,
             coord: pos,
             placed: true,
-        });
+        })
+        .unwrap();
     // Stock food.
     if food_count > 0 {
         sim.inv_add_simple_item(inv_id, ItemKind::Bread, food_count, None, None);
@@ -82,10 +81,12 @@ fn busy_tired_elf_does_not_create_sleep_task() {
 
     // Set rest very low but keep food high.
     let food_max_val = sim.species_table[&Species::Elf].food_max;
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.rest = rest_max * 10 / 100;
         c.food = food_max_val;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Give the elf a GoTo task so it's busy.
     let task_id = TaskId::new(&mut sim.rng);
@@ -106,7 +107,7 @@ fn busy_tired_elf_does_not_create_sleep_task() {
     sim.insert_task(goto_task);
     let mut c = sim.db.creatures.get(&elf_id).unwrap();
     c.current_task = Some(task_id);
-    let _ = sim.db.creatures.update_no_fk(c);
+    sim.db.update_creature(c).unwrap();
 
     // Advance past the heartbeat.
     let target_tick = 1 + heartbeat_interval + 1;
@@ -169,10 +170,12 @@ fn hungry_takes_priority_over_tired() {
         .id;
 
     // Both food AND rest below threshold.
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.food = food_max * 20 / 100;
         c.rest = rest_max * 20 / 100;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Advance past the heartbeat.
     let target_tick = 1 + heartbeat_interval + 1;
@@ -221,10 +224,12 @@ fn ground_sleep_fallback_when_no_beds() {
 
     // Set rest below threshold, food high.
     let food_max_val = sim.species_table[&Species::Elf].food_max;
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.rest = rest_max * 30 / 100;
         c.food = food_max_val;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Advance past the heartbeat.
     let target_tick = 1 + heartbeat_interval + 1;
@@ -264,9 +269,9 @@ fn find_nearest_bed_excludes_occupied() {
     let structure_id = StructureId(999);
     let project_id = ProjectId::new(&mut sim.rng);
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    insert_stub_blueprint(&mut sim, project_id);
     sim.db
-        .structures
-        .insert_no_fk(CompletedStructure {
+        .insert_structure(CompletedStructure {
             id: structure_id,
             project_id,
             build_type: BuildType::Building,
@@ -286,15 +291,14 @@ fn find_nearest_bed_excludes_occupied() {
             last_dance_completed_tick: 0,
         })
         .unwrap();
-    let _ = sim
-        .db
-        .furniture
-        .insert_auto_no_fk(|id| crate::db::Furniture {
+    sim.db
+        .insert_furniture_auto(|id| crate::db::Furniture {
             id,
             structure_id,
             coord: bed_pos,
             placed: true,
-        });
+        })
+        .unwrap();
 
     // Spawn two elves.
     let cmds = vec![
@@ -329,10 +333,10 @@ fn find_nearest_bed_excludes_occupied() {
     // Make both elves tired with high food.
     let food_max_val = sim.species_table[&Species::Elf].food_max;
     for &elf_id in &elf_ids {
-        let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-            c.rest = rest_max * 20 / 100;
-            c.food = food_max_val;
-        });
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.rest = rest_max * 20 / 100;
+        c.food = food_max_val;
+        sim.db.update_creature(c).unwrap();
     }
 
     // Advance past the heartbeat.
@@ -386,9 +390,9 @@ fn tired_elf_sleeps_and_rest_increases() {
     let structure_id = StructureId(999);
     let project_id = ProjectId::new(&mut sim.rng);
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    insert_stub_blueprint(&mut sim, project_id);
     sim.db
-        .structures
-        .insert_no_fk(CompletedStructure {
+        .insert_structure(CompletedStructure {
             id: structure_id,
             project_id,
             build_type: BuildType::Building,
@@ -408,15 +412,14 @@ fn tired_elf_sleeps_and_rest_increases() {
             last_dance_completed_tick: 0,
         })
         .unwrap();
-    let _ = sim
-        .db
-        .furniture
-        .insert_auto_no_fk(|id| crate::db::Furniture {
+    sim.db
+        .insert_furniture_auto(|id| crate::db::Furniture {
             id,
             structure_id,
             coord: bed_pos,
             placed: true,
-        });
+        })
+        .unwrap();
 
     // Spawn an elf.
     let cmd = SimCommand {
@@ -438,9 +441,11 @@ fn tired_elf_sleeps_and_rest_increases() {
         .id;
 
     // Set rest to 20% — well below the 50% threshold.
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.rest = rest_max * 20 / 100;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
     let rest_before = sim.db.creatures.get(&elf_id).unwrap().rest;
 
     // Run for 50_000 ticks — enough for heartbeat + pathfind + sleep.
@@ -543,10 +548,11 @@ fn eat_fruit_task_restores_food_on_arrival() {
     let elf_node = creature_node(&sim, elf_id);
 
     // Set elf food low.
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&elf_id, |c| c.food = food_max / 10);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.food = food_max / 10;
+        sim.db.update_creature(c).unwrap();
+    }
     let food_before = sim.db.creatures.get(&elf_id).unwrap().food;
 
     // Manually create an EatFruit task at the elf's current node (instant arrival).
@@ -570,7 +576,7 @@ fn eat_fruit_task_restores_food_on_arrival() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Advance enough ticks for the elf to start and complete the Eat action.
@@ -624,10 +630,11 @@ fn hungry_idle_elf_creates_eat_fruit_task() {
         .id;
 
     // Set food below threshold (threshold is 50% by default).
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&elf_id, |c| c.food = food_max * 30 / 100);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.food = food_max * 30 / 100;
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Advance past the next heartbeat — hunger check should fire.
     let target_tick = 1 + heartbeat_interval + 1;
@@ -707,10 +714,11 @@ fn busy_hungry_elf_does_not_create_eat_fruit_task() {
         .id;
 
     // Set food very low.
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&elf_id, |c| c.food = food_max * 10 / 100);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.food = food_max * 10 / 100;
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Give the elf a GoTo task so it's busy.
     let task_id = TaskId::new(&mut sim.rng);
@@ -732,7 +740,7 @@ fn busy_hungry_elf_does_not_create_eat_fruit_task() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Advance past the heartbeat.
@@ -794,15 +802,18 @@ fn hungry_elf_eats_fruit_and_food_increases() {
     let fruit_pos = elf_pos;
     sim.world.set(fruit_pos, VoxelType::Fruit);
     let tree_id = sim.player_tree_id;
-    let _ = sim.db.trees.modify_unchecked(&tree_id, |t| {
+    {
+        let mut t = sim.db.trees.get(&tree_id).unwrap();
         t.fruit_positions.push(fruit_pos);
-    });
+        sim.db.update_tree(t).unwrap();
+    }
 
     // Set food to 20% — well below the 50% hunger threshold.
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&elf_id, |c| c.food = food_max * 20 / 100);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.food = food_max * 20 / 100;
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Run for 50_000 ticks — enough for heartbeat + pathfind + eat.
     sim.step(&[], 50_001);
@@ -858,10 +869,11 @@ fn hungry_elf_with_bread_creates_eat_bread_task() {
     );
 
     // Set food below hunger threshold.
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&elf_id, |c| c.food = food_max * 30 / 100);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.food = food_max * 30 / 100;
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Advance past the next heartbeat.
     let target_tick = 1 + heartbeat_interval + 1;
@@ -919,10 +931,11 @@ fn eat_bread_restores_food_and_removes_bread() {
     );
 
     // Set food low.
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&elf_id, |c| c.food = food_max / 10);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.food = food_max / 10;
+        sim.db.update_creature(c).unwrap();
+    }
     let food_before = sim.db.creatures.get(&elf_id).unwrap().food;
 
     // Manually create an EatBread task at the elf's current node.
@@ -945,7 +958,7 @@ fn eat_bread_restores_food_and_removes_bread() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Advance enough ticks for the elf to start and complete the Eat action.
@@ -1005,10 +1018,11 @@ fn hungry_elf_without_bread_still_seeks_fruit() {
         .id;
 
     // Set food below threshold.
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&elf_id, |c| c.food = food_max * 30 / 100);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.food = food_max * 30 / 100;
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Advance past heartbeat.
     let target_tick = 1 + heartbeat_interval + 1;
@@ -1071,10 +1085,11 @@ fn hungry_elf_with_unowned_bread_seeks_fruit() {
     );
 
     // Set food below threshold.
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&elf_id, |c| c.food = food_max * 30 / 100);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.food = food_max * 30 / 100;
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Advance past heartbeat.
     let target_tick = 1 + heartbeat_interval + 1;
@@ -1382,7 +1397,7 @@ fn assign_home_rejects_non_home() {
     {
         let mut s = sim.db.structures.get(&structure_id).unwrap();
         s.furnishing = Some(FurnishingType::Dormitory);
-        let _ = sim.db.structures.update_no_fk(s);
+        sim.db.update_structure(s).unwrap();
     }
 
     let cmd = SimCommand {
@@ -1528,7 +1543,7 @@ fn tired_elf_sleeps_in_assigned_home() {
         c.food = food_max_val;
         // Clear any existing task so the elf is idle.
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Advance past heartbeat.
@@ -1566,16 +1581,15 @@ fn tired_elf_without_home_uses_dormitory() {
     let bed_pos = structure.floor_interior_positions()[0];
     let mut structure = sim.db.structures.get(&structure_id).unwrap();
     structure.furnishing = Some(FurnishingType::Dormitory);
-    let _ = sim.db.structures.update_no_fk(structure);
-    let _ = sim
-        .db
-        .furniture
-        .insert_auto_no_fk(|id| crate::db::Furniture {
+    sim.db.update_structure(structure).unwrap();
+    sim.db
+        .insert_furniture_auto(|id| crate::db::Furniture {
             id,
             structure_id,
             coord: bed_pos,
             placed: true,
-        });
+        })
+        .unwrap();
 
     // Spawn elf (no home assignment).
     let cmd = SimCommand {
@@ -1602,7 +1616,7 @@ fn tired_elf_without_home_uses_dormitory() {
         c.rest = rest_max * 30 / 100;
         c.food = food_max_val;
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let target_tick = 1 + heartbeat_interval + 1;
@@ -1632,7 +1646,7 @@ fn assigned_home_unfurnished_falls_back() {
     let mut structure = sim.db.structures.get(&structure_id).unwrap();
     structure.furnishing = Some(FurnishingType::Home);
     // No furniture placed — bed not yet built.
-    let _ = sim.db.structures.update_no_fk(structure);
+    sim.db.update_structure(structure).unwrap();
 
     // Spawn and assign.
     let cmd = SimCommand {
@@ -1671,7 +1685,7 @@ fn assigned_home_unfurnished_falls_back() {
         c.rest = rest_max * 30 / 100;
         c.food = food_max_val;
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let target_tick = 2 + heartbeat_interval + 1;
@@ -1815,15 +1829,15 @@ fn find_nearest_dining_hall_returns_none_when_seats_full() {
             required_civ_id: None,
         };
         sim.insert_task(fake_task);
-        let _ = sim
-            .db
-            .task_voxel_refs
-            .insert_auto_no_fk(|seq| crate::db::TaskVoxelRef {
+        let seq = sim.db.task_voxel_refs.next_seq();
+        sim.db
+            .insert_task_voxel_ref(crate::db::TaskVoxelRef {
                 seq,
                 task_id: fake_task_id,
                 coord: table_pos,
                 role: crate::db::TaskVoxelRole::DiningSeat,
-            });
+            })
+            .unwrap();
     }
 
     let result = sim.find_nearest_dining_hall(elf_id);
@@ -1848,10 +1862,11 @@ fn elf_seeks_dining_hall_at_dining_threshold() {
     create_dining_hall(&mut sim, table_pos, 5);
 
     // Set food to 50% — below dining threshold (60%) but above emergency (40%).
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&elf_id, |c| c.food = food_max * 50 / 100);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.food = food_max * 50 / 100;
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Advance one heartbeat.
     sim.step(&[], 1 + heartbeat);
@@ -1888,10 +1903,11 @@ fn elf_eats_emergency_food_below_hunger_threshold() {
         Some(elf_id),
         None,
     );
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&elf_id, |c| c.food = food_max * 10 / 100);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.food = food_max * 10 / 100;
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Advance one heartbeat.
     sim.step(&[], 1 + heartbeat);
@@ -1917,10 +1933,11 @@ fn elf_stays_idle_at_dining_threshold_without_hall() {
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
     // Set food to 50% — below dining threshold but above emergency. No dining hall.
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&elf_id, |c| c.food = food_max * 50 / 100);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.food = food_max * 50 / 100;
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Advance one heartbeat.
     sim.step(&[], 1 + heartbeat);
@@ -1956,10 +1973,11 @@ fn dine_at_hall_reserves_seat_and_food() {
     let structure_id = create_dining_hall(&mut sim, table_pos, 2);
 
     // Set food to 50%.
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&elf_id, |c| c.food = food_max * 50 / 100);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.food = food_max * 50 / 100;
+        sim.db.update_creature(c).unwrap();
+    }
 
     sim.step(&[], 1 + heartbeat);
 
@@ -2020,9 +2038,11 @@ fn dine_at_hall_completion_restores_food_and_generates_thought() {
 
     // Set food to 50% — below dining threshold (60%) but above emergency (40%).
     let initial_food = food_max * 50 / 100;
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.food = initial_food;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Advance enough ticks for: heartbeat → DineAtHall task → walk to table →
     // eat animation → completion. Give plenty of time for pathing.
@@ -2077,10 +2097,11 @@ fn dine_at_hall_cleanup_releases_reservations() {
     let structure_id = create_dining_hall(&mut sim, table_pos, 2);
 
     // Set food to 50%.
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&elf_id, |c| c.food = food_max * 50 / 100);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.food = food_max * 50 / 100;
+        sim.db.update_creature(c).unwrap();
+    }
 
     sim.step(&[], 1 + heartbeat);
 
@@ -2197,9 +2218,9 @@ fn dining_hall_with_fruit_only() {
     let structure_id = StructureId(900);
     let project_id = ProjectId::new(&mut sim.rng);
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    insert_stub_blueprint(&mut sim, project_id);
     sim.db
-        .structures
-        .insert_no_fk(CompletedStructure {
+        .insert_structure(CompletedStructure {
             id: structure_id,
             project_id,
             build_type: BuildType::Building,
@@ -2219,15 +2240,14 @@ fn dining_hall_with_fruit_only() {
             last_dance_completed_tick: 0,
         })
         .unwrap();
-    let _ = sim
-        .db
-        .furniture
-        .insert_auto_no_fk(|id| crate::db::Furniture {
+    sim.db
+        .insert_furniture_auto(|id| crate::db::Furniture {
             id,
             structure_id,
             coord: table_pos,
             placed: true,
-        });
+        })
+        .unwrap();
     // Stock fruit, not bread.
     sim.inv_add_simple_item(inv_id, ItemKind::Fruit, 3, None, None);
 
@@ -2251,10 +2271,12 @@ fn dine_at_hall_instant_on_arrival() {
     create_dining_hall(&mut sim, table_pos, 3);
 
     // Place elf at table and set food to 50%.
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.food = food_max * 50 / 100;
         c.position = table_pos;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Step past heartbeat + enough for walk + activation. The key test is
     // that completion happens WITHOUT needing eat_action_ticks of delay.
@@ -2303,8 +2325,7 @@ fn furnish_dining_hall_enables_logistics() {
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     insert_stub_blueprint(&mut sim, project_id);
     sim.db
-        .structures
-        .insert_no_fk(CompletedStructure {
+        .insert_structure(CompletedStructure {
             id: structure_id,
             project_id,
             build_type: BuildType::Building,
@@ -2384,14 +2405,15 @@ fn dining_preempts_autonomous_task() {
     };
     sim.insert_task(haul_task);
     // Set food into the dining band.
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&elf_id, |c| c.food = food_max * 50 / 100);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.food = food_max * 50 / 100;
+        sim.db.update_creature(c).unwrap();
+    }
     // Assign the task (indexed field — must use full update).
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = Some(haul_task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Advance enough for heartbeat(s) to fire. The elf was spawned at tick ~2,
@@ -2449,10 +2471,9 @@ fn find_dining_hall_with_realistic_building() {
         .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
     {
         if !furn.placed {
-            let _ = sim
-                .db
-                .furniture
-                .modify_unchecked(&furn.id, |f| f.placed = true);
+            let mut f = sim.db.furniture.get(&furn.id).unwrap();
+            f.placed = true;
+            sim.db.update_furniture(f).unwrap();
         }
     }
     let placed_count = sim
@@ -2507,10 +2528,9 @@ fn end_to_end_dining_hall() {
         .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
     {
         if !furn.placed {
-            let _ = sim
-                .db
-                .furniture
-                .modify_unchecked(&furn.id, |f| f.placed = true);
+            let mut f = sim.db.furniture.get(&furn.id).unwrap();
+            f.placed = true;
+            sim.db.update_furniture(f).unwrap();
         }
     }
 
@@ -2520,10 +2540,11 @@ fn end_to_end_dining_hall() {
 
     // Spawn an elf and set food to 50% (in the dining band).
     let elf_id = spawn_creature(&mut sim, Species::Elf);
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&elf_id, |c| c.food = food_max * 50 / 100);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.food = food_max * 50 / 100;
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Verify every single prerequisite for dining to work.
     // If any of these fail, we know EXACTLY where the problem is.
@@ -2642,10 +2663,11 @@ fn elf_resumes_activation_after_dining() {
     create_dining_hall(&mut sim, table_pos, 5);
 
     // Set food to 50% (dining band) and place elf near table.
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&elf_id, |c| c.food = food_max * 50 / 100);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.food = food_max * 50 / 100;
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Advance enough for: heartbeat → DineAtHall task → walk → instant eat.
     sim.step(&[], sim.tick + heartbeat + 50_000);
@@ -2704,14 +2726,15 @@ fn dine_at_hall_no_food_completes_speculative_task() {
     for stack in stacks {
         let mut s = stack.clone();
         s.reserved_by = Some(dummy_task_id);
-        let _ = sim.db.update_item_stack(s);
+        sim.db.update_item_stack(s).unwrap();
     }
 
     // Set food to 50% — below dining threshold (60%) but above emergency (40%).
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&elf_id, |c| c.food = food_max * 50 / 100);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.food = food_max * 50 / 100;
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Advance one heartbeat. The heartbeat will find the dining hall (it has
     // 1 bread, passing the existence check), speculatively insert a DineAtHall
@@ -3089,10 +3112,12 @@ fn tired_idle_elf_creates_sleep_task() {
 
     // Set rest below threshold (50%) and food well above threshold.
     let food_max_val = sim.species_table[&Species::Elf].food_max;
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.rest = rest_max * 30 / 100;
         c.food = food_max_val;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Advance past the next heartbeat.
     let target_tick = 1 + heartbeat_interval + 1;

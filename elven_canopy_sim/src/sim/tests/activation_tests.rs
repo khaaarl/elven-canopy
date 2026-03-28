@@ -435,9 +435,11 @@ fn sleep_adaptive_completion_rest_full_exits_early() {
     // Set rest to 95% (near full). With rest_per_sleep_tick=500 and
     // sleep_action_ticks=1000, each action restores 500_000. rest_max
     // is typically 100_000, so 5% = 5000 → one action should fill it.
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.rest = rest_max * 95 / 100;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Create a ground sleep task at elf's location.
     let elf_node = creature_node(&sim, elf_id);
@@ -463,7 +465,7 @@ fn sleep_adaptive_completion_rest_full_exits_early() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Run enough for the first activation (tick 2) + a few sleep actions.
@@ -611,7 +613,7 @@ fn eat_action_ticks_controls_timing() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Run 1 tick to let activation fire and start the Eat action.
@@ -748,10 +750,12 @@ fn abort_build_action_clears_state_only() {
         .id;
 
     // Manually set elf to Build action state.
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.action_kind = ActionKind::Build;
         c.next_available_tick = Some(sim.tick + 50_000);
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     // No MoveAction should exist (elf hasn't moved yet).
     assert!(sim.db.move_actions.get(&elf_id).is_none());
@@ -794,7 +798,7 @@ fn interrupt_goto_completes_task_and_clears_creature() {
     sim.insert_task(goto_task);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     sim.interrupt_task(elf_id, task_id);
@@ -835,11 +839,11 @@ fn interrupt_build_returns_task_to_available() {
     // Assign the elf to the build task.
     if let Some(mut t) = sim.db.tasks.get(&build_task_id) {
         t.state = TaskState::InProgress;
-        let _ = sim.db.tasks.update_no_fk(t);
+        sim.db.update_task(t).unwrap();
     }
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = Some(build_task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     sim.interrupt_task(elf_id, build_task_id);
@@ -928,11 +932,11 @@ fn interrupt_craft_clears_reservations() {
     // Assign elf to the task.
     if let Some(mut t) = sim.db.tasks.get(&task_id) {
         t.state = TaskState::InProgress;
-        let _ = sim.db.tasks.update_no_fk(t);
+        sim.db.update_task(t).unwrap();
     }
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     sim.interrupt_task(elf_id, task_id);
@@ -981,7 +985,7 @@ fn interrupt_sleep_completes_task() {
     sim.insert_task(sleep_task);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     sim.interrupt_task(elf_id, task_id);
@@ -993,18 +997,20 @@ fn interrupt_sleep_completes_task() {
 }
 
 #[test]
-fn interrupt_missing_task_clears_creature_fields() {
+fn interrupt_task_clears_creature_fields() {
     let mut sim = test_sim(42);
     let elf_id = spawn_elf(&mut sim);
 
-    // Assign creature to a task ID that doesn't exist in the DB.
-    let fake_task_id = TaskId::new(&mut sim.rng);
-    if let Some(mut c) = sim.db.creatures.get(&elf_id) {
-        c.current_task = Some(fake_task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
-    }
+    // Assign creature to a stub task, then interrupt it.
+    // (The original "missing task" scenario is now impossible thanks to FK
+    // constraints — current_task cannot point to a nonexistent task.)
+    let task_id = TaskId::new(&mut sim.rng);
+    insert_stub_task(&mut sim, task_id);
+    let mut c = sim.db.creatures.get(&elf_id).unwrap();
+    c.current_task = Some(task_id);
+    sim.db.update_creature(c).unwrap();
 
-    sim.interrupt_task(elf_id, fake_task_id);
+    sim.interrupt_task(elf_id, task_id);
 
     let creature = sim.db.creatures.get(&elf_id).unwrap();
     assert!(creature.current_task.is_none());
@@ -1023,7 +1029,7 @@ fn interrupt_clears_move_action() {
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.action_kind = ActionKind::Move;
         c.next_available_tick = Some(sim.tick + 1000);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
     let move_action = crate::db::MoveAction {
         creature_id: elf_id,
@@ -1031,7 +1037,9 @@ fn interrupt_clears_move_action() {
         move_to: pos,
         move_start_tick: sim.tick,
     };
-    let _ = sim.db.move_actions.insert_no_fk(move_action);
+    // Remove any existing move action from spawn/wander (may not exist).
+    let _ = sim.db.remove_move_action(&elf_id);
+    sim.db.insert_move_action(move_action).unwrap();
 
     // Create a GoTo task for context.
     let task_id = TaskId::new(&mut sim.rng);
@@ -1052,7 +1060,7 @@ fn interrupt_clears_move_action() {
     sim.insert_task(goto_task);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     sim.interrupt_task(elf_id, task_id);
@@ -1093,9 +1101,11 @@ fn find_available_task_respects_civ_filter() {
     let goblin_id = sim
         .spawn_creature_with_civ(Species::Goblin, tree_pos, Some(hostile_civ), &mut events)
         .expect("should spawn goblin");
-    let _ = sim.db.creatures.modify_unchecked(&goblin_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&goblin_id).unwrap();
         c.current_task = None;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     let task_node = sim
         .nav_graph
@@ -1120,7 +1130,7 @@ fn find_available_task_respects_civ_filter() {
         prerequisite_task_id: None,
         required_civ_id: Some(player_civ),
     };
-    sim.db.tasks.insert_no_fk(task).unwrap();
+    sim.db.insert_task(task).unwrap();
 
     let chosen = sim.find_available_task(goblin_id);
     assert_eq!(
@@ -1132,9 +1142,11 @@ fn find_available_task_respects_civ_filter() {
     let elf_id = sim
         .spawn_creature(Species::Elf, tree_pos, &mut events)
         .expect("should spawn elf");
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = None;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     let chosen = sim.find_available_task(elf_id);
     assert_eq!(
@@ -1173,9 +1185,11 @@ fn find_available_task_unaffiliated_creature_blocked_by_civ_filter() {
     let capy_id = capy.id;
     assert_eq!(capy.civ_id, None, "capybara should be unaffiliated");
 
-    let _ = sim.db.creatures.modify_unchecked(&capy_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&capy_id).unwrap();
         c.current_task = None;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     let task_node = sim
         .nav_graph
@@ -1200,7 +1214,7 @@ fn find_available_task_unaffiliated_creature_blocked_by_civ_filter() {
         prerequisite_task_id: None,
         required_civ_id: Some(player_civ),
     };
-    sim.db.tasks.insert_no_fk(task).unwrap();
+    sim.db.insert_task(task).unwrap();
 
     let chosen = sim.find_available_task(capy_id);
     assert_eq!(
@@ -1252,9 +1266,11 @@ fn find_available_task_no_civ_filter_allows_any() {
     let goblin_id = sim
         .spawn_creature_with_civ(Species::Goblin, tree_pos, Some(hostile_civ), &mut events)
         .expect("should spawn goblin");
-    let _ = sim.db.creatures.modify_unchecked(&goblin_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&goblin_id).unwrap();
         c.current_task = None;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     let task_node = sim
         .nav_graph
@@ -1279,7 +1295,7 @@ fn find_available_task_no_civ_filter_allows_any() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.db.tasks.insert_no_fk(task).unwrap();
+    sim.db.insert_task(task).unwrap();
 
     let chosen = sim.find_available_task(goblin_id);
     assert_eq!(
@@ -2176,7 +2192,7 @@ fn deleted_prerequisite_unblocks_dependent_task() {
     });
 
     // Delete the prerequisite task entirely (simulates DB compaction/pruning).
-    let _ = sim.db.tasks.remove_no_fk(&task_a_id);
+    sim.db.remove_task(&task_a_id).unwrap();
 
     // Task B should now be available (missing prerequisite treated as complete).
     assert_eq!(
@@ -2428,7 +2444,7 @@ fn find_queue_tail_terminates_on_cycle() {
     // Set the elf's current_task to task_a to start the chain.
     if let Some(mut c) = sim.db.creatures.get(&elf) {
         c.current_task = Some(task_a_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // find_queue_tail should terminate (return None due to cycle guard),
@@ -2997,7 +3013,7 @@ fn find_available_task_skips_incomplete_prerequisite() {
     // Complete task A.
     if let Some(mut t) = sim.db.tasks.get(&task_a_id) {
         t.state = TaskState::Complete;
-        let _ = sim.db.tasks.update_no_fk(t);
+        sim.db.update_task(t).unwrap();
     }
 
     // Now task B should be found.
@@ -3033,7 +3049,7 @@ fn cancel_creature_queue_cancels_entire_chain() {
     // Assign A to the elf.
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = Some(task_a_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let task_b_id = TaskId::new(&mut sim.rng);

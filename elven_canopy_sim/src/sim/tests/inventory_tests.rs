@@ -431,17 +431,17 @@ fn item_subcomponent_cascade_delete() {
     let stack_id = stacks[0].id;
 
     // Add a subcomponent.
-    let _ = sim
-        .db
-        .item_subcomponents
-        .insert_auto_no_fk(|seq| crate::db::ItemSubcomponent {
+    let seq = sim.db.item_subcomponents.next_seq();
+    sim.db
+        .insert_item_subcomponent(crate::db::ItemSubcomponent {
             item_stack_id: stack_id,
             seq,
             component_kind: inventory::ItemKind::Bowstring,
             material: None,
             quality: 0,
             quantity_per_item: 1,
-        });
+        })
+        .unwrap();
     assert_eq!(sim.db.item_subcomponents.len(), 1);
 
     // Delete the item stack — subcomponent should cascade.
@@ -460,21 +460,20 @@ fn enchantment_effect_cascade_delete() {
     // Create an enchantment.
     let ench_id = sim
         .db
-        .item_enchantments
-        .insert_auto_no_fk(|id| crate::db::ItemEnchantment { id })
+        .insert_item_enchantment_auto(|id| crate::db::ItemEnchantment { id })
         .unwrap();
 
     // Add an effect.
-    let _ = sim
-        .db
-        .enchantment_effects
-        .insert_auto_no_fk(|seq| crate::db::EnchantmentEffect {
+    let seq = sim.db.enchantment_effects.next_seq();
+    sim.db
+        .insert_enchantment_effect(crate::db::EnchantmentEffect {
             enchantment_id: ench_id,
             seq,
             effect_kind: inventory::EffectKind::Placeholder,
             magnitude: 10,
             threshold: None,
-        });
+        })
+        .unwrap();
     assert_eq!(sim.db.enchantment_effects.len(), 1);
 
     // Delete enchantment — effect should cascade.
@@ -2132,9 +2131,9 @@ fn item_display_name_dye_color_prefix() {
 
     // Now dye the tunic blue.
     let tunic_id = tunic.id;
-    let _ = sim.db.item_stacks.modify_unchecked(&tunic_id, |s| {
-        s.dye_color = Some(inventory::ItemColor::new(50, 70, 180));
-    });
+    let mut tunic_row = sim.db.item_stacks.get(&tunic_id).unwrap();
+    tunic_row.dye_color = Some(inventory::ItemColor::new(50, 70, 180));
+    sim.db.update_item_stack(tunic_row).unwrap();
     let tunic_dyed = sim.db.item_stacks.get(&tunic_id).unwrap();
     assert_eq!(sim.item_display_name(&tunic_dyed), "Fine Blue Tunic");
 
@@ -2159,9 +2158,9 @@ fn item_display_name_dye_color_prefix() {
         .find(|s| s.kind == inventory::ItemKind::Breastplate)
         .unwrap();
     let bp_id = bp.id;
-    let _ = sim.db.item_stacks.modify_unchecked(&bp_id, |s| {
-        s.dye_color = Some(inventory::ItemColor::new(180, 40, 40));
-    });
+    let mut bp_row = sim.db.item_stacks.get(&bp_id).unwrap();
+    bp_row.dye_color = Some(inventory::ItemColor::new(180, 40, 40));
+    sim.db.update_item_stack(bp_row).unwrap();
     let bp_dyed = sim.db.item_stacks.get(&bp_id).unwrap();
     assert_eq!(sim.item_display_name(&bp_dyed), "Fine Red Oak Breastplate");
 }
@@ -2781,10 +2780,9 @@ fn inv_normalize_keeps_differently_dyed_stacks_separate() {
     // Now dye one unit: split it off and apply dye.
     let split_id = sim.inv_split_stack(stacks[0].id, 1).unwrap();
     let dye = inventory::ItemColor::new(200, 0, 0);
-    let _ = sim
-        .db
-        .item_stacks
-        .modify_unchecked(&split_id, |s| s.dye_color = Some(dye));
+    let mut split_row = sim.db.item_stacks.get(&split_id).unwrap();
+    split_row.dye_color = Some(dye);
+    sim.db.update_item_stack(split_row).unwrap();
     sim.inv_normalize(inv_id);
     // Should now have two separate stacks: one undyed, one dyed.
     let stacks: Vec<_> = sim
@@ -2836,10 +2834,9 @@ fn inv_normalize_merges_same_dye_color_stacks() {
         .map(|s| s.id)
         .collect();
     for id in &ids {
-        let _ = sim
-            .db
-            .item_stacks
-            .modify_unchecked(id, |s| s.dye_color = Some(dye));
+        let mut row = sim.db.item_stacks.get(id).unwrap();
+        row.dye_color = Some(dye);
+        sim.db.update_item_stack(row).unwrap();
     }
     sim.inv_normalize(inv_id);
     let stacks: Vec<_> = sim
@@ -3047,9 +3044,9 @@ fn item_display_name_quality_with_dye_color() {
         .find(|s| s.kind == inventory::ItemKind::Tunic)
         .unwrap();
     let tunic_id = tunic.id;
-    let _ = sim.db.item_stacks.modify_unchecked(&tunic_id, |s| {
-        s.dye_color = Some(inventory::ItemColor::new(50, 70, 180));
-    });
+    let mut tunic_row2 = sim.db.item_stacks.get(&tunic_id).unwrap();
+    tunic_row2.dye_color = Some(inventory::ItemColor::new(50, 70, 180));
+    sim.db.update_item_stack(tunic_row2).unwrap();
     let tunic_dyed = sim.db.item_stacks.get(&tunic_id).unwrap();
     assert_eq!(sim.item_display_name(&tunic_dyed), "Crude Blue Tunic");
 }

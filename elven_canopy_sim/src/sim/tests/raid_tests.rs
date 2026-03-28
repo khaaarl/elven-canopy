@@ -787,9 +787,9 @@ fn trigger_raid_human_civ_aborts_with_notification() {
         .find(|c| c.id != player_civ)
         .map(|c| c.id)
         .unwrap();
-    let _ = sim.db.civilizations.modify_unchecked(&any_ai_civ, |c| {
-        c.primary_species = CivSpecies::Human;
-    });
+    let mut civ = sim.db.civilizations.get(&any_ai_civ).unwrap();
+    civ.primary_species = CivSpecies::Human;
+    sim.db.update_civilization(civ).unwrap();
     sim.discover_civ(any_ai_civ, player_civ, CivOpinion::Hostile);
 
     let creature_count_before = sim.db.creatures.iter_all().count();

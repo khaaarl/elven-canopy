@@ -109,7 +109,7 @@ fn quorum_promotes_volunteers_to_assembling() {
     for eid in &elves {
         let mut c = sim.db.creatures.get(eid).unwrap();
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let mut events = Vec::new();
@@ -155,7 +155,7 @@ fn quorum_prunes_busy_volunteers() {
     for eid in &elves {
         let mut c = sim.db.creatures.get(eid).unwrap();
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let mut events = Vec::new();
@@ -179,10 +179,10 @@ fn quorum_prunes_busy_volunteers() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.db.tasks.insert_no_fk(task).unwrap();
+    sim.db.insert_task(task).unwrap();
     let mut c = sim.db.creatures.get(&elves[0]).unwrap();
     c.current_task = Some(fake_task_id);
-    let _ = sim.db.creatures.update_no_fk(c);
+    sim.db.update_creature(c).unwrap();
 
     // 3rd volunteer triggers quorum check, but elf[0] is now busy → pruned.
     sim.volunteer_for_activity(activity_id, elves[2], &mut events);
@@ -211,7 +211,7 @@ fn arrival_transitions_to_executing() {
     for eid in &elves {
         let mut c = sim.db.creatures.get(eid).unwrap();
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let mut events = Vec::new();
@@ -254,7 +254,7 @@ fn dance_execution_generates_plan_and_adds_thoughts() {
     for eid in &elves {
         let mut c = sim.db.creatures.get(eid).unwrap();
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let mut events = Vec::new();
@@ -304,7 +304,7 @@ fn dance_waypoints_move_creatures() {
     for eid in &elves {
         let mut c = sim.db.creatures.get(eid).unwrap();
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let mut events = Vec::new();
@@ -371,7 +371,7 @@ fn dance_completes_with_mood_bonus_and_cleanup() {
     for eid in &elves {
         let mut c = sim.db.creatures.get(eid).unwrap();
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let mut events = Vec::new();
@@ -450,7 +450,7 @@ fn cancel_activity_releases_participants() {
     for eid in &elves {
         let mut c = sim.db.creatures.get(eid).unwrap();
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let mut events = Vec::new();
@@ -487,7 +487,7 @@ fn departure_continue_policy_keeps_activity_running() {
     for eid in &elves {
         let mut c = sim.db.creatures.get(eid).unwrap();
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let mut events = Vec::new();
@@ -541,7 +541,7 @@ fn departure_cancel_on_departure_cancels_activity() {
     for eid in &elves {
         let mut c = sim.db.creatures.get(eid).unwrap();
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Directed recruitment for Ceremony.
@@ -595,7 +595,7 @@ fn departure_pause_and_wait_pauses_activity() {
     for eid in &elves {
         let mut c = sim.db.creatures.get(eid).unwrap();
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     for i in 0..3 {
@@ -637,7 +637,7 @@ fn pause_timeout_cancels_activity() {
     for eid in &elves {
         let mut c = sim.db.creatures.get(eid).unwrap();
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     for i in 0..3 {
@@ -683,7 +683,7 @@ fn directed_recruitment_assigns_and_creates_goto() {
     for eid in &elves {
         let mut c = sim.db.creatures.get(eid).unwrap();
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Assign one creature.
@@ -712,7 +712,7 @@ fn all_participants_leaving_cancels_activity() {
     for eid in &elves {
         let mut c = sim.db.creatures.get(eid).unwrap();
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let mut events = Vec::new();
@@ -740,7 +740,7 @@ fn double_volunteer_is_no_op() {
 
     let mut c0 = sim.db.creatures.get(&elves[0]).unwrap();
     c0.current_task = None;
-    let _ = sim.db.creatures.update_no_fk(c0);
+    sim.db.update_creature(c0).unwrap();
 
     let mut events = Vec::new();
     sim.volunteer_for_activity(activity_id, elves[0], &mut events);
@@ -766,7 +766,7 @@ fn find_open_activity_discovers_nearby_activity() {
     // Make elf idle.
     let mut c0 = sim.db.creatures.get(&elves[0]).unwrap();
     c0.current_task = None;
-    let _ = sim.db.creatures.update_no_fk(c0);
+    sim.db.update_creature(c0).unwrap();
 
     let found = sim.find_open_activity_for_creature(elves[0]);
     assert_eq!(found, Some(activity_id));
@@ -785,7 +785,7 @@ fn find_open_activity_ignores_far_activity() {
 
     let mut c0 = sim.db.creatures.get(&elves[0]).unwrap();
     c0.current_task = None;
-    let _ = sim.db.creatures.update_no_fk(c0);
+    sim.db.update_creature(c0).unwrap();
 
     let found = sim.find_open_activity_for_creature(elves[0]);
     assert!(found.is_none());
@@ -1041,7 +1041,7 @@ fn creature_death_with_cancel_on_departure_cancels_activity() {
     for eid in &elves[..3] {
         let mut c = sim.db.creatures.get(eid).unwrap();
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     for i in 0..3 {
@@ -1077,7 +1077,7 @@ fn resume_activity_from_paused() {
     for eid in &elves[..3] {
         let mut c = sim.db.creatures.get(eid).unwrap();
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     for i in 0..3 {
@@ -1317,10 +1317,10 @@ fn busy_creatures_dont_volunteer() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.db.tasks.insert_no_fk(task).unwrap();
+    sim.db.insert_task(task).unwrap();
     let mut c = sim.db.creatures.get(&elves[0]).unwrap();
     c.current_task = Some(task_id);
-    let _ = sim.db.creatures.update_no_fk(c);
+    sim.db.update_creature(c).unwrap();
 
     // Should not find any open activity.
     let found = sim.find_open_activity_for_creature(elves[0]);
@@ -1331,9 +1331,12 @@ fn busy_creatures_dont_volunteer() {
 }
 
 #[test]
-fn stale_activity_reference_is_cleared_on_activation() {
-    // If a creature's current_activity points to a deleted activity,
-    // the activation loop should clear it and reactivate normally.
+fn recruiting_activity_reference_cleared_on_activation() {
+    // If a creature's current_activity points to an activity still in
+    // Recruiting phase, the activation loop treats it as unexpected and
+    // clears it. (The original "stale/deleted activity" scenario is now
+    // prevented by FK constraints — current_activity cannot reference a
+    // nonexistent activity.)
     let mut sim = test_sim(42);
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position;
@@ -1341,13 +1344,36 @@ fn stale_activity_reference_is_cleared_on_activation() {
 
     // Delete the activity (FK cascade nullifies current_activity).
     let mut events = Vec::new();
-    let _ = sim.db.remove_activity(&activity_id);
+    sim.db.remove_activity(&activity_id).unwrap();
 
     // Manually set a stale current_activity (simulating corruption or
     // a code path that bypasses FK cleanup).
+    // Re-insert a stub in Recruiting phase so the FK is satisfied during
+    // update_creature. The activation loop treats Recruiting as an unexpected
+    // phase and clears current_activity, which is the behavior under test.
+    sim.db
+        .insert_activity(crate::db::Activity {
+            id: activity_id,
+            kind: ActivityKind::Dance,
+            phase: ActivityPhase::Recruiting,
+            location: VoxelCoord::new(0, 0, 0),
+            min_count: None,
+            desired_count: None,
+            progress: 0,
+            total_cost: 0,
+            origin: TaskOrigin::Automated,
+            recruitment: RecruitmentMode::Open,
+            departure_policy: DeparturePolicy::Continue,
+            allows_late_join: false,
+            civ_id: None,
+            required_species: None,
+            execution_start_tick: None,
+            pause_started_tick: None,
+        })
+        .unwrap();
     let mut c0 = sim.db.creatures.get(&elves[0]).unwrap();
     c0.current_activity = Some(activity_id);
-    let _ = sim.db.creatures.update_no_fk(c0);
+    sim.db.update_creature(c0).unwrap();
 
     let c0 = sim.db.creatures.get(&elves[0]).unwrap();
     assert!(c0.current_activity.is_some());
@@ -1424,10 +1450,10 @@ fn activity_with_all_elves_busy_stays_recruiting() {
             prerequisite_task_id: None,
             required_civ_id: None,
         };
-        sim.db.tasks.insert_no_fk(task).unwrap();
+        sim.db.insert_task(task).unwrap();
         let mut c = sim.db.creatures.get(eid).unwrap();
         c.current_task = Some(*task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // No creature should find the activity.
@@ -1524,7 +1550,7 @@ fn participant_death_during_assembly_reverts_to_recruiting_and_replacement_joins
     // Elf 3 (idle) discovers the activity and volunteers.
     let mut c3 = sim.db.creatures.get(&elves[3]).unwrap();
     c3.current_task = None;
-    let _ = sim.db.creatures.update_no_fk(c3);
+    sim.db.update_creature(c3).unwrap();
 
     sim.volunteer_for_activity(activity_id, elves[3], &mut events);
 
@@ -1596,7 +1622,7 @@ fn participant_death_during_assembly_with_some_arrived() {
     // Replacement elf volunteers.
     let mut c3 = sim.db.creatures.get(&elves[3]).unwrap();
     c3.current_task = None;
-    let _ = sim.db.creatures.update_no_fk(c3);
+    sim.db.update_creature(c3).unwrap();
     sim.volunteer_for_activity(activity_id, elves[3], &mut events);
 
     // Should be back to Assembling.
@@ -1862,10 +1888,10 @@ fn stale_volunteer_row_cleared_so_creature_can_revolunteer() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.db.tasks.insert_no_fk(task).unwrap();
+    sim.db.insert_task(task).unwrap();
     let mut c = sim.db.creatures.get(&elves[0]).unwrap();
     c.current_task = Some(task_id);
-    let _ = sim.db.creatures.update_no_fk(c);
+    sim.db.update_creature(c).unwrap();
 
     // Elf 0 finishes eating — clear task.
     sim.complete_task(task_id);
@@ -1924,10 +1950,10 @@ fn recruiting_stall_resolved_by_revolunteering() {
             prerequisite_task_id: None,
             required_civ_id: None,
         };
-        sim.db.tasks.insert_no_fk(task).unwrap();
+        sim.db.insert_task(task).unwrap();
         let mut c = sim.db.creatures.get(&elves[i]).unwrap();
         c.current_task = Some(*tid);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Both finish tasks.
@@ -2033,7 +2059,7 @@ fn last_participant_removed_from_paused_activity_cancels_it() {
     for eid in &elves[..2] {
         let mut c = sim.db.creatures.get(eid).unwrap();
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     sim.handle_assign_to_activity(activity_id, elves[0], &mut events);
@@ -2165,7 +2191,7 @@ fn pause_timeout_not_expired_keeps_activity() {
     for eid in &elves[..3] {
         let mut c = sim.db.creatures.get(eid).unwrap();
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     for i in 0..3 {
@@ -2277,7 +2303,7 @@ fn activity_serde_roundtrip_preserves_executing_state() {
     for eid in &elves {
         let mut c = sim.db.creatures.get(eid).unwrap();
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let mut events = Vec::new();
@@ -2350,7 +2376,7 @@ fn volunteer_rejects_non_recruiting_phase() {
     for eid in &elves {
         let mut c = sim.db.creatures.get(eid).unwrap();
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Promote to Assembling via 3 volunteers.
@@ -2385,7 +2411,7 @@ fn desired_count_caps_volunteer_discovery() {
     for eid in &elves {
         let mut c = sim.db.creatures.get(eid).unwrap();
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Volunteer 3 elves so desired_count is reached. But make quorum fail
@@ -2409,10 +2435,10 @@ fn desired_count_caps_volunteer_discovery() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.db.tasks.insert_no_fk(task).unwrap();
+    sim.db.insert_task(task).unwrap();
     let mut c0 = sim.db.creatures.get(&elves[0]).unwrap();
     c0.current_task = Some(fake_task_id);
-    let _ = sim.db.creatures.update_no_fk(c0);
+    sim.db.update_creature(c0).unwrap();
 
     sim.volunteer_for_activity(activity_id, elves[2], &mut events);
     // Elf[0] pruned, 2 remain (elf[1], elf[2]). Still Recruiting.
@@ -2447,7 +2473,7 @@ fn cancel_recruiting_activity_with_only_volunteers() {
     for eid in &elves {
         let mut c = sim.db.creatures.get(eid).unwrap();
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Add 2 volunteers (below quorum).
@@ -2520,7 +2546,7 @@ fn directed_recruitment_three_assigned_transitions_to_assembling() {
     for eid in &elves {
         let mut c = sim.db.creatures.get(eid).unwrap();
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Assign 2 — still Recruiting.
@@ -2566,7 +2592,7 @@ fn wild_capybara_cannot_volunteer_for_dance() {
         .expect("should spawn capybara");
     let mut c = sim.db.creatures.get(&capybara_id).unwrap();
     c.current_task = None;
-    let _ = sim.db.creatures.update_no_fk(c);
+    sim.db.update_creature(c).unwrap();
 
     // Capybara should NOT be able to volunteer — wrong species + no civ.
     sim.volunteer_for_activity(activity_id, capybara_id, &mut events);
@@ -2593,7 +2619,7 @@ fn other_civ_elf_cannot_volunteer_for_dance() {
         .expect("should spawn foreign elf");
     let mut c = sim.db.creatures.get(&foreign_elf_id).unwrap();
     c.current_task = None;
-    let _ = sim.db.creatures.update_no_fk(c);
+    sim.db.update_creature(c).unwrap();
 
     // Foreign elf should NOT be able to volunteer — wrong civ.
     sim.volunteer_for_activity(activity_id, foreign_elf_id, &mut events);
@@ -2620,7 +2646,7 @@ fn same_civ_capybara_cannot_volunteer_for_dance() {
         .expect("should spawn same-civ capybara");
     let mut c = sim.db.creatures.get(&capybara_id).unwrap();
     c.current_task = None;
-    let _ = sim.db.creatures.update_no_fk(c);
+    sim.db.update_creature(c).unwrap();
 
     // Capybara should NOT be able to volunteer — wrong species even though right civ.
     sim.volunteer_for_activity(activity_id, capybara_id, &mut events);
@@ -2646,7 +2672,7 @@ fn find_open_activity_ignores_wrong_species() {
         .expect("should spawn capybara");
     let mut c = sim.db.creatures.get(&capybara_id).unwrap();
     c.current_task = None;
-    let _ = sim.db.creatures.update_no_fk(c);
+    sim.db.update_creature(c).unwrap();
 
     // Capybara should not discover the dance.
     let found = sim.find_open_activity_for_creature(capybara_id);
@@ -2667,7 +2693,7 @@ fn find_open_activity_ignores_wrong_civ() {
         .expect("should spawn foreign elf");
     let mut c = sim.db.creatures.get(&foreign_elf_id).unwrap();
     c.current_task = None;
-    let _ = sim.db.creatures.update_no_fk(c);
+    sim.db.update_creature(c).unwrap();
 
     // Foreign elf should not discover the dance.
     let found = sim.find_open_activity_for_creature(foreign_elf_id);
@@ -2708,7 +2734,7 @@ fn directed_assign_rejects_wrong_species() {
         .expect("should spawn capybara");
     let mut c = sim.db.creatures.get(&capybara_id).unwrap();
     c.current_task = None;
-    let _ = sim.db.creatures.update_no_fk(c);
+    sim.db.update_creature(c).unwrap();
 
     // Directed assign should be rejected — wrong species.
     sim.handle_assign_to_activity(activity_id, capybara_id, &mut events);
@@ -2734,7 +2760,7 @@ fn directed_assign_rejects_wrong_civ() {
         .expect("should spawn foreign elf");
     let mut c = sim.db.creatures.get(&foreign_elf_id).unwrap();
     c.current_task = None;
-    let _ = sim.db.creatures.update_no_fk(c);
+    sim.db.update_creature(c).unwrap();
 
     // Directed assign should be rejected — wrong civ.
     sim.handle_assign_to_activity(activity_id, foreign_elf_id, &mut events);
@@ -2754,11 +2780,11 @@ fn dead_creature_cannot_volunteer() {
     let activity_id = create_debug_dance(&mut sim, tree_pos);
     let elves = spawn_test_elves(&mut sim, 3);
 
-    // Kill elf[0]. vital_status is indexed, so use update_no_fk.
+    // Kill elf[0].
     let mut c0 = sim.db.creatures.get(&elves[0]).unwrap();
     c0.vital_status = VitalStatus::Dead;
     c0.current_task = None;
-    let _ = sim.db.creatures.update_no_fk(c0);
+    sim.db.update_creature(c0).unwrap();
 
     let mut events = Vec::new();
     sim.volunteer_for_activity(activity_id, elves[0], &mut events);
@@ -2781,7 +2807,7 @@ fn activity_goto_inherits_player_directed_origin() {
     for eid in &elves {
         let mut c = sim.db.creatures.get(eid).unwrap();
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Volunteer 3 to trigger quorum → Assembling with GoTo tasks.
@@ -2893,7 +2919,7 @@ fn dance_completion_cleans_up_dance_data() {
     for eid in &elves {
         let mut c = sim.db.creatures.get(eid).unwrap();
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let mut events = Vec::new();
@@ -2988,7 +3014,7 @@ fn cancel_executing_dance_cleans_up_plan_and_composition() {
     for eid in &elves {
         let mut c = sim.db.creatures.get(eid).unwrap();
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let mut events = Vec::new();
@@ -3052,7 +3078,7 @@ fn serde_roundtrip_preserves_dance_slot_and_cursor() {
     for eid in &elves {
         let mut c = sim.db.creatures.get(eid).unwrap();
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let mut events = Vec::new();
@@ -3172,7 +3198,7 @@ fn idle_elf_near_dance_hall_organizes_spontaneous_dance() {
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = None;
         c.current_activity = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Try to organize a spontaneous dance.
@@ -3209,9 +3235,9 @@ fn hall_cooldown_prevents_spontaneous_dance() {
     sim.config.activity.dance_elf_cooldown_ticks = 0;
 
     // Mark the hall as having had a recent dance.
-    let _ = sim.db.structures.modify_unchecked(&structure_id, |s| {
-        s.last_dance_completed_tick = sim.tick;
-    });
+    let mut s = sim.db.structures.get(&structure_id).unwrap();
+    s.last_dance_completed_tick = sim.tick;
+    sim.db.update_structure(s).unwrap();
 
     let hall = sim.db.structures.get(&structure_id).unwrap().clone();
     let mut events = Vec::new();
@@ -3221,7 +3247,7 @@ fn hall_cooldown_prevents_spontaneous_dance() {
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = None;
         c.current_activity = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let organized = sim.try_organize_spontaneous_dance(elf_id, &mut events);
@@ -3249,7 +3275,7 @@ fn elf_cooldown_prevents_spontaneous_dance() {
         c.current_task = None;
         c.current_activity = None;
         c.last_dance_tick = sim.tick; // Just danced.
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let organized = sim.try_organize_spontaneous_dance(elf_id, &mut events);
@@ -3280,7 +3306,7 @@ fn first_dance_nudge_skips_hall_cooldown() {
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = None;
         c.current_activity = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let organized = sim.try_organize_spontaneous_dance(elf_id, &mut events);
@@ -3320,7 +3346,7 @@ fn venue_exclusivity_blocks_spontaneous_dance() {
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = None;
         c.current_activity = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let organized = sim.try_organize_spontaneous_dance(elf_id, &mut events);
@@ -3356,7 +3382,7 @@ fn dance_completion_sets_tracking_ticks() {
     for eid in &elves {
         if let Some(mut c) = sim.db.creatures.get(eid) {
             c.current_task = None;
-            let _ = sim.db.creatures.update_no_fk(c);
+            sim.db.update_creature(c).unwrap();
         }
     }
 
@@ -3425,7 +3451,7 @@ fn zero_chance_prevents_spontaneous_dance() {
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = None;
         c.current_activity = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Try many times — with 0% chance, none should succeed.
@@ -3460,7 +3486,7 @@ fn non_elf_cannot_organize_spontaneous_dance() {
     if let Some(mut c) = sim.db.creatures.get(&capybara_id) {
         c.current_task = None;
         c.current_activity = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let organized = sim.try_organize_spontaneous_dance(capybara_id, &mut events);
@@ -3485,9 +3511,10 @@ fn busy_elf_cannot_organize_spontaneous_dance() {
     // Elf has a task — should not organize.
     // Give it a dummy task reference via the sim's RNG.
     let dummy_task_id = crate::types::TaskId::new(&mut sim.rng);
+    insert_stub_task(&mut sim, dummy_task_id);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = Some(dummy_task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let organized = sim.try_organize_spontaneous_dance(elf_id, &mut events);
@@ -3504,9 +3531,9 @@ fn serde_roundtrip_preserves_last_dance_tick() {
     let elf_id = elves[0];
 
     // Set last_dance_tick.
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.last_dance_tick = 12345;
-    });
+    let mut c = sim.db.creatures.get(&elf_id).unwrap();
+    c.last_dance_tick = 12345;
+    sim.db.update_creature(c).unwrap();
 
     let json = serde_json::to_string(&sim).unwrap();
     let restored: SimState = serde_json::from_str(&json).unwrap();
@@ -3520,9 +3547,9 @@ fn serde_roundtrip_preserves_last_dance_completed_tick() {
     let mut sim = test_sim(42);
     let structure_id = create_dance_hall(&mut sim);
 
-    let _ = sim.db.structures.modify_unchecked(&structure_id, |s| {
-        s.last_dance_completed_tick = 67890;
-    });
+    let mut s = sim.db.structures.get(&structure_id).unwrap();
+    s.last_dance_completed_tick = 67890;
+    sim.db.update_structure(s).unwrap();
 
     let json = serde_json::to_string(&sim).unwrap();
     let restored: SimState = serde_json::from_str(&json).unwrap();
@@ -3562,7 +3589,7 @@ fn organizer_retains_role_after_reactivation() {
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = None;
         c.current_activity = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let organized = sim.try_organize_spontaneous_dance(elf_id, &mut events);
@@ -3612,7 +3639,7 @@ fn dead_elf_cannot_organize_spontaneous_dance() {
         c.vital_status = VitalStatus::Dead;
         c.current_task = None;
         c.current_activity = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let organized = sim.try_organize_spontaneous_dance(elf_id, &mut events);
@@ -3636,10 +3663,30 @@ fn elf_with_current_activity_cannot_organize() {
 
     // Elf is committed to some activity.
     let dummy_activity_id = ActivityId::new(&mut sim.rng);
+    sim.db
+        .insert_activity(crate::db::Activity {
+            id: dummy_activity_id,
+            kind: ActivityKind::Dance,
+            phase: ActivityPhase::Recruiting,
+            location: VoxelCoord::new(0, 0, 0),
+            min_count: None,
+            desired_count: None,
+            progress: 0,
+            total_cost: 0,
+            origin: TaskOrigin::Automated,
+            recruitment: RecruitmentMode::Open,
+            departure_policy: DeparturePolicy::Continue,
+            allows_late_join: false,
+            civ_id: None,
+            required_species: None,
+            execution_start_tick: None,
+            pause_started_tick: None,
+        })
+        .unwrap();
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = None;
         c.current_activity = Some(dummy_activity_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let organized = sim.try_organize_spontaneous_dance(elf_id, &mut events);
@@ -3667,7 +3714,7 @@ fn elf_already_volunteer_cannot_organize() {
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = None;
         c.current_activity = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Create an existing activity and make the elf a volunteer.
@@ -3689,10 +3736,7 @@ fn elf_already_volunteer_cannot_organize() {
         dance_slot: None,
         waypoint_cursor: 0,
     };
-    sim.db
-        .activity_participants
-        .insert_no_fk(participant)
-        .unwrap();
+    sim.db.insert_activity_participant(participant).unwrap();
 
     // Should not organize because the elf has a participant row.
     let organized = sim.try_organize_spontaneous_dance(elf_id, &mut events);
@@ -3724,7 +3768,7 @@ fn dance_hall_out_of_range_prevents_organizing() {
         c.position = far_pos;
         c.current_task = None;
         c.current_activity = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let organized = sim.try_organize_spontaneous_dance(elf_id, &mut events);
@@ -3763,7 +3807,7 @@ fn elf_cooldown_prevents_volunteering_for_dance() {
         c.current_task = None;
         c.current_activity = None;
         c.last_dance_tick = sim.tick; // Just danced.
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // The elf should not discover this dance activity.
@@ -3800,7 +3844,7 @@ fn organizer_survives_quorum_prune_when_busy() {
     if let Some(mut c) = sim.db.creatures.get(&organizer_id) {
         c.current_task = None;
         c.current_activity = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Organizer creates a spontaneous dance.
@@ -3817,9 +3861,10 @@ fn organizer_survives_quorum_prune_when_busy() {
 
     // Organizer picks up a task (e.g., eating) before quorum is reached.
     let dummy_task_id = crate::types::TaskId::new(&mut sim.rng);
+    insert_stub_task(&mut sim, dummy_task_id);
     if let Some(mut c) = sim.db.creatures.get(&organizer_id) {
         c.current_task = Some(dummy_task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Another elf volunteers, triggering quorum check.
@@ -3829,7 +3874,7 @@ fn organizer_survives_quorum_prune_when_busy() {
     if let Some(mut c) = sim.db.creatures.get(&other_elf) {
         c.current_task = None;
         c.current_activity = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
     sim.volunteer_for_activity(activity_id, other_elf, &mut events);
 
@@ -3855,9 +3900,9 @@ fn hall_cooldown_expires_allows_new_dance() {
     sim.config.activity.dance_elf_cooldown_ticks = 0;
 
     // Mark hall as having had a dance recently.
-    let _ = sim.db.structures.modify_unchecked(&structure_id, |s| {
-        s.last_dance_completed_tick = 1000;
-    });
+    let mut s = sim.db.structures.get(&structure_id).unwrap();
+    s.last_dance_completed_tick = 1000;
+    sim.db.update_structure(s).unwrap();
 
     let hall = sim.db.structures.get(&structure_id).unwrap().clone();
     let mut events = Vec::new();
@@ -3867,7 +3912,7 @@ fn hall_cooldown_expires_allows_new_dance() {
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = None;
         c.current_activity = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // At tick 1099: elapsed=99 < 100, should be blocked.
@@ -3903,7 +3948,7 @@ fn elf_cooldown_expires_allows_organizing() {
         c.current_task = None;
         c.current_activity = None;
         c.last_dance_tick = 1000;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // At tick 1099: elapsed=99 < 100, should be blocked.

@@ -48,7 +48,6 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [~] B-qem-deformation      QEM decimation visual artifacts
-[~] B-unsafe-db-calls      Replace _no_fk and modify_unchecked calls with safe database-level methods
 [~] F-creature-skills      Creature skill system (17 universal skills with path-gated advancement)
 [~] F-enemy-ai             Hostile creature AI (goblin/orc/troll behavior)
 [~] F-face-tint            Directional face tinting by normal (top warm, bottom cool)
@@ -298,6 +297,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-sim-floats           Remaining f32/f64 in sim logic threaten determinism
 [x] B-tab-serde-tests      Fix tabulosity test compilation under feature unification
 [x] B-task-civ-filter      Tasks lack civilization-level eligibility filtering
+[x] B-unsafe-db-calls      Replace _no_fk and modify_unchecked calls with safe database-level methods
 [x] B-win-freeze           Periodic ~3s freezes on Windows (debug build)
 [x] F-ai-test-harness      Remote game control for AI-driven testing (Puppet)
 [x] F-alt-deselect         Alt+click to remove from selection
@@ -6054,7 +6054,7 @@ type priority prevents overwrites.
 **Status:** Done
 
 #### B-unsafe-db-calls — Replace _no_fk and modify_unchecked calls with safe database-level methods
-**Status:** In Progress
+**Status:** Done
 
 All production code converted (0 `_no_fk`/`modify_unchecked` calls remain in non-test code). 464 calls remain in `tests.rs` (54k lines). The safe API conversion also uncovered and fixed real bugs: blueprint/task FK ordering in `designate_build` and `cancel_build`, and task insertion ordering for item reservations in logistics/activation/crafting/mod. **Next step:** split `tests.rs` (see F-split-sim-tests), then convert test code to safe API in manageable chunks.
 

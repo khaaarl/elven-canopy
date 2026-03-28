@@ -448,9 +448,11 @@ fn harvest_task_creates_ground_pile() {
 
     // Place the elf at the fruit nav node.
     let elf_pos = sim.nav_graph.node(fruit_nav).position;
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |elf| {
+    {
+        let mut elf = sim.db.creatures.get(&elf_id).unwrap();
         elf.position = elf_pos;
-    });
+        sim.db.update_creature(elf).unwrap();
+    }
 
     // Create a Harvest task at the fruit nav node.
     let task_id = TaskId::new(&mut sim.rng);
@@ -472,7 +474,7 @@ fn harvest_task_creates_ground_pile() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Execute the task directly (resolve the harvest action).
@@ -547,7 +549,7 @@ fn logistics_heartbeat_creates_harvest_tasks() {
     {
         let mut s = sim.db.structures.get(&sid).unwrap();
         s.furnishing = Some(FurnishingType::Kitchen);
-        let _ = sim.db.structures.update_no_fk(s);
+        sim.db.update_structure(s).unwrap();
     }
 
     // Run logistics heartbeat.
@@ -623,16 +625,19 @@ fn haul_source_empty_cancels() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
     let source_pos = sim.nav_graph.node(source_nav).position;
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.position = source_pos;
-    });
-    let _ = sim
-        .db
-        .tasks
-        .modify_unchecked(&task_id, |t| t.state = task::TaskState::InProgress);
+        sim.db.update_creature(c).unwrap();
+    }
+    {
+        let mut t = sim.db.tasks.get(&task_id).unwrap();
+        t.state = task::TaskState::InProgress;
+        sim.db.update_task(t).unwrap();
+    }
 
     // Execute the task — no ground pile exists, so pickup should find 0 items.
     sim.resolve_pickup_action(elf_id);
@@ -1261,12 +1266,12 @@ fn military_acquisition_prefers_owned_items() {
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Create military group wanting a bow.
+    let civ_id = sim.player_civ_id.unwrap();
     let group_id = sim
         .db
-        .military_groups
-        .insert_auto_no_fk(|id| crate::db::MilitaryGroup {
+        .insert_military_group_auto(|id| crate::db::MilitaryGroup {
             id,
-            civ_id: sim.player_civ_id.unwrap(),
+            civ_id,
             name: "Test".into(),
             is_default_civilian: false,
             engagement_style: Default::default(),
@@ -1280,7 +1285,7 @@ fn military_acquisition_prefers_owned_items() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.military_group = Some(group_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Pile A: 1 bow owned by this elf.
@@ -1410,7 +1415,7 @@ fn military_acquisition_suppressed_during_combat() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.military_group = Some(soldiers.id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Place an unowned bow in a ground pile (elf could acquire it).
@@ -1470,7 +1475,7 @@ fn military_acquisition_falls_back_to_unowned() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.military_group = Some(soldiers.id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Only unowned bow available.
@@ -1523,7 +1528,7 @@ fn military_acquisition_skips_other_creatures_owned_items() {
     {
         let mut c = sim.db.creatures.get(&elf_b).unwrap();
         c.military_group = Some(soldiers.id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Only elf_a's owned bow exists — no unowned bows.
@@ -2163,9 +2168,9 @@ fn remove_active_recipe_cleans_up_pending_craft_task() {
         .map(|f| f.id)
         .collect();
     for fid in furn_ids {
-        let _ = sim.db.furniture.modify_unchecked(&fid, |f| {
-            f.placed = true;
-        });
+        let mut f = sim.db.furniture.get(&fid).unwrap();
+        f.placed = true;
+        sim.db.update_furniture(f).unwrap();
     }
 
     // Manually add Grow Oak Bow recipe (1 Bowstring → 1 Bow) and set a target.
@@ -2248,8 +2253,7 @@ fn overlapping_wants_additive() {
     let mut sim = test_sim(42);
     let inv_id = sim
         .db
-        .inventories
-        .insert_auto_no_fk(|id| crate::db::Inventory {
+        .insert_inventory_auto(|id| crate::db::Inventory {
             id,
             owner_kind: crate::db::InventoryOwnerKind::Structure,
         })
@@ -2304,8 +2308,7 @@ fn gap_calculation_with_material_filter() {
     let mut sim = test_sim(42);
     let inv_id = sim
         .db
-        .inventories
-        .insert_auto_no_fk(|id| crate::db::Inventory {
+        .insert_inventory_auto(|id| crate::db::Inventory {
             id,
             owner_kind: crate::db::InventoryOwnerKind::Structure,
         })
@@ -2365,8 +2368,7 @@ fn surplus_uses_want_target_total() {
     let mut sim = test_sim(42);
     let inv_id = sim
         .db
-        .inventories
-        .insert_auto_no_fk(|id| crate::db::Inventory {
+        .insert_inventory_auto(|id| crate::db::Inventory {
             id,
             owner_kind: crate::db::InventoryOwnerKind::Structure,
         })
@@ -2924,7 +2926,7 @@ fn haul_dropoff_does_not_move_owned_bread_into_building() {
     {
         let mut h = sim.db.task_haul_data.get(&task_id).unwrap();
         h.phase = crate::task::HaulPhase::GoingToDestination;
-        sim.db.task_haul_data.update_no_fk(h).unwrap();
+        sim.db.update_task_haul_data(h).unwrap();
     }
 
     // Give elf 3 personally owned bread.
@@ -2949,7 +2951,7 @@ fn haul_dropoff_does_not_move_owned_bread_into_building() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
-        sim.db.creatures.update_no_fk(c).unwrap();
+        sim.db.update_creature(c).unwrap();
     }
 
     // Resolve the dropoff.
@@ -3051,7 +3053,7 @@ fn haul_pickup_preserves_reservation_on_carried_items() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
-        sim.db.creatures.update_no_fk(c).unwrap();
+        sim.db.update_creature(c).unwrap();
     }
 
     // Resolve pickup.
@@ -3123,7 +3125,7 @@ fn haul_cleanup_going_to_dest_drops_only_reserved_items() {
     {
         let mut h = sim.db.task_haul_data.get(&task_id).unwrap();
         h.phase = crate::task::HaulPhase::GoingToDestination;
-        sim.db.task_haul_data.update_no_fk(h).unwrap();
+        sim.db.update_task_haul_data(h).unwrap();
     }
 
     // Give elf 3 owned bread + 5 reserved-by-task bread.
@@ -3146,7 +3148,7 @@ fn haul_cleanup_going_to_dest_drops_only_reserved_items() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
-        sim.db.creatures.update_no_fk(c).unwrap();
+        sim.db.update_creature(c).unwrap();
     }
 
     // Abandon the haul.
@@ -3251,7 +3253,7 @@ fn haul_cleanup_going_to_source_clears_reservation_at_source() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
-        sim.db.creatures.update_no_fk(c).unwrap();
+        sim.db.update_creature(c).unwrap();
     }
 
     // Abandon the haul.
@@ -3403,7 +3405,7 @@ fn two_concurrent_haul_tasks_dropoff_only_moves_own_reserved_items() {
     {
         let mut h = sim.db.task_haul_data.get(&task_a).unwrap();
         h.phase = crate::task::HaulPhase::GoingToDestination;
-        sim.db.task_haul_data.update_no_fk(h).unwrap();
+        sim.db.update_task_haul_data(h).unwrap();
     }
     sim.inv_add_simple_item(
         inv_a,
@@ -3415,7 +3417,7 @@ fn two_concurrent_haul_tasks_dropoff_only_moves_own_reserved_items() {
     {
         let mut c = sim.db.creatures.get(&elf_a).unwrap();
         c.current_task = Some(task_a);
-        sim.db.creatures.update_no_fk(c).unwrap();
+        sim.db.update_creature(c).unwrap();
     }
 
     // Task B: elf B carries 3 reserved bread.
@@ -3445,7 +3447,7 @@ fn two_concurrent_haul_tasks_dropoff_only_moves_own_reserved_items() {
     {
         let mut h = sim.db.task_haul_data.get(&task_b).unwrap();
         h.phase = crate::task::HaulPhase::GoingToDestination;
-        sim.db.task_haul_data.update_no_fk(h).unwrap();
+        sim.db.update_task_haul_data(h).unwrap();
     }
     sim.inv_add_simple_item(
         inv_b,
@@ -3457,7 +3459,7 @@ fn two_concurrent_haul_tasks_dropoff_only_moves_own_reserved_items() {
     {
         let mut c = sim.db.creatures.get(&elf_b).unwrap();
         c.current_task = Some(task_b);
-        sim.db.creatures.update_no_fk(c).unwrap();
+        sim.db.update_creature(c).unwrap();
     }
 
     // Drop off task A only.
@@ -3542,7 +3544,7 @@ fn death_during_haul_drops_all_items_unreserved_and_unowned() {
     {
         let mut h = sim.db.task_haul_data.get(&task_id).unwrap();
         h.phase = crate::task::HaulPhase::GoingToDestination;
-        sim.db.task_haul_data.update_no_fk(h).unwrap();
+        sim.db.update_task_haul_data(h).unwrap();
     }
 
     // Give elf 3 owned bread + 5 reserved bread.
@@ -3565,7 +3567,7 @@ fn death_during_haul_drops_all_items_unreserved_and_unowned() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
-        sim.db.creatures.update_no_fk(c).unwrap();
+        sim.db.update_creature(c).unwrap();
     }
 
     // Kill the elf.
@@ -3653,7 +3655,7 @@ fn haul_dropoff_does_not_affect_other_item_kinds_in_inventory() {
     {
         let mut h = sim.db.task_haul_data.get(&task_id).unwrap();
         h.phase = crate::task::HaulPhase::GoingToDestination;
-        sim.db.task_haul_data.update_no_fk(h).unwrap();
+        sim.db.update_task_haul_data(h).unwrap();
     }
 
     // Give elf a personally-owned spear + reserved bread.
@@ -3676,7 +3678,7 @@ fn haul_dropoff_does_not_affect_other_item_kinds_in_inventory() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
-        sim.db.creatures.update_no_fk(c).unwrap();
+        sim.db.update_creature(c).unwrap();
     }
 
     // Drop off.
@@ -3786,9 +3788,11 @@ fn acquire_item_picks_up_and_owns() {
     let elf_id = spawn_elf(&mut sim);
     let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.position = pile_nav_pos;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Create AcquireItem task with reservations.
     let task_id = TaskId::new(&mut sim.rng);
@@ -3831,7 +3835,7 @@ fn acquire_item_picks_up_and_owns() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Execute.
@@ -4082,8 +4086,7 @@ fn set_inv_wants_deduplicates_by_kind_filter() {
     let mut sim = test_sim(42);
     let inv_id = sim
         .db
-        .inventories
-        .insert_auto_no_fk(|id| crate::db::Inventory {
+        .insert_inventory_auto(|id| crate::db::Inventory {
             id,
             owner_kind: crate::db::InventoryOwnerKind::Structure,
         })

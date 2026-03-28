@@ -437,9 +437,9 @@ fn unified_crafting_monitor_creates_craft_task() {
         .map(|f| f.id)
         .collect();
     for fid in furn_ids {
-        let _ = sim.db.furniture.modify_unchecked(&fid, |f| {
-            f.placed = true;
-        });
+        let mut f = sim.db.furniture.get(&fid).unwrap();
+        f.placed = true;
+        sim.db.update_furniture(f).unwrap();
     }
 
     // Crafting is auto-enabled by furnishing. Add arrow recipe manually.
@@ -513,9 +513,9 @@ fn unified_crafting_monitor_skips_when_target_met() {
         .map(|f| f.id)
         .collect();
     for fid in furn_ids {
-        let _ = sim.db.furniture.modify_unchecked(&fid, |f| {
-            f.placed = true;
-        });
+        let mut f = sim.db.furniture.get(&fid).unwrap();
+        f.placed = true;
+        sim.db.update_furniture(f).unwrap();
     }
 
     let enable_cmd = SimCommand {
@@ -604,9 +604,9 @@ fn unified_crafting_monitor_skips_when_disabled() {
         .map(|f| f.id)
         .collect();
     for fid in furn_ids {
-        let _ = sim.db.furniture.modify_unchecked(&fid, |f| {
-            f.placed = true;
-        });
+        let mut f = sim.db.furniture.get(&fid).unwrap();
+        f.placed = true;
+        sim.db.update_furniture(f).unwrap();
     }
 
     // Disable crafting (furnishing auto-enables it).
@@ -688,9 +688,9 @@ fn resolve_craft_via_unified_catalog_path() {
         .map(|f| f.id)
         .collect();
     for fid in furn_ids {
-        let _ = sim.db.furniture.modify_unchecked(&fid, |f| {
-            f.placed = true;
-        });
+        let mut f = sim.db.furniture.get(&fid).unwrap();
+        f.placed = true;
+        sim.db.update_furniture(f).unwrap();
     }
 
     // Manually add Grow Oak Bow recipe (1 Bowstring → 1 Bow) and set a target.
@@ -753,11 +753,11 @@ fn resolve_craft_via_unified_catalog_path() {
         .id;
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = Some(craft_task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
     if let Some(mut t) = sim.db.tasks.get(&craft_task_id) {
         t.state = TaskState::InProgress;
-        let _ = sim.db.tasks.update_no_fk(t);
+        sim.db.update_task(t).unwrap();
     }
 
     // Resolve the craft action — Grow recipes are multi-action now.
@@ -950,10 +950,10 @@ fn extraction_produces_correct_component_items() {
     // Make elf not hungry/sleepy so they'll pick up the task.
     let food_max = sim.species_table[&Species::Elf].food_max;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.food = food_max;
-        c.rest = rest_max;
-    });
+    let mut c = sim.db.creatures.get(&elf_id).unwrap();
+    c.food = food_max;
+    c.rest = rest_max;
+    sim.db.update_creature(c).unwrap();
 
     // Run the sim forward: need heartbeat interval (5000) + walk time +
     // extract_work_ticks (3000) + margin.
@@ -1950,9 +1950,9 @@ fn subcomponent_records_inherit_parent_quality() {
     set_trait(&mut sim, elf_id, TraitKind::Woodcraft, 100);
 
     // Give elf enough mana for Grow recipes.
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.mp = 100_000;
-    });
+    let mut c = sim.db.creatures.get(&elf_id).unwrap();
+    c.mp = 100_000;
+    sim.db.update_creature(c).unwrap();
 
     sim.step(&[], sim.tick + 200_000);
 

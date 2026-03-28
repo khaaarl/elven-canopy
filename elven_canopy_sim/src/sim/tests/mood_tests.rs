@@ -171,10 +171,11 @@ fn eat_bread_generates_thought() {
         Some(elf_id),
         None,
     );
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&elf_id, |c| c.food = food_max / 10);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.food = food_max / 10;
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Create EatBread task at current node.
     let task_id = TaskId::new(&mut sim.rng);
@@ -196,7 +197,7 @@ fn eat_bread_generates_thought() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Advance enough to start and complete the Eat action.
@@ -483,10 +484,11 @@ fn ground_sleep_generates_thought() {
         .id;
 
     // Set rest very low to trigger sleep.
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&elf_id, |c| c.rest = rest_max * 10 / 100);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.rest = rest_max * 10 / 100;
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Advance past heartbeat to trigger sleep + enough ticks for it to complete.
     let target_tick = 1 + heartbeat_interval + sim.config.sleep_ticks_ground + 1000;
@@ -556,10 +558,11 @@ fn eating_generates_thought() {
         .id;
 
     // Make the elf hungry.
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&elf_id, |c| c.food = food_max * 10 / 100);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.food = food_max * 10 / 100;
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Advance enough ticks for the elf to find fruit, walk to it, and eat it.
     // Walk could be up to ~50 voxels at 500 tpv = 25000 ticks.
@@ -600,9 +603,9 @@ fn dormitory_sleep_generates_thought() {
     let structure_id = StructureId(999);
     let project_id = ProjectId::new(&mut sim.rng);
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    insert_stub_blueprint(&mut sim, project_id);
     sim.db
-        .structures
-        .insert_no_fk(CompletedStructure {
+        .insert_structure(CompletedStructure {
             id: structure_id,
             project_id,
             build_type: BuildType::Building,
@@ -622,15 +625,14 @@ fn dormitory_sleep_generates_thought() {
             last_dance_completed_tick: 0,
         })
         .unwrap();
-    let _ = sim
-        .db
-        .furniture
-        .insert_auto_no_fk(|id| crate::db::Furniture {
+    sim.db
+        .insert_furniture_auto(|id| crate::db::Furniture {
             id,
             structure_id,
             coord: bed_pos,
             placed: true,
-        });
+        })
+        .unwrap();
 
     // Spawn an elf.
     let cmd = SimCommand {
@@ -652,10 +654,11 @@ fn dormitory_sleep_generates_thought() {
         .id;
 
     // Set rest very low to trigger sleep.
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&elf_id, |c| c.rest = rest_max * 10 / 100);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.rest = rest_max * 10 / 100;
+        sim.db.update_creature(c).unwrap();
+    }
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
     // Advance enough ticks for sleep to trigger, walk to bed, and complete.
@@ -709,9 +712,9 @@ fn home_sleep_generates_thought() {
     let structure_id = StructureId(888);
     let project_id = ProjectId::new(&mut sim.rng);
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    insert_stub_blueprint(&mut sim, project_id);
     sim.db
-        .structures
-        .insert_no_fk(CompletedStructure {
+        .insert_structure(CompletedStructure {
             id: structure_id,
             project_id,
             build_type: BuildType::Building,
@@ -731,15 +734,14 @@ fn home_sleep_generates_thought() {
             last_dance_completed_tick: 0,
         })
         .unwrap();
-    let _ = sim
-        .db
-        .furniture
-        .insert_auto_no_fk(|id| crate::db::Furniture {
+    sim.db
+        .insert_furniture_auto(|id| crate::db::Furniture {
             id,
             structure_id,
             coord: bed_pos,
             placed: true,
-        });
+        })
+        .unwrap();
 
     // Spawn an elf.
     let cmd = SimCommand {
@@ -774,10 +776,11 @@ fn home_sleep_generates_thought() {
     );
 
     // Set rest very low to trigger sleep.
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&elf_id, |c| c.rest = rest_max * 10 / 100);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.rest = rest_max * 10 / 100;
+        sim.db.update_creature(c).unwrap();
+    }
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
     // Advance enough ticks for sleep to trigger, walk to bed, and complete.
@@ -830,9 +833,9 @@ fn low_ceiling_generates_thought() {
     let structure_id = StructureId(888);
     let project_id = ProjectId::new(&mut sim.rng);
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    insert_stub_blueprint(&mut sim, project_id);
     sim.db
-        .structures
-        .insert_no_fk(CompletedStructure {
+        .insert_structure(CompletedStructure {
             id: structure_id,
             project_id,
             build_type: BuildType::Building,
@@ -852,15 +855,14 @@ fn low_ceiling_generates_thought() {
             last_dance_completed_tick: 0,
         })
         .unwrap();
-    let _ = sim
-        .db
-        .furniture
-        .insert_auto_no_fk(|id| crate::db::Furniture {
+    sim.db
+        .insert_furniture_auto(|id| crate::db::Furniture {
             id,
             structure_id,
             coord: bed_pos,
             placed: true,
-        });
+        })
+        .unwrap();
 
     // Spawn an elf.
     let cmd = SimCommand {
@@ -882,10 +884,11 @@ fn low_ceiling_generates_thought() {
         .id;
 
     // Set rest very low to trigger sleep.
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&elf_id, |c| c.rest = rest_max * 10 / 100);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.rest = rest_max * 10 / 100;
+        sim.db.update_creature(c).unwrap();
+    }
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
     // Advance enough ticks for sleep to trigger, walk to bed, and complete.
@@ -1102,7 +1105,11 @@ fn mope_does_not_interrupt_autonomous_sleep() {
         .unwrap();
 
     // Drain rest to 0 so the elf won't complete sleep via rest_full.
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| c.rest = 0);
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.rest = 0;
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Inject Devastated-level thoughts.
     for _ in 0..4 {
@@ -1133,7 +1140,7 @@ fn mope_does_not_interrupt_autonomous_sleep() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(sleep_task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Run several heartbeats — mope rate is P≈1.0 but should not interrupt sleep.
@@ -1242,7 +1249,7 @@ fn mope_always_preempts_player_directed_build() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
@@ -1405,7 +1412,7 @@ fn moping_notification_unnamed_elf_uses_generic_text() {
     // Clear the elf's name to exercise the empty-name branch.
     let mut elf = sim.db.creatures.get(&elf_id).unwrap();
     elf.name = String::new();
-    let _ = sim.db.creatures.update_no_fk(elf);
+    sim.db.update_creature(elf).unwrap();
 
     let elf_hb = sim.config.species[&Species::Elf].heartbeat_interval_ticks;
     sim.step(&[], sim.tick + elf_hb + 1);
@@ -1645,7 +1652,7 @@ fn devastated_elf_interrupts_task_to_mope() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;

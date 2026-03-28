@@ -212,10 +212,10 @@ fn remove_fruit_from_trees_removes_correct_fruit() {
     // Manually add two fruit positions to the home tree.
     let fruit_a = VoxelCoord::new(10, 60, 10);
     let fruit_b = VoxelCoord::new(11, 60, 11);
-    let _ = sim.db.trees.modify_unchecked(&tree_id, |t| {
-        t.fruit_positions.push(fruit_a);
-        t.fruit_positions.push(fruit_b);
-    });
+    let mut tree = sim.db.trees.get(&tree_id).unwrap().clone();
+    tree.fruit_positions.push(fruit_a);
+    tree.fruit_positions.push(fruit_b);
+    sim.db.update_tree(tree).unwrap();
 
     // Remove fruit_a — fruit_b should remain.
     sim.remove_fruit_from_trees(fruit_a);
@@ -520,9 +520,9 @@ fn spatial_index_multiple_creatures_same_voxel() {
         let species = sim.db.creatures.get(&elf2).unwrap().species;
         let footprint = sim.species_table[&species].footprint;
         SimState::deregister_creature_from_index(&mut sim.spatial_index, elf2, pos2, footprint);
-        let _ = sim.db.creatures.modify_unchecked(&elf2, |c| {
-            c.position = pos1;
-        });
+        let mut c = sim.db.creatures.get(&elf2).unwrap().clone();
+        c.position = pos1;
+        sim.db.update_creature(c).unwrap();
         SimState::register_creature_in_index(&mut sim.spatial_index, elf2, pos1, footprint);
     }
 

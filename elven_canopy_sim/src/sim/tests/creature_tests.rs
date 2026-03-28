@@ -225,9 +225,24 @@ fn biology_traits_cascade_on_creature_removal() {
     // First remove FKs that would block creature removal (tasks, inventory, etc.).
     let creature = sim.db.creatures.get(&elf_id).unwrap().clone();
     if let Some(task_id) = creature.current_task {
-        let _ = sim.db.remove_task(&task_id);
+        // Clear creature's FK before removing the task.
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.current_task = None;
+        sim.db.update_creature(c).unwrap();
+        sim.db.remove_task(&task_id).unwrap();
     }
     let inv_id = creature.inventory_id;
+    // Remove all logistics_want_rows referencing the inventory (FK blocker).
+    let want_keys: Vec<_> = sim
+        .db
+        .logistics_want_rows
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
+        .iter()
+        .map(|r| (r.inventory_id, r.seq))
+        .collect();
+    for key in want_keys {
+        sim.db.remove_logistics_want_row(&key).unwrap();
+    }
     // Remove all item stacks in the creature's inventory.
     let stack_ids: Vec<_> = sim
         .db
@@ -237,9 +252,9 @@ fn biology_traits_cascade_on_creature_removal() {
         .map(|s| s.id)
         .collect();
     for sid in stack_ids {
-        let _ = sim.db.item_stacks.remove_no_fk(&sid);
+        sim.db.remove_item_stack(&sid).unwrap();
     }
-    let _ = sim.db.inventories.remove_no_fk(&inv_id);
+    sim.db.remove_inventory(&inv_id).unwrap();
     sim.db
         .remove_creature(&elf_id)
         .expect("creature removal should succeed");
@@ -267,14 +282,13 @@ fn trait_int_returns_default_for_text_value() {
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
     // Manually insert a text-valued trait to verify fallback.
-    let _ = sim
-        .db
-        .creature_traits
-        .insert_no_fk(crate::db::CreatureTrait {
+    sim.db
+        .insert_creature_trait(crate::db::CreatureTrait {
             creature_id: elf_id,
             trait_kind: TraitKind::WarPaint,
             value: TraitValue::Text("blue".into()),
-        });
+        })
+        .unwrap();
 
     // trait_int should return the default since the value is Text.
     assert_eq!(sim.trait_int(elf_id, TraitKind::WarPaint, 99), 99);
@@ -288,14 +302,11 @@ fn compound_unique_prevents_duplicate_traits() {
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
     // Trying to insert a second HairColor should fail (duplicate PK).
-    let result = sim
-        .db
-        .creature_traits
-        .insert_no_fk(crate::db::CreatureTrait {
-            creature_id: elf_id,
-            trait_kind: TraitKind::HairColor,
-            value: TraitValue::Int(99),
-        });
+    let result = sim.db.insert_creature_trait(crate::db::CreatureTrait {
+        creature_id: elf_id,
+        trait_kind: TraitKind::HairColor,
+        value: TraitValue::Int(99),
+    });
     assert!(result.is_err(), "duplicate trait should be rejected");
 }
 
@@ -723,12 +734,13 @@ fn strength_modifies_melee_damage() {
             .creature_traits
             .contains(&(goblin, TraitKind::Strength))
     );
-    let _ = sim
+    let mut t = sim
         .db
         .creature_traits
-        .modify_unchecked(&(goblin, TraitKind::Strength), |t| {
-            t.value = TraitValue::Int(100);
-        });
+        .get(&(goblin, TraitKind::Strength))
+        .unwrap();
+    t.value = TraitValue::Int(100);
+    sim.db.update_creature_trait(t).unwrap();
 
     // Position them adjacent and make the goblin strike.
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
@@ -804,12 +816,13 @@ fn effective_detection_range_sq_high_perception_extends() {
     let mut sim = test_sim(42);
     let goblin = spawn_species(&mut sim, Species::Goblin);
     zero_creature_stats(&mut sim, goblin);
-    let _ = sim
+    let mut t = sim
         .db
         .creature_traits
-        .modify_unchecked(&(goblin, TraitKind::Perception), |t| {
-            t.value = TraitValue::Int(200);
-        });
+        .get(&(goblin, TraitKind::Perception))
+        .unwrap();
+    t.value = TraitValue::Int(200);
+    sim.db.update_creature_trait(t).unwrap();
     let base = sim.species_table[&Species::Goblin].hostile_detection_range_sq;
     let range = sim.effective_detection_range_sq(goblin, Species::Goblin);
     // PER +200 = 4x linear range → 16x squared range (applied twice).
@@ -824,12 +837,13 @@ fn effective_detection_range_sq_low_perception_shrinks() {
     let mut sim = test_sim(42);
     let goblin = spawn_species(&mut sim, Species::Goblin);
     zero_creature_stats(&mut sim, goblin);
-    let _ = sim
+    let mut t = sim
         .db
         .creature_traits
-        .modify_unchecked(&(goblin, TraitKind::Perception), |t| {
-            t.value = TraitValue::Int(-200);
-        });
+        .get(&(goblin, TraitKind::Perception))
+        .unwrap();
+    t.value = TraitValue::Int(-200);
+    sim.db.update_creature_trait(t).unwrap();
     let base = sim.species_table[&Species::Goblin].hostile_detection_range_sq;
     let range = sim.effective_detection_range_sq(goblin, Species::Goblin);
     assert!(range > 0, "Detection range should be clamped to >= 1");
@@ -843,12 +857,13 @@ fn effective_detection_range_sq_per_100_quadruples_squared() {
     let mut sim = test_sim(42);
     let goblin = spawn_species(&mut sim, Species::Goblin);
     zero_creature_stats(&mut sim, goblin);
-    let _ = sim
+    let mut t = sim
         .db
         .creature_traits
-        .modify_unchecked(&(goblin, TraitKind::Perception), |t| {
-            t.value = TraitValue::Int(100);
-        });
+        .get(&(goblin, TraitKind::Perception))
+        .unwrap();
+    t.value = TraitValue::Int(100);
+    sim.db.update_creature_trait(t).unwrap();
     let base = sim.species_table[&Species::Goblin].hostile_detection_range_sq; // 225
     let range = sim.effective_detection_range_sq(goblin, Species::Goblin);
     // PER +100 doubles linear radius → 4x squared range.
@@ -881,17 +896,18 @@ fn disengage_uses_creature_hp_max_not_species_base() {
     zero_creature_stats(&mut sim, goblin);
 
     // Give this goblin CON +200 → hp_max ≈ 400 (4x base 100).
-    let _ = sim
+    let mut t = sim
         .db
         .creature_traits
-        .modify_unchecked(&(goblin, TraitKind::Constitution), |t| {
-            t.value = TraitValue::Int(200);
-        });
+        .get(&(goblin, TraitKind::Constitution))
+        .unwrap();
+    t.value = TraitValue::Int(200);
+    sim.db.update_creature_trait(t).unwrap();
     let effective_hp = crate::stats::apply_stat_multiplier(100, 200);
-    let _ = sim.db.creatures.modify_unchecked(&goblin, |c| {
-        c.hp_max = effective_hp;
-        c.hp = effective_hp;
-    });
+    let mut c = sim.db.creatures.get(&goblin).unwrap();
+    c.hp_max = effective_hp;
+    c.hp = effective_hp;
+    sim.db.update_creature(c).unwrap();
 
     // Set disengage threshold to 50%. With hp_max=400, hp=150 is 37.5% → flee.
     // With species base 100, hp=150 would be 150% → would NOT flee (bug).
@@ -900,9 +916,9 @@ fn disengage_uses_creature_hp_max_not_species_base() {
         .unwrap()
         .engagement_style
         .disengage_threshold_pct = 50;
-    let _ = sim.db.creatures.modify_unchecked(&goblin, |c| {
-        c.hp = 150;
-    });
+    let mut c = sim.db.creatures.get(&goblin).unwrap();
+    c.hp = 150;
+    sim.db.update_creature(c).unwrap();
 
     assert!(
         sim.should_flee(goblin, Species::Goblin),

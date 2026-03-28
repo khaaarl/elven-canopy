@@ -179,7 +179,7 @@ fn backfill_outcast_paths_assigns_unpathed_elves() {
     let elf_id = spawn_test_elf(&mut sim);
 
     // Manually remove the path assignment to simulate an old save.
-    let _ = sim.db.path_assignments.remove_no_fk(&elf_id);
+    sim.db.remove_path_assignment(&elf_id).unwrap();
     assert_eq!(sim.creature_path(elf_id), None);
 
     sim.backfill_outcast_paths();
@@ -551,7 +551,7 @@ fn backfill_outcast_paths_includes_incapacitated() {
     );
 
     // Remove path to simulate old save.
-    let _ = sim.db.path_assignments.remove_no_fk(&elf_id);
+    sim.db.remove_path_assignment(&elf_id).unwrap();
 
     sim.backfill_outcast_paths();
 
@@ -576,7 +576,7 @@ fn backfill_outcast_paths_skips_dead_elves() {
     );
 
     // Remove path to simulate old save.
-    let _ = sim.db.path_assignments.remove_no_fk(&elf_id);
+    sim.db.remove_path_assignment(&elf_id).unwrap();
 
     sim.backfill_outcast_paths();
 
