@@ -61,7 +61,6 @@ This reduces merge conflicts when parallel work streams add items.
 ### Todo
 
 ```
-[ ] B-chamfer-nonmfld      Chamfer produces non-manifold edges for diagonally-adjacent voxels
 [ ] B-dead-owner-items     Dead creature items retain ownership, becoming invisible to all systems
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-floating-dirt        Floating dirt still treated as ground by structural validator
@@ -289,6 +288,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-assembly-timeout     Activity assembly timeout not enforced
 [x] B-carve-dirt           Carving pure dirt voxels rejected as nothing to carve
 [x] B-carve-perf           Carving dirt causes severe CPU stall, possibly structural checks
+[x] B-chamfer-nonmfld      Chamfer produces non-manifold edges for diagonally-adjacent voxels
 [x] B-dead-enums           Remove dead GrownStairs/Bridge code and add explicit enum discriminants
 [x] B-dead-max-gen         Remove vestigial max_gen_per_frame field and ~40 test calls
 [x] B-dead-node-panic      Panic on dead nav node in pathfinding
@@ -5994,7 +5994,7 @@ check_activity_pause_timeout handles the Paused phase.
 **Related:** F-group-activity
 
 #### B-chamfer-nonmfld — Chamfer produces non-manifold edges for diagonally-adjacent voxels
-**Status:** Todo
+**Status:** Done
 
 The chamfer pass in `smooth_mesh.rs` produces non-manifold edges (edges shared by 3+ triangles) when two voxels are diagonally adjacent — sharing only an edge, not a face. This is a distinct issue from the QEM deformation bug (B-qem-deformation).
 
@@ -6010,6 +6010,16 @@ The chamfer pass in `smooth_mesh.rs` produces non-manifold edges (edges shared b
 1. **Gap-filling in terrain gen:** Ensure no diagonal-only voxel adjacency exists by filling gaps (raise one neighbor column to eliminate the checkerboard pattern). The B-qem-deformation test suite uses this approach in `smooth_random_heightmap`.
 2. **Chamfer-level fix:** Detect diagonal-only adjacency during face generation and either skip the conflicting faces or merge them into a single surface.
 3. **Post-chamfer cleanup:** Add a non-manifold edge resolution pass before decimation.
+
+**Chosen fix — vertex splitting (post-subdivision, pre-chamfer):**
+
+After face subdivision (which creates 8 triangles per voxel face and deduplicates vertices by position) but before anchoring and chamfering, run a two-pass non-manifold resolution:
+
+**Pass 1 — Split non-manifold voxel edge midpoints:** Build an edge→triangle adjacency map. Find edges shared by 3+ voxel faces (non-manifold edges). These occur along voxel edges where diagonally-adjacent voxels' faces were merged by position dedup. The non-manifold edges run through the *midpoint* vertices that were created by face subdivision — NOT the voxel corner vertices. For each non-manifold edge, partition its incident triangles into connected groups (connected through other, non-NM edges), then duplicate only the edge midpoint vertex for each additional group, rewriting that group's triangles to use the new vertex index. The corner vertices remain shared in this pass.
+
+**Pass 2 — Split non-manifold voxel vertices:** After edge-midpoint splitting, scan for remaining non-manifold vertices — vertices where the incident triangles don't form a single connected fan (connected through shared edges). This catches cases not addressed by pass 1: (a) voxels sharing only a corner point with no shared edge, and (b) corner vertices that become non-manifold due to surrounding geometry (e.g., the bottom corner of a split diagonal edge that sits flush on a flat ground surface, creating two disconnected fans on either side). For each such vertex, partition incident triangles into connected fan components and duplicate the vertex per additional component.
+
+No positional offset is needed for duplicated vertices — the pipeline operates on topology (vertex indices) downstream, so same-position vertices with different indices stay separate through chamfer, smoothing, and decimation.
 
 **Related:** B-qem-deformation, F-mesh-lod
 

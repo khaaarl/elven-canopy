@@ -601,6 +601,7 @@ pub fn generate_chunk_mesh(nh: &ChunkNeighborhood) -> ChunkMesh {
 
     // Run the smoothing pipeline on the unified solid mesh.
     if !solid_smooth.vertices.is_empty() {
+        solid_smooth.resolve_non_manifold();
         solid_smooth.normalize_initial_normals();
         solid_smooth.apply_anchoring();
         solid_smooth.chamfer();

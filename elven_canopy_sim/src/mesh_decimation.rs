@@ -1782,6 +1782,7 @@ mod tests {
             }
         }
 
+        mesh.resolve_non_manifold();
         mesh.normalize_initial_normals();
         mesh.apply_anchoring();
         mesh.chamfer();

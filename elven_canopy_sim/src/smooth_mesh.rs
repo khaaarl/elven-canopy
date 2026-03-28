@@ -9,16 +9,19 @@
 // 1. Face subdivision: each visible solid face → 8 triangles (4 corners,
 //    4 edge midpoints, 1 center). Vertices are deduplicated by pre-smoothing
 //    grid position.
-// 2. Anchoring: mark vertices that must not move (face centers, vertices
+// 2. Non-manifold resolution: split voxel-edge midpoint vertices and voxel
+//    corner vertices that are non-manifold (shared by faces from
+//    diagonally-adjacent voxels). See `resolve_non_manifold`.
+// 3. Anchoring: mark vertices that must not move (face centers, vertices
 //    adjacent to non-solid voxels like `BuildingInterior`, vertices with
 //    insufficient anchored neighbors).
-// 3. Chamfer: non-anchored vertices with ≥2 anchored neighbors move toward
+// 4. Chamfer: non-anchored vertices with ≥2 anchored neighbors move toward
 //    the centroid of their anchored neighbors. Solid vertices first, then
 //    leaf-only vertices (so solid geometry is independent of leaves).
-// 4. Curvature-minimizing smoothing: iterative Jacobi-style passes that
+// 5. Curvature-minimizing smoothing: iterative Jacobi-style passes that
 //    minimize total squared Laplacian pointiness in each vertex's 1-ring
 //    neighborhood.
-// 5. Vertex normals: area-weighted average of incident triangle normals.
+// 6. Vertex normals: area-weighted average of incident triangle normals.
 //
 // All solid opaque voxel types (Trunk, Branch, Root, Dirt, GrownPlatform,
 // GrownWall, Strut) and Leaf voxels participate. Leaf↔leaf faces are culled
@@ -113,6 +116,15 @@ pub struct SmoothMesh {
     /// each triangle is emitted by exactly the chunk that owns its source
     /// voxel, regardless of where smoothing moved the vertices.
     pub triangle_voxel_pos: Vec<[i32; 3]>,
+    /// Per-triangle face normal — the axis-aligned normal of the voxel face
+    /// that generated each triangle. Used to recompute `initial_normal` for
+    /// split vertices during non-manifold resolution, and to determine which
+    /// "side" of a non-manifold voxel edge each triangle belongs to.
+    pub triangle_face_normals: Vec<[f32; 3]>,
+    /// Per-triangle face midpoint — the center position of the voxel face
+    /// that generated each triangle. Together with `triangle_face_normals`,
+    /// used to pair voxel faces into "sides" during non-manifold resolution.
+    pub triangle_face_midpoints: Vec<[f32; 3]>,
     /// Deduplication map: grid position → vertex index.
     pub dedup: BTreeMap<VertexKey, u32>,
 }
@@ -132,6 +144,8 @@ impl SmoothMesh {
             triangle_tags: Vec::new(),
             triangle_colors: Vec::new(),
             triangle_voxel_pos: Vec::new(),
+            triangle_face_normals: Vec::new(),
+            triangle_face_midpoints: Vec::new(),
             dedup: BTreeMap::new(),
         }
     }
@@ -241,6 +255,8 @@ impl SmoothMesh {
             self.triangle_tags.push(tag);
             self.triangle_colors.push(color);
             self.triangle_voxel_pos.push(voxel_pos);
+            self.triangle_face_normals.push(face_normal);
+            self.triangle_face_midpoints.push(center);
 
             // Add edges: center↔a, center↔b, a↔b
             self.add_edge(ct, a);
@@ -249,6 +265,451 @@ impl SmoothMesh {
         }
 
         [c0, c1, c2, c3, m01, m12, m23, m30, ct]
+    }
+
+    /// Resolve non-manifold topology by splitting vertices.
+    ///
+    /// Must be called after face subdivision + dedup and before
+    /// `normalize_initial_normals` / `apply_anchoring` / `chamfer`.
+    ///
+    /// Solid (wood) and leaf surfaces are treated independently, matching
+    /// the pipeline's existing separation (solid chamfer ignores leaves,
+    /// leaf chamfer ignores solid). A solid midpoint shared by 2 solid
+    /// faces + 1 leaf face is manifold from wood's perspective; similarly
+    /// for leaf midpoints. Only same-surface-type faces count toward the
+    /// non-manifold threshold.
+    ///
+    /// For each surface type, runs two passes:
+    /// - **Pass 1 — Split non-manifold voxel edge midpoints:** Finds voxel
+    ///   edges shared by more than 2 same-type voxel faces. Splits the
+    ///   midpoint using side-pairing (`face_midpoint + face_normal * 0.5`).
+    /// - **Pass 2 — Split non-manifold voxel vertices:** Finds vertices
+    ///   where same-type incident triangles don't form a single connected
+    ///   fan. Splits into one vertex per fan component.
+    pub fn resolve_non_manifold(&mut self) {
+        let mut any_split = false;
+        // Resolve solid surfaces (non-leaf).
+        any_split |= self.resolve_non_manifold_pass1(false);
+        any_split |= self.resolve_non_manifold_pass2(false);
+        // Resolve leaf surfaces.
+        any_split |= self.resolve_non_manifold_pass1(true);
+        any_split |= self.resolve_non_manifold_pass2(true);
+        if any_split {
+            self.rebuild_neighbors();
+            self.recompute_split_vertex_metadata();
+        }
+    }
+
+    /// Pass 1: Find and split non-manifold voxel edge midpoints.
+    ///
+    /// Only considers triangles of the specified surface type (`leaf_only`:
+    /// true = leaf triangles only, false = solid/non-leaf triangles only).
+    /// A voxel-edge midpoint vertex is identified by its `VertexKey` having
+    /// exactly one odd coordinate. If such a vertex has incident same-type
+    /// triangles from more than 2 distinct voxel faces, the corresponding
+    /// voxel edge is non-manifold for that surface type.
+    ///
+    /// Returns true if any splits were performed.
+    fn resolve_non_manifold_pass1(&mut self, leaf_only: bool) -> bool {
+        let vtx_tris = self.build_vertex_triangle_index();
+        let mut any_split = false;
+
+        // Collect midpoints to split before mutating (indices shift as we add
+        // vertices, so collect first, then process with updated indices).
+        let mut midpoints_to_split: Vec<u32> = Vec::new();
+
+        for (vi, tri_indices) in vtx_tris.iter().enumerate() {
+            // Check if this is a voxel-edge midpoint: exactly one odd
+            // coordinate in the VertexKey (doubled integer coords).
+            let key = VertexKey::from_position(self.vertices[vi].position);
+            let odd_count = [key.x2 % 2 != 0, key.y2 % 2 != 0, key.z2 % 2 != 0]
+                .iter()
+                .filter(|&&b| b)
+                .count();
+            if odd_count != 1 {
+                continue;
+            }
+
+            // Filter to only same-type triangles.
+            let filtered: Vec<usize> = tri_indices
+                .iter()
+                .copied()
+                .filter(|&ti| (self.triangle_tags[ti] == TAG_LEAF) == leaf_only)
+                .collect();
+
+            // Count distinct voxel faces among filtered triangles. A voxel
+            // face is identified by its (face_normal, face_midpoint) pair.
+            let mut face_keys: Vec<([i32; 3], [i32; 3])> = Vec::new();
+            for &ti in &filtered {
+                let n = self.triangle_face_normals[ti];
+                let m = self.triangle_face_midpoints[ti];
+                // Quantize to avoid float comparison issues (normals are
+                // axis-aligned ±1, midpoints are on half-integer grid).
+                let nk = [
+                    (n[0] * 2.0).round() as i32,
+                    (n[1] * 2.0).round() as i32,
+                    (n[2] * 2.0).round() as i32,
+                ];
+                let mk = [
+                    (m[0] * 2.0).round() as i32,
+                    (m[1] * 2.0).round() as i32,
+                    (m[2] * 2.0).round() as i32,
+                ];
+                if !face_keys.contains(&(nk, mk)) {
+                    face_keys.push((nk, mk));
+                }
+            }
+
+            if face_keys.len() <= 2 {
+                continue; // Manifold for this surface type.
+            }
+
+            midpoints_to_split.push(vi as u32);
+        }
+
+        // Process each non-manifold midpoint, splitting only same-type
+        // triangles.
+        for &orig_vi in &midpoints_to_split {
+            any_split |= self.split_midpoint_vertex(orig_vi, leaf_only);
+        }
+
+        any_split
+    }
+
+    /// Split a single non-manifold voxel-edge midpoint vertex. Only
+    /// considers triangles of the specified surface type. The same-type
+    /// voxel faces at the midpoint are paired into sides using
+    /// `face_midpoint + face_normal * 0.5`. Triangles of the other
+    /// surface type are left on the original vertex.
+    fn split_midpoint_vertex(&mut self, vi: u32, leaf_only: bool) -> bool {
+        // Collect only same-type incident triangles (must re-scan since
+        // earlier splits may have changed indices).
+        let incident: Vec<usize> = self
+            .triangles
+            .iter()
+            .enumerate()
+            .filter(|(ti, tri)| {
+                tri.contains(&vi) && (self.triangle_tags[*ti] == TAG_LEAF) == leaf_only
+            })
+            .map(|(ti, _)| ti)
+            .collect();
+
+        if incident.is_empty() {
+            return false;
+        }
+
+        // Collect distinct voxel faces and compute side keys.
+        // side_key = face_midpoint + face_normal * 0.5, quantized.
+        struct FaceInfo {
+            normal_key: [i32; 3],
+            midpoint_key: [i32; 3],
+            side_key: [i32; 3],
+        }
+
+        let mut face_infos: Vec<FaceInfo> = Vec::new();
+        let mut tri_face_idx: Vec<usize> = Vec::new(); // which face each incident tri belongs to
+
+        for &ti in &incident {
+            let n = self.triangle_face_normals[ti];
+            let m = self.triangle_face_midpoints[ti];
+            let nk = [
+                (n[0] * 2.0).round() as i32,
+                (n[1] * 2.0).round() as i32,
+                (n[2] * 2.0).round() as i32,
+            ];
+            let mk = [
+                (m[0] * 2.0).round() as i32,
+                (m[1] * 2.0).round() as i32,
+                (m[2] * 2.0).round() as i32,
+            ];
+            // side_key = (face_midpoint + face_normal * 0.5) in doubled
+            // integer coords. Two faces on the same "side" of the diagonal
+            // gap will have matching side_keys.
+            let sk = [
+                ((m[0] + n[0] * 0.5) * 2.0).round() as i32,
+                ((m[1] + n[1] * 0.5) * 2.0).round() as i32,
+                ((m[2] + n[2] * 0.5) * 2.0).round() as i32,
+            ];
+
+            let face_idx = face_infos
+                .iter()
+                .position(|f| f.normal_key == nk && f.midpoint_key == mk);
+            if let Some(idx) = face_idx {
+                tri_face_idx.push(idx);
+            } else {
+                tri_face_idx.push(face_infos.len());
+                face_infos.push(FaceInfo {
+                    normal_key: nk,
+                    midpoint_key: mk,
+                    side_key: sk,
+                });
+            }
+        }
+
+        if face_infos.len() <= 2 {
+            return false; // Not non-manifold (or already resolved).
+        }
+
+        // Group faces into 2 sides by matching side_keys. Typically 4
+        // voxel faces (2 diagonally-adjacent voxels × 2 faces each), but
+        // asymmetric face culling (e.g., solid→leaf faces are kept while
+        // leaf→solid faces are culled) can produce 3 faces.
+        let mut side_assignment: Vec<u8> = vec![0; face_infos.len()];
+        let side_a_key = face_infos[0].side_key;
+
+        for (i, face) in face_infos.iter().enumerate() {
+            if face.side_key == side_a_key {
+                side_assignment[i] = 0;
+            } else {
+                side_assignment[i] = 1;
+            }
+        }
+
+        // Determine which side each incident triangle belongs to.
+        let mut tri_sides: Vec<u8> = Vec::new();
+        for &fi in &tri_face_idx {
+            tri_sides.push(side_assignment[fi]);
+        }
+
+        // Side 0 keeps the original vertex. Side 1 gets a duplicate.
+        let new_vi = self.vertices.len() as u32;
+        let orig_vertex = self.vertices[vi as usize].clone();
+        self.vertices.push(orig_vertex);
+
+        // Rewrite side 1 triangles to use the new vertex index.
+        for (local_idx, &ti) in incident.iter().enumerate() {
+            if tri_sides[local_idx] == 1 {
+                let tri = &mut self.triangles[ti];
+                for v in tri.iter_mut() {
+                    if *v == vi {
+                        *v = new_vi;
+                    }
+                }
+            }
+        }
+
+        // Remove the original midpoint from dedup (now ambiguous).
+        let key = VertexKey::from_position(self.vertices[vi as usize].position);
+        self.dedup.remove(&key);
+
+        true
+    }
+
+    /// Pass 2: Find and split non-manifold voxel vertices.
+    ///
+    /// Only considers triangles of the specified surface type. After pass 1,
+    /// some voxel corner vertices may still be non-manifold for a given
+    /// surface type — their same-type incident triangles don't form a single
+    /// connected fan. This catches: (a) voxels sharing only a corner point,
+    /// (b) corner vertices left non-manifold after a voxel-edge midpoint
+    /// split (e.g., the bottom of a split voxel edge sitting on flat ground).
+    ///
+    /// Returns true if any splits were performed.
+    fn resolve_non_manifold_pass2(&mut self, leaf_only: bool) -> bool {
+        let vtx_tris = self.build_vertex_triangle_index();
+        let mut any_split = false;
+
+        // Collect vertices to split before mutating.
+        let mut verts_to_split: Vec<u32> = Vec::new();
+
+        for (vi, tri_indices) in vtx_tris.iter().enumerate() {
+            // Filter to only same-type triangles.
+            let filtered: Vec<usize> = tri_indices
+                .iter()
+                .copied()
+                .filter(|&ti| (self.triangle_tags[ti] == TAG_LEAF) == leaf_only)
+                .collect();
+            if filtered.len() < 2 {
+                continue;
+            }
+            if self.fan_components(vi as u32, &filtered).is_some() {
+                verts_to_split.push(vi as u32);
+            }
+        }
+
+        for &vi in &verts_to_split {
+            any_split |= self.split_non_manifold_vertex(vi, leaf_only);
+        }
+
+        any_split
+    }
+
+    /// Partition incident triangles into connected fan components around a
+    /// vertex. Two triangles are fan-adjacent if they share a triangle-mesh
+    /// edge that includes the vertex (i.e., they share another vertex
+    /// besides `vi`). Returns a per-triangle component assignment (parallel
+    /// to `tri_indices`) where each value is a component index starting at 0.
+    /// Returns `None` if there is only one component (the common manifold
+    /// case), to avoid allocating for the majority of vertices.
+    fn fan_components(&self, vi: u32, tri_indices: &[usize]) -> Option<Vec<usize>> {
+        let n = tri_indices.len();
+        if n <= 1 {
+            return None;
+        }
+
+        // For each triangle, collect the other two vertex indices (not vi).
+        let other_verts: Vec<[u32; 2]> = tri_indices
+            .iter()
+            .map(|&ti| {
+                let tri = &self.triangles[ti];
+                let others: Vec<u32> = tri.iter().copied().filter(|&v| v != vi).collect();
+                [others[0], others[1]]
+            })
+            .collect();
+
+        // Union-find to group fan-adjacent triangles.
+        let mut parent: Vec<usize> = (0..n).collect();
+
+        fn find(parent: &mut [usize], mut x: usize) -> usize {
+            while parent[x] != x {
+                parent[x] = parent[parent[x]];
+                x = parent[x];
+            }
+            x
+        }
+
+        for i in 0..n {
+            for j in (i + 1)..n {
+                if other_verts[i].iter().any(|v| other_verts[j].contains(v)) {
+                    let ri = find(&mut parent, i);
+                    let rj = find(&mut parent, j);
+                    if ri != rj {
+                        parent[ri] = rj;
+                    }
+                }
+            }
+        }
+
+        // Collect distinct roots and check for multiple components.
+        let roots: Vec<usize> = (0..n).map(|i| find(&mut parent, i)).collect();
+        let mut unique_roots: Vec<usize> = roots.clone();
+        unique_roots.sort_unstable();
+        unique_roots.dedup();
+
+        if unique_roots.len() <= 1 {
+            return None;
+        }
+
+        // Remap roots to sequential component indices 0, 1, 2, ...
+        let components: Vec<usize> = roots
+            .iter()
+            .map(|r| unique_roots.iter().position(|u| u == r).unwrap())
+            .collect();
+        Some(components)
+    }
+
+    /// Split a non-manifold vertex into one vertex per connected fan
+    /// component. Only considers triangles of the specified surface type.
+    /// The first component keeps the original vertex index; each additional
+    /// component gets a duplicate. Triangles of the other surface type are
+    /// left on the original vertex.
+    fn split_non_manifold_vertex(&mut self, vi: u32, leaf_only: bool) -> bool {
+        // Re-collect same-type incident triangles (indices may have shifted
+        // from earlier splits in the same pass).
+        let incident: Vec<usize> = self
+            .triangles
+            .iter()
+            .enumerate()
+            .filter(|(ti, tri)| {
+                tri.contains(&vi) && (self.triangle_tags[*ti] == TAG_LEAF) == leaf_only
+            })
+            .map(|(ti, _)| ti)
+            .collect();
+
+        if incident.len() < 2 {
+            return false;
+        }
+
+        let components = match self.fan_components(vi, &incident) {
+            Some(c) => c,
+            None => return false,
+        };
+
+        let n_components = *components.iter().max().unwrap() + 1;
+
+        // Component 0 keeps original vertex. Each additional component gets
+        // a duplicate.
+        for comp in 1..n_components {
+            let new_vi = self.vertices.len() as u32;
+            let orig_vertex = self.vertices[vi as usize].clone();
+            self.vertices.push(orig_vertex);
+
+            // Rewrite triangles in this component to use the new vertex.
+            for (local_idx, &ti) in incident.iter().enumerate() {
+                if components[local_idx] == comp {
+                    let tri = &mut self.triangles[ti];
+                    for v in tri.iter_mut() {
+                        if *v == vi {
+                            *v = new_vi;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Remove from dedup (now ambiguous).
+        let key = VertexKey::from_position(self.vertices[vi as usize].position);
+        self.dedup.remove(&key);
+
+        true
+    }
+
+    /// Rebuild all neighbor lists from scratch using triangle connectivity.
+    /// Called after non-manifold vertex splitting to ensure neighbor lists
+    /// are consistent with the (modified) triangle data.
+    fn rebuild_neighbors(&mut self) {
+        for v in &mut self.vertices {
+            v.neighbors.clear();
+        }
+        // Inline add_edge logic to avoid borrow conflict (can't call
+        // &mut self method while iterating &self.triangles).
+        for ti in 0..self.triangles.len() {
+            let [a, b, c] = self.triangles[ti];
+            for (x, y) in [(a, b), (a, c), (b, c)] {
+                if !self.vertices[x as usize].neighbors.contains(&y) {
+                    self.vertices[x as usize].neighbors.push(y);
+                }
+                if !self.vertices[y as usize].neighbors.contains(&x) {
+                    self.vertices[y as usize].neighbors.push(x);
+                }
+            }
+        }
+    }
+
+    /// Recompute `initial_normal`, `has_solid_face`, and `has_leaf_face` for
+    /// all vertices from their incident triangles. Called after splitting to
+    /// ensure both original and duplicated vertices have correct metadata
+    /// (since the original lost some incident triangles during the split).
+    fn recompute_split_vertex_metadata(&mut self) {
+        // Reset all vertices.
+        for v in &mut self.vertices {
+            v.initial_normal = [0.0; 3];
+            v.has_solid_face = false;
+            v.has_leaf_face = false;
+        }
+
+        // Accumulate from triangles. This adds the face normal once per
+        // incident triangle (8 per voxel face), whereas the original
+        // get_or_create_vertex accumulates once per voxel face. The direction
+        // is identical after normalize_initial_normals since all triangles
+        // from the same voxel face share the same axis-aligned face normal.
+        for (ti, tri) in self.triangles.iter().enumerate() {
+            let fn_ = self.triangle_face_normals[ti];
+            let tag = self.triangle_tags[ti];
+            let is_leaf = tag == TAG_LEAF;
+
+            for &vi in tri {
+                let v = &mut self.vertices[vi as usize];
+                v.initial_normal[0] += fn_[0];
+                v.initial_normal[1] += fn_[1];
+                v.initial_normal[2] += fn_[2];
+                if is_leaf {
+                    v.has_leaf_face = true;
+                } else {
+                    v.has_solid_face = true;
+                }
+            }
+        }
     }
 
     /// Apply all three anchoring rules in order:
@@ -1220,16 +1681,162 @@ mod tests {
         }
     }
 
-    /// Build a smooth mesh from a set of voxel positions. Generates all
-    /// visible faces (face culling based on which positions are in the set),
-    /// normalizes, anchors, and chamfers.
-    fn build_chamfered_voxel_mesh(voxels: &[(i32, i32, i32)]) -> SmoothMesh {
-        let mut mesh = SmoothMesh::new();
-        let color = voxel_color(VoxelType::Trunk);
-        let voxel_set: std::collections::HashSet<(i32, i32, i32)> =
-            voxels.iter().copied().collect();
+    // --- Non-manifold detection utilities ---
 
-        for &(wx, wy, wz) in voxels {
+    /// Check for non-manifold triangle-mesh edges (shared by 3+ triangles)
+    /// and boundary edges (shared by only 1 triangle). Returns
+    /// `(boundary_edges, non_manifold_edges)`. An empty pair means the mesh
+    /// is watertight with manifold edges.
+    fn check_watertight(mesh: &SmoothMesh) -> (Vec<(u32, u32)>, Vec<(u32, u32)>) {
+        let mut edge_counts: BTreeMap<(u32, u32), u32> = BTreeMap::new();
+        for tri in &mesh.triangles {
+            for i in 0..3 {
+                let a = tri[i];
+                let b = tri[(i + 1) % 3];
+                let edge = if a < b { (a, b) } else { (b, a) };
+                *edge_counts.entry(edge).or_insert(0) += 1;
+            }
+        }
+        let mut boundary = Vec::new();
+        let mut non_manifold = Vec::new();
+        for (edge, count) in &edge_counts {
+            match count {
+                1 => boundary.push(*edge),
+                2 => {}
+                _ => non_manifold.push(*edge),
+            }
+        }
+        (boundary, non_manifold)
+    }
+
+    /// Check for non-manifold vertices — vertices where incident triangles
+    /// don't form a single connected fan. Two triangles incident to vertex v
+    /// are "fan-adjacent" if they share a triangle-mesh edge that includes v
+    /// (i.e., both triangles contain v and some other shared vertex w).
+    /// Returns the list of non-manifold vertex indices.
+    fn check_manifold_vertices(mesh: &SmoothMesh) -> Vec<u32> {
+        let vtx_tris = mesh.build_vertex_triangle_index();
+        let mut non_manifold = Vec::new();
+        for (vi, tri_indices) in vtx_tris.iter().enumerate() {
+            if tri_indices.len() < 2 {
+                continue;
+            }
+            if mesh.fan_components(vi as u32, tri_indices).is_some() {
+                non_manifold.push(vi as u32);
+            }
+        }
+        non_manifold
+    }
+
+    /// Assert that a mesh is fully manifold: no boundary edges, no
+    /// non-manifold triangle-mesh edges, and no non-manifold vertices.
+    fn assert_fully_manifold(mesh: &SmoothMesh, label: &str) {
+        let (boundary, nm_edges) = check_watertight(mesh);
+        assert!(
+            boundary.is_empty(),
+            "{label}: mesh has {} boundary edges (holes). First 5: {:?}",
+            boundary.len(),
+            &boundary[..boundary.len().min(5)]
+        );
+        assert!(
+            nm_edges.is_empty(),
+            "{label}: mesh has {} non-manifold triangle-mesh edges. First 5: {:?}",
+            nm_edges.len(),
+            &nm_edges[..nm_edges.len().min(5)]
+        );
+        let nm_verts = check_manifold_vertices(mesh);
+        assert!(
+            nm_verts.is_empty(),
+            "{label}: mesh has {} non-manifold vertices. First 5: {:?}",
+            nm_verts.len(),
+            &nm_verts[..nm_verts.len().min(5)]
+        );
+    }
+
+    /// Check manifoldness for a single surface type's triangles within a
+    /// mesh. Filters to only triangles matching `leaf_only`, then checks
+    /// for non-manifold triangle-mesh edges and non-manifold vertices
+    /// within that subset. This matches what `resolve_non_manifold`
+    /// guarantees: per-surface-type manifoldness (solid and leaf are
+    /// resolved independently).
+    fn assert_surface_manifold(mesh: &SmoothMesh, leaf_only: bool, label: &str) {
+        let tag_label = if leaf_only { "leaf" } else { "solid" };
+
+        // Filter triangles to this surface type.
+        let filtered_tris: Vec<usize> = (0..mesh.triangles.len())
+            .filter(|&ti| (mesh.triangle_tags[ti] == TAG_LEAF) == leaf_only)
+            .collect();
+
+        // Check triangle-mesh edges within filtered triangles.
+        let mut edge_counts: BTreeMap<(u32, u32), u32> = BTreeMap::new();
+        for &ti in &filtered_tris {
+            let tri = &mesh.triangles[ti];
+            for i in 0..3 {
+                let a = tri[i];
+                let b = tri[(i + 1) % 3];
+                let edge = if a < b { (a, b) } else { (b, a) };
+                *edge_counts.entry(edge).or_insert(0) += 1;
+            }
+        }
+        let nm_edges: Vec<_> = edge_counts
+            .iter()
+            .filter(|(_, c)| **c > 2)
+            .map(|(e, _)| *e)
+            .collect();
+        assert!(
+            nm_edges.is_empty(),
+            "{label} ({tag_label}): {} non-manifold triangle-mesh edges. First 5: {:?}",
+            nm_edges.len(),
+            &nm_edges[..nm_edges.len().min(5)]
+        );
+
+        // Check vertex fan connectivity within filtered triangles.
+        let mut vtx_tris: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+        for &ti in &filtered_tris {
+            for &vi in &mesh.triangles[ti] {
+                vtx_tris.entry(vi).or_default().push(ti);
+            }
+        }
+        let mut nm_verts = Vec::new();
+        for (&vi, tri_indices) in &vtx_tris {
+            if tri_indices.len() < 2 {
+                continue;
+            }
+            if mesh.fan_components(vi, tri_indices).is_some() {
+                nm_verts.push(vi);
+            }
+        }
+        assert!(
+            nm_verts.is_empty(),
+            "{label} ({tag_label}): {} non-manifold vertices. First 5: {:?}",
+            nm_verts.len(),
+            &nm_verts[..nm_verts.len().min(5)]
+        );
+    }
+
+    /// Assert per-surface-type manifoldness: solid triangles are manifold
+    /// among themselves, and leaf triangles are manifold among themselves.
+    fn assert_per_surface_manifold(mesh: &SmoothMesh, label: &str) {
+        assert_surface_manifold(mesh, false, label);
+        assert_surface_manifold(mesh, true, label);
+    }
+
+    /// Build a subdivided mesh from voxel positions with per-voxel surface
+    /// tags. Face culling uses the same rules as `build_subdivided_voxel_mesh`
+    /// but does NOT apply asymmetric solid/leaf culling (all face-adjacent
+    /// pairs are fully culled). For testing non-manifold resolution with
+    /// mixed surface types.
+    fn build_subdivided_typed_voxel_mesh(voxels: &[((i32, i32, i32), SurfaceTag)]) -> SmoothMesh {
+        let mut mesh = SmoothMesh::new();
+        let voxel_set: std::collections::HashSet<(i32, i32, i32)> =
+            voxels.iter().map(|&(pos, _)| pos).collect();
+
+        for &((wx, wy, wz), tag) in voxels {
+            let color = if tag == TAG_LEAF {
+                voxel_color(VoxelType::Leaf)
+            } else {
+                voxel_color(VoxelType::Trunk)
+            };
             for face_idx in 0..6 {
                 let (dx, dy, dz) = [
                     (1, 0, 0),
@@ -1249,16 +1856,29 @@ mod tests {
                         FACE_VERTICES[face_idx][vi][2] + wz as f32,
                     ]
                 });
-                mesh.add_subdivided_face(
-                    corners,
-                    FACE_NORMALS[face_idx],
-                    color,
-                    TAG_BARK,
-                    [wx, wy, wz],
-                );
+                mesh.add_subdivided_face(corners, FACE_NORMALS[face_idx], color, tag, [wx, wy, wz]);
             }
         }
 
+        mesh
+    }
+
+    /// Build a subdivided mesh from a set of voxel positions. Generates all
+    /// visible faces (face culling based on which positions are in the set)
+    /// and deduplicates vertices. Does NOT normalize, anchor, or chamfer —
+    /// returns the raw post-subdivision mesh for testing non-manifold
+    /// detection and splitting.
+    fn build_subdivided_voxel_mesh(voxels: &[(i32, i32, i32)]) -> SmoothMesh {
+        let typed: Vec<_> = voxels.iter().map(|&pos| (pos, TAG_BARK)).collect();
+        build_subdivided_typed_voxel_mesh(&typed)
+    }
+
+    /// Build a smooth mesh from a set of voxel positions. Generates all
+    /// visible faces (face culling based on which positions are in the set),
+    /// normalizes, anchors, and chamfers.
+    fn build_chamfered_voxel_mesh(voxels: &[(i32, i32, i32)]) -> SmoothMesh {
+        let mut mesh = build_subdivided_voxel_mesh(voxels);
+        mesh.resolve_non_manifold();
         mesh.normalize_initial_normals();
         mesh.apply_anchoring();
         mesh.chamfer();
@@ -2018,5 +2638,373 @@ mod tests {
         }
 
         mesh
+    }
+
+    // --- Non-manifold resolution tests ---
+
+    #[test]
+    fn single_voxel_is_fully_manifold() {
+        // Sanity check: a single voxel's subdivided mesh should be manifold.
+        let mesh = build_subdivided_voxel_mesh(&[(0, 0, 0)]);
+        assert_fully_manifold(&mesh, "single voxel");
+    }
+
+    #[test]
+    fn two_diagonal_voxels_manifold_after_resolve() {
+        // Two diagonally-adjacent voxels sharing a voxel edge at (1, y, 1).
+        // Before resolve: non-manifold triangle-mesh edges at the shared
+        // voxel-edge midpoint. After resolve: fully manifold.
+        let mut mesh = build_subdivided_voxel_mesh(&[(0, 0, 0), (1, 0, 1)]);
+
+        // Verify the mesh is non-manifold before resolving.
+        let (_, nm_edges) = check_watertight(&mesh);
+        assert!(
+            !nm_edges.is_empty(),
+            "diagonal voxels should produce non-manifold triangle-mesh edges before resolve"
+        );
+
+        // After resolve, should be fully manifold.
+        mesh.resolve_non_manifold();
+        assert_fully_manifold(&mesh, "two diagonal voxels after resolve");
+    }
+
+    #[test]
+    fn two_corner_sharing_voxels_manifold_after_resolve() {
+        // Two voxels sharing only corner (1,1,1): voxel A at (0,0,0)
+        // occupies [0,1]^3, voxel B at (1,1,1) occupies [1,2]^3.
+        // No shared voxel edge, so pass 1 finds nothing. But the corner
+        // vertex has disconnected triangle fans — pass 2 should split it.
+        let mut mesh = build_subdivided_voxel_mesh(&[(0, 0, 0), (1, 1, 1)]);
+
+        // Before resolve: no non-manifold triangle-mesh edges (corner-only
+        // sharing doesn't produce those), but the corner vertex is
+        // non-manifold.
+        let (_, nm_edges) = check_watertight(&mesh);
+        assert!(
+            nm_edges.is_empty(),
+            "corner-sharing voxels should not have non-manifold triangle-mesh edges"
+        );
+        let nm_verts = check_manifold_vertices(&mesh);
+        assert!(
+            !nm_verts.is_empty(),
+            "corner-sharing voxels should have non-manifold vertex before resolve"
+        );
+
+        mesh.resolve_non_manifold();
+        assert_fully_manifold(&mesh, "two corner-sharing voxels after resolve");
+    }
+
+    #[test]
+    fn diagonal_voxels_on_ground_manifold_after_resolve() {
+        // Two diagonally-adjacent voxels at (0,0,0) and (1,0,1) sitting on
+        // a row of ground voxels at y=-1. Pass 1 splits the voxel-edge
+        // midpoint, but the bottom corner vertex of the shared voxel edge
+        // (at position (1,0,1)) may still have disconnected fans where the
+        // ground surface meets the side faces. Pass 2 catches this.
+        let voxels: Vec<(i32, i32, i32)> = vec![
+            // Ground layer at y=-1 under both diagonal voxels.
+            (0, -1, 0),
+            (1, -1, 0),
+            (0, -1, 1),
+            (1, -1, 1),
+            // The two diagonal voxels.
+            (0, 0, 0),
+            (1, 0, 1),
+        ];
+        let mut mesh = build_subdivided_voxel_mesh(&voxels);
+        mesh.resolve_non_manifold();
+        assert_fully_manifold(&mesh, "diagonal voxels on ground after resolve");
+    }
+
+    /// Generate a smooth heightmap WITHOUT diagonal gap-filling. Adjacent
+    /// columns differ by at most 1, but diagonal-only voxel adjacency is
+    /// allowed. Used to test that `resolve_non_manifold` handles the
+    /// non-manifold cases that gap-filling was previously needed to avoid.
+    fn smooth_heightmap_no_gapfill(seed: u64, size: usize, base_h: i32) -> Vec<Vec<i32>> {
+        let mut heights = vec![vec![base_h; size]; size];
+        let mut state = seed.wrapping_add(1);
+        for x in 0..size {
+            for z in 0..size {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                let neighbor_h = if x > 0 && z > 0 {
+                    (heights[x - 1][z] + heights[x][z - 1]) / 2
+                } else if x > 0 {
+                    heights[x - 1][z]
+                } else if z > 0 {
+                    heights[x][z - 1]
+                } else {
+                    base_h
+                };
+                let delta = match state % 3 {
+                    0 => -1,
+                    1 => 0,
+                    _ => 1,
+                };
+                heights[x][z] = (neighbor_h + delta).max(1);
+            }
+        }
+        heights
+    }
+
+    /// Convert a heightmap to a list of voxel positions.
+    fn heightmap_to_voxels(heights: &[Vec<i32>]) -> Vec<(i32, i32, i32)> {
+        let mut voxels = Vec::new();
+        for (x, col) in heights.iter().enumerate() {
+            for (z, &h) in col.iter().enumerate() {
+                for y in 0..h {
+                    voxels.push((x as i32, y, z as i32));
+                }
+            }
+        }
+        voxels
+    }
+
+    #[test]
+    fn fuzz_resolve_non_manifold_smooth_terrain() {
+        // Fuzz test: generate smooth heightmaps WITHOUT gap-filling (which
+        // allows diagonal-only voxel adjacency), run resolve_non_manifold,
+        // and verify the result is fully manifold.
+        for seed in 0..100 {
+            let heights = smooth_heightmap_no_gapfill(seed, 12, 3);
+            let voxels = heightmap_to_voxels(&heights);
+            let mut mesh = build_subdivided_voxel_mesh(&voxels);
+            mesh.resolve_non_manifold();
+            assert_fully_manifold(&mesh, &format!("smooth terrain seed={seed}"));
+        }
+    }
+
+    #[test]
+    fn resolve_non_manifold_is_idempotent() {
+        // Calling resolve twice should produce the same mesh as calling once.
+        let mut mesh = build_subdivided_voxel_mesh(&[(0, 0, 0), (1, 0, 1)]);
+        mesh.resolve_non_manifold();
+        let verts_after_first = mesh.vertices.len();
+        let tris_after_first = mesh.triangles.len();
+        mesh.resolve_non_manifold();
+        assert_eq!(mesh.vertices.len(), verts_after_first);
+        assert_eq!(mesh.triangles.len(), tris_after_first);
+        assert_fully_manifold(&mesh, "idempotent resolve");
+    }
+
+    #[test]
+    fn resolve_non_manifold_preserves_triangle_count() {
+        // Resolve only duplicates vertices, never adds or removes triangles.
+        let voxels = vec![(0, 0, 0), (1, 0, 1)];
+        let mesh_before = build_subdivided_voxel_mesh(&voxels);
+        let tri_count_before = mesh_before.triangles.len();
+        let mut mesh_after = build_subdivided_voxel_mesh(&voxels);
+        mesh_after.resolve_non_manifold();
+        assert_eq!(mesh_after.triangles.len(), tri_count_before);
+        // Vertex count should increase (midpoint was split).
+        assert!(
+            mesh_after.vertices.len() > mesh_before.vertices.len(),
+            "expected more vertices after resolve, got {} vs {}",
+            mesh_after.vertices.len(),
+            mesh_before.vertices.len()
+        );
+    }
+
+    #[test]
+    fn diagonal_voxels_all_axis_pairs() {
+        // Test diagonal adjacency along all three axis pairs:
+        // XZ (existing), XY, and YZ.
+        let configs: &[(&str, Vec<(i32, i32, i32)>)] = &[
+            ("XZ diagonal", vec![(0, 0, 0), (1, 0, 1)]),
+            ("XY diagonal", vec![(0, 0, 0), (1, 1, 0)]),
+            ("YZ diagonal", vec![(0, 0, 0), (0, 1, 1)]),
+        ];
+        for (label, voxels) in configs {
+            let mut mesh = build_subdivided_voxel_mesh(voxels);
+            let (_, nm_edges) = check_watertight(&mesh);
+            assert!(
+                !nm_edges.is_empty(),
+                "{label}: should be non-manifold before resolve"
+            );
+            mesh.resolve_non_manifold();
+            assert_fully_manifold(&mesh, label);
+        }
+    }
+
+    #[test]
+    fn three_diagonals_sharing_corner() {
+        // Three voxels all meeting at corner (1,1,1) via different diagonal
+        // voxel edges. Each pair shares a voxel edge, creating multiple
+        // non-manifold midpoints plus a potentially non-manifold corner.
+        let voxels = vec![(0, 0, 0), (1, 1, 0), (1, 0, 1)];
+        let mut mesh = build_subdivided_voxel_mesh(&voxels);
+        mesh.resolve_non_manifold();
+        assert_fully_manifold(&mesh, "three diagonals sharing corner");
+    }
+
+    #[test]
+    fn face_adjacent_voxels_no_splits() {
+        // Two face-adjacent voxels should produce no splits — the mesh is
+        // already manifold. Vertex count should not change.
+        let voxels = vec![(0, 0, 0), (1, 0, 0)];
+        let mesh_before = build_subdivided_voxel_mesh(&voxels);
+        let vert_count_before = mesh_before.vertices.len();
+        let mut mesh_after = build_subdivided_voxel_mesh(&voxels);
+        mesh_after.resolve_non_manifold();
+        assert_eq!(
+            mesh_after.vertices.len(),
+            vert_count_before,
+            "face-adjacent voxels should not get any vertex splits"
+        );
+        assert_fully_manifold(&mesh_after, "face-adjacent voxels");
+    }
+
+    #[test]
+    fn resolve_preserves_per_triangle_metadata_lengths() {
+        // All per-triangle parallel arrays must remain the same length as
+        // triangles after resolve (resolve doesn't add/remove triangles).
+        let mut mesh = build_subdivided_voxel_mesh(&[(0, 0, 0), (1, 0, 1)]);
+        mesh.resolve_non_manifold();
+        let n = mesh.triangles.len();
+        assert_eq!(mesh.triangle_tags.len(), n);
+        assert_eq!(mesh.triangle_colors.len(), n);
+        assert_eq!(mesh.triangle_voxel_pos.len(), n);
+        assert_eq!(mesh.triangle_face_normals.len(), n);
+        assert_eq!(mesh.triangle_face_midpoints.len(), n);
+    }
+
+    #[test]
+    fn rebuild_neighbors_consistent_with_triangles() {
+        // After resolve, every triangle-mesh edge should appear in both
+        // vertices' neighbor lists, and vice versa.
+        let mut mesh = build_subdivided_voxel_mesh(&[(0, 0, 0), (1, 0, 1)]);
+        mesh.resolve_non_manifold();
+        // Check: every triangle edge is in neighbor lists.
+        for tri in &mesh.triangles {
+            for i in 0..3 {
+                let a = tri[i];
+                let b = tri[(i + 1) % 3];
+                assert!(
+                    mesh.vertices[a as usize].neighbors.contains(&b),
+                    "vertex {a} missing neighbor {b}"
+                );
+                assert!(
+                    mesh.vertices[b as usize].neighbors.contains(&a),
+                    "vertex {b} missing neighbor {a}"
+                );
+            }
+        }
+        // Check: every neighbor pair appears in at least one triangle.
+        for (vi, v) in mesh.vertices.iter().enumerate() {
+            for &ni in &v.neighbors {
+                let vi32 = vi as u32;
+                let in_tri = mesh
+                    .triangles
+                    .iter()
+                    .any(|tri| tri.contains(&vi32) && tri.contains(&ni));
+                assert!(
+                    in_tri,
+                    "neighbor edge ({vi}, {ni}) not found in any triangle"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn l_shaped_diagonal_manifold() {
+        // L-shaped arrangement with a diagonal on a vertical face: voxels
+        // stacked vertically at (0,0,0)+(0,1,0) with a diagonal at (1,0,1).
+        let voxels = vec![(0, 0, 0), (0, 1, 0), (1, 0, 1)];
+        let mut mesh = build_subdivided_voxel_mesh(&voxels);
+        mesh.resolve_non_manifold();
+        assert_fully_manifold(&mesh, "L-shaped diagonal");
+    }
+
+    // --- Mixed solid/leaf surface type tests ---
+
+    #[test]
+    fn leaf_diagonal_voxels_manifold_after_resolve() {
+        // Two diagonally-adjacent leaf voxels. Exercises the leaf_only=true
+        // code path in resolve_non_manifold_pass1 and pass2.
+        let voxels = vec![((0, 0, 0), TAG_LEAF), ((1, 0, 1), TAG_LEAF)];
+        let mut mesh = build_subdivided_typed_voxel_mesh(&voxels);
+        mesh.resolve_non_manifold();
+        assert_per_surface_manifold(&mesh, "leaf diagonal voxels");
+    }
+
+    #[test]
+    fn mixed_solid_leaf_diagonal_no_spurious_solid_splits() {
+        // A solid voxel and a leaf voxel diagonally adjacent. The shared
+        // voxel-edge midpoint has solid faces from one voxel and leaf faces
+        // from the other. The solid-only pass should NOT split the midpoint
+        // (only 2 solid faces = manifold from solid's perspective). The
+        // leaf-only pass should also NOT split (only 2 leaf faces).
+        let voxels = vec![((0, 0, 0), TAG_BARK), ((1, 0, 1), TAG_LEAF)];
+        let mesh_before = build_subdivided_typed_voxel_mesh(&voxels);
+        let vert_count_before = mesh_before.vertices.len();
+
+        let mut mesh_after = build_subdivided_typed_voxel_mesh(&voxels);
+        mesh_after.resolve_non_manifold();
+
+        // No vertices should be split — each surface type has only 2 faces
+        // at the shared midpoint, which is manifold.
+        assert_eq!(
+            mesh_after.vertices.len(),
+            vert_count_before,
+            "mixed solid/leaf diagonal should not produce any vertex splits"
+        );
+        assert_per_surface_manifold(&mesh_after, "mixed solid/leaf diagonal");
+    }
+
+    #[test]
+    fn two_solid_diagonal_with_leaf_neighbor_no_spurious_splits() {
+        // Two solid voxels diagonally adjacent, plus a leaf voxel
+        // face-adjacent to one of them. The solid-only pass should split
+        // the midpoint (4 solid faces at the shared voxel edge). The leaf
+        // faces should not interfere.
+        let voxels = vec![
+            ((0, 0, 0), TAG_BARK),
+            ((1, 0, 1), TAG_BARK),
+            ((2, 0, 1), TAG_LEAF), // face-adjacent to second solid
+        ];
+        let mut mesh = build_subdivided_typed_voxel_mesh(&voxels);
+        mesh.resolve_non_manifold();
+        assert_per_surface_manifold(&mesh, "solid diagonal + leaf neighbor");
+    }
+
+    #[test]
+    fn diagonal_voxels_full_pipeline_manifold() {
+        // Run the full pipeline (resolve + normalize + anchor + chamfer) on
+        // diagonal voxels and verify the output is still manifold. Chamfer
+        // moves vertices and could theoretically create issues.
+        let mesh = build_chamfered_voxel_mesh(&[(0, 0, 0), (1, 0, 1)]);
+        assert_fully_manifold(&mesh, "diagonal voxels full pipeline");
+    }
+
+    #[test]
+    fn fuzz_resolve_non_manifold_random_3d_clusters() {
+        // Fuzz test with random 3D voxel clusters (not just heightmaps).
+        // Exercises configurations like overhangs, floating voxels, and
+        // multi-axis diagonal adjacency that heightmaps can't produce.
+        for seed in 0..50 {
+            let mut state: u64 = seed + 1;
+            let mut voxels = Vec::new();
+            for _ in 0..30 {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                let x = (state % 6) as i32;
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                let y = (state % 6) as i32;
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                let z = (state % 6) as i32;
+                voxels.push((x, y, z));
+            }
+            voxels.sort();
+            voxels.dedup();
+            let mut mesh = build_subdivided_voxel_mesh(&voxels);
+            mesh.resolve_non_manifold();
+            assert_fully_manifold(&mesh, &format!("3D cluster seed={seed}"));
+        }
     }
 }
