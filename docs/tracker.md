@@ -98,6 +98,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-build-queue-ui       Construction queue/progress UI
 [ ] F-building-door        Player-controlled building door orientation
 [ ] F-cascade-fail         Cascading structural failure
+[ ] F-casual-social        Opportunistic passing social interactions
 [ ] F-cavalry              Mount tamed creatures as cavalry
 [ ] F-choir-build          Choir-based construction singing
 [ ] F-choir-harmony        Ensemble harmony in construction singing
@@ -105,6 +106,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-civ-pets             Non-elf civ members and pets
 [ ] F-cloak-slot           Cloak/cape equipment slot
 [ ] F-combat               Combat and invader threat system
+[ ] F-combat-opinions      Respect and fear from combat events
 [ ] F-combat-singing       Combat singing buffs and musical instrument bands
 [ ] F-conjured-creatures   Temporary creature spawning with lifetime and auto-despawn
 [ ] F-controls-config      Centralized controls config with rebinding and persistence
@@ -112,6 +114,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-controls-config-B    Controls persistence and sensitivity settings
 [ ] F-controls-config-C    Controls settings screen with rebinding UI
 [ ] F-creature-control     Temporary allegiance change and AI override
+[ ] F-creature-sex         Creature sex/gender field
 [ ] F-cultural-drift       Inter-tree cultural divergence
 [ ] F-dance-choreo         Refine dance figure choreography
 [ ] F-dance-movespeed      Dance movement paced to creature walk speed
@@ -121,6 +124,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-day-night-color      Color grading shift by time of day
 [ ] F-defense-struct       Defensive structures (ballista, wards)
 [ ] F-demolish             Structure demolition
+[ ] F-dinner-party         Organized group dining social activity
 [ ] F-docs-overhaul        Reorganize and consolidate docs/ directory
 [ ] F-dwarf-fort-gen       Underground dwarf fortress generation
 [ ] F-dye-application      Apply dye to equipment at workshop
@@ -144,6 +148,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-food-quality-mood    Food quality affects dining mood boost
 [ ] F-forest-ecology       Forest floor ecology (flora, fauna, foraging)
 [ ] F-forest-radar         Forest awareness radar (world map detection)
+[ ] F-formal-bonds         Formal bonds (marriage, parent-child, fiance)
 [ ] F-fov-slider           FOV slider in settings
 [ ] F-fruit-pigments       More natural fruit pigment colors (secondaries on fruit parts)
 [ ] F-fruit-prod           Basic fruit production and harvesting
@@ -203,6 +208,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-recipe-any-mat       Any-material recipe parameter support
 [ ] F-rescue               Rescue and stabilize incapacitated creatures
 [ ] F-retire-events        Retire event queue: poll-based heartbeats and periodic systems
+[ ] F-romance              Romantic relationships and courtship
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
 [ ] F-round-building       Round/circular building construction
@@ -215,7 +221,11 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-slow-eating          Slow eating with interruptible consumption and partial restoration
 [ ] F-smooth-perf          Smooth mesh performance optimization
 [ ] F-smooth-ycutoff       Post-smoothing Y-cutoff with cap faces
+[ ] F-social-dance         Dance integration with social opinions
 [ ] F-social-graph         Relationships and social contagion
+[ ] F-social-opinions      Interpersonal opinion table and social skill checks
+[ ] F-social-prefer        Social preference in group activity recruitment
+[ ] F-social-ui            Social tab on creature info panel
 [ ] F-soul-mech            Death, soul passage, resurrection
 [ ] F-sound-effects        Basic ambient and action sound effects
 [ ] F-spell-berserk        Berserk frenzy buff (damage up, uncontrollable)
@@ -1541,12 +1551,13 @@ Non-elf creatures that belong to the player's civilization — tamed
 animals, companion creatures, working beasts. They live in the
 settlement, have needs, and may perform tasks or provide combat support.
 
-Encompasses: elf-animal bonds/relationships, war training, mounting and
-cavalry, animal needs (food, shelter), breeding, labor assignment panel
-for controlling which creatures do which tasks.
+Encompasses: war training, mounting and cavalry, animal needs (food,
+shelter), breeding, labor assignment panel for controlling which creatures
+do which tasks. Pet ownership is an explicit formal bond (like marriage
+or parent-child), stored in the formal bonds system (F-formal-bonds).
 
 **Unblocked by:** F-taming
-**Related:** F-animal-bonds, F-animal-breeding, F-animal-husbandry, F-cavalry, F-civilizations, F-herding, F-labor-panel, F-pack-animals, F-pet-names, F-task-tags, F-war-animals
+**Related:** F-animal-bonds, F-animal-breeding, F-animal-husbandry, F-cavalry, F-civilizations, F-formal-bonds, F-herding, F-labor-panel, F-pack-animals, F-pet-names, F-task-tags, F-war-animals
 
 #### F-creature-actions — Creature action system: typed duration-bearing actions
 **Status:** Done
@@ -1611,6 +1622,16 @@ meaningful tactical tool. Also improves general simulation fidelity.
 **Unblocked:** F-spell-gust
 **Related:** F-pile-gravity
 
+#### F-creature-sex — Creature sex/gender field
+**Status:** Todo
+
+Optional sex/gender field on creatures. Initially a simple enum stored
+as a trait or direct field on the Creature row. Used by romance and
+attraction systems to determine eligible pairs. May also affect sprite
+generation and name generation in the future.
+
+**Blocks:** F-romance
+
 #### F-creature-skills — Creature skill system (17 universal skills with path-gated advancement)
 **Status:** In Progress · **Phase:** 4
 
@@ -1636,7 +1657,7 @@ channels.
 
 **Draft:** docs/drafts/F-creature-skills.md
 
-**Related:** F-apprentice, F-attack-evasion, F-item-quality, F-path-core, F-taming
+**Related:** F-apprentice, F-attack-evasion, F-item-quality, F-path-core, F-social-opinions, F-taming
 
 #### F-creature-stats — Creature stats (str/agi/dex/con/wil/int/per/cha)
 **Status:** Done
@@ -2775,7 +2796,12 @@ effects for both elf and animal — happiness from bond, grief on death.
 Bonded animals follow their elf, respond better to commands, and may
 defend them in combat.
 
-**Related:** F-civ-pets, F-emotions
+Uses the social opinion system (F-social-opinions) — an elf's Friendliness
+toward their tamed hawk is a row in the same opinion table. A "bonded"
+threshold on opinion intensity triggers special bonded-pair behavior.
+
+**Blocked by:** F-social-opinions
+**Related:** F-casual-social, F-civ-pets, F-emotions, F-social-opinions
 
 #### F-apprentice — Skill transfer via proximity
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
@@ -2785,13 +2811,55 @@ emergent social/economic system.
 
 **Related:** F-creature-skills, F-path-core
 
+#### F-casual-social — Opportunistic passing social interactions
+**Status:** Todo
+
+Quick, lightweight social interactions that happen opportunistically when
+creatures are near each other without interrupting their current activities.
+Examples: two elves of the same civ walking past each other might have a
+brief chat or flirtation; a Scout might pet a tamed animal in passing.
+These micro-interactions upsert social opinions (small Friendliness bumps,
+occasional Attraction rolls) and provide a baseline social fabric even
+when creatures aren't engaged in formal group activities.
+
+**Blocked by:** F-social-opinions
+**Blocks:** F-social-graph
+**Related:** F-animal-bonds, F-social-dance
+
+#### F-combat-opinions — Respect and fear from combat events
+**Status:** Todo
+
+Combat as a source of social opinion changes. Witnessing a creature fight
+bravely bumps Respect. Surviving an attack from a creature bumps Fear of
+that creature. Fighting alongside someone bumps Friendliness. These use
+the social opinion table (F-social-opinions) — no new schema, just new
+triggers from combat events.
+
+**Blocked by:** F-social-opinions
+**Blocks:** F-social-graph
+
+#### F-dinner-party — Organized group dining social activity
+**Status:** Todo
+
+Organized group dining as a social activity. Unlike routine individual
+dining (which only gets incidental casual socialization from proximity),
+a dinner party is a coordinated group activity where elves gather, eat
+together, and socialize — upserting Friendliness opinions between
+participants and providing mood boosts scaled by how much they like
+their dining companions.
+
+**Blocked by:** F-social-opinions
+**Blocks:** F-social-graph
+**Unblocked by:** F-group-activity
+**Related:** F-social-dance, F-social-prefer
+
 #### F-emotions — Multi-dimensional emotional state
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
 
 Emotions as multiple simultaneous dimensions: joy, fulfillment, sorrow,
 stress, pain, fear, anxiety. Not a single "happiness" number.
 
-**Blocks:** F-elf-leave, F-hedonic-adapt, F-mana-mood
+**Blocks:** F-elf-leave, F-hedonic-adapt, F-mana-mood, F-social-graph
 **Related:** F-animal-bonds, F-path-core, F-path-stuck, F-social-graph
 
 #### F-emotions-basic — Mood score from thought weights
@@ -2814,6 +2882,22 @@ with mechanical consequences.
 
 **Related:** F-mood-system, F-poetry-reading
 
+#### F-formal-bonds — Formal bonds (marriage, parent-child, fiance)
+**Status:** Todo
+
+Schema and storage for explicit formal relationships between creatures:
+marriage, parent-child, fiance, pet ownership, and similar. Stored in
+separate table(s) from the informal opinion system (F-social-opinions).
+These are binary facts (married or not), not sliding-scale opinions.
+Displayed in the social UI tab alongside informal opinions.
+
+This item covers the table schema and basic CRUD — the behaviors that
+create these bonds (courtship, romance, reproduction) are tracked
+separately.
+
+**Blocks:** F-romance, F-social-graph
+**Related:** F-civ-pets, F-romance, F-social-ui
+
 #### F-funeral-rites — Funeral rites and mourning
 **Status:** Todo
 
@@ -2829,6 +2913,13 @@ and F-social-graph (close relationships = deeper grief).
 #### F-group-chat — Group chat social activity
 **Status:** Todo
 
+Group chat social activity. Chatting alters social opinions between
+participants — upserts Friendliness using max(Influence, Culture) as the
+relevant skill check (you're either entertaining with stories or charming
+with social maneuvering, whichever you're better at).
+
+**Blocked by:** F-social-opinions
+**Blocks:** F-social-graph
 **Unblocked by:** F-group-activity
 
 #### F-group-dance — Group dance and social singing activities
@@ -2844,7 +2935,7 @@ geometric patterns. Module within elven_canopy_sim.
 **Draft:** docs/drafts/F-group-dance.md
 
 **Unblocked by:** F-group-activity
-**Related:** F-bldg-concert, F-dance-choreo, F-dance-movespeed, F-dance-scaling, F-dance-self-org, F-music-runtime
+**Related:** F-bldg-concert, F-dance-choreo, F-dance-movespeed, F-dance-scaling, F-dance-self-org, F-music-runtime, F-social-dance
 
 #### F-hedonic-adapt — Asymmetric hedonic adaptation
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
@@ -2991,7 +3082,7 @@ Multi-axis personality model affecting task preferences, social behavior,
 stress responses, and creative output.
 
 **Blocks:** F-cultural-drift, F-path-stuck
-**Related:** F-path-civil, F-path-core, F-social-graph
+**Related:** F-path-civil, F-path-core, F-social-graph, F-social-opinions
 
 #### F-poetry-reading — Social gatherings and poetry readings
 **Status:** Todo · **Phase:** 4 · **Refs:** §18, §20
@@ -3000,6 +3091,23 @@ Elves gather for poetry readings, festivals, and social events. Quality of
 poetry/music affects mood and mana generation.
 
 **Related:** F-festivals, F-proc-poetry, F-vaelith-expand
+
+#### F-romance — Romantic relationships and courtship
+**Status:** Todo
+
+Romantic relationships between creatures. Attraction opinions from the
+social opinion system can develop into courtship and flirtation — e.g.,
+spending time together, giving gifts, seeking each other out for social
+activities. High enough Attraction + Friendliness between two creatures
+can lead to formal bonds (fiance, marriage) via F-formal-bonds.
+
+Requires creature sex (F-creature-sex) to be implemented. Courtship
+behaviors interact with mood, social activities, and the social
+preference system.
+
+**Blocked by:** F-creature-sex, F-formal-bonds, F-social-opinions
+**Blocks:** F-social-graph
+**Related:** F-formal-bonds
 
 #### F-seasons — Seasonal visual and gameplay effects
 **Status:** Todo · **Phase:** 4 · **Refs:** §8, §18
@@ -3010,13 +3118,94 @@ shelter.
 
 **Related:** F-forest-ecology, F-weather
 
+#### F-social-dance — Dance integration with social opinions
+**Status:** Todo
+
+Integrate group dance with the social opinions system. Dancing together
+upserts Friendliness opinions between dance partners, with intensity
+modulated by Culture skill and CHA. Joy gained from dancing is tweaked
+upward when dancing with creatures you already like.
+
+**Blocked by:** F-social-opinions
+**Blocks:** F-social-graph
+**Related:** F-casual-social, F-dinner-party, F-group-dance, F-social-prefer
+
 #### F-social-graph — Relationships and social contagion
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
 
-Elf-to-elf relationships: friendships, rivalries, romantic bonds, mentorship.
-Emotional contagion spreads mood through social connections.
+Overarching tracker item for the full social relationship system. The
+social graph encompasses interpersonal opinions (F-social-opinions),
+opinion sources (F-social-dance, F-casual-social, F-combat-opinions,
+F-group-chat, F-dinner-party), social preference in decision-making
+(F-social-prefer), UI (F-social-ui), formal bonds (F-formal-bonds),
+and romance (F-romance). This item is complete when the constituent
+pieces are done and integrated — including emotional contagion (mood
+spreading through social connections, weighted by relationship intensity)
+which requires F-emotions.
 
+**Blocked by:** F-casual-social, F-combat-opinions, F-dinner-party, F-emotions, F-formal-bonds, F-group-chat, F-romance, F-social-dance, F-social-opinions, F-social-prefer, F-social-ui
 **Related:** F-emotions, F-funeral-rites, F-personality
+
+#### F-social-opinions — Interpersonal opinion table and social skill checks
+**Status:** Todo · **Phase:** 4 · **Refs:** §18
+
+Asymmetric interpersonal opinion system. Each creature holds a child table
+of opinions about other creatures: (creature_id, kind, intensity, other_creature_id).
+Creature A's opinion of B can differ from B's opinion of A.
+
+**Kind enum (initial set):** Friendliness, Respect, Fear, Attraction.
+Intensity is a signed integer — e.g., negative Friendliness represents a
+grudge/dislike. Intensity zero rows can be pruned.
+
+**Skill checks are context-dependent.** The other creature's CHA stat and a
+relevant skill modulate the impression they leave — a charismatic creature
+with high Culture leaves a stronger positive impression when dancing, while
+max(Influence, Culture) applies for casual social interactions (a good
+storyteller entertains; a socially savvy creature charms). The specific
+skill depends on the activity. A random roll is also part of the formula.
+
+**Pre-game bootstrap:** A new game's starting elves receive several simulated
+friendly interactions before game start, so they begin with some existing
+relationships and social skill training — emulating that they knew each
+other reasonably well before the player arrived.
+
+**Decay:** Periodic sweep moves intensity toward zero by a small amount, so
+relationships not reinforced by continued interaction fade naturally.
+
+**Formal relationships** (marriage, parent-child, etc.) are a separate concern
+for a future tracker item — this item covers only informal interpersonal
+opinions.
+
+**Blocks:** F-animal-bonds, F-casual-social, F-combat-opinions, F-dinner-party, F-group-chat, F-romance, F-social-dance, F-social-graph, F-social-prefer, F-social-ui
+**Related:** F-animal-bonds, F-creature-skills, F-personality
+
+#### F-social-prefer — Social preference in group activity recruitment
+**Status:** Todo
+
+Social opportunity scoring in creature decision-making. Elves prefer to
+invite creatures they like to group activities (dances, dinner parties,
+group chats) rather than activities being open to whoever is free. When
+recruiting for a group activity, the organizer biases invitations toward
+creatures with higher Friendliness opinions. May also apply to seating
+choices, work crew preferences, and other social decisions.
+
+**Blocked by:** F-social-opinions
+**Blocks:** F-social-graph
+**Related:** F-dinner-party, F-social-dance
+
+#### F-social-ui — Social tab on creature info panel
+**Status:** Todo
+
+Social tab on the creature info panel. Shows other creatures about whom
+this creature holds opinions, with human-readable labels derived from
+intensity thresholds (e.g., Friendliness above threshold A = "acquaintance",
+above threshold B = "friend", negative = "disliked", etc.). In the future,
+also displays explicit bonds (marriage, parent-child, fiance) once those
+systems exist.
+
+**Blocked by:** F-social-opinions
+**Blocks:** F-social-graph
+**Related:** F-formal-bonds
 
 #### F-thoughts — Creature thoughts (DF-style event reactions)
 **Status:** Done · **Phase:** 4 · **Refs:** §18
@@ -5966,7 +6155,7 @@ plus kind-specific extension tables.
 
 **Draft:** docs/drafts/group_activities.md
 
-**Unblocked:** F-choir-build, F-group-chat, F-group-dance
+**Unblocked:** F-choir-build, F-dinner-party, F-group-chat, F-group-dance
 **Related:** B-assembly-timeout, B-task-civ-filter, F-choir-harmony, F-combat-singing
 
 #### F-immediate-commands — Immediate command application (zero-tick updates)
