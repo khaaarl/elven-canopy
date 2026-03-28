@@ -124,6 +124,11 @@ For the full list of codebase patterns, conventions, and gotchas, see `docs/code
 
 **This is non-negotiable.** If you realize you are on `main` and have already made changes, STOP immediately and ask the user how to proceed — do NOT commit to `main`.
 
+**Subagents and branching:**
+- If you are a subagent, check what branch you are on before making changes. If you are on `main`, follow the branching rules above (create a feature branch). If you are already on a feature branch, stay on it — do not create a sub-branch unless your instructions specifically tell you to.
+- When launching a subagent that will edit or commit code, always include in the prompt: "You are on branch `<branch-name>`. Do not create new branches or switch branches."
+- When launching multiple agents in parallel that will each edit code, use worktree isolation. Specify a branch name for each agent to work on. Once an agent enters a worktree and checks out or creates its assigned branch, it must stay on that branch — no further branching.
+
 The only exception is editing `CLAUDE.md` itself, which can be done on `main` if explicitly requested. However, do NOT commit or push CLAUDE.md changes until the user explicitly says to — they may want to review or iterate first.
 
 ## Committing Code

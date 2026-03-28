@@ -70,6 +70,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fragile-tests        Audit and harden tests against PRNG stream shifts and worldgen changes
 [ ] B-safe-api-tests       Additional safe API test coverage from once-over
+[ ] B-spawn-creature       spawn_creature test helper finds first creature of species, not newly spawned
 [ ] B-start-paused-ui      start_paused_on_load UI desync and missing new-game support
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
@@ -228,7 +229,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-spell-summon         Conjure temporary allied creature
 [ ] F-spell-system         Core spell casting infrastructure (SpellId, commands, mana costs)
 [ ] F-spell-thornbriar     Thornbriar zone spell (slow + damage area)
-[ ] F-split-sim-tests      Split sim tests.rs into per-module test files
 [ ] F-stairs               Stairs and ramps for vertical movement
 [ ] F-starvation-rework    Starvation rework: incapacitation interaction and bleed-out
 [ ] F-status-effects       Generic creature status effect system
@@ -463,6 +463,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-spatial-index        Creature spatial index for voxel-level position queries
 [x] F-spawn-toolbar        Spawn toolbar and placement UI
 [x] F-split-sim            Split monolithic sim.rs into domain sub-modules
+[x] F-split-sim-tests      Split sim tests.rs into per-module test files
 [x] F-status-bar           Persistent status bar (population, idle count, active tasks)
 [x] F-struct-basic         Basic structural integrity (flood fill)
 [x] F-struct-names         User-editable structure names
@@ -6044,7 +6045,7 @@ type priority prevents overwrites.
 
 All production code converted (0 `_no_fk`/`modify_unchecked` calls remain in non-test code). 464 calls remain in `tests.rs` (54k lines). The safe API conversion also uncovered and fixed real bugs: blueprint/task FK ordering in `designate_build` and `cancel_build`, and task insertion ordering for item reservations in logistics/activation/crafting/mod. **Next step:** split `tests.rs` (see F-split-sim-tests), then convert test code to safe API in manageable chunks.
 
-**Blocked by:** F-split-sim-tests
+**Unblocked by:** F-split-sim-tests
 
 #### F-child-table-pks — Convert child tables to natural compound primary keys
 **Status:** Done
@@ -6595,6 +6596,9 @@ Write additional tests identified during the B-unsafe-db-calls once-over to hard
 - `cancel_build` on furnished structure cleans up furniture rows
 - `cancel_build` reverts voxels after blueprint removed from DB
 
+#### B-spawn-creature — spawn_creature test helper finds first creature of species, not newly spawned
+**Status:** Todo
+
 #### F-ai-test-harness — Remote game control for AI-driven testing (Puppet)
 **Status:** Done
 
@@ -6671,11 +6675,11 @@ the sim or bridge — just GDScript in isolation.
 **Related:** F-ai-test-harness, F-bridge-integ-tests
 
 #### F-split-sim-tests — Split sim tests.rs into per-module test files
-**Status:** Todo
+**Status:** Done
 
 `elven_canopy_sim/src/sim/tests.rs` is 54k lines — too large for parallel editing, slow IDE navigation, and hard to review. Split into per-module test files (e.g., `tests/combat_tests.rs`, `tests/construction_tests.rs`, etc.) mirroring the sim module structure. This unblocks B-unsafe-db-calls test conversion and improves long-term maintainability.
 
-**Blocks:** B-unsafe-db-calls
+**Unblocked:** B-unsafe-db-calls
 
 #### F-test-perf — Test performance audit: per-test timing
 **Status:** Todo
