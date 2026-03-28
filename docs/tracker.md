@@ -57,6 +57,7 @@ This reduces merge conflicts when parallel work streams add items.
 [~] F-notifications        Player-visible event notifications
 [~] F-parallel-dedup       Radix-partitioned parallel dedup (elven_canopy_utils)
 [~] F-path-ui              Path management UI and notifications
+[~] F-split-sim-tests      Split sim tests.rs into per-module test files
 ```
 
 ### Todo
@@ -228,7 +229,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-spell-summon         Conjure temporary allied creature
 [ ] F-spell-system         Core spell casting infrastructure (SpellId, commands, mana costs)
 [ ] F-spell-thornbriar     Thornbriar zone spell (slow + damage area)
-[ ] F-split-sim-tests      Split sim tests.rs into per-module test files
 [ ] F-stairs               Stairs and ramps for vertical movement
 [ ] F-starvation-rework    Starvation rework: incapacitation interaction and bleed-out
 [ ] F-status-effects       Generic creature status effect system
@@ -6671,7 +6671,7 @@ the sim or bridge — just GDScript in isolation.
 **Related:** F-ai-test-harness, F-bridge-integ-tests
 
 #### F-split-sim-tests — Split sim tests.rs into per-module test files
-**Status:** Todo
+**Status:** In Progress
 
 `elven_canopy_sim/src/sim/tests.rs` is 54k lines — too large for parallel editing, slow IDE navigation, and hard to review. Split into per-module test files (e.g., `tests/combat_tests.rs`, `tests/construction_tests.rs`, etc.) mirroring the sim module structure. This unblocks B-unsafe-db-calls test conversion and improves long-term maintainability.
 
