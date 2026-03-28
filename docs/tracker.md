@@ -69,6 +69,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-dead-owner-items     Dead creature items retain ownership, becoming invisible to all systems
 [ ] B-dine-orphan-task     DineAtHall speculative task leaves orphaned Complete rows
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
+[ ] B-floating-dirt        Floating dirt still treated as ground by structural validator
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fragile-tests        Audit and harden tests against PRNG stream shifts and worldgen changes
 [ ] B-safe-api-tests       Additional safe API test coverage from once-over
@@ -524,6 +525,8 @@ draft docs, and blocking relationships where relevant.
 
 #### B-carve-perf — Carving dirt causes severe CPU stall, possibly structural checks
 **Status:** Todo
+
+**Related:** B-floating-dirt
 
 #### F-batch-blueprint — Batch blueprinting with dependency order
 **Status:** Todo · **Phase:** 3 · **Refs:** §12
@@ -1122,6 +1125,74 @@ resnapping or abandoning the task if the node is dead.
 acts as massive dead weight in the weight-flow analysis, causing all
 structures near hilly terrain to fail validation. One-line fix: add
 `|| vt == VoxelType::Dirt` to match the full solver's pinning logic.
+
+#### B-floating-dirt — Floating dirt still treated as ground by structural validator
+**Status:** Todo
+
+Dirt voxels are unconditionally pinned (immovable ground) in the structural
+model (`structural.rs:1073`). The only protection against carving all
+supporting dirt is `designate_carve`'s y>0 bedrock guard, which prevents
+carving the y=0 layer but allows carving all dirt above it.
+
+This means a player can carve a horizontal tunnel through dirt at y=1,
+isolating a column of dirt above it. That floating dirt column is still
+treated as ground by the structural validator — any structure resting on
+it (tree trunk, platforms, buildings) would pass structural checks despite
+having no actual path to bedrock.
+
+**Scenario:**
+1. Terrain has dirt from y=0 to y=3.
+2. Player carves a horizontal ring at y=1 around a 3x3 column.
+3. The y=2-3 dirt above the ring is now floating (no face-adjacent path
+   to y=0 bedrock through dirt).
+4. A tree trunk on that floating dirt passes structural validation because
+   the dirt is pinned.
+
+**Root cause:** The structural model assumes all dirt is bedrock-equivalent.
+There is no connectivity check from dirt voxels back to the actual bedrock
+layer (y=0).
+
+**Possible fix:** A dirt voxel should only be pinned if it can reach the
+bedrock layer (y=0) through a contiguous path of dirt. The world is
+1024x1024x~50 dirt voxels (~52M total), so any approach touching "all dirt"
+is prohibitively expensive. The check needs to be fast for the common case
+(unbroken dirt column) and bounded for the uncommon case (carved terrain).
+
+Preferred approach: **RLE-aware downward-biased A\* search.**
+
+- **Common case O(1):** VoxelWorld stores columns as RLE spans
+  (`world.rs:column_spans()`). If the column at (x,z) has a dirt span
+  covering y=0 through the carved voxel's Y, the dirt trivially reaches
+  bedrock — one span lookup, no search needed.
+
+- **Carved-column case:** If the column has been carved (multiple spans),
+  use A\* from the dirt voxel toward y=0 through face-adjacent dirt,
+  with a heuristic strongly biased downward (h = manhattan distance to
+  nearest y=0 voxel). The downward bias means A\* finds bedrock quickly
+  in typical terrain without exploring laterally.
+
+- **RLE column jumping:** When A\* expands a node at (x,y,z), instead of
+  stepping one voxel at a time in -Y, read the column spans at (x,z) to
+  determine the full extent of the dirt span containing y, and jump
+  directly to the bottom of that span. This makes vertical traversal
+  through uncarved columns O(1) regardless of column height.
+
+- **Disconnected dirt (worst case):** If the dirt is truly floating (no
+  path to bedrock), A\* terminates after exhausting the connected dirt
+  component. This component is bounded by the carve geometry — for a
+  small carve isolating a small island, the search is small.
+
+**Interaction with B-carve-perf:** The perf fix skips stress analysis for
+all-dirt carves (since removing pinned voxels can't overstress above-ground
+structure). Once this bug is fixed, the "is this dirt actually ground?"
+check would need to run during dirt carving to detect newly-floating dirt
+and trigger gravity/collapse on the disconnected island. The perf
+optimization remains valid — skip stress, but add the dirt connectivity
+check.
+
+F-carve-holes (carving feature).
+
+**Related:** B-carve-perf, B-carve-perf (perf fix skips stress for dirt carves)
 
 #### B-preview-blueprints — Preview treats blueprints as complete
 **Status:** Done · **Phase:** 2
