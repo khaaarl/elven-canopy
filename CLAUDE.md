@@ -110,6 +110,8 @@ For the full list of codebase patterns, conventions, and gotchas, see `docs/code
 - **Before writing ANY code that touches tabulosity tables, read `tabulosity/README.md` in full.**
 - **Do not use `_no_fk` or `modify_unchecked` methods in new code without explicit user approval.** Use database-level methods (`db.update_foo()`, etc.) instead.
 
+**No relying on Godot node names for identity.** Godot silently renames children on `add_child()` when a sibling has the same name (including `queue_free()`d nodes still in the tree). Use direct references instead of name-based lookups.
+
 **Voxel coordinate system:** Each voxel is 2 meters on a side. Y is up. Terrain floor at `config.floor_y` (default 50), creatures walk at `floor_y + 1`. Renderers offset by +0.5.
 
 **"Pull main":** When asked to pull/update/rebase on main, first update the local ref: `git fetch origin main:main` (if not on main) or `git pull` (if on main). A stale local main causes wrong diffs.

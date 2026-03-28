@@ -39,6 +39,7 @@ const DIRECTION_OFFSETS: Array[Vector3] = [
 
 var _bridge: SimBridge
 var _instances: Array[MultiMeshInstance3D] = []
+var _ceiling_instance: MultiMeshInstance3D = null
 var _roofs_hidden: bool = false
 var _last_face_data: PackedInt32Array = PackedInt32Array()
 
@@ -114,10 +115,13 @@ func refresh() -> void:
 		return
 	_last_face_data = data
 
-	# Remove previous instances.
+	# Remove previous instances.  Use free() not queue_free() so the dying
+	# nodes are removed from the tree immediately — avoids Godot silently
+	# renaming new children that share a name with a queue_free'd sibling.
 	for inst in _instances:
-		inst.queue_free()
+		inst.free()
 	_instances.clear()
+	_ceiling_instance = null
 	var quintuple_count := data.size() / 5
 	if quintuple_count == 0:
 		return
@@ -171,10 +175,10 @@ func refresh() -> void:
 		instance.multimesh = mm
 		instance.name = "BuildingFaces_" + str(ftype)
 		if ftype == 4:
+			_ceiling_instance = instance
 			instance.visible = not _roofs_hidden
 		add_child(instance)
 		_instances.append(instance)
-	_apply_roof_visibility()
 
 
 func set_roofs_hidden(hidden: bool) -> void:
@@ -187,6 +191,5 @@ func is_roofs_hidden() -> bool:
 
 
 func _apply_roof_visibility() -> void:
-	for inst in _instances:
-		if inst.name == "BuildingFaces_4":
-			inst.visible = not _roofs_hidden
+	if _ceiling_instance:
+		_ceiling_instance.visible = not _roofs_hidden
