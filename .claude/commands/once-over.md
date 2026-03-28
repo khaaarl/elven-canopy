@@ -90,3 +90,18 @@ once-overs in succession, which helps check for issues more thoroughly.
 6. **Commit fixes.** If you made changes, commit them to the feature branch
    with a message like "Once-over fixes: [brief summary]" and push. (If step
    5 already pushed the fix commits, this step is done.)
+
+7. **Present all findings to the user.** After CI passes and fixes are
+   committed, present the complete triage to the user. Include every
+   finding from every agent, organized into the categories from step 3.
+   For each finding, include:
+   - The agent that raised it (A/B/C/D)
+   - The full finding text (do not summarize or paraphrase)
+   - Your disposition: what you fixed, what you dismissed (with
+     rationale), or what needs the user's decision
+
+   **Do not silently drop or collapse findings.** If all four agents say
+   "no issues," say that explicitly. If agents raised 12 findings and
+   you think 10 are non-issues, present all 12 — the user decides which
+   are truly non-issues, not you. Err on the side of verbosity over
+   compression.

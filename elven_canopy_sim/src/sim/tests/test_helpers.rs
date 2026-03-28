@@ -57,7 +57,18 @@ pub(super) fn test_sim(seed: u64) -> SimState {
 // ---------------------------------------------------------------------------
 
 /// Helper: spawn a creature and return its ID.
+///
+/// Snapshots existing creature IDs before spawning so that the returned
+/// ID is always the *newly created* creature, not a pre-existing one of
+/// the same species.
 pub(super) fn spawn_creature(sim: &mut SimState, species: Species) -> CreatureId {
+    let existing: std::collections::BTreeSet<CreatureId> = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.species == species)
+        .map(|c| c.id)
+        .collect();
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let tick = sim.tick + 1;
     let cmd = SimCommand {
@@ -72,8 +83,8 @@ pub(super) fn spawn_creature(sim: &mut SimState, species: Species) -> CreatureId
     sim.db
         .creatures
         .iter_all()
-        .find(|c| c.species == species)
-        .expect("creature should exist")
+        .find(|c| c.species == species && !existing.contains(&c.id))
+        .expect("newly spawned creature should exist")
         .id
 }
 
@@ -730,9 +741,15 @@ pub(super) fn find_chain_of_three(sim: &SimState) -> (NavNodeId, NavNodeId, NavN
     panic!("No chain of three nav nodes found");
 }
 
-/// Spawn an elf using SpawnCreature command. Note: returns the first elf found,
-/// so only use when there are no existing elves.
+/// Spawn an elf using SpawnCreature command and return the newly spawned ID.
 pub(super) fn spawn_test_elf(sim: &mut SimState) -> CreatureId {
+    let existing: std::collections::BTreeSet<CreatureId> = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.species == Species::Elf)
+        .map(|c| c.id)
+        .collect();
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let cmd = SimCommand {
         player_name: String::new(),
@@ -746,7 +763,7 @@ pub(super) fn spawn_test_elf(sim: &mut SimState) -> CreatureId {
     sim.db
         .creatures
         .iter_all()
-        .find(|c| c.species == Species::Elf)
+        .find(|c| c.species == Species::Elf && !existing.contains(&c.id))
         .expect("elf should exist after spawn")
         .id
 }
@@ -960,18 +977,28 @@ pub(super) fn add_recipe_with_targets(
     }
     ar_id
 }
-/// Spawn multiple test elves.
+/// Spawn multiple test elves and return only the newly spawned IDs.
 pub(super) fn spawn_test_elves(sim: &mut SimState, count: usize) -> Vec<CreatureId> {
+    let existing: std::collections::BTreeSet<CreatureId> = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.species == Species::Elf)
+        .map(|c| c.id)
+        .collect();
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     for _ in 0..count {
         let mut events = Vec::new();
         sim.spawn_creature(Species::Elf, tree_pos, &mut events);
     }
-    // Collect all alive elves (includes any pre-existing ones).
     sim.db
         .creatures
         .iter_all()
-        .filter(|c| c.species == Species::Elf && c.vital_status == VitalStatus::Alive)
+        .filter(|c| {
+            c.species == Species::Elf
+                && c.vital_status == VitalStatus::Alive
+                && !existing.contains(&c.id)
+        })
         .map(|c| c.id)
         .collect()
 }

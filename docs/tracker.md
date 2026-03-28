@@ -71,7 +71,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fragile-tests        Audit and harden tests against PRNG stream shifts and worldgen changes
 [ ] B-safe-api-tests       Additional safe API test coverage from once-over
-[ ] B-spawn-creature       spawn_creature test helper finds first creature of species, not newly spawned
 [ ] B-start-paused-ui      start_paused_on_load UI desync and missing new-game support
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
@@ -297,6 +296,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-preview-blueprints   Preview treats blueprints as complete
 [x] B-raid-spawn           Raiders sometimes spawn inside map instead of at perimeter
 [x] B-sim-floats           Remaining f32/f64 in sim logic threaten determinism
+[x] B-spawn-creature       spawn_creature test helper finds first creature of species, not newly spawned
 [x] B-tab-serde-tests      Fix tabulosity test compilation under feature unification
 [x] B-task-civ-filter      Tasks lack civilization-level eligibility filtering
 [x] B-unsafe-db-calls      Replace _no_fk and modify_unchecked calls with safe database-level methods
@@ -6747,7 +6747,7 @@ Write additional tests identified during the B-unsafe-db-calls once-over to hard
 - `cancel_build` reverts voxels after blueprint removed from DB
 
 #### B-spawn-creature — spawn_creature test helper finds first creature of species, not newly spawned
-**Status:** Todo
+**Status:** Done
 
 #### F-ai-test-harness — Remote game control for AI-driven testing (Puppet)
 **Status:** Done

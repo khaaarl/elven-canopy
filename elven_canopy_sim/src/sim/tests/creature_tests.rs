@@ -1803,3 +1803,42 @@ fn all_civ_species_with_to_species_have_species_table_entry() {
         }
     }
 }
+
+#[test]
+fn spawn_creature_helper_returns_newly_spawned_id() {
+    let mut sim = test_sim(42);
+    // Spawn two capybaras and verify each call returns the newly spawned
+    // one, not the first capybara in the table.
+    let first = spawn_creature(&mut sim, Species::Capybara);
+    let second = spawn_creature(&mut sim, Species::Capybara);
+    assert_ne!(
+        first, second,
+        "spawn_creature should return distinct IDs for each spawn"
+    );
+    // Both creatures should exist.
+    assert!(sim.db.creatures.get(&first).is_some());
+    assert!(sim.db.creatures.get(&second).is_some());
+}
+
+#[test]
+fn spawn_test_elf_helper_returns_newly_spawned_id() {
+    let mut sim = test_sim(42);
+    let first = spawn_test_elf(&mut sim);
+    let second = spawn_test_elf(&mut sim);
+    assert_ne!(
+        first, second,
+        "spawn_test_elf should return distinct IDs for each spawn"
+    );
+}
+
+#[test]
+fn spawn_test_elves_helper_returns_only_new_ids() {
+    let mut sim = test_sim(42);
+    let pre_existing = spawn_test_elf(&mut sim);
+    let new_elves = spawn_test_elves(&mut sim, 3);
+    assert_eq!(new_elves.len(), 3, "should return exactly 3 new elves");
+    assert!(
+        !new_elves.contains(&pre_existing),
+        "should not include pre-existing elf"
+    );
+}
