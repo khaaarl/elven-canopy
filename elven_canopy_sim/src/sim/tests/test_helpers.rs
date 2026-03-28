@@ -1028,25 +1028,6 @@ pub(super) fn add_recipe_with_targets(
     }
     ar_id
 }
-
-/// Helper: get the first cultivable fruit species from the DB.
-pub(super) fn first_cultivable_species(sim: &SimState) -> Option<crate::fruit::FruitSpeciesId> {
-    sim.db
-        .fruit_species
-        .iter_all()
-        .find(|f| f.greenhouse_cultivable)
-        .map(|f| f.id)
-}
-
-/// Helper: get a non-cultivable fruit species from the DB.
-pub(super) fn first_non_cultivable_species(sim: &SimState) -> Option<crate::fruit::FruitSpeciesId> {
-    sim.db
-        .fruit_species
-        .iter_all()
-        .find(|f| !f.greenhouse_cultivable)
-        .map(|f| f.id)
-}
-
 /// Spawn multiple test elves.
 pub(super) fn spawn_test_elves(sim: &mut SimState, count: usize) -> Vec<CreatureId> {
     (0..count).map(|_| spawn_elf(sim)).collect()
