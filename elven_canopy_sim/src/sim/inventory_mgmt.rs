@@ -37,8 +37,7 @@ impl SimState {
         owner_kind: crate::db::InventoryOwnerKind,
     ) -> InventoryId {
         self.db
-            .inventories
-            .insert_auto_no_fk(|id| crate::db::Inventory { id, owner_kind })
+            .insert_inventory_auto(|id| crate::db::Inventory { id, owner_kind })
             .unwrap()
     }
 
@@ -90,8 +89,7 @@ impl SimState {
         };
 
         self.db
-            .music_compositions
-            .insert_auto_no_fk(|id| MusicComposition {
+            .insert_music_composition_auto(|id| MusicComposition {
                 id,
                 seed,
                 sections: best_sections,
@@ -127,8 +125,7 @@ impl SimState {
         };
 
         self.db
-            .music_compositions
-            .insert_auto_no_fk(|id| MusicComposition {
+            .insert_music_composition_auto(|id| MusicComposition {
                 id,
                 seed,
                 sections,
@@ -161,24 +158,21 @@ impl SimState {
         // Look up default durability from config when creating fresh items.
         let max_hp = self.config.item_durability.get(&kind).copied().unwrap_or(0);
         let current_hp = max_hp;
-        let _ = self
-            .db
-            .item_stacks
-            .insert_auto_no_fk(|id| crate::db::ItemStack {
-                id,
-                inventory_id: inv_id,
-                kind,
-                quantity,
-                material,
-                quality,
-                current_hp,
-                max_hp,
-                enchantment_id,
-                owner,
-                reserved_by,
-                equipped_slot,
-                dye_color: None,
-            });
+        let _ = self.db.insert_item_stack_auto(|id| crate::db::ItemStack {
+            id,
+            inventory_id: inv_id,
+            kind,
+            quantity,
+            material,
+            quality,
+            current_hp,
+            max_hp,
+            enchantment_id,
+            owner,
+            reserved_by,
+            equipped_slot,
+            dye_color: None,
+        });
         self.inv_normalize(inv_id);
     }
 
@@ -200,24 +194,21 @@ impl SimState {
         enchantment_id: Option<crate::types::EnchantmentId>,
         equipped_slot: Option<inventory::EquipSlot>,
     ) {
-        let _ = self
-            .db
-            .item_stacks
-            .insert_auto_no_fk(|id| crate::db::ItemStack {
-                id,
-                inventory_id: inv_id,
-                kind,
-                quantity,
-                material,
-                quality,
-                current_hp,
-                max_hp,
-                enchantment_id,
-                owner,
-                reserved_by,
-                equipped_slot,
-                dye_color: None,
-            });
+        let _ = self.db.insert_item_stack_auto(|id| crate::db::ItemStack {
+            id,
+            inventory_id: inv_id,
+            kind,
+            quantity,
+            material,
+            quality,
+            current_hp,
+            max_hp,
+            enchantment_id,
+            owner,
+            reserved_by,
+            equipped_slot,
+            dye_color: None,
+        });
         self.inv_normalize(inv_id);
     }
 
@@ -255,7 +246,7 @@ impl SimState {
         for stack in stacks {
             let mut moved = stack;
             moved.inventory_id = dst;
-            let _ = self.db.item_stacks.update_no_fk(moved);
+            let _ = self.db.update_item_stack(moved);
         }
         self.inv_normalize(dst);
     }
@@ -377,11 +368,11 @@ impl SimState {
                 let take = remaining.min(stack.quantity);
                 let new_qty = stack.quantity - take;
                 if new_qty == 0 {
-                    let _ = self.db.item_stacks.remove_no_fk(&stack.id);
+                    let _ = self.db.remove_item_stack(&stack.id);
                 } else {
-                    let _ = self.db.item_stacks.modify_unchecked(&stack.id, |s| {
-                        s.quantity = new_qty;
-                    });
+                    let mut s = stack.clone();
+                    s.quantity = new_qty;
+                    let _ = self.db.update_item_stack(s);
                 }
                 remaining -= take;
                 removed += take;
@@ -462,13 +453,13 @@ impl SimState {
                 // Reserve the entire stack — changes indexed field.
                 let mut s = stack.clone();
                 s.reserved_by = Some(task_id);
-                let _ = self.db.item_stacks.update_no_fk(s);
+                let _ = self.db.update_item_stack(s);
             } else {
                 // Split: reduce this stack and create a new reserved stack.
                 let new_qty = stack.quantity - take;
-                let _ = self.db.item_stacks.modify_unchecked(&stack.id, |s| {
-                    s.quantity = new_qty;
-                });
+                let mut s = stack.clone();
+                s.quantity = new_qty;
+                let _ = self.db.update_item_stack(s);
                 let mat = stack.material;
                 let qual = stack.quality;
                 let chp = stack.current_hp;
@@ -476,24 +467,21 @@ impl SimState {
                 let ench = stack.enchantment_id;
                 let own = stack.owner;
                 let dye = stack.dye_color;
-                let _ = self
-                    .db
-                    .item_stacks
-                    .insert_auto_no_fk(|id| crate::db::ItemStack {
-                        id,
-                        inventory_id: inv_id,
-                        kind,
-                        quantity: take,
-                        material: mat,
-                        quality: qual,
-                        current_hp: chp,
-                        max_hp: mhp,
-                        enchantment_id: ench,
-                        owner: own,
-                        reserved_by: Some(task_id),
-                        equipped_slot: None,
-                        dye_color: dye,
-                    });
+                let _ = self.db.insert_item_stack_auto(|id| crate::db::ItemStack {
+                    id,
+                    inventory_id: inv_id,
+                    kind,
+                    quantity: take,
+                    material: mat,
+                    quality: qual,
+                    current_hp: chp,
+                    max_hp: mhp,
+                    enchantment_id: ench,
+                    owner: own,
+                    reserved_by: Some(task_id),
+                    equipped_slot: None,
+                    dye_color: dye,
+                });
             }
             remaining -= take;
             reserved += take;
@@ -511,7 +499,7 @@ impl SimState {
             if stack.reserved_by == Some(task_id) {
                 let mut s = stack.clone();
                 s.reserved_by = None;
-                let _ = self.db.item_stacks.update_no_fk(s);
+                let _ = self.db.update_item_stack(s);
             }
         }
         self.inv_normalize(inv_id);
@@ -536,11 +524,11 @@ impl SimState {
                 let take = remaining.min(stack.quantity);
                 let new_qty = stack.quantity - take;
                 if new_qty == 0 {
-                    let _ = self.db.item_stacks.remove_no_fk(&stack.id);
+                    let _ = self.db.remove_item_stack(&stack.id);
                 } else {
-                    let _ = self.db.item_stacks.modify_unchecked(&stack.id, |s| {
-                        s.quantity = new_qty;
-                    });
+                    let mut s = stack.clone();
+                    s.quantity = new_qty;
+                    let _ = self.db.update_item_stack(s);
                 }
                 remaining -= take;
                 removed += take;
@@ -686,12 +674,12 @@ impl SimState {
         }
         for (primary_id, total_qty, duplicates) in groups.values() {
             if !duplicates.is_empty() {
-                let qty = *total_qty;
-                let _ = self.db.item_stacks.modify_unchecked(primary_id, |s| {
-                    s.quantity = qty;
-                });
+                if let Some(mut s) = self.db.item_stacks.get(primary_id) {
+                    s.quantity = *total_qty;
+                    let _ = self.db.update_item_stack(s);
+                }
                 for dup_id in duplicates {
-                    let _ = self.db.item_stacks.remove_no_fk(dup_id);
+                    let _ = self.db.remove_item_stack(dup_id);
                 }
             }
         }
@@ -732,15 +720,13 @@ impl SimState {
         let reserved_by = stack.reserved_by;
         let dye_color = stack.dye_color;
         // Shrink original stack.
-        let _ = self
-            .db
-            .item_stacks
-            .modify_unchecked(&stack_id, |s| s.quantity = new_qty);
+        let mut orig = stack;
+        orig.quantity = new_qty;
+        let _ = self.db.update_item_stack(orig);
         // Insert new stack with split quantity.
         let new_id = self
             .db
-            .item_stacks
-            .insert_auto_no_fk(|id| crate::db::ItemStack {
+            .insert_item_stack_auto(|id| crate::db::ItemStack {
                 id,
                 inventory_id: inv_id,
                 kind,
@@ -780,7 +766,7 @@ impl SimState {
         let split_id = self.inv_split_stack(stack_id, quantity)?;
         if let Some(mut stack) = self.db.item_stacks.get(&split_id) {
             stack.inventory_id = dst;
-            let _ = self.db.item_stacks.update_no_fk(stack);
+            let _ = self.db.update_item_stack(stack);
         }
         self.inv_normalize(dst);
         Some(split_id)
@@ -900,7 +886,7 @@ impl SimState {
         }
         let mut updated = stack;
         updated.equipped_slot = Some(slot);
-        let _ = self.db.item_stacks.update_no_fk(updated);
+        let _ = self.db.update_item_stack(updated);
         true
     }
 
@@ -926,7 +912,7 @@ impl SimState {
             None => return false,
         };
         updated.equipped_slot = Some(slot);
-        let _ = self.db.item_stacks.update_no_fk(updated);
+        let _ = self.db.update_item_stack(updated);
         true
     }
 
@@ -943,7 +929,7 @@ impl SimState {
         let stack_id = stack.id;
         let mut updated = stack;
         updated.equipped_slot = None;
-        let _ = self.db.item_stacks.update_no_fk(updated);
+        let _ = self.db.update_item_stack(updated);
         self.inv_normalize(inv_id);
         Some(stack_id)
     }
@@ -991,10 +977,9 @@ impl SimState {
         let new_hp = (target.current_hp - amount).max(0);
         if new_hp > 0 {
             // Item damaged but not broken.
-            let _ = self
-                .db
-                .item_stacks
-                .modify_unchecked(&target_id, |s| s.current_hp = new_hp);
+            let mut t = target;
+            t.current_hp = new_hp;
+            let _ = self.db.update_item_stack(t);
             return false;
         }
         // Item broke — capture fields before removing.
@@ -1002,7 +987,7 @@ impl SimState {
         let material = target.material;
         let owner = target.owner;
         let inv_id = target.inventory_id;
-        let _ = self.db.item_stacks.remove_no_fk(&target_id);
+        let _ = self.db.remove_item_stack(&target_id);
         events.push(SimEvent {
             tick: self.tick,
             kind: SimEventKind::ItemBroken {
@@ -1061,8 +1046,7 @@ impl SimState {
         for row in &existing {
             let _ = self
                 .db
-                .logistics_want_rows
-                .remove_no_fk(&(row.inventory_id, row.seq));
+                .remove_logistics_want_row(&(row.inventory_id, row.seq));
         }
         // Deduplicate by (kind, filter), taking max quantity.
         let mut deduped: std::collections::BTreeMap<
@@ -1076,16 +1060,16 @@ impl SimState {
         }
         // Insert deduplicated wants.
         for ((item_kind, material_filter), target_quantity) in &deduped {
-            let _ =
-                self.db
-                    .logistics_want_rows
-                    .insert_auto_no_fk(|seq| crate::db::LogisticsWantRow {
-                        inventory_id: inv_id,
-                        seq,
-                        item_kind: *item_kind,
-                        material_filter: *material_filter,
-                        target_quantity: *target_quantity,
-                    });
+            let seq = self.db.logistics_want_rows.next_seq();
+            let _ = self
+                .db
+                .insert_logistics_want_row(crate::db::LogisticsWantRow {
+                    inventory_id: inv_id,
+                    seq,
+                    item_kind: *item_kind,
+                    material_filter: *material_filter,
+                    target_quantity: *target_quantity,
+                });
         }
     }
 

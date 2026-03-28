@@ -139,16 +139,12 @@ impl SimState {
         grass_pos: VoxelCoord,
     ) -> bool {
         // Restore food.
-        if let Some(creature) = self.db.creatures.get(&creature_id) {
+        if let Some(mut creature) = self.db.creatures.get(&creature_id) {
             let species_data = &self.species_table[&creature.species];
             let restore = species_data.food_max * species_data.graze_food_restore_pct / 100;
             let food_max = species_data.food_max;
-            let _ = self
-                .db
-                .creatures
-                .modify_unchecked(&creature_id, |creature| {
-                    creature.food = (creature.food + restore).min(food_max);
-                });
+            creature.food = (creature.food + restore).min(food_max);
+            let _ = self.db.update_creature(creature);
         }
 
         // Add to grassless set.

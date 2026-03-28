@@ -19,10 +19,11 @@ impl SimState {
     pub(crate) fn start_pickup_action(&mut self, creature_id: CreatureId) {
         let duration = self.config.haul_pickup_action_ticks;
         let tick = self.tick;
-        let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+        if let Some(mut c) = self.db.creatures.get(&creature_id) {
             c.action_kind = ActionKind::PickUp;
             c.next_available_tick = Some(tick + duration);
-        });
+            let _ = self.db.update_creature(c);
+        }
         self.event_queue.schedule(
             self.tick + duration,
             ScheduledEventKind::CreatureActivation { creature_id },
@@ -100,7 +101,7 @@ impl SimState {
                 .next()
             && self.inv_items(pile.inventory_id).is_empty()
         {
-            let _ = self.db.ground_piles.remove_no_fk(&pile.id);
+            let _ = self.db.remove_ground_pile(&pile.id);
         }
 
         if picked_up == 0 {
@@ -113,19 +114,18 @@ impl SimState {
         let mut updated_haul = haul.clone();
         updated_haul.phase = task::HaulPhase::GoingToDestination;
         updated_haul.quantity = picked_up;
-        let _ = self.db.task_haul_data.update_no_fk(updated_haul);
+        let _ = self.db.update_task_haul_data(updated_haul);
         // Update task location for the new destination.
         let dest_coord = destination_coord;
-        let _ = self.db.tasks.modify_unchecked(&task_id, |task| {
+        if let Some(mut task) = self.db.tasks.get(&task_id) {
             task.location = dest_coord;
-        });
+            let _ = self.db.update_task(task);
+        }
         // Clear cached path so creature re-pathfinds to new destination.
-        let _ = self
-            .db
-            .creatures
-            .modify_unchecked(&creature_id, |creature| {
-                creature.path = None;
-            });
+        if let Some(mut creature) = self.db.creatures.get(&creature_id) {
+            creature.path = None;
+            let _ = self.db.update_creature(creature);
+        }
         false
     }
 
@@ -134,10 +134,11 @@ impl SimState {
     pub(crate) fn start_dropoff_action(&mut self, creature_id: CreatureId) {
         let duration = self.config.haul_dropoff_action_ticks;
         let tick = self.tick;
-        let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+        if let Some(mut c) = self.db.creatures.get(&creature_id) {
             c.action_kind = ActionKind::DropOff;
             c.next_available_tick = Some(tick + duration);
-        });
+            let _ = self.db.update_creature(c);
+        }
         self.event_queue.schedule(
             self.tick + duration,
             ScheduledEventKind::CreatureActivation { creature_id },
@@ -238,7 +239,7 @@ impl SimState {
             .is_some_and(|t| t.kind_tag == crate::db::TaskKindTag::Harvest);
         if is_harvest && let Some(mut t) = self.db.tasks.get(&task_id) {
             t.state = task::TaskState::Complete;
-            let _ = self.db.tasks.update_no_fk(t);
+            let _ = self.db.update_task(t);
         }
     }
 
@@ -445,18 +446,15 @@ impl SimState {
                     // Find destination coordinate.
                     let dest_anchor = self.db.structures.get(building_id).unwrap().anchor;
 
-                    // Reserve items at source.
+                    // Insert task before reserving so the task row exists for
+                    // FK validation on item_stacks.reserved_by.
                     let task_id = TaskId::new(&mut self.rng);
-                    let hauled_material =
-                        self.reserve_haul_items(&source, want.item_kind, filter, quantity, task_id);
-
-                    // Create haul task.
                     let new_task = task::Task {
                         id: task_id,
                         kind: task::TaskKind::Haul {
                             item_kind: want.item_kind,
                             quantity,
-                            source,
+                            source: source.clone(),
                             destination: *building_id,
                             phase: task::HaulPhase::GoingToSource,
                             destination_coord: dest_anchor,
@@ -472,15 +470,17 @@ impl SimState {
                         prerequisite_task_id: None,
                         required_civ_id: self.player_civ_id,
                     };
-                    // Store material filter and hauled material on the haul data extension.
-                    // These are set after insert_task creates the base TaskHaulData row.
                     self.insert_task(new_task);
+
+                    // Reserve items at source (task row now exists for FK).
+                    let hauled_material =
+                        self.reserve_haul_items(&source, want.item_kind, filter, quantity, task_id);
+
                     // Patch the TaskHaulData row with material info.
-                    if self.task_haul_data(task_id).is_some() {
-                        let _ = self.db.task_haul_data.modify_unchecked(&task_id, |h| {
-                            h.material_filter = filter;
-                            h.hauled_material = hauled_material;
-                        });
+                    if let Some(mut h) = self.task_haul_data(task_id) {
+                        h.material_filter = filter;
+                        h.hauled_material = hauled_material;
+                        let _ = self.db.update_task_haul_data(h);
                     }
                     tasks_created += 1;
                 }

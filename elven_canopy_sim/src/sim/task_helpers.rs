@@ -153,296 +153,10 @@ impl SimState {
         let task_id = task.id;
         let kind = &task.kind;
 
-        // Populate relationship and extension tables.
-        match kind {
-            task::TaskKind::Build { project_id } => {
-                let _ = self.db.task_blueprint_refs.insert_auto_no_fk(|seq| {
-                    crate::db::TaskBlueprintRef {
-                        task_id,
-                        seq,
-                        project_id: *project_id,
-                    }
-                });
-            }
-            task::TaskKind::DineAtHall { structure_id } => {
-                let _ = self.db.task_structure_refs.insert_auto_no_fk(|seq| {
-                    crate::db::TaskStructureRef {
-                        seq,
-                        task_id,
-                        structure_id: *structure_id,
-                        role: crate::db::TaskStructureRole::DineAt,
-                    }
-                });
-                // DiningSeat voxel ref is inserted at task creation site (heartbeat),
-                // since the table position is determined during find_nearest_dining_hall.
-            }
-            task::TaskKind::EatFruit { fruit_pos } | task::TaskKind::Harvest { fruit_pos } => {
-                let _ = self
-                    .db
-                    .task_voxel_refs
-                    .insert_auto_no_fk(|seq| crate::db::TaskVoxelRef {
-                        seq,
-                        task_id,
-                        coord: *fruit_pos,
-                        role: crate::db::TaskVoxelRole::FruitTarget,
-                    });
-            }
-            task::TaskKind::Furnish { structure_id } => {
-                let _ = self.db.task_structure_refs.insert_auto_no_fk(|seq| {
-                    crate::db::TaskStructureRef {
-                        seq,
-                        task_id,
-                        structure_id: *structure_id,
-                        role: crate::db::TaskStructureRole::FurnishTarget,
-                    }
-                });
-            }
-            task::TaskKind::Sleep { bed_pos, location } => {
-                if let Some(pos) = bed_pos {
-                    let _ =
-                        self.db
-                            .task_voxel_refs
-                            .insert_auto_no_fk(|seq| crate::db::TaskVoxelRef {
-                                seq,
-                                task_id,
-                                coord: *pos,
-                                role: crate::db::TaskVoxelRole::BedPosition,
-                            });
-                }
-                let sleep_loc = match location {
-                    task::SleepLocation::Home(sid) => {
-                        let _ = self.db.task_structure_refs.insert_auto_no_fk(|seq| {
-                            crate::db::TaskStructureRef {
-                                seq,
-                                task_id,
-                                structure_id: *sid,
-                                role: crate::db::TaskStructureRole::SleepAt,
-                            }
-                        });
-                        crate::db::SleepLocationType::Home
-                    }
-                    task::SleepLocation::Dormitory(sid) => {
-                        let _ = self.db.task_structure_refs.insert_auto_no_fk(|seq| {
-                            crate::db::TaskStructureRef {
-                                seq,
-                                task_id,
-                                structure_id: *sid,
-                                role: crate::db::TaskStructureRole::SleepAt,
-                            }
-                        });
-                        crate::db::SleepLocationType::Dormitory
-                    }
-                    task::SleepLocation::Ground => crate::db::SleepLocationType::Ground,
-                };
-                let _ = self
-                    .db
-                    .task_sleep_data
-                    .insert_no_fk(crate::db::TaskSleepData {
-                        task_id,
-                        sleep_location: sleep_loc,
-                    });
-            }
-            task::TaskKind::Haul {
-                item_kind,
-                quantity,
-                source,
-                destination,
-                phase,
-                destination_coord,
-            } => {
-                // Destination structure ref.
-                let _ = self.db.task_structure_refs.insert_auto_no_fk(|seq| {
-                    crate::db::TaskStructureRef {
-                        seq,
-                        task_id,
-                        structure_id: *destination,
-                        role: crate::db::TaskStructureRole::HaulDestination,
-                    }
-                });
-                // Source ref.
-                let source_kind = match source {
-                    task::HaulSource::GroundPile(pos) => {
-                        let _ = self.db.task_voxel_refs.insert_auto_no_fk(|seq| {
-                            crate::db::TaskVoxelRef {
-                                seq,
-                                task_id,
-                                coord: *pos,
-                                role: crate::db::TaskVoxelRole::HaulSourcePile,
-                            }
-                        });
-                        crate::db::HaulSourceKind::Pile
-                    }
-                    task::HaulSource::Building(sid) => {
-                        let _ = self.db.task_structure_refs.insert_auto_no_fk(|seq| {
-                            crate::db::TaskStructureRef {
-                                seq,
-                                task_id,
-                                structure_id: *sid,
-                                role: crate::db::TaskStructureRole::HaulSourceBuilding,
-                            }
-                        });
-                        crate::db::HaulSourceKind::Building
-                    }
-                };
-                let _ = self
-                    .db
-                    .task_haul_data
-                    .insert_no_fk(crate::db::TaskHaulData {
-                        task_id,
-                        item_kind: *item_kind,
-                        quantity: *quantity,
-                        phase: *phase,
-                        source_kind,
-                        destination_coord: *destination_coord,
-                        material_filter: inventory::MaterialFilter::Any,
-                        hauled_material: None,
-                    });
-            }
-            task::TaskKind::AcquireItem {
-                source,
-                item_kind,
-                quantity,
-            } => {
-                let source_kind = match source {
-                    task::HaulSource::GroundPile(pos) => {
-                        let _ = self.db.task_voxel_refs.insert_auto_no_fk(|seq| {
-                            crate::db::TaskVoxelRef {
-                                seq,
-                                task_id,
-                                coord: *pos,
-                                role: crate::db::TaskVoxelRole::AcquireSourcePile,
-                            }
-                        });
-                        crate::db::HaulSourceKind::Pile
-                    }
-                    task::HaulSource::Building(sid) => {
-                        let _ = self.db.task_structure_refs.insert_auto_no_fk(|seq| {
-                            crate::db::TaskStructureRef {
-                                seq,
-                                task_id,
-                                structure_id: *sid,
-                                role: crate::db::TaskStructureRole::AcquireSourceBuilding,
-                            }
-                        });
-                        crate::db::HaulSourceKind::Building
-                    }
-                };
-                let _ = self
-                    .db
-                    .task_acquire_data
-                    .insert_no_fk(crate::db::TaskAcquireData {
-                        task_id,
-                        item_kind: *item_kind,
-                        quantity: *quantity,
-                        source_kind,
-                    });
-            }
-            task::TaskKind::Craft {
-                structure_id,
-                active_recipe_id,
-            } => {
-                let _ = self.db.task_structure_refs.insert_auto_no_fk(|seq| {
-                    crate::db::TaskStructureRef {
-                        seq,
-                        task_id,
-                        structure_id: *structure_id,
-                        role: crate::db::TaskStructureRole::CraftAt,
-                    }
-                });
-                // TaskCraftData is populated by the crafting monitor after
-                // insert_task — it overwrites recipe/material/active_recipe_id.
-                // We insert a placeholder here for task decomposition.
-                let _ = self
-                    .db
-                    .task_craft_data
-                    .insert_no_fk(crate::db::TaskCraftData {
-                        task_id,
-                        recipe: crate::recipe::Recipe::Extract,
-                        material: None,
-                        active_recipe_id: *active_recipe_id,
-                    });
-            }
-            task::TaskKind::AttackTarget { target } => {
-                let _ =
-                    self.db
-                        .task_attack_target_data
-                        .insert_no_fk(crate::db::TaskAttackTargetData {
-                            task_id,
-                            target: *target,
-                            path_failures: 0,
-                        });
-            }
-            task::TaskKind::AcquireMilitaryEquipment {
-                source,
-                item_kind,
-                quantity,
-            } => {
-                let source_kind = match source {
-                    task::HaulSource::GroundPile(pos) => {
-                        let _ = self.db.task_voxel_refs.insert_auto_no_fk(|seq| {
-                            crate::db::TaskVoxelRef {
-                                seq,
-                                task_id,
-                                coord: *pos,
-                                role: crate::db::TaskVoxelRole::AcquireSourcePile,
-                            }
-                        });
-                        crate::db::HaulSourceKind::Pile
-                    }
-                    task::HaulSource::Building(sid) => {
-                        let _ = self.db.task_structure_refs.insert_auto_no_fk(|seq| {
-                            crate::db::TaskStructureRef {
-                                seq,
-                                task_id,
-                                structure_id: *sid,
-                                role: crate::db::TaskStructureRole::AcquireSourceBuilding,
-                            }
-                        });
-                        crate::db::HaulSourceKind::Building
-                    }
-                };
-                let _ = self
-                    .db
-                    .task_acquire_data
-                    .insert_no_fk(crate::db::TaskAcquireData {
-                        task_id,
-                        item_kind: *item_kind,
-                        quantity: *quantity,
-                        source_kind,
-                    });
-            }
-            task::TaskKind::Tame { target } => {
-                let _ = self
-                    .db
-                    .task_tame_data
-                    .insert_no_fk(crate::db::TaskTameData {
-                        task_id,
-                        target: *target,
-                    });
-            }
-            // AttackMove — extension data inserted by the command handler
-            // (command_attack_move) since the destination VoxelCoord is not
-            // carried in the TaskKind variant.
-            task::TaskKind::AttackMove => {}
-            task::TaskKind::Graze { grass_pos } => {
-                let _ = self
-                    .db
-                    .task_voxel_refs
-                    .insert_auto_no_fk(|seq| crate::db::TaskVoxelRef {
-                        seq,
-                        task_id,
-                        coord: *grass_pos,
-                        role: crate::db::TaskVoxelRole::GrazeTarget,
-                    });
-            }
-            // GoTo, EatBread, Mope — no extra data.
-            task::TaskKind::GoTo | task::TaskKind::EatBread | task::TaskKind::Mope => {}
-        }
-
-        // Insert the base task row.
+        // Insert the base task row first (extension tables have FK → tasks).
         let db_task = crate::db::Task {
             id: task.id,
-            kind_tag: crate::db::TaskKindTag::from_kind(&task.kind),
+            kind_tag: crate::db::TaskKindTag::from_kind(kind),
             state: task.state,
             location: task.location,
             progress: task.progress,
@@ -454,6 +168,278 @@ impl SimState {
             prerequisite_task_id: task.prerequisite_task_id,
             required_civ_id: task.required_civ_id,
         };
-        self.db.tasks.insert_no_fk(db_task).unwrap();
+        self.db.insert_task(db_task).unwrap();
+
+        // Populate relationship and extension tables.
+        match kind {
+            task::TaskKind::Build { project_id } => {
+                let seq = self.db.task_blueprint_refs.next_seq();
+                let _ = self
+                    .db
+                    .insert_task_blueprint_ref(crate::db::TaskBlueprintRef {
+                        task_id,
+                        seq,
+                        project_id: *project_id,
+                    });
+            }
+            task::TaskKind::DineAtHall { structure_id } => {
+                let seq = self.db.task_structure_refs.next_seq();
+                let _ = self
+                    .db
+                    .insert_task_structure_ref(crate::db::TaskStructureRef {
+                        seq,
+                        task_id,
+                        structure_id: *structure_id,
+                        role: crate::db::TaskStructureRole::DineAt,
+                    });
+                // DiningSeat voxel ref is inserted at task creation site (heartbeat),
+                // since the table position is determined during find_nearest_dining_hall.
+            }
+            task::TaskKind::EatFruit { fruit_pos } | task::TaskKind::Harvest { fruit_pos } => {
+                let seq = self.db.task_voxel_refs.next_seq();
+                let _ = self.db.insert_task_voxel_ref(crate::db::TaskVoxelRef {
+                    seq,
+                    task_id,
+                    coord: *fruit_pos,
+                    role: crate::db::TaskVoxelRole::FruitTarget,
+                });
+            }
+            task::TaskKind::Furnish { structure_id } => {
+                let seq = self.db.task_structure_refs.next_seq();
+                let _ = self
+                    .db
+                    .insert_task_structure_ref(crate::db::TaskStructureRef {
+                        seq,
+                        task_id,
+                        structure_id: *structure_id,
+                        role: crate::db::TaskStructureRole::FurnishTarget,
+                    });
+            }
+            task::TaskKind::Sleep { bed_pos, location } => {
+                if let Some(pos) = bed_pos {
+                    let seq = self.db.task_voxel_refs.next_seq();
+                    let _ = self.db.insert_task_voxel_ref(crate::db::TaskVoxelRef {
+                        seq,
+                        task_id,
+                        coord: *pos,
+                        role: crate::db::TaskVoxelRole::BedPosition,
+                    });
+                }
+                let sleep_loc = match location {
+                    task::SleepLocation::Home(sid) => {
+                        let seq = self.db.task_structure_refs.next_seq();
+                        let _ = self
+                            .db
+                            .insert_task_structure_ref(crate::db::TaskStructureRef {
+                                seq,
+                                task_id,
+                                structure_id: *sid,
+                                role: crate::db::TaskStructureRole::SleepAt,
+                            });
+                        crate::db::SleepLocationType::Home
+                    }
+                    task::SleepLocation::Dormitory(sid) => {
+                        let seq = self.db.task_structure_refs.next_seq();
+                        let _ = self
+                            .db
+                            .insert_task_structure_ref(crate::db::TaskStructureRef {
+                                seq,
+                                task_id,
+                                structure_id: *sid,
+                                role: crate::db::TaskStructureRole::SleepAt,
+                            });
+                        crate::db::SleepLocationType::Dormitory
+                    }
+                    task::SleepLocation::Ground => crate::db::SleepLocationType::Ground,
+                };
+                let _ = self.db.insert_task_sleep_data(crate::db::TaskSleepData {
+                    task_id,
+                    sleep_location: sleep_loc,
+                });
+            }
+            task::TaskKind::Haul {
+                item_kind,
+                quantity,
+                source,
+                destination,
+                phase,
+                destination_coord,
+            } => {
+                // Destination structure ref.
+                let seq = self.db.task_structure_refs.next_seq();
+                let _ = self
+                    .db
+                    .insert_task_structure_ref(crate::db::TaskStructureRef {
+                        seq,
+                        task_id,
+                        structure_id: *destination,
+                        role: crate::db::TaskStructureRole::HaulDestination,
+                    });
+                // Source ref.
+                let source_kind = match source {
+                    task::HaulSource::GroundPile(pos) => {
+                        let seq = self.db.task_voxel_refs.next_seq();
+                        let _ = self.db.insert_task_voxel_ref(crate::db::TaskVoxelRef {
+                            seq,
+                            task_id,
+                            coord: *pos,
+                            role: crate::db::TaskVoxelRole::HaulSourcePile,
+                        });
+                        crate::db::HaulSourceKind::Pile
+                    }
+                    task::HaulSource::Building(sid) => {
+                        let seq = self.db.task_structure_refs.next_seq();
+                        let _ = self
+                            .db
+                            .insert_task_structure_ref(crate::db::TaskStructureRef {
+                                seq,
+                                task_id,
+                                structure_id: *sid,
+                                role: crate::db::TaskStructureRole::HaulSourceBuilding,
+                            });
+                        crate::db::HaulSourceKind::Building
+                    }
+                };
+                let _ = self.db.insert_task_haul_data(crate::db::TaskHaulData {
+                    task_id,
+                    item_kind: *item_kind,
+                    quantity: *quantity,
+                    phase: *phase,
+                    source_kind,
+                    destination_coord: *destination_coord,
+                    material_filter: inventory::MaterialFilter::Any,
+                    hauled_material: None,
+                });
+            }
+            task::TaskKind::AcquireItem {
+                source,
+                item_kind,
+                quantity,
+            } => {
+                let source_kind = match source {
+                    task::HaulSource::GroundPile(pos) => {
+                        let seq = self.db.task_voxel_refs.next_seq();
+                        let _ = self.db.insert_task_voxel_ref(crate::db::TaskVoxelRef {
+                            seq,
+                            task_id,
+                            coord: *pos,
+                            role: crate::db::TaskVoxelRole::AcquireSourcePile,
+                        });
+                        crate::db::HaulSourceKind::Pile
+                    }
+                    task::HaulSource::Building(sid) => {
+                        let seq = self.db.task_structure_refs.next_seq();
+                        let _ = self
+                            .db
+                            .insert_task_structure_ref(crate::db::TaskStructureRef {
+                                seq,
+                                task_id,
+                                structure_id: *sid,
+                                role: crate::db::TaskStructureRole::AcquireSourceBuilding,
+                            });
+                        crate::db::HaulSourceKind::Building
+                    }
+                };
+                let _ = self
+                    .db
+                    .insert_task_acquire_data(crate::db::TaskAcquireData {
+                        task_id,
+                        item_kind: *item_kind,
+                        quantity: *quantity,
+                        source_kind,
+                    });
+            }
+            task::TaskKind::Craft {
+                structure_id,
+                active_recipe_id,
+            } => {
+                let seq = self.db.task_structure_refs.next_seq();
+                let _ = self
+                    .db
+                    .insert_task_structure_ref(crate::db::TaskStructureRef {
+                        seq,
+                        task_id,
+                        structure_id: *structure_id,
+                        role: crate::db::TaskStructureRole::CraftAt,
+                    });
+                // TaskCraftData is populated by the crafting monitor after
+                // insert_task — it overwrites recipe/material/active_recipe_id.
+                // We insert a placeholder here for task decomposition.
+                let _ = self.db.insert_task_craft_data(crate::db::TaskCraftData {
+                    task_id,
+                    recipe: crate::recipe::Recipe::Extract,
+                    material: None,
+                    active_recipe_id: *active_recipe_id,
+                });
+            }
+            task::TaskKind::AttackTarget { target } => {
+                let _ = self
+                    .db
+                    .insert_task_attack_target_data(crate::db::TaskAttackTargetData {
+                        task_id,
+                        target: *target,
+                        path_failures: 0,
+                    });
+            }
+            task::TaskKind::AcquireMilitaryEquipment {
+                source,
+                item_kind,
+                quantity,
+            } => {
+                let source_kind = match source {
+                    task::HaulSource::GroundPile(pos) => {
+                        let seq = self.db.task_voxel_refs.next_seq();
+                        let _ = self.db.insert_task_voxel_ref(crate::db::TaskVoxelRef {
+                            seq,
+                            task_id,
+                            coord: *pos,
+                            role: crate::db::TaskVoxelRole::AcquireSourcePile,
+                        });
+                        crate::db::HaulSourceKind::Pile
+                    }
+                    task::HaulSource::Building(sid) => {
+                        let seq = self.db.task_structure_refs.next_seq();
+                        let _ = self
+                            .db
+                            .insert_task_structure_ref(crate::db::TaskStructureRef {
+                                seq,
+                                task_id,
+                                structure_id: *sid,
+                                role: crate::db::TaskStructureRole::AcquireSourceBuilding,
+                            });
+                        crate::db::HaulSourceKind::Building
+                    }
+                };
+                let _ = self
+                    .db
+                    .insert_task_acquire_data(crate::db::TaskAcquireData {
+                        task_id,
+                        item_kind: *item_kind,
+                        quantity: *quantity,
+                        source_kind,
+                    });
+            }
+            task::TaskKind::Tame { target } => {
+                let _ = self.db.insert_task_tame_data(crate::db::TaskTameData {
+                    task_id,
+                    target: *target,
+                });
+            }
+            // AttackMove — extension data inserted by the command handler
+            // (command_attack_move) since the destination VoxelCoord is not
+            // carried in the TaskKind variant.
+            task::TaskKind::AttackMove => {}
+            task::TaskKind::Graze { grass_pos } => {
+                let seq = self.db.task_voxel_refs.next_seq();
+                let _ = self.db.insert_task_voxel_ref(crate::db::TaskVoxelRef {
+                    seq,
+                    task_id,
+                    coord: *grass_pos,
+                    role: crate::db::TaskVoxelRole::GrazeTarget,
+                });
+            }
+            // GoTo, EatBread, Mope — no extra data.
+            task::TaskKind::GoTo | task::TaskKind::EatBread | task::TaskKind::Mope => {}
+        }
     }
 }

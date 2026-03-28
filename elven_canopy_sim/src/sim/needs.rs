@@ -79,16 +79,12 @@ impl SimState {
         fruit_pos: VoxelCoord,
     ) -> bool {
         // Restore food.
-        if let Some(creature) = self.db.creatures.get(&creature_id) {
+        if let Some(mut creature) = self.db.creatures.get(&creature_id) {
             let species_data = &self.species_table[&creature.species];
             let restore = species_data.food_max * species_data.food_restore_pct / 100;
             let food_max = species_data.food_max;
-            let _ = self
-                .db
-                .creatures
-                .modify_unchecked(&creature_id, |creature| {
-                    creature.food = (creature.food + restore).min(food_max);
-                });
+            creature.food = (creature.food + restore).min(food_max);
+            let _ = self.db.update_creature(creature);
         }
 
         // Remove fruit from world, tree's fruit_positions, and species map.
@@ -208,13 +204,12 @@ impl SimState {
             }
             let take = remaining.min(stack.quantity);
             if let Some(split_id) = self.inv_split_stack(stack.id, take) {
-                // Move the split stack to creature inventory (uses update_no_fk
-                // because inventory_id is an indexed field).
+                // Move the split stack to creature inventory.
                 if let Some(mut moved) = self.db.item_stacks.get(&split_id) {
                     moved.inventory_id = creature_inv;
                     moved.owner = Some(creature_id);
                     moved.reserved_by = None;
-                    let _ = self.db.item_stacks.update_no_fk(moved);
+                    let _ = self.db.update_item_stack(moved);
                 }
                 moved_ids.push(split_id);
                 remaining -= take;
@@ -241,7 +236,7 @@ impl SimState {
                         && let Some(mut s) = self.db.item_stacks.get(&equip_id)
                     {
                         s.equipped_slot = Some(slot);
-                        let _ = self.db.item_stacks.update_no_fk(s);
+                        let _ = self.db.update_item_stack(s);
                     }
                 }
             }
@@ -261,7 +256,7 @@ impl SimState {
                 .next()
             && self.inv_items(pile.inventory_id).is_empty()
         {
-            let _ = self.db.ground_piles.remove_no_fk(&pile.id);
+            let _ = self.db.remove_ground_pile(&pile.id);
         }
 
         self.complete_task(task_id);
@@ -299,7 +294,7 @@ impl SimState {
         }
         if let Some(mut t) = self.db.tasks.get(&task_id) {
             t.state = task::TaskState::Complete;
-            let _ = self.db.tasks.update_no_fk(t);
+            let _ = self.db.update_task(t);
         }
     }
 
@@ -360,7 +355,7 @@ impl SimState {
                     moved.inventory_id = creature_inv;
                     moved.reserved_by = None;
                     // ownership unchanged — stays None or whatever it was
-                    let _ = self.db.item_stacks.update_no_fk(moved);
+                    let _ = self.db.update_item_stack(moved);
                 }
                 moved_ids.push(split_id);
                 remaining -= take;
@@ -400,7 +395,7 @@ impl SimState {
                 .next()
             && self.inv_items(pile.inventory_id).is_empty()
         {
-            let _ = self.db.ground_piles.remove_no_fk(&pile.id);
+            let _ = self.db.remove_ground_pile(&pile.id);
         }
 
         self.complete_task(task_id);
@@ -430,9 +425,11 @@ impl SimState {
                 creature_id,
                 1,
             );
-            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+            // Re-fetch after inv_remove_owned_item may have mutated DB.
+            if let Some(mut c) = self.db.creatures.get(&creature_id) {
                 c.food = (c.food + restore).min(food_max);
-            });
+                let _ = self.db.update_creature(c);
+            }
         }
 
         // Generate AteAlone thought (eating outside a dining hall).
@@ -474,13 +471,12 @@ impl SimState {
         }
 
         // Restore food.
-        if let Some(creature) = self.db.creatures.get(&creature_id) {
+        if let Some(mut creature) = self.db.creatures.get(&creature_id) {
             let species_data = &self.species_table[&creature.species];
             let restore = species_data.food_max * species_data.food_restore_pct / 100;
             let food_max = species_data.food_max;
-            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
-                c.food = (c.food + restore).min(food_max);
-            });
+            creature.food = (creature.food + restore).min(food_max);
+            let _ = self.db.update_creature(creature);
         }
 
         // Generate AteDining thought.
@@ -511,7 +507,7 @@ impl SimState {
         // Mark task complete so it isn't re-claimed.
         if let Some(mut t) = self.db.tasks.get(&task_id) {
             t.state = crate::task::TaskState::Complete;
-            let _ = self.db.tasks.update_no_fk(t);
+            let _ = self.db.update_task(t);
         }
     }
 
@@ -737,10 +733,11 @@ impl SimState {
         }
 
         let tick = self.tick;
-        let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+        if let Some(mut c) = self.db.creatures.get(&creature_id) {
             c.action_kind = ActionKind::Sleep;
             c.next_available_tick = Some(tick + duration);
-        });
+            let _ = self.db.update_creature(c);
+        }
         self.event_queue.schedule(
             self.tick + duration,
             ScheduledEventKind::CreatureActivation { creature_id },
@@ -762,22 +759,19 @@ impl SimState {
 
         // Restore rest: use rest_per_sleep_tick * sleep_action_ticks to get
         // the per-action restore amount (preserves total balance).
-        if let Some(creature) = self.db.creatures.get(&creature_id) {
+        if let Some(mut creature) = self.db.creatures.get(&creature_id) {
             let species_data = &self.species_table[&creature.species];
             let rest_max = species_data.rest_max;
             let restore = species_data.rest_per_sleep_tick * self.config.sleep_action_ticks as i64;
-            let _ = self
-                .db
-                .creatures
-                .modify_unchecked(&creature_id, |creature| {
-                    creature.rest = (creature.rest + restore).min(rest_max);
-                });
+            creature.rest = (creature.rest + restore).min(rest_max);
+            let _ = self.db.update_creature(creature);
         }
 
         // Increment progress by 1 (one action).
-        let _ = self.db.tasks.modify_unchecked(&task_id, |t| {
+        if let Some(mut t) = self.db.tasks.get(&task_id) {
             t.progress += 1;
-        });
+            let _ = self.db.update_task(t);
+        }
 
         // Check if done by progress or rest full.
         let done = self
@@ -817,10 +811,11 @@ impl SimState {
     pub(crate) fn start_mope_action(&mut self, creature_id: CreatureId) {
         let duration = self.config.mope_action_ticks;
         let tick = self.tick;
-        let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+        if let Some(mut c) = self.db.creatures.get(&creature_id) {
             c.action_kind = ActionKind::Mope;
             c.next_available_tick = Some(tick + duration);
-        });
+            let _ = self.db.update_creature(c);
+        }
         self.event_queue.schedule(
             self.tick + duration,
             ScheduledEventKind::CreatureActivation { creature_id },
@@ -841,9 +836,10 @@ impl SimState {
         };
 
         let increment = self.config.mope_action_ticks as i64;
-        let _ = self.db.tasks.modify_unchecked(&task_id, |t| {
+        if let Some(mut t) = self.db.tasks.get(&task_id) {
             t.progress += increment;
-        });
+            let _ = self.db.update_task(t);
+        }
 
         let done = self
             .db

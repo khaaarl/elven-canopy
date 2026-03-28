@@ -129,7 +129,7 @@ impl SimState {
             last_dance_tick: 0,
         };
 
-        self.db.creatures.insert_no_fk(creature).unwrap();
+        self.db.insert_creature(creature).unwrap();
 
         // Roll biological traits from the PRNG and store them.
         self.roll_creature_traits(creature_id, species);
@@ -138,10 +138,11 @@ impl SimState {
         let constitution = self.trait_int(creature_id, TraitKind::Constitution, 0);
         if constitution != 0 {
             let effective_hp = crate::stats::apply_stat_multiplier(hp_max, constitution).max(1);
-            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+            if let Some(mut c) = self.db.creatures.get(&creature_id) {
                 c.hp_max = effective_hp;
                 c.hp = effective_hp; // spawn at full HP
-            });
+                let _ = self.db.update_creature(c);
+            }
         }
 
         // Apply Willpower to mana pool size (after traits are rolled).
@@ -149,10 +150,11 @@ impl SimState {
         let willpower = self.trait_int(creature_id, TraitKind::Willpower, 0);
         if willpower != 0 && mp_max > 0 {
             let effective_mp = crate::stats::apply_stat_multiplier(mp_max, willpower).max(1);
-            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+            if let Some(mut c) = self.db.creatures.get(&creature_id) {
                 c.mp_max = effective_mp;
                 c.mp = effective_mp; // spawn at full mana
-            });
+                let _ = self.db.update_creature(c);
+            }
         }
 
         // Register in spatial index.
@@ -212,13 +214,10 @@ impl SimState {
         // Assign default path (Outcast) for elves. Other species don't
         // participate in the path system.
         if species == Species::Elf {
-            let _ = self
-                .db
-                .path_assignments
-                .insert_no_fk(crate::db::PathAssignment {
-                    creature_id,
-                    path_id: PathId::Outcast,
-                });
+            let _ = self.db.insert_path_assignment(crate::db::PathAssignment {
+                creature_id,
+                path_id: PathId::Outcast,
+            });
         }
 
         // Schedule first activation (drives movement — wander or task work).
@@ -462,7 +461,7 @@ impl SimState {
         trait_kind: TraitKind,
         value: TraitValue,
     ) {
-        let _ = self.db.creature_traits.insert_no_fk(CreatureTrait {
+        let _ = self.db.insert_creature_trait(CreatureTrait {
             creature_id,
             trait_kind,
             value: value.clone(),
@@ -555,8 +554,7 @@ impl SimState {
         } else {
             let inv_id = self.create_inventory(crate::db::InventoryOwnerKind::GroundPile);
             self.db
-                .ground_piles
-                .insert_auto_no_fk(|id| crate::db::GroundPile {
+                .insert_ground_pile_auto(|id| crate::db::GroundPile {
                     id,
                     position: pos,
                     inventory_id: inv_id,
@@ -625,17 +623,16 @@ impl SimState {
                 // Merge inventories and delete the floating pile.
                 let src_inv = pile.inventory_id;
                 self.inv_merge(src_inv, target_pile.inventory_id);
-                let _ = self.db.ground_piles.remove_no_fk(&pile_id);
-                let _ = self.db.inventories.remove_no_fk(&src_inv);
+                let _ = self.db.remove_ground_pile(&pile_id);
+                let _ = self.db.remove_inventory(&src_inv);
             } else {
                 // No pile at landing — remove and re-insert to update the
                 // unique position index.
                 let inv_id = pile.inventory_id;
-                let _ = self.db.ground_piles.remove_no_fk(&pile_id);
+                let _ = self.db.remove_ground_pile(&pile_id);
                 let _ = self
                     .db
-                    .ground_piles
-                    .insert_auto_no_fk(|new_id| crate::db::GroundPile {
+                    .insert_ground_pile_auto(|new_id| crate::db::GroundPile {
                         id: new_id,
                         position: landing,
                         inventory_id: inv_id,
@@ -792,10 +789,11 @@ impl SimState {
         }
 
         // Move creature to landing position.
-        let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+        if let Some(mut c) = self.db.creatures.get(&creature_id) {
             c.position = landing;
             c.path = None;
-        });
+            let _ = self.db.update_creature(c);
+        }
         self.update_creature_spatial_index(creature_id, species, old_pos, landing);
 
         // Apply fall damage.
@@ -884,14 +882,14 @@ impl SimState {
                 .count();
             if remaining == 0 && matches!(task.state, task::TaskState::InProgress) {
                 task.state = task::TaskState::Available;
-                let _ = self.db.tasks.update_no_fk(task);
+                let _ = self.db.update_task(task);
             }
         }
         if let Some(mut creature) = self.db.creatures.get(&creature_id) {
             creature.current_task = None;
             creature.path = None;
             creature.wasted_action_count = 0;
-            let _ = self.db.creatures.update_no_fk(creature);
+            let _ = self.db.update_creature(creature);
         }
     }
 
@@ -943,7 +941,7 @@ impl SimState {
                     c.current_task = None;
                     c.path = None;
                     c.wasted_action_count = 0;
-                    let _ = self.db.creatures.update_no_fk(c);
+                    let _ = self.db.update_creature(c);
                 }
                 return;
             }
@@ -985,7 +983,7 @@ impl SimState {
             | crate::db::TaskKindTag::AttackMove => {
                 if let Some(mut t) = self.db.tasks.get(&task_id) {
                     t.state = task::TaskState::Complete;
-                    let _ = self.db.tasks.update_no_fk(t);
+                    let _ = self.db.update_task(t);
                 }
             }
         }
@@ -1019,7 +1017,7 @@ impl SimState {
         for tid in queued {
             if let Some(mut t) = self.db.tasks.get(&tid) {
                 t.state = task::TaskState::Complete;
-                let _ = self.db.tasks.update_no_fk(t);
+                let _ = self.db.update_task(t);
             }
         }
     }

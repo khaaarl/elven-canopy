@@ -84,20 +84,11 @@ impl super::SimState {
 
             if roll < adjusted {
                 let new_val = current + 1;
-                if self.db.creature_traits.get(&(creature_id, skill)).is_some() {
-                    let _ = self
-                        .db
-                        .creature_traits
-                        .modify_unchecked(&(creature_id, skill), |row| {
-                            row.value = TraitValue::Int(new_val)
-                        });
-                } else {
-                    let _ = self.db.creature_traits.insert_no_fk(CreatureTrait {
-                        creature_id,
-                        trait_kind: skill,
-                        value: TraitValue::Int(new_val),
-                    });
-                }
+                let _ = self.db.upsert_creature_trait(CreatureTrait {
+                    creature_id,
+                    trait_kind: skill,
+                    value: TraitValue::Int(new_val),
+                });
             }
         }
     }

@@ -71,9 +71,8 @@ impl super::SimState {
             return;
         }
 
-        // Upsert: remove old assignment if any, then insert new one.
-        let _ = self.db.path_assignments.remove_no_fk(&creature_id);
-        let _ = self.db.path_assignments.insert_no_fk(PathAssignment {
+        // Upsert: replace old assignment if any, or insert new one.
+        let _ = self.db.upsert_path_assignment(PathAssignment {
             creature_id,
             path_id,
         });
@@ -103,7 +102,7 @@ impl super::SimState {
             .collect();
 
         for creature_id in unpathed {
-            let _ = self.db.path_assignments.insert_no_fk(PathAssignment {
+            let _ = self.db.insert_path_assignment(PathAssignment {
                 creature_id,
                 path_id: PathId::Outcast,
             });

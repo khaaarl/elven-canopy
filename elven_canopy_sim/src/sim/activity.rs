@@ -91,7 +91,7 @@ impl SimState {
             execution_start_tick: None,
             pause_started_tick: None,
         };
-        self.db.activities.insert_no_fk(activity).unwrap();
+        self.db.insert_activity(activity).unwrap();
         activity_id
     }
 
@@ -123,14 +123,15 @@ impl SimState {
         );
 
         // Link the activity to the dance hall via ActivityStructureRef.
-        let _ = self.db.activity_structure_refs.insert_auto_no_fk(|seq| {
-            crate::db::ActivityStructureRef {
+        let seq = self.db.activity_structure_refs.next_seq();
+        let _ = self
+            .db
+            .insert_activity_structure_ref(crate::db::ActivityStructureRef {
                 activity_id,
                 seq,
                 structure_id: structure.id,
                 role: crate::db::ActivityStructureRole::DanceVenue,
-            }
-        });
+            });
     }
 
     /// Handle `SimAction::CancelActivity` — cancel and clean up an activity.
@@ -196,15 +197,12 @@ impl SimState {
             dance_slot: None,
             waypoint_cursor: 0,
         };
-        self.db
-            .activity_participants
-            .insert_no_fk(participant)
-            .unwrap();
+        self.db.insert_activity_participant(participant).unwrap();
 
         // Set current_activity on creature.
         if let Some(mut c) = self.db.creatures.get(&creature_id) {
             c.current_activity = Some(activity_id);
-            let _ = self.db.creatures.update_no_fk(c);
+            let _ = self.db.update_creature(c);
         }
 
         // Create GoTo task for this participant, inheriting the activity's origin.
@@ -308,10 +306,7 @@ impl SimState {
             dance_slot: None,
             waypoint_cursor: 0,
         };
-        self.db
-            .activity_participants
-            .insert_no_fk(participant)
-            .unwrap();
+        self.db.insert_activity_participant(participant).unwrap();
 
         // Check quorum — maybe we have enough volunteers to start assembling.
         self.check_volunteer_quorum(activity_id, events);
@@ -388,15 +383,13 @@ impl SimState {
                 .map(|p| p.creature_id)
                 .collect();
             for cid in to_promote {
-                let _ = self
-                    .db
-                    .activity_participants
-                    .modify_unchecked(&(activity_id, cid), |p| {
-                        p.status = ParticipantStatus::Traveling;
-                    });
+                if let Some(mut p) = self.db.activity_participants.get(&(activity_id, cid)) {
+                    p.status = ParticipantStatus::Traveling;
+                    let _ = self.db.update_activity_participant(p);
+                }
                 if let Some(mut c) = self.db.creatures.get(&cid) {
                     c.current_activity = Some(activity_id);
-                    let _ = self.db.creatures.update_no_fk(c);
+                    let _ = self.db.update_creature(c);
                 }
                 self.create_activity_goto(
                     activity_id,
@@ -417,18 +410,20 @@ impl SimState {
         creature_id: CreatureId,
         _events: &mut Vec<SimEvent>,
     ) {
-        let _ = self
+        if let Some(mut p) = self
             .db
             .activity_participants
-            .modify_unchecked(&(activity_id, creature_id), |p| {
-                p.status = ParticipantStatus::Arrived;
-                p.travel_task = None;
-            });
+            .get(&(activity_id, creature_id))
+        {
+            p.status = ParticipantStatus::Arrived;
+            p.travel_task = None;
+            let _ = self.db.update_activity_participant(p);
+        }
 
         // Clear current_task now that GoTo is done.
         if let Some(mut c) = self.db.creatures.get(&creature_id) {
             c.current_task = None;
-            let _ = self.db.creatures.update_no_fk(c);
+            let _ = self.db.update_creature(c);
         }
 
         // Check if enough participants have arrived to start executing.
@@ -461,7 +456,7 @@ impl SimState {
         {
             a.phase = ActivityPhase::Executing;
             a.execution_start_tick = Some(self.tick);
-            let _ = self.db.activities.update_no_fk(a);
+            let _ = self.db.update_activity(a);
 
             // Dance-specific: generate the choreography plan.
             if activity.kind == ActivityKind::Dance {
@@ -562,13 +557,15 @@ impl SimState {
         let participant_count = arrived.len();
 
         for (slot, p) in arrived.iter().enumerate() {
-            let _ = self.db.activity_participants.modify_unchecked(
-                &(p.activity_id, p.creature_id),
-                |ap| {
-                    ap.dance_slot = Some(slot as u16);
-                    ap.waypoint_cursor = 0;
-                },
-            );
+            if let Some(mut ap) = self
+                .db
+                .activity_participants
+                .get(&(p.activity_id, p.creature_id))
+            {
+                ap.dance_slot = Some(slot as u16);
+                ap.waypoint_cursor = 0;
+                let _ = self.db.update_activity_participant(ap);
+            }
         }
 
         // Create a music composition for the dance.
@@ -606,12 +603,10 @@ impl SimState {
         let composition_id = self.create_composition_for_dance(best_sections, target_duration_ms);
         // Mark build_started immediately — dance music plays as soon as
         // the rendering layer finishes generating it.
-        let _ = self
-            .db
-            .music_compositions
-            .modify_unchecked(&composition_id, |c| {
-                c.build_started = true;
-            });
+        if let Some(mut c) = self.db.music_compositions.get(&composition_id) {
+            c.build_started = true;
+            let _ = self.db.update_music_composition(c);
+        }
 
         let tempo_multiplier = 1_u64;
         let tempo_bpm = 78_u64; // Ideal BPM; actual playback BPM is adjusted by renderer.
@@ -635,9 +630,10 @@ impl SimState {
 
         // Store total_ticks as total_cost on the activity for progress display.
         let total_ticks = plan.total_ticks as i64;
-        let _ = self.db.activities.modify_unchecked(&activity_id, |a| {
+        if let Some(mut a) = self.db.activities.get(&activity_id) {
             a.total_cost = total_ticks;
-        });
+            let _ = self.db.update_activity(a);
+        }
 
         // Store the plan and composition link.
         let dance_data = crate::db::ActivityDanceData {
@@ -645,7 +641,7 @@ impl SimState {
             plan,
             composition_id: Some(composition_id),
         };
-        let _ = self.db.activity_dance_data.insert_no_fk(dance_data);
+        let _ = self.db.insert_activity_dance_data(dance_data);
     }
 
     /// Dance-specific execution behavior.
@@ -728,17 +724,17 @@ impl SimState {
             let arrival_tick = target_wp.tick;
 
             let tick = self.tick;
-            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+            if let Some(mut c) = self.db.creatures.get(&creature_id) {
                 c.position = new_pos;
                 c.action_kind = crate::db::ActionKind::Move;
                 c.next_available_tick = Some(arrival_tick);
-            });
+                let _ = self.db.update_creature(c);
+            }
 
             // Create MoveAction for render interpolation.
-            let _ = self.db.move_actions.remove_no_fk(&creature_id);
+            let _ = self.db.remove_move_action(&creature_id);
             self.db
-                .move_actions
-                .insert_no_fk(crate::db::MoveAction {
+                .insert_move_action(crate::db::MoveAction {
                     creature_id,
                     move_from: old_pos,
                     move_to: new_pos,
@@ -747,12 +743,14 @@ impl SimState {
                 .unwrap();
 
             // Advance cursor past all waypoints up to and including this one.
-            let _ =
-                self.db
-                    .activity_participants
-                    .modify_unchecked(&(activity_id, creature_id), |ap| {
-                        ap.waypoint_cursor = (next_cursor + 1) as u32;
-                    });
+            if let Some(mut ap) = self
+                .db
+                .activity_participants
+                .get(&(activity_id, creature_id))
+            {
+                ap.waypoint_cursor = (next_cursor + 1) as u32;
+                let _ = self.db.update_activity_participant(ap);
+            }
 
             // Reactivate when the move completes (on the beat).
             Some(arrival_tick)
@@ -785,9 +783,10 @@ impl SimState {
 
             // Update per-creature dance cooldown tracking.
             for cid in &participant_ids {
-                let _ = self.db.creatures.modify_unchecked(cid, |c| {
+                if let Some(mut c) = self.db.creatures.get(cid) {
                     c.last_dance_tick = self.tick;
-                });
+                    let _ = self.db.update_creature(c);
+                }
             }
 
             // Update per-hall dance cooldown tracking.
@@ -796,10 +795,11 @@ impl SimState {
                 .activity_structure_refs
                 .by_activity_id(&activity_id, tabulosity::QueryOpts::ASC);
             for sr in &structure_refs {
-                if sr.role == crate::db::ActivityStructureRole::DanceVenue {
-                    let _ = self.db.structures.modify_unchecked(&sr.structure_id, |s| {
-                        s.last_dance_completed_tick = self.tick;
-                    });
+                if sr.role == crate::db::ActivityStructureRole::DanceVenue
+                    && let Some(mut s) = self.db.structures.get(&sr.structure_id)
+                {
+                    s.last_dance_completed_tick = self.tick;
+                    let _ = self.db.update_structure(s);
                 }
             }
         }
@@ -810,7 +810,7 @@ impl SimState {
         for cid in &participant_ids {
             if let Some(mut c) = self.db.creatures.get(cid) {
                 c.current_activity = None;
-                let _ = self.db.creatures.update_no_fk(c);
+                let _ = self.db.update_creature(c);
             }
             self.event_queue.cancel_creature_activations(*cid);
             self.schedule_reactivation(*cid);
@@ -820,7 +820,7 @@ impl SimState {
         if let Some(dance_data) = self.db.activity_dance_data.get(&activity_id)
             && let Some(comp_id) = dance_data.composition_id
         {
-            let _ = self.db.music_compositions.remove_no_fk(&comp_id);
+            let _ = self.db.remove_music_composition(&comp_id);
         }
 
         // Delete activity (cascade removes participants + dance data).
@@ -852,7 +852,7 @@ impl SimState {
                 if c.current_task == p.travel_task {
                     c.current_task = None;
                 }
-                let _ = self.db.creatures.update_no_fk(c);
+                let _ = self.db.update_creature(c);
             }
         }
 
@@ -860,7 +860,7 @@ impl SimState {
         if let Some(dance_data) = self.db.activity_dance_data.get(&activity_id)
             && let Some(comp_id) = dance_data.composition_id
         {
-            let _ = self.db.music_compositions.remove_no_fk(&comp_id);
+            let _ = self.db.remove_music_composition(&comp_id);
         }
 
         // Delete activity (cascade removes participants + dance data).
@@ -907,7 +907,7 @@ impl SimState {
         {
             c.current_activity = None;
             c.current_task = None;
-            let _ = self.db.creatures.update_no_fk(c);
+            let _ = self.db.update_creature(c);
         }
 
         // Remove participant row.
@@ -950,7 +950,7 @@ impl SimState {
                     if let Some(mut a) = self.db.activities.get(&activity_id) {
                         a.phase = ActivityPhase::Paused;
                         a.pause_started_tick = Some(self.tick);
-                        let _ = self.db.activities.update_no_fk(a);
+                        let _ = self.db.update_activity(a);
                     }
                 }
                 DeparturePolicy::CancelOnDeparture => {
@@ -988,21 +988,23 @@ impl SimState {
             prerequisite_task_id: None,
             required_civ_id: None,
         };
-        self.db.tasks.insert_no_fk(task).unwrap();
+        self.db.insert_task(task).unwrap();
 
         // Assign the task to the creature.
         if let Some(mut c) = self.db.creatures.get(&creature_id) {
             c.current_task = Some(task_id);
-            let _ = self.db.creatures.update_no_fk(c);
+            let _ = self.db.update_creature(c);
         }
 
         // Record the travel task on the participant.
-        let _ = self
+        if let Some(mut p) = self
             .db
             .activity_participants
-            .modify_unchecked(&(activity_id, creature_id), |p| {
-                p.travel_task = Some(task_id);
-            });
+            .get(&(activity_id, creature_id))
+        {
+            p.travel_task = Some(task_id);
+            let _ = self.db.update_activity_participant(p);
+        }
     }
 
     /// Prune any stale `Volunteered` participant rows for an idle creature.
@@ -1187,16 +1189,16 @@ impl SimState {
         {
             a.phase = ActivityPhase::Executing;
             a.pause_started_tick = None;
-            let _ = self.db.activities.update_no_fk(a);
+            let _ = self.db.update_activity(a);
         }
     }
 
-    /// Helper: update the activity phase. Uses `update_no_fk` because `phase`
-    /// is an indexed field and `modify_unchecked` panics when indexed fields change.
+    /// Helper: update the activity phase. Uses `update_activity` because `phase`
+    /// is an indexed field.
     fn set_activity_phase(&mut self, activity_id: ActivityId, phase: ActivityPhase) {
         if let Some(mut a) = self.db.activities.get(&activity_id) {
             a.phase = phase;
-            let _ = self.db.activities.update_no_fk(a);
+            let _ = self.db.update_activity(a);
         }
     }
 
@@ -1307,14 +1309,15 @@ impl SimState {
         );
 
         // Link activity to the dance hall.
-        let _ = self.db.activity_structure_refs.insert_auto_no_fk(|seq| {
-            crate::db::ActivityStructureRef {
+        let seq = self.db.activity_structure_refs.next_seq();
+        let _ = self
+            .db
+            .insert_activity_structure_ref(crate::db::ActivityStructureRef {
                 activity_id,
                 seq,
                 structure_id: hall_id,
                 role: crate::db::ActivityStructureRole::DanceVenue,
-            }
-        });
+            });
 
         // The organizer becomes the first participant with Organizer role.
         let participant = crate::db::ActivityParticipant {
@@ -1327,10 +1330,7 @@ impl SimState {
             dance_slot: None,
             waypoint_cursor: 0,
         };
-        self.db
-            .activity_participants
-            .insert_no_fk(participant)
-            .unwrap();
+        self.db.insert_activity_participant(participant).unwrap();
 
         true
     }

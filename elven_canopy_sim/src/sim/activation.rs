@@ -40,23 +40,19 @@ impl SimState {
                     };
 
                 // Apply per-creature food override.
-                if let Some(&pct) = spec.food_pcts.get(i) {
-                    let _ = self
-                        .db
-                        .creatures
-                        .modify_unchecked(&creature_id, |creature| {
-                            creature.food = species_data.food_max * pct as i64 / 100;
-                        });
+                if let Some(&pct) = spec.food_pcts.get(i)
+                    && let Some(mut creature) = self.db.creatures.get(&creature_id)
+                {
+                    creature.food = species_data.food_max * pct as i64 / 100;
+                    let _ = self.db.update_creature(creature);
                 }
 
                 // Apply per-creature rest override.
-                if let Some(&pct) = spec.rest_pcts.get(i) {
-                    let _ = self
-                        .db
-                        .creatures
-                        .modify_unchecked(&creature_id, |creature| {
-                            creature.rest = species_data.rest_max * pct as i64 / 100;
-                        });
+                if let Some(&pct) = spec.rest_pcts.get(i)
+                    && let Some(mut creature) = self.db.creatures.get(&creature_id)
+                {
+                    creature.rest = species_data.rest_max * pct as i64 / 100;
+                    let _ = self.db.update_creature(creature);
                 }
 
                 // Apply per-creature bread count. Starting bread is Crude.
@@ -98,9 +94,9 @@ impl SimState {
                             && let Some(slot) = slot
                             && let Some(stack) = self.inv_equipped_in_slot(inv_id, slot)
                         {
-                            let _ = self.db.item_stacks.modify_unchecked(&stack.id, |s| {
-                                s.dye_color = Some(dye);
-                            });
+                            let mut s = stack;
+                            s.dye_color = Some(dye);
+                            let _ = self.db.update_item_stack(s);
                         }
                     }
                 }
@@ -133,9 +129,9 @@ impl SimState {
                         && stack.material == pile_spec.material
                         && stack.dye_color.is_none()
                     {
-                        let _ = self.db.item_stacks.modify_unchecked(&stack.id, |s| {
-                            s.dye_color = Some(dye);
-                        });
+                        let mut s = stack;
+                        s.dye_color = Some(dye);
+                        let _ = self.db.update_item_stack(s);
                         break;
                     }
                 }
@@ -154,12 +150,13 @@ impl SimState {
             None => return,
         };
         if action_kind == ActionKind::Move {
-            let _ = self.db.move_actions.remove_no_fk(&creature_id);
+            let _ = self.db.remove_move_action(&creature_id);
         }
-        let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+        if let Some(mut c) = self.db.creatures.get(&creature_id) {
             c.action_kind = ActionKind::NoAction;
             c.next_available_tick = None;
-        });
+            let _ = self.db.update_creature(c);
+        }
         // Remove orphaned CreatureActivation events from the queue.
         // Without this, the old activation fires on a creature whose action
         // state has been cleared, causing double-activations and erratic
@@ -236,10 +233,11 @@ impl SimState {
                 None => return,
             };
             let new_pos = graph.node(new_node).position;
-            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+            if let Some(mut c) = self.db.creatures.get(&creature_id) {
                 c.position = new_pos;
                 c.path = None;
-            });
+                let _ = self.db.update_creature(c);
+            }
             self.update_creature_spatial_index(creature_id, species, pos, new_pos);
             self.event_queue.schedule(
                 self.tick + 1,
@@ -250,17 +248,19 @@ impl SimState {
 
         // --- Step 1: Resolve completed action (shared) ---
         if action_kind == ActionKind::Move {
-            let _ = self.db.move_actions.remove_no_fk(&creature_id);
-            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+            let _ = self.db.remove_move_action(&creature_id);
+            if let Some(mut c) = self.db.creatures.get(&creature_id) {
                 c.action_kind = ActionKind::NoAction;
                 c.next_available_tick = None;
-            });
+                let _ = self.db.update_creature(c);
+            }
         }
         if action_kind == ActionKind::Build {
-            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+            if let Some(mut c) = self.db.creatures.get(&creature_id) {
                 c.action_kind = ActionKind::NoAction;
                 c.next_available_tick = None;
-            });
+                let _ = self.db.update_creature(c);
+            }
             let completed = self.resolve_build_action(creature_id);
             // Re-read current_node for ground creatures.
             if !is_flying {
@@ -288,10 +288,11 @@ impl SimState {
 
         // Resolve taming attempts (needs events for CreatureTamed).
         if action_kind == ActionKind::TameAttempt {
-            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+            if let Some(mut c) = self.db.creatures.get(&creature_id) {
                 c.action_kind = ActionKind::NoAction;
                 c.next_available_tick = None;
-            });
+                let _ = self.db.update_creature(c);
+            }
             let completed = self.resolve_tame_attempt(creature_id, events);
             if !completed {
                 let task_id = self
@@ -323,10 +324,11 @@ impl SimState {
                 | ActionKind::MeleeStrike
                 | ActionKind::Shoot
         ) {
-            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+            if let Some(mut c) = self.db.creatures.get(&creature_id) {
                 c.action_kind = ActionKind::NoAction;
                 c.next_available_tick = None;
-            });
+                let _ = self.db.update_creature(c);
+            }
             let completed = self.resolve_work_action(creature_id, action_kind);
             if !completed {
                 let task_id = self
@@ -477,7 +479,7 @@ impl SimState {
                         .remove_activity_participant(&(activity_id, creature_id));
                     if let Some(mut c) = self.db.creatures.get(&creature_id) {
                         c.current_activity = None;
-                        let _ = self.db.creatures.update_no_fk(c);
+                        let _ = self.db.update_creature(c);
                     }
                     self.schedule_reactivation(creature_id);
                 }
@@ -658,11 +660,11 @@ impl SimState {
     pub(crate) fn claim_task(&mut self, creature_id: CreatureId, task_id: TaskId) {
         if let Some(mut task) = self.db.tasks.get(&task_id) {
             task.state = task::TaskState::InProgress;
-            let _ = self.db.tasks.update_no_fk(task);
+            let _ = self.db.update_task(task);
         }
         if let Some(mut creature) = self.db.creatures.get(&creature_id) {
             creature.current_task = Some(task_id);
-            let _ = self.db.creatures.update_no_fk(creature);
+            let _ = self.db.update_creature(creature);
         }
     }
 
@@ -694,7 +696,7 @@ impl SimState {
                 if let Some(mut c) = self.db.creatures.get(&creature_id) {
                     c.current_task = None;
                     c.path = None;
-                    let _ = self.db.creatures.update_no_fk(c);
+                    let _ = self.db.update_creature(c);
                 }
                 self.wander_dispatch(creature_id, current_node, events);
                 return;
@@ -715,12 +717,14 @@ impl SimState {
                     if target_coord != task_location_coord {
                         // Target moved — update task location and invalidate path.
                         task_location_coord = target_coord;
-                        let _ = self.db.tasks.modify_unchecked(&task_id, |t| {
+                        if let Some(mut t) = self.db.tasks.get(&task_id) {
                             t.location = target_coord;
-                        });
-                        let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+                            let _ = self.db.update_task(t);
+                        }
+                        if let Some(mut c) = self.db.creatures.get(&creature_id) {
                             c.path = None;
-                        });
+                            let _ = self.db.update_creature(c);
+                        }
                     }
                 }
             }
@@ -763,13 +767,12 @@ impl SimState {
             if !graph.is_node_alive(cn) || !graph.is_node_alive(tl) {
                 self.interrupt_task(creature_id, task_id);
                 let graph = self.graph_for_species(species);
-                if let Some(c) = self.db.creatures.get(&creature_id) {
+                if let Some(mut c) = self.db.creatures.get(&creature_id) {
                     let old_pos = c.position;
                     if let Some(new_node) = graph.find_nearest_node(old_pos) {
                         let new_pos = graph.node(new_node).position;
-                        let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
-                            c.position = new_pos;
-                        });
+                        c.position = new_pos;
+                        let _ = self.db.update_creature(c);
                         self.update_creature_spatial_index(creature_id, species, old_pos, new_pos);
                         self.ground_wander(creature_id, new_node, events);
                     }
@@ -1120,7 +1123,7 @@ impl SimState {
         if let Some(mut creature) = self.db.creatures.get(&creature_id) {
             creature.current_task = Some(task_id);
             let name = creature.name.clone();
-            let _ = self.db.creatures.update_no_fk(creature);
+            let _ = self.db.update_creature(creature);
 
             let tier_label = tier.label();
             let msg = if name.is_empty() {
@@ -1171,7 +1174,18 @@ impl SimState {
                 self.find_owned_item_source(*item_kind, *filter, needed, creature_id)
             {
                 let task_id = TaskId::new(&mut self.rng);
-                if let Some(inv_id) = self.source_inventory_id(&source) {
+                let src_inv = self.source_inventory_id(&source);
+                // Insert task before reserving so the task row exists for FK
+                // validation on item_stacks.reserved_by.
+                self.create_acquire_item_task(
+                    task_id,
+                    creature_id,
+                    source,
+                    *item_kind,
+                    quantity,
+                    nav_node,
+                );
+                if let Some(inv_id) = src_inv {
                     self.inv_reserve_owned_items(
                         inv_id,
                         *item_kind,
@@ -1181,14 +1195,6 @@ impl SimState {
                         creature_id,
                     );
                 }
-                self.create_acquire_item_task(
-                    task_id,
-                    creature_id,
-                    source,
-                    *item_kind,
-                    quantity,
-                    nav_node,
-                );
                 return; // One task per heartbeat.
             }
 
@@ -1197,9 +1203,9 @@ impl SimState {
                 self.find_unowned_item_source(*item_kind, *filter, needed)
             {
                 let task_id = TaskId::new(&mut self.rng);
-                if let Some(inv_id) = self.source_inventory_id(&source) {
-                    self.inv_reserve_unowned_items(inv_id, *item_kind, *filter, quantity, task_id);
-                }
+                let src_inv = self.source_inventory_id(&source);
+                // Insert task before reserving so the task row exists for FK
+                // validation on item_stacks.reserved_by.
                 self.create_acquire_item_task(
                     task_id,
                     creature_id,
@@ -1208,6 +1214,9 @@ impl SimState {
                     quantity,
                     nav_node,
                 );
+                if let Some(inv_id) = src_inv {
+                    self.inv_reserve_unowned_items(inv_id, *item_kind, *filter, quantity, task_id);
+                }
                 return; // One task per heartbeat.
             }
         }
@@ -1244,7 +1253,7 @@ impl SimState {
         self.insert_task(new_task);
         if let Some(mut creature) = self.db.creatures.get(&creature_id) {
             creature.current_task = Some(task_id);
-            let _ = self.db.creatures.update_no_fk(creature);
+            let _ = self.db.update_creature(creature);
         }
     }
 
@@ -1365,7 +1374,7 @@ impl SimState {
                 moved.inventory_id = pile_inv;
                 moved.owner = None;
                 moved.reserved_by = None;
-                let _ = self.db.item_stacks.update_no_fk(moved);
+                let _ = self.db.update_item_stack(moved);
             }
         }
 
@@ -1443,16 +1452,9 @@ impl SimState {
                 creature_id,
             ) {
                 let task_id = TaskId::new(&mut self.rng);
-                if let Some(src_inv) = self.source_inventory_id(&source) {
-                    self.inv_reserve_owned_items(
-                        src_inv,
-                        want.item_kind,
-                        want.material_filter,
-                        quantity,
-                        task_id,
-                        creature_id,
-                    );
-                }
+                let src_inv = self.source_inventory_id(&source);
+                // Insert task before reserving so the task row exists for FK
+                // validation on item_stacks.reserved_by.
                 self.create_acquire_military_task(
                     task_id,
                     creature_id,
@@ -1461,6 +1463,16 @@ impl SimState {
                     quantity,
                     nav_node,
                 );
+                if let Some(inv_id) = src_inv {
+                    self.inv_reserve_owned_items(
+                        inv_id,
+                        want.item_kind,
+                        want.material_filter,
+                        quantity,
+                        task_id,
+                        creature_id,
+                    );
+                }
                 return; // One task per heartbeat.
             }
 
@@ -1469,15 +1481,9 @@ impl SimState {
                 self.find_unowned_item_source(want.item_kind, want.material_filter, needed)
             {
                 let task_id = TaskId::new(&mut self.rng);
-                if let Some(src_inv) = self.source_inventory_id(&source) {
-                    self.inv_reserve_unowned_items(
-                        src_inv,
-                        want.item_kind,
-                        want.material_filter,
-                        quantity,
-                        task_id,
-                    );
-                }
+                let src_inv = self.source_inventory_id(&source);
+                // Insert task before reserving so the task row exists for FK
+                // validation on item_stacks.reserved_by.
                 self.create_acquire_military_task(
                     task_id,
                     creature_id,
@@ -1486,6 +1492,15 @@ impl SimState {
                     quantity,
                     nav_node,
                 );
+                if let Some(inv_id) = src_inv {
+                    self.inv_reserve_unowned_items(
+                        inv_id,
+                        want.item_kind,
+                        want.material_filter,
+                        quantity,
+                        task_id,
+                    );
+                }
                 return; // One task per heartbeat.
             }
         }
@@ -1522,7 +1537,7 @@ impl SimState {
         self.insert_task(new_task);
         if let Some(mut creature) = self.db.creatures.get(&creature_id) {
             creature.current_task = Some(task_id);
-            let _ = self.db.creatures.update_no_fk(creature);
+            let _ = self.db.update_creature(creature);
         }
     }
 

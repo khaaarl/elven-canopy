@@ -119,7 +119,7 @@ impl SimState {
         if let Some(mut c) = self.db.creatures.get(&creature_id) {
             c.current_task = Some(task_id);
             c.path = None;
-            let _ = self.db.creatures.update_no_fk(c);
+            let _ = self.db.update_creature(c);
         }
 
         // Only schedule a new activation if no Move action is in-flight.
@@ -419,14 +419,12 @@ impl SimState {
                 .iter()
                 .map(|&nid| graph.node(nid).position)
                 .collect();
-            let _ = self
-                .db
-                .creatures
-                .modify_unchecked(&creature_id, |creature| {
-                    creature.path = Some(CreaturePath {
-                        remaining_positions,
-                    });
+            if let Some(mut creature) = self.db.creatures.get(&creature_id) {
+                creature.path = Some(CreaturePath {
+                    remaining_positions,
                 });
+                let _ = self.db.update_creature(creature);
+            }
 
             (first_edge, first_dest)
         };
@@ -439,12 +437,10 @@ impl SimState {
         // Voxel exclusion: reject move if destination is hostile-occupied.
         let footprint = self.species_table[&species].footprint;
         if self.destination_blocked_by_hostile(creature_id, dest_pos, footprint) {
-            let _ = self
-                .db
-                .creatures
-                .modify_unchecked(&creature_id, |creature| {
-                    creature.path = None;
-                });
+            if let Some(mut creature) = self.db.creatures.get(&creature_id) {
+                creature.path = None;
+                let _ = self.db.update_creature(creature);
+            }
             self.event_queue.schedule(
                 self.tick + self.config.voxel_exclusion_retry_ticks,
                 ScheduledEventKind::CreatureActivation { creature_id },
@@ -459,23 +455,21 @@ impl SimState {
 
         let old_pos = self.db.creatures.get(&creature_id).unwrap().position;
         let tick = self.tick;
-        let _ = self
-            .db
-            .creatures
-            .modify_unchecked(&creature_id, |creature| {
-                creature.position = dest_pos;
+        if let Some(mut creature) = self.db.creatures.get(&creature_id) {
+            creature.position = dest_pos;
 
-                // Set action state.
-                creature.action_kind = ActionKind::Move;
-                creature.next_available_tick = Some(tick + delay);
+            // Set action state.
+            creature.action_kind = ActionKind::Move;
+            creature.next_available_tick = Some(tick + delay);
 
-                // Advance stored path.
-                if let Some(ref mut path) = creature.path
-                    && !path.remaining_positions.is_empty()
-                {
-                    path.remaining_positions.remove(0);
-                }
-            });
+            // Advance stored path.
+            if let Some(ref mut path) = creature.path
+                && !path.remaining_positions.is_empty()
+            {
+                path.remaining_positions.remove(0);
+            }
+            let _ = self.db.update_creature(creature);
+        }
 
         self.update_creature_spatial_index(creature_id, species, old_pos, dest_pos);
 
@@ -487,8 +481,8 @@ impl SimState {
             move_start_tick: tick,
         };
         // Remove any existing MoveAction (shouldn't happen, but be safe).
-        let _ = self.db.move_actions.remove_no_fk(&creature_id);
-        self.db.move_actions.insert_no_fk(move_action).unwrap();
+        let _ = self.db.remove_move_action(&creature_id);
+        self.db.insert_move_action(move_action).unwrap();
 
         // Schedule next activation.
         self.event_queue.schedule(
@@ -591,16 +585,14 @@ impl SimState {
         // Move creature to the destination.
         let old_pos = self.db.creatures.get(&creature_id).unwrap().position;
         let tick = self.tick;
-        let _ = self
-            .db
-            .creatures
-            .modify_unchecked(&creature_id, |creature| {
-                creature.position = dest_pos;
+        if let Some(mut creature) = self.db.creatures.get(&creature_id) {
+            creature.position = dest_pos;
 
-                // Set action state.
-                creature.action_kind = ActionKind::Move;
-                creature.next_available_tick = Some(tick + delay);
-            });
+            // Set action state.
+            creature.action_kind = ActionKind::Move;
+            creature.next_available_tick = Some(tick + delay);
+            let _ = self.db.update_creature(creature);
+        }
 
         self.update_creature_spatial_index(creature_id, species, old_pos, dest_pos);
 
@@ -611,8 +603,8 @@ impl SimState {
             move_to: dest_pos,
             move_start_tick: tick,
         };
-        let _ = self.db.move_actions.remove_no_fk(&creature_id);
-        self.db.move_actions.insert_no_fk(move_action).unwrap();
+        let _ = self.db.remove_move_action(&creature_id);
+        self.db.insert_move_action(move_action).unwrap();
 
         // Schedule next activation based on edge traversal time.
         self.event_queue.schedule(
@@ -760,14 +752,12 @@ impl SimState {
 
             // Store remaining path (skip start, which is current position).
             let remaining_positions: Vec<VoxelCoord> = path_result.waypoints[1..].to_vec();
-            let _ = self
-                .db
-                .creatures
-                .modify_unchecked(&creature_id, |creature| {
-                    creature.path = Some(CreaturePath {
-                        remaining_positions,
-                    });
+            if let Some(mut creature) = self.db.creatures.get(&creature_id) {
+                creature.path = Some(CreaturePath {
+                    remaining_positions,
                 });
+                let _ = self.db.update_creature(creature);
+            }
 
             next
         };
@@ -813,21 +803,19 @@ impl SimState {
             .max(1);
 
         let tick = self.tick;
-        let _ = self
-            .db
-            .creatures
-            .modify_unchecked(&creature_id, |creature| {
-                creature.position = dest_pos;
-                creature.action_kind = ActionKind::Move;
-                creature.next_available_tick = Some(tick + delay);
+        if let Some(mut creature) = self.db.creatures.get(&creature_id) {
+            creature.position = dest_pos;
+            creature.action_kind = ActionKind::Move;
+            creature.next_available_tick = Some(tick + delay);
 
-                // Advance stored path.
-                if let Some(ref mut path) = creature.path
-                    && !path.remaining_positions.is_empty()
-                {
-                    path.remaining_positions.remove(0);
-                }
-            });
+            // Advance stored path.
+            if let Some(ref mut path) = creature.path
+                && !path.remaining_positions.is_empty()
+            {
+                path.remaining_positions.remove(0);
+            }
+            let _ = self.db.update_creature(creature);
+        }
 
         self.update_creature_spatial_index(creature_id, species, old_pos, dest_pos);
 
@@ -838,8 +826,8 @@ impl SimState {
             move_to: dest_pos,
             move_start_tick: tick,
         };
-        let _ = self.db.move_actions.remove_no_fk(&creature_id);
-        self.db.move_actions.insert_no_fk(move_action).unwrap();
+        let _ = self.db.remove_move_action(&creature_id);
+        self.db.insert_move_action(move_action).unwrap();
 
         // Schedule next activation.
         self.event_queue.schedule(

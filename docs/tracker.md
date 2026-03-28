@@ -48,6 +48,7 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [~] B-qem-deformation      QEM decimation visual artifacts
+[~] B-unsafe-db-calls      Replace _no_fk and modify_unchecked calls with safe database-level methods
 [~] F-creature-skills      Creature skill system (17 universal skills with path-gated advancement)
 [~] F-enemy-ai             Hostile creature AI (goblin/orc/troll behavior)
 [~] F-face-tint            Directional face tinting by normal (top warm, bottom cool)
@@ -64,11 +65,12 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-assembly-timeout     Activity assembly timeout not enforced
 [ ] B-chamfer-nonmfld      Chamfer produces non-manifold edges for diagonally-adjacent voxels
 [ ] B-dead-owner-items     Dead creature items retain ownership, becoming invisible to all systems
+[ ] B-dine-orphan-task     DineAtHall speculative task leaves orphaned Complete rows
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fragile-tests        Audit and harden tests against PRNG stream shifts and worldgen changes
+[ ] B-safe-api-tests       Additional safe API test coverage from once-over
 [ ] B-start-paused-ui      start_paused_on_load UI desync and missing new-game support
-[ ] B-unsafe-db-calls      Replace _no_fk and modify_unchecked calls with safe database-level methods
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
 [ ] F-adventure-mode       Control individual elf (RPG-like)
@@ -226,6 +228,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-spell-summon         Conjure temporary allied creature
 [ ] F-spell-system         Core spell casting infrastructure (SpellId, commands, mana costs)
 [ ] F-spell-thornbriar     Thornbriar zone spell (slow + damage area)
+[ ] F-split-sim-tests      Split sim tests.rs into per-module test files
 [ ] F-stairs               Stairs and ramps for vertical movement
 [ ] F-starvation-rework    Starvation rework: incapacitation interaction and bleed-out
 [ ] F-status-effects       Generic creature status effect system
@@ -1817,6 +1820,11 @@ Requires F-flying-nav-big.
 
 #### B-dead-owner-items — Dead creature items retain ownership, becoming invisible to all systems
 **Status:** Todo
+
+#### B-dine-orphan-task — DineAtHall speculative task leaves orphaned Complete rows
+**Status:** Todo
+
+The DineAtHall code path speculatively inserts a task before checking if food can be reserved (needed for FK validation on item_stacks.reserved_by). If no food is available, the task is cleaned up via `complete_task()`, which sets it to Complete state rather than removing it. This leaves orphaned Complete DineAtHall tasks in the DB. While not a correctness bug, it creates unnecessary DB clutter. Consider either removing the task on the failure path, or adding a periodic GC for completed tasks with zero progress.
 
 #### F-batch-craft — Workstation-driven batch crafting with time discount
 **Status:** Todo
@@ -6032,9 +6040,11 @@ type priority prevents overwrites.
 **Status:** Done
 
 #### B-unsafe-db-calls — Replace _no_fk and modify_unchecked calls with safe database-level methods
-**Status:** Todo
+**Status:** In Progress
 
-Audit all `_no_fk` and `modify_unchecked` call sites in `elven_canopy_sim` and convert them to safe database-level methods (`db.update_foo()`, `db.insert_foo()`, etc.) where possible. As of writing there are ~271 `modify_unchecked` uses and widespread `update_no_fk` / `insert_no_fk` usage. Each remaining unchecked call site should have a comment justifying why it cannot use the safe API (e.g., profiled hot path, field guaranteed non-indexed). See `tabulosity/README.md` for the safe mutation API guide.
+All production code converted (0 `_no_fk`/`modify_unchecked` calls remain in non-test code). 464 calls remain in `tests.rs` (54k lines). The safe API conversion also uncovered and fixed real bugs: blueprint/task FK ordering in `designate_build` and `cancel_build`, and task insertion ordering for item reservations in logistics/activation/crafting/mod. **Next step:** split `tests.rs` (see F-split-sim-tests), then convert test code to safe API in manageable chunks.
+
+**Blocked by:** F-split-sim-tests
 
 #### F-child-table-pks — Convert child tables to natural compound primary keys
 **Status:** Done
@@ -6562,6 +6572,29 @@ changes. Fruit tests (incident 3) were never hardened — only pinned.
 The audit should examine all test categories for remaining fragility,
 not assume any are fully hardened.
 
+#### B-safe-api-tests — Additional safe API test coverage from once-over
+**Status:** Todo
+
+Write additional tests identified during the B-unsafe-db-calls once-over to harden coverage of new control flow and FK ordering:
+
+**FK ordering assertions:**
+- `designate_build` inserts blueprint before task (all 4 designate variants)
+- `insert_task` creates base row before extension tables
+- Acquire item reserves after task insert (activation heartbeat path)
+- Haul task reserves after task insert (logistics heartbeat path)
+- Strut row created after blueprint (designate_build strut path)
+
+**Graceful degradation:**
+- `claim_task` with nonexistent creature is a no-op
+- `set_recipe_enabled` with nonexistent recipe is a no-op
+
+**Upsert correctness:**
+- `upsert_path_assignment` replaces existing assignment
+
+**Cancel/cleanup:**
+- `cancel_build` on furnished structure cleans up furniture rows
+- `cancel_build` reverts voxels after blueprint removed from DB
+
 #### F-ai-test-harness — Remote game control for AI-driven testing (Puppet)
 **Status:** Done
 
@@ -6636,6 +6669,13 @@ coordinate math, selection helpers, input mode transitions. Add a
 the sim or bridge — just GDScript in isolation.
 
 **Related:** F-ai-test-harness, F-bridge-integ-tests
+
+#### F-split-sim-tests — Split sim tests.rs into per-module test files
+**Status:** Todo
+
+`elven_canopy_sim/src/sim/tests.rs` is 54k lines — too large for parallel editing, slow IDE navigation, and hard to review. Split into per-module test files (e.g., `tests/combat_tests.rs`, `tests/construction_tests.rs`, etc.) mirroring the sim module structure. This unblocks B-unsafe-db-calls test conversion and improves long-term maintainability.
+
+**Blocks:** B-unsafe-db-calls
 
 #### F-test-perf — Test performance audit: per-test timing
 **Status:** Todo

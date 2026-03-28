@@ -106,10 +106,11 @@ impl SimState {
         );
 
         let tick = self.tick;
-        let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+        if let Some(mut c) = self.db.creatures.get(&creature_id) {
             c.action_kind = ActionKind::Craft;
             c.next_available_tick = Some(tick + duration);
-        });
+            let _ = self.db.update_creature(c);
+        }
         self.event_queue.schedule(
             self.tick + duration,
             ScheduledEventKind::CreatureActivation { creature_id },
@@ -166,9 +167,10 @@ impl SimState {
             }
 
             // Mana drained — increment progress.
-            let _ = self.db.tasks.modify_unchecked(&task_id, |t| {
+            if let Some(mut t) = self.db.tasks.get(&task_id) {
                 t.progress += 1;
-            });
+                let _ = self.db.update_task(t);
+            }
 
             // Skill advancement per grow action (not just on completion).
             // Growing equipment is primarily woodcraft with some
@@ -284,11 +286,9 @@ impl SimState {
                 && s.quality == quality
                 && s.dye_color.is_none()
         }) {
-            let stack_id = stack.id;
-            let _ = self
-                .db
-                .item_stacks
-                .modify_unchecked(&stack_id, |s| s.dye_color = Some(dye_color));
+            let mut stack = stack.clone();
+            stack.dye_color = Some(dye_color);
+            let _ = self.db.update_item_stack(stack);
             self.inv_normalize(inv_id);
         }
     }
@@ -318,16 +318,17 @@ impl SimState {
         }) {
             let stack_id = output_stack.id;
             for sub in subcomponent_records {
-                let _ = self.db.item_subcomponents.insert_auto_no_fk(|seq| {
-                    crate::db::ItemSubcomponent {
+                let seq = self.db.item_subcomponents.next_seq();
+                let _ = self
+                    .db
+                    .insert_item_subcomponent(crate::db::ItemSubcomponent {
                         item_stack_id: stack_id,
                         seq,
                         component_kind: sub.input_kind,
                         material: None,
                         quality,
                         quantity_per_item: sub.quantity_per_item,
-                    }
-                });
+                    });
             }
         }
     }
@@ -435,7 +436,7 @@ impl SimState {
         self.inv_clear_reservations(self.structure_inv(structure_id), task_id);
         if let Some(mut t) = self.db.tasks.get(&task_id) {
             t.state = task::TaskState::Complete;
-            let _ = self.db.tasks.update_no_fk(t);
+            let _ = self.db.update_task(t);
         }
     }
 
@@ -539,15 +540,6 @@ impl SimState {
             let location = interior_pos;
 
             let task_id = TaskId::new(&mut self.rng);
-            for input in &resolved.inputs {
-                self.inv_reserve_items(
-                    inv_id,
-                    input.item_kind,
-                    input.material_filter,
-                    input.quantity,
-                    task_id,
-                );
-            }
 
             // Grow-verb recipes use multi-action (total_cost = number of
             // actions), all others use single-action (total_cost = work_ticks).
@@ -558,6 +550,8 @@ impl SimState {
                 resolved.work_ticks as i64
             };
 
+            // Insert task before reserving so the task row exists for FK
+            // validation on item_stacks.reserved_by.
             let new_task = task::Task {
                 id: task_id,
                 kind: task::TaskKind::Craft {
@@ -577,14 +571,23 @@ impl SimState {
             };
             self.insert_task(new_task);
 
+            for input in &resolved.inputs {
+                self.inv_reserve_items(
+                    inv_id,
+                    input.item_kind,
+                    input.material_filter,
+                    input.quantity,
+                    task_id,
+                );
+            }
+
             // Overwrite the TaskCraftData with the recipe + material + ar_id
             // (insert_task already created a row via task decomposition).
-            if self.task_craft_data(task_id).is_some() {
-                let _ = self.db.task_craft_data.modify_unchecked(&task_id, |d| {
-                    d.recipe = recipe;
-                    d.material = material;
-                    d.active_recipe_id = ar_id;
-                });
+            if let Some(mut d) = self.task_craft_data(task_id) {
+                d.recipe = recipe;
+                d.material = material;
+                d.active_recipe_id = ar_id;
+                let _ = self.db.update_task_craft_data(d);
             }
         }
     }
@@ -712,9 +715,10 @@ impl SimState {
         {
             return;
         }
-        let _ = self.db.structures.modify_unchecked(&structure_id, |s| {
+        if let Some(mut s) = self.db.structures.get(&structure_id) {
             s.crafting_enabled = enabled;
-        });
+            let _ = self.db.update_structure(s);
+        }
     }
 
     /// Add a recipe to a building's active recipe list. Validates via
@@ -833,15 +837,10 @@ impl SimState {
         target_id: ActiveRecipeTargetId,
         target_quantity: u32,
     ) {
-        if self.db.active_recipe_targets.get(&target_id).is_none() {
-            return;
+        if let Some(mut t) = self.db.active_recipe_targets.get(&target_id) {
+            t.target_quantity = target_quantity;
+            let _ = self.db.update_active_recipe_target(t);
         }
-        let _ = self
-            .db
-            .active_recipe_targets
-            .modify_unchecked(&target_id, |t| {
-                t.target_quantity = target_quantity;
-            });
     }
 
     /// Configure auto-logistics for an active recipe.
@@ -851,29 +850,19 @@ impl SimState {
         auto_logistics: bool,
         spare_iterations: u32,
     ) {
-        if self.db.active_recipes.get(&active_recipe_id).is_none() {
-            return;
+        if let Some(mut ar) = self.db.active_recipes.get(&active_recipe_id) {
+            ar.auto_logistics = auto_logistics;
+            ar.spare_iterations = spare_iterations;
+            let _ = self.db.update_active_recipe(ar);
         }
-        let _ = self
-            .db
-            .active_recipes
-            .modify_unchecked(&active_recipe_id, |ar| {
-                ar.auto_logistics = auto_logistics;
-                ar.spare_iterations = spare_iterations;
-            });
     }
 
     /// Toggle an individual active recipe.
     pub(crate) fn set_recipe_enabled(&mut self, active_recipe_id: ActiveRecipeId, enabled: bool) {
-        if self.db.active_recipes.get(&active_recipe_id).is_none() {
-            return;
+        if let Some(mut ar) = self.db.active_recipes.get(&active_recipe_id) {
+            ar.enabled = enabled;
+            let _ = self.db.update_active_recipe(ar);
         }
-        let _ = self
-            .db
-            .active_recipes
-            .modify_unchecked(&active_recipe_id, |ar| {
-                ar.enabled = enabled;
-            });
     }
 
     /// Move an active recipe up in priority (swap sort_order with the recipe
@@ -937,10 +926,26 @@ impl SimState {
         let mut row_a = self.db.active_recipes.get(&id_a).unwrap().clone();
         let mut row_b = self.db.active_recipes.get(&id_b).unwrap().clone();
         std::mem::swap(&mut row_a.sort_order, &mut row_b.sort_order);
+        // Save targets before removing (cascade would delete them).
+        let targets_a: Vec<_> = self
+            .db
+            .active_recipe_targets
+            .by_active_recipe_id(&id_a, tabulosity::QueryOpts::ASC);
+        let targets_b: Vec<_> = self
+            .db
+            .active_recipe_targets
+            .by_active_recipe_id(&id_b, tabulosity::QueryOpts::ASC);
         // Remove both to clear the unique index entries, then re-insert.
-        let _ = self.db.active_recipes.remove_no_fk(&id_a);
-        let _ = self.db.active_recipes.remove_no_fk(&id_b);
-        let _ = self.db.active_recipes.insert_no_fk(row_a);
-        let _ = self.db.active_recipes.insert_no_fk(row_b);
+        let _ = self.db.remove_active_recipe(&id_a);
+        let _ = self.db.remove_active_recipe(&id_b);
+        let _ = self.db.insert_active_recipe(row_a);
+        let _ = self.db.insert_active_recipe(row_b);
+        // Restore targets.
+        for t in targets_a {
+            let _ = self.db.insert_active_recipe_target(t);
+        }
+        for t in targets_b {
+            let _ = self.db.insert_active_recipe_target(t);
+        }
     }
 }

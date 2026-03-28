@@ -57,7 +57,7 @@ impl super::SimState {
         }
 
         // Insert designation.
-        let _ = self.db.tame_designations.insert_no_fk(TameDesignation {
+        let _ = self.db.insert_tame_designation(TameDesignation {
             creature_id: target_id,
             designated_tick: self.tick,
         });
@@ -85,7 +85,7 @@ impl super::SimState {
     /// cancel any in-progress taming task on that creature.
     pub(crate) fn handle_cancel_tame_designation(&mut self, target_id: CreatureId) {
         // Remove designation (if present).
-        let _ = self.db.tame_designations.remove_no_fk(&target_id);
+        let _ = self.db.remove_tame_designation(&target_id);
 
         // Find and cancel any Tame task targeting this creature.
         let task_id = self
@@ -126,7 +126,7 @@ impl super::SimState {
             .is_some_and(|c| c.vital_status == VitalStatus::Alive);
         if !target_alive {
             // Clean up designation and complete.
-            let _ = self.db.tame_designations.remove_no_fk(&target_id);
+            let _ = self.db.remove_tame_designation(&target_id);
             self.complete_task(task_id);
             return;
         }
@@ -134,7 +134,7 @@ impl super::SimState {
         // Re-validate target isn't already tamed (multiplayer race).
         let target_civ = self.db.creatures.get(&target_id).and_then(|c| c.civ_id);
         if target_civ.is_some() {
-            let _ = self.db.tame_designations.remove_no_fk(&target_id);
+            let _ = self.db.remove_tame_designation(&target_id);
             self.complete_task(task_id);
             return;
         }
@@ -176,7 +176,7 @@ impl super::SimState {
             None => (false, false, Species::Elf),
         };
         if !target_alive || !target_wild {
-            let _ = self.db.tame_designations.remove_no_fk(&target_id);
+            let _ = self.db.remove_tame_designation(&target_id);
             self.complete_task(task_id);
             return true;
         }
@@ -217,11 +217,11 @@ impl super::SimState {
                 && let Some(mut target) = self.db.creatures.get(&target_id)
             {
                 target.civ_id = Some(civ_id);
-                let _ = self.db.creatures.update_no_fk(target);
+                let _ = self.db.update_creature(target);
             }
 
             // Remove designation and complete task.
-            let _ = self.db.tame_designations.remove_no_fk(&target_id);
+            let _ = self.db.remove_tame_designation(&target_id);
 
             // Create notification.
             let tamer_name = self

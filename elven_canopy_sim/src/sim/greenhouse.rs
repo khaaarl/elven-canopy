@@ -64,9 +64,10 @@ impl SimState {
             );
 
             // Update last production tick.
-            let _ = self.db.structures.modify_unchecked(&sid, |s| {
+            if let Some(mut s) = self.db.structures.get(&sid) {
                 s.greenhouse_last_production_tick = tick;
-            });
+                let _ = self.db.update_structure(s);
+            }
         }
     }
 
@@ -77,7 +78,7 @@ impl SimState {
     /// This is the single code path for all fruit spawning — both the initial
     /// fast-forward during `with_config()` and the periodic `TreeHeartbeat`.
     pub(crate) fn attempt_fruit_spawn(&mut self, tree_id: TreeId) -> bool {
-        let tree = match self.db.trees.get(&tree_id) {
+        let mut tree = match self.db.trees.get(&tree_id) {
             Some(t) => t,
             None => return false,
         };
@@ -120,9 +121,8 @@ impl SimState {
         // Place the fruit and record its species.
         self.set_voxel(fruit_pos, VoxelType::Fruit);
         let species_id = tree.fruit_species_id;
-        let _ = self.db.trees.modify_unchecked(&tree_id, |t| {
-            t.fruit_positions.push(fruit_pos);
-        });
+        tree.fruit_positions.push(fruit_pos);
+        let _ = self.db.update_tree(tree);
         if let Some(species_id) = species_id {
             self.fruit_voxel_species.insert(fruit_pos, species_id);
             self.fruit_voxel_species_list.push((fruit_pos, species_id));

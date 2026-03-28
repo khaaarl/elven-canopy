@@ -2133,6 +2133,47 @@ fn spawn_elf(sim: &mut SimState) -> CreatureId {
         .id
 }
 
+/// Helper: insert a minimal blueprint row so that `structures.project_id` FK
+/// validation passes when production code calls `update_structure`.
+fn insert_stub_blueprint(sim: &mut SimState, project_id: ProjectId) {
+    sim.db
+        .insert_blueprint(crate::db::Blueprint {
+            id: project_id,
+            build_type: BuildType::Building,
+            voxels: Vec::new(),
+            priority: crate::types::Priority::Normal,
+            state: crate::blueprint::BlueprintState::Complete,
+            task_id: None,
+            composition_id: None,
+            face_layout: None,
+            stress_warning: false,
+            original_voxels: Vec::new(),
+        })
+        .unwrap();
+}
+
+/// Helper: insert a minimal task row into the DB so that FK validation passes
+/// when other tables (e.g. `item_stacks.reserved_by`) reference this task ID.
+/// The task has no meaningful kind or location — it exists only to satisfy FKs.
+fn insert_stub_task(sim: &mut SimState, task_id: TaskId) {
+    sim.db
+        .insert_task(crate::db::Task {
+            id: task_id,
+            kind_tag: TaskKindTag::GoTo,
+            state: TaskState::Available,
+            location: VoxelCoord::new(0, 0, 0),
+            progress: 0,
+            total_cost: 0,
+            required_species: None,
+            origin: TaskOrigin::Automated,
+            target_creature: None,
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
+            required_civ_id: None,
+        })
+        .unwrap();
+}
+
 /// Helper: insert a GoTo task at the given nav node (elf-only).
 fn insert_goto_task(sim: &mut SimState, location: NavNodeId) -> TaskId {
     let task_id = TaskId::new(&mut sim.rng);
@@ -11242,6 +11283,8 @@ fn insert_building(
     sim.next_structure_id += 1;
     let project_id = ProjectId::new(&mut sim.rng);
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    // Insert a stub blueprint so structures.project_id FK passes validation.
+    insert_stub_blueprint(sim, project_id);
     sim.db
         .structures
         .insert_no_fk(CompletedStructure {
@@ -12225,6 +12268,7 @@ fn logistics_reserve_haul_items_skips_owned_stacks() {
     );
 
     let task_id = TaskId::new(&mut sim.rng);
+    insert_stub_task(&mut sim, task_id);
     sim.reserve_haul_items(
         &task::HaulSource::GroundPile(pile_pos),
         crate::inventory::ItemKind::Bread,
@@ -12835,6 +12879,7 @@ fn find_owned_item_source_skips_reserved_owned_items() {
 
     // Reserve all owned items for a fake task.
     let fake_task_id = TaskId::new(&mut sim.rng);
+    insert_stub_task(&mut sim, fake_task_id);
     sim.inv_reserve_owned_items(
         pile.inventory_id,
         inventory::ItemKind::Bread,
@@ -12877,6 +12922,7 @@ fn inv_reserve_owned_items_splits_stack_preserving_owner() {
     );
 
     let task_id = TaskId::new(&mut sim.rng);
+    insert_stub_task(&mut sim, task_id);
     let material = sim.inv_reserve_owned_items(
         pile.inventory_id,
         inventory::ItemKind::Bread,
@@ -13196,22 +13242,6 @@ fn acquire_item_picks_up_and_owns() {
     // Create AcquireItem task with reservations.
     let task_id = TaskId::new(&mut sim.rng);
     let source = task::HaulSource::GroundPile(pile_pos);
-    {
-        let pile = sim
-            .db
-            .ground_piles
-            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
-            .into_iter()
-            .next()
-            .unwrap();
-        sim.inv_reserve_unowned_items(
-            pile.inventory_id,
-            inventory::ItemKind::Bread,
-            inventory::MaterialFilter::Any,
-            2,
-            task_id,
-        );
-    }
     let acquire_task = Task {
         id: task_id,
         kind: TaskKind::AcquireItem {
@@ -13231,6 +13261,22 @@ fn acquire_item_picks_up_and_owns() {
         required_civ_id: None,
     };
     sim.insert_task(acquire_task);
+    {
+        let pile = sim
+            .db
+            .ground_piles
+            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
+        sim.inv_reserve_unowned_items(
+            pile.inventory_id,
+            inventory::ItemKind::Bread,
+            inventory::MaterialFilter::Any,
+            2,
+            task_id,
+        );
+    }
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
@@ -24837,6 +24883,7 @@ fn inv_reserve_items_single_material_lock() {
 
     // Request 6 fruit with Any filter. Should lock in one material.
     let task_id = TaskId::new(&mut sim.rng.clone());
+    insert_stub_task(&mut sim, task_id);
     let hauled_material = sim.inv_reserve_items(
         inv_id,
         inventory::ItemKind::Fruit,
@@ -24890,6 +24937,7 @@ fn inv_reserve_items_specific_filter() {
 
     // Reserve with Specific(species_b) filter — should only reserve species B.
     let task_id = TaskId::new(&mut sim.rng.clone());
+    insert_stub_task(&mut sim, task_id);
     let hauled = sim.inv_reserve_items(
         inv_id,
         inventory::ItemKind::Fruit,
@@ -30458,22 +30506,6 @@ fn acquire_item_auto_equips_one_from_multi_qty() {
     // Create AcquireItem task for 3 Hats.
     let task_id = TaskId::new(&mut sim.rng);
     let source = task::HaulSource::GroundPile(pile_pos);
-    {
-        let pile = sim
-            .db
-            .ground_piles
-            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
-            .into_iter()
-            .next()
-            .unwrap();
-        sim.inv_reserve_unowned_items(
-            pile.inventory_id,
-            inventory::ItemKind::Hat,
-            inventory::MaterialFilter::Any,
-            3,
-            task_id,
-        );
-    }
     let acquire_task = Task {
         id: task_id,
         kind: TaskKind::AcquireItem {
@@ -30493,6 +30525,22 @@ fn acquire_item_auto_equips_one_from_multi_qty() {
         required_civ_id: None,
     };
     sim.insert_task(acquire_task);
+    {
+        let pile = sim
+            .db
+            .ground_piles
+            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
+        sim.inv_reserve_unowned_items(
+            pile.inventory_id,
+            inventory::ItemKind::Hat,
+            inventory::MaterialFilter::Any,
+            3,
+            task_id,
+        );
+    }
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
@@ -30644,22 +30692,6 @@ fn acquire_item_preserves_material() {
     // Create AcquireItem task with reservation.
     let task_id = TaskId::new(&mut sim.rng);
     let source = task::HaulSource::GroundPile(pile_pos);
-    {
-        let pile = sim
-            .db
-            .ground_piles
-            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
-            .into_iter()
-            .next()
-            .unwrap();
-        sim.inv_reserve_items(
-            pile.inventory_id,
-            inventory::ItemKind::Cloth,
-            inventory::MaterialFilter::Any,
-            1,
-            task_id,
-        );
-    }
     let acquire_task = Task {
         id: task_id,
         kind: TaskKind::AcquireItem {
@@ -30679,6 +30711,22 @@ fn acquire_item_preserves_material() {
         required_civ_id: None,
     };
     sim.insert_task(acquire_task);
+    {
+        let pile = sim
+            .db
+            .ground_piles
+            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
+        sim.inv_reserve_items(
+            pile.inventory_id,
+            inventory::ItemKind::Cloth,
+            inventory::MaterialFilter::Any,
+            1,
+            task_id,
+        );
+    }
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
@@ -30725,22 +30773,6 @@ fn acquire_item_auto_equips_clothing() {
     // Create AcquireItem task with reservation.
     let task_id = TaskId::new(&mut sim.rng);
     let source = task::HaulSource::GroundPile(pile_pos);
-    {
-        let pile = sim
-            .db
-            .ground_piles
-            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
-            .into_iter()
-            .next()
-            .unwrap();
-        sim.inv_reserve_unowned_items(
-            pile.inventory_id,
-            inventory::ItemKind::Tunic,
-            inventory::MaterialFilter::Any,
-            1,
-            task_id,
-        );
-    }
     let acquire_task = Task {
         id: task_id,
         kind: TaskKind::AcquireItem {
@@ -30760,6 +30792,22 @@ fn acquire_item_auto_equips_clothing() {
         required_civ_id: None,
     };
     sim.insert_task(acquire_task);
+    {
+        let pile = sim
+            .db
+            .ground_piles
+            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
+        sim.inv_reserve_unowned_items(
+            pile.inventory_id,
+            inventory::ItemKind::Tunic,
+            inventory::MaterialFilter::Any,
+            1,
+            task_id,
+        );
+    }
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
@@ -30813,22 +30861,6 @@ fn acquire_item_does_not_equip_if_slot_occupied() {
     // Create AcquireItem task with reservation.
     let task_id = TaskId::new(&mut sim.rng);
     let source = task::HaulSource::GroundPile(pile_pos);
-    {
-        let pile = sim
-            .db
-            .ground_piles
-            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
-            .into_iter()
-            .next()
-            .unwrap();
-        sim.inv_reserve_unowned_items(
-            pile.inventory_id,
-            inventory::ItemKind::Tunic,
-            inventory::MaterialFilter::Any,
-            1,
-            task_id,
-        );
-    }
     let acquire_task = Task {
         id: task_id,
         kind: TaskKind::AcquireItem {
@@ -30848,6 +30880,22 @@ fn acquire_item_does_not_equip_if_slot_occupied() {
         required_civ_id: None,
     };
     sim.insert_task(acquire_task);
+    {
+        let pile = sim
+            .db
+            .ground_piles
+            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
+        sim.inv_reserve_unowned_items(
+            pile.inventory_id,
+            inventory::ItemKind::Tunic,
+            inventory::MaterialFilter::Any,
+            1,
+            task_id,
+        );
+    }
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
@@ -33837,6 +33885,7 @@ fn inv_reserve_items_preserves_durability() {
     sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 5, None, None);
 
     let task_id = TaskId::new(&mut sim.rng.clone());
+    insert_stub_task(&mut sim, task_id);
     sim.inv_reserve_items(
         inv_id,
         inventory::ItemKind::Arrow,
@@ -33942,8 +33991,9 @@ fn inv_move_stack_preserves_owner_and_reserved() {
     let mut sim = test_sim(42);
     let src = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
     let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
-    let fake_owner = CreatureId::new(&mut sim.rng.clone());
+    let fake_owner = spawn_elf(&mut sim);
     let fake_task = TaskId::new(&mut sim.rng.clone());
+    insert_stub_task(&mut sim, fake_task);
     sim.inv_add_item(
         src,
         inventory::ItemKind::Bow,
@@ -34362,6 +34412,7 @@ fn death_drop_preserves_preexisting_pile_items() {
     let pile_id = sim.ensure_ground_pile(elf_pos);
     let pile_inv = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
     let fake_task = TaskId::new(&mut sim.rng.clone());
+    insert_stub_task(&mut sim, fake_task);
     sim.inv_add_item(
         pile_inv,
         inventory::ItemKind::Arrow,
@@ -34630,22 +34681,6 @@ fn soldier_acquires_military_equipment_no_ownership_change() {
     // Create AcquireMilitaryEquipment task with reservations.
     let task_id = TaskId::new(&mut sim.rng);
     let source = task::HaulSource::GroundPile(pile_pos);
-    {
-        let pile = sim
-            .db
-            .ground_piles
-            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
-            .into_iter()
-            .next()
-            .unwrap();
-        sim.inv_reserve_unowned_items(
-            pile.inventory_id,
-            inventory::ItemKind::Bow,
-            inventory::MaterialFilter::Any,
-            1,
-            task_id,
-        );
-    }
     let acquire_task = Task {
         id: task_id,
         kind: TaskKind::AcquireMilitaryEquipment {
@@ -34665,6 +34700,22 @@ fn soldier_acquires_military_equipment_no_ownership_change() {
         required_civ_id: None,
     };
     sim.insert_task(acquire_task);
+    {
+        let pile = sim
+            .db
+            .ground_piles
+            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
+        sim.inv_reserve_unowned_items(
+            pile.inventory_id,
+            inventory::ItemKind::Bow,
+            inventory::MaterialFilter::Any,
+            1,
+            task_id,
+        );
+    }
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
@@ -35414,16 +35465,8 @@ fn cleanup_acquire_military_equipment_clears_reservations() {
     let soldiers = soldiers_group(&sim);
     set_military_group(&mut sim, elf_id, Some(soldiers.id));
 
-    // Create task and reserve items.
+    // Create task before reserving so the task row exists for FK validation.
     let task_id = TaskId::new(&mut sim.rng);
-    sim.inv_reserve_unowned_items(
-        pile_inv,
-        inventory::ItemKind::Bow,
-        inventory::MaterialFilter::Any,
-        1,
-        task_id,
-    );
-
     let task = Task {
         id: task_id,
         kind: TaskKind::AcquireMilitaryEquipment {
@@ -35443,6 +35486,14 @@ fn cleanup_acquire_military_equipment_clears_reservations() {
         required_civ_id: None,
     };
     sim.insert_task(task);
+
+    sim.inv_reserve_unowned_items(
+        pile_inv,
+        inventory::ItemKind::Bow,
+        inventory::MaterialFilter::Any,
+        1,
+        task_id,
+    );
 
     // Verify bow is reserved.
     let bow_stack = sim
@@ -36506,24 +36557,8 @@ fn military_equipment_auto_equips_wearable_on_pickup() {
         c.position = pile_nav_pos;
     });
 
-    // Create AcquireMilitaryEquipment task.
+    // Create AcquireMilitaryEquipment task before reserving.
     let task_id = TaskId::new(&mut sim.rng);
-    {
-        let pile = sim
-            .db
-            .ground_piles
-            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
-            .into_iter()
-            .next()
-            .unwrap();
-        sim.inv_reserve_unowned_items(
-            pile.inventory_id,
-            inventory::ItemKind::Helmet,
-            inventory::MaterialFilter::Any,
-            1,
-            task_id,
-        );
-    }
     let acquire_task = Task {
         id: task_id,
         kind: TaskKind::AcquireMilitaryEquipment {
@@ -36543,6 +36578,22 @@ fn military_equipment_auto_equips_wearable_on_pickup() {
         required_civ_id: None,
     };
     sim.insert_task(acquire_task);
+    {
+        let pile = sim
+            .db
+            .ground_piles
+            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
+        sim.inv_reserve_unowned_items(
+            pile.inventory_id,
+            inventory::ItemKind::Helmet,
+            inventory::MaterialFilter::Any,
+            1,
+            task_id,
+        );
+    }
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
@@ -36620,24 +36671,8 @@ fn military_equipment_auto_equip_displaces_existing_clothing() {
         c.position = pile_nav_pos;
     });
 
-    // Create AcquireMilitaryEquipment task.
+    // Create AcquireMilitaryEquipment task before reserving.
     let task_id = TaskId::new(&mut sim.rng);
-    {
-        let pile = sim
-            .db
-            .ground_piles
-            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
-            .into_iter()
-            .next()
-            .unwrap();
-        sim.inv_reserve_unowned_items(
-            pile.inventory_id,
-            inventory::ItemKind::Helmet,
-            inventory::MaterialFilter::Any,
-            1,
-            task_id,
-        );
-    }
     let acquire_task = Task {
         id: task_id,
         kind: TaskKind::AcquireMilitaryEquipment {
@@ -36657,6 +36692,22 @@ fn military_equipment_auto_equip_displaces_existing_clothing() {
         required_civ_id: None,
     };
     sim.insert_task(acquire_task);
+    {
+        let pile = sim
+            .db
+            .ground_piles
+            .by_position(&pile_pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
+            .unwrap();
+        sim.inv_reserve_unowned_items(
+            pile.inventory_id,
+            inventory::ItemKind::Helmet,
+            inventory::MaterialFilter::Any,
+            1,
+            task_id,
+        );
+    }
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
@@ -52745,6 +52796,7 @@ fn furnish_dining_hall_enables_logistics() {
     let structure_id = StructureId(901);
     let project_id = ProjectId::new(&mut sim.rng);
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    insert_stub_blueprint(&mut sim, project_id);
     sim.db
         .structures
         .insert_no_fk(CompletedStructure {
@@ -53260,16 +53312,9 @@ fn haul_pickup_preserves_reservation_on_carried_items() {
     let pile_id = sim.ensure_ground_pile(pile_pos);
     let pile_inv = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
 
+    // Create the haul task before adding reserved items so the task row
+    // exists for FK validation on item_stacks.reserved_by.
     let task_id = TaskId::new(&mut sim.rng);
-    sim.inv_add_simple_item(
-        pile_inv,
-        crate::inventory::ItemKind::Bread,
-        5,
-        None,
-        Some(task_id),
-    );
-
-    // Create the haul task in GoingToSource phase.
     let building_anchor = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
     let dest_sid = insert_building(&mut sim, building_anchor, Some(5), Vec::new());
     let haul_task = Task {
@@ -53294,6 +53339,14 @@ fn haul_pickup_preserves_reservation_on_carried_items() {
         required_civ_id: None,
     };
     sim.insert_task(haul_task);
+
+    sim.inv_add_simple_item(
+        pile_inv,
+        crate::inventory::ItemKind::Bread,
+        5,
+        None,
+        Some(task_id),
+    );
 
     // Assign task to elf.
     {
@@ -53459,16 +53512,9 @@ fn haul_cleanup_going_to_source_clears_reservation_at_source() {
     let pile_id = sim.ensure_ground_pile(pile_pos);
     let pile_inv = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
 
+    // Create haul task before adding reserved items so the task row
+    // exists for FK validation on item_stacks.reserved_by.
     let task_id = TaskId::new(&mut sim.rng);
-    sim.inv_add_simple_item(
-        pile_inv,
-        crate::inventory::ItemKind::Bread,
-        5,
-        None,
-        Some(task_id),
-    );
-
-    // Create haul task in GoingToSource phase.
     let building_anchor = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
     let dest_sid = insert_building(&mut sim, building_anchor, Some(5), Vec::new());
     let haul_task = Task {
@@ -53493,6 +53539,14 @@ fn haul_cleanup_going_to_source_clears_reservation_at_source() {
         required_civ_id: None,
     };
     sim.insert_task(haul_task);
+
+    sim.inv_add_simple_item(
+        pile_inv,
+        crate::inventory::ItemKind::Bread,
+        5,
+        None,
+        Some(task_id),
+    );
 
     // Assign task to elf.
     {
@@ -53567,6 +53621,7 @@ fn inv_move_reserved_items_clears_reservation_and_merges_at_dest() {
     let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
 
     let task_id = TaskId::new(&mut sim.rng);
+    insert_stub_task(&mut sim, task_id);
 
     // Destination already has 3 unreserved bread.
     sim.inv_add_simple_item(dst, crate::inventory::ItemKind::Bread, 3, None, None);
@@ -53960,4 +54015,192 @@ fn haul_dropoff_does_not_affect_other_item_kinds_in_inventory() {
         .map(|s| s.quantity)
         .sum();
     assert_eq!(elf_spears, 1, "Elf should still have their spear");
+}
+
+#[test]
+fn swap_active_recipe_sort_order_preserves_targets() {
+    let mut sim = test_sim(42);
+    let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
+
+    // Add two recipes that each generate target rows.
+    sim.add_active_recipe(structure_id, Recipe::GrowBow, Some(Material::Oak));
+    sim.add_active_recipe(structure_id, Recipe::GrowArrow, Some(Material::Oak));
+
+    let recipes = sim
+        .db
+        .active_recipes
+        .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(recipes.len(), 2, "Should have two active recipes");
+
+    let id_a = recipes[0].id;
+    let id_b = recipes[1].id;
+    let sort_a = recipes[0].sort_order;
+    let sort_b = recipes[1].sort_order;
+
+    // Snapshot original targets.
+    let targets_a_before = sim
+        .db
+        .active_recipe_targets
+        .by_active_recipe_id(&id_a, tabulosity::QueryOpts::ASC);
+    let targets_b_before = sim
+        .db
+        .active_recipe_targets
+        .by_active_recipe_id(&id_b, tabulosity::QueryOpts::ASC);
+    assert!(
+        !targets_a_before.is_empty(),
+        "Recipe A should have targets before swap"
+    );
+    assert!(
+        !targets_b_before.is_empty(),
+        "Recipe B should have targets before swap"
+    );
+
+    // Perform the swap.
+    sim.swap_active_recipe_sort_order(id_a, id_b);
+
+    // Verify sort_orders are swapped.
+    let recipe_a_after = sim.db.active_recipes.get(&id_a).unwrap();
+    let recipe_b_after = sim.db.active_recipes.get(&id_b).unwrap();
+    assert_eq!(
+        recipe_a_after.sort_order, sort_b,
+        "Recipe A should have B's sort_order"
+    );
+    assert_eq!(
+        recipe_b_after.sort_order, sort_a,
+        "Recipe B should have A's sort_order"
+    );
+
+    // Verify all original targets still exist and are associated with the
+    // correct (same) recipe IDs — targets follow the recipe row, not the
+    // sort_order.
+    let targets_a_after = sim
+        .db
+        .active_recipe_targets
+        .by_active_recipe_id(&id_a, tabulosity::QueryOpts::ASC);
+    let targets_b_after = sim
+        .db
+        .active_recipe_targets
+        .by_active_recipe_id(&id_b, tabulosity::QueryOpts::ASC);
+    assert_eq!(
+        targets_a_after.len(),
+        targets_a_before.len(),
+        "Recipe A should have the same number of targets after swap"
+    );
+    assert_eq!(
+        targets_b_after.len(),
+        targets_b_before.len(),
+        "Recipe B should have the same number of targets after swap"
+    );
+    // Verify target content matches (same output item kinds).
+    for (before, after) in targets_a_before.iter().zip(targets_a_after.iter()) {
+        assert_eq!(
+            before.output_item_kind, after.output_item_kind,
+            "Recipe A target item kind should be preserved"
+        );
+    }
+    for (before, after) in targets_b_before.iter().zip(targets_b_after.iter()) {
+        assert_eq!(
+            before.output_item_kind, after.output_item_kind,
+            "Recipe B target item kind should be preserved"
+        );
+    }
+}
+
+#[test]
+fn cancel_build_with_no_task_cleans_up() {
+    let mut sim = test_sim(42);
+    let air_coord = find_air_adjacent_to_trunk(&sim);
+
+    // Insert a blueprint directly with task_id: None.
+    let project_id = ProjectId::new(&mut sim.rng);
+    sim.db
+        .insert_blueprint(crate::db::Blueprint {
+            id: project_id,
+            build_type: BuildType::Platform,
+            voxels: vec![air_coord],
+            priority: crate::types::Priority::Normal,
+            state: crate::blueprint::BlueprintState::Designated,
+            task_id: None,
+            composition_id: None,
+            face_layout: None,
+            stress_warning: false,
+            original_voxels: Vec::new(),
+        })
+        .unwrap();
+
+    // Place the voxel as GrownPlatform so cancel_build has something to revert.
+    sim.world.set(air_coord, VoxelType::GrownPlatform);
+    sim.structure_voxels.insert(air_coord, StructureId(999_999));
+
+    assert!(sim.db.blueprints.contains(&project_id));
+
+    // Cancel should not panic despite task_id being None.
+    let mut events = Vec::new();
+    sim.cancel_build(project_id, &mut events);
+
+    assert!(
+        !sim.db.blueprints.contains(&project_id),
+        "Blueprint should be removed after cancel"
+    );
+}
+
+#[test]
+fn dine_at_hall_no_food_completes_speculative_task() {
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let graph = sim.graph_for_species(Species::Elf);
+    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_pos = graph.node(table_node).position;
+
+    let food_max = sim.species_table[&Species::Elf].food_max;
+    let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+
+    // Create a dining hall with NO food.
+    create_dining_hall(&mut sim, table_pos, 0);
+
+    // Stock 1 food so find_nearest_dining_hall succeeds (it requires food),
+    // then immediately reserve it so inv_reserve_unowned_items finds nothing.
+    let structure_id = StructureId(900);
+    let inv_id = sim.db.structures.get(&structure_id).unwrap().inventory_id;
+    sim.inv_add_simple_item(inv_id, ItemKind::Bread, 1, None, None);
+
+    // Reserve the bread with a dummy task so the elf can't claim it.
+    let dummy_task_id = TaskId::new(&mut sim.rng);
+    insert_stub_task(&mut sim, dummy_task_id);
+    let stacks = sim
+        .db
+        .item_stacks
+        .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+    for stack in stacks {
+        let mut s = stack.clone();
+        s.reserved_by = Some(dummy_task_id);
+        let _ = sim.db.update_item_stack(s);
+    }
+
+    // Set food to 50% — below dining threshold (60%) but above emergency (40%).
+    let _ = sim
+        .db
+        .creatures
+        .modify_unchecked(&elf_id, |c| c.food = food_max * 50 / 100);
+
+    // Advance one heartbeat. The heartbeat will find the dining hall (it has
+    // 1 bread, passing the existence check), speculatively insert a DineAtHall
+    // task, then fail to reserve food (all bread is reserved). It should call
+    // complete_task to clean up the speculative task.
+    sim.step(&[], 1 + heartbeat);
+
+    // Elf should NOT have a DineAtHall task — the speculative task was cleaned up.
+    let creature = sim.db.creatures.get(&elf_id).unwrap();
+    let has_dine_task = creature.current_task.is_some_and(|tid| {
+        sim.db
+            .tasks
+            .get(&tid)
+            .is_some_and(|t| t.kind_tag == TaskKindTag::DineAtHall)
+    });
+    assert!(
+        !has_dine_task,
+        "Elf should not have a DineAtHall task when no food could be reserved"
+    );
 }

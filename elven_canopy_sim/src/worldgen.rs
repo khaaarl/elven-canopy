@@ -206,7 +206,7 @@ pub fn run_worldgen(seed: u64, config: &GameConfig, log: &WgLog) -> WorldgenResu
 
     // Insert fruit species into SimDb.
     for fruit in &fruit_species {
-        let _ = db.fruit_species.insert_no_fk(fruit.clone());
+        let _ = db.insert_fruit_species(fruit.clone());
     }
 
     let player_civ_id;
@@ -501,7 +501,7 @@ fn generate_civilizations(
         culture_tag: CultureTag::Woodland,
         player_controlled: true,
     };
-    db.civilizations.insert_no_fk(player_civ).unwrap();
+    db.insert_civilization(player_civ).unwrap();
 
     // Create default military groups for the player civ.
     create_default_military_groups(db, player_civ_id);
@@ -528,7 +528,7 @@ fn generate_civilizations(
             culture_tag,
             player_controlled: false,
         };
-        db.civilizations.insert_no_fk(civ).unwrap();
+        db.insert_civilization(civ).unwrap();
 
         // Create default military groups for this AI civ.
         create_default_military_groups(db, civ_id);
@@ -548,12 +548,13 @@ fn generate_civilizations(
             let last_ai_id = CivId(config.civ_count - 1);
             let new_name = generate_civ_name(rng, CivSpecies::Goblin, lexicon);
             let new_culture = pick_culture_tag(rng, CivSpecies::Goblin);
-            let _ = db.civilizations.modify_unchecked(&last_ai_id, |c| {
+            if let Some(mut c) = db.civilizations.get(&last_ai_id) {
                 c.primary_species = CivSpecies::Goblin;
                 c.name = new_name.clone();
                 c.culture_tag = new_culture;
                 c.minority_species = Vec::new();
-            });
+                let _ = db.update_civilization(c);
+            }
         }
     }
 
@@ -569,47 +570,43 @@ fn create_default_military_groups(db: &mut SimDb, civ_id: CivId) {
     use crate::species::{
         AmmoExhaustedBehavior, EngagementInitiative, EngagementStyle, WeaponPreference,
     };
-    let _ = db
-        .military_groups
-        .insert_auto_no_fk(|id| crate::db::MilitaryGroup {
-            id,
-            civ_id,
-            name: "Civilians".to_string(),
-            is_default_civilian: true,
-            engagement_style: EngagementStyle {
-                weapon_preference: WeaponPreference::PreferRanged,
-                ammo_exhausted: AmmoExhaustedBehavior::Flee,
-                initiative: EngagementInitiative::Defensive,
-                disengage_threshold_pct: 100,
+    let _ = db.insert_military_group_auto(|id| crate::db::MilitaryGroup {
+        id,
+        civ_id,
+        name: "Civilians".to_string(),
+        is_default_civilian: true,
+        engagement_style: EngagementStyle {
+            weapon_preference: WeaponPreference::PreferRanged,
+            ammo_exhausted: AmmoExhaustedBehavior::Flee,
+            initiative: EngagementInitiative::Defensive,
+            disengage_threshold_pct: 100,
+        },
+        equipment_wants: Vec::new(),
+    });
+    let _ = db.insert_military_group_auto(|id| crate::db::MilitaryGroup {
+        id,
+        civ_id,
+        name: "Soldiers".to_string(),
+        is_default_civilian: false,
+        engagement_style: EngagementStyle {
+            weapon_preference: WeaponPreference::PreferRanged,
+            ammo_exhausted: AmmoExhaustedBehavior::SwitchToMelee,
+            initiative: EngagementInitiative::Aggressive,
+            disengage_threshold_pct: 0,
+        },
+        equipment_wants: vec![
+            LogisticsWant {
+                item_kind: ItemKind::Bow,
+                material_filter: MaterialFilter::Any,
+                target_quantity: 1,
             },
-            equipment_wants: Vec::new(),
-        });
-    let _ = db
-        .military_groups
-        .insert_auto_no_fk(|id| crate::db::MilitaryGroup {
-            id,
-            civ_id,
-            name: "Soldiers".to_string(),
-            is_default_civilian: false,
-            engagement_style: EngagementStyle {
-                weapon_preference: WeaponPreference::PreferRanged,
-                ammo_exhausted: AmmoExhaustedBehavior::SwitchToMelee,
-                initiative: EngagementInitiative::Aggressive,
-                disengage_threshold_pct: 0,
+            LogisticsWant {
+                item_kind: ItemKind::Arrow,
+                material_filter: MaterialFilter::Any,
+                target_quantity: 20,
             },
-            equipment_wants: vec![
-                LogisticsWant {
-                    item_kind: ItemKind::Bow,
-                    material_filter: MaterialFilter::Any,
-                    target_quantity: 1,
-                },
-                LogisticsWant {
-                    item_kind: ItemKind::Arrow,
-                    material_filter: MaterialFilter::Any,
-                    target_quantity: 20,
-                },
-            ],
-        });
+        ],
+    });
 }
 
 /// Pick a species from the weighted distribution.
@@ -860,13 +857,12 @@ fn generate_diplomacy(rng: &mut GameRng, config: &CivConfig, db: &mut SimDb) {
                 opinion = opinion.shift_hostile();
             }
 
-            db.civ_relationships
-                .insert_no_fk(CivRelationship {
-                    from_civ: civ_a,
-                    to_civ: civ_b,
-                    opinion,
-                })
-                .unwrap();
+            db.insert_civ_relationship(CivRelationship {
+                from_civ: civ_a,
+                to_civ: civ_b,
+                opinion,
+            })
+            .unwrap();
         }
     }
 
@@ -893,22 +889,18 @@ fn generate_diplomacy(rng: &mut GameRng, config: &CivConfig, db: &mut SimDb) {
 /// Ensure a Hostile relationship exists from `from_civ` to `to_civ`.
 /// If a relationship already exists, upgrade it to Hostile. Otherwise insert one.
 fn ensure_hostile_rel(db: &mut SimDb, from_civ: CivId, to_civ: CivId) {
-    if let Some(rel) = db.civ_relationships.get(&(from_civ, to_civ)) {
+    if let Some(mut rel) = db.civ_relationships.get(&(from_civ, to_civ)) {
         if rel.opinion != CivOpinion::Hostile {
-            let _ = db
-                .civ_relationships
-                .modify_unchecked(&(from_civ, to_civ), |r| {
-                    r.opinion = CivOpinion::Hostile;
-                });
+            rel.opinion = CivOpinion::Hostile;
+            let _ = db.update_civ_relationship(rel);
         }
     } else {
-        db.civ_relationships
-            .insert_no_fk(CivRelationship {
-                from_civ,
-                to_civ,
-                opinion: CivOpinion::Hostile,
-            })
-            .unwrap();
+        db.insert_civ_relationship(CivRelationship {
+            from_civ,
+            to_civ,
+            opinion: CivOpinion::Hostile,
+        })
+        .unwrap();
     }
 }
 

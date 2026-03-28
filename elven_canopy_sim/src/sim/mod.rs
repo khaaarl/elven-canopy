@@ -592,10 +592,11 @@ impl SimState {
             .iter_all()
             .find(|t| t.fruit_positions.contains(&fruit_pos))
             .map(|t| t.id);
-        if let Some(tree_id) = tree_id {
-            let _ = self.db.trees.modify_unchecked(&tree_id, |t| {
-                t.fruit_positions.retain(|&p| p != fruit_pos);
-            });
+        if let Some(tree_id) = tree_id
+            && let Some(mut t) = self.db.trees.get(&tree_id)
+        {
+            t.fruit_positions.retain(|&p| p != fruit_pos);
+            let _ = self.db.update_tree(t);
         }
     }
 
@@ -699,7 +700,7 @@ impl SimState {
         use crate::db::Player;
         let name = name.to_string();
         if self.db.players.get(&name).is_none() {
-            let _ = self.db.players.insert_no_fk(Player {
+            let _ = self.db.insert_player(Player {
                 name,
                 civ_id: self.player_civ_id,
             });
@@ -722,18 +723,16 @@ impl SimState {
         // Find existing row for this player + group_number.
         let existing_id = self.find_selection_group_id(player_name, group_number);
         if let Some(id) = existing_id {
-            let c = creature_ids;
-            let s = structure_ids;
-            let _ = self.db.selection_groups.modify_unchecked(&id, |g| {
-                g.creature_ids = c;
-                g.structure_ids = s;
-            });
+            if let Some(mut g) = self.db.selection_groups.get(&id) {
+                g.creature_ids = creature_ids;
+                g.structure_ids = structure_ids;
+                let _ = self.db.update_selection_group(g);
+            }
         } else {
             let pn = player_name.to_string();
             let _ = self
                 .db
-                .selection_groups
-                .insert_auto_no_fk(|id| crate::db::SelectionGroup {
+                .insert_selection_group_auto(|id| crate::db::SelectionGroup {
                     id,
                     player_name: pn,
                     group_number,
@@ -757,26 +756,24 @@ impl SimState {
         }
         let existing_id = self.find_selection_group_id(player_name, group_number);
         if let Some(id) = existing_id {
-            let c = creature_ids;
-            let s = structure_ids;
-            let _ = self.db.selection_groups.modify_unchecked(&id, |g| {
-                for cid in &c {
+            if let Some(mut g) = self.db.selection_groups.get(&id) {
+                for cid in &creature_ids {
                     if !g.creature_ids.contains(cid) {
                         g.creature_ids.push(*cid);
                     }
                 }
-                for sid in &s {
+                for sid in &structure_ids {
                     if !g.structure_ids.contains(sid) {
                         g.structure_ids.push(*sid);
                     }
                 }
-            });
+                let _ = self.db.update_selection_group(g);
+            }
         } else {
             let pn = player_name.to_string();
             let _ = self
                 .db
-                .selection_groups
-                .insert_auto_no_fk(|id| crate::db::SelectionGroup {
+                .insert_selection_group_auto(|id| crate::db::SelectionGroup {
                     id,
                     player_name: pn,
                     group_number,
@@ -922,10 +919,10 @@ impl SimState {
                 self.designate_carve(voxels, *priority, events);
             }
             SimAction::RenameStructure { structure_id, name } => {
-                let name_clone = name.clone();
-                let _ = self.db.structures.modify_unchecked(structure_id, |s| {
-                    s.name = name_clone;
-                });
+                if let Some(mut s) = self.db.structures.get(structure_id) {
+                    s.name = name.clone();
+                    let _ = self.db.update_structure(s);
+                }
             }
             SimAction::FurnishStructure {
                 structure_id,
@@ -944,10 +941,10 @@ impl SimState {
                 structure_id,
                 priority,
             } => {
-                let priority_val = *priority;
-                let _ = self.db.structures.modify_unchecked(structure_id, |s| {
-                    s.logistics_priority = priority_val;
-                });
+                if let Some(mut s) = self.db.structures.get(structure_id) {
+                    s.logistics_priority = *priority;
+                    let _ = self.db.update_structure(s);
+                }
             }
             SimAction::SetLogisticsWants {
                 structure_id,
@@ -957,14 +954,16 @@ impl SimState {
                 self.set_inv_wants(inv_id, wants);
             }
             SimAction::SetCreatureFood { creature_id, food } => {
-                let _ = self.db.creatures.modify_unchecked(creature_id, |creature| {
+                if let Some(mut creature) = self.db.creatures.get(creature_id) {
                     creature.food = *food;
-                });
+                    let _ = self.db.update_creature(creature);
+                }
             }
             SimAction::SetCreatureRest { creature_id, rest } => {
-                let _ = self.db.creatures.modify_unchecked(creature_id, |creature| {
+                if let Some(mut creature) = self.db.creatures.get(creature_id) {
                     creature.rest = *rest;
-                });
+                    let _ = self.db.update_creature(creature);
+                }
             }
             SimAction::AddCreatureItem {
                 creature_id,
@@ -1306,7 +1305,7 @@ impl SimState {
                     let current_task_id = creature.current_task;
 
                     // Write back mutated fields.
-                    let _ = self.db.creatures.update_no_fk(creature);
+                    let _ = self.db.update_creature(creature);
 
                     // Overflow mana to the bonded tree (the tree owned by
                     // the creature's civilization). Wild creatures (no civ)
@@ -1333,10 +1332,11 @@ impl SimState {
                             .next()
                         {
                             let tree_id = tree.id;
-                            let _ = self.db.great_tree_infos.modify_unchecked(&tree_id, |info| {
+                            if let Some(mut info) = self.db.great_tree_infos.get(&tree_id) {
                                 info.mana_stored =
                                     (info.mana_stored + tree_gain).min(info.mana_capacity);
-                            });
+                                let _ = self.db.update_great_tree_info(info);
+                            }
                         }
                     }
 
@@ -1395,6 +1395,24 @@ impl SimState {
                         self.find_nearest_dining_hall(creature_id)
                 {
                     let task_id = TaskId::new(&mut self.rng);
+                    // Insert task before reserving so the task row exists for
+                    // FK validation on item_stacks.reserved_by.
+                    let new_task = task::Task {
+                        id: task_id,
+                        kind: task::TaskKind::DineAtHall { structure_id },
+                        state: task::TaskState::InProgress,
+                        location: table_coord,
+                        progress: 0,
+                        total_cost: 0,
+                        required_species: None,
+                        origin: task::TaskOrigin::Autonomous,
+                        target_creature: None,
+                        restrict_to_creature_id: None,
+                        prerequisite_task_id: None,
+                        required_civ_id: None,
+                    };
+                    self.insert_task(new_task);
+
                     // Reserve one edible food item in the dining hall.
                     let mut food_reserved = false;
                     if let Some(structure) = self.db.structures.get(&structure_id) {
@@ -1413,11 +1431,10 @@ impl SimState {
                             }
                         }
                     }
-                    // Only create the task (and preempt the old one) if food
-                    // was successfully reserved. Preemption must happen AFTER
-                    // confirming reservation — otherwise a failed reservation
-                    // leaves the elf taskless with the old task already gone.
                     if food_reserved {
+                        // Preemption must happen AFTER confirming reservation —
+                        // otherwise a failed reservation leaves the elf taskless
+                        // with the old task already gone.
                         if should_preempt_for_dining
                             && let Some(tid) = self
                                 .db
@@ -1427,34 +1444,22 @@ impl SimState {
                         {
                             self.preempt_task(creature_id, tid);
                         }
-                        let new_task = task::Task {
-                            id: task_id,
-                            kind: task::TaskKind::DineAtHall { structure_id },
-                            state: task::TaskState::InProgress,
-                            location: table_coord,
-                            progress: 0,
-                            total_cost: 0,
-                            required_species: None,
-                            origin: task::TaskOrigin::Autonomous,
-                            target_creature: None,
-                            restrict_to_creature_id: None,
-                            prerequisite_task_id: None,
-                            required_civ_id: None,
-                        };
-                        self.insert_task(new_task);
                         // Insert DiningSeat voxel ref for seat reservation.
-                        let _ = self.db.task_voxel_refs.insert_auto_no_fk(|seq| {
-                            crate::db::TaskVoxelRef {
-                                seq,
-                                task_id,
-                                coord: table_coord,
-                                role: crate::db::TaskVoxelRole::DiningSeat,
-                            }
+                        let seq = self.db.task_voxel_refs.next_seq();
+                        let _ = self.db.insert_task_voxel_ref(crate::db::TaskVoxelRef {
+                            seq,
+                            task_id,
+                            coord: table_coord,
+                            role: crate::db::TaskVoxelRole::DiningSeat,
                         });
                         if let Some(mut creature) = self.db.creatures.get(&creature_id) {
                             creature.current_task = Some(task_id);
-                            let _ = self.db.creatures.update_no_fk(creature);
+                            let _ = self.db.update_creature(creature);
                         }
+                    } else {
+                        // No food available — remove the task we speculatively
+                        // inserted so it doesn't linger.
+                        self.complete_task(task_id);
                     }
                 }
                 // If no dining hall available, elf remains idle until
@@ -1500,7 +1505,7 @@ impl SimState {
                         self.insert_task(new_task);
                         if let Some(mut creature) = self.db.creatures.get(&creature_id) {
                             creature.current_task = Some(task_id);
-                            let _ = self.db.creatures.update_no_fk(creature);
+                            let _ = self.db.update_creature(creature);
                         }
                         ate_bread = true;
                     }
@@ -1539,7 +1544,7 @@ impl SimState {
                     self.insert_task(new_task);
                     if let Some(mut creature) = self.db.creatures.get(&creature_id) {
                         creature.current_task = Some(task_id);
-                        let _ = self.db.creatures.update_no_fk(creature);
+                        let _ = self.db.update_creature(creature);
                     }
                     started_grazing = true;
                 }
@@ -1571,7 +1576,7 @@ impl SimState {
                     self.insert_task(new_task);
                     if let Some(mut creature) = self.db.creatures.get(&creature_id) {
                         creature.current_task = Some(task_id);
-                        let _ = self.db.creatures.update_no_fk(creature);
+                        let _ = self.db.update_creature(creature);
                     }
                 }
 
@@ -1631,7 +1636,7 @@ impl SimState {
                     self.insert_task(new_task);
                     if let Some(mut creature) = self.db.creatures.get(&creature_id) {
                         creature.current_task = Some(task_id);
-                        let _ = self.db.creatures.update_no_fk(creature);
+                        let _ = self.db.update_creature(creature);
                     }
                 }
 
@@ -1738,7 +1743,7 @@ impl SimState {
                 Outcome::StillDown
             };
 
-            let _ = self.db.creatures.update_no_fk(c);
+            let _ = self.db.update_creature(c);
 
             // Reschedule heartbeat unless dying.
             if !matches!(outcome, Outcome::Die) {
@@ -1773,11 +1778,11 @@ impl SimState {
         action_kind: ActionKind,
         duration: u64,
     ) {
-        let tick = self.tick;
-        let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+        if let Some(mut c) = self.db.creatures.get(&creature_id) {
             c.action_kind = action_kind;
-            c.next_available_tick = Some(tick + duration);
-        });
+            c.next_available_tick = Some(self.tick + duration);
+            let _ = self.db.update_creature(c);
+        }
         self.event_queue.schedule(
             self.tick + duration,
             ScheduledEventKind::CreatureActivation { creature_id },
@@ -1875,14 +1880,14 @@ impl SimState {
         }
         if let Some(mut task) = self.db.tasks.get(&task_id) {
             task.state = task::TaskState::Complete;
-            let _ = self.db.tasks.update_no_fk(task);
+            let _ = self.db.update_task(task);
         }
 
         for cid in assignees.iter().map(|c| &c.id) {
             if let Some(mut creature) = self.db.creatures.get(cid) {
                 creature.current_task = None;
                 creature.path = None;
-                let _ = self.db.creatures.update_no_fk(creature);
+                let _ = self.db.update_creature(creature);
             }
         }
     }
@@ -2043,15 +2048,13 @@ impl SimState {
             return;
         }
         // Insert the new thought.
-        let _ = self
-            .db
-            .thoughts
-            .insert_auto_no_fk(|seq| crate::db::Thought {
-                creature_id,
-                seq,
-                kind: kind.clone(),
-                tick: self.tick,
-            });
+        let seq = self.db.thoughts.next_seq();
+        let _ = self.db.insert_thought(crate::db::Thought {
+            creature_id,
+            seq,
+            kind: kind.clone(),
+            tick: self.tick,
+        });
         // Cap enforcement: remove oldest if over cap.
         let thoughts = self
             .db
@@ -2061,16 +2064,14 @@ impl SimState {
             // Remove the oldest (first in ASC order by PK, which is insertion order).
             let _ = self
                 .db
-                .thoughts
-                .remove_no_fk(&(thoughts[0].creature_id, thoughts[0].seq));
+                .remove_thought(&(thoughts[0].creature_id, thoughts[0].seq));
         }
     }
 
     pub(crate) fn add_notification(&mut self, message: String) {
         let _ = self
             .db
-            .notifications
-            .insert_auto_no_fk(|id| crate::db::Notification {
+            .insert_notification_auto(|id| crate::db::Notification {
                 id,
                 tick: self.tick,
                 message,
@@ -2085,7 +2086,7 @@ impl SimState {
             .by_creature_id(&creature_id, tabulosity::QueryOpts::ASC);
         for t in &thoughts {
             if self.tick.saturating_sub(t.tick) >= self.config.thoughts.expiry_ticks(&t.kind) {
-                let _ = self.db.thoughts.remove_no_fk(&(t.creature_id, t.seq));
+                let _ = self.db.remove_thought(&(t.creature_id, t.seq));
             }
         }
     }

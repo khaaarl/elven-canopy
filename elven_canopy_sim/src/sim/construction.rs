@@ -227,11 +227,51 @@ impl SimState {
         }
         let task_id = TaskId::new(&mut self.rng);
         let num_voxels = build_voxels.len() as u64;
+        let task_location = build_voxels[0];
+
+        // Insert blueprint before task — task_blueprint_ref has FK to blueprints.
+        // Blueprint initially has task_id: None; updated after task insertion.
+        let composition_id = Some(self.create_composition(build_voxels.len()));
+
+        // For struts, capture endpoints before build_voxels is moved.
+        let strut_endpoints = if build_type == BuildType::Strut {
+            Some((build_voxels[0], build_voxels[build_voxels.len() - 1]))
+        } else {
+            None
+        };
+
+        let bp = Blueprint {
+            id: project_id,
+            build_type,
+            voxels: build_voxels,
+            priority,
+            state: BlueprintState::Designated,
+            task_id: None,
+            composition_id,
+            face_layout: None,
+            stress_warning,
+            original_voxels,
+        };
+        self.db.insert_blueprint(bp).unwrap();
+
+        // For struts, create a Strut row (blueprint must exist for FK).
+        if let Some((endpoint_a, endpoint_b)) = strut_endpoints {
+            self.db
+                .insert_strut_auto(|id| crate::db::Strut {
+                    id,
+                    endpoint_a,
+                    endpoint_b,
+                    blueprint_id: Some(project_id),
+                    structure_id: None,
+                })
+                .unwrap();
+        }
+
         let build_task = task::Task {
             id: task_id,
             kind: task::TaskKind::Build { project_id },
             state: task::TaskState::Available,
-            location: build_voxels[0],
+            location: task_location,
             progress: 0,
             total_cost: num_voxels as i64,
             required_species: Some(Species::Elf),
@@ -243,32 +283,11 @@ impl SimState {
         };
         self.insert_task(build_task);
 
-        // For struts, create a Strut row in the database.
-        if build_type == BuildType::Strut {
-            let strut = crate::db::Strut {
-                id: StrutId(0), // auto-increment
-                endpoint_a: build_voxels[0],
-                endpoint_b: build_voxels[build_voxels.len() - 1],
-                blueprint_id: Some(project_id),
-                structure_id: None,
-            };
-            self.db.struts.insert_no_fk(strut).unwrap();
+        // Update blueprint with the task_id now that the task exists.
+        if let Some(mut bp) = self.db.blueprints.get(&project_id) {
+            bp.task_id = Some(task_id);
+            let _ = self.db.update_blueprint(bp);
         }
-
-        let composition_id = Some(self.create_composition(build_voxels.len()));
-        let bp = Blueprint {
-            id: project_id,
-            build_type,
-            voxels: build_voxels,
-            priority,
-            state: BlueprintState::Designated,
-            task_id: Some(task_id),
-            composition_id,
-            face_layout: None,
-            stress_warning,
-            original_voxels,
-        };
-        self.db.blueprints.insert_no_fk(bp).unwrap();
         events.push(SimEvent {
             tick: self.tick,
             kind: SimEventKind::BlueprintDesignated { project_id },
@@ -384,11 +403,29 @@ impl SimState {
         }
         let task_id = TaskId::new(&mut self.rng);
         let num_voxels = voxels.len() as u64;
+        let task_location = voxels[0];
+
+        // Insert blueprint before task — task_blueprint_ref has FK to blueprints.
+        let composition_id = Some(self.create_composition(voxels.len()));
+        let bp = Blueprint {
+            id: project_id,
+            build_type: BuildType::Building,
+            voxels,
+            priority,
+            state: BlueprintState::Designated,
+            task_id: None,
+            composition_id,
+            face_layout: Some(face_layout.into_iter().collect()),
+            stress_warning,
+            original_voxels: Vec::new(),
+        };
+        self.db.insert_blueprint(bp).unwrap();
+
         let build_task = task::Task {
             id: task_id,
             kind: task::TaskKind::Build { project_id },
             state: task::TaskState::Available,
-            location: voxels[0],
+            location: task_location,
             progress: 0,
             total_cost: num_voxels as i64,
             required_species: Some(Species::Elf),
@@ -400,20 +437,11 @@ impl SimState {
         };
         self.insert_task(build_task);
 
-        let composition_id = Some(self.create_composition(voxels.len()));
-        let bp = Blueprint {
-            id: project_id,
-            build_type: BuildType::Building,
-            voxels,
-            priority,
-            state: BlueprintState::Designated,
-            task_id: Some(task_id),
-            composition_id,
-            face_layout: Some(face_layout.into_iter().collect()),
-            stress_warning,
-            original_voxels: Vec::new(),
-        };
-        self.db.blueprints.insert_no_fk(bp).unwrap();
+        // Update blueprint with the task_id now that the task exists.
+        if let Some(mut bp) = self.db.blueprints.get(&project_id) {
+            bp.task_id = Some(task_id);
+            let _ = self.db.update_blueprint(bp);
+        }
         events.push(SimEvent {
             tick: self.tick,
             kind: SimEventKind::BlueprintDesignated { project_id },
@@ -542,11 +570,35 @@ impl SimState {
         }
         let task_id = TaskId::new(&mut self.rng);
         let num_voxels = build_voxels.len() as u64;
+        let task_location = build_voxels[0];
+
+        // Store the orientation in the blueprint's face_layout field.
+        let face_layout: Vec<(VoxelCoord, FaceData)> = build_voxels
+            .iter()
+            .map(|&coord| (coord, ladder_face_data(orientation)))
+            .collect();
+
+        // Insert blueprint before task — task_blueprint_ref has FK to blueprints.
+        let composition_id = Some(self.create_composition(build_voxels.len()));
+        let bp = Blueprint {
+            id: project_id,
+            build_type,
+            voxels: build_voxels,
+            priority,
+            state: BlueprintState::Designated,
+            task_id: None,
+            composition_id,
+            face_layout: Some(face_layout.into_iter().collect()),
+            stress_warning: false,
+            original_voxels,
+        };
+        self.db.insert_blueprint(bp).unwrap();
+
         let build_task = task::Task {
             id: task_id,
             kind: task::TaskKind::Build { project_id },
             state: task::TaskState::Available,
-            location: build_voxels[0],
+            location: task_location,
             progress: 0,
             total_cost: num_voxels as i64,
             required_species: Some(Species::Elf),
@@ -558,28 +610,11 @@ impl SimState {
         };
         self.insert_task(build_task);
 
-        // Store the orientation in the blueprint's face_layout field for later
-        // use during materialization. We encode it as a map from each voxel to
-        // its FaceData (computed from orientation).
-        let face_layout: Vec<(VoxelCoord, FaceData)> = build_voxels
-            .iter()
-            .map(|&coord| (coord, ladder_face_data(orientation)))
-            .collect();
-
-        let composition_id = Some(self.create_composition(build_voxels.len()));
-        let bp = Blueprint {
-            id: project_id,
-            build_type,
-            voxels: build_voxels,
-            priority,
-            state: BlueprintState::Designated,
-            task_id: Some(task_id),
-            composition_id,
-            face_layout: Some(face_layout.into_iter().collect()),
-            stress_warning: false,
-            original_voxels,
-        };
-        self.db.blueprints.insert_no_fk(bp).unwrap();
+        // Update blueprint with the task_id now that the task exists.
+        if let Some(mut bp) = self.db.blueprints.get(&project_id) {
+            bp.task_id = Some(task_id);
+            let _ = self.db.update_blueprint(bp);
+        }
         events.push(SimEvent {
             tick: self.tick,
             kind: SimEventKind::BlueprintDesignated { project_id },
@@ -667,11 +702,28 @@ impl SimState {
         }
         let task_id = TaskId::new(&mut self.rng);
         let num_voxels = carve_voxels.len() as u64;
+        let task_location = carve_voxels[0];
+
+        // Insert blueprint before task — task_blueprint_ref has FK to blueprints.
+        let bp = Blueprint {
+            id: project_id,
+            build_type: BuildType::Carve,
+            voxels: carve_voxels,
+            priority,
+            state: BlueprintState::Designated,
+            task_id: None,
+            composition_id: None,
+            face_layout: None,
+            stress_warning,
+            original_voxels,
+        };
+        self.db.insert_blueprint(bp).unwrap();
+
         let build_task = task::Task {
             id: task_id,
             kind: task::TaskKind::Build { project_id },
             state: task::TaskState::Available,
-            location: carve_voxels[0],
+            location: task_location,
             progress: 0,
             total_cost: num_voxels as i64,
             required_species: Some(Species::Elf),
@@ -683,19 +735,11 @@ impl SimState {
         };
         self.insert_task(build_task);
 
-        let bp = Blueprint {
-            id: project_id,
-            build_type: BuildType::Carve,
-            voxels: carve_voxels,
-            priority,
-            state: BlueprintState::Designated,
-            task_id: Some(task_id),
-            composition_id: None,
-            face_layout: None,
-            stress_warning,
-            original_voxels,
-        };
-        self.db.blueprints.insert_no_fk(bp).unwrap();
+        // Update blueprint with the task_id now that the task exists.
+        if let Some(mut bp) = self.db.blueprints.get(&project_id) {
+            bp.task_id = Some(task_id);
+            let _ = self.db.update_blueprint(bp);
+        }
         events.push(SimEvent {
             tick: self.tick,
             kind: SimEventKind::BlueprintDesignated { project_id },
@@ -707,26 +751,40 @@ impl SimState {
     /// the nav graph. Emits `BuildCancelled` if found.
     /// Silent no-op if the ProjectId doesn't exist (idempotent for multiplayer).
     pub(crate) fn cancel_build(&mut self, project_id: ProjectId, events: &mut Vec<SimEvent>) {
-        let bp = match self.db.blueprints.remove_no_fk(&project_id) {
-            Ok(bp) => bp,
-            Err(_) => return,
+        let bp = match self.db.blueprints.get(&project_id) {
+            Some(bp) => bp,
+            None => return,
         };
 
-        // Remove any strut row linked to this blueprint.
-        if bp.build_type == BuildType::Strut {
-            let strut_id: Option<StrutId> = self
-                .db
-                .struts
-                .iter_all()
-                .find(|s| s.blueprint_id == Some(project_id))
-                .map(|s| s.id);
-            if let Some(id) = strut_id {
-                let _ = self.db.struts.remove_no_fk(&id);
-            }
+        // Clear FK references before removing entities. Order matters:
+        // - blueprint.task_id → tasks (restrict)
+        // - creature.current_task → tasks (restrict)
+        // - structure.project_id → blueprints (restrict)
+        // - task_blueprint_ref.project_id → blueprints (restrict)
+        // All restrict FKs must be nullified/removed before the target can be deleted.
+
+        // 1. Nullify blueprint.task_id so the blueprint no longer blocks task removal.
+        if let Some(mut bp_mut) = self.db.blueprints.get(&project_id) {
+            bp_mut.task_id = None;
+            let _ = self.db.update_blueprint(bp_mut);
         }
 
-        // Remove any completed structure for this project (linear scan — map is small).
-        // Also remove structure_voxels entries for the cancelled blueprint.
+        // 2. Unassign creatures from the task and remove the task.
+        if let Some(task_id) = bp.task_id {
+            for mut creature in self
+                .db
+                .creatures
+                .by_current_task(&Some(task_id), tabulosity::QueryOpts::ASC)
+            {
+                creature.current_task = None;
+                creature.path = None;
+                let _ = self.db.update_creature(creature);
+            }
+            // Task removal cascades to task_blueprint_ref, task_structure_ref, etc.
+            let _ = self.db.remove_task(&task_id);
+        }
+
+        // 3. Remove structures (structure.project_id → blueprints is restrict).
         for &coord in &bp.voxels {
             self.structure_voxels.remove(&coord);
         }
@@ -738,24 +796,11 @@ impl SimState {
             .map(|s| s.id)
             .collect();
         for sid in structure_ids_to_remove {
-            let _ = self.db.structures.remove_no_fk(&sid);
+            let _ = self.db.remove_structure(&sid);
         }
 
-        // Remove the associated Build task and unassign workers.
-        if let Some(task_id) = bp.task_id
-            && let Ok(_task) = self.db.tasks.remove_no_fk(&task_id)
-        {
-            // Unassign any creatures working on this task.
-            for mut creature in self
-                .db
-                .creatures
-                .by_current_task(&Some(task_id), tabulosity::QueryOpts::ASC)
-            {
-                creature.current_task = None;
-                creature.path = None;
-                let _ = self.db.creatures.update_no_fk(creature);
-            }
-        }
+        // 4. Remove blueprint (cascades to struts via blueprint_id FK).
+        let _ = self.db.remove_blueprint(&project_id);
 
         let bp_voxels: Vec<VoxelCoord> = bp.voxels.clone();
         let original_map: BTreeMap<VoxelCoord, VoxelType> =
@@ -881,17 +926,17 @@ impl SimState {
         if progress == 0
             && let Some(bp) = self.db.blueprints.get(&project_id)
             && let Some(comp_id) = bp.composition_id
+            && let Some(mut comp) = self.db.music_compositions.get(&comp_id)
         {
-            let _ = self.db.music_compositions.modify_unchecked(&comp_id, |c| {
-                c.build_started = true;
-            });
+            comp.build_started = true;
+            let _ = self.db.update_music_composition(comp);
         }
 
-        let tick = self.tick;
-        let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+        if let Some(mut c) = self.db.creatures.get(&creature_id) {
             c.action_kind = ActionKind::Build;
-            c.next_available_tick = Some(tick + duration);
-        });
+            c.next_available_tick = Some(self.tick + duration);
+            let _ = self.db.update_creature(c);
+        }
 
         self.event_queue.schedule(
             self.tick + duration,
@@ -942,9 +987,10 @@ impl SimState {
         }
 
         // Increment progress by 1 (one voxel).
-        let _ = self.db.tasks.modify_unchecked(&task_id, |t| {
+        if let Some(mut t) = self.db.tasks.get(&task_id) {
             t.progress += 1;
-        });
+            let _ = self.db.update_task(t);
+        }
 
         // Skill advancement: construction is woodsinging (Singing + Channeling
         // primary, Woodcraft secondary).
@@ -1011,25 +1057,20 @@ impl SimState {
 
         if creature.mp >= cost {
             // Enough mana: drain and reset wasted counter.
-            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
-                c.mp -= cost;
-                c.wasted_action_count = 0;
-            });
+            let mut creature = creature;
+            creature.mp -= cost;
+            creature.wasted_action_count = 0;
+            let _ = self.db.update_creature(creature);
             true
         } else {
             // Insufficient mana: wasted action. Record position for VFX.
             self.mana_wasted_positions.push(creature.position);
             let threshold = self.config.mana_abandon_threshold;
-            let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
-                c.wasted_action_count += 1;
-            });
+            let mut creature = creature;
+            creature.wasted_action_count += 1;
+            let count = creature.wasted_action_count;
+            let _ = self.db.update_creature(creature);
             // Check if we've hit the abandon threshold.
-            let count = self
-                .db
-                .creatures
-                .get(&creature_id)
-                .map(|c| c.wasted_action_count)
-                .unwrap_or(0);
             if count >= threshold {
                 // Abandon: interrupt_task reverts it to Available.
                 if let Some(task_id) = self
@@ -1264,7 +1305,7 @@ impl SimState {
     pub(crate) fn complete_build(&mut self, project_id: ProjectId, task_id: TaskId) {
         if let Some(mut bp) = self.db.blueprints.get(&project_id) {
             bp.state = BlueprintState::Complete;
-            let _ = self.db.blueprints.update_no_fk(bp);
+            let _ = self.db.update_blueprint(bp);
         }
 
         // Register a CompletedStructure if the blueprint exists.
@@ -1278,7 +1319,7 @@ impl SimState {
             let inv_id = self.create_inventory(crate::db::InventoryOwnerKind::Structure);
             let structure =
                 crate::db::CompletedStructure::from_blueprint(structure_id, &bp, self.tick, inv_id);
-            self.db.structures.insert_no_fk(structure).unwrap();
+            self.db.insert_structure(structure).unwrap();
 
             // For struts: update the Strut row with the completed structure_id
             // and clear the blueprint_id (build is done).
@@ -1292,7 +1333,7 @@ impl SimState {
                 if let Some(mut strut) = strut_to_update {
                     strut.blueprint_id = None;
                     strut.structure_id = Some(structure_id);
-                    let _ = self.db.struts.update_no_fk(strut);
+                    let _ = self.db.update_strut(strut);
                 }
             }
         }
@@ -1326,7 +1367,7 @@ impl SimState {
         if furnishing_type == FurnishingType::DanceHall {
             let mut structure = self.db.structures.get(&structure_id).unwrap();
             structure.furnishing = Some(FurnishingType::DanceHall);
-            let _ = self.db.structures.update_no_fk(structure);
+            let _ = self.db.update_structure(structure);
             return;
         }
 
@@ -1355,15 +1396,12 @@ impl SimState {
 
         // Insert planned furniture rows.
         for coord in &planned_furniture {
-            let _ = self
-                .db
-                .furniture
-                .insert_auto_no_fk(|id| crate::db::Furniture {
-                    id,
-                    structure_id,
-                    coord: *coord,
-                    placed: false,
-                });
+            let _ = self.db.insert_furniture_auto(|id| crate::db::Furniture {
+                id,
+                structure_id,
+                coord: *coord,
+                placed: false,
+            });
         }
 
         // Set furnishing type on the structure.
@@ -1417,7 +1455,7 @@ impl SimState {
         // Find a nav node inside the building to use as the task location.
         let interior_pos = structure.floor_interior_positions();
         let task_pos = interior_pos.first().copied().unwrap_or(structure.anchor);
-        let _ = self.db.structures.update_no_fk(structure);
+        let _ = self.db.update_structure(structure);
         self.set_inv_wants(inv_id, &default_wants);
 
         if self.nav_graph.find_nearest_node(task_pos).is_none() {
@@ -1467,7 +1505,7 @@ impl SimState {
                 // Unassign only.
                 if let Some(mut c) = self.db.creatures.get(&creature_id) {
                     c.assigned_home = None;
-                    let _ = self.db.creatures.update_no_fk(c);
+                    let _ = self.db.update_creature(c);
                 }
                 return;
             }
@@ -1488,14 +1526,14 @@ impl SimState {
             if prev_elf.id != creature_id {
                 let mut prev = prev_elf;
                 prev.assigned_home = None;
-                let _ = self.db.creatures.update_no_fk(prev);
+                let _ = self.db.update_creature(prev);
             }
         }
 
         // Set creature's assigned_home.
         if let Some(mut c) = self.db.creatures.get(&creature_id) {
             c.assigned_home = Some(target_id);
-            let _ = self.db.creatures.update_no_fk(c);
+            let _ = self.db.update_creature(c);
         }
     }
 
@@ -1508,11 +1546,11 @@ impl SimState {
             crate::types::TraitKind::Dexterity,
             crate::types::TraitKind::Woodcraft,
         );
-        let tick = self.tick;
-        let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+        if let Some(mut c) = self.db.creatures.get(&creature_id) {
             c.action_kind = ActionKind::Furnish;
-            c.next_available_tick = Some(tick + duration);
-        });
+            c.next_available_tick = Some(self.tick + duration);
+            let _ = self.db.update_creature(c);
+        }
         self.event_queue.schedule(
             self.tick + duration,
             ScheduledEventKind::CreatureActivation { creature_id },
@@ -1557,15 +1595,16 @@ impl SimState {
             .into_iter()
             .find(|f| !f.placed)
         {
-            let _ = self.db.furniture.modify_unchecked(&furn.id, |f| {
-                f.placed = true;
-            });
+            let mut furn = furn;
+            furn.placed = true;
+            let _ = self.db.update_furniture(furn);
         }
 
         // Increment progress by 1 (one item).
-        let _ = self.db.tasks.modify_unchecked(&task_id, |t| {
+        if let Some(mut t) = self.db.tasks.get(&task_id) {
             t.progress += 1;
-        });
+            let _ = self.db.update_task(t);
+        }
 
         // Check if furnishing is complete.
         let task = match self.db.tasks.get(&task_id) {
@@ -1594,12 +1633,13 @@ impl SimState {
             let graph = self.graph_for_species(species);
             let new_node = graph.find_nearest_node(old_pos);
             let new_pos = new_node.map(|nid| graph.node(nid).position);
-            let _ = self.db.creatures.modify_unchecked(&cid, |creature| {
+            if let Some(mut creature) = self.db.creatures.get(&cid) {
                 creature.path = None;
                 if let Some(p) = new_pos {
                     creature.position = p;
                 }
-            });
+                let _ = self.db.update_creature(creature);
+            }
             if let Some(p) = new_pos {
                 self.update_creature_spatial_index(cid, species, old_pos, p);
             }
@@ -1635,12 +1675,13 @@ impl SimState {
             let graph = self.graph_for_species(species);
             let new_node = graph.find_nearest_node(old_pos);
             let new_pos = new_node.map(|nid| graph.node(nid).position);
-            let _ = self.db.creatures.modify_unchecked(&cid, |creature| {
+            if let Some(mut creature) = self.db.creatures.get(&cid) {
                 creature.path = None;
                 if let Some(p) = new_pos {
                     creature.position = p;
                 }
-            });
+                let _ = self.db.update_creature(creature);
+            }
             if let Some(p) = new_pos {
                 self.update_creature_spatial_index(cid, species, old_pos, p);
             }

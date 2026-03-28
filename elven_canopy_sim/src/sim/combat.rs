@@ -200,7 +200,7 @@ impl SimState {
         if let Some(mut c) = self.db.creatures.get(&attacker_id) {
             c.current_task = Some(task_id);
             c.path = None;
-            let _ = self.db.creatures.update_no_fk(c);
+            let _ = self.db.update_creature(c);
         }
 
         // Only schedule activation if no Move action is in-flight.
@@ -262,8 +262,7 @@ impl SimState {
             // Insert extension row with destination.
             let _ = self
                 .db
-                .task_attack_move_data
-                .insert_no_fk(crate::db::TaskAttackMoveData {
+                .insert_task_attack_move_data(crate::db::TaskAttackMoveData {
                     task_id,
                     destination,
                 });
@@ -323,8 +322,7 @@ impl SimState {
         // Insert extension row with destination.
         let _ = self
             .db
-            .task_attack_move_data
-            .insert_no_fk(crate::db::TaskAttackMoveData {
+            .insert_task_attack_move_data(crate::db::TaskAttackMoveData {
                 task_id,
                 destination,
             });
@@ -333,7 +331,7 @@ impl SimState {
         if let Some(mut c) = self.db.creatures.get(&creature_id) {
             c.current_task = Some(task_id);
             c.path = None;
-            let _ = self.db.creatures.update_no_fk(c);
+            let _ = self.db.update_creature(c);
         }
 
         if !mid_move {
@@ -513,11 +511,12 @@ impl SimState {
                     if let Some(mut t) = self.db.tasks.get(&task_id) {
                         t.target_creature = Some(nearest_id);
                         t.location = nearest_pos;
-                        let _ = self.db.tasks.update_no_fk(t);
+                        let _ = self.db.update_task(t);
                     }
-                    let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+                    if let Some(mut c) = self.db.creatures.get(&creature_id) {
                         c.path = None;
-                    });
+                        let _ = self.db.update_creature(c);
+                    }
                     self.event_queue.schedule(
                         self.tick + 1,
                         ScheduledEventKind::CreatureActivation { creature_id },
@@ -556,11 +555,12 @@ impl SimState {
         if let Some(mut t) = self.db.tasks.get(&task_id) {
             t.target_creature = None;
             t.location = dest_pos;
-            let _ = self.db.tasks.update_no_fk(t);
+            let _ = self.db.update_task(t);
         }
-        let _ = self.db.creatures.modify_unchecked(&creature_id, |c| {
+        if let Some(mut c) = self.db.creatures.get(&creature_id) {
             c.path = None;
-        });
+            let _ = self.db.update_creature(c);
+        }
     }
 
     /// When a creature is hit by a projectile from outside its detection range,
@@ -615,19 +615,19 @@ impl SimState {
             // Update the AttackMove destination to the new origin.
             if let Some(mut amd) = self.task_attack_move_data(current_task_id) {
                 amd.destination = origin_voxel;
-                let _ = self.db.task_attack_move_data.update_no_fk(amd);
+                let _ = self.db.update_task_attack_move_data(amd);
             }
             // Update task location so pathing heads to the new target.
             if let Some(mut t) = self.db.tasks.get(&current_task_id) {
                 t.location = origin_voxel;
                 t.target_creature = None;
-                let _ = self.db.tasks.update_no_fk(t);
+                let _ = self.db.update_task(t);
             }
             // Clear cached path so pathing recomputes.
-            let _ = self
-                .db
-                .creatures
-                .modify_unchecked(&target_id, |c| c.path = None);
+            if let Some(mut c) = self.db.creatures.get(&target_id) {
+                c.path = None;
+                let _ = self.db.update_creature(c);
+            }
             return;
         }
 
@@ -683,8 +683,7 @@ impl SimState {
 
         let _ = self
             .db
-            .task_attack_move_data
-            .insert_no_fk(crate::db::TaskAttackMoveData {
+            .insert_task_attack_move_data(crate::db::TaskAttackMoveData {
                 task_id,
                 destination: origin_voxel,
             });
@@ -693,7 +692,7 @@ impl SimState {
         if let Some(mut c) = self.db.creatures.get(&target_id) {
             c.current_task = Some(task_id);
             c.path = None;
-            let _ = self.db.creatures.update_no_fk(c);
+            let _ = self.db.update_creature(c);
         }
 
         if !mid_move {
@@ -832,14 +831,12 @@ impl SimState {
                 .iter()
                 .map(|&nid| graph.node(nid).position)
                 .collect();
-            let _ = self
-                .db
-                .creatures
-                .modify_unchecked(&creature_id, |creature| {
-                    creature.path = Some(CreaturePath {
-                        remaining_positions,
-                    });
+            if let Some(mut creature) = self.db.creatures.get(&creature_id) {
+                creature.path = Some(CreaturePath {
+                    remaining_positions,
                 });
+                let _ = self.db.update_creature(creature);
+            }
 
             (first_edge, first_dest)
         };
@@ -853,12 +850,10 @@ impl SimState {
         let footprint = self.species_table[&species].footprint;
         if self.destination_blocked_by_hostile(creature_id, dest_pos, footprint) {
             // Invalidate cached path so we repath on retry.
-            let _ = self
-                .db
-                .creatures
-                .modify_unchecked(&creature_id, |creature| {
-                    creature.path = None;
-                });
+            if let Some(mut creature) = self.db.creatures.get(&creature_id) {
+                creature.path = None;
+                let _ = self.db.update_creature(creature);
+            }
             self.event_queue.schedule(
                 self.tick + self.config.voxel_exclusion_retry_ticks,
                 ScheduledEventKind::CreatureActivation { creature_id },
@@ -880,19 +875,17 @@ impl SimState {
 
         let old_pos = self.db.creatures.get(&creature_id).unwrap().position;
         let tick = self.tick;
-        let _ = self
-            .db
-            .creatures
-            .modify_unchecked(&creature_id, |creature| {
-                creature.position = dest_pos;
-                creature.action_kind = ActionKind::Move;
-                creature.next_available_tick = Some(tick + delay);
-                if let Some(ref mut path) = creature.path
-                    && !path.remaining_positions.is_empty()
-                {
-                    path.remaining_positions.remove(0);
-                }
-            });
+        if let Some(mut creature) = self.db.creatures.get(&creature_id) {
+            creature.position = dest_pos;
+            creature.action_kind = ActionKind::Move;
+            creature.next_available_tick = Some(tick + delay);
+            if let Some(ref mut path) = creature.path
+                && !path.remaining_positions.is_empty()
+            {
+                path.remaining_positions.remove(0);
+            }
+            let _ = self.db.update_creature(creature);
+        }
 
         self.update_creature_spatial_index(creature_id, species, old_pos, dest_pos);
 
@@ -902,8 +895,8 @@ impl SimState {
             move_to: dest_pos,
             move_start_tick: tick,
         };
-        let _ = self.db.move_actions.remove_no_fk(&creature_id);
-        self.db.move_actions.insert_no_fk(move_action).unwrap();
+        let _ = self.db.remove_move_action(&creature_id);
+        self.db.insert_move_action(move_action).unwrap();
 
         self.event_queue.schedule(
             self.tick + delay,
@@ -1120,13 +1113,9 @@ impl SimState {
         let result = self.try_combat_against_target(creature_id, target_id, events);
         if result {
             // Reset path failure counter on combat contact.
-            if let Some(data) = self.task_attack_target_data(task_id) {
-                let _ = self
-                    .db
-                    .task_attack_target_data
-                    .modify_unchecked(&data.task_id, |d| {
-                        d.path_failures = 0;
-                    });
+            if let Some(mut data) = self.task_attack_target_data(task_id) {
+                data.path_failures = 0;
+                let _ = self.db.update_task_attack_target_data(data);
             }
         }
         result
@@ -1157,15 +1146,11 @@ impl SimState {
         {
             if self.fly_toward_target(creature_id, task_location_coord, events) {
                 // Reset failure counter on successful flight step.
-                if let Some(data) = self.task_attack_target_data(task_id)
+                if let Some(mut data) = self.task_attack_target_data(task_id)
                     && data.path_failures > 0
                 {
-                    let _ = self
-                        .db
-                        .task_attack_target_data
-                        .modify_unchecked(&data.task_id, |d| {
-                            d.path_failures = 0;
-                        });
+                    data.path_failures = 0;
+                    let _ = self.db.update_task_attack_target_data(data);
                 }
             } else {
                 // Flight pathfinding failed — increment counter, check limit.
@@ -1176,12 +1161,9 @@ impl SimState {
                         self.fly_wander(creature_id, events);
                         return;
                     }
-                    let _ = self
-                        .db
-                        .task_attack_target_data
-                        .modify_unchecked(&data.task_id, |d| {
-                            d.path_failures = new_failures;
-                        });
+                    let mut data = data;
+                    data.path_failures = new_failures;
+                    let _ = self.db.update_task_attack_target_data(data);
                 }
                 self.event_queue.schedule(
                     self.tick + 500,
@@ -1233,15 +1215,11 @@ impl SimState {
 
         let (edge_idx, dest_node) = if let Some(step) = next_step {
             // Reset failure counter on successful path usage.
-            if let Some(data) = self.task_attack_target_data(task_id)
+            if let Some(mut data) = self.task_attack_target_data(task_id)
                 && data.path_failures > 0
             {
-                let _ = self
-                    .db
-                    .task_attack_target_data
-                    .modify_unchecked(&data.task_id, |d| {
-                        d.path_failures = 0;
-                    });
+                data.path_failures = 0;
+                let _ = self.db.update_task_attack_target_data(data);
             }
             step
         } else {
@@ -1281,12 +1259,9 @@ impl SimState {
                             self.ground_wander(creature_id, current_node, events);
                             return;
                         }
-                        let _ =
-                            self.db
-                                .task_attack_target_data
-                                .modify_unchecked(&data.task_id, |d| {
-                                    d.path_failures = new_failures;
-                                });
+                        let mut data = data;
+                        data.path_failures = new_failures;
+                        let _ = self.db.update_task_attack_target_data(data);
                     }
                     // Retry next activation.
                     self.event_queue.schedule(
@@ -1304,14 +1279,12 @@ impl SimState {
                 .iter()
                 .map(|&nid| graph.node(nid).position)
                 .collect();
-            let _ = self
-                .db
-                .creatures
-                .modify_unchecked(&creature_id, |creature| {
-                    creature.path = Some(CreaturePath {
-                        remaining_positions,
-                    });
+            if let Some(mut creature) = self.db.creatures.get(&creature_id) {
+                creature.path = Some(CreaturePath {
+                    remaining_positions,
                 });
+                let _ = self.db.update_creature(creature);
+            }
 
             (first_edge, first_dest)
         };
@@ -1324,12 +1297,10 @@ impl SimState {
         // Voxel exclusion: reject move if destination is hostile-occupied.
         let footprint = self.species_table[&species].footprint;
         if self.destination_blocked_by_hostile(creature_id, dest_pos, footprint) {
-            let _ = self
-                .db
-                .creatures
-                .modify_unchecked(&creature_id, |creature| {
-                    creature.path = None;
-                });
+            if let Some(mut creature) = self.db.creatures.get(&creature_id) {
+                creature.path = None;
+                let _ = self.db.update_creature(creature);
+            }
             self.event_queue.schedule(
                 self.tick + self.config.voxel_exclusion_retry_ticks,
                 ScheduledEventKind::CreatureActivation { creature_id },
@@ -1351,19 +1322,17 @@ impl SimState {
 
         let old_pos = self.db.creatures.get(&creature_id).unwrap().position;
         let tick = self.tick;
-        let _ = self
-            .db
-            .creatures
-            .modify_unchecked(&creature_id, |creature| {
-                creature.position = dest_pos;
-                creature.action_kind = ActionKind::Move;
-                creature.next_available_tick = Some(tick + delay);
-                if let Some(ref mut path) = creature.path
-                    && !path.remaining_positions.is_empty()
-                {
-                    path.remaining_positions.remove(0);
-                }
-            });
+        if let Some(mut creature) = self.db.creatures.get(&creature_id) {
+            creature.position = dest_pos;
+            creature.action_kind = ActionKind::Move;
+            creature.next_available_tick = Some(tick + delay);
+            if let Some(ref mut path) = creature.path
+                && !path.remaining_positions.is_empty()
+            {
+                path.remaining_positions.remove(0);
+            }
+            let _ = self.db.update_creature(creature);
+        }
 
         self.update_creature_spatial_index(creature_id, species, old_pos, dest_pos);
 
@@ -1373,8 +1342,8 @@ impl SimState {
             move_to: dest_pos,
             move_start_tick: tick,
         };
-        let _ = self.db.move_actions.remove_no_fk(&creature_id);
-        self.db.move_actions.insert_no_fk(move_action).unwrap();
+        let _ = self.db.remove_move_action(&creature_id);
+        self.db.insert_move_action(move_action).unwrap();
 
         self.event_queue.schedule(
             self.tick + delay,
@@ -1420,10 +1389,10 @@ impl SimState {
             self.remove_participant(activity_id, creature_id, events);
         }
 
-        // Set vital_status = Incapacitated (indexed field → update_no_fk).
+        // Set vital_status = Incapacitated (indexed field).
         if let Some(mut c) = self.db.creatures.get(&creature_id) {
             c.vital_status = VitalStatus::Incapacitated;
-            let _ = self.db.creatures.update_no_fk(c);
+            let _ = self.db.update_creature(c);
         }
 
         // Emit CreatureIncapacitated event.
@@ -1454,8 +1423,7 @@ impl SimState {
         };
         let _ = self
             .db
-            .notifications
-            .insert_auto_no_fk(|id| crate::db::Notification {
+            .insert_notification_auto(|id| crate::db::Notification {
                 id,
                 tick: self.tick,
                 message: msg,
@@ -1527,7 +1495,6 @@ impl SimState {
                 // Clear owner, reserved_by, and equipped_slot on the dead
                 // creature's stacks only (filter by owner to avoid clobbering
                 // pre-existing items in the same ground pile).
-                // Uses update_no_fk because owner and equipped_slot are indexed.
                 let pile_stacks: Vec<_> = self
                     .db
                     .item_stacks
@@ -1537,7 +1504,7 @@ impl SimState {
                         stack.owner = None;
                         stack.reserved_by = None;
                         stack.equipped_slot = None;
-                        let _ = self.db.item_stacks.update_no_fk(stack);
+                        let _ = self.db.update_item_stack(stack);
                     }
                 }
                 self.inv_normalize(pile_inv_id);
@@ -1554,12 +1521,11 @@ impl SimState {
         );
 
         // 4. Clear assigned_home, set vital_status = Dead, hp = 0.
-        // Uses update_no_fk because vital_status is #[indexed].
         if let Some(mut c) = self.db.creatures.get(&creature_id) {
             c.assigned_home = None;
             c.vital_status = VitalStatus::Dead;
             c.hp = 0;
-            let _ = self.db.creatures.update_no_fk(c);
+            let _ = self.db.update_creature(c);
         }
 
         // 5. Emit CreatureDied event.
@@ -1596,8 +1562,7 @@ impl SimState {
         };
         let _ = self
             .db
-            .notifications
-            .insert_auto_no_fk(|id| crate::db::Notification {
+            .insert_notification_auto(|id| crate::db::Notification {
                 id,
                 tick: self.tick,
                 message: msg,
@@ -1650,7 +1615,7 @@ impl SimState {
                     }
                 }
             };
-            let _ = self.db.creatures.update_no_fk(c);
+            let _ = self.db.update_creature(c);
             result
         } else {
             return;
@@ -1695,8 +1660,7 @@ impl SimState {
                 c.vital_status = VitalStatus::Alive;
                 revived = true;
             }
-            // vital_status is indexed → must use update_no_fk.
-            let _ = self.db.creatures.update_no_fk(c);
+            let _ = self.db.update_creature(c);
         }
         // Restart the activation chain so the revived creature can act again.
         if revived {
@@ -2098,18 +2062,15 @@ impl SimState {
 
         let was_empty = self.db.projectiles.is_empty();
 
-        let _ = self
-            .db
-            .projectiles
-            .insert_auto_no_fk(|id| crate::db::Projectile {
-                id,
-                shooter: Some(attacker_id),
-                inventory_id: proj_inv_id,
-                position: origin_sub,
-                velocity: aim_velocity,
-                prev_voxel: attacker_pos,
-                origin_voxel: attacker_pos,
-            });
+        let _ = self.db.insert_projectile_auto(|id| crate::db::Projectile {
+            id,
+            shooter: Some(attacker_id),
+            inventory_id: proj_inv_id,
+            position: origin_sub,
+            velocity: aim_velocity,
+            prev_voxel: attacker_pos,
+            origin_voxel: attacker_pos,
+        });
 
         if was_empty {
             self.event_queue
@@ -2171,18 +2132,15 @@ impl SimState {
         let aim = compute_aim_velocity(origin_sub, target, speed, gravity, 5, 5000);
 
         // Insert projectile into SimDb.
-        let _ = self
-            .db
-            .projectiles
-            .insert_auto_no_fk(|id| crate::db::Projectile {
-                id,
-                shooter: shooter_id,
-                inventory_id: inv_id,
-                position: origin_sub,
-                velocity: aim.velocity,
-                prev_voxel: origin,
-                origin_voxel: origin,
-            });
+        let _ = self.db.insert_projectile_auto(|id| crate::db::Projectile {
+            id,
+            shooter: shooter_id,
+            inventory_id: inv_id,
+            position: origin_sub,
+            velocity: aim.velocity,
+            prev_voxel: origin,
+            origin_voxel: origin,
+        });
 
         // Schedule ProjectileTick if this is the first in-flight projectile.
         if was_empty {
@@ -2308,7 +2266,7 @@ impl SimState {
                 proj.prev_voxel = current_voxel;
                 proj.position = new_pos;
                 proj.velocity = new_vel;
-                let _ = self.db.projectiles.update_no_fk(proj);
+                let _ = self.db.update_projectile(proj);
             }
         }
 
@@ -2494,7 +2452,7 @@ impl SimState {
         if let Some(proj) = self.db.projectiles.get(&proj_id) {
             let inv_id = proj.inventory_id;
             // Remove projectile first (it references the inventory).
-            let _ = self.db.projectiles.remove_no_fk(&proj_id);
+            let _ = self.db.remove_projectile(&proj_id);
             // Remove any remaining item stacks in the inventory.
             let stacks: Vec<ItemStackId> = self
                 .db
@@ -2504,10 +2462,10 @@ impl SimState {
                 .map(|s| s.id)
                 .collect();
             for stack_id in stacks {
-                let _ = self.db.item_stacks.remove_no_fk(&stack_id);
+                let _ = self.db.remove_item_stack(&stack_id);
             }
             // Remove the inventory row itself.
-            let _ = self.db.inventories.remove_no_fk(&inv_id);
+            let _ = self.db.remove_inventory(&inv_id);
         }
     }
 
@@ -2720,14 +2678,11 @@ impl SimState {
         if already_aware {
             return;
         }
-        let _ = self
-            .db
-            .civ_relationships
-            .insert_no_fk(crate::db::CivRelationship {
-                from_civ: civ_id,
-                to_civ: discovered_civ,
-                opinion: initial_opinion,
-            });
+        let _ = self.db.insert_civ_relationship(crate::db::CivRelationship {
+            from_civ: civ_id,
+            to_civ: discovered_civ,
+            opinion: initial_opinion,
+        });
     }
 
     /// Get the player-controlled civ's known civilizations for the elfcyclopedia.
@@ -2775,11 +2730,9 @@ impl SimState {
         opinion: CivOpinion,
     ) {
         let pk = (civ_id, target_civ);
-        if self.db.civ_relationships.contains(&pk) {
-            let _ = self
-                .db
-                .civ_relationships
-                .modify_unchecked(&pk, |r| r.opinion = opinion);
+        if let Some(mut r) = self.db.civ_relationships.get(&pk) {
+            r.opinion = opinion;
+            let _ = self.db.update_civ_relationship(r);
         }
     }
 
@@ -2832,8 +2785,7 @@ impl SimState {
         let group_name = name.clone();
         let result = self
             .db
-            .military_groups
-            .insert_auto_no_fk(|id| crate::db::MilitaryGroup {
+            .insert_military_group_auto(|id| crate::db::MilitaryGroup {
                 id,
                 civ_id,
                 name,
@@ -2882,15 +2834,14 @@ impl SimState {
         let member_ids: Vec<CreatureId> = members.iter().map(|c| c.id).collect();
 
         // Nullify creature.military_group for all members (manual FK nullify).
-        // Uses update_no_fk because military_group is an indexed field.
         for cid in member_ids {
             if let Some(mut creature) = self.db.creatures.get(&cid) {
                 creature.military_group = None;
-                let _ = self.db.creatures.update_no_fk(creature);
+                let _ = self.db.update_creature(creature);
             }
         }
 
-        let _ = self.db.military_groups.remove_no_fk(&group_id);
+        let _ = self.db.remove_military_group(&group_id);
 
         self.add_notification(format!(
             "Group '{}' disbanded, {} members returned to civilian duty.",
@@ -2932,10 +2883,9 @@ impl SimState {
                 _ => return,
             }
         }
-        // Uses update_no_fk because military_group is an indexed field.
         if let Some(mut creature) = self.db.creatures.get(&creature_id) {
             creature.military_group = group_id;
-            let _ = self.db.creatures.update_no_fk(creature);
+            let _ = self.db.update_creature(creature);
         }
     }
 
@@ -2951,10 +2901,9 @@ impl SimState {
         if group.civ_id != player_civ {
             return;
         }
-        let _ = self
-            .db
-            .military_groups
-            .modify_unchecked(&group_id, |g| g.name = name);
+        let mut group = group;
+        group.name = name;
+        let _ = self.db.update_military_group(group);
     }
 
     /// Change a military group's engagement style.
@@ -2972,10 +2921,9 @@ impl SimState {
         if group.civ_id != player_civ {
             return;
         }
-        let _ = self
-            .db
-            .military_groups
-            .modify_unchecked(&group_id, |g| g.engagement_style = engagement_style);
+        let mut group = group;
+        group.engagement_style = engagement_style;
+        let _ = self.db.update_military_group(group);
     }
 
     /// Set a military group's equipment wants.
@@ -3020,10 +2968,9 @@ impl SimState {
             }
         }
 
-        let _ = self
-            .db
-            .military_groups
-            .modify_unchecked(&group_id, |g| g.equipment_wants = wants);
+        let mut group = group;
+        group.equipment_wants = wants;
+        let _ = self.db.update_military_group(group);
     }
 
     /// Determine whether a creature should flee from nearby hostiles.
