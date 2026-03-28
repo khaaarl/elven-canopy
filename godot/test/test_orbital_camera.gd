@@ -193,6 +193,69 @@ func test_pan_does_not_move_vertically() -> void:
 	assert_eq(_cam.position.y, 20.0, "Pan should not change Y position")
 
 
+# -- Ctrl+scroll wheel elevation -----------------------------------------------
+
+
+func _make_scroll_event(direction: int, ctrl: bool = false) -> InputEventMouseButton:
+	var mb := InputEventMouseButton.new()
+	mb.button_index = direction
+	mb.pressed = true
+	mb.ctrl_pressed = ctrl
+	return mb
+
+
+func test_ctrl_scroll_up_raises_elevation() -> void:
+	_cam.position = Vector3(50.0, 20.0, 50.0)
+	_cam._unhandled_input(_make_scroll_event(MOUSE_BUTTON_WHEEL_UP, true))
+	assert_gt(_cam.position.y, 20.0, "Ctrl+scroll up should raise focal Y")
+
+
+func test_ctrl_scroll_down_lowers_elevation() -> void:
+	_cam.position = Vector3(50.0, 20.0, 50.0)
+	_cam._unhandled_input(_make_scroll_event(MOUSE_BUTTON_WHEEL_DOWN, true))
+	assert_lt(_cam.position.y, 20.0, "Ctrl+scroll down should lower focal Y")
+
+
+func test_ctrl_scroll_does_not_change_zoom() -> void:
+	_cam._zoom = 30.0
+	_cam.position = Vector3(50.0, 20.0, 50.0)
+	_cam._unhandled_input(_make_scroll_event(MOUSE_BUTTON_WHEEL_UP, true))
+	assert_eq(_cam._zoom, 30.0, "Ctrl+scroll should not change zoom")
+
+
+func test_ctrl_scroll_step_size() -> void:
+	_cam.position = Vector3(50.0, 20.0, 50.0)
+	_cam._unhandled_input(_make_scroll_event(MOUSE_BUTTON_WHEEL_UP, true))
+	assert_almost_eq(_cam.position.y, 21.0, 0.001, "Ctrl+scroll up should move by 1.0")
+
+
+func test_ctrl_scroll_clamped_to_max() -> void:
+	_cam.position = Vector3(50.0, 256.0, 50.0)
+	_cam._unhandled_input(_make_scroll_event(MOUSE_BUTTON_WHEEL_UP, true))
+	assert_eq(_cam.position.y, 256.0, "Should not exceed focal_y_max")
+
+
+func test_ctrl_scroll_clamped_to_min() -> void:
+	_cam.position = Vector3(50.0, 0.0, 50.0)
+	_cam._unhandled_input(_make_scroll_event(MOUSE_BUTTON_WHEEL_DOWN, true))
+	assert_eq(_cam.position.y, 0.0, "Should not go below focal_y_min")
+
+
+func test_ctrl_scroll_breaks_follow() -> void:
+	_cam.start_follow(Vector3(10.0, 5.0, 10.0))
+	assert_true(_cam.is_following(), "Should be following before ctrl+scroll")
+	_cam._unhandled_input(_make_scroll_event(MOUSE_BUTTON_WHEEL_UP, true))
+	assert_false(_cam.is_following(), "Ctrl+scroll should break follow mode")
+
+
+func test_plain_scroll_still_zooms() -> void:
+	_cam._zoom = 30.0
+	_cam.position = Vector3(50.0, 20.0, 50.0)
+	_cam._unhandled_input(_make_scroll_event(MOUSE_BUTTON_WHEEL_UP, false))
+	assert_lt(_cam._zoom, 30.0, "Plain scroll up should zoom in")
+	assert_eq(_cam.position.y, 20.0, "Plain scroll should not change Y")
+
+
 func test_vertical_snap_suppressed_during_pan() -> void:
 	_cam.position = Vector3(50.0, 10.3, 50.0)
 	_cam.set_vertical_snap(true)

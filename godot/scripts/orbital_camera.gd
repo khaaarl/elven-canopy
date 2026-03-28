@@ -9,6 +9,7 @@
 ## - Up/Down arrows or middle-mouse drag: tilt the camera up/down.
 ## - Ctrl+middle-mouse drag: pan the focal point horizontally.
 ## - Scroll wheel or +/= and - keys: zoom (distance from focal point to camera).
+## - Ctrl+scroll wheel: move the focal point vertically by 1 unit per tick.
 ## - Page Up/Down: move the focal point vertically (clamped to world bounds).
 ## - Home: center focal point on the home tree (emits home_requested signal).
 ## - R/F formerly duplicated Page Up/Down; removed to free F for attack-move.
@@ -134,10 +135,18 @@ func _ready() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	# Scroll wheel zoom.
+	# Scroll wheel: Ctrl+scroll adjusts elevation, plain scroll zooms.
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
-		if mb.button_index == MOUSE_BUTTON_WHEEL_UP:
+		if mb.ctrl_pressed and mb.button_index == MOUSE_BUTTON_WHEEL_UP:
+			position.y = min(position.y + 1.0, focal_y_max)
+			_following = false
+			_update_camera_transform()
+		elif mb.ctrl_pressed and mb.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			position.y = max(position.y - 1.0, focal_y_min)
+			_following = false
+			_update_camera_transform()
+		elif mb.button_index == MOUSE_BUTTON_WHEEL_UP:
 			_zoom = max(_zoom - zoom_speed, zoom_min)
 			_update_camera_transform()
 		elif mb.button_index == MOUSE_BUTTON_WHEEL_DOWN:

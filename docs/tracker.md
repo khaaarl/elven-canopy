@@ -182,7 +182,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mobile-support       Mobile/touch platform support
 [ ] F-modding              Scripting layer for modding support
 [ ] F-modifier-keybinds    Modifier key combinations in bindings
-[ ] F-mouse-elevation      Ctrl+mouse wheel to move camera elevation
 [ ] F-mp-chat              Multiplayer in-game chat
 [ ] F-mp-reconnect         Multiplayer reconnection after disconnect
 [ ] F-multi-tree           NPC trees with personalities
@@ -429,6 +428,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-minimap              Minimap with tree silhouette and creature positions
 [x] F-mmb-pan              Ctrl+MMB drag to pan camera horizontally
 [x] F-mood-system          Mood with escalating consequences
+[x] F-mouse-elevation      Ctrl+mouse wheel to move camera elevation
 [x] F-move-interp          Smooth creature movement interpolation
 [x] F-move-spread          Spread destinations for multi-creature move commands
 [x] F-mp-checksums         Multiplayer state checksums for desync detection
@@ -5647,7 +5647,7 @@ Depends on F-controls-config-C (rebinding UI must exist first).
 **Related:** F-controls-config
 
 #### F-mouse-elevation — Ctrl+mouse wheel to move camera elevation
-**Status:** Todo · **Phase:** 5
+**Status:** Done · **Phase:** 5
 
 **Related:** F-controls-config, F-mmb-pan
 
