@@ -4,6 +4,7 @@
 //! Corresponds to `sim/movement.rs`.
 
 use super::combat_tests::{give_spear, setup_aggressive_elf, setup_frozen_hornet};
+use super::test_helpers::*;
 use super::*;
 
 // ===================================================================
@@ -244,72 +245,6 @@ fn walk_toward_dead_task_node_does_not_panic() {
 // Pursuit tasks
 // ===================================================================
 
-/// Helper: spawn a second elf and return its CreatureId.
-fn spawn_second_elf(sim: &mut SimState) -> CreatureId {
-    // Collect existing elf IDs before spawning.
-    let existing: std::collections::BTreeSet<CreatureId> = sim
-        .db
-        .creatures
-        .iter_all()
-        .filter(|c| c.species == Species::Elf)
-        .map(|c| c.id)
-        .collect();
-    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let cmd = SimCommand {
-        player_name: String::new(),
-        tick: sim.tick + 1,
-        action: SimAction::SpawnCreature {
-            species: Species::Elf,
-            position: tree_pos,
-        },
-    };
-    sim.step(&[cmd], sim.tick + 2);
-    // Return the newly spawned elf (not in the existing set).
-    sim.db
-        .creatures
-        .iter_all()
-        .find(|c| c.species == Species::Elf && !existing.contains(&c.id))
-        .unwrap()
-        .id
-}
-
-/// Helper: insert a pursuit task targeting `target_id` at `location`,
-/// and directly assign `pursuer_id` to it.
-fn insert_pursuit_task(
-    sim: &mut SimState,
-    location: NavNodeId,
-    target_id: CreatureId,
-    pursuer_id: CreatureId,
-) -> TaskId {
-    let task_id = TaskId::new(&mut sim.rng);
-    // Safely get the position; if the node is bogus/dead, use a sentinel coord.
-    let location_coord = if sim.nav_graph.is_node_alive(location) {
-        sim.nav_graph.node(location).position
-    } else {
-        VoxelCoord::new(999, 999, 999)
-    };
-    let task = Task {
-        id: task_id,
-        kind: TaskKind::GoTo,
-        state: TaskState::InProgress,
-        location: location_coord,
-        progress: 0,
-        total_cost: 0,
-        required_species: Some(Species::Elf),
-        origin: TaskOrigin::PlayerDirected,
-        target_creature: Some(target_id),
-        restrict_to_creature_id: None,
-        prerequisite_task_id: None,
-        required_civ_id: None,
-    };
-    sim.insert_task(task);
-    // Directly assign the pursuer to this task.
-    let mut pursuer = sim.db.creatures.get(&pursuer_id).unwrap();
-    pursuer.current_task = Some(task_id);
-    let _ = sim.db.creatures.update_no_fk(pursuer);
-    task_id
-}
-
 #[test]
 fn pursuit_task_repaths_when_target_moves() {
     let mut sim = test_sim(42);
@@ -328,8 +263,8 @@ fn pursuit_task_repaths_when_target_moves() {
     assert_ne!(target_node, new_target_node);
 
     // Create pursuit task at target's current node, assigned to pursuer.
-    let task_id = insert_pursuit_task(&mut sim, target_node, target_id, pursuer_id);
     let target_pos = sim.nav_graph.node(target_node).position;
+    let task_id = insert_pursuit_task(&mut sim, pursuer_id, target_id, target_pos);
     assert_eq!(sim.db.tasks.get(&task_id).unwrap().location, target_pos);
 
     // Manually move the target to the new node (simulates target movement).
@@ -399,7 +334,8 @@ fn pursuit_task_completes_when_adjacent() {
     let _ = sim.db.creatures.update_no_fk(target);
 
     // Create pursuit task at the shared node.
-    let task_id = insert_pursuit_task(&mut sim, pursuer_node, target_id, pursuer_id);
+    let pursuer_pos = sim.nav_graph.node(pursuer_node).position;
+    let task_id = insert_pursuit_task(&mut sim, pursuer_id, target_id, pursuer_pos);
 
     // Clear pursuer's action state and schedule an immediate activation so
     // the pursuit logic fires regardless of the sim's PRNG-dependent event
@@ -448,7 +384,8 @@ fn pursuit_task_abandons_when_target_gone() {
     pursuer.path = None;
     let _ = sim.db.creatures.update_no_fk(pursuer);
 
-    let task_id = insert_pursuit_task(&mut sim, target_node, target_id, pursuer_id);
+    let target_pos = sim.nav_graph.node(target_node).position;
+    let task_id = insert_pursuit_task(&mut sim, pursuer_id, target_id, target_pos);
 
     // Simulate target becoming unreachable by moving it to a position with
     // no nav node. This triggers the `node_at(target.position) == None`
@@ -484,9 +421,9 @@ fn pursuit_task_abandons_when_target_unreachable() {
     let pursuer_id = spawn_elf(&mut sim);
     let target_id = spawn_second_elf(&mut sim);
 
-    // Place target at a non-existent nav node (simulates disconnected region).
-    let bogus_node = NavNodeId(999999);
-    let _task_id = insert_pursuit_task(&mut sim, bogus_node, target_id, pursuer_id);
+    // Place target at a non-existent position (simulates disconnected region).
+    let bogus_pos = VoxelCoord::new(999, 999, 999);
+    let _task_id = insert_pursuit_task(&mut sim, pursuer_id, target_id, bogus_pos);
     // Move the target to an unreachable position with no nav node.
     let _ = sim.db.creatures.modify_unchecked(&target_id, |c| {
         c.position = VoxelCoord::new(0, 200, 0);
@@ -539,7 +476,8 @@ fn pursuit_task_serde_roundtrip() {
     let target_id = spawn_second_elf(&mut sim);
     let target_node = creature_node(&sim, target_id);
 
-    let task_id = insert_pursuit_task(&mut sim, target_node, target_id, pursuer_id);
+    let target_pos = sim.nav_graph.node(target_node).position;
+    let task_id = insert_pursuit_task(&mut sim, pursuer_id, target_id, target_pos);
 
     // Verify the task has target_creature set.
     let task = sim.db.tasks.get(&task_id).unwrap();
@@ -853,39 +791,6 @@ fn troll_pursues_elf_cross_graph_pathfinding() {
 // ===================================================================
 // Voxel exclusion (hostile blocking)
 // ===================================================================
-
-/// Helper: place a creature at a specific nav node, updating position
-/// and spatial index.
-fn force_to_node(sim: &mut SimState, creature_id: CreatureId, node_id: NavNodeId) {
-    let node_pos = sim.nav_graph.node(node_id).position;
-    force_position(sim, creature_id, node_pos);
-}
-
-/// Find two connected nav nodes (A has an edge to B). Returns (node_a, node_b).
-fn find_connected_pair(sim: &SimState) -> (NavNodeId, NavNodeId) {
-    for node in sim.nav_graph.live_nodes() {
-        if !node.edge_indices.is_empty() {
-            let edge = sim.nav_graph.edge(node.edge_indices[0]);
-            return (node.id, edge.to);
-        }
-    }
-    panic!("No connected nav nodes found in test sim");
-}
-
-/// Find three connected nav nodes in a chain: A->B->C where B has edges
-/// to both A and C. Returns (node_a, node_b, node_c).
-fn find_chain_of_three(sim: &SimState) -> (NavNodeId, NavNodeId, NavNodeId) {
-    for node_b in sim.nav_graph.live_nodes() {
-        if node_b.edge_indices.len() >= 2 {
-            let edge_0 = sim.nav_graph.edge(node_b.edge_indices[0]);
-            let edge_1 = sim.nav_graph.edge(node_b.edge_indices[1]);
-            if edge_0.to != edge_1.to {
-                return (edge_0.to, node_b.id, edge_1.to);
-            }
-        }
-    }
-    panic!("No chain of 3 connected nav nodes found in test sim");
-}
 
 #[test]
 fn voxel_exclusion_hostile_blocks_movement() {

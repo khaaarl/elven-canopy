@@ -3,6 +3,7 @@
 //! integration tests for thought generation from actions.
 //! Corresponds to `sim/mood.rs`.
 
+use super::test_helpers::*;
 use super::*;
 
 #[test]
@@ -177,15 +178,6 @@ fn eat_bread_generates_thought() {
 // -----------------------------------------------------------------------
 // Thought system tests
 // -----------------------------------------------------------------------
-
-/// Helper: create a `SimState` with an elf spawned for thought/mood tests.
-/// Returns `(sim, creature_id)`.
-fn sim_with_elf_for_thoughts() -> (SimState, CreatureId) {
-    let mut sim = test_sim(42);
-    let elf_id = spawn_elf(&mut sim);
-    sim.tick = 1000; // Advance tick for thought timestamps.
-    (sim, elf_id)
-}
 
 #[test]
 fn thought_dedup_within_cooldown() {
@@ -898,46 +890,6 @@ fn low_ceiling_generates_thought() {
 // -----------------------------------------------------------------------
 // Mood consequences: moping tests
 // -----------------------------------------------------------------------
-
-/// Helper: create a sim with custom mood_consequences config, spawn an elf,
-/// and optionally inject thoughts to reach a target mood tier.
-fn mope_test_setup(
-    mope_config: crate::config::MoodConsequencesConfig,
-    thoughts: &[ThoughtKind],
-) -> (SimState, CreatureId) {
-    let mut config = test_config();
-    config.mood_consequences = mope_config;
-    // Disable hunger and tiredness so they don't interfere.
-    let elf_species = config.species.get_mut(&Species::Elf).unwrap();
-    elf_species.food_decay_per_tick = 0;
-    elf_species.rest_decay_per_tick = 0;
-    let mut sim = SimState::with_config(99, config);
-    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-
-    let cmd = SimCommand {
-        player_name: String::new(),
-        tick: 1,
-        action: SimAction::SpawnCreature {
-            species: Species::Elf,
-            position: tree_pos,
-        },
-    };
-    sim.step(&[cmd], 1);
-
-    let elf_id = *sim
-        .db
-        .creatures
-        .iter_keys()
-        .find(|id| sim.db.creatures.get(id).unwrap().species == Species::Elf)
-        .expect("elf should exist");
-
-    // Inject thoughts.
-    for thought in thoughts {
-        sim.add_creature_thought(elf_id, thought.clone());
-    }
-
-    (sim, elf_id)
-}
 
 #[test]
 fn mope_probability_zero_mean_never_fires() {

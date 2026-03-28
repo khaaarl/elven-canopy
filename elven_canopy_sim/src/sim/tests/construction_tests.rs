@@ -3,73 +3,12 @@
 //! furnishing, structure voxels, and raycasting.
 //! Corresponds to `sim/construction.rs`.
 
+use super::test_helpers::*;
 use super::*;
 
 // -----------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------
-
-/// Helper: find N air voxels adjacent to trunk, all face-adjacent to
-/// each other or to solid geometry (valid for a multi-voxel blueprint).
-fn find_air_strip_adjacent_to_trunk(sim: &SimState, count: usize) -> Vec<VoxelCoord> {
-    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
-    // Find a trunk voxel with an air voxel to the +x side, then extend
-    // in the +x direction.
-    for &trunk_coord in &tree.trunk_voxels {
-        let start = VoxelCoord::new(trunk_coord.x + 1, trunk_coord.y, trunk_coord.z);
-        if !sim.world.in_bounds(start) || sim.world.get(start) != VoxelType::Air {
-            continue;
-        }
-        let mut strip = vec![start];
-        for i in 1..count {
-            let next = VoxelCoord::new(start.x + i as i32, start.y, start.z);
-            if !sim.world.in_bounds(next) || sim.world.get(next) != VoxelType::Air {
-                break;
-            }
-            strip.push(next);
-        }
-        if strip.len() == count {
-            return strip;
-        }
-    }
-    panic!("Could not find {count} air voxels adjacent to trunk");
-}
-
-/// Helper: create a sim with fast build speed for testing.
-fn build_test_sim() -> SimState {
-    let mut config = test_config();
-    // Fast builds: 1 tick per voxel for quick test completion.
-    config.build_work_ticks_per_voxel = 1;
-    SimState::with_config(42, config)
-}
-
-/// Find a ground-level position where a 3x3 building can be placed.
-/// Needs solid foundation at y=0 and air above at y=1.
-fn find_building_site(sim: &SimState) -> VoxelCoord {
-    let (sx, _, sz) = sim.config.world_size;
-    for x in 1..(sx as i32 - 4) {
-        for z in 1..(sz as i32 - 4) {
-            let mut all_solid = true;
-            let mut all_air = true;
-            for dx in 0..3 {
-                for dz in 0..3 {
-                    let foundation = VoxelCoord::new(x + dx, 0, z + dz);
-                    if !sim.world.get(foundation).is_solid() {
-                        all_solid = false;
-                    }
-                    let above = VoxelCoord::new(x + dx, 1, z + dz);
-                    if sim.world.get(above) != VoxelType::Air {
-                        all_air = false;
-                    }
-                }
-            }
-            if all_solid && all_air {
-                return VoxelCoord::new(x, 0, z);
-            }
-        }
-    }
-    panic!("No valid 3x3 building site found");
-}
 
 /// Helper: designate a single-voxel platform and run the sim until the
 /// build task is complete. Returns the sim after completion.
@@ -182,30 +121,6 @@ fn designate_and_complete_building(mut sim: SimState) -> SimState {
     sim
 }
 
-/// Find a Leaf voxel that is face-adjacent to a Trunk, Branch, or Root
-/// voxel (not just any solid — must be adjacent to structural wood so the
-/// structural validator can reach the ground).
-fn find_leaf_adjacent_to_wood(sim: &SimState) -> VoxelCoord {
-    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
-    for &leaf_coord in &tree.leaf_voxels {
-        for &(dx, dy, dz) in &[
-            (1, 0, 0),
-            (-1, 0, 0),
-            (0, 1, 0),
-            (0, -1, 0),
-            (0, 0, 1),
-            (0, 0, -1),
-        ] {
-            let neighbor = VoxelCoord::new(leaf_coord.x + dx, leaf_coord.y + dy, leaf_coord.z + dz);
-            let vt = sim.world.get(neighbor);
-            if matches!(vt, VoxelType::Trunk | VoxelType::Branch | VoxelType::Root) {
-                return leaf_coord;
-            }
-        }
-    }
-    panic!("No leaf voxel adjacent to wood found");
-}
-
 /// Helper: find a solid voxel that is safe to carve (won't disconnect the
 /// structure). Picks the highest trunk voxel so removing it doesn't sever
 /// the tree's connection to ground.
@@ -244,85 +159,6 @@ fn find_ladder_column(sim: &SimState, height: i32) -> (VoxelCoord, FaceDirection
         }
     }
     panic!("No suitable ladder column found");
-}
-
-/// Insert a completed 3x3x1 building into the sim directly, including
-/// BuildingInterior voxels (not the foundation). The building is 3x3x1
-/// with solid foundation below and BuildingInterior above.
-fn insert_completed_building(sim: &mut SimState, anchor: VoxelCoord) -> StructureId {
-    let id = StructureId(sim.next_structure_id);
-    sim.next_structure_id += 1;
-
-    // Place BuildingInterior voxels in the world and record face data.
-    // compute_building_face_layout treats `anchor` as foundation level
-    // and creates interior voxels at anchor.y + 1.
-    let face_layout = crate::building::compute_building_face_layout(anchor, 3, 3, 1);
-    for (&coord, fd) in &face_layout {
-        sim.world.set(coord, VoxelType::BuildingInterior);
-        sim.face_data.insert(coord, fd.clone());
-        sim.face_data_list.push((coord, fd.clone()));
-        sim.placed_voxels.push((coord, VoxelType::BuildingInterior));
-        sim.structure_voxels.insert(coord, id);
-    }
-
-    // Place the foundation as solid GrownWall underneath.
-    for z in anchor.z..anchor.z + 3 {
-        for x in anchor.x..anchor.x + 3 {
-            let foundation = VoxelCoord::new(x, anchor.y, z);
-            if sim.world.get(foundation) == VoxelType::Air {
-                sim.world.set(foundation, VoxelType::GrownWall);
-                sim.placed_voxels.push((foundation, VoxelType::GrownWall));
-            }
-        }
-    }
-
-    // The CompletedStructure anchor is the bounding-box min of the
-    // blueprint voxels (BuildingInterior), which is one above foundation.
-    let interior_anchor = VoxelCoord::new(anchor.x, anchor.y + 1, anchor.z);
-
-    let project_id = ProjectId::new(&mut sim.rng);
-    let structure = CompletedStructure {
-        id,
-        project_id,
-        build_type: BuildType::Building,
-        anchor: interior_anchor,
-        width: 3,
-        depth: 3,
-        height: 1,
-        completed_tick: sim.tick,
-        name: None,
-        furnishing: None,
-        inventory_id: sim.create_inventory(crate::db::InventoryOwnerKind::Structure),
-        logistics_priority: None,
-        crafting_enabled: false,
-        greenhouse_species: None,
-        greenhouse_enabled: false,
-        greenhouse_last_production_tick: 0,
-        last_dance_completed_tick: 0,
-    };
-    sim.db.structures.insert_no_fk(structure).unwrap();
-
-    // Insert a dummy blueprint so FK validation passes on deserialization.
-    sim.db
-        .blueprints
-        .insert_no_fk(crate::db::Blueprint {
-            id: project_id,
-            build_type: BuildType::Building,
-            voxels: Vec::new(),
-            priority: crate::types::Priority::Normal,
-            state: crate::blueprint::BlueprintState::Complete,
-            task_id: None,
-            composition_id: None,
-            face_layout: None,
-            stress_warning: false,
-            original_voxels: Vec::new(),
-        })
-        .unwrap();
-
-    // Rebuild nav graph so there are nav nodes inside the building.
-    sim.nav_graph = nav::build_nav_graph(&sim.world, &sim.face_data);
-
-    id
 }
 
 /// Find two air voxels adjacent to trunk that form a valid 2-voxel strut
