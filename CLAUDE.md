@@ -106,8 +106,9 @@ For the full list of codebase patterns, conventions, and gotchas, see `docs/code
 **Godot ScrollContainer sizing (CRITICAL):**
 - Before writing ANY code involving `ScrollContainer`, **read `docs/godot_scroll_sizing.md` in full.** Your built-in understanding of scroll container sizing is wrong.
 
-**Tabulosity safe mutations (CRITICAL):**
-- **Do not use `_no_fk` or `modify_unchecked` methods in new code without explicit user approval.** Use database-level methods (`db.update_foo()`, etc.) instead. See `tabulosity/README.md`.
+**Tabulosity (CRITICAL):**
+- **Before writing ANY code that touches tabulosity tables, read `tabulosity/README.md` in full.**
+- **Do not use `_no_fk` or `modify_unchecked` methods in new code without explicit user approval.** Use database-level methods (`db.update_foo()`, etc.) instead.
 
 **Voxel coordinate system:** Each voxel is 2 meters on a side. Y is up. Terrain floor at `config.floor_y` (default 50), creatures walk at `floor_y + 1`. Renderers offset by +0.5.
 
