@@ -70,7 +70,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-safe-api-tests       Additional safe API test coverage from once-over
 [ ] B-start-paused-ui      start_paused_on_load UI desync and missing new-game support
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
-[ ] F-activation-revamp    Replace manual event scheduling with automatic reactivation
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-aggro-fauna          Neutral fauna with aggro triggers
 [ ] F-ai-sprites           AI-generated sprite art pipeline
@@ -311,6 +310,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-task-civ-filter      Tasks lack civilization-level eligibility filtering
 [x] B-unsafe-db-calls      Replace _no_fk and modify_unchecked calls with safe database-level methods
 [x] B-win-freeze           Periodic ~3s freezes on Windows (debug build)
+[x] F-activation-revamp    Replace manual event scheduling with automatic reactivation
 [x] F-ai-test-harness      Remote game control for AI-driven testing (Puppet)
 [x] F-alt-deselect         Alt+click to remove from selection
 [x] F-armor                Wearable armor system
@@ -6056,7 +6056,7 @@ Tasks have required_species but no civ_id filter. Any creature of the right spec
 **Related:** F-group-activity
 
 #### F-activation-revamp — Replace manual event scheduling with automatic reactivation
-**Status:** Todo · **Phase:** 5
+**Status:** Done · **Phase:** 5
 
 Replace event-driven creature activation with poll-based activation using indexed DB queries.
 
@@ -6078,12 +6078,11 @@ Replace event-driven creature activation with poll-based activation using indexe
 - The "forgotten reactivation" bug class entirely — any alive creature with `next_available_tick <= tick` is found automatically.
 
 **Fixes included:**
-- **B-ranged-shoot-walk:** After Shoot resolves, creature goes through full decision cascade (flee → combat → task) instead of entering `execute_task_behavior` directly for a sneaked-in heartbeat task.
-- **Ranged cooldown asymmetry:** Ranged on cooldown sets `next_available_tick = cooldown_end`, matching melee's existing behavior, preventing unnecessary walk steps between shots.
+- **Ranged cooldown asymmetry:** Resolved by design — creature stays in `ActionKind::Shoot` during cooldown with `next_available_tick` set to cooldown end, preventing unnecessary walking. No explicit code change needed.
 
 **Non-goals:** Other event types (`CreatureHeartbeat`, `TreeHeartbeat`, `LogisticsHeartbeat`, `ProjectileTick`, `GrassRegrowth`) remain in the event queue for now. See F-retire-events for extending poll-based activation to those systems.
 
-**Blocks:** F-retire-events
+**Unblocked:** F-retire-events
 **Related:** F-event-loop, F-task-assign-opt
 
 #### F-adventure-mode — Control individual elf (RPG-like)
@@ -6296,7 +6295,7 @@ Two candidate approaches:
 
 The fixed-interval approach may be simpler and cheaper for systems that already run on regular cadences. Design decision deferred until F-activation-revamp is complete and we have experience with the poll model in practice.
 
-**Blocked by:** F-activation-revamp
+**Unblocked by:** F-activation-revamp
 **Related:** F-event-loop
 
 #### F-rle-voxels — RLE column-based voxel storage

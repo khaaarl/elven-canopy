@@ -10,7 +10,7 @@
 // `flight_pathfinding.rs` (vanilla A* on voxel grid for flying creatures).
 use super::*;
 use crate::db::{ActionKind, MoveAction};
-use crate::event::{ScheduledEventKind, SimEvent};
+use crate::event::SimEvent;
 use crate::pathfinding;
 use crate::preemption;
 use crate::task;
@@ -126,10 +126,7 @@ impl SimState {
         // If mid-Move, the existing activation will fire at
         // next_available_tick, resolve the step, and pick up the new task.
         if !mid_move {
-            self.event_queue.schedule(
-                self.tick + 1,
-                ScheduledEventKind::CreatureActivation { creature_id },
-            );
+            self.set_creature_activation_tick(creature_id, self.tick + 1);
         }
     }
 
@@ -439,12 +436,10 @@ impl SimState {
         if self.destination_blocked_by_hostile(creature_id, dest_pos, footprint) {
             if let Some(mut creature) = self.db.creatures.get(&creature_id) {
                 creature.path = None;
+                creature.next_available_tick =
+                    Some(self.tick + self.config.voxel_exclusion_retry_ticks);
                 let _ = self.db.update_creature(creature);
             }
-            self.event_queue.schedule(
-                self.tick + self.config.voxel_exclusion_retry_ticks,
-                ScheduledEventKind::CreatureActivation { creature_id },
-            );
             return;
         }
 
@@ -483,12 +478,6 @@ impl SimState {
         // Remove any existing MoveAction (shouldn't happen, but be safe).
         let _ = self.db.remove_move_action(&creature_id);
         self.db.insert_move_action(move_action).unwrap();
-
-        // Schedule next activation.
-        self.event_queue.schedule(
-            self.tick + delay,
-            ScheduledEventKind::CreatureActivation { creature_id },
-        );
     }
 
     /// Wander: pick a random adjacent nav node and move there.
@@ -565,10 +554,7 @@ impl SimState {
             let footprint = species_data.footprint;
             if self.destination_blocked_by_hostile(creature_id, dest_pos, footprint) {
                 let retry_delay = self.config.voxel_exclusion_retry_ticks;
-                self.event_queue.schedule(
-                    self.tick + retry_delay,
-                    ScheduledEventKind::CreatureActivation { creature_id },
-                );
+                self.set_creature_activation_tick(creature_id, self.tick + retry_delay);
                 return false;
             }
         }
@@ -606,11 +592,6 @@ impl SimState {
         let _ = self.db.remove_move_action(&creature_id);
         self.db.insert_move_action(move_action).unwrap();
 
-        // Schedule next activation based on edge traversal time.
-        self.event_queue.schedule(
-            self.tick + delay,
-            ScheduledEventKind::CreatureActivation { creature_id },
-        );
         true
     }
 
@@ -627,10 +608,7 @@ impl SimState {
             let graph = self.graph_for_species(species);
             let edge_indices = graph.neighbors(current_node);
             if edge_indices.is_empty() {
-                self.event_queue.schedule(
-                    self.tick + 1000,
-                    ScheduledEventKind::CreatureActivation { creature_id },
-                );
+                self.set_creature_activation_tick(creature_id, self.tick + 1000);
                 return;
             }
             if let Some(ref allowed) = species_data.allowed_edge_types {
@@ -645,10 +623,7 @@ impl SimState {
         };
 
         if eligible_edges.is_empty() {
-            self.event_queue.schedule(
-                self.tick + 1000,
-                ScheduledEventKind::CreatureActivation { creature_id },
-            );
+            self.set_creature_activation_tick(creature_id, self.tick + 1000);
             return;
         }
 
@@ -672,9 +647,9 @@ impl SimState {
 
         let edges_to_pick = if unblocked_edges.is_empty() {
             // All neighbors hostile-occupied — wait rather than walk into a hostile.
-            self.event_queue.schedule(
+            self.set_creature_activation_tick(
+                creature_id,
                 self.tick + self.config.voxel_exclusion_retry_ticks,
-                ScheduledEventKind::CreatureActivation { creature_id },
             );
             return;
         } else {
@@ -786,9 +761,9 @@ impl SimState {
         // Voxel exclusion: reject move if destination is hostile-occupied.
         let footprint = self.species_table[&species].footprint;
         if self.destination_blocked_by_hostile(creature_id, dest_pos, footprint) {
-            self.event_queue.schedule(
+            self.set_creature_activation_tick(
+                creature_id,
                 self.tick + self.config.voxel_exclusion_retry_ticks,
-                ScheduledEventKind::CreatureActivation { creature_id },
             );
             return false;
         }
@@ -829,11 +804,6 @@ impl SimState {
         let _ = self.db.remove_move_action(&creature_id);
         self.db.insert_move_action(move_action).unwrap();
 
-        // Schedule next activation.
-        self.event_queue.schedule(
-            self.tick + delay,
-            ScheduledEventKind::CreatureActivation { creature_id },
-        );
         true
     }
 
@@ -870,10 +840,7 @@ impl SimState {
 
         if candidates.is_empty() {
             // Stuck — schedule retry.
-            self.event_queue.schedule(
-                self.tick + 1000,
-                ScheduledEventKind::CreatureActivation { creature_id },
-            );
+            self.set_creature_activation_tick(creature_id, self.tick + 1000);
             return;
         }
 

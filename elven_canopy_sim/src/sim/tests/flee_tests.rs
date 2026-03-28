@@ -23,10 +23,7 @@ fn elf_flees_from_adjacent_goblin() {
     // Force the elf idle and schedule an activation.
     force_idle(&mut sim, elf);
     let tick = sim.tick;
-    sim.event_queue.schedule(
-        tick + 1,
-        ScheduledEventKind::CreatureActivation { creature_id: elf },
-    );
+    schedule_activation_at(&mut sim, elf, tick + 1);
 
     // Run one activation — elf should move away from the goblin.
     sim.step(&[], tick + 2);
@@ -59,10 +56,23 @@ fn elf_does_not_flee_when_goblin_out_of_range() {
     let goblin_pos = VoxelCoord::new(elf_pos.x + 50, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, goblin);
+    // Suppress goblin activation so it stays put.
+    suppress_activation(&mut sim, goblin);
+
+    // Ensure elf is activated (spawn sets nat, but re-force in case the elf
+    // resolved its first move and is now mid-wander with an in-range nat).
+    {
+        let mut ec = sim.db.creatures.get(&elf).unwrap();
+        if ec.next_available_tick.is_none() {
+            ec.next_available_tick = Some(sim.tick + 1);
+            sim.db.update_creature(ec).unwrap();
+        }
+    }
 
     // Run a short period — elf should wander normally, not flee.
     // Keep ticks low so random wander can't close the 50-voxel gap.
-    sim.step(&[], sim.tick + 5000);
+    // Use enough ticks that the elf completes several wander cycles.
+    sim.step(&[], sim.tick + 10_000);
 
     // Elf should have wandered (moved from starting pos) but NOT
     // systematically moved away from goblin. We just verify it didn't
@@ -110,10 +120,7 @@ fn flee_interrupts_current_task() {
 
     // Schedule elf activation.
     let tick = sim.tick;
-    sim.event_queue.schedule(
-        tick + 1,
-        ScheduledEventKind::CreatureActivation { creature_id: elf },
-    );
+    schedule_activation_at(&mut sim, elf, tick + 1);
 
     sim.step(&[], tick + 2);
 
@@ -218,10 +225,7 @@ fn passive_species_with_detection_flees() {
 
     // Schedule deer activation and run.
     let tick = sim.tick;
-    sim.event_queue.schedule(
-        tick + 1,
-        ScheduledEventKind::CreatureActivation { creature_id: deer },
-    );
+    schedule_activation_at(&mut sim, deer, tick + 1);
     sim.step(&[], tick + 2);
 
     let deer_new_pos = sim.db.creatures.get(&deer).unwrap().position;
@@ -280,10 +284,7 @@ fn flee_from_multiple_threats_uses_nearest() {
 
     // Schedule activation and run.
     let tick = sim.tick;
-    sim.event_queue.schedule(
-        tick + 1,
-        ScheduledEventKind::CreatureActivation { creature_id: elf },
-    );
+    schedule_activation_at(&mut sim, elf, tick + 1);
     sim.step(&[], tick + 2);
 
     let elf_new_pos = sim.db.creatures.get(&elf).unwrap().position;
@@ -1309,17 +1310,13 @@ fn defensive_elf_fights_instead_of_claiming_non_preemptable_task() {
     let orc_id = spawn_species(&mut sim, Species::Orc);
     let orc_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
     force_position(&mut sim, orc_id, orc_pos);
-    force_idle(&mut sim, orc_id);
+    // Suppress orc activation so it stays put and doesn't interfere.
+    suppress_activation_until(&mut sim, orc_id, u64::MAX);
     force_idle_and_cancel_activations(&mut sim, elf_id);
 
     // Run just ONE activation — the elf's very first decision.
     let tick = sim.tick;
-    sim.event_queue.schedule(
-        tick + 1,
-        ScheduledEventKind::CreatureActivation {
-            creature_id: elf_id,
-        },
-    );
+    schedule_activation_at(&mut sim, elf_id, tick + 1);
     sim.step(&[], tick + 2);
 
     // After one activation, the elf should have engaged the hostile (fired
@@ -1393,12 +1390,7 @@ fn aggressive_soldier_shoots_repeatedly_over_time() {
 
     // Schedule elf activation and run for many shoot cooldowns.
     let tick = sim.tick;
-    sim.event_queue.schedule(
-        tick + 1,
-        ScheduledEventKind::CreatureActivation {
-            creature_id: elf_id,
-        },
-    );
+    schedule_activation_at(&mut sim, elf_id, tick + 1);
     // shoot_cooldown_ticks default is 3000; run enough for 5+ shots.
     sim.step(&[], tick + 20000);
 
@@ -1444,12 +1436,7 @@ fn civilian_elf_flees_instead_of_fighting() {
 
     // Schedule activation and run.
     let tick = sim.tick;
-    sim.event_queue.schedule(
-        tick + 1,
-        ScheduledEventKind::CreatureActivation {
-            creature_id: elf_id,
-        },
-    );
+    schedule_activation_at(&mut sim, elf_id, tick + 1);
     sim.step(&[], tick + 5000);
 
     // Elf should have fled, not shot.
@@ -1530,12 +1517,7 @@ fn defensive_elf_shoots_at_target_beyond_pursuit_range() {
 
     // Single activation: the elf should detect the orc and shoot.
     let tick = sim.tick;
-    sim.event_queue.schedule(
-        tick + 1,
-        ScheduledEventKind::CreatureActivation {
-            creature_id: elf_id,
-        },
-    );
+    schedule_activation_at(&mut sim, elf_id, tick + 1);
     sim.step(&[], tick + 2);
 
     let elf = sim.db.creatures.get(&elf_id).unwrap();
@@ -1643,12 +1625,7 @@ fn defensive_elf_with_flee_ammo_shoots_troll_at_10_voxels() {
 
     // Schedule elf activation and run for a long time.
     let tick = sim.tick;
-    sim.event_queue.schedule(
-        tick + 1,
-        ScheduledEventKind::CreatureActivation {
-            creature_id: elf_id,
-        },
-    );
+    schedule_activation_at(&mut sim, elf_id, tick + 1);
     // 30000 ticks = 10 shoot cooldown windows (3000 each).
     sim.step(&[], tick + 30000);
 
@@ -1730,12 +1707,13 @@ fn defensive_elf_does_not_freeze_after_shooting_once() {
 
     // Run for 30000 ticks — enough for ~10 shots.
     let tick = sim.tick;
-    sim.event_queue.schedule(
-        tick + 1,
-        ScheduledEventKind::CreatureActivation {
-            creature_id: elf_id,
-        },
-    );
+    // Enable elf activation (force_idle_and_cancel_activations sets
+    // next_available_tick=None).
+    {
+        let mut ec = sim.db.creatures.get(&elf_id).unwrap();
+        ec.next_available_tick = Some(tick + 1);
+        sim.db.update_creature(ec).unwrap();
+    }
     sim.step(&[], tick + 30000);
 
     let inv_id = sim.db.creatures.get(&elf_id).unwrap().inventory_id;
@@ -1834,7 +1812,7 @@ fn defensive_elf_with_task_interrupts_to_shoot_troll_at_10_voxels() {
 
     // Cancel pending activations so we control the exact activation.
     // Don't use force_idle — it clears current_task which we need to keep.
-    sim.event_queue.cancel_creature_activations(elf_id);
+    suppress_activation_until(&mut sim, elf_id, u64::MAX);
     let mut c = sim.db.creatures.get(&elf_id).unwrap();
     c.action_kind = ActionKind::NoAction;
     c.next_available_tick = None;
@@ -1842,12 +1820,7 @@ fn defensive_elf_with_task_interrupts_to_shoot_troll_at_10_voxels() {
     sim.db.update_creature(c).unwrap();
 
     let tick = sim.tick;
-    sim.event_queue.schedule(
-        tick + 1,
-        ScheduledEventKind::CreatureActivation {
-            creature_id: elf_id,
-        },
-    );
+    schedule_activation_at(&mut sim, elf_id, tick + 1);
     sim.step(&[], tick + 2);
 
     let elf = sim.db.creatures.get(&elf_id).unwrap();
@@ -1985,12 +1958,7 @@ fn debug_spawn_troll_via_command_elf_detects_and_shoots() {
     }
 
     let tick = sim.tick;
-    sim.event_queue.schedule(
-        tick + 1,
-        ScheduledEventKind::CreatureActivation {
-            creature_id: elf_id,
-        },
-    );
+    schedule_activation_at(&mut sim, elf_id, tick + 1);
     sim.step(&[], tick + 30000);
 
     let inv_id = sim.db.creatures.get(&elf_id).unwrap().inventory_id;

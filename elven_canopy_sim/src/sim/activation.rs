@@ -1,10 +1,12 @@
 // Creature activation chain — task selection, claiming, and behavior execution.
 //
-// The activation system drives all creature decisions. Each creature has a
-// `CreatureActivation` event that fires periodically, performing one action
-// (walk one nav edge or do one unit of task work) and scheduling the next
-// activation. `process_creature_activation` is the main entry point,
-// implementing the flee → task → wander decision cascade.
+// The activation system drives all creature decisions via poll-based
+// activation: each tick, all living creatures whose `next_available_tick
+// <= current_tick` are activated in deterministic CreatureId order. Each
+// activation performs one action (walk one nav edge or do one unit of task
+// work) and sets `next_available_tick` for the next poll.
+// `process_creature_activation` is the main entry point, implementing the
+// flee → task → wander decision cascade.
 //
 // Also contains heartbeat-driven military equipment logic:
 // - `military_equipment_drop`: drops unowned items that don't satisfy the
@@ -16,11 +18,24 @@
 // `combat.rs` (flee behavior).
 use super::*;
 use crate::db::ActionKind;
-use crate::event::{ScheduledEventKind, SimEvent};
+use crate::event::SimEvent;
 use crate::inventory;
 use crate::pathfinding;
 use crate::preemption;
 use crate::task;
+
+/// Result of querying when the next creature activation should occur.
+/// Used by `step()` to determine the next tick to advance to, preserving
+/// the "empty ticks are free" property.
+pub(crate) enum NextCreatureActivation {
+    /// No living creatures exist — nothing to activate.
+    NoCreatures,
+    /// At least one living creature has `next_available_tick = None`
+    /// and needs activation immediately (at the current tick).
+    Immediate,
+    /// The earliest `next_available_tick` among all living creatures.
+    AtTick(u64),
+}
 
 impl SimState {
     /// Spawn initial creatures and ground piles from `config.initial_creatures`
@@ -168,11 +183,13 @@ impl SimState {
             c.next_available_tick = None;
             let _ = self.db.update_creature(c);
         }
-        // Remove orphaned CreatureActivation events from the queue.
-        // Without this, the old activation fires on a creature whose action
-        // state has been cleared, causing double-activations and erratic
-        // movement (B-erratic-movement).
-        self.event_queue.cancel_creature_activations(creature_id);
+        // Poll-based activation: no event-queue cleanup needed.
+        // Setting `next_available_tick = None` clears the action timer. The
+        // caller is responsible for either changing `vital_status` to non-Alive
+        // (death/incapacitation) or setting a new `next_available_tick` value.
+        // Note: `None` IS included in the poll range (`None < Some(_)`), so an
+        // alive creature with `None` will be polled — the anti-re-poll guard in
+        // `process_creature_activation` handles this safely by setting `tick + 1`.
     }
 
     /// Creature activation: fires when a creature's current action completes
@@ -195,6 +212,15 @@ impl SimState {
             Some(c) if c.vital_status == VitalStatus::Alive => c,
             _ => return,
         };
+
+        // Immediately advance next_available_tick so this creature won't be
+        // re-polled at the same tick. The decision cascade or action start
+        // will overwrite with the correct future tick if needed.
+        if creature.next_available_tick.is_none_or(|t| t <= self.tick) {
+            self.set_creature_activation_tick(creature_id, self.tick + 1);
+        }
+
+        let creature = self.db.creatures.get(&creature_id).unwrap();
         let species = creature.species;
         let is_flying = self.species_table[&species]
             .flight_ticks_per_voxel
@@ -250,10 +276,7 @@ impl SimState {
                 let _ = self.db.update_creature(c);
             }
             self.update_creature_spatial_index(creature_id, species, pos, new_pos);
-            self.event_queue.schedule(
-                self.tick + 1,
-                ScheduledEventKind::CreatureActivation { creature_id },
-            );
+            self.set_creature_activation_tick(creature_id, self.tick + 1);
             return;
         }
 
@@ -460,10 +483,7 @@ impl SimState {
                         if let Some(tick) = next_tick {
                             // Activity requested a specific reactivation time
                             // (e.g., dance move completing on a beat).
-                            self.event_queue.schedule(
-                                tick,
-                                ScheduledEventKind::CreatureActivation { creature_id },
-                            );
+                            self.set_creature_activation_tick(creature_id, tick);
                         } else {
                             self.schedule_reactivation(creature_id);
                         }
@@ -855,10 +875,7 @@ impl SimState {
                 return;
             }
             // At location but not in range (target just moved) — re-activate.
-            self.event_queue.schedule(
-                self.tick + 1,
-                ScheduledEventKind::CreatureActivation { creature_id },
-            );
+            self.set_creature_activation_tick(creature_id, self.tick + 1);
             return;
         }
 
@@ -1049,23 +1066,64 @@ impl SimState {
             }
         }
 
-        // Schedule next activation (creature is now idle, will wander or pick
-        // up another task).
-        self.event_queue.schedule(
-            self.tick + 1,
-            ScheduledEventKind::CreatureActivation { creature_id },
-        );
+        // Mark creature for next activation (creature is now idle, will wander
+        // or pick up another task).
+        self.set_creature_activation_tick(creature_id, self.tick + 1);
     }
 
-    /// Schedule a creature reactivation on the next tick so it enters the
-    /// decision cascade (picks up a new task or wanders). Use this after
-    /// `complete_task` in code paths that `return` before reaching the
-    /// cascade in `process_creature_activation`.
+    /// Set a creature's `next_available_tick` to the given tick. Used to
+    /// schedule when the creature will next be polled for activation.
+    pub(crate) fn set_creature_activation_tick(&mut self, creature_id: CreatureId, tick: u64) {
+        if let Some(mut c) = self.db.creatures.get(&creature_id) {
+            c.next_available_tick = Some(tick);
+            let _ = self.db.update_creature(c);
+        }
+    }
+
+    /// Mark a creature as available for activation on the next tick so it
+    /// enters the decision cascade (picks up a new task or wanders). Sets
+    /// `next_available_tick = tick + 1` — the poll loop in `step()` will
+    /// find and activate the creature at that tick.
     pub(crate) fn schedule_reactivation(&mut self, creature_id: CreatureId) {
-        self.event_queue.schedule(
-            self.tick + 1,
-            ScheduledEventKind::CreatureActivation { creature_id },
-        );
+        self.set_creature_activation_tick(creature_id, self.tick + 1);
+    }
+
+    /// Query the compound index for all living creatures whose
+    /// `next_available_tick` is at or before `up_to_tick` (or `None`).
+    /// Returns creature IDs sorted by `CreatureId` for deterministic
+    /// intra-tick ordering.
+    pub(crate) fn poll_ready_creatures(&self, up_to_tick: u64) -> Vec<CreatureId> {
+        let mut ids: Vec<CreatureId> = self
+            .db
+            .creatures
+            .iter_by_activation_ready(
+                &VitalStatus::Alive,
+                None..=Some(up_to_tick),
+                tabulosity::QueryOpts::ASC,
+            )
+            .map(|c| c.id)
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// Query when the next creature activation should occur.
+    /// The compound index is ordered `(VitalStatus, Option<u64>)`, and
+    /// `None < Some(_)` in Rust's `Option` ordering, so the first alive
+    /// creature in the index has the smallest `next_available_tick`.
+    pub(crate) fn next_creature_activation_tick(&self) -> NextCreatureActivation {
+        match self
+            .db
+            .creatures
+            .iter_by_activation_ready(&VitalStatus::Alive, None.., tabulosity::QueryOpts::ASC)
+            .next()
+        {
+            None => NextCreatureActivation::NoCreatures,
+            Some(c) => match c.next_available_tick {
+                None => NextCreatureActivation::Immediate,
+                Some(t) => NextCreatureActivation::AtTick(t),
+            },
+        }
     }
 
     /// Check if a creature should start moping due to low mood. Called during

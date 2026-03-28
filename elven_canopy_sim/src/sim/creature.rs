@@ -220,12 +220,9 @@ impl SimState {
             });
         }
 
-        // Schedule first activation (drives movement — wander or task work).
+        // Mark creature for first activation (drives movement — wander or task work).
         // Fires 1 tick after spawn so the creature starts moving immediately.
-        self.event_queue.schedule(
-            self.tick + 1,
-            ScheduledEventKind::CreatureActivation { creature_id },
-        );
+        self.set_creature_activation_tick(creature_id, self.tick + 1);
 
         // Schedule first heartbeat (periodic non-movement checks).
         let heartbeat_tick = self.tick + heartbeat_interval;
@@ -820,17 +817,14 @@ impl SimState {
             self.apply_damage_with_cause(creature_id, damage, DeathCause::Falling, events);
         }
 
-        // Schedule a new activation so the creature resumes behavior (if alive).
+        // Mark creature for reactivation so it resumes behavior (if alive).
         if self
             .db
             .creatures
             .get(&creature_id)
             .is_some_and(|c| c.vital_status == VitalStatus::Alive)
         {
-            self.event_queue.schedule(
-                self.tick + 1,
-                ScheduledEventKind::CreatureActivation { creature_id },
-            );
+            self.set_creature_activation_tick(creature_id, self.tick + 1);
         }
 
         true

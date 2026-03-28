@@ -1122,16 +1122,17 @@ fn no_double_reactivation_after_activity_execution() {
         sim.on_activity_participant_arrived(activity_id, elves[i], &mut events);
     }
 
-    // Clear all pending activations so we can count fresh ones.
-    sim.event_queue.cancel_creature_activations(elves[0]);
-    assert_eq!(sim.event_queue.count_creature_activations(elves[0]), 0);
+    // Clear next_available_tick so we can verify it gets set.
+    let mut c = sim.db.creatures.get(&elves[0]).unwrap();
+    c.next_available_tick = None;
+    sim.db.update_creature(c).unwrap();
 
     // Run one activation via the activation loop.
     sim.process_creature_activation(elves[0], &mut events);
 
-    // Should have exactly 1 pending activation, not 2.
+    // Should have exactly 1 pending activation (next_available_tick is Some).
     assert_eq!(
-        sim.event_queue.count_creature_activations(elves[0]),
+        sim.count_pending_activations_for(elves[0]),
         1,
         "should have exactly 1 reactivation, not more"
     );
@@ -1172,9 +1173,11 @@ fn no_double_reactivation_on_activity_completion() {
         .unwrap();
     sim.tick = execution_start + plan_total;
 
-    // Clear pending activations.
+    // Clear next_available_tick for all participants.
     for i in 0..3 {
-        sim.event_queue.cancel_creature_activations(elves[i]);
+        let mut c = sim.db.creatures.get(&elves[i]).unwrap();
+        c.next_available_tick = None;
+        sim.db.update_creature(c).unwrap();
     }
 
     // Run one activation — this should complete the dance.
@@ -1183,9 +1186,9 @@ fn no_double_reactivation_on_activity_completion() {
     // Activity should be gone.
     assert!(sim.db.activities.get(&activity_id).is_none());
 
-    // Each participant should have exactly 1 pending activation (from complete_activity).
+    // Each participant should have exactly 1 pending activation (next_available_tick is Some).
     for i in 0..3 {
-        let count = sim.event_queue.count_creature_activations(elves[i]);
+        let count = sim.count_pending_activations_for(elves[i]);
         assert_eq!(
             count, 1,
             "elf {} should have exactly 1 reactivation after completion, got {}",
@@ -1230,7 +1233,7 @@ fn preempted_goto_during_assembly_reissues_goto() {
 
     // Simulate the preempting task completing — creature enters activation
     // loop with current_activity but no task.
-    sim.event_queue.cancel_creature_activations(elves[2]);
+    suppress_activation_until(&mut sim, elves[2], u64::MAX);
     sim.process_creature_activation(elves[2], &mut events);
 
     // reissue_activity_goto_if_needed should have created a new GoTo task.
@@ -1279,8 +1282,10 @@ fn elves_a_and_b_idle_while_c_is_preempted() {
         ActivityPhase::Assembling
     );
 
-    // Clear pending activations and run activation for elf 0.
-    sim.event_queue.cancel_creature_activations(elves[0]);
+    // Clear next_available_tick and run activation for elf 0.
+    let mut c = sim.db.creatures.get(&elves[0]).unwrap();
+    c.next_available_tick = None;
+    sim.db.update_creature(c).unwrap();
     sim.process_creature_activation(elves[0], &mut events);
 
     // Elf 0 should still be in the activity, not wandering.
@@ -1288,8 +1293,8 @@ fn elves_a_and_b_idle_while_c_is_preempted() {
     assert_eq!(c0.current_activity, Some(activity_id));
     assert!(c0.current_task.is_none()); // No task, just idling.
 
-    // Should have exactly 1 reactivation scheduled.
-    assert_eq!(sim.event_queue.count_creature_activations(elves[0]), 1);
+    // Should have exactly 1 reactivation (next_available_tick is Some).
+    assert_eq!(sim.count_pending_activations_for(elves[0]), 1);
 }
 
 #[test]
@@ -1379,8 +1384,10 @@ fn recruiting_activity_reference_cleared_on_activation() {
     let c0 = sim.db.creatures.get(&elves[0]).unwrap();
     assert!(c0.current_activity.is_some());
 
-    // Run activation — should clear the stale reference.
-    sim.event_queue.cancel_creature_activations(elves[0]);
+    // Clear next_available_tick and run activation — should clear the stale reference.
+    let mut c = sim.db.creatures.get(&elves[0]).unwrap();
+    c.next_available_tick = None;
+    sim.db.update_creature(c).unwrap();
     sim.process_creature_activation(elves[0], &mut events);
 
     let c0 = sim.db.creatures.get(&elves[0]).unwrap();
@@ -1388,8 +1395,8 @@ fn recruiting_activity_reference_cleared_on_activation() {
         c0.current_activity.is_none(),
         "stale activity reference should be cleared"
     );
-    // Should have a reactivation scheduled for normal behavior.
-    assert_eq!(sim.event_queue.count_creature_activations(elves[0]), 1);
+    // Should have a reactivation (next_available_tick is Some).
+    assert_eq!(sim.count_pending_activations_for(elves[0]), 1);
 }
 
 #[test]
@@ -1411,9 +1418,9 @@ fn cancel_activity_no_double_reactivation() {
     // Cancel the activity.
     sim.cancel_activity(activity_id, &mut events);
 
-    // Each creature should have exactly 1 pending activation.
+    // Each creature should have exactly 1 pending activation (next_available_tick is Some).
     for i in 0..3 {
-        let count = sim.event_queue.count_creature_activations(elves[i]);
+        let count = sim.count_pending_activations_for(elves[i]);
         assert_eq!(
             count, 1,
             "elf {} should have exactly 1 reactivation after cancel, got {}",
@@ -4467,9 +4474,10 @@ fn assembly_timeout_cancel_no_double_reactivation() {
         sim.db.update_creature(c).unwrap();
     }
 
-    // Clear pending activations so we can count fresh ones.
-    sim.event_queue.cancel_creature_activations(elves[0]);
-    assert_eq!(sim.event_queue.count_creature_activations(elves[0]), 0);
+    // Clear next_available_tick so we can verify it gets set.
+    let mut c = sim.db.creatures.get(&elves[0]).unwrap();
+    c.next_available_tick = None;
+    sim.db.update_creature(c).unwrap();
 
     // Trigger activation loop for elves[0] — this will hit the Assembling
     // branch, fire the timeout (arrived=0 < min=3), and cancel the activity.
@@ -4478,9 +4486,9 @@ fn assembly_timeout_cancel_no_double_reactivation() {
     // Activity should be cancelled.
     assert!(sim.db.activities.get(&activity_id).is_none());
 
-    // elves[0] should have exactly 1 pending activation, not 2.
+    // elves[0] should have exactly 1 pending activation (next_available_tick is Some).
     assert_eq!(
-        sim.event_queue.count_creature_activations(elves[0]),
+        sim.count_pending_activations_for(elves[0]),
         1,
         "cancel via assembly timeout should produce exactly 1 reactivation, not 2 (B-erratic-movement)"
     );
@@ -4532,9 +4540,10 @@ fn assembly_timeout_start_no_double_reactivation() {
         sim.db.update_creature(c).unwrap();
     }
 
-    // Clear pending activations for an arrived participant.
-    sim.event_queue.cancel_creature_activations(elves[0]);
-    assert_eq!(sim.event_queue.count_creature_activations(elves[0]), 0);
+    // Clear next_available_tick so we can verify it gets set.
+    let mut c = sim.db.creatures.get(&elves[0]).unwrap();
+    c.next_available_tick = None;
+    sim.db.update_creature(c).unwrap();
 
     // Trigger activation — timeout fires, transitions to Executing.
     sim.process_creature_activation(elves[0], &mut events);
@@ -4544,7 +4553,7 @@ fn assembly_timeout_start_no_double_reactivation() {
         ActivityPhase::Executing,
     );
     assert_eq!(
-        sim.event_queue.count_creature_activations(elves[0]),
+        sim.count_pending_activations_for(elves[0]),
         1,
         "start via assembly timeout should produce exactly 1 reactivation (B-erratic-movement)"
     );
@@ -4597,9 +4606,10 @@ fn pause_timeout_cancel_no_double_reactivation() {
     sim.tick += timeout + 1;
 
     // elves[1] is an Arrived participant still in the activity.
-    // Clear pending activations so we can count fresh ones.
-    sim.event_queue.cancel_creature_activations(elves[1]);
-    assert_eq!(sim.event_queue.count_creature_activations(elves[1]), 0);
+    // Clear next_available_tick so we can verify it gets set.
+    let mut c = sim.db.creatures.get(&elves[1]).unwrap();
+    c.next_available_tick = None;
+    sim.db.update_creature(c).unwrap();
 
     // Trigger activation — pause timeout fires, cancels the activity.
     sim.process_creature_activation(elves[1], &mut events);
@@ -4607,9 +4617,9 @@ fn pause_timeout_cancel_no_double_reactivation() {
     // Activity should be cancelled.
     assert!(sim.db.activities.get(&activity_id).is_none());
 
-    // elves[1] should have exactly 1 pending activation, not 2.
+    // elves[1] should have exactly 1 pending activation (next_available_tick is Some).
     assert_eq!(
-        sim.event_queue.count_creature_activations(elves[1]),
+        sim.count_pending_activations_for(elves[1]),
         1,
         "cancel via pause timeout should produce exactly 1 reactivation, not 2 (B-erratic-movement)"
     );

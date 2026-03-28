@@ -19,12 +19,13 @@
 // `StartGame` processing — it reads `config.initial_creatures` and
 // `config.initial_ground_piles` to populate the world.
 //
-// ## Activation chain
+// ## Poll-based activation
 //
-// Creature movement uses an **activation chain**: each creature has a
-// `CreatureActivation` event that fires, performs one action (walk 1 nav edge
-// or do 1 unit of task work), and schedules the next activation based on how
-// long the action takes. The sim runs at **1000 ticks per simulated second**
+// Creature behavior uses **poll-based activation**: each tick, all living
+// creatures whose `next_available_tick <= current_tick` are activated in
+// deterministic CreatureId order. Each activation performs one action (walk
+// 1 nav edge or do 1 unit of task work) and sets `next_available_tick` for
+// the next poll. The sim runs at **1000 ticks per simulated second**
 // (`tick_duration_ms = 1`). Edge traversal time is computed as
 // `ceil(edge.distance * species_ticks_per_voxel)` where ticks_per_voxel is
 // `walk_ticks_per_voxel` for flat edges or `climb_ticks_per_voxel` for
@@ -149,8 +150,8 @@
 // then enters the decision cascade for the next action.
 //
 // **Action lifecycle:**
-// 1. `start_*_action()` — sets `action_kind` and `next_available_tick`,
-//    schedules a `CreatureActivation` at the completion tick.
+// 1. `start_*_action()` — sets `action_kind` and `next_available_tick`
+//    (poll-based activation fires when that tick is reached).
 // 2. `resolve_*_action()` — applies the action's effects (place voxel,
 //    restore food, etc.) and returns whether the task completed.
 // 3. Decision cascade — if task not done, re-enter `execute_task_behavior`
@@ -158,8 +159,8 @@
 //
 // **Interruption:** `interrupt_task()` is the entry point for hard task
 // interruption (nav invalidation, mope preemption, death, flee). It calls
-// `abort_current_action()` to cancel the in-progress action and purge
-// orphaned activation events, then delegates to `cleanup_and_unassign_task()`
+// `abort_current_action()` to clear the in-progress action and reset
+// activation state, then delegates to `cleanup_and_unassign_task()`
 // for per-kind cleanup (release reservations, drop carried items) and task
 // state transitions (resumable → Available, others → Complete).
 //
@@ -548,6 +549,7 @@ pub fn melee_distance_sq(
 }
 
 mod activation;
+use activation::NextCreatureActivation;
 mod activity;
 mod combat;
 mod construction;
@@ -834,20 +836,25 @@ impl SimState {
         let mut cmd_idx = 0;
 
         while self.tick < target_tick {
-            // Determine the next thing to process: the next scheduled event
-            // or the next command, whichever comes first.
+            // Determine the next thing to process: the next scheduled event,
+            // the next command, or the next creature activation — whichever
+            // comes first.
             let next_event_tick = self.event_queue.peek_tick();
             let next_cmd_tick = commands
                 .get(cmd_idx)
                 .filter(|c| c.tick <= target_tick)
                 .map(|c| c.tick);
-
-            let next_tick = match (next_event_tick, next_cmd_tick) {
-                (Some(et), Some(ct)) => et.min(ct).min(target_tick),
-                (Some(et), None) => et.min(target_tick),
-                (None, Some(ct)) => ct.min(target_tick),
-                (None, None) => target_tick,
+            let next_activation_tick = match self.next_creature_activation_tick() {
+                NextCreatureActivation::NoCreatures => None,
+                NextCreatureActivation::Immediate => Some(self.tick),
+                NextCreatureActivation::AtTick(t) => Some(t),
             };
+
+            let next_tick = [next_event_tick, next_cmd_tick, next_activation_tick]
+                .into_iter()
+                .flatten()
+                .min()
+                .map_or(target_tick, |t| t.min(target_tick));
 
             self.tick = next_tick;
 
@@ -858,9 +865,21 @@ impl SimState {
                 self.apply_command(cmd, &mut events);
             }
 
-            // Process scheduled events at this tick.
+            // Process scheduled events at this tick (heartbeats, projectiles,
+            // etc.).
             while let Some(event) = self.event_queue.pop_if_ready(self.tick) {
                 self.process_event(event.kind, &mut events);
+            }
+
+            // Poll-based creature activation: find all living creatures whose
+            // next_available_tick <= current tick and activate them in
+            // CreatureId order for deterministic intra-tick ordering.
+            // process_creature_activation immediately advances each creature's
+            // next_available_tick to tick+1 (or later), preventing re-polling
+            // at the same tick.
+            let ready = self.poll_ready_creatures(self.tick);
+            for creature_id in ready {
+                self.process_creature_activation(creature_id, &mut events);
             }
         }
 
@@ -1238,7 +1257,7 @@ impl SimState {
                 }
 
                 // Heartbeat is for periodic non-movement checks (mood, mana, etc.).
-                // Movement is driven by CreatureActivation, not heartbeats.
+                // Movement is driven by poll-based activation, not heartbeats.
 
                 // Phase 1: apply food and rest decay, read state for need checks.
                 let (
@@ -1694,8 +1713,9 @@ impl SimState {
                     self.check_creature_wants(creature_id);
                 }
             }
-            ScheduledEventKind::CreatureActivation { creature_id } => {
-                self.process_creature_activation(creature_id, events);
+            ScheduledEventKind::_LegacyCreatureActivation { .. } => {
+                // Legacy event from old save files — ignored.
+                // Poll-based activation replaced this in F-activation-revamp.
             }
             ScheduledEventKind::TreeHeartbeat { tree_id } => {
                 if self.db.trees.contains(&tree_id) {
@@ -1810,10 +1830,6 @@ impl SimState {
             c.next_available_tick = Some(self.tick + duration);
             let _ = self.db.update_creature(c);
         }
-        self.event_queue.schedule(
-            self.tick + duration,
-            ScheduledEventKind::CreatureActivation { creature_id },
-        );
     }
 
     /// Dispatch to the appropriate resolve function for a completed work action.

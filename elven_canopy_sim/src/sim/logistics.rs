@@ -9,7 +9,6 @@
 // (item reservation and transfer), `needs.rs` (personal item acquisition).
 use super::*;
 use crate::db::ActionKind;
-use crate::event::ScheduledEventKind;
 use crate::inventory;
 use crate::task;
 
@@ -24,10 +23,6 @@ impl SimState {
             c.next_available_tick = Some(tick + duration);
             let _ = self.db.update_creature(c);
         }
-        self.event_queue.schedule(
-            self.tick + duration,
-            ScheduledEventKind::CreatureActivation { creature_id },
-        );
     }
 
     /// Resolve a completed PickUp action: remove reserved items from source,
@@ -139,10 +134,6 @@ impl SimState {
             c.next_available_tick = Some(tick + duration);
             let _ = self.db.update_creature(c);
         }
-        self.event_queue.schedule(
-            self.tick + duration,
-            ScheduledEventKind::CreatureActivation { creature_id },
-        );
     }
 
     /// Resolve a completed DropOff action: deposit items at destination,

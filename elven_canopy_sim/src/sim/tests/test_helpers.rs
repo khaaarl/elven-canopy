@@ -436,12 +436,55 @@ pub(super) fn force_idle(sim: &mut SimState, creature_id: CreatureId) {
     sim.db.update_creature(creature).unwrap();
 }
 
-/// Like `force_idle` but also cancels any pending activation events (e.g.
-/// from spawn). Use when you need the creature truly quiescent so you can
-/// precisely control activation counts.
+/// Like `force_idle` but also suppresses activation so the creature
+/// won't be polled. Use when you need the creature truly quiescent so
+/// you can precisely control activation counts.
+///
+/// Sets `next_available_tick = Some(u64::MAX)` rather than `None`
+/// because `None` sorts before `Some(0)` in Rust's `Option` ordering,
+/// so `poll_ready_creatures` (which queries `None..=Some(tick)`) would
+/// treat `None` as "immediately ready." `u64::MAX` is unreachable.
 pub(super) fn force_idle_and_cancel_activations(sim: &mut SimState, creature_id: CreatureId) {
     force_idle(sim, creature_id);
-    sim.event_queue.cancel_creature_activations(creature_id);
+    // Suppress: u64::MAX is never <= current tick.
+    if let Some(mut c) = sim.db.creatures.get(&creature_id) {
+        c.next_available_tick = Some(u64::MAX);
+        let _ = sim.db.update_creature(c);
+    }
+}
+
+/// Prevent a creature from being activated by poll-based activation
+/// until the specified tick. Sets `next_available_tick` to `tick` so
+/// the creature is available (not on cooldown) but won't be polled
+/// before that tick. Since commands run before poll at each tick, a
+/// command at `tick` will fire before the creature's poll activation.
+///
+/// For creatures that should never be activated (e.g., bystanders in a
+/// test), pass `u64::MAX`.
+pub(super) fn suppress_activation_until(sim: &mut SimState, creature_id: CreatureId, tick: u64) {
+    let mut creature = sim.db.creatures.get(&creature_id).unwrap();
+    creature.next_available_tick = Some(tick);
+    sim.db.update_creature(creature).unwrap();
+}
+
+/// Convenience: suppress activation until the next tick (sim.tick + 1).
+/// Use for creatures that will receive a command at `sim.tick + 1`.
+/// The creature is idle with `next_available_tick = Some(sim.tick + 1)`,
+/// meaning the command (which runs before poll at that tick) fires first,
+/// and the creature won't be polled before then.
+pub(super) fn suppress_activation(sim: &mut SimState, creature_id: CreatureId) {
+    let tick = sim.tick + 1;
+    suppress_activation_until(sim, creature_id, tick);
+}
+
+/// Force a creature to be activated at a specific tick by poll-based
+/// activation. Sets `next_available_tick` to the given tick and ensures
+/// the creature is idle (NoAction) so it enters the decision cascade.
+pub(super) fn schedule_activation_at(sim: &mut SimState, creature_id: CreatureId, tick: u64) {
+    let mut creature = sim.db.creatures.get(&creature_id).unwrap();
+    creature.action_kind = ActionKind::NoAction;
+    creature.next_available_tick = Some(tick);
+    sim.db.update_creature(creature).unwrap();
 }
 
 /// Zero all 8 stat traits for a creature and reset HP to the species base.
@@ -505,9 +548,14 @@ pub(super) fn force_to_node(sim: &mut SimState, creature_id: CreatureId, node_id
 }
 
 impl SimState {
-    /// Test helper: count pending `CreatureActivation` events for a creature.
+    /// Test helper: count pending activations for a creature.
+    /// In the poll-based model, a creature has 0 or 1 pending activations
+    /// depending on whether `next_available_tick` is `Some`.
     pub(super) fn count_pending_activations_for(&self, creature_id: CreatureId) -> usize {
-        self.event_queue.count_creature_activations(creature_id)
+        match self.db.creatures.get(&creature_id) {
+            Some(c) if c.next_available_tick.is_some() => 1,
+            _ => 0,
+        }
     }
 }
 

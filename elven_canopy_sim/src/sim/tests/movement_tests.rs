@@ -406,16 +406,10 @@ fn pursuit_task_completes_when_adjacent() {
     // schedule. This makes the test robust to worldgen PRNG changes.
     {
         let mut c = sim.db.creatures.get(&pursuer_id).unwrap();
-        c.next_available_tick = None;
+        c.next_available_tick = Some(sim.tick + 1);
         c.action_kind = crate::db::ActionKind::NoAction;
         sim.db.update_creature(c).unwrap();
     }
-    sim.event_queue.schedule(
-        sim.tick + 1,
-        crate::event::ScheduledEventKind::CreatureActivation {
-            creature_id: pursuer_id,
-        },
-    );
 
     // Step — pursuer should complete the GoTo since it's at the target's node.
     sim.step(&[], sim.tick + 10000);
@@ -881,12 +875,9 @@ fn voxel_exclusion_hostile_blocks_movement() {
     force_idle(&mut sim, goblin);
 
     // Schedule only the elf to activate (goblin stays idle).
-    sim.event_queue.cancel_creature_activations(elf);
-    sim.event_queue.cancel_creature_activations(goblin);
-    sim.event_queue.schedule(
-        sim.tick + 1,
-        ScheduledEventKind::CreatureActivation { creature_id: elf },
-    );
+    suppress_activation_until(&mut sim, goblin, u64::MAX);
+    let tick = sim.tick + 1;
+    schedule_activation_at(&mut sim, elf, tick);
 
     // Run a few ticks — elf should NOT move to goblin's voxel.
     sim.step(&[], sim.tick + 200);
@@ -1015,17 +1006,18 @@ fn voxel_exclusion_hostile_pursue_blocked() {
     let goblin_pos_before = sim.db.creatures.get(&goblin).unwrap().position;
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
 
-    // Only activate the goblin, freeze the elf.
-    sim.event_queue.cancel_creature_activations(goblin);
-    sim.event_queue.cancel_creature_activations(elf);
-    sim.event_queue.schedule(
-        sim.tick + 1,
-        ScheduledEventKind::CreatureActivation {
-            creature_id: goblin,
-        },
-    );
+    // Freeze the elf so only the goblin activates.
+    suppress_activation(&mut sim, elf);
 
-    sim.step(&[], sim.tick + 200);
+    // Schedule the goblin's activation and step the sim.
+    let goblin_tick = sim
+        .db
+        .creatures
+        .get(&goblin)
+        .unwrap()
+        .next_available_tick
+        .unwrap_or(sim.tick);
+    sim.step(&[], goblin_tick + 1);
 
     let goblin_pos_after = sim.db.creatures.get(&goblin).unwrap().position;
 
@@ -1063,8 +1055,8 @@ fn voxel_exclusion_wander_avoids_hostile_voxels() {
     force_idle(&mut sim, goblin);
 
     // Cancel goblin activations so it stays put.
-    sim.event_queue.cancel_creature_activations(goblin);
-    sim.event_queue.cancel_creature_activations(elf);
+    suppress_activation_until(&mut sim, goblin, u64::MAX);
+    suppress_activation_until(&mut sim, elf, u64::MAX);
 
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
 
@@ -1072,10 +1064,8 @@ fn voxel_exclusion_wander_avoids_hostile_voxels() {
     for i in 0..20 {
         force_idle(&mut sim, elf);
         force_to_node(&mut sim, elf, node_b);
-        sim.event_queue.schedule(
-            sim.tick + 1,
-            ScheduledEventKind::CreatureActivation { creature_id: elf },
-        );
+        let tick = sim.tick + 1;
+        schedule_activation_at(&mut sim, elf, tick);
         sim.step(&[], sim.tick + 200);
 
         let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
@@ -1101,16 +1091,14 @@ fn voxel_exclusion_flee_avoids_hostile_voxels() {
     force_idle(&mut sim, elf);
     force_idle(&mut sim, goblin);
 
-    sim.event_queue.cancel_creature_activations(elf);
-    sim.event_queue.cancel_creature_activations(goblin);
+    suppress_activation_until(&mut sim, elf, u64::MAX);
+    suppress_activation_until(&mut sim, goblin, u64::MAX);
 
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
 
     // Activate only the elf — it should detect the goblin and flee.
-    sim.event_queue.schedule(
-        sim.tick + 1,
-        ScheduledEventKind::CreatureActivation { creature_id: elf },
-    );
+    let tick = sim.tick + 1;
+    schedule_activation_at(&mut sim, elf, tick);
     sim.step(&[], sim.tick + 200);
 
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
@@ -1157,7 +1145,9 @@ fn voxel_exclusion_flee_cornered_still_moves() {
         let g = spawn_species(&mut sim, Species::Goblin);
         force_to_node(&mut sim, g, neighbor_node);
         force_idle(&mut sim, g);
-        sim.event_queue.cancel_creature_activations(g);
+        // Prevent goblins from being polled for activation.
+        // (None means "immediately ready" in the poll model, so use u64::MAX.)
+        suppress_activation_until(&mut sim, g, u64::MAX);
         goblins.push(g);
     }
 
@@ -1165,7 +1155,6 @@ fn voxel_exclusion_flee_cornered_still_moves() {
     // things around).
     force_to_node(&mut sim, elf, elf_node);
     force_idle(&mut sim, elf);
-    sim.event_queue.cancel_creature_activations(elf);
 
     // Verify that all neighbors are indeed hostile-blocked.
     let elf_fp = sim.species_table[&Species::Elf].footprint;
@@ -1180,10 +1169,9 @@ fn voxel_exclusion_flee_cornered_still_moves() {
 
     // Now activate the elf — it should be cornered but flee should still
     // use the fallback (allow movement through hostile).
-    sim.event_queue.schedule(
-        sim.tick + 1,
-        ScheduledEventKind::CreatureActivation { creature_id: elf },
-    );
+    let mut ec = sim.db.creatures.get(&elf).unwrap();
+    ec.next_available_tick = Some(sim.tick + 1);
+    sim.db.update_creature(ec).unwrap();
     sim.step(&[], sim.tick + 200);
 
     // The elf has hostile_detection_range_sq=225 (15 voxels) and the
@@ -1271,7 +1259,7 @@ fn voxel_exclusion_skip_exclusion_allows_blocked_move() {
     );
 
     // Cancel the retry activation scheduled by the failed move.
-    sim.event_queue.cancel_creature_activations(elf);
+    suppress_activation_until(&mut sim, elf, u64::MAX);
 
     // With skip_exclusion: allowed.
     let result_forced = sim.ground_move_one_step_inner(elf, Species::Elf, edge_idx, true);
@@ -1330,8 +1318,8 @@ fn voxel_exclusion_blocked_schedules_retry() {
     force_idle(&mut sim, elf);
     force_idle(&mut sim, goblin);
 
-    sim.event_queue.cancel_creature_activations(elf);
-    sim.event_queue.cancel_creature_activations(goblin);
+    suppress_activation_until(&mut sim, elf, u64::MAX);
+    suppress_activation_until(&mut sim, goblin, u64::MAX);
 
     let edge_idx = sim
         .nav_graph
@@ -1341,14 +1329,21 @@ fn voxel_exclusion_blocked_schedules_retry() {
         .find(|&idx| sim.nav_graph.edge(idx).to == node_b)
         .expect("Should have edge from A to B");
 
-    let activations_before = sim.count_pending_activations_for(elf);
-    sim.ground_move_one_step(elf, Species::Elf, edge_idx);
-    let activations_after = sim.count_pending_activations_for(elf);
+    // Before the blocked move, elf is suppressed (next_available_tick = u64::MAX).
+    let nat_before = sim.db.creatures.get(&elf).unwrap().next_available_tick;
+    assert_eq!(nat_before, Some(u64::MAX), "precondition: elf suppressed");
 
+    sim.ground_move_one_step(elf, Species::Elf, edge_idx);
+
+    // After the blocked move, next_available_tick should be set to a
+    // near-future retry tick (tick + voxel_exclusion_retry_ticks), not
+    // u64::MAX.
+    let nat_after = sim.db.creatures.get(&elf).unwrap().next_available_tick;
+    let expected_retry = sim.tick + sim.config.voxel_exclusion_retry_ticks;
     assert_eq!(
-        activations_after,
-        activations_before + 1,
-        "Blocked move should schedule a retry activation"
+        nat_after,
+        Some(expected_retry),
+        "Blocked move should schedule a retry activation at tick + retry_delay"
     );
 }
 
@@ -1376,18 +1371,10 @@ fn voxel_exclusion_already_overlapping_allowed() {
     // The sim should not crash when processing these creatures.
     force_idle(&mut sim, elf);
     force_idle(&mut sim, goblin);
-    sim.event_queue.cancel_creature_activations(elf);
-    sim.event_queue.cancel_creature_activations(goblin);
-    sim.event_queue.schedule(
-        sim.tick + 1,
-        ScheduledEventKind::CreatureActivation { creature_id: elf },
-    );
-    sim.event_queue.schedule(
-        sim.tick + 1,
-        ScheduledEventKind::CreatureActivation {
-            creature_id: goblin,
-        },
-    );
+    let tick = sim.tick + 1;
+    schedule_activation_at(&mut sim, elf, tick);
+    let tick = sim.tick + 1;
+    schedule_activation_at(&mut sim, goblin, tick);
 
     // Just verify no panic. Creatures should separate on their next moves.
     sim.step(&[], sim.tick + 500);
@@ -1548,8 +1535,8 @@ fn voxel_exclusion_config_retry_ticks_respected() {
     force_idle(&mut sim, elf);
     force_idle(&mut sim, goblin);
 
-    sim.event_queue.cancel_creature_activations(elf);
-    sim.event_queue.cancel_creature_activations(goblin);
+    suppress_activation_until(&mut sim, elf, u64::MAX);
+    suppress_activation_until(&mut sim, goblin, u64::MAX);
 
     let edge_idx = sim
         .nav_graph
@@ -1608,8 +1595,8 @@ fn voxel_exclusion_walk_toward_task_blocked() {
     force_idle(&mut sim, elf);
     force_idle(&mut sim, goblin);
 
-    sim.event_queue.cancel_creature_activations(goblin);
-    sim.event_queue.cancel_creature_activations(elf);
+    suppress_activation_until(&mut sim, goblin, u64::MAX);
+    suppress_activation_until(&mut sim, elf, u64::MAX);
 
     // Create a GoTo task at node_c and assign the elf.
     let task_id = insert_goto_task(&mut sim, node_c);
@@ -1623,10 +1610,8 @@ fn voxel_exclusion_walk_toward_task_blocked() {
     }
 
     // Activate elf.
-    sim.event_queue.schedule(
-        sim.tick + 1,
-        ScheduledEventKind::CreatureActivation { creature_id: elf },
-    );
+    let tick = sim.tick + 1;
+    schedule_activation_at(&mut sim, elf, tick);
     sim.step(&[], sim.tick + 200);
 
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
@@ -1681,8 +1666,8 @@ fn voxel_exclusion_walk_toward_task_clears_cached_path() {
     force_to_node(&mut sim, goblin, node_b);
     force_idle(&mut sim, elf);
     force_idle(&mut sim, goblin);
-    sim.event_queue.cancel_creature_activations(goblin);
-    sim.event_queue.cancel_creature_activations(elf);
+    suppress_activation_until(&mut sim, goblin, u64::MAX);
+    suppress_activation_until(&mut sim, elf, u64::MAX);
 
     // Give the elf a cached path through the goblin's node.
     let pos_b = sim.nav_graph.node(node_b).position;
@@ -1712,10 +1697,8 @@ fn voxel_exclusion_walk_toward_task_clears_cached_path() {
 
     // Activate the elf — it should try to follow the cached path,
     // hit the hostile, and clear the path.
-    sim.event_queue.schedule(
-        sim.tick + 1,
-        ScheduledEventKind::CreatureActivation { creature_id: elf },
-    );
+    let tick = sim.tick + 1;
+    schedule_activation_at(&mut sim, elf, tick);
     sim.step(&[], sim.tick + 10);
 
     assert!(
@@ -1737,8 +1720,8 @@ fn voxel_exclusion_hostile_dies_creature_retries_and_moves() {
     force_to_node(&mut sim, goblin, node_b);
     force_idle(&mut sim, elf);
     force_idle(&mut sim, goblin);
-    sim.event_queue.cancel_creature_activations(goblin);
-    sim.event_queue.cancel_creature_activations(elf);
+    suppress_activation_until(&mut sim, goblin, u64::MAX);
+    suppress_activation_until(&mut sim, elf, u64::MAX);
 
     let node_a_pos = sim.nav_graph.node(node_a).position;
     let node_b_pos = sim.nav_graph.node(node_b).position;
@@ -1807,9 +1790,9 @@ fn voxel_exclusion_attack_target_task_blocked_by_hostile() {
     force_idle(&mut sim, elf);
     force_idle(&mut sim, blocking_goblin);
     force_idle(&mut sim, target_goblin);
-    sim.event_queue.cancel_creature_activations(blocking_goblin);
-    sim.event_queue.cancel_creature_activations(target_goblin);
-    sim.event_queue.cancel_creature_activations(elf);
+    suppress_activation_until(&mut sim, blocking_goblin, u64::MAX);
+    suppress_activation_until(&mut sim, target_goblin, u64::MAX);
+    suppress_activation_until(&mut sim, elf, u64::MAX);
 
     // Issue AttackCreature command — this creates an AttackTarget task.
     let tick = sim.tick;
@@ -1854,8 +1837,8 @@ fn voxel_exclusion_attack_move_task_blocked_by_hostile() {
     force_to_node(&mut sim, goblin, node_b);
     force_idle(&mut sim, elf);
     force_idle(&mut sim, goblin);
-    sim.event_queue.cancel_creature_activations(goblin);
-    sim.event_queue.cancel_creature_activations(elf);
+    suppress_activation_until(&mut sim, goblin, u64::MAX);
+    suppress_activation_until(&mut sim, elf, u64::MAX);
 
     let dest_pos = sim.nav_graph.node(node_c).position;
 
@@ -1945,11 +1928,8 @@ fn cached_path_reroutes_when_nav_node_destroyed() {
     }
 
     // Schedule activation and step forward.
-    sim.event_queue.cancel_creature_activations(elf);
-    sim.event_queue.schedule(
-        sim.tick + 1,
-        ScheduledEventKind::CreatureActivation { creature_id: elf },
-    );
+    let tick = sim.tick + 1;
+    schedule_activation_at(&mut sim, elf, tick);
     sim.step(&[], sim.tick + 500);
 
     // Creature should still be alive.
@@ -2110,6 +2090,11 @@ fn aggressive_elf_vs_hornet_at_heights() {
         let hornet_pos = VoxelCoord::new(elf_pos.x, elf_pos.y + case.dy, elf_pos.z);
         let hornet_id = setup_frozen_hornet(&mut sim, hornet_pos);
         let hornet_hp_before = sim.db.creatures.get(&hornet_id).unwrap().hp;
+
+        // Enable elf activation (force_idle sets next_available_tick=None).
+        let mut ec = sim.db.creatures.get(&elf_id).unwrap();
+        ec.next_available_tick = Some(sim.tick + 1);
+        sim.db.update_creature(ec).unwrap();
 
         // Let the elf act for enough ticks to walk + strike.
         let target_tick = sim.tick + 8000;
@@ -3537,7 +3522,8 @@ fn wander_sets_movement_metadata() {
     // Before the first activation, the elf should have no action.
     let elf = sim.db.creatures.get(&elf_id).unwrap();
     assert_eq!(elf.action_kind, ActionKind::NoAction);
-    assert!(elf.next_available_tick.is_none());
+    // In the poll-based model, next_available_tick is set at spawn.
+    assert!(elf.next_available_tick.is_some());
     assert!(sim.db.move_actions.get(&elf_id).is_none());
 
     let initial_pos = elf.position;
@@ -4222,11 +4208,8 @@ fn path_resolution_nav_node_destroyed_no_panic() {
 
     // Schedule the elf to activate and step forward. The movement code should
     // detect the missing nav node and repath (not panic).
-    sim.event_queue.cancel_creature_activations(elf);
-    sim.event_queue.schedule(
-        sim.tick + 1,
-        ScheduledEventKind::CreatureActivation { creature_id: elf },
-    );
+    let tick = sim.tick + 1;
+    schedule_activation_at(&mut sim, elf, tick);
     sim.step(&[], sim.tick + 200);
 
     // Creature should still be alive and at a valid position.

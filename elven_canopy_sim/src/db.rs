@@ -336,6 +336,10 @@ pub struct GreatTreeInfo {
 /// Personal wants are in the `logistics_want_rows` table (queried by
 /// `inventory_id`). Thoughts are in the `thoughts` table.
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
+#[index(
+    name = "activation_ready",
+    fields("vital_status", "next_available_tick")
+)]
 pub struct Creature {
     #[primary_key]
     pub id: CreatureId,

@@ -434,6 +434,7 @@ fn test_melee_strike_dead_target() {
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, goblin);
+    suppress_activation(&mut sim, goblin);
 
     // Kill the elf first.
     let tick = sim.tick;
@@ -450,7 +451,13 @@ fn test_melee_strike_dead_target() {
         VitalStatus::Dead
     );
 
+    // Re-idle goblin for the second step. Use suppress_activation to
+    // prevent poll-based activation before the command fires.
+    force_idle(&mut sim, goblin);
+    suppress_activation(&mut sim, goblin);
+
     // Melee attack on dead target should be a no-op.
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
     let tick2 = sim.tick;
     sim.step(
         &[SimCommand {
@@ -463,10 +470,17 @@ fn test_melee_strike_dead_target() {
         }],
         tick2 + 1,
     );
-    // Goblin should still be idle (attack didn't fire).
+    // Dead elf's HP should be unchanged (attack didn't fire).
     assert_eq!(
+        sim.db.creatures.get(&elf).unwrap().hp,
+        elf_hp_before,
+        "Melee attack on dead target should not deal damage"
+    );
+    // Goblin should not be in MeleeStrike action.
+    assert_ne!(
         sim.db.creatures.get(&goblin).unwrap().action_kind,
-        ActionKind::NoAction,
+        ActionKind::MeleeStrike,
+        "Goblin should not have started a melee strike on dead target"
     );
 }
 
@@ -2069,6 +2083,7 @@ fn test_shoot_arrow_spawns_projectile() {
     let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, elf);
+    suppress_activation(&mut sim, elf);
 
     // Give elf a bow and arrows.
     arm_with_bow_and_arrows(&mut sim, elf, 5);
@@ -2136,6 +2151,7 @@ fn test_shoot_arrow_no_bow_fails() {
     let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, elf);
+    suppress_activation(&mut sim, elf);
 
     // Give arrows but NO bow.
     let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
@@ -2156,10 +2172,11 @@ fn test_shoot_arrow_no_bow_fails() {
 
     // No projectile spawned.
     assert_eq!(sim.db.projectiles.iter_all().count(), 0);
-    // Elf still idle.
-    assert_eq!(
+    // Elf should not have entered Shoot action (no bow available).
+    assert_ne!(
         sim.db.creatures.get(&elf).unwrap().action_kind,
-        ActionKind::NoAction,
+        ActionKind::Shoot,
+        "Elf without bow should not be in Shoot action"
     );
 }
 
@@ -2208,6 +2225,7 @@ fn test_shoot_arrow_cooldown_prevents_second_shot() {
     let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, elf);
+    suppress_activation(&mut sim, elf);
     arm_with_bow_and_arrows(&mut sim, elf, 10);
 
     // First shot.
@@ -2297,6 +2315,7 @@ fn test_shoot_arrow_leaf_does_not_block_los() {
     let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, elf);
+    suppress_activation(&mut sim, elf);
     arm_with_bow_and_arrows(&mut sim, elf, 5);
 
     // Place a leaf between them — should NOT block LOS.
@@ -2423,6 +2442,7 @@ fn test_shoot_arrow_cooldown_expiry_allows_second_shot() {
     let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, elf);
+    suppress_activation(&mut sim, elf);
     arm_with_bow_and_arrows(&mut sim, elf, 10);
 
     // First shot.
@@ -2455,6 +2475,7 @@ fn test_shoot_arrow_cooldown_expiry_allows_second_shot() {
     let cooldown = sim.config.shoot_cooldown_ticks;
     sim.step(&[], sim.tick + cooldown + 1);
     force_idle(&mut sim, elf);
+    suppress_activation(&mut sim, elf);
     force_position(&mut sim, elf, elf_pos);
 
     // Second shot should succeed now that cooldown has expired.
@@ -2700,6 +2721,7 @@ fn shoot_arrow_hostile_in_path_does_not_block() {
     force_position(&mut sim, goblin_near, near_pos);
     force_position(&mut sim, goblin_far, far_pos);
     force_idle(&mut sim, shooter);
+    suppress_activation(&mut sim, shooter);
 
     arm_with_bow_and_arrows(&mut sim, shooter, 5);
 
@@ -2806,6 +2828,9 @@ fn in_flight_arrow_passes_through_friendly_near_origin() {
     force_idle_and_cancel_activations(&mut sim, shooter);
     force_idle_and_cancel_activations(&mut sim, buddy);
     force_idle_and_cancel_activations(&mut sim, goblin);
+    suppress_activation(&mut sim, shooter);
+    suppress_activation_until(&mut sim, buddy, u64::MAX);
+    suppress_activation_until(&mut sim, goblin, u64::MAX);
     arm_with_bow_and_arrows(&mut sim, shooter, 5);
 
     // Re-confirm all positions after idle (ensure no drift from earlier steps).
@@ -2951,6 +2976,7 @@ fn in_flight_arrow_hits_hostile_at_origin_neighbor() {
     force_position(&mut sim, goblin_far, far_pos);
 
     force_idle(&mut sim, shooter);
+    suppress_activation(&mut sim, shooter);
     arm_with_bow_and_arrows(&mut sim, shooter, 5);
 
     // Fire at the far goblin.
@@ -3157,6 +3183,7 @@ fn melee_weapon_spear_extended_range() {
     let elf_pos = VoxelCoord::new(target_pos.x + 2, target_pos.y, target_pos.z);
     force_position(&mut sim, elf, elf_pos);
     force_idle(&mut sim, elf);
+    suppress_activation(&mut sim, elf);
 
     // Without a weapon, elf can't reach (species melee_range_sq = 3, dist_sq = 4).
     let target_hp_before = sim.db.creatures.get(&target).unwrap().hp;
@@ -3192,6 +3219,9 @@ fn melee_weapon_spear_extended_range() {
         None,
     );
     force_idle(&mut sim, elf);
+    suppress_activation(&mut sim, elf);
+    // Re-force position in case elf moved during poll activation.
+    force_position(&mut sim, elf, elf_pos);
 
     let tick = sim.tick;
     sim.step(
@@ -3229,6 +3259,7 @@ fn melee_weapon_prefers_highest_damage_when_both_in_range() {
     let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
     force_position(&mut sim, elf, elf_pos);
     force_idle(&mut sim, elf);
+    suppress_activation(&mut sim, elf);
 
     let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
     sim.inv_add_item(
@@ -3292,6 +3323,7 @@ fn melee_weapon_spear_only_at_extended_range() {
     let elf_pos = VoxelCoord::new(target_pos.x + 2, target_pos.y, target_pos.z);
     force_position(&mut sim, elf, elf_pos);
     force_idle(&mut sim, elf);
+    suppress_activation(&mut sim, elf);
 
     let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
     sim.inv_add_item(
@@ -3358,6 +3390,7 @@ fn melee_weapon_degrades_on_strike() {
     let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
     force_position(&mut sim, elf, elf_pos);
     force_idle(&mut sim, elf);
+    suppress_activation(&mut sim, elf);
 
     let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
     sim.inv_add_item(
@@ -3519,6 +3552,7 @@ fn melee_weapon_enables_attack_for_zero_damage_species() {
     let cap_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
     force_position(&mut sim, capybara, cap_pos);
     force_idle(&mut sim, capybara);
+    suppress_activation(&mut sim, capybara);
 
     // Without weapon, capybara can't melee.
     assert!(!sim.can_melee(capybara));
@@ -3581,6 +3615,7 @@ fn melee_weapon_breaks_then_fallback_to_bare_hands() {
     let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
     force_position(&mut sim, elf, elf_pos);
     force_idle(&mut sim, elf);
+    suppress_activation(&mut sim, elf);
 
     // Give the elf a club with only 1 HP remaining.
     let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
@@ -3629,6 +3664,7 @@ fn melee_weapon_breaks_then_fallback_to_bare_hands() {
 
     // Second strike: bare hands fallback.
     force_idle(&mut sim, elf);
+    suppress_activation(&mut sim, elf);
     let target_hp_after_first = sim.db.creatures.get(&target).unwrap().hp;
     let tick = sim.tick;
     sim.step(
@@ -3866,6 +3902,7 @@ fn weapon_damage_reduced_by_armor() {
     let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
     force_position(&mut sim, elf, elf_pos);
     force_idle(&mut sim, elf);
+    suppress_activation(&mut sim, elf);
 
     // Give elf a club (damage = 20).
     let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
@@ -3924,6 +3961,7 @@ fn weapon_damage_scales_with_strength() {
     let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
     force_position(&mut sim, elf, elf_pos);
     force_idle(&mut sim, elf);
+    suppress_activation(&mut sim, elf);
 
     // Give elf a club and set STR to +10 (doubles damage).
     let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
@@ -4005,6 +4043,8 @@ fn attack_target_spear_stops_at_extended_range() {
     let goblin_pos = VoxelCoord::new(elf_pos.x + 2, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, elf);
+    suppress_activation(&mut sim, elf);
+    suppress_activation_until(&mut sim, goblin, u64::MAX);
 
     let goblin_hp_before = sim.db.creatures.get(&goblin).unwrap().hp;
     let spear_damage = sim.config.spear_base_damage;
@@ -4068,15 +4108,11 @@ fn hostile_ai_spear_attacks_at_extended_range() {
     let goblin_pos = VoxelCoord::new(elf_pos.x + 2, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, goblin);
-
-    // Schedule goblin activation so it enters the hostile AI decision cascade.
+    // Suppress elf activation so it doesn't interfere.
+    suppress_activation_until(&mut sim, elf, u64::MAX);
+    // Schedule goblin activation at tick+1 via poll-based activation.
     let tick = sim.tick;
-    sim.event_queue.schedule(
-        tick + 1,
-        ScheduledEventKind::CreatureActivation {
-            creature_id: goblin,
-        },
-    );
+    schedule_activation_at(&mut sim, goblin, tick + 1);
 
     let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
     let spear_damage = sim.config.spear_base_damage;
@@ -5398,15 +5434,11 @@ fn hostile_creature_attacks_adjacent_elf() {
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, goblin);
-
-    // Schedule an activation so the goblin enters the decision cascade.
+    // Suppress elf activation so it doesn't interfere.
+    suppress_activation_until(&mut sim, elf, u64::MAX);
+    // Schedule goblin activation at tick+1 via poll-based activation.
     let tick = sim.tick;
-    sim.event_queue.schedule(
-        tick + 1,
-        ScheduledEventKind::CreatureActivation {
-            creature_id: goblin,
-        },
-    );
+    schedule_activation_at(&mut sim, goblin, tick + 1);
 
     let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
 
@@ -5811,12 +5843,7 @@ fn hostile_ignores_elf_outside_detection_range() {
 
     // Schedule activation.
     let tick = sim.tick;
-    sim.event_queue.schedule(
-        tick + 1,
-        ScheduledEventKind::CreatureActivation {
-            creature_id: goblin,
-        },
-    );
+    schedule_activation_at(&mut sim, goblin, tick + 1);
     force_idle(&mut sim, goblin);
 
     let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
@@ -5850,12 +5877,7 @@ fn hostile_pursues_elf_within_detection_range() {
 
     // Schedule activation.
     let tick = sim.tick;
-    sim.event_queue.schedule(
-        tick + 1,
-        ScheduledEventKind::CreatureActivation {
-            creature_id: goblin,
-        },
-    );
+    schedule_activation_at(&mut sim, goblin, tick + 1);
     force_idle(&mut sim, goblin);
 
     let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
@@ -5893,14 +5915,8 @@ fn hostile_does_not_attack_same_species() {
     force_idle(&mut sim, g2);
 
     let tick = sim.tick;
-    sim.event_queue.schedule(
-        tick + 1,
-        ScheduledEventKind::CreatureActivation { creature_id: g1 },
-    );
-    sim.event_queue.schedule(
-        tick + 1,
-        ScheduledEventKind::CreatureActivation { creature_id: g2 },
-    );
+    schedule_activation_at(&mut sim, g1, tick + 1);
+    schedule_activation_at(&mut sim, g2, tick + 1);
 
     let g1_hp_before = sim.db.creatures.get(&g1).unwrap().hp;
     let g2_hp_before = sim.db.creatures.get(&g2).unwrap().hp;
@@ -6160,6 +6176,8 @@ fn attack_target_task_pursues_and_strikes() {
     let goblin_pos = VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, elf);
+    suppress_activation(&mut sim, elf);
+    suppress_activation_until(&mut sim, goblin, u64::MAX);
 
     let goblin_hp_before = sim.db.creatures.get(&goblin).unwrap().hp;
 

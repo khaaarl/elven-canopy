@@ -112,11 +112,8 @@ impl SimState {
             return;
         }
 
-        // Assign attack-move to each raider. Cancel the spawn-scheduled
-        // activation first — command_attack_move schedules its own, and
-        // having both causes duplicate activations (jerky double-step movement).
+        // Assign attack-move to each raider.
         for &raider_id in &raider_ids {
-            self.event_queue.cancel_creature_activations(raider_id);
             let target = if attack_targets.is_empty() {
                 // Fallback: attack-move toward world center at ground level.
                 let cx = self.config.world_size.0 as i32 / 2;

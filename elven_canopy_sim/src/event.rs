@@ -11,12 +11,9 @@
 // ## `ScheduledEvent` — internal sim events (priority queue)
 //
 // These drive the simulation's behavior. Current event types:
-// - `CreatureActivation` — the core creature behavior loop. Each activation,
-//   the creature does one action (check for a task, walk 1 nav edge, or do
-//   1 unit of work) and schedules its next activation based on how long the
-//   action took. See `sim/activation.rs` `process_creature_activation()`.
 // - `CreatureHeartbeat` — periodic non-movement checks (mood, mana, needs).
-//   Does NOT drive movement — that's entirely the activation chain.
+//   Does NOT drive movement — that's handled by poll-based activation
+//   (see `sim/activation.rs`).
 // - `TreeHeartbeat` — periodic tree updates (fruit, mana capacity).
 // - `LogisticsHeartbeat` — periodic scan of buildings with logistics config;
 //   creates `Haul` tasks to fill unmet item wants.
@@ -24,19 +21,18 @@
 //   Scheduled when the first projectile spawns (table 0→1), self-reschedules
 //   for tick+1 while projectiles remain. See `sim/combat.rs` `process_projectile_tick()`.
 //
+// Creature activation is NOT event-driven — it uses poll-based activation
+// (see `sim/mod.rs` tick loop and `sim/activation.rs`). Each tick, all living
+// creatures whose `next_available_tick <= current_tick` are activated in
+// deterministic `CreatureId` order.
+//
 // The `EventQueue` wraps a `BinaryHeap` with reversed `Ord` to get min-heap
 // behavior (earliest tick pops first). A monotonic `next_sequence` counter
 // breaks ties within the same tick deterministically — events scheduled first
 // fire first.
 //
-// Activation and heartbeat events check `vital_status` before processing
-// and do not reschedule for dead creatures, effectively terminating their
-// event chains.
-//
-// `cancel_creature_activations()` removes all pending `CreatureActivation`
-// events for a creature. Called by `abort_current_action()` when a creature's
-// action is forcibly interrupted (death, flee, nav invalidation) to prevent
-// orphaned activations from causing double-speed movement (B-erratic-movement).
+// Heartbeat events check `vital_status` before processing and do not
+// reschedule for dead creatures, effectively terminating their event chains.
 //
 // ## `SimEvent` — player-visible narrative events (output)
 //
@@ -46,9 +42,9 @@
 // `CreatureDamaged` (melee strike hit), `ProjectileHitCreature`,
 // `ProjectileHitSurface`, and `ItemBroken` (durability reached zero).
 //
-// See also: `sim/mod.rs` for the tick loop that processes scheduled events,
-// `types.rs` for entity IDs and the `Species` enum, `task.rs` for the task
-// system that `CreatureActivation` interacts with.
+// See also: `sim/mod.rs` for the tick loop that processes scheduled events
+// and poll-based creature activation, `types.rs` for entity IDs and the
+// `Species` enum, `task.rs` for the task system.
 //
 // **Critical constraint: determinism.** Event ordering must be identical
 // across all clients. The `(tick, sequence)` key provides a total order.
@@ -78,11 +74,12 @@ pub struct ScheduledEvent {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ScheduledEventKind {
     /// Periodic heartbeat for a creature (mood decay, mana generation, need updates).
-    /// Does NOT drive movement — that's handled by `CreatureActivation`.
+    /// Does NOT drive movement — that's handled by poll-based activation.
     CreatureHeartbeat { creature_id: CreatureId },
-    /// A creature's activation fires: it does one action (walk 1 edge or work)
-    /// and schedules the next activation based on how long the action takes.
-    CreatureActivation { creature_id: CreatureId },
+    /// Legacy variant — kept only for save-file backward compatibility.
+    /// Poll-based activation replaced this in F-activation-revamp.
+    #[serde(alias = "CreatureActivation")]
+    _LegacyCreatureActivation { creature_id: CreatureId },
     /// Tree heartbeat (fruit production, mana capacity updates).
     TreeHeartbeat { tree_id: TreeId },
     /// Logistics heartbeat: scan buildings for unmet wants and create haul tasks.
@@ -176,40 +173,6 @@ impl EventQueue {
     /// that need to detect whether a particular event kind is already scheduled.
     pub fn iter(&self) -> impl Iterator<Item = &ScheduledEvent> {
         self.heap.iter()
-    }
-
-    /// Remove all pending `CreatureActivation` events for a specific creature.
-    /// Called when a creature's action is forcibly aborted (death, flee, nav
-    /// invalidation) to prevent orphaned activations from firing and causing
-    /// erratic behavior (B-erratic-movement).
-    pub(crate) fn cancel_creature_activations(&mut self, creature_id: CreatureId) {
-        let old_heap = std::mem::take(&mut self.heap);
-        self.heap = old_heap
-            .into_iter()
-            .filter(|e| {
-                !matches!(
-                    &e.kind,
-                    ScheduledEventKind::CreatureActivation { creature_id: id }
-                    if *id == creature_id
-                )
-            })
-            .collect();
-    }
-
-    /// Count pending `CreatureActivation` events for a specific creature.
-    /// Used in tests to verify orphaned events are cleaned up.
-    #[cfg(test)]
-    pub fn count_creature_activations(&self, creature_id: CreatureId) -> usize {
-        self.heap
-            .iter()
-            .filter(|e| {
-                matches!(
-                    &e.kind,
-                    ScheduledEventKind::CreatureActivation { creature_id: id }
-                    if *id == creature_id
-                )
-            })
-            .count()
     }
 }
 

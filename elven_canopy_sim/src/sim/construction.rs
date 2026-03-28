@@ -11,7 +11,7 @@ use super::*;
 use crate::blueprint::{Blueprint, BlueprintState};
 use crate::building;
 use crate::db::ActionKind;
-use crate::event::{ScheduledEventKind, SimEvent, SimEventKind};
+use crate::event::{SimEvent, SimEventKind};
 use crate::inventory;
 use crate::nav::{self};
 use crate::structural;
@@ -941,11 +941,6 @@ impl SimState {
             c.next_available_tick = Some(self.tick + duration);
             let _ = self.db.update_creature(c);
         }
-
-        self.event_queue.schedule(
-            self.tick + duration,
-            ScheduledEventKind::CreatureActivation { creature_id },
-        );
     }
 
     /// Resolve a completed Build action: materialize one voxel (or carve),
@@ -1555,10 +1550,6 @@ impl SimState {
             c.next_available_tick = Some(self.tick + duration);
             let _ = self.db.update_creature(c);
         }
-        self.event_queue.schedule(
-            self.tick + duration,
-            ScheduledEventKind::CreatureActivation { creature_id },
-        );
     }
 
     /// Resolve a completed Furnish action: place one furniture item, increment

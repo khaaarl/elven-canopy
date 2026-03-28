@@ -90,14 +90,19 @@ fn test_attack_move_engages_hostile() {
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
-    // Place goblin between elf and destination.
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
-    let goblin_pos = VoxelCoord::new(elf_pos.x + 2, elf_pos.y, elf_pos.z);
-    force_position(&mut sim, goblin, goblin_pos);
+    // Use connected nav nodes to ensure valid positions.
+    let (node_a, node_b) = find_connected_pair(&sim);
+    force_to_node(&mut sim, elf, node_a);
+    force_to_node(&mut sim, goblin, node_b);
     force_idle(&mut sim, elf);
+    force_guaranteed_hits(&mut sim, elf);
+    suppress_activation(&mut sim, elf);
+    suppress_activation(&mut sim, goblin);
 
-    let dest = VoxelCoord::new(elf_pos.x + 10, elf_pos.y, elf_pos.z);
-    let goblin_hp_before = sim.db.creatures.get(&goblin).unwrap().hp;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    // Use a far node on the nav graph as the destination.
+    let dest_node = sim.nav_graph.live_nodes().last().map(|n| n.id).unwrap();
+    let dest = sim.nav_graph.node(dest_node).position;
 
     let tick = sim.tick;
     let cmd = SimCommand {
@@ -113,12 +118,12 @@ fn test_attack_move_engages_hostile() {
     sim.step(&[cmd], tick + 10_000);
 
     // Goblin should have taken damage (elf detected and engaged).
-    let goblin_hp_after = sim.db.creatures.get(&goblin).unwrap().hp;
+    let goblin = sim.db.creatures.get(&goblin).unwrap();
     assert!(
-        goblin_hp_after < goblin_hp_before,
-        "Goblin should take damage from attack-move engagement: hp {} -> {}",
-        goblin_hp_before,
-        goblin_hp_after
+        goblin.hp < goblin.hp_max || goblin.vital_status == VitalStatus::Dead,
+        "Goblin should take damage from attack-move engagement: hp {}/{}",
+        goblin.hp,
+        goblin.hp_max
     );
 }
 
@@ -183,7 +188,10 @@ fn test_attack_move_nearest_target() {
     let far_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin_near, near_pos);
     force_position(&mut sim, goblin_far, far_pos);
+    // Idle the elf and suppress it so it doesn't wander before the
+    // command fires. The AttackMove command will override nat.
     force_idle(&mut sim, elf);
+    suppress_activation(&mut sim, elf);
 
     let dest = VoxelCoord::new(elf_pos.x + 10, elf_pos.y, elf_pos.z);
 
@@ -533,9 +541,9 @@ fn trigger_raid_command_serde_roundtrip() {
 
 #[test]
 fn trigger_raid_single_activation_per_raider() {
-    // Raid-spawned creatures should have exactly 1 pending CreatureActivation,
-    // not 2. Both spawn_creature_with_civ and command_attack_move schedule an
-    // activation at tick+1; the duplicate causes jerky double-step movement.
+    // Raid-spawned creatures should have exactly 1 pending activation
+    // (next_available_tick is Some). Verifies that spawn + attack-move
+    // doesn't leave the creature in an inconsistent activation state.
     let mut sim = test_sim(42);
     let hostile_civ = ensure_hostile_civ(&mut sim);
 
@@ -552,7 +560,9 @@ fn trigger_raid_single_activation_per_raider() {
     assert!(!raiders.is_empty(), "should have spawned raiders");
 
     for raider in &raiders {
-        let activation_count = sim.event_queue.count_creature_activations(raider.id);
+        // In the poll-based model, a creature has exactly 1 pending
+        // activation when next_available_tick is Some.
+        let activation_count = sim.count_pending_activations_for(raider.id);
         assert_eq!(
             activation_count, 1,
             "raider {} should have exactly 1 pending activation, got {}",

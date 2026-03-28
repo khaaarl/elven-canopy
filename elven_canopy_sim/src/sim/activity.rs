@@ -797,14 +797,14 @@ impl SimState {
         }
 
         // Release all participants and schedule reactivation so they resume
-        // normal behavior (find tasks, wander, etc.). Cancel existing
-        // activations first to prevent double-activation (B-erratic-movement).
+        // normal behavior (find tasks, wander, etc.). schedule_reactivation
+        // sets next_available_tick, which is all that's needed in the
+        // poll-based activation model.
         for cid in &participant_ids {
             if let Some(mut c) = self.db.creatures.get(cid) {
                 c.current_activity = None;
                 let _ = self.db.update_creature(c);
             }
-            self.event_queue.cancel_creature_activations(*cid);
             self.schedule_reactivation(*cid);
         }
 
@@ -858,10 +858,8 @@ impl SimState {
         // Delete activity (cascade removes participants + dance data).
         let _ = self.db.remove_activity(&activity_id);
 
-        // Schedule reactivation for all released creatures. Cancel existing
-        // activations first to prevent double-activation (B-erratic-movement).
+        // Schedule reactivation for all released creatures.
         for cid in &creature_ids {
-            self.event_queue.cancel_creature_activations(*cid);
             self.schedule_reactivation(*cid);
         }
     }

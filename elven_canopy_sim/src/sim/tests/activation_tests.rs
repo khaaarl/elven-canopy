@@ -2580,12 +2580,15 @@ fn shift_click_during_flee_preserves_and_extends_queue() {
     };
     sim.step(&[cmd_c], sim.tick + 2);
 
-    // Task B should still be Available (NOT wiped by cancel_creature_queue).
+    // Task B should still exist and not be cancelled/wiped. In the poll-based
+    // model, the creature may have been activated during the step and claimed
+    // task B (InProgress), or it may still be Available — either is fine.
     let task_b = sim.db.tasks.get(&task_b_id).unwrap();
-    assert_eq!(
+    assert!(
+        task_b.state == TaskState::Available || task_b.state == TaskState::InProgress,
+        "Surviving queued task B should not be wiped by shift-click during flee, \
+             but was {:?}",
         task_b.state,
-        TaskState::Available,
-        "Surviving queued task B should not be wiped by shift-click during flee"
     );
 
     // There should be a new task C appended after B in the chain.
@@ -2871,10 +2874,10 @@ fn only_one_creature_claims_goto_task() {
 }
 
 #[test]
-fn abort_current_action_cancels_orphaned_activation_events() {
+fn abort_current_action_clears_activation_state() {
     // B-erratic-movement safety net: when abort_current_action is called
-    // (death, flee, nav invalidation), orphaned CreatureActivation events
-    // for that creature should be removed from the event queue.
+    // (death, flee, nav invalidation), the creature's next_available_tick
+    // should be cleared so it won't be polled for activation.
     let mut sim = test_sim(42);
     let elf = spawn_elf(&mut sim);
     force_idle_and_cancel_activations(&mut sim, elf);
@@ -2902,7 +2905,7 @@ fn abort_current_action_cancels_orphaned_activation_events() {
         }
     }
 
-    // Count CreatureActivation events for this elf before abort.
+    // Verify the elf has a pending activation before abort.
     let count_before = sim.count_pending_activations_for(elf);
     assert!(
         count_before >= 1,
@@ -2912,12 +2915,9 @@ fn abort_current_action_cancels_orphaned_activation_events() {
     // Abort the current action (simulating death/flee/nav invalidation).
     sim.abort_current_action(elf);
 
-    // After abort, all CreatureActivation events for this elf should be gone.
+    // After abort, next_available_tick should be None (no pending activation).
     let count_after = sim.count_pending_activations_for(elf);
-    assert_eq!(
-        count_after, 0,
-        "Orphaned activation events should be cancelled after abort"
-    );
+    assert_eq!(count_after, 0, "Activation should be cleared after abort");
 }
 
 // ---- Command queue (F-command-queue) ----
@@ -3158,4 +3158,257 @@ fn cancel_creature_queue_only_cancels_player_directed() {
         TaskState::Available,
         "Autonomous restricted task should NOT be cancelled"
     );
+}
+
+// -----------------------------------------------------------------------
+// Poll-based activation index
+// -----------------------------------------------------------------------
+
+#[test]
+fn activation_ready_index_returns_alive_creatures_at_or_before_tick() {
+    let mut sim = test_sim(42);
+
+    // Spawn two elves and force them idle with specific next_available_tick values.
+    let elf_a = spawn_elf(&mut sim);
+    let elf_b = spawn_elf(&mut sim);
+    force_idle_and_cancel_activations(&mut sim, elf_a);
+    force_idle_and_cancel_activations(&mut sim, elf_b);
+
+    // Set elf_a ready at tick 100, elf_b ready at tick 200.
+    {
+        let mut c = sim.db.creatures.get(&elf_a).unwrap();
+        c.next_available_tick = Some(100);
+        sim.db.update_creature(c).unwrap();
+    }
+    {
+        let mut c = sim.db.creatures.get(&elf_b).unwrap();
+        c.next_available_tick = Some(200);
+        sim.db.update_creature(c).unwrap();
+    }
+
+    // At tick 99: neither ready.
+    let ready = sim.poll_ready_creatures(99);
+    assert!(
+        !ready.contains(&elf_a) && !ready.contains(&elf_b),
+        "No creature should be ready before tick 100"
+    );
+
+    // At tick 100: only elf_a.
+    let ready = sim.poll_ready_creatures(100);
+    assert!(ready.contains(&elf_a), "elf_a should be ready at tick 100");
+    assert!(
+        !ready.contains(&elf_b),
+        "elf_b should not be ready at tick 100"
+    );
+
+    // At tick 200: both.
+    let ready = sim.poll_ready_creatures(200);
+    assert!(ready.contains(&elf_a), "elf_a should be ready at tick 200");
+    assert!(ready.contains(&elf_b), "elf_b should be ready at tick 200");
+}
+
+#[test]
+fn activation_ready_index_excludes_dead_creatures() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    force_idle_and_cancel_activations(&mut sim, elf);
+
+    // Set ready at tick 10.
+    {
+        let mut c = sim.db.creatures.get(&elf).unwrap();
+        c.next_available_tick = Some(10);
+        sim.db.update_creature(c).unwrap();
+    }
+    let ready = sim.poll_ready_creatures(10);
+    assert!(ready.contains(&elf), "alive elf should be ready");
+
+    // Kill the elf.
+    {
+        let mut c = sim.db.creatures.get(&elf).unwrap();
+        c.vital_status = VitalStatus::Dead;
+        sim.db.update_creature(c).unwrap();
+    }
+    let ready = sim.poll_ready_creatures(10);
+    assert!(!ready.contains(&elf), "dead elf should not be ready");
+}
+
+#[test]
+fn activation_ready_index_excludes_incapacitated_creatures() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    force_idle_and_cancel_activations(&mut sim, elf);
+
+    // Set ready at tick 10.
+    {
+        let mut c = sim.db.creatures.get(&elf).unwrap();
+        c.next_available_tick = Some(10);
+        sim.db.update_creature(c).unwrap();
+    }
+    let ready = sim.poll_ready_creatures(10);
+    assert!(ready.contains(&elf), "alive elf should be ready");
+
+    // Incapacitate the elf.
+    {
+        let mut c = sim.db.creatures.get(&elf).unwrap();
+        c.vital_status = VitalStatus::Incapacitated;
+        sim.db.update_creature(c).unwrap();
+    }
+    let ready = sim.poll_ready_creatures(10);
+    assert!(
+        !ready.contains(&elf),
+        "incapacitated elf should not be ready"
+    );
+}
+
+#[test]
+fn activation_ready_index_includes_none_next_available_tick() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    // Directly set next_available_tick to None to test the index behavior.
+    // (force_idle_and_cancel_activations uses Some(u64::MAX) to suppress.)
+    {
+        let mut c = sim.db.creatures.get(&elf).unwrap();
+        c.next_available_tick = None;
+        sim.db.update_creature(c).unwrap();
+    }
+
+    let c = sim.db.creatures.get(&elf).unwrap();
+    assert_eq!(c.next_available_tick, None);
+
+    // None should be included in the ready set (None < Some(anything)).
+    let ready = sim.poll_ready_creatures(0);
+    assert!(
+        ready.contains(&elf),
+        "creature with next_available_tick=None should be ready"
+    );
+}
+
+#[test]
+fn activation_ready_index_returns_sorted_by_creature_id() {
+    let mut sim = test_sim(42);
+    let elf_a = spawn_elf(&mut sim);
+    let elf_b = spawn_elf(&mut sim);
+    let elf_c = spawn_elf(&mut sim);
+    force_idle_and_cancel_activations(&mut sim, elf_a);
+    force_idle_and_cancel_activations(&mut sim, elf_b);
+    force_idle_and_cancel_activations(&mut sim, elf_c);
+
+    // All ready at tick 50.
+    for &id in &[elf_a, elf_b, elf_c] {
+        let mut c = sim.db.creatures.get(&id).unwrap();
+        c.next_available_tick = Some(50);
+        sim.db.update_creature(c).unwrap();
+    }
+
+    let ready = sim.poll_ready_creatures(50);
+    // Must contain all three and be sorted by CreatureId.
+    let mut our_ids: Vec<_> = ready
+        .iter()
+        .copied()
+        .filter(|id| *id == elf_a || *id == elf_b || *id == elf_c)
+        .collect();
+    let sorted = {
+        let mut s = our_ids.clone();
+        s.sort();
+        s
+    };
+    assert_eq!(our_ids, sorted, "ready list should be sorted by CreatureId");
+    assert_eq!(our_ids.len(), 3);
+}
+
+// -----------------------------------------------------------------------
+// Serde backward compat: _LegacyCreatureActivation
+// -----------------------------------------------------------------------
+
+#[test]
+fn legacy_creature_activation_deserializes_from_old_format() {
+    // Old save files contain `{"CreatureActivation":{...}}`. The alias on
+    // `_LegacyCreatureActivation` must accept this.
+    let json = r#"{"CreatureActivation":{"creature_id":"00000000-0000-0000-0000-000000000001"}}"#;
+    let kind: ScheduledEventKind = serde_json::from_str(json).unwrap();
+    match kind {
+        ScheduledEventKind::_LegacyCreatureActivation { creature_id } => {
+            assert_eq!(
+                creature_id.0.to_string(),
+                "00000000-0000-0000-0000-000000000001"
+            );
+        }
+        other => panic!("expected _LegacyCreatureActivation, got {other:?}"),
+    }
+}
+
+// -----------------------------------------------------------------------
+// next_creature_activation_tick
+// -----------------------------------------------------------------------
+
+#[test]
+fn next_creature_activation_tick_returns_earliest() {
+    let mut sim = test_sim(42);
+    let elf_a = spawn_elf(&mut sim);
+    let elf_b = spawn_elf(&mut sim);
+    let elf_c = spawn_elf(&mut sim);
+    force_idle_and_cancel_activations(&mut sim, elf_a);
+    force_idle_and_cancel_activations(&mut sim, elf_b);
+    force_idle_and_cancel_activations(&mut sim, elf_c);
+
+    // Set different next_available_tick values.
+    {
+        let mut c = sim.db.creatures.get(&elf_a).unwrap();
+        c.next_available_tick = Some(100);
+        sim.db.update_creature(c).unwrap();
+    }
+    {
+        let mut c = sim.db.creatures.get(&elf_b).unwrap();
+        c.next_available_tick = Some(50);
+        sim.db.update_creature(c).unwrap();
+    }
+    {
+        let mut c = sim.db.creatures.get(&elf_c).unwrap();
+        c.next_available_tick = Some(200);
+        sim.db.update_creature(c).unwrap();
+    }
+
+    // Should return the smallest tick among living creatures.
+    assert!(matches!(
+        sim.next_creature_activation_tick(),
+        NextCreatureActivation::AtTick(50)
+    ));
+}
+
+#[test]
+fn next_creature_activation_tick_none_means_immediate() {
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+    force_idle_and_cancel_activations(&mut sim, elf);
+
+    // Set next_available_tick to None (meaning "immediately ready").
+    {
+        let mut c = sim.db.creatures.get(&elf).unwrap();
+        c.next_available_tick = None;
+        sim.db.update_creature(c).unwrap();
+    }
+
+    // None means a creature needs activation right now.
+    assert!(matches!(
+        sim.next_creature_activation_tick(),
+        NextCreatureActivation::Immediate
+    ));
+}
+
+#[test]
+fn next_creature_activation_tick_no_alive_returns_no_creatures() {
+    let mut sim = test_sim(42);
+
+    // Kill all creatures so no living creatures exist.
+    let all_ids: Vec<_> = sim.db.creatures.iter_all().map(|c| c.id).collect();
+    for id in all_ids {
+        let mut c = sim.db.creatures.get(&id).unwrap();
+        c.vital_status = VitalStatus::Dead;
+        sim.db.update_creature(c).unwrap();
+    }
+
+    assert!(matches!(
+        sim.next_creature_activation_tick(),
+        NextCreatureActivation::NoCreatures
+    ));
 }

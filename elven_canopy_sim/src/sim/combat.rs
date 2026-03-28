@@ -205,12 +205,7 @@ impl SimState {
 
         // Only schedule activation if no Move action is in-flight.
         if !mid_move {
-            self.event_queue.schedule(
-                self.tick + 1,
-                ScheduledEventKind::CreatureActivation {
-                    creature_id: attacker_id,
-                },
-            );
+            self.set_creature_activation_tick(attacker_id, self.tick + 1);
         }
     }
 
@@ -335,10 +330,7 @@ impl SimState {
         }
 
         if !mid_move {
-            self.event_queue.schedule(
-                self.tick + 1,
-                ScheduledEventKind::CreatureActivation { creature_id },
-            );
+            self.set_creature_activation_tick(creature_id, self.tick + 1);
         }
     }
 
@@ -476,10 +468,7 @@ impl SimState {
                     return;
                 }
                 // At target location but not in range — re-activate next tick.
-                self.event_queue.schedule(
-                    self.tick + 1,
-                    ScheduledEventKind::CreatureActivation { creature_id },
-                );
+                self.set_creature_activation_tick(creature_id, self.tick + 1);
                 return;
             }
         }
@@ -517,10 +506,7 @@ impl SimState {
                         c.path = None;
                         let _ = self.db.update_creature(c);
                     }
-                    self.event_queue.schedule(
-                        self.tick + 1,
-                        ScheduledEventKind::CreatureActivation { creature_id },
-                    );
+                    self.set_creature_activation_tick(creature_id, self.tick + 1);
                     return;
                 }
             }
@@ -696,12 +682,7 @@ impl SimState {
         }
 
         if !mid_move {
-            self.event_queue.schedule(
-                self.tick + 1,
-                ScheduledEventKind::CreatureActivation {
-                    creature_id: target_id,
-                },
-            );
+            self.set_creature_activation_tick(target_id, self.tick + 1);
         }
     }
 
@@ -733,10 +714,7 @@ impl SimState {
             if !self.fly_toward_target(creature_id, task_location_coord, events) {
                 // Flight pathfinding failed — disengage from engagement target.
                 self.disengage_attack_move(task_id, destination, creature_id, dest_nav_node);
-                self.event_queue.schedule(
-                    self.tick + 1,
-                    ScheduledEventKind::CreatureActivation { creature_id },
-                );
+                self.set_creature_activation_tick(creature_id, self.tick + 1);
             }
             return;
         }
@@ -752,10 +730,7 @@ impl SimState {
             Some(n) => n,
             None => {
                 self.disengage_attack_move(task_id, destination, creature_id, dest_nav_node);
-                self.event_queue.schedule(
-                    self.tick + 1,
-                    ScheduledEventKind::CreatureActivation { creature_id },
-                );
+                self.set_creature_activation_tick(creature_id, self.tick + 1);
                 return;
             }
         };
@@ -816,10 +791,7 @@ impl SimState {
                 _ => {
                     // Path failure during engagement — immediately disengage.
                     self.disengage_attack_move(task_id, destination, creature_id, dest_nav_node);
-                    self.event_queue.schedule(
-                        self.tick + 1,
-                        ScheduledEventKind::CreatureActivation { creature_id },
-                    );
+                    self.set_creature_activation_tick(creature_id, self.tick + 1);
                     return;
                 }
             };
@@ -852,12 +824,10 @@ impl SimState {
             // Invalidate cached path so we repath on retry.
             if let Some(mut creature) = self.db.creatures.get(&creature_id) {
                 creature.path = None;
+                creature.next_available_tick =
+                    Some(self.tick + self.config.voxel_exclusion_retry_ticks);
                 let _ = self.db.update_creature(creature);
             }
-            self.event_queue.schedule(
-                self.tick + self.config.voxel_exclusion_retry_ticks,
-                ScheduledEventKind::CreatureActivation { creature_id },
-            );
             return;
         }
 
@@ -897,11 +867,6 @@ impl SimState {
         };
         let _ = self.db.remove_move_action(&creature_id);
         self.db.insert_move_action(move_action).unwrap();
-
-        self.event_queue.schedule(
-            self.tick + delay,
-            ScheduledEventKind::CreatureActivation { creature_id },
-        );
     }
 
     /// Execute combat at the target's location — try melee, then ranged, then
@@ -944,22 +909,16 @@ impl SimState {
             if self.try_melee_strike(creature_id, target_id, events) {
                 return;
             }
-            // On cooldown — wait.
-            if let Some(next_tick) = self
+            // On cooldown — wait. next_available_tick is already set by
+            // try_melee_strike; if somehow missing, set a fallback.
+            if self
                 .db
                 .creatures
                 .get(&creature_id)
                 .and_then(|c| c.next_available_tick)
+                .is_none()
             {
-                self.event_queue.schedule(
-                    next_tick,
-                    ScheduledEventKind::CreatureActivation { creature_id },
-                );
-            } else {
-                self.event_queue.schedule(
-                    self.tick + 100,
-                    ScheduledEventKind::CreatureActivation { creature_id },
-                );
+                self.set_creature_activation_tick(creature_id, self.tick + 100);
             }
             return;
         }
@@ -987,10 +946,7 @@ impl SimState {
         // If we're at the same node but out of melee range (shouldn't happen
         // normally), re-activate next tick — the dynamic pursuit system in
         // execute_task_behavior will update the location.
-        self.event_queue.schedule(
-            self.tick + 1,
-            ScheduledEventKind::CreatureActivation { creature_id },
-        );
+        self.set_creature_activation_tick(creature_id, self.tick + 1);
     }
 
     /// Execute the AttackTarget task behavior when the creature has arrived
@@ -1063,22 +1019,16 @@ impl SimState {
             if self.try_melee_strike(creature_id, target_id, events) {
                 return true;
             }
-            // On cooldown — wait.
-            if let Some(next_tick) = self
+            // On cooldown — wait. next_available_tick is already set by
+            // try_melee_strike; if somehow missing, set a fallback.
+            if self
                 .db
                 .creatures
                 .get(&creature_id)
                 .and_then(|c| c.next_available_tick)
+                .is_none()
             {
-                self.event_queue.schedule(
-                    next_tick,
-                    ScheduledEventKind::CreatureActivation { creature_id },
-                );
-            } else {
-                self.event_queue.schedule(
-                    self.tick + 100,
-                    ScheduledEventKind::CreatureActivation { creature_id },
-                );
+                self.set_creature_activation_tick(creature_id, self.tick + 100);
             }
             return true;
         }
@@ -1165,10 +1115,7 @@ impl SimState {
                     data.path_failures = new_failures;
                     let _ = self.db.update_task_attack_target_data(data);
                 }
-                self.event_queue.schedule(
-                    self.tick + 500,
-                    ScheduledEventKind::CreatureActivation { creature_id },
-                );
+                self.set_creature_activation_tick(creature_id, self.tick + 500);
             }
             return;
         }
@@ -1264,10 +1211,7 @@ impl SimState {
                         let _ = self.db.update_task_attack_target_data(data);
                     }
                     // Retry next activation.
-                    self.event_queue.schedule(
-                        self.tick + 500,
-                        ScheduledEventKind::CreatureActivation { creature_id },
-                    );
+                    self.set_creature_activation_tick(creature_id, self.tick + 500);
                     return;
                 }
             };
@@ -1299,12 +1243,10 @@ impl SimState {
         if self.destination_blocked_by_hostile(creature_id, dest_pos, footprint) {
             if let Some(mut creature) = self.db.creatures.get(&creature_id) {
                 creature.path = None;
+                creature.next_available_tick =
+                    Some(self.tick + self.config.voxel_exclusion_retry_ticks);
                 let _ = self.db.update_creature(creature);
             }
-            self.event_queue.schedule(
-                self.tick + self.config.voxel_exclusion_retry_ticks,
-                ScheduledEventKind::CreatureActivation { creature_id },
-            );
             return;
         }
 
@@ -1344,11 +1286,6 @@ impl SimState {
         };
         let _ = self.db.remove_move_action(&creature_id);
         self.db.insert_move_action(move_action).unwrap();
-
-        self.event_queue.schedule(
-            self.tick + delay,
-            ScheduledEventKind::CreatureActivation { creature_id },
-        );
     }
 
     /// Handle a creature becoming incapacitated (HP reached 0 but above
@@ -1816,13 +1753,11 @@ impl SimState {
             _ => return false, // dead or missing — not targetable
         };
 
-        // 2. Attacker must be idle.
+        // 2. Attacker must be idle (not already performing an action).
+        // In the poll-based activation model, next_available_tick may be
+        // set to tick+1 as an anti-re-poll guard at activation entry;
+        // action_kind is the authoritative "busy" signal.
         if attacker.action_kind != ActionKind::NoAction {
-            return false;
-        }
-        if let Some(next_tick) = attacker.next_available_tick
-            && next_tick > self.tick
-        {
             return false;
         }
 
@@ -1852,7 +1787,7 @@ impl SimState {
             TraitKind::Striking,
         );
 
-        // Start the action (sets action_kind + next_available_tick, schedules activation).
+        // Start the action (sets action_kind + next_available_tick).
         self.start_simple_action(attacker_id, ActionKind::MeleeStrike, duration);
 
         // Hit check: attacker (Striking + DEX) vs defender (Evasion + AGI).
@@ -1962,13 +1897,11 @@ impl SimState {
             _ => return false, // dead or missing — not targetable
         };
 
-        // 2. Attacker must be idle.
+        // 2. Attacker must be idle (not already performing an action).
+        // In the poll-based activation model, next_available_tick may be
+        // set to tick+1 as an anti-re-poll guard at activation entry;
+        // action_kind is the authoritative "busy" signal.
         if attacker.action_kind != ActionKind::NoAction {
-            return false;
-        }
-        if let Some(next_tick) = attacker.next_available_tick
-            && next_tick > self.tick
-        {
             return false;
         }
 
@@ -3102,10 +3035,7 @@ impl SimState {
 
         if edge_indices.is_empty() {
             // No neighbors (isolated node). Wait and retry.
-            self.event_queue.schedule(
-                self.tick + 1000,
-                ScheduledEventKind::CreatureActivation { creature_id },
-            );
+            self.set_creature_activation_tick(creature_id, self.tick + 1000);
             return true;
         }
 
@@ -3123,10 +3053,7 @@ impl SimState {
 
         if eligible_edges.is_empty() {
             // Cornered — no eligible edges. Wait and retry.
-            self.event_queue.schedule(
-                self.tick + 1000,
-                ScheduledEventKind::CreatureActivation { creature_id },
-            );
+            self.set_creature_activation_tick(creature_id, self.tick + 1000);
             return true;
         }
 
@@ -3240,21 +3167,16 @@ impl SimState {
                 return true;
             }
             // Strike failed (cooldown). Wait for cooldown.
-            if let Some(next_tick) = self
+            // next_available_tick is already set by try_melee_strike;
+            // if somehow missing, set a fallback.
+            if self
                 .db
                 .creatures
                 .get(&creature_id)
                 .and_then(|c| c.next_available_tick)
+                .is_none()
             {
-                self.event_queue.schedule(
-                    next_tick,
-                    ScheduledEventKind::CreatureActivation { creature_id },
-                );
-            } else {
-                self.event_queue.schedule(
-                    self.tick + 100,
-                    ScheduledEventKind::CreatureActivation { creature_id },
-                );
+                self.set_creature_activation_tick(creature_id, self.tick + 100);
             }
             return true;
         }

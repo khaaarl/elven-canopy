@@ -12,7 +12,6 @@
 // `inventory_mgmt.rs` (item operations), `greenhouse.rs` (fruit sources).
 use super::*;
 use crate::db::ActionKind;
-use crate::event::ScheduledEventKind;
 use crate::inventory;
 use crate::pathfinding;
 use crate::task;
@@ -738,10 +737,6 @@ impl SimState {
             c.next_available_tick = Some(tick + duration);
             let _ = self.db.update_creature(c);
         }
-        self.event_queue.schedule(
-            self.tick + duration,
-            ScheduledEventKind::CreatureActivation { creature_id },
-        );
     }
 
     /// Resolve a completed Sleep action: restore rest, increment progress,
@@ -816,10 +811,6 @@ impl SimState {
             c.next_available_tick = Some(tick + duration);
             let _ = self.db.update_creature(c);
         }
-        self.event_queue.schedule(
-            self.tick + duration,
-            ScheduledEventKind::CreatureActivation { creature_id },
-        );
     }
 
     /// Resolve a completed Mope action: increment progress by
