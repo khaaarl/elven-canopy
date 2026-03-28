@@ -3,7 +3,6 @@
 //! furnishing, structure voxels, and raycasting.
 //! Corresponds to `sim/construction.rs`.
 
-use super::test_helpers::*;
 use super::*;
 
 // -----------------------------------------------------------------------

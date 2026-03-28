@@ -4,7 +4,6 @@
 //! Corresponds to `sim/movement.rs`.
 
 use super::combat_tests::{give_spear, setup_aggressive_elf, setup_frozen_hornet};
-use super::test_helpers::*;
 use super::*;
 
 // ===================================================================

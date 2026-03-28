@@ -3,7 +3,6 @@
 //! auto-logistics from recipes, and haul lifecycle (pickup/dropoff/cleanup).
 //! Corresponds to `sim/logistics.rs`.
 
-use super::test_helpers::*;
 use super::*;
 
 #[test]

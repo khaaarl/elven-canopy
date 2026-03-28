@@ -3,7 +3,6 @@
 //! and manufacturing chain (extraction → mill → bake).
 //! Corresponds to `sim/crafting.rs`.
 
-use super::test_helpers::*;
 use super::*;
 
 // =========================================================================

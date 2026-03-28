@@ -3,7 +3,6 @@
 //! and serde roundtrip.
 //! Corresponds to `sim/taming.rs`.
 
-use super::test_helpers::*;
 use super::*;
 
 // ---------------------------------------------------------------------------

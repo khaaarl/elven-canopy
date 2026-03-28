@@ -4,7 +4,6 @@
 //! and participant management (death, preemption, re-volunteering).
 //! Corresponds to `sim/activity.rs`.
 
-use super::test_helpers::*;
 use super::*;
 
 // ===========================================================================

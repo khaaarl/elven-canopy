@@ -3,7 +3,6 @@
 //! avoidance, projectile flight paths, weapon degradation, and arrow chase.
 //! Corresponds to `sim/combat.rs`.
 
-use super::test_helpers::*;
 use super::*;
 
 // -----------------------------------------------------------------------
@@ -6906,4 +6905,75 @@ fn resolve_engagement_style_non_civ_creature() {
         crate::species::EngagementInitiative::Aggressive,
         "Non-civ goblin should use species default (Aggressive)"
     );
+}
+
+// -----------------------------------------------------------------------
+// Military group serde roundtrip (moved from flee_tests.rs)
+// -----------------------------------------------------------------------
+
+#[test]
+fn military_group_serde_roundtrip() {
+    let sim = test_sim(42);
+
+    // Serialize and deserialize the full SimDb.
+    let json = serde_json::to_string(&sim.db).unwrap();
+    let db2: crate::db::SimDb = serde_json::from_str(&json).unwrap();
+
+    let civ_id = sim.player_civ_id.unwrap();
+    let groups_orig = sim
+        .db
+        .military_groups
+        .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC);
+    let groups_deser = db2
+        .military_groups
+        .by_civ_id(&civ_id, tabulosity::QueryOpts::ASC);
+
+    assert_eq!(groups_orig.len(), groups_deser.len());
+    for (a, b) in groups_orig.iter().zip(groups_deser.iter()) {
+        assert_eq!(a.id, b.id);
+        assert_eq!(a.civ_id, b.civ_id);
+        assert_eq!(a.name, b.name);
+        assert_eq!(a.is_default_civilian, b.is_default_civilian);
+        assert_eq!(a.engagement_style, b.engagement_style);
+    }
+}
+
+#[test]
+fn military_group_command_serde_roundtrip() {
+    use crate::species::{
+        AmmoExhaustedBehavior, EngagementInitiative, EngagementStyle, WeaponPreference,
+    };
+
+    let actions = vec![
+        SimAction::CreateMilitaryGroup {
+            name: "Guards".to_string(),
+        },
+        SimAction::DeleteMilitaryGroup {
+            group_id: MilitaryGroupId(1),
+        },
+        SimAction::ReassignMilitaryGroup {
+            creature_id: CreatureId(SimUuid::new_v4(&mut GameRng::new(1))),
+            group_id: Some(MilitaryGroupId(2)),
+        },
+        SimAction::RenameMilitaryGroup {
+            group_id: MilitaryGroupId(1),
+            name: "Elite".to_string(),
+        },
+        SimAction::SetGroupEngagementStyle {
+            group_id: MilitaryGroupId(1),
+            engagement_style: EngagementStyle {
+                weapon_preference: WeaponPreference::PreferRanged,
+                ammo_exhausted: AmmoExhaustedBehavior::Flee,
+                initiative: EngagementInitiative::Defensive,
+                disengage_threshold_pct: 100,
+            },
+        },
+    ];
+
+    for action in &actions {
+        let json = serde_json::to_string(action).unwrap();
+        let deser: SimAction = serde_json::from_str(&json).unwrap();
+        let json2 = serde_json::to_string(&deser).unwrap();
+        assert_eq!(json, json2, "Serde roundtrip failed for {action:?}");
+    }
 }

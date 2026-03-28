@@ -18,7 +18,7 @@ use crate::types::{ActiveRecipeId, NotificationId};
 // ---------------------------------------------------------------------------
 
 pub(super) mod test_helpers;
-pub(super) use test_helpers::*;
+use test_helpers::*;
 
 // ---------------------------------------------------------------------------
 // Domain-specific test submodules

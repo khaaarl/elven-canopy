@@ -1,7 +1,6 @@
 //! Tests for the HP/vital status system: damage, incapacitation, bleed-out,
 //! death, healing, HP regeneration, death drops, and troll regen recovery.
 
-use super::test_helpers::*;
 use super::*;
 
 // -----------------------------------------------------------------------

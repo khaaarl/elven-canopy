@@ -3,7 +3,6 @@
 //! mechanics (seat reservation, food consumption, thought generation).
 //! Corresponds to `sim/needs.rs`.
 
-use super::test_helpers::*;
 use super::*;
 
 // -----------------------------------------------------------------------

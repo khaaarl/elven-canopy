@@ -3,7 +3,6 @@
 //! integration tests for thought generation from actions.
 //! Corresponds to `sim/mood.rs`.
 
-use super::test_helpers::*;
 use super::*;
 
 #[test]
