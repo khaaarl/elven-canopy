@@ -109,7 +109,7 @@ fn resolve_graze_action_restores_food() {
     if let Some(mut c) = sim.db.creatures.get(&capybara_id) {
         c.food = 100;
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let food_before = sim.db.creatures.get(&capybara_id).unwrap().food;
@@ -198,7 +198,7 @@ fn hungry_herbivore_creates_graze_task() {
     if let Some(mut c) = sim.db.creatures.get(&capybara_id) {
         c.food = threshold / 2; // Well below threshold but not starving.
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Advance enough ticks for the heartbeat to fire.
@@ -224,10 +224,10 @@ fn hungry_elf_does_not_create_graze_task() {
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
     // Make the elf hungry.
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.food = 1;
-        c.current_task = None;
-    });
+    let mut elf = sim.db.creatures.get(&elf_id).unwrap();
+    elf.food = 1;
+    elf.current_task = None;
+    sim.db.update_creature(elf).unwrap();
 
     let species_data = sim.species_table[&Species::Elf].clone();
     let target_tick = sim.tick + species_data.heartbeat_interval_ticks + 100;
@@ -323,7 +323,7 @@ fn resolve_graze_food_capped_at_food_max() {
     // Set food to near-max.
     if let Some(mut c) = sim.db.creatures.get(&capybara_id) {
         c.food = species_data.food_max - 1;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let grass_pos = VoxelCoord::new(10, 0, 10);
@@ -369,7 +369,7 @@ fn herbivore_does_not_fall_back_to_fruit() {
     if let Some(mut c) = sim.db.creatures.get(&capybara_id) {
         c.food = 1;
         c.current_task = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Advance past the heartbeat.
@@ -450,7 +450,7 @@ fn two_herbivores_graze_same_tile() {
         if let Some(mut c) = sim.db.creatures.get(&cid) {
             c.food = 100;
             c.current_task = Some(tid);
-            let _ = sim.db.creatures.update_no_fk(c);
+            sim.db.update_creature(c).unwrap();
         }
     }
 

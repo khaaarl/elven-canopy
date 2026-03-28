@@ -61,7 +61,7 @@ fn insert_pursuit_task(
     // Directly assign the pursuer to this task.
     let mut pursuer_creature = sim.db.creatures.get(&pursuer).unwrap();
     pursuer_creature.current_task = Some(task_id);
-    let _ = sim.db.creatures.update_no_fk(pursuer_creature);
+    sim.db.update_creature(pursuer_creature).unwrap();
     task_id
 }
 
@@ -267,7 +267,7 @@ fn walk_toward_dead_task_node_does_not_panic() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Directly kill the task node's slot to simulate an incremental update
@@ -327,9 +327,11 @@ fn pursuit_task_repaths_when_target_moves() {
 
     // Manually move the target to the new node (simulates target movement).
     let new_pos = sim.nav_graph.node(new_target_node).position;
-    let _ = sim.db.creatures.modify_unchecked(&target_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&target_id).unwrap();
         c.position = new_pos;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Step so the pursuer's activation fires and updates the task location.
     sim.step(&[], sim.tick + 10000);
@@ -359,13 +361,17 @@ fn pursuit_task_completes_when_adjacent() {
 
     // Place both creatures at the same node and prevent them from wandering.
     let node_pos = sim.nav_graph.node(pursuer_node).position;
-    let _ = sim.db.creatures.modify_unchecked(&target_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&target_id).unwrap();
         c.position = node_pos;
-    });
-    let _ = sim.db.creatures.modify_unchecked(&pursuer_id, |c| {
+        sim.db.update_creature(c).unwrap();
+    }
+    {
+        let mut c = sim.db.creatures.get(&pursuer_id).unwrap();
         c.position = node_pos;
         c.path = None;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Give the target a Sleep task so it stays still.
     let sleep_task_id = TaskId::new(&mut sim.rng);
@@ -389,7 +395,7 @@ fn pursuit_task_completes_when_adjacent() {
     sim.insert_task(sleep_task);
     let mut target = sim.db.creatures.get(&target_id).unwrap();
     target.current_task = Some(sleep_task_id);
-    let _ = sim.db.creatures.update_no_fk(target);
+    sim.db.update_creature(target).unwrap();
 
     // Create pursuit task at the shared node.
     let pursuer_pos = sim.nav_graph.node(pursuer_node).position;
@@ -398,10 +404,12 @@ fn pursuit_task_completes_when_adjacent() {
     // Clear pursuer's action state and schedule an immediate activation so
     // the pursuit logic fires regardless of the sim's PRNG-dependent event
     // schedule. This makes the test robust to worldgen PRNG changes.
-    let _ = sim.db.creatures.modify_unchecked(&pursuer_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&pursuer_id).unwrap();
         c.next_available_tick = None;
         c.action_kind = crate::db::ActionKind::NoAction;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
     sim.event_queue.schedule(
         sim.tick + 1,
         crate::event::ScheduledEventKind::CreatureActivation {
@@ -440,7 +448,7 @@ fn pursuit_task_abandons_when_target_gone() {
     let mut pursuer = sim.db.creatures.get(&pursuer_id).unwrap();
     pursuer.current_task = None;
     pursuer.path = None;
-    let _ = sim.db.creatures.update_no_fk(pursuer);
+    sim.db.update_creature(pursuer).unwrap();
 
     let target_pos = sim.nav_graph.node(target_node).position;
     let task_id = insert_pursuit_task(&mut sim, pursuer_id, target_id, target_pos);
@@ -448,10 +456,11 @@ fn pursuit_task_abandons_when_target_gone() {
     // Simulate target becoming unreachable by moving it to a position with
     // no nav node. This triggers the `node_at(target.position) == None`
     // branch in pursuit logic, causing the pursuer to abandon the task.
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&target_id, |c| c.position = VoxelCoord::new(0, 200, 0));
+    {
+        let mut c = sim.db.creatures.get(&target_id).unwrap();
+        c.position = VoxelCoord::new(0, 200, 0);
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Step — pursuer should notice target has no nav node and unassign.
     sim.step(&[], sim.tick + 500000);
@@ -483,9 +492,11 @@ fn pursuit_task_abandons_when_target_unreachable() {
     let bogus_pos = VoxelCoord::new(999, 999, 999);
     let _task_id = insert_pursuit_task(&mut sim, pursuer_id, target_id, bogus_pos);
     // Move the target to an unreachable position with no nav node.
-    let _ = sim.db.creatures.modify_unchecked(&target_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&target_id).unwrap();
         c.position = VoxelCoord::new(0, 200, 0);
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Step enough ticks for pursuer's activation to fire and hit the
     // dead-node check. The exact timing depends on PRNG state (spawn
@@ -639,13 +650,15 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
         required_civ_id: None,
     };
 
-    sim.db.tasks.insert_no_fk(far_task).unwrap();
-    sim.db.tasks.insert_no_fk(near_task).unwrap();
+    sim.db.insert_task(far_task).unwrap();
+    sim.db.insert_task(near_task).unwrap();
 
     // Clear the elf's current task so it's idle.
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = None;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     let chosen = sim.find_available_task(elf_id).expect("should find a task");
     assert_eq!(
@@ -700,11 +713,13 @@ fn find_available_task_single_candidate_skips_dijkstra() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.db.tasks.insert_no_fk(task).unwrap();
+    sim.db.insert_task(task).unwrap();
 
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = None;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     let chosen = sim
         .find_available_task(elf_id)
@@ -759,11 +774,13 @@ fn find_available_task_respects_species_filter_with_proximity() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.db.tasks.insert_no_fk(elf_task).unwrap();
+    sim.db.insert_task(elf_task).unwrap();
 
-    let _ = sim.db.creatures.modify_unchecked(&capy_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&capy_id).unwrap();
         c.current_task = None;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     let chosen = sim.find_available_task(capy_id);
     assert_eq!(
@@ -942,7 +959,7 @@ fn voxel_exclusion_dead_hostile_does_not_block() {
     // Kill the goblin (vital_status is indexed, so use update).
     if let Some(mut c) = sim.db.creatures.get(&goblin) {
         c.vital_status = VitalStatus::Dead;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
@@ -1455,7 +1472,7 @@ fn voxel_exclusion_large_creature_blocked_by_small_hostile_in_footprint() {
     let player_civ = sim.player_civ_id.unwrap();
     if let Some(mut c) = sim.db.creatures.get(&elephant) {
         c.civ_id = Some(player_civ);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     assert!(
@@ -1598,11 +1615,11 @@ fn voxel_exclusion_walk_toward_task_blocked() {
     let task_id = insert_goto_task(&mut sim, node_c);
     if let Some(mut t) = sim.db.tasks.get(&task_id) {
         t.state = TaskState::InProgress;
-        let _ = sim.db.tasks.update_no_fk(t);
+        sim.db.update_task(t).unwrap();
     }
     if let Some(mut c) = sim.db.creatures.get(&elf) {
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Activate elf.
@@ -1670,11 +1687,13 @@ fn voxel_exclusion_walk_toward_task_clears_cached_path() {
     // Give the elf a cached path through the goblin's node.
     let pos_b = sim.nav_graph.node(node_b).position;
     let pos_c = sim.nav_graph.node(node_c).position;
-    let _ = sim.db.creatures.modify_unchecked(&elf, |c| {
+    {
+        let mut c = sim.db.creatures.get(&elf).unwrap();
         c.path = Some(CreaturePath {
             remaining_positions: vec![pos_b, pos_c],
         });
-    });
+        sim.db.update_creature(c).unwrap();
+    }
     assert!(
         sim.db.creatures.get(&elf).unwrap().path.is_some(),
         "Test setup: elf should have a cached path"
@@ -1684,11 +1703,11 @@ fn voxel_exclusion_walk_toward_task_clears_cached_path() {
     let task_id = insert_goto_task(&mut sim, node_c);
     if let Some(mut t) = sim.db.tasks.get(&task_id) {
         t.state = TaskState::InProgress;
-        let _ = sim.db.tasks.update_no_fk(t);
+        sim.db.update_task(t).unwrap();
     }
     if let Some(mut c) = sim.db.creatures.get(&elf) {
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Activate the elf — it should try to follow the cached path,
@@ -1903,11 +1922,11 @@ fn cached_path_reroutes_when_nav_node_destroyed() {
     let task_id = insert_goto_task(&mut sim, node_b);
     if let Some(mut t) = sim.db.tasks.get(&task_id) {
         t.state = TaskState::InProgress;
-        let _ = sim.db.tasks.update_no_fk(t);
+        sim.db.update_task(t).unwrap();
     }
     if let Some(mut c) = sim.db.creatures.get(&elf) {
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Assign a cached path with TWO bogus positions (unlike the existing
@@ -1917,11 +1936,13 @@ fn cached_path_reroutes_when_nav_node_destroyed() {
     assert!(sim.nav_graph.node_at(bogus_a).is_none());
     assert!(sim.nav_graph.node_at(bogus_b).is_none());
 
-    let _ = sim.db.creatures.modify_unchecked(&elf, |c| {
+    {
+        let mut c = sim.db.creatures.get(&elf).unwrap();
         c.path = Some(CreaturePath {
             remaining_positions: vec![bogus_a, bogus_b],
         });
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Schedule activation and step forward.
     sim.event_queue.cancel_creature_activations(elf);
@@ -2447,9 +2468,11 @@ fn climber_on_trunk_does_not_fall() {
         .expect("should spawn elf");
 
     // Move elf to trunk position (may already be there if spawn snapped).
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.position = trunk_adj;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Elf should be supported (has nav node, is a climber).
     assert!(sim.creature_is_supported(elf_id));
@@ -2470,9 +2493,11 @@ fn ground_only_creature_without_solid_below_falls() {
     // Teleport the capybara to a position without solid below — e.g., y=5
     // with no platform. The nav graph likely has no node here either.
     let floating_pos = VoxelCoord::new(pos.x, 5, pos.z);
-    let _ = sim.db.creatures.modify_unchecked(&capy_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&capy_id).unwrap();
         c.position = floating_pos;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     assert!(!sim.creature_is_supported(capy_id));
 
@@ -2581,7 +2606,7 @@ fn creature_gravity_clears_task_and_path() {
         c.path = Some(CreaturePath {
             remaining_positions: vec![VoxelCoord::new(15, 1, 15)],
         });
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Remove platform and apply gravity.
@@ -2707,9 +2732,11 @@ fn degenerate_landing_teleports_to_nearest_node() {
     // generated). Use a corner of the world where there's terrain but
     // possibly no nav node.
     let floating_pos = VoxelCoord::new(1, 10, 1);
-    let _ = sim.db.creatures.modify_unchecked(&capy_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&capy_id).unwrap();
         c.position = floating_pos;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     events.clear();
     let fell = sim.apply_single_creature_gravity(capy_id, &mut events);
@@ -2761,9 +2788,11 @@ fn ground_only_with_nav_node_but_no_solid_below_falls() {
     let capy_id = sim
         .spawn_creature(Species::Capybara, VoxelCoord::new(10, 1, 10), &mut events)
         .expect("should spawn capybara");
-    let _ = sim.db.creatures.modify_unchecked(&capy_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&capy_id).unwrap();
         c.position = standing_pos;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
     assert!(
         sim.creature_is_supported(capy_id),
         "should be supported on platform"
@@ -4167,11 +4196,11 @@ fn path_resolution_nav_node_destroyed_no_panic() {
     let task_id = insert_goto_task(&mut sim, node_b);
     if let Some(mut t) = sim.db.tasks.get(&task_id) {
         t.state = TaskState::InProgress;
-        let _ = sim.db.tasks.update_no_fk(t);
+        sim.db.update_task(t).unwrap();
     }
     if let Some(mut c) = sim.db.creatures.get(&elf) {
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Assign a cached path through a position that has NO nav node.
@@ -4183,11 +4212,13 @@ fn path_resolution_nav_node_destroyed_no_panic() {
     );
 
     let real_dest = sim.nav_graph.node(node_b).position;
-    let _ = sim.db.creatures.modify_unchecked(&elf, |c| {
+    {
+        let mut c = sim.db.creatures.get(&elf).unwrap();
         c.path = Some(CreaturePath {
             remaining_positions: vec![bogus_pos, real_dest],
         });
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Schedule the elf to activate and step forward. The movement code should
     // detect the missing nav node and repath (not panic).

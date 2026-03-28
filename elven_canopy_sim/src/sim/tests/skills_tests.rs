@@ -31,18 +31,13 @@ fn try_advance_skill_guaranteed_at_zero() {
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
     // Force INT to 0 so it doesn't modify the probability.
-    if sim
+    if let Some(mut row) = sim
         .db
         .creature_traits
         .get(&(elf_id, TraitKind::Intelligence))
-        .is_some()
     {
-        let _ = sim
-            .db
-            .creature_traits
-            .modify_unchecked(&(elf_id, TraitKind::Intelligence), |row| {
-                row.value = TraitValue::Int(0)
-            });
+        row.value = TraitValue::Int(0);
+        sim.db.update_creature_trait(row).unwrap();
     }
 
     sim.try_advance_skill(elf_id, TraitKind::Striking, 1000);
@@ -60,14 +55,13 @@ fn try_advance_skill_blocked_at_cap() {
     let cap = sim.config.skills.default_skill_cap;
 
     // Manually set skill to exactly the cap.
-    let _ = sim
-        .db
-        .creature_traits
-        .insert_no_fk(crate::db::CreatureTrait {
+    sim.db
+        .insert_creature_trait(crate::db::CreatureTrait {
             creature_id: elf_id,
             trait_kind: TraitKind::Striking,
             value: TraitValue::Int(cap),
-        });
+        })
+        .unwrap();
     assert_eq!(sim.trait_int(elf_id, TraitKind::Striking, 0), cap);
 
     // Even with 1000 permille, should not advance past cap.
@@ -88,42 +82,37 @@ fn try_advance_skill_decay_reduces_probability() {
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
     // Force INT to 0.
-    if sim
+    if let Some(mut row) = sim
         .db
         .creature_traits
         .get(&(elf_id, TraitKind::Intelligence))
-        .is_some()
     {
-        let _ = sim
-            .db
-            .creature_traits
-            .modify_unchecked(&(elf_id, TraitKind::Intelligence), |row| {
-                row.value = TraitValue::Int(0)
-            });
+        row.value = TraitValue::Int(0);
+        sim.db.update_creature_trait(row).unwrap();
     }
 
     // Set skill to 100 (halfway to cap at default cap 100 — but we need to
     // raise the cap so the creature can advance).
     sim.config.skills.default_skill_cap = 1000;
-    let _ = sim
-        .db
-        .creature_traits
-        .insert_no_fk(crate::db::CreatureTrait {
+    sim.db
+        .insert_creature_trait(crate::db::CreatureTrait {
             creature_id: elf_id,
             trait_kind: TraitKind::Cuisine,
             value: TraitValue::Int(100),
-        });
+        })
+        .unwrap();
 
     // Run 1000 trials, resetting skill to 100 each time so the probability
     // stays constant (we're testing the decay formula, not cumulative drift).
     let mut successes = 0;
     for _ in 0..1000 {
-        let _ = sim
+        let mut row = sim
             .db
             .creature_traits
-            .modify_unchecked(&(elf_id, TraitKind::Cuisine), |row| {
-                row.value = TraitValue::Int(100)
-            });
+            .get(&(elf_id, TraitKind::Cuisine))
+            .unwrap();
+        row.value = TraitValue::Int(100);
+        sim.db.update_creature_trait(row).unwrap();
         sim.try_advance_skill(elf_id, TraitKind::Cuisine, 1000);
         if sim.trait_int(elf_id, TraitKind::Cuisine, 0) > 100 {
             successes += 1;
@@ -146,27 +135,21 @@ fn try_advance_skill_intelligence_boosts_probability() {
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
     // Set INT to +100.
-    if sim
+    if let Some(mut row) = sim
         .db
         .creature_traits
         .get(&(elf_id, TraitKind::Intelligence))
-        .is_some()
     {
-        let _ = sim
-            .db
-            .creature_traits
-            .modify_unchecked(&(elf_id, TraitKind::Intelligence), |row| {
-                row.value = TraitValue::Int(100)
-            });
+        row.value = TraitValue::Int(100);
+        sim.db.update_creature_trait(row).unwrap();
     } else {
-        let _ = sim
-            .db
-            .creature_traits
-            .insert_no_fk(crate::db::CreatureTrait {
+        sim.db
+            .insert_creature_trait(crate::db::CreatureTrait {
                 creature_id: elf_id,
                 trait_kind: TraitKind::Intelligence,
                 value: TraitValue::Int(100),
-            });
+            })
+            .unwrap();
     }
 
     // 500 permille * 2x (INT +100) = 1000 permille = guaranteed.
@@ -185,27 +168,21 @@ fn try_advance_skill_intelligence_capped_at_1000() {
     let mut sim = test_sim(42);
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
-    if sim
+    if let Some(mut row) = sim
         .db
         .creature_traits
         .get(&(elf_id, TraitKind::Intelligence))
-        .is_some()
     {
-        let _ = sim
-            .db
-            .creature_traits
-            .modify_unchecked(&(elf_id, TraitKind::Intelligence), |row| {
-                row.value = TraitValue::Int(500)
-            });
+        row.value = TraitValue::Int(500);
+        sim.db.update_creature_trait(row).unwrap();
     } else {
-        let _ = sim
-            .db
-            .creature_traits
-            .insert_no_fk(crate::db::CreatureTrait {
+        sim.db
+            .insert_creature_trait(crate::db::CreatureTrait {
                 creature_id: elf_id,
                 trait_kind: TraitKind::Intelligence,
                 value: TraitValue::Int(500),
-            });
+            })
+            .unwrap();
     }
 
     sim.try_advance_skill(elf_id, TraitKind::Striking, 1000);
@@ -222,18 +199,13 @@ fn try_advance_skill_deterministic() {
     let run = |seed| {
         let mut sim = test_sim(seed);
         let elf_id = spawn_creature(&mut sim, Species::Elf);
-        if sim
+        if let Some(mut row) = sim
             .db
             .creature_traits
             .get(&(elf_id, TraitKind::Intelligence))
-            .is_some()
         {
-            let _ = sim
-                .db
-                .creature_traits
-                .modify_unchecked(&(elf_id, TraitKind::Intelligence), |row| {
-                    row.value = TraitValue::Int(0)
-                });
+            row.value = TraitValue::Int(0);
+            sim.db.update_creature_trait(row).unwrap();
         }
         sim.config.skills.default_skill_cap = 1000;
         for _ in 0..50 {
@@ -266,14 +238,14 @@ fn try_advance_skill_prng_consumed_at_cap() {
 
     // Set one creature at cap, leave the other at 0.
     let cap = sim_capped.config.skills.default_skill_cap;
-    let _ = sim_capped
+    sim_capped
         .db
-        .creature_traits
-        .insert_no_fk(crate::db::CreatureTrait {
+        .insert_creature_trait(crate::db::CreatureTrait {
             creature_id: elf_capped,
             trait_kind: TraitKind::Striking,
             value: TraitValue::Int(cap),
-        });
+        })
+        .unwrap();
 
     // Call try_advance_skill on both — should consume 1 PRNG call each.
     sim_capped.try_advance_skill(elf_capped, TraitKind::Striking, 1000);
@@ -295,29 +267,23 @@ fn try_advance_skill_boundary_99_to_100() {
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
     // Force INT to 0.
-    if sim
+    if let Some(mut row) = sim
         .db
         .creature_traits
         .get(&(elf_id, TraitKind::Intelligence))
-        .is_some()
     {
-        let _ = sim
-            .db
-            .creature_traits
-            .modify_unchecked(&(elf_id, TraitKind::Intelligence), |row| {
-                row.value = TraitValue::Int(0)
-            });
+        row.value = TraitValue::Int(0);
+        sim.db.update_creature_trait(row).unwrap();
     }
 
     // Set skill to 99.
-    let _ = sim
-        .db
-        .creature_traits
-        .insert_no_fk(crate::db::CreatureTrait {
+    sim.db
+        .insert_creature_trait(crate::db::CreatureTrait {
             creature_id: elf_id,
             trait_kind: TraitKind::Striking,
             value: TraitValue::Int(99),
-        });
+        })
+        .unwrap();
 
     // With 1000 permille base and decay 100: adjusted = 1000 * 100/199 ≈ 502.
     // Try many times to ensure at least one success (very likely with 50% chance).

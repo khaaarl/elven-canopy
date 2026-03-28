@@ -84,7 +84,7 @@ fn discover_civ_creates_relationship() {
         .map(|r| (r.from_civ, r.to_civ))
         .collect();
     for pk in existing {
-        let _ = sim.db.civ_relationships.remove_no_fk(&pk);
+        sim.db.remove_civ_relationship(&pk).unwrap();
     }
 
     let cmd = SimCommand {
@@ -125,7 +125,7 @@ fn discover_civ_is_idempotent() {
         .map(|r| (r.from_civ, r.to_civ))
         .collect();
     for pk in existing {
-        let _ = sim.db.civ_relationships.remove_no_fk(&pk);
+        sim.db.remove_civ_relationship(&pk).unwrap();
     }
 
     // Discover twice.
@@ -410,7 +410,7 @@ fn diplomatic_relation_neutral_civs() {
         .map(|r| (r.from_civ, r.to_civ))
         .collect();
     for pk in existing {
-        let _ = sim.db.civ_relationships.remove_no_fk(&pk);
+        sim.db.remove_civ_relationship(&pk).unwrap();
     }
 
     assert_eq!(
@@ -516,7 +516,19 @@ fn creature_relation_missing_creature_is_neutral() {
     // Spawn an elf, then remove it so the ID exists but creature is gone.
     let elf = spawn_elf(&mut sim);
     let fake_id = elf;
-    let _ = sim.db.creatures.remove_no_fk(&fake_id);
+    // Clear any item stacks that reference this creature before removing it,
+    // to avoid FK constraint violations (e.g. bread from elf_starting_bread).
+    let owned: Vec<_> = sim
+        .db
+        .item_stacks
+        .by_owner(&Some(fake_id), tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    for stack_id in owned {
+        sim.db.remove_item_stack(&stack_id).unwrap();
+    }
+    sim.db.remove_creature(&fake_id).unwrap();
     let elf_b = spawn_elf(&mut sim);
     assert_eq!(
         sim.creature_relation(fake_id, elf_b),
@@ -656,14 +668,14 @@ fn is_non_hostile_different_civs_neutral() {
         .map(|r| (r.from_civ, r.to_civ))
         .collect();
     for pk in existing {
-        let _ = sim.db.civ_relationships.remove_no_fk(&pk);
+        sim.db.remove_civ_relationship(&pk).unwrap();
     }
 
     let elf_a = spawn_elf(&mut sim);
     let elf_b = spawn_elf(&mut sim);
     if let Some(mut c) = sim.db.creatures.get(&elf_b) {
         c.civ_id = Some(civ_b);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // No Hostile relationship → non-hostile.
@@ -693,7 +705,7 @@ fn is_non_hostile_different_civs_hostile() {
     // Assign elf_b to civ_b.
     if let Some(mut c) = sim.db.creatures.get(&elf_b) {
         c.civ_id = Some(civ_b);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Discover civ_b as Hostile.
@@ -731,7 +743,7 @@ fn civ_species_to_species_conversion() {
 // Tests migrated from commands_tests.rs
 // ---------------------------------------------------------------------------
 
-/// Verify CivRelationship compound PK operations: get, contains, modify_unchecked.
+/// Verify CivRelationship compound PK operations: get, contains, update.
 #[test]
 fn civ_relationship_compound_pk_operations() {
     let mut sim = test_sim(42);
@@ -750,12 +762,15 @@ fn civ_relationship_compound_pk_operations() {
     };
 
     // Remove any existing relationship so we start clean.
-    let _ = sim.db.civ_relationships.remove_no_fk(&(civ_a, civ_b));
+    let _ = sim.db.civ_relationships.get(&(civ_a, civ_b)).map(|r| {
+        sim.db
+            .remove_civ_relationship(&(r.from_civ, r.to_civ))
+            .unwrap();
+    });
 
     // Insert a new relationship.
     sim.db
-        .civ_relationships
-        .insert_no_fk(crate::db::CivRelationship {
+        .insert_civ_relationship(crate::db::CivRelationship {
             from_civ: civ_a,
             to_civ: civ_b,
             opinion: CivOpinion::Neutral,
@@ -770,13 +785,10 @@ fn civ_relationship_compound_pk_operations() {
     assert!(sim.db.civ_relationships.contains(&(civ_a, civ_b)));
     assert!(!sim.db.civ_relationships.contains(&(civ_b, CivId(999))));
 
-    // modify_unchecked() changes opinion.
-    let _ = sim
-        .db
-        .civ_relationships
-        .modify_unchecked(&(civ_a, civ_b), |r| {
-            r.opinion = CivOpinion::Hostile;
-        });
+    // update_civ_relationship() changes opinion.
+    let mut rel = sim.db.civ_relationships.get(&(civ_a, civ_b)).unwrap();
+    rel.opinion = CivOpinion::Hostile;
+    sim.db.update_civ_relationship(rel).unwrap();
     assert_eq!(
         sim.db
             .civ_relationships
@@ -787,13 +799,10 @@ fn civ_relationship_compound_pk_operations() {
     );
 
     // Duplicate insert fails.
-    let err = sim
-        .db
-        .civ_relationships
-        .insert_no_fk(crate::db::CivRelationship {
-            from_civ: civ_a,
-            to_civ: civ_b,
-            opinion: CivOpinion::Friendly,
-        });
+    let err = sim.db.insert_civ_relationship(crate::db::CivRelationship {
+        from_civ: civ_a,
+        to_civ: civ_b,
+        opinion: CivOpinion::Friendly,
+    });
     assert!(err.is_err());
 }

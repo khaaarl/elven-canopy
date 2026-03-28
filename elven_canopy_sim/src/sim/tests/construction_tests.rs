@@ -764,9 +764,9 @@ fn build_displaces_creature_on_occupied_voxel() {
         let node_pos = sim.nav_graph.node(node_id).position;
         if node_pos == air_coord {
             // Move the elf there.
-            let _ = sim.db.creatures.modify_unchecked(&elf_id, |elf| {
-                elf.position = air_coord;
-            });
+            let mut elf = sim.db.creatures.get(&elf_id).unwrap().clone();
+            elf.position = air_coord;
+            sim.db.update_creature(elf).unwrap();
         }
     }
 
@@ -3454,9 +3454,11 @@ fn furnish_rejects_non_building() {
     let id = StructureId(sim.next_structure_id);
     sim.next_structure_id += 1;
     let mut rng = GameRng::new(99);
+    let project_id = ProjectId::new(&mut rng);
+    insert_stub_blueprint(&mut sim, project_id);
     let structure = CompletedStructure {
         id,
-        project_id: ProjectId::new(&mut rng),
+        project_id,
         build_type: BuildType::Platform,
         anchor: VoxelCoord::new(10, 5, 10),
         width: 3,
@@ -3473,7 +3475,7 @@ fn furnish_rejects_non_building() {
         greenhouse_last_production_tick: 0,
         last_dance_completed_tick: 0,
     };
-    sim.db.structures.insert_no_fk(structure).unwrap();
+    sim.db.insert_structure(structure).unwrap();
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -4323,7 +4325,7 @@ fn blueprint_overlay_excludes_complete_blueprints() {
     // Manually flip the blueprint to Complete.
     let mut bp = sim.db.blueprints.iter_all().next().unwrap().clone();
     bp.state = BlueprintState::Complete;
-    let _ = sim.db.blueprints.update_no_fk(bp);
+    sim.db.update_blueprint(bp).unwrap();
 
     let overlay = sim.blueprint_overlay();
     assert!(

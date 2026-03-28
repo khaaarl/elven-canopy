@@ -93,13 +93,13 @@ fn flee_interrupts_current_task() {
     // Force-assign the task to the elf.
     if let Some(mut t) = sim.db.tasks.get(&task_id) {
         t.state = TaskState::InProgress;
-        let _ = sim.db.tasks.update_no_fk(t);
+        sim.db.update_task(t).unwrap();
     }
     if let Some(mut c) = sim.db.creatures.get(&elf) {
         c.current_task = Some(task_id);
         c.action_kind = ActionKind::NoAction;
         c.next_available_tick = None;
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Place goblin adjacent to elf — within detection range.
@@ -458,9 +458,9 @@ fn disengage_threshold_creature_flees_at_low_hp() {
 
     // Reduce HP to 40% of max.
     let hp_max = sim.species_table[&Species::Goblin].hp_max;
-    let _ = sim.db.creatures.modify_unchecked(&goblin, |c| {
-        c.hp = hp_max * 40 / 100;
-    });
+    let mut c = sim.db.creatures.get(&goblin).unwrap();
+    c.hp = hp_max * 40 / 100;
+    sim.db.update_creature(c).unwrap();
 
     assert!(
         sim.should_flee(goblin, Species::Goblin),
@@ -498,9 +498,9 @@ fn disengage_threshold_0_never_flees() {
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
     // Reduce to 1 HP.
-    let _ = sim.db.creatures.modify_unchecked(&goblin, |c| {
-        c.hp = 1;
-    });
+    let mut c = sim.db.creatures.get(&goblin).unwrap();
+    c.hp = 1;
+    sim.db.update_creature(c).unwrap();
 
     assert!(
         !sim.should_flee(goblin, Species::Goblin),
@@ -816,9 +816,9 @@ fn defensive_creature_zero_disengage_does_not_flee_at_low_hp() {
     };
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
-    let _ = sim.db.creatures.modify_unchecked(&goblin, |c| {
-        c.hp = 1;
-    });
+    let mut c = sim.db.creatures.get(&goblin).unwrap();
+    c.hp = 1;
+    sim.db.update_creature(c).unwrap();
 
     assert!(
         !sim.should_flee(goblin, Species::Goblin),
@@ -846,18 +846,18 @@ fn disengage_threshold_boundary_exact_value() {
     let hp_max = sim.db.creatures.get(&goblin).unwrap().hp_max;
 
     // At exactly 50% HP, should flee (threshold is inclusive: <=).
-    let _ = sim.db.creatures.modify_unchecked(&goblin, |c| {
-        c.hp = hp_max * 50 / 100;
-    });
+    let mut c = sim.db.creatures.get(&goblin).unwrap();
+    c.hp = hp_max * 50 / 100;
+    sim.db.update_creature(c).unwrap();
     assert!(
         sim.should_flee(goblin, Species::Goblin),
         "Creature at exactly 50% HP should flee with 50% disengage threshold"
     );
 
     // At 1 HP above the 50% mark, should not flee.
-    let _ = sim.db.creatures.modify_unchecked(&goblin, |c| {
-        c.hp = hp_max * 50 / 100 + 1;
-    });
+    let mut c = sim.db.creatures.get(&goblin).unwrap();
+    c.hp = hp_max * 50 / 100 + 1;
+    sim.db.update_creature(c).unwrap();
     assert!(
         !sim.should_flee(goblin, Species::Goblin),
         "Creature 1 HP above 50% threshold should not flee"
@@ -1113,7 +1113,7 @@ fn aggressive_soldier_interrupts_low_priority_task_to_fight() {
     sim.insert_task(acquire_task);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Spawn an orc nearby (within detection range, ~5 voxels away).
@@ -1200,7 +1200,7 @@ fn creature_does_not_freeze_after_combat_preempts_task() {
     sim.insert_task(acquire_task);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Spawn orc nearby. Cancel its activations so it doesn't attack the elf
@@ -1818,7 +1818,7 @@ fn defensive_elf_with_task_interrupts_to_shoot_troll_at_10_voxels() {
     sim.insert_task(acquire_task);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Spawn troll at 10 voxels — beyond pursuit range (25) but within
@@ -1835,11 +1835,11 @@ fn defensive_elf_with_task_interrupts_to_shoot_troll_at_10_voxels() {
     // Cancel pending activations so we control the exact activation.
     // Don't use force_idle — it clears current_task which we need to keep.
     sim.event_queue.cancel_creature_activations(elf_id);
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
-        c.action_kind = ActionKind::NoAction;
-        c.next_available_tick = None;
-        c.path = None;
-    });
+    let mut c = sim.db.creatures.get(&elf_id).unwrap();
+    c.action_kind = ActionKind::NoAction;
+    c.next_available_tick = None;
+    c.path = None;
+    sim.db.update_creature(c).unwrap();
 
     let tick = sim.tick;
     sim.event_queue.schedule(

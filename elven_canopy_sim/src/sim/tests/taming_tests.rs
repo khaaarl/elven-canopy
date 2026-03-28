@@ -114,10 +114,9 @@ fn taming_only_scouts_can_claim() {
     designate_tame(&mut sim, capy_id);
 
     // Clear warrior's current task so it's idle.
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&warrior_id, |c| c.current_task = None);
+    let mut warrior = sim.db.creatures.get(&warrior_id).unwrap();
+    warrior.current_task = None;
+    sim.db.update_creature(warrior).unwrap();
 
     // Warrior should NOT find the Tame task.
     let found = sim.find_available_task(warrior_id);
@@ -132,10 +131,9 @@ fn taming_only_scouts_can_claim() {
     // Now spawn a Scout — should find it.
     let scout_id = spawn_elf(&mut sim);
     assign_path(&mut sim, scout_id, PathId::Scout);
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&scout_id, |c| c.current_task = None);
+    let mut scout = sim.db.creatures.get(&scout_id).unwrap();
+    scout.current_task = None;
+    sim.db.update_creature(scout).unwrap();
 
     let found_scout = sim.find_available_task(scout_id);
     let is_tame_scout = found_scout.is_some_and(|tid| {
@@ -366,10 +364,9 @@ fn taming_outcast_cannot_claim() {
 
     designate_tame(&mut sim, capy_id);
 
-    let _ = sim
-        .db
-        .creatures
-        .modify_unchecked(&outcast_id, |c| c.current_task = None);
+    let mut outcast = sim.db.creatures.get(&outcast_id).unwrap();
+    outcast.current_task = None;
+    sim.db.update_creature(outcast).unwrap();
 
     let found = sim.find_available_task(outcast_id);
     let is_tame = found.is_some_and(|tid| {
@@ -464,7 +461,9 @@ fn taming_task_resumable_after_preemption() {
     let task_id = tame_task.id;
 
     // Force the scout to drop the task by making it very hungry (survival preemption).
-    let _ = sim.db.creatures.modify_unchecked(&scout_id, |c| c.food = 0);
+    let mut scout = sim.db.creatures.get(&scout_id).unwrap();
+    scout.food = 0;
+    sim.db.update_creature(scout).unwrap();
 
     // Run a few ticks for the heartbeat to trigger hunger preemption.
     for _ in 0..20 {
@@ -505,7 +504,7 @@ fn taming_target_already_tamed_completes_task() {
     // Manually tame the capybara (simulating another player in multiplayer).
     if let Some(mut capy) = sim.db.creatures.get(&capy_id) {
         capy.civ_id = sim.player_civ_id;
-        let _ = sim.db.creatures.update_no_fk(capy);
+        sim.db.update_creature(capy).unwrap();
     }
 
     // Run a few more ticks — scout should detect target is tamed and complete.

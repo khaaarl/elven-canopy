@@ -156,9 +156,11 @@ fn acquire_item_auto_equips_one_from_multi_qty() {
     // Position elf at the pile.
     let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.position = pile_nav_pos;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Create AcquireItem task for 3 Hats.
     let task_id = TaskId::new(&mut sim.rng);
@@ -201,7 +203,7 @@ fn acquire_item_auto_equips_one_from_multi_qty() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     sim.resolve_acquire_item_action(elf_id, task_id);
@@ -342,9 +344,11 @@ fn acquire_item_preserves_material() {
     // Position elf at the pile.
     let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.position = pile_nav_pos;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Create AcquireItem task with reservation.
     let task_id = TaskId::new(&mut sim.rng);
@@ -387,7 +391,7 @@ fn acquire_item_preserves_material() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     sim.resolve_acquire_item_action(elf_id, task_id);
@@ -423,9 +427,11 @@ fn acquire_item_auto_equips_clothing() {
     // Position elf at the pile.
     let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.position = pile_nav_pos;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Create AcquireItem task with reservation.
     let task_id = TaskId::new(&mut sim.rng);
@@ -468,7 +474,7 @@ fn acquire_item_auto_equips_clothing() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     sim.resolve_acquire_item_action(elf_id, task_id);
@@ -511,9 +517,11 @@ fn acquire_item_does_not_equip_if_slot_occupied() {
     // Position elf at the pile.
     let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.position = pile_nav_pos;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Create AcquireItem task with reservation.
     let task_id = TaskId::new(&mut sim.rng);
@@ -556,7 +564,7 @@ fn acquire_item_does_not_equip_if_slot_occupied() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     sim.resolve_acquire_item_action(elf_id, task_id);
@@ -792,9 +800,11 @@ fn soldier_acquires_military_equipment_no_ownership_change() {
     set_military_group(&mut sim, elf_id, Some(soldiers.id));
     let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.position = pile_nav_pos;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Create AcquireMilitaryEquipment task with reservations.
     let task_id = TaskId::new(&mut sim.rng);
@@ -837,7 +847,7 @@ fn soldier_acquires_military_equipment_no_ownership_change() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     // Execute.
@@ -1058,13 +1068,15 @@ fn military_equipment_drop_when_wants_change() {
     sim.inv_add_simple_item(elf.inventory_id, inventory::ItemKind::Bow, 1, None, None);
 
     // Change soldiers group wants to only arrows (remove bow).
-    let _ = sim.db.military_groups.modify_unchecked(&soldiers.id, |g| {
+    {
+        let mut g = sim.db.military_groups.get(&soldiers.id).unwrap();
         g.equipment_wants = vec![crate::building::LogisticsWant {
             item_kind: inventory::ItemKind::Arrow,
             material_filter: inventory::MaterialFilter::Any,
             target_quantity: 20,
         }];
-    });
+        sim.db.update_military_group(g).unwrap();
+    }
 
     // Run drop phase.
     sim.military_equipment_drop(elf_id);
@@ -1236,7 +1248,8 @@ fn military_group_equipment_wants_serde_roundtrip() {
     let soldiers = soldiers_group(&sim);
 
     // Set up some wants.
-    let _ = sim.db.military_groups.modify_unchecked(&soldiers.id, |g| {
+    {
+        let mut g = sim.db.military_groups.get(&soldiers.id).unwrap();
         g.equipment_wants = vec![
             LogisticsWant {
                 item_kind: inventory::ItemKind::Bow,
@@ -1249,7 +1262,8 @@ fn military_group_equipment_wants_serde_roundtrip() {
                 target_quantity: 30,
             },
         ];
-    });
+        sim.db.update_military_group(g).unwrap();
+    }
 
     // Serialize and deserialize.
     let json = serde_json::to_string(&sim.db.military_groups.get(&soldiers.id).unwrap()).unwrap();
@@ -1361,7 +1375,7 @@ fn military_equipment_drop_does_not_drop_equipped_items() {
         .find(|s| s.kind == inventory::ItemKind::Tunic)
         .unwrap();
     stack.equipped_slot = Some(inventory::EquipSlot::Torso);
-    let _ = sim.db.item_stacks.update_no_fk(stack);
+    sim.db.update_item_stack(stack).unwrap();
 
     // Run drop phase — equipped items should be kept even if unowned.
     sim.military_equipment_drop(elf_id);
@@ -1391,6 +1405,7 @@ fn military_equipment_drop_does_not_drop_task_reserved_items() {
 
     // Create a fake task and reserve the bow for it, assign task to elf.
     let task_id = TaskId::new(&mut sim.rng);
+    insert_stub_task(&mut sim, task_id);
     let mut stack = sim
         .db
         .item_stacks
@@ -1399,10 +1414,10 @@ fn military_equipment_drop_does_not_drop_task_reserved_items() {
         .find(|s| s.kind == inventory::ItemKind::Bow)
         .unwrap();
     stack.reserved_by = Some(task_id);
-    let _ = sim.db.item_stacks.update_no_fk(stack);
+    sim.db.update_item_stack(stack).unwrap();
     let mut creature = sim.db.creatures.get(&elf_id).unwrap();
     creature.current_task = Some(task_id);
-    let _ = sim.db.creatures.update_no_fk(creature);
+    sim.db.update_creature(creature).unwrap();
 
     // Run drop phase — reserved items for current task should be kept.
     sim.military_equipment_drop(elf_id);
@@ -1431,13 +1446,15 @@ fn military_equipment_drop_respects_material_filter() {
     set_military_group(&mut sim, elf_id, Some(soldiers.id));
 
     // Change soldiers to want specifically Oak bows.
-    let _ = sim.db.military_groups.modify_unchecked(&soldiers.id, |g| {
+    {
+        let mut g = sim.db.military_groups.get(&soldiers.id).unwrap();
         g.equipment_wants = vec![crate::building::LogisticsWant {
             item_kind: inventory::ItemKind::Bow,
             material_filter: inventory::MaterialFilter::Specific(inventory::Material::Oak),
             target_quantity: 1,
         }];
-    });
+        sim.db.update_military_group(g).unwrap();
+    }
 
     let elf_inv = sim.db.creatures.get(&elf_id).unwrap().inventory_id;
     // Give elf an unowned non-Oak bow (material = None, doesn't match Specific(Oak)).
@@ -1487,7 +1504,7 @@ fn check_military_equipment_wants_overwrites_task_on_non_idle_elf() {
     let goto_task_id = insert_goto_task(&mut sim, pile_nav);
     let mut creature = sim.db.creatures.get(&elf_id).unwrap();
     creature.current_task = Some(goto_task_id);
-    let _ = sim.db.creatures.update_no_fk(creature);
+    sim.db.update_creature(creature).unwrap();
 
     // Call directly (bypassing heartbeat idle gate) — it will overwrite.
     sim.check_military_equipment_wants(elf_id);
@@ -1866,9 +1883,11 @@ fn military_equipment_auto_equips_wearable_on_pickup() {
     set_military_group(&mut sim, elf_id, Some(soldiers.id));
     let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.position = pile_nav_pos;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Create AcquireMilitaryEquipment task before reserving.
     let task_id = TaskId::new(&mut sim.rng);
@@ -1910,7 +1929,7 @@ fn military_equipment_auto_equips_wearable_on_pickup() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     sim.resolve_acquire_military_equipment_action(elf_id, task_id);
@@ -1980,9 +1999,11 @@ fn military_equipment_auto_equip_displaces_existing_clothing() {
     set_military_group(&mut sim, elf_id, Some(soldiers.id));
     let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.position = pile_nav_pos;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     // Create AcquireMilitaryEquipment task before reserving.
     let task_id = TaskId::new(&mut sim.rng);
@@ -2024,7 +2045,7 @@ fn military_equipment_auto_equip_displaces_existing_clothing() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     sim.resolve_acquire_military_equipment_action(elf_id, task_id);
@@ -2077,9 +2098,11 @@ fn military_equipment_non_wearable_not_equipped() {
     set_military_group(&mut sim, elf_id, Some(soldiers.id));
     let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
-    let _ = sim.db.creatures.modify_unchecked(&elf_id, |c| {
+    {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.position = pile_nav_pos;
-    });
+        sim.db.update_creature(c).unwrap();
+    }
 
     let task_id = TaskId::new(&mut sim.rng);
     {
@@ -2120,7 +2143,7 @@ fn military_equipment_non_wearable_not_equipped() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
-        let _ = sim.db.creatures.update_no_fk(c);
+        sim.db.update_creature(c).unwrap();
     }
 
     sim.resolve_acquire_military_equipment_action(elf_id, task_id);
