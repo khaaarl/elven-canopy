@@ -203,6 +203,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-raid-polish          Raid polish: military groups, provisions for long treks
 [ ] F-recipe-any-mat       Any-material recipe parameter support
 [ ] F-rescue               Rescue and stabilize incapacitated creatures
+[ ] F-retire-events        Retire event queue: poll-based heartbeats and periodic systems
 [ ] F-root-network         Root network expansion and diplomacy
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
 [ ] F-round-building       Round/circular building construction
@@ -5864,12 +5865,32 @@ Tasks have required_species but no civ_id filter. Any creature of the right spec
 #### F-activation-revamp — Replace manual event scheduling with automatic reactivation
 **Status:** Todo · **Phase:** 5
 
-Revamp the creature activation/event system so that creatures do not need to manually schedule their next activation event. The current pattern — where every code path in execute_task_behavior, execute_attack_move, execute_attack_target_at_location, etc. must explicitly call event_queue.schedule() or risk leaving the creature permanently inert — is a persistent source of bugs. Any new return path that forgets to schedule a reactivation silently kills the creature's AI. Design a system where creatures are automatically reactivated unless explicitly suspended (e.g., waiting on an action timer).
+Replace event-driven creature activation with poll-based activation using indexed DB queries.
 
-Additional issues to address:
-- **Shoot resolution bypasses autonomous combat check (B-ranged-shoot-walk):** After a Shoot action resolves at activation.rs:308-319, if a heartbeat-assigned task (EatBread/Sleep) was sneaked onto the creature during the cooldown, execute_task_behavior is called for that task and the function returns — skipping the flee check and autonomous combat check entirely. This causes autonomous archers to alternate between shooting and performing survival tasks instead of continuing to fight. The root cause is that the Shoot/MeleeStrike resolution path enters execute_task_behavior for any task the creature has, while the Move resolution path correctly falls through to the flee and autonomous combat checks.
-- **Missing ranged cooldown wait in try_combat_against_target:** Melee on cooldown returns true and schedules reactivation (combat.rs:713-731), preventing the caller from walking. Ranged has no such handling — any try_shoot_arrow failure returns false, causing the caller to immediately walk toward the target. This asymmetry can cause ranged combatants to take unnecessary walk steps between shots.
+**Current problem:** Every code path in the activation cascade must explicitly call `event_queue.schedule()` or the creature goes permanently inert. Forgotten reactivations are a persistent bug class. Additionally, `cancel_creature_activations()` does an O(n) heap rebuild on action abort.
 
+**Solution:** Remove `CreatureActivation` from the event queue entirely. The main `step()` loop queries for creatures that need activation using the existing `next_available_tick` field on the Creature table.
+
+**Core mechanics:**
+- A creature is "available for activation" when `vital_status == Alive` and `next_available_tick <= current_tick`.
+- `next_available_tick` is always set to a concrete tick, never `None` in steady state. Set to `tick + 1` at spawn. When an action starts, set to `tick + duration`. When an action completes and the creature re-enters the decision cascade, set to `tick + 1` (replacing `schedule_reactivation`). This avoids same-tick activation order dependencies.
+- Compound tabulosity index on `(vital_status, next_available_tick)` enables efficient range scan: all `(Alive, None..=Some(tick))` entries. `None` sorts before all `Some` values in Rust's `Option` ordering, so the scan covers both `None` (newly created creatures not yet activated) and `Some(t)` where `t <= tick` in a single contiguous index sweep. Dead creatures (tens of thousands in long games) are skipped at the index level, not post-filtered.
+- Creatures processed in `CreatureId` order for deterministic tiebreaking within a tick.
+- The main loop asks the index for `min(next_available_tick)` among living creatures to compute the next tick to advance to, preserving the "empty ticks are free" property.
+
+**What this eliminates:**
+- All `schedule_reactivation()` calls → replaced by setting `next_available_tick = tick + 1`.
+- All `event_queue.schedule(CreatureActivation)` calls in `start_simple_action`, `ground_move_one_step`, `start_build_action`, etc. → action start already sets `next_available_tick`; no separate event needed.
+- `cancel_creature_activations()` and the O(n) heap filter in `abort_current_action` → just clear/reset `next_available_tick` on the creature row.
+- The "forgotten reactivation" bug class entirely — any alive creature with `next_available_tick <= tick` is found automatically.
+
+**Fixes included:**
+- **B-ranged-shoot-walk:** After Shoot resolves, creature goes through full decision cascade (flee → combat → task) instead of entering `execute_task_behavior` directly for a sneaked-in heartbeat task.
+- **Ranged cooldown asymmetry:** Ranged on cooldown sets `next_available_tick = cooldown_end`, matching melee's existing behavior, preventing unnecessary walk steps between shots.
+
+**Non-goals:** Other event types (`CreatureHeartbeat`, `TreeHeartbeat`, `LogisticsHeartbeat`, `ProjectileTick`, `GrassRegrowth`) remain in the event queue for now. See F-retire-events for extending poll-based activation to those systems.
+
+**Blocks:** F-retire-events
 **Related:** F-event-loop, F-task-assign-opt
 
 #### F-adventure-mode — Control individual elf (RPG-like)
@@ -5916,7 +5937,7 @@ enables headless testing, fast-forward, and replay verification.
 Discrete event simulation with priority queue. Empty ticks are free.
 1000 ticks per simulated second.
 
-**Related:** F-activation-revamp, F-sim-speed
+**Related:** F-activation-revamp, F-retire-events, F-sim-speed
 
 #### F-game-session — Game session autoload singleton
 **Status:** Done · **Refs:** §26
@@ -6070,6 +6091,20 @@ Optimize nav graph generation performance on 1024x255x1024 worlds.
 **Status:** In Progress
 
 New `elven_canopy_utils` crate with radix-partitioned parallel dedup algorithm. Scatters items by hash into power-of-2 buckets (bitmask assignment), deduplicates each bucket independently via hashbrown HashTable with precomputed hashes, collects results. Configurable bucket count and generic hasher (`parallel_dedup_with`). Sequential fallback below 10k items. Criterion benchmarks comparing bucket counts (32/64/128/256) × hashers (std/ahash/fxhash) × item types (u64/[u64;6]/String) × sizes (1k–10M). Currently slower than `par_sort_unstable + dedup` — needs tuning. **Draft:** `docs/drafts/parallel_dedup.md`
+
+#### F-retire-events — Retire event queue: poll-based heartbeats and periodic systems
+**Status:** Todo · **Phase:** 5
+
+After F-activation-revamp removes `CreatureActivation` from the event queue, revisit the remaining event types (`CreatureHeartbeat`, `TreeHeartbeat`, `LogisticsHeartbeat`, `ProjectileTick`, `GrassRegrowth`) and retire the event queue entirely.
+
+Two candidate approaches:
+- **Polling:** Same pattern as F-activation-revamp — each system has an indexed tick field, main loop queries for ready entries.
+- **Fixed-interval ticks:** Periodic systems fire at deterministic intervals (e.g., creature heartbeats at every tick divisible by N, logistics every M ticks). No per-entity scheduling or polling — the main loop checks `tick % interval == 0` and processes all relevant entities in ID order.
+
+The fixed-interval approach may be simpler and cheaper for systems that already run on regular cadences. Design decision deferred until F-activation-revamp is complete and we have experience with the poll model in practice.
+
+**Blocked by:** F-activation-revamp
+**Related:** F-event-loop
 
 #### F-rle-voxels — RLE column-based voxel storage
 **Status:** Done
