@@ -144,6 +144,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-food-quality-mood    Food quality affects dining mood boost
 [ ] F-forest-ecology       Forest floor ecology (flora, fauna, foraging)
 [ ] F-forest-radar         Forest awareness radar (world map detection)
+[ ] F-fov-slider           FOV slider in settings
 [ ] F-fruit-pigments       More natural fruit pigment colors (secondaries on fruit parts)
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-sprite-ui      Fruit sprites in inventory/logistics/selection UI
@@ -5198,6 +5199,9 @@ Zoom level stays at the player's current setting (no auto-zoom to
 bounding box). WASD breaks follow as with single-unit follow.
 
 **Related:** F-cam-follow, F-selection-groups
+
+#### F-fov-slider — FOV slider in settings
+**Status:** Todo
 
 #### F-fruit-sprite-ui — Fruit sprites in inventory/logistics/selection UI
 **Status:** Todo
