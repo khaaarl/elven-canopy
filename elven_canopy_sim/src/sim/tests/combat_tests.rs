@@ -3,39 +3,12 @@
 //! avoidance, projectile flight paths, weapon degradation, and arrow chase.
 //! Corresponds to `sim/combat.rs`.
 
+use super::test_helpers::*;
 use super::*;
 
 // -----------------------------------------------------------------------
 // Domain-specific helpers
 // -----------------------------------------------------------------------
-
-fn force_guaranteed_hits(sim: &mut SimState, creature_id: CreatureId) {
-    use crate::db::CreatureTrait;
-    use crate::types::TraitValue;
-    // Set Striking and Archery to 500 (huge attack bonus).
-    // With zeroed defender stats, attacker_total = 500 + DEX + quasi_normal.
-    // Even with DEX=0, min attacker_total = 500 + 0 + (-300) = 200 > 0, so
-    // always hits.
-    for skill in [TraitKind::Striking, TraitKind::Archery] {
-        if sim.db.creature_traits.get(&(creature_id, skill)).is_some() {
-            let _ = sim
-                .db
-                .creature_traits
-                .modify_unchecked(&(creature_id, skill), |t| {
-                    t.value = TraitValue::Int(500);
-                });
-        } else {
-            let _ = sim.db.creature_traits.insert_no_fk(CreatureTrait {
-                creature_id,
-                trait_kind: skill,
-                value: TraitValue::Int(500),
-            });
-        }
-    }
-    // Raise crit threshold so the large attack bonus guarantees a normal Hit,
-    // not a CriticalHit (which would double damage and break assertions).
-    sim.config.evasion_crit_threshold = 100_000;
-}
 
 /// Helper: equip a full set of wood armor on a creature (all 5 slots).
 fn equip_full_armor(sim: &mut SimState, creature_id: CreatureId) {
@@ -98,45 +71,6 @@ fn equip_armor_with_durability(
         .find(|s| s.kind == kind && s.equipped_slot.is_none())
         .unwrap();
     sim.inv_equip_item(stack.id);
-}
-
-/// Helper: give a creature a bow and some arrows.
-fn arm_with_bow_and_arrows(sim: &mut SimState, creature_id: CreatureId, arrows: u32) {
-    let inv_id = sim.db.creatures.get(&creature_id).unwrap().inventory_id;
-    sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bow, 1, Some(creature_id), None);
-    sim.inv_add_simple_item(
-        inv_id,
-        inventory::ItemKind::Arrow,
-        arrows,
-        Some(creature_id),
-        None,
-    );
-}
-
-fn spawn_hornet_at(sim: &mut SimState, pos: VoxelCoord) -> CreatureId {
-    let existing: std::collections::BTreeSet<CreatureId> = sim
-        .db
-        .creatures
-        .iter_all()
-        .filter(|c| c.species == Species::Hornet)
-        .map(|c| c.id)
-        .collect();
-    let tick = sim.tick + 1;
-    let cmd = SimCommand {
-        player_name: String::new(),
-        tick,
-        action: SimAction::SpawnCreature {
-            species: Species::Hornet,
-            position: pos,
-        },
-    };
-    sim.step(&[cmd], tick + 1);
-    sim.db
-        .creatures
-        .iter_all()
-        .find(|c| c.species == Species::Hornet && !existing.contains(&c.id))
-        .expect("hornet should have spawned")
-        .id
 }
 
 /// Helper: spawn elf, make it aggressive (military group), zero stats (predictable damage),

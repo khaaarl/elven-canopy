@@ -1050,34 +1050,6 @@ fn hungry_elf_with_unowned_bread_seeks_fruit() {
 // Home assignment tests
 // -----------------------------------------------------------------------
 
-/// Create a completed building at `anchor`, furnish it as Home, and manually
-/// place 1 bed in the furniture table (skipping the furnishing task flow).
-fn insert_completed_home(sim: &mut SimState, anchor: VoxelCoord) -> StructureId {
-    let structure_id = insert_completed_building(sim, anchor);
-
-    // Find a valid bed position inside the building interior.
-    let structure = sim.db.structures.get(&structure_id).unwrap();
-    let interior = structure.floor_interior_positions();
-    let bed_pos = interior[0]; // First interior tile.
-
-    let mut structure = sim.db.structures.get(&structure_id).unwrap();
-    structure.furnishing = Some(FurnishingType::Home);
-    let _ = sim.db.structures.update_no_fk(structure);
-
-    // Insert a placed furniture row for the bed.
-    let _ = sim
-        .db
-        .furniture
-        .insert_auto_no_fk(|id| crate::db::Furniture {
-            id,
-            structure_id,
-            coord: bed_pos,
-            placed: true,
-        });
-
-    structure_id
-}
-
 #[test]
 fn assign_home_sets_bidirectional_refs() {
     let mut sim = test_sim(42);
@@ -1730,53 +1702,8 @@ fn death_clears_assigned_home() {
 }
 
 // -----------------------------------------------------------------------
-// Dining hall helpers and tests
+// Dining hall tests
 // -----------------------------------------------------------------------
-
-/// Helper: create a furnished dining hall at `pos` with one table and stock
-/// `food_count` bread items. Returns the structure ID.
-fn create_dining_hall(sim: &mut SimState, pos: VoxelCoord, food_count: u32) -> StructureId {
-    let structure_id = StructureId(900);
-    let project_id = ProjectId::new(&mut sim.rng);
-    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
-    sim.db
-        .structures
-        .insert_no_fk(CompletedStructure {
-            id: structure_id,
-            project_id,
-            build_type: BuildType::Building,
-            anchor: pos,
-            width: 3,
-            depth: 3,
-            height: 3,
-            completed_tick: 0,
-            name: None,
-            furnishing: Some(FurnishingType::DiningHall),
-            inventory_id: inv_id,
-            logistics_priority: None,
-            crafting_enabled: false,
-            greenhouse_species: None,
-            greenhouse_enabled: false,
-            greenhouse_last_production_tick: 0,
-            last_dance_completed_tick: 0,
-        })
-        .unwrap();
-    // Place one table.
-    let _ = sim
-        .db
-        .furniture
-        .insert_auto_no_fk(|id| crate::db::Furniture {
-            id,
-            structure_id,
-            coord: pos,
-            placed: true,
-        });
-    // Stock food.
-    if food_count > 0 {
-        sim.inv_add_simple_item(inv_id, ItemKind::Bread, food_count, None, None);
-    }
-    structure_id
-}
 
 #[test]
 fn find_nearest_dining_hall_returns_hall_with_food() {

@@ -3,44 +3,12 @@
 //! and serde roundtrip.
 //! Corresponds to `sim/taming.rs`.
 
+use super::test_helpers::*;
 use super::*;
 
 // ---------------------------------------------------------------------------
 // Taming (F-taming)
 // ---------------------------------------------------------------------------
-
-/// Helper: assign a path to a creature via SimAction::AssignPath.
-fn assign_path(sim: &mut SimState, creature_id: CreatureId, path_id: PathId) {
-    let cmd = SimCommand {
-        player_name: String::new(),
-        tick: sim.tick + 1,
-        action: SimAction::AssignPath {
-            creature_id,
-            path_id,
-        },
-    };
-    sim.step(&[cmd], sim.tick + 1);
-}
-
-/// Helper: send DesignateTame for a creature.
-fn designate_tame(sim: &mut SimState, target_id: CreatureId) {
-    let cmd = SimCommand {
-        player_name: String::new(),
-        tick: sim.tick + 1,
-        action: SimAction::DesignateTame { target_id },
-    };
-    sim.step(&[cmd], sim.tick + 1);
-}
-
-/// Helper: send CancelTameDesignation for a creature.
-fn cancel_tame_designation(sim: &mut SimState, target_id: CreatureId) {
-    let cmd = SimCommand {
-        player_name: String::new(),
-        tick: sim.tick + 1,
-        action: SimAction::CancelTameDesignation { target_id },
-    };
-    sim.step(&[cmd], sim.tick + 1);
-}
 
 #[test]
 fn taming_designate_creates_task_and_designation() {

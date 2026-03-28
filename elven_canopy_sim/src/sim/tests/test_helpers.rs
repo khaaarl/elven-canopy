@@ -839,15 +839,54 @@ pub(super) fn place_all_furniture(sim: &mut SimState, structure_id: StructureId)
     }
 }
 
-/// Insert a test fruit species with cultivation enabled.
+/// Insert a test fruit species with known properties for deterministic tests.
 pub(super) fn insert_test_fruit_species(sim: &mut SimState) -> crate::fruit::FruitSpeciesId {
-    // Find an existing cultivable species from worldgen.
-    sim.db
-        .fruit_species
-        .iter_all()
-        .find(|f| f.greenhouse_cultivable)
-        .map(|f| f.id)
-        .expect("worldgen should produce at least one cultivable fruit species")
+    use crate::fruit::{
+        FruitAppearance, FruitColor, FruitPart, FruitShape, FruitSpecies, GrowthHabitat, PartType,
+        Rarity,
+    };
+    use std::collections::BTreeSet;
+    let id = crate::types::FruitSpeciesId(999);
+    let species = FruitSpecies {
+        id,
+        vaelith_name: "Testaleth".to_string(),
+        english_gloss: "test-berry".to_string(),
+        parts: vec![
+            FruitPart {
+                part_type: PartType::Flesh,
+                properties: BTreeSet::new(),
+                pigment: None,
+                component_units: 37,
+            },
+            FruitPart {
+                part_type: PartType::Fiber,
+                properties: BTreeSet::new(),
+                pigment: None,
+                component_units: 52,
+            },
+            FruitPart {
+                part_type: PartType::Seed,
+                properties: BTreeSet::new(),
+                pigment: None,
+                component_units: 15,
+            },
+        ],
+        habitat: GrowthHabitat::Branch,
+        rarity: Rarity::Common,
+        greenhouse_cultivable: true,
+        appearance: FruitAppearance {
+            exterior_color: FruitColor {
+                r: 200,
+                g: 100,
+                b: 50,
+            },
+            shape: FruitShape::Round,
+            size_percent: 100,
+            glows: false,
+        },
+    };
+    let _ = sim.db.fruit_species.insert_no_fk(species);
+    id
 }
 
 /// Set up an extraction kitchen: furnish a building as Kitchen, add an
@@ -897,9 +936,53 @@ pub(super) fn setup_extraction_kitchen(
     (structure_id, species_id)
 }
 
-/// Insert a full-chain fruit species with pulp, bowstring, etc.
+/// Insert a fruit species with Starchy flesh + FibrousFine fiber +
+/// pigmented rind, enabling the full Extract->Mill->Bake and Spin->Weave chains.
 pub(super) fn insert_full_chain_fruit_species(sim: &mut SimState) -> crate::fruit::FruitSpeciesId {
-    insert_test_fruit_species(sim)
+    use crate::fruit::{
+        DyeColor, FruitAppearance, FruitColor, FruitPart, FruitShape, FruitSpecies, GrowthHabitat,
+        PartProperty, PartType, Rarity,
+    };
+    use std::collections::BTreeSet;
+    let id = crate::types::FruitSpeciesId(998);
+    let mut starchy_props = BTreeSet::new();
+    starchy_props.insert(PartProperty::Starchy);
+    let mut fine_fiber_props = BTreeSet::new();
+    fine_fiber_props.insert(PartProperty::FibrousFine);
+    let species = FruitSpecies {
+        id,
+        vaelith_name: "Chainberry".to_string(),
+        english_gloss: "chain-berry".to_string(),
+        parts: vec![
+            FruitPart {
+                part_type: PartType::Flesh,
+                properties: starchy_props,
+                pigment: Some(DyeColor::Red),
+                component_units: 40,
+            },
+            FruitPart {
+                part_type: PartType::Fiber,
+                properties: fine_fiber_props,
+                pigment: None,
+                component_units: 30,
+            },
+        ],
+        habitat: GrowthHabitat::Branch,
+        rarity: Rarity::Common,
+        greenhouse_cultivable: false,
+        appearance: FruitAppearance {
+            exterior_color: FruitColor {
+                r: 200,
+                g: 50,
+                b: 50,
+            },
+            shape: FruitShape::Round,
+            size_percent: 100,
+            glows: false,
+        },
+    };
+    let _ = sim.db.fruit_species.insert_no_fk(species);
+    id
 }
 
 /// Mope test helper: create a sim with mope configuration and optional thoughts.
@@ -962,21 +1045,24 @@ pub(super) fn insert_pursuit_task(
         location: destination,
         progress: 0,
         total_cost: 0,
-        required_species: None,
+        required_species: Some(Species::Elf),
         origin: TaskOrigin::PlayerDirected,
         target_creature: Some(target),
-        restrict_to_creature_id: Some(pursuer),
+        restrict_to_creature_id: None,
         prerequisite_task_id: None,
         required_civ_id: None,
     };
     sim.insert_task(task);
-    let _ = sim.db.creatures.modify_unchecked(&pursuer, |c| {
-        c.current_task = Some(task_id);
-    });
+    // Directly assign the pursuer to this task.
+    let mut pursuer_creature = sim.db.creatures.get(&pursuer).unwrap();
+    pursuer_creature.current_task = Some(task_id);
+    let _ = sim.db.creatures.update_no_fk(pursuer_creature);
     task_id
 }
 
-/// Helper: find an Air voxel adjacent to a Leaf or Wood voxel.
+/// Find a Leaf voxel that is face-adjacent to a Trunk, Branch, or Root
+/// voxel (not just any solid -- must be adjacent to structural wood so the
+/// structural validator can reach the ground).
 pub(super) fn find_leaf_adjacent_to_wood(sim: &SimState) -> VoxelCoord {
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     for &leaf_coord in &tree.leaf_voxels {
@@ -989,12 +1075,13 @@ pub(super) fn find_leaf_adjacent_to_wood(sim: &SimState) -> VoxelCoord {
             (0, 0, -1),
         ] {
             let neighbor = VoxelCoord::new(leaf_coord.x + dx, leaf_coord.y + dy, leaf_coord.z + dz);
-            if sim.world.in_bounds(neighbor) && sim.world.get(neighbor) == VoxelType::Air {
+            let vt = sim.world.get(neighbor);
+            if matches!(vt, VoxelType::Trunk | VoxelType::Branch | VoxelType::Root) {
                 return leaf_coord;
             }
         }
     }
-    panic!("No leaf voxel adjacent to air found");
+    panic!("No leaf voxel adjacent to wood found");
 }
 
 /// Add an active recipe with output targets to a crafting building.
@@ -1030,7 +1117,18 @@ pub(super) fn add_recipe_with_targets(
 }
 /// Spawn multiple test elves.
 pub(super) fn spawn_test_elves(sim: &mut SimState, count: usize) -> Vec<CreatureId> {
-    (0..count).map(|_| spawn_elf(sim)).collect()
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    for _ in 0..count {
+        let mut events = Vec::new();
+        sim.spawn_creature(Species::Elf, tree_pos, &mut events);
+    }
+    // Collect all alive elves (includes any pre-existing ones).
+    sim.db
+        .creatures
+        .iter_all()
+        .filter(|c| c.species == Species::Elf && c.vital_status == VitalStatus::Alive)
+        .map(|c| c.id)
+        .collect()
 }
 
 /// Create a debug dance activity.
@@ -1038,55 +1136,88 @@ pub(super) fn create_debug_dance(
     sim: &mut SimState,
     location: VoxelCoord,
 ) -> crate::types::ActivityId {
-    let cmd = SimCommand {
-        player_name: String::new(),
-        tick: sim.tick + 1,
-        action: SimAction::StartDebugDance,
-    };
-    sim.step(&[cmd], sim.tick + 1);
+    let before: std::collections::BTreeSet<_> =
+        sim.db.activities.iter_all().map(|a| a.id).collect();
+    let mut events = Vec::new();
+    sim.handle_create_activity(
+        ActivityKind::Dance,
+        location,
+        Some(3),
+        Some(3),
+        TaskOrigin::PlayerDirected,
+        &mut events,
+    );
     sim.db
         .activities
         .iter_all()
-        .last()
-        .expect("activity should exist")
-        .id
+        .map(|a| a.id)
+        .find(|id| !before.contains(id))
+        .expect("create_debug_dance: no new activity created")
 }
 
-/// Helper: create a dining hall building with food.
+/// Helper: create a furnished dining hall at `pos` with one table and stock
+/// `food_count` bread items. Returns the structure ID.
 pub(super) fn create_dining_hall(
     sim: &mut SimState,
     pos: VoxelCoord,
     food_count: u32,
 ) -> StructureId {
-    let structure_id = insert_completed_building(sim, pos);
-    let _ = sim.db.structures.modify_unchecked(&structure_id, |s| {
-        s.furnishing = Some(FurnishingType::DiningHall);
-    });
-    // Add food to the dining hall inventory.
+    let structure_id = StructureId(900);
+    let project_id = ProjectId::new(&mut sim.rng);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.db
+        .structures
+        .insert_no_fk(CompletedStructure {
+            id: structure_id,
+            project_id,
+            build_type: BuildType::Building,
+            anchor: pos,
+            width: 3,
+            depth: 3,
+            height: 3,
+            completed_tick: 0,
+            name: None,
+            furnishing: Some(FurnishingType::DiningHall),
+            inventory_id: inv_id,
+            logistics_priority: None,
+            crafting_enabled: false,
+            greenhouse_species: None,
+            greenhouse_enabled: false,
+            greenhouse_last_production_tick: 0,
+            last_dance_completed_tick: 0,
+        })
+        .unwrap();
+    // Place one table.
+    let _ = sim
+        .db
+        .furniture
+        .insert_auto_no_fk(|id| crate::db::Furniture {
+            id,
+            structure_id,
+            coord: pos,
+            placed: true,
+        });
+    // Stock food.
     if food_count > 0 {
-        let inv_id = sim.db.structures.get(&structure_id).unwrap().inventory_id;
-        sim.inv_add_item(
-            inv_id,
-            ItemKind::Bread,
-            food_count,
-            None,
-            None,
-            None,
-            0,
-            None,
-            None,
-        );
+        sim.inv_add_simple_item(inv_id, ItemKind::Bread, food_count, None, None);
     }
     structure_id
 }
 
-/// Helper: create a dance hall building.
+/// Helper: create a furnished dance hall and return its structure ID.
 pub(super) fn create_dance_hall(sim: &mut SimState) -> StructureId {
     let anchor = find_building_site(sim);
     let structure_id = insert_completed_building(sim, anchor);
-    let _ = sim.db.structures.modify_unchecked(&structure_id, |s| {
-        s.furnishing = Some(FurnishingType::DanceHall);
-    });
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::FurnishStructure {
+            structure_id,
+            furnishing_type: FurnishingType::DanceHall,
+            greenhouse_species: None,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
     structure_id
 }
 

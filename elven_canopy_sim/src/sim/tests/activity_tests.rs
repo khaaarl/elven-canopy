@@ -4,65 +4,8 @@
 //! and participant management (death, preemption, re-volunteering).
 //! Corresponds to `sim/activity.rs`.
 
+use super::test_helpers::*;
 use super::*;
-
-// ===========================================================================
-// Helpers
-// ===========================================================================
-
-/// Helper: create a Dance activity via command and return its ID.
-fn create_debug_dance(sim: &mut SimState, location: VoxelCoord) -> ActivityId {
-    let before: std::collections::BTreeSet<_> =
-        sim.db.activities.iter_all().map(|a| a.id).collect();
-    let mut events = Vec::new();
-    sim.handle_create_activity(
-        ActivityKind::Dance,
-        location,
-        Some(3),
-        Some(3),
-        TaskOrigin::PlayerDirected,
-        &mut events,
-    );
-    sim.db
-        .activities
-        .iter_all()
-        .map(|a| a.id)
-        .find(|id| !before.contains(id))
-        .expect("create_debug_dance: no new activity created")
-}
-
-/// Helper: spawn N elves at the tree position and return their IDs.
-fn spawn_test_elves(sim: &mut SimState, count: usize) -> Vec<CreatureId> {
-    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    for _ in 0..count {
-        let mut events = Vec::new();
-        sim.spawn_creature(Species::Elf, tree_pos, &mut events);
-    }
-    // Collect the newly spawned elves (includes any pre-existing ones).
-    sim.db
-        .creatures
-        .iter_all()
-        .filter(|c| c.species == Species::Elf && c.vital_status == VitalStatus::Alive)
-        .map(|c| c.id)
-        .collect()
-}
-
-/// Helper: create a furnished dance hall and return its structure ID.
-fn create_dance_hall(sim: &mut SimState) -> StructureId {
-    let anchor = find_building_site(sim);
-    let structure_id = insert_completed_building(sim, anchor);
-    let cmd = SimCommand {
-        player_name: String::new(),
-        tick: sim.tick + 1,
-        action: SimAction::FurnishStructure {
-            structure_id,
-            furnishing_type: FurnishingType::DanceHall,
-            greenhouse_species: None,
-        },
-    };
-    sim.step(&[cmd], sim.tick + 1);
-    structure_id
-}
 
 // ===========================================================================
 // Group activity lifecycle tests
