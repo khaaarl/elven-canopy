@@ -4371,8 +4371,8 @@ impl SimBridge {
     /// **Blueprint-aware:** Treats designated (not yet built) blueprints as
     /// their target voxel types for carvability and structural checks.
     ///
-    /// Counts carvable solid voxels (not Air, not Dirt, considering
-    /// overlay) in the region. Returns a `VarDictionary` with `"tier"` and
+    /// Counts carvable solid voxels (above bedrock, considering overlay)
+    /// in the region. Returns a `VarDictionary` with `"tier"` and
     /// `"message"` keys.
     #[func]
     fn validate_carve_preview(
@@ -4406,8 +4406,9 @@ impl SimBridge {
             }
         }
 
-        // Collect carvable coords: solid, not Dirt, and not already
-        // claimed by an existing blueprint (F-no-bp-overlap).
+        // Collect carvable coords: solid, above bedrock (y > 0), and not
+        // already claimed by an existing blueprint (F-no-bp-overlap).
+        // Must match the filter in `designate_carve()` (construction.rs).
         let mut carve_coords = Vec::new();
         for dy in 0..h {
             for dx in 0..w {
@@ -4417,7 +4418,7 @@ impl SimBridge {
                         continue;
                     }
                     let vt = effective_type(coord);
-                    if vt.is_solid() && vt != VoxelType::Dirt {
+                    if vt.is_solid() && coord.y > 0 {
                         carve_coords.push(coord);
                     }
                 }

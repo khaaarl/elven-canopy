@@ -2105,6 +2105,48 @@ fn test_carve_task_location_uses_nav_node() {
 }
 
 #[test]
+fn test_designate_carve_accepts_dirt_voxels() {
+    // Regression test for B-carve-dirt: pure dirt voxels above bedrock
+    // must be accepted by designate_carve (and by validate_carve_preview
+    // in gdext, which mirrors this filter).
+    let mut config = test_config();
+    config.terrain_max_height = 3;
+    let mut sim = SimState::with_config(42, config);
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
+    let tree_pos = tree.position;
+
+    // Find a dirt voxel above bedrock (y > 0).
+    let dirt_coord = (-20i32..=20)
+        .flat_map(|dx| (-20i32..=20).map(move |dz| (dx, dz)))
+        .flat_map(|(dx, dz)| (1i32..=5).rev().map(move |y| (dx, y, dz)))
+        .map(|(dx, y, dz)| VoxelCoord::new(tree_pos.x + dx, y, tree_pos.z + dz))
+        .find(|&c| sim.world.in_bounds(c) && sim.world.get(c) == VoxelType::Dirt && c.y > 0)
+        .expect("Should find carvable dirt voxel near tree");
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::DesignateCarve {
+            voxels: vec![dirt_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // A blueprint should be created — dirt above bedrock is carvable.
+    assert_eq!(
+        sim.db.blueprints.len(),
+        1,
+        "Dirt voxel at {:?} should be carvable; last_build_message: {:?}",
+        dirt_coord,
+        sim.last_build_message,
+    );
+    let bp = sim.db.blueprints.iter_all().next().unwrap();
+    assert_eq!(bp.build_type, BuildType::Carve);
+    assert_eq!(bp.voxels, vec![dirt_coord]);
+}
+
+#[test]
 fn test_carve_skips_bedrock_layer() {
     let mut sim = test_sim(42);
     let (ws_x, _, ws_z) = sim.config.world_size;
