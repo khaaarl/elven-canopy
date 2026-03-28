@@ -2695,7 +2695,10 @@ fn elf_resumes_activation_after_dining() {
 }
 
 #[test]
-fn dine_at_hall_no_food_completes_speculative_task() {
+fn dine_at_hall_no_task_when_food_unavailable() {
+    // When all food in a dining hall is reserved, the heartbeat must not
+    // create a DineAtHall task at all — no speculative insert, no orphaned
+    // rows.
     let mut sim = test_sim(42);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
@@ -2707,14 +2710,10 @@ fn dine_at_hall_no_food_completes_speculative_task() {
 
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
-    // Create a dining hall with NO food.
-    create_dining_hall(&mut sim, table_pos, 0);
-
-    // Stock 1 food so find_nearest_dining_hall succeeds (it requires food),
-    // then immediately reserve it so inv_reserve_unowned_items finds nothing.
+    // Create a dining hall and stock 1 bread.
+    create_dining_hall(&mut sim, table_pos, 1);
     let structure_id = StructureId(900);
     let inv_id = sim.db.structures.get(&structure_id).unwrap().inventory_id;
-    sim.inv_add_simple_item(inv_id, ItemKind::Bread, 1, None, None);
 
     // Reserve the bread with a dummy task so the elf can't claim it.
     let dummy_task_id = TaskId::new(&mut sim.rng);
@@ -2729,6 +2728,8 @@ fn dine_at_hall_no_food_completes_speculative_task() {
         sim.db.update_item_stack(s).unwrap();
     }
 
+    let tasks_before = sim.db.tasks.iter_all().count();
+
     // Set food to 50% — below dining threshold (60%) but above emergency (40%).
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
@@ -2736,23 +2737,107 @@ fn dine_at_hall_no_food_completes_speculative_task() {
         sim.db.update_creature(c).unwrap();
     }
 
-    // Advance one heartbeat. The heartbeat will find the dining hall (it has
-    // 1 bread, passing the existence check), speculatively insert a DineAtHall
-    // task, then fail to reserve food (all bread is reserved). It should call
-    // complete_task to clean up the speculative task.
+    // Advance one heartbeat. find_nearest_dining_hall sees no unreserved food
+    // and returns None, so no task is created.
     sim.step(&[], 1 + heartbeat);
 
-    // Elf should NOT have a DineAtHall task — the speculative task was cleaned up.
+    // Elf should NOT have a DineAtHall task.
     let creature = sim.db.creatures.get(&elf_id).unwrap();
-    let has_dine_task = creature.current_task.is_some_and(|tid| {
-        sim.db
-            .tasks
-            .get(&tid)
-            .is_some_and(|t| t.kind_tag == TaskKindTag::DineAtHall)
-    });
     assert!(
-        !has_dine_task,
-        "Elf should not have a DineAtHall task when no food could be reserved"
+        creature.current_task.is_none()
+            || !sim
+                .db
+                .tasks
+                .get(&creature.current_task.unwrap())
+                .is_some_and(|t| t.kind_tag == TaskKindTag::DineAtHall),
+        "Elf should not have a DineAtHall task when no food is available"
+    );
+
+    // No DineAtHall tasks should exist in the DB at all.
+    let dine_tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::DineAtHall)
+        .collect();
+    assert!(
+        dine_tasks.is_empty(),
+        "No DineAtHall tasks should be created when food is unavailable; \
+         found {} task(s)",
+        dine_tasks.len(),
+    );
+
+    // Task count should not grow.
+    assert_eq!(
+        sim.db.tasks.iter_all().count(),
+        tasks_before,
+        "Task count should not grow from failed dining attempts"
+    );
+}
+
+#[test]
+fn two_elves_one_food_only_one_gets_dine_task() {
+    // Two hungry elves, one dining hall with exactly 1 food item. After a
+    // heartbeat tick, exactly one elf should get a DineAtHall task. The
+    // other stays idle. No orphaned tasks should remain.
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let graph = sim.graph_for_species(Species::Elf);
+    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_pos = graph.node(table_node).position;
+
+    let food_max = sim.species_table[&Species::Elf].food_max;
+    let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    let elf_a = spawn_creature(&mut sim, Species::Elf);
+    let elf_b = spawn_creature(&mut sim, Species::Elf);
+
+    // Create a dining hall with exactly 1 bread.
+    create_dining_hall(&mut sim, table_pos, 1);
+
+    // Set both elves to 50% food — below dining threshold.
+    for eid in [elf_a, elf_b] {
+        let mut c = sim.db.creatures.get(&eid).unwrap();
+        c.food = food_max * 50 / 100;
+        sim.db.update_creature(c).unwrap();
+    }
+
+    // Advance one heartbeat so both elves' heartbeats fire.
+    sim.step(&[], 1 + heartbeat);
+
+    // Exactly one elf should have a DineAtHall task.
+    let has_dine = |eid: CreatureId| -> bool {
+        sim.db
+            .creatures
+            .get(&eid)
+            .and_then(|c| c.current_task)
+            .is_some_and(|tid| {
+                sim.db
+                    .tasks
+                    .get(&tid)
+                    .is_some_and(|t| t.kind_tag == TaskKindTag::DineAtHall)
+            })
+    };
+    let a_dining = has_dine(elf_a);
+    let b_dining = has_dine(elf_b);
+    assert!(
+        a_dining ^ b_dining,
+        "Exactly one elf should get a DineAtHall task (a={a_dining}, b={b_dining})"
+    );
+
+    // No orphaned DineAtHall tasks: exactly 1 should exist, assigned to
+    // whichever elf got it.
+    let dine_tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::DineAtHall)
+        .collect();
+    assert_eq!(
+        dine_tasks.len(),
+        1,
+        "Exactly 1 DineAtHall task should exist, found {}",
+        dine_tasks.len(),
     );
 }
 

@@ -65,7 +65,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-carve-perf           Carving dirt causes severe CPU stall, possibly structural checks
 [ ] B-chamfer-nonmfld      Chamfer produces non-manifold edges for diagonally-adjacent voxels
 [ ] B-dead-owner-items     Dead creature items retain ownership, becoming invisible to all systems
-[ ] B-dine-orphan-task     DineAtHall speculative task leaves orphaned Complete rows
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-floating-dirt        Floating dirt still treated as ground by structural validator
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
@@ -285,6 +284,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-dead-enums           Remove dead GrownStairs/Bridge code and add explicit enum discriminants
 [x] B-dead-max-gen         Remove vestigial max_gen_per_frame field and ~40 test calls
 [x] B-dead-node-panic      Panic on dead nav node in pathfinding
+[x] B-dine-orphan-task     DineAtHall speculative task leaves orphaned Complete rows
 [x] B-dirt-not-pinned      Dirt unpinned in fast structural validator
 [x] B-erratic-movement     Erratic/too-fast creature movement after move commands
 [x] B-escape-menu          Rename pause_menu to escape_menu and block hotkeys/buttons while it's open
@@ -1971,7 +1971,7 @@ Requires F-flying-nav-big.
 **Status:** Todo
 
 #### B-dine-orphan-task — DineAtHall speculative task leaves orphaned Complete rows
-**Status:** Todo
+**Status:** Done
 
 The DineAtHall code path speculatively inserts a task before checking if food can be reserved (needed for FK validation on item_stacks.reserved_by). If no food is available, the task is cleaned up via `complete_task()`, which sets it to Complete state rather than removing it. This leaves orphaned Complete DineAtHall tasks in the DB. While not a correctness bug, it creates unnecessary DB clutter. Consider either removing the task on the failure path, or adding a periodic GC for completed tasks with zero progress.
 

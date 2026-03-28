@@ -1395,72 +1395,88 @@ impl SimState {
                     && let Some((table_coord, _nav_node, structure_id)) =
                         self.find_nearest_dining_hall(creature_id)
                 {
-                    let task_id = TaskId::new(&mut self.rng);
-                    // Insert task before reserving so the task row exists for
-                    // FK validation on item_stacks.reserved_by.
-                    let new_task = task::Task {
-                        id: task_id,
-                        kind: task::TaskKind::DineAtHall { structure_id },
-                        state: task::TaskState::InProgress,
-                        location: table_coord,
-                        progress: 0,
-                        total_cost: 0,
-                        required_species: None,
-                        origin: task::TaskOrigin::Autonomous,
-                        target_creature: None,
-                        restrict_to_creature_id: None,
-                        prerequisite_task_id: None,
-                        required_civ_id: None,
-                    };
-                    self.insert_task(new_task);
-
-                    // Reserve one edible food item in the dining hall.
-                    let mut food_reserved = false;
-                    if let Some(structure) = self.db.structures.get(&structure_id) {
-                        let inv_id = structure.inventory_id;
-                        for kind in inventory::ItemKind::EDIBLE_KINDS {
-                            let reserved = self.inv_reserve_unowned_items(
-                                inv_id,
+                    // Verify unreserved food exists before creating any DB rows.
+                    // find_nearest_dining_hall already checks this, but we
+                    // confirm here so we never insert a task we'd have to
+                    // roll back.
+                    let has_food = self.db.structures.get(&structure_id).is_some_and(|s| {
+                        inventory::ItemKind::EDIBLE_KINDS.iter().any(|kind| {
+                            self.inv_unreserved_item_count(
+                                s.inventory_id,
                                 *kind,
                                 inventory::MaterialFilter::Any,
-                                1,
-                                task_id,
-                            );
-                            if reserved > 0 {
-                                food_reserved = true;
-                                break;
+                            ) > 0
+                        })
+                    });
+                    if has_food {
+                        // Insert the task first so the FK on
+                        // item_stacks.reserved_by is satisfied.
+                        let task_id = TaskId::new(&mut self.rng);
+                        let new_task = task::Task {
+                            id: task_id,
+                            kind: task::TaskKind::DineAtHall { structure_id },
+                            state: task::TaskState::InProgress,
+                            location: table_coord,
+                            progress: 0,
+                            total_cost: 0,
+                            required_species: None,
+                            origin: task::TaskOrigin::Autonomous,
+                            target_creature: None,
+                            restrict_to_creature_id: None,
+                            prerequisite_task_id: None,
+                            required_civ_id: None,
+                        };
+                        self.insert_task(new_task);
+
+                        // Reserve one edible food item in the dining hall.
+                        let mut food_reserved = false;
+                        if let Some(structure) = self.db.structures.get(&structure_id) {
+                            let inv_id = structure.inventory_id;
+                            for kind in inventory::ItemKind::EDIBLE_KINDS {
+                                let reserved = self.inv_reserve_unowned_items(
+                                    inv_id,
+                                    *kind,
+                                    inventory::MaterialFilter::Any,
+                                    1,
+                                    task_id,
+                                );
+                                if reserved > 0 {
+                                    food_reserved = true;
+                                    break;
+                                }
                             }
                         }
-                    }
-                    if food_reserved {
-                        // Preemption must happen AFTER confirming reservation —
-                        // otherwise a failed reservation leaves the elf taskless
-                        // with the old task already gone.
-                        if should_preempt_for_dining
-                            && let Some(tid) = self
-                                .db
-                                .creatures
-                                .get(&creature_id)
-                                .and_then(|c| c.current_task)
-                        {
-                            self.preempt_task(creature_id, tid);
+                        if food_reserved {
+                            // Preemption must happen AFTER confirming
+                            // reservation — otherwise a failed reservation
+                            // leaves the elf taskless with the old task gone.
+                            if should_preempt_for_dining
+                                && let Some(tid) = self
+                                    .db
+                                    .creatures
+                                    .get(&creature_id)
+                                    .and_then(|c| c.current_task)
+                            {
+                                self.preempt_task(creature_id, tid);
+                            }
+                            // Insert DiningSeat voxel ref for seat reservation.
+                            let seq = self.db.task_voxel_refs.next_seq();
+                            let _ = self.db.insert_task_voxel_ref(crate::db::TaskVoxelRef {
+                                seq,
+                                task_id,
+                                coord: table_coord,
+                                role: crate::db::TaskVoxelRole::DiningSeat,
+                            });
+                            if let Some(mut creature) = self.db.creatures.get(&creature_id) {
+                                creature.current_task = Some(task_id);
+                                let _ = self.db.update_creature(creature);
+                            }
+                        } else {
+                            // Reservation failed despite the pre-check (should
+                            // not happen in single-threaded sim, but defend
+                            // against it). Remove the task entirely.
+                            let _ = self.db.remove_task(&task_id);
                         }
-                        // Insert DiningSeat voxel ref for seat reservation.
-                        let seq = self.db.task_voxel_refs.next_seq();
-                        let _ = self.db.insert_task_voxel_ref(crate::db::TaskVoxelRef {
-                            seq,
-                            task_id,
-                            coord: table_coord,
-                            role: crate::db::TaskVoxelRole::DiningSeat,
-                        });
-                        if let Some(mut creature) = self.db.creatures.get(&creature_id) {
-                            creature.current_task = Some(task_id);
-                            let _ = self.db.update_creature(creature);
-                        }
-                    } else {
-                        // No food available — remove the task we speculatively
-                        // inserted so it doesn't linger.
-                        self.complete_task(task_id);
                     }
                 }
                 // If no dining hall available, elf remains idle until
