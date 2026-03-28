@@ -34,6 +34,10 @@
 // - `validate_carve_fast()`: Like `validate_blueprint_fast()` but checks whether
 //   *removing* voxels would compromise remaining structure. Seeds BFS from
 //   neighbors of carved voxels rather than the carved voxels themselves.
+//   Two fast paths for dirt carving (B-carve-perf): (1) if all seed neighbors
+//   are dirt (no above-ground structure adjacent), returns Ok immediately;
+//   (2) if connectivity passes and all carved voxels are dirt, skips stress
+//   analysis (removing pinned ground can't overstress above-ground structure).
 // - `add_rod_springs()`: Insert chain-topology rod springs along strut axes
 //   into an existing `StructuralNetwork`. Called by `build_network()` and by
 //   the fast validator's weight-flow phase.
@@ -1550,7 +1554,9 @@ pub fn validate_carve_fast(
     }
 
     // No structural neighbors → carving non-structural or isolated voxels.
-    if visited.is_empty() {
+    // BFS queue empty but visited non-empty → all neighbors are dirt
+    // (ground). No above-ground structure is affected by the carve.
+    if visited.is_empty() || queue.is_empty() {
         return BlueprintValidation {
             tier: ValidationTier::Ok,
             stress_map: BTreeMap::new(),
@@ -1564,7 +1570,16 @@ pub fn validate_carve_fast(
             let (dx, dy, dz) = dir.to_offset();
             let neighbor = VoxelCoord::new(current.x + dx, current.y + dy, current.z + dz);
 
-            if visited.contains_key(&neighbor) || carved_set.contains_key(&neighbor) {
+            if carved_set.contains_key(&neighbor) {
+                continue;
+            }
+            // If this neighbor was a dirt seed (already visited during
+            // seeding), the BFS reaching it proves the above-ground
+            // structure is connected to ground.
+            if let Some(&vt) = visited.get(&neighbor) {
+                if vt == VoxelType::Dirt {
+                    reached_ground = true;
+                }
                 continue;
             }
             if !world.in_bounds(neighbor) {
@@ -1590,6 +1605,21 @@ pub fn validate_carve_fast(
             tier: ValidationTier::Blocked,
             stress_map: BTreeMap::new(),
             message: "Carving would disconnect structure from the ground.".to_string(),
+        };
+    }
+
+    // All-dirt optimization (B-carve-perf): removing dirt (ground/pinned)
+    // voxels cannot overstress above-ground structure — only connectivity
+    // matters, which we already checked above. Skip the expensive
+    // network-build and stress-analysis phases entirely.
+    let all_dirt = carved_voxels
+        .iter()
+        .all(|&c| world.get(c) == VoxelType::Dirt);
+    if all_dirt {
+        return BlueprintValidation {
+            tier: ValidationTier::Ok,
+            stress_map: BTreeMap::new(),
+            message: "Structure is sound.".to_string(),
         };
     }
 
@@ -2457,6 +2487,145 @@ mod tests {
     }
 
     // --- Carve validation tests ---
+
+    #[test]
+    fn carve_dirt_surrounded_by_dirt_is_ok() {
+        // Carving a dirt voxel whose face-adjacent neighbors are all dirt
+        // should return Ok via fast path 1 (queue empty, all seeds are dirt).
+        // Exercises the `queue.is_empty()` early return.
+        let config = GameConfig::default();
+        let mut world = VoxelWorld::new(16, 16, 16);
+
+        // Fill y=0..3 with dirt.
+        for x in 0..8 {
+            for z in 0..8 {
+                for y in 0..4 {
+                    world.set(VoxelCoord::new(x, y, z), VoxelType::Dirt);
+                }
+            }
+        }
+
+        // Carve a dirt voxel at y=2, surrounded by dirt on all sides.
+        let carved = vec![VoxelCoord::new(4, 2, 4)];
+        let result = validate_carve_fast(
+            &world,
+            &BTreeMap::new(),
+            &carved,
+            &config,
+            &BlueprintOverlay::empty(),
+            &[],
+        );
+        assert_eq!(
+            result.tier,
+            ValidationTier::Ok,
+            "Carving dirt surrounded by dirt should be Ok, got: {}",
+            result.message,
+        );
+        // Stress map should be empty — we hit the early return before stress.
+        assert!(
+            result.stress_map.is_empty(),
+            "Fast path 1 should skip stress analysis",
+        );
+    }
+
+    #[test]
+    fn carve_dirt_adjacent_to_trunk_skips_stress() {
+        // Carving dirt that is face-adjacent to a non-dirt structural voxel
+        // (Trunk) should run the BFS connectivity check but skip stress
+        // analysis via the all-dirt optimization (fast path 2). The Trunk
+        // neighbor seeds the BFS queue, so fast path 1 (queue empty) does
+        // NOT fire — the BFS runs, finds ground, then the all-dirt check
+        // returns Ok without building a stress network.
+        let config = GameConfig::default();
+        let mut world = VoxelWorld::new(64, 64, 64);
+
+        // Dirt floor y=0..2.
+        for x in 0..32 {
+            for z in 0..32 {
+                for y in 0..3 {
+                    world.set(VoxelCoord::new(x, y, z), VoxelType::Dirt);
+                }
+            }
+        }
+
+        // 2-wide trunk base so the tree has multiple ground contacts.
+        // Columns at (16,_,16) and (17,_,16) both sit on dirt at y=2.
+        for y in 3..=10 {
+            world.set(VoxelCoord::new(16, y, 16), VoxelType::Trunk);
+            world.set(VoxelCoord::new(17, y, 16), VoxelType::Trunk);
+        }
+
+        // Carve (16, 2, 16) — dirt directly below one trunk column.
+        // Face neighbor (16,3,16) is Trunk → BFS queue is non-empty.
+        // The tree stays connected via (17,3,16) → (17,2,16) [dirt].
+        let carved = vec![VoxelCoord::new(16, 2, 16)];
+        let result = validate_carve_fast(
+            &world,
+            &BTreeMap::new(),
+            &carved,
+            &config,
+            &BlueprintOverlay::empty(),
+            &[],
+        );
+        assert_eq!(
+            result.tier,
+            ValidationTier::Ok,
+            "Carving dirt below one trunk column should be Ok, got: {}",
+            result.message,
+        );
+        // Stress map should be empty — all-dirt optimization skipped stress.
+        assert!(
+            result.stress_map.is_empty(),
+            "All-dirt carve (fast path 2) should skip stress analysis, but stress_map has {} entries",
+            result.stress_map.len(),
+        );
+    }
+
+    #[test]
+    fn carve_mixed_dirt_and_trunk_runs_stress() {
+        // Carving a mix of dirt and non-dirt voxels should NOT trigger the
+        // all-dirt optimization — the full stress analysis must run.
+        let config = GameConfig::default();
+        let mut world = VoxelWorld::new(64, 64, 64);
+
+        // Dirt floor y=0..2.
+        for x in 0..32 {
+            for z in 0..32 {
+                for y in 0..3 {
+                    world.set(VoxelCoord::new(x, y, z), VoxelType::Dirt);
+                }
+            }
+        }
+
+        // 2-wide trunk so the tree stays connected when we carve one column.
+        for y in 3..=10 {
+            world.set(VoxelCoord::new(16, y, 16), VoxelType::Trunk);
+            world.set(VoxelCoord::new(17, y, 16), VoxelType::Trunk);
+        }
+
+        // Carve one dirt voxel and one trunk voxel from the (16,_,16) column.
+        // The tree stays connected via the (17,_,16) column.
+        let carved = vec![VoxelCoord::new(16, 2, 16), VoxelCoord::new(16, 3, 16)];
+        let result = validate_carve_fast(
+            &world,
+            &BTreeMap::new(),
+            &carved,
+            &config,
+            &BlueprintOverlay::empty(),
+            &[],
+        );
+        // Mixed carve: all_dirt is false, so full stress analysis runs.
+        assert_ne!(
+            result.tier,
+            ValidationTier::Blocked,
+            "Mixed carve with second trunk column should stay connected: {}",
+            result.message,
+        );
+        assert!(
+            !result.stress_map.is_empty(),
+            "Mixed dirt+trunk carve should run full stress analysis",
+        );
+    }
 
     #[test]
     fn test_carve_structural_blocks_disconnect() {

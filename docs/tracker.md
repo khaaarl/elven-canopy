@@ -62,7 +62,6 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [ ] B-carve-dirt           Carving pure dirt voxels rejected as nothing to carve
-[ ] B-carve-perf           Carving dirt causes severe CPU stall, possibly structural checks
 [ ] B-chamfer-nonmfld      Chamfer produces non-manifold edges for diagonally-adjacent voxels
 [ ] B-dead-owner-items     Dead creature items retain ownership, becoming invisible to all systems
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
@@ -281,6 +280,7 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [x] B-assembly-timeout     Activity assembly timeout not enforced
+[x] B-carve-perf           Carving dirt causes severe CPU stall, possibly structural checks
 [x] B-dead-enums           Remove dead GrownStairs/Bridge code and add explicit enum discriminants
 [x] B-dead-max-gen         Remove vestigial max_gen_per_frame field and ~40 test calls
 [x] B-dead-node-panic      Panic on dead nav node in pathfinding
@@ -525,7 +525,7 @@ draft docs, and blocking relationships where relevant.
 **Status:** Todo
 
 #### B-carve-perf — Carving dirt causes severe CPU stall, possibly structural checks
-**Status:** Todo
+**Status:** Done
 
 **Related:** B-floating-dirt
 

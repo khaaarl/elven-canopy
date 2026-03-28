@@ -697,12 +697,16 @@ impl SimState {
         let project_id = ProjectId::new(&mut self.rng);
 
         // Create a Build task at the nearest nav node to the carve site.
-        if self.nav_graph.find_nearest_node(carve_voxels[0]).is_none() {
-            return;
-        }
+        // Use the nav node's position as the task location so that
+        // find_available_task's expanding-box search resolves instantly
+        // instead of scanning the entire world from underground dirt.
+        let nav_node = match self.nav_graph.find_nearest_node(carve_voxels[0]) {
+            Some(n) => n,
+            None => return,
+        };
         let task_id = TaskId::new(&mut self.rng);
         let num_voxels = carve_voxels.len() as u64;
-        let task_location = carve_voxels[0];
+        let task_location = self.nav_graph.node(nav_node).position;
 
         // Insert blueprint before task — task_blueprint_ref has FK to blueprints.
         let bp = Blueprint {

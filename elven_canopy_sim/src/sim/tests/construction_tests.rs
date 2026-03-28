@@ -2055,6 +2055,56 @@ fn test_carve_execution_removes_voxels() {
 }
 
 #[test]
+fn test_carve_task_location_uses_nav_node() {
+    // The carve task location should be at the nearest nav node's position,
+    // not at the raw carve voxel coordinate. Underground dirt voxels have no
+    // nearby nav node, so using the voxel directly causes a full-world
+    // expanding-box search in find_available_task (~415ms per creature).
+    //
+    // Use terrain_max_height > 0 so dirt extends above y=0 (y=0 is bedrock,
+    // not carvable). The test_config sets floor_y=0 and terrain_max_height=0,
+    // giving no carvable dirt.
+    let mut config = test_config();
+    config.terrain_max_height = 3;
+    let mut sim = SimState::with_config(42, config);
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
+    let tree_pos = tree.position;
+
+    // Find a carvable dirt voxel near the tree (y > 0 so it's above bedrock).
+    let dirt_coord = (-20i32..=20)
+        .flat_map(|dx| (-20i32..=20).map(move |dz| (dx, dz)))
+        .flat_map(|(dx, dz)| (1i32..=5).rev().map(move |y| (dx, y, dz)))
+        .map(|(dx, y, dz)| VoxelCoord::new(tree_pos.x + dx, y, tree_pos.z + dz))
+        .find(|&c| sim.world.in_bounds(c) && sim.world.get(c) == VoxelType::Dirt && c.y > 0)
+        .expect("Should find carvable dirt voxel near tree");
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::DesignateCarve {
+            voxels: vec![dirt_coord],
+            priority: Priority::Normal,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    // Find the carve task.
+    let task = sim
+        .db
+        .tasks
+        .iter_all()
+        .find(|t| t.kind_tag == crate::db::TaskKindTag::Build)
+        .expect("Carve task should exist");
+
+    // Task location should be at a nav node, not the underground dirt voxel.
+    assert!(
+        sim.nav_graph.node_at(task.location).is_some(),
+        "Task location {:?} should be a valid nav node",
+        task.location,
+    );
+}
+
+#[test]
 fn test_carve_skips_bedrock_layer() {
     let mut sim = test_sim(42);
     let (ws_x, _, ws_z) = sim.config.world_size;
