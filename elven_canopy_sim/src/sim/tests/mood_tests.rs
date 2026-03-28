@@ -5,6 +5,51 @@
 
 use super::*;
 
+/// Mope test helper: create a sim with mope configuration and optional thoughts.
+fn mope_test_setup(
+    mope_config: crate::config::MoodConsequencesConfig,
+    thoughts: &[ThoughtKind],
+) -> (SimState, CreatureId) {
+    let mut config = test_config();
+    config.mood_consequences = mope_config;
+    let elf_species = config.species.get_mut(&Species::Elf).unwrap();
+    elf_species.food_decay_per_tick = 0;
+    elf_species.rest_decay_per_tick = 0;
+    let mut sim = SimState::with_config(99, config);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], 1);
+
+    let elf_id = *sim
+        .db
+        .creatures
+        .iter_keys()
+        .find(|id| sim.db.creatures.get(id).unwrap().species == Species::Elf)
+        .expect("elf should exist");
+
+    for thought in thoughts {
+        sim.add_creature_thought(elf_id, thought.clone());
+    }
+
+    (sim, elf_id)
+}
+
+/// Helper: create a sim_with_elf for thought tests.
+fn sim_with_elf_for_thoughts() -> (SimState, CreatureId) {
+    let mut sim = test_sim(42);
+    let elf_id = spawn_elf(&mut sim);
+    sim.tick = 1000;
+    (sim, elf_id)
+}
+
 #[test]
 fn thought_insert_after_roundtrip_continues_seq() {
     let mut sim = test_sim(42);

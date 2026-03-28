@@ -5,6 +5,51 @@
 
 use super::*;
 
+/// Helper: create a furnished dining hall at `pos` with one table and stock
+/// `food_count` bread items. Returns the structure ID.
+fn create_dining_hall(sim: &mut SimState, pos: VoxelCoord, food_count: u32) -> StructureId {
+    let structure_id = StructureId(900);
+    let project_id = ProjectId::new(&mut sim.rng);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    sim.db
+        .structures
+        .insert_no_fk(CompletedStructure {
+            id: structure_id,
+            project_id,
+            build_type: BuildType::Building,
+            anchor: pos,
+            width: 3,
+            depth: 3,
+            height: 3,
+            completed_tick: 0,
+            name: None,
+            furnishing: Some(FurnishingType::DiningHall),
+            inventory_id: inv_id,
+            logistics_priority: None,
+            crafting_enabled: false,
+            greenhouse_species: None,
+            greenhouse_enabled: false,
+            greenhouse_last_production_tick: 0,
+            last_dance_completed_tick: 0,
+        })
+        .unwrap();
+    // Place one table.
+    let _ = sim
+        .db
+        .furniture
+        .insert_auto_no_fk(|id| crate::db::Furniture {
+            id,
+            structure_id,
+            coord: pos,
+            placed: true,
+        });
+    // Stock food.
+    if food_count > 0 {
+        sim.inv_add_simple_item(inv_id, ItemKind::Bread, food_count, None, None);
+    }
+    structure_id
+}
+
 // -----------------------------------------------------------------------
 // Sleep priority / busy-elf tests
 // -----------------------------------------------------------------------

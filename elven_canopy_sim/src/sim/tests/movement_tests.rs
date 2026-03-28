@@ -6,6 +6,65 @@
 use super::combat_tests::{give_spear, setup_aggressive_elf, setup_frozen_hornet};
 use super::*;
 
+/// Helper: spawn a second elf and return its CreatureId.
+fn spawn_second_elf(sim: &mut SimState) -> CreatureId {
+    // Collect existing elf IDs before spawning.
+    let existing: std::collections::BTreeSet<CreatureId> = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.species == Species::Elf)
+        .map(|c| c.id)
+        .collect();
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::SpawnCreature {
+            species: Species::Elf,
+            position: tree_pos,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 2);
+    // Return the newly spawned elf (not in the existing set).
+    sim.db
+        .creatures
+        .iter_all()
+        .find(|c| c.species == Species::Elf && !existing.contains(&c.id))
+        .unwrap()
+        .id
+}
+
+/// Insert a pursuit task targeting a specific creature.
+fn insert_pursuit_task(
+    sim: &mut SimState,
+    pursuer: CreatureId,
+    target: CreatureId,
+    destination: VoxelCoord,
+) -> crate::types::TaskId {
+    let task_id = crate::types::TaskId::new(&mut sim.rng);
+    let task = Task {
+        id: task_id,
+        kind: TaskKind::GoTo,
+        state: TaskState::InProgress,
+        location: destination,
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Elf),
+        origin: TaskOrigin::PlayerDirected,
+        target_creature: Some(target),
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
+        required_civ_id: None,
+    };
+    sim.insert_task(task);
+    // Directly assign the pursuer to this task.
+    let mut pursuer_creature = sim.db.creatures.get(&pursuer).unwrap();
+    pursuer_creature.current_task = Some(task_id);
+    let _ = sim.db.creatures.update_no_fk(pursuer_creature);
+    task_id
+}
+
 // ===================================================================
 // Elf wander (basic ground movement)
 // ===================================================================

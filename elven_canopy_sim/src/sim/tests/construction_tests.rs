@@ -9,6 +9,30 @@ use super::*;
 // Helpers
 // -----------------------------------------------------------------------
 
+/// Find a Leaf voxel that is face-adjacent to a Trunk, Branch, or Root
+/// voxel (not just any solid -- must be adjacent to structural wood so the
+/// structural validator can reach the ground).
+fn find_leaf_adjacent_to_wood(sim: &SimState) -> VoxelCoord {
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
+    for &leaf_coord in &tree.leaf_voxels {
+        for &(dx, dy, dz) in &[
+            (1, 0, 0),
+            (-1, 0, 0),
+            (0, 1, 0),
+            (0, -1, 0),
+            (0, 0, 1),
+            (0, 0, -1),
+        ] {
+            let neighbor = VoxelCoord::new(leaf_coord.x + dx, leaf_coord.y + dy, leaf_coord.z + dz);
+            let vt = sim.world.get(neighbor);
+            if matches!(vt, VoxelType::Trunk | VoxelType::Branch | VoxelType::Root) {
+                return leaf_coord;
+            }
+        }
+    }
+    panic!("No leaf voxel adjacent to wood found");
+}
+
 /// Helper: designate a single-voxel platform and run the sim until the
 /// build task is complete. Returns the sim after completion.
 fn designate_and_complete_build(mut sim: SimState) -> SimState {

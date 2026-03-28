@@ -6,6 +6,44 @@
 
 use super::*;
 
+/// Create a debug dance activity.
+fn create_debug_dance(sim: &mut SimState, location: VoxelCoord) -> crate::types::ActivityId {
+    let before: std::collections::BTreeSet<_> =
+        sim.db.activities.iter_all().map(|a| a.id).collect();
+    let mut events = Vec::new();
+    sim.handle_create_activity(
+        ActivityKind::Dance,
+        location,
+        Some(3),
+        Some(3),
+        TaskOrigin::PlayerDirected,
+        &mut events,
+    );
+    sim.db
+        .activities
+        .iter_all()
+        .map(|a| a.id)
+        .find(|id| !before.contains(id))
+        .expect("create_debug_dance: no new activity created")
+}
+
+/// Helper: create a furnished dance hall and return its structure ID.
+fn create_dance_hall(sim: &mut SimState) -> StructureId {
+    let anchor = find_building_site(sim);
+    let structure_id = insert_completed_building(sim, anchor);
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::FurnishStructure {
+            structure_id,
+            furnishing_type: FurnishingType::DanceHall,
+            greenhouse_species: None,
+        },
+    };
+    sim.step(&[cmd], sim.tick + 1);
+    structure_id
+}
+
 // ===========================================================================
 // Group activity lifecycle tests
 // ===========================================================================
