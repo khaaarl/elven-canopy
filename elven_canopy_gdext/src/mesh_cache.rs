@@ -569,11 +569,6 @@ pub struct MeshCache {
     draw_distance_voxels: f32,
     /// Memory budget in bytes. 0 means unlimited (no eviction).
     memory_budget: usize,
-    /// Maximum number of chunk meshes to generate per `update_visibility()` call.
-    /// Unused in the async pipeline (all visible chunks are submitted
-    /// immediately), but retained for test compatibility.
-    #[allow(dead_code)]
-    max_gen_per_frame: usize,
     /// Light direction for shadow-only culling. Unit vector pointing from
     /// light source toward scene. `None` disables shadow-only (all culled
     /// chunks are hidden).
@@ -636,7 +631,6 @@ impl MeshCache {
             frame_counter: 0,
             draw_distance_voxels: 50.0,
             memory_budget: 0,
-            max_gen_per_frame: 64,
             light_direction: None,
             perf: PerfStats::new(),
             mesh_tx,
@@ -655,11 +649,6 @@ impl MeshCache {
 
     pub fn set_memory_budget(&mut self, bytes: usize) {
         self.memory_budget = bytes;
-    }
-
-    #[cfg(test)]
-    pub fn set_max_gen_per_frame(&mut self, n: usize) {
-        self.max_gen_per_frame = n;
     }
 
     /// Block until all in-flight background mesh generations complete,
@@ -1714,7 +1703,6 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_draw_distance(50.0); // 50 voxels — only reaches chunk 0.
-        cache.set_max_gen_per_frame(100);
 
         let cam_pos = [8.0, 8.0, 8.0];
         cache.update_visibility(
@@ -1737,7 +1725,6 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_draw_distance(0.0); // unlimited
-        cache.set_max_gen_per_frame(100);
 
         let cam_pos = [8.0, 8.0, 8.0];
         cache.update_visibility(
@@ -1762,7 +1749,6 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_draw_distance(0.0); // unlimited distance
-        cache.set_max_gen_per_frame(100);
 
         // Frustum: only accept z > 100 (everything else behind camera).
         // Outward -Z normal, d=-100: inside when -z - (-100) < 0 → z > 100.
@@ -1792,7 +1778,6 @@ mod tests {
 
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
-        cache.set_max_gen_per_frame(100);
 
         assert!(cache.chunks.is_empty()); // No meshes yet.
 
@@ -1808,8 +1793,6 @@ mod tests {
         assert_eq!(cache.chunks_generated.len(), 1);
     }
 
-    // -- max_gen_per_frame --
-
     #[test]
     fn visibility_submits_all_chunks_without_cap() {
         // With async mesh generation, all visible chunks are submitted in a
@@ -1822,7 +1805,6 @@ mod tests {
 
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
-        cache.set_max_gen_per_frame(100);
 
         cache.update_visibility(
             &world,
@@ -1848,7 +1830,6 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_draw_distance(50.0);
-        cache.set_max_gen_per_frame(100);
 
         // Frame 1: camera near chunk 0. Submits async work.
         cache.update_visibility(
@@ -1903,7 +1884,6 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_draw_distance(0.0); // unlimited
-        cache.set_max_gen_per_frame(100);
 
         // Generate all.
         cache.update_visibility(
@@ -1953,7 +1933,6 @@ mod tests {
 
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
-        cache.set_max_gen_per_frame(100);
         cache.set_memory_budget(1); // Tiny budget.
 
         cache.update_visibility(
@@ -1985,7 +1964,6 @@ mod tests {
 
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
-        cache.set_max_gen_per_frame(100);
         cache.update_visibility(
             &world,
             [8.0, 8.0, 8.0],
@@ -2012,7 +1990,6 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_draw_distance(50.0);
-        cache.set_max_gen_per_frame(100);
 
         // Only chunk 0 visible.
         cache.update_visibility(
@@ -2038,7 +2015,6 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_draw_distance(50.0);
-        cache.set_max_gen_per_frame(100);
 
         // Only chunk 0 visible.
         cache.update_visibility(
@@ -2084,7 +2060,6 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_draw_distance(0.0);
-        cache.set_max_gen_per_frame(100);
 
         // Frame 1: all visible (submits all 3 for async gen).
         cache.update_visibility(
@@ -2141,7 +2116,6 @@ mod tests {
 
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
-        cache.set_max_gen_per_frame(100);
         cache.update_visibility(
             &world,
             [8.0, 8.0, 8.0],
@@ -2174,7 +2148,6 @@ mod tests {
 
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
-        cache.set_max_gen_per_frame(100);
         cache.update_visibility(
             &world,
             [8.0, 8.0, 8.0],
@@ -2237,7 +2210,6 @@ mod tests {
 
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
-        cache.set_max_gen_per_frame(100);
 
         // Frame 1: all visible, submits both chunks.
         cache.update_visibility(
@@ -2279,7 +2251,6 @@ mod tests {
         assert_eq!(cache.megachunks.len(), 1);
 
         // But update_visibility should handle the empty mesh gracefully.
-        cache.set_max_gen_per_frame(100);
         cache.update_visibility(
             &world,
             [8.0, 8.0, 8.0],
@@ -2320,7 +2291,6 @@ mod tests {
 
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
-        cache.set_max_gen_per_frame(1);
 
         // Frame 1: generate 1.
         cache.update_visibility(
@@ -2368,7 +2338,6 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_draw_distance(0.0); // unlimited
-        cache.set_max_gen_per_frame(100);
 
         // Step 1: No cutoff — both chunks should be visible.
         cache.update_visibility(
@@ -2452,7 +2421,6 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_draw_distance(0.0);
-        cache.set_max_gen_per_frame(100);
 
         // Initial: all visible.
         cache.update_visibility(
@@ -2512,7 +2480,6 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_draw_distance(0.0);
-        cache.set_max_gen_per_frame(100);
 
         // Generate both.
         cache.update_visibility(
@@ -2562,7 +2529,6 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_draw_distance(0.0);
-        cache.set_max_gen_per_frame(1000);
 
         // Frame 1: submits all chunks for async generation.
         cache.update_visibility(
@@ -2608,7 +2574,6 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_draw_distance(0.0);
-        cache.set_max_gen_per_frame(1000);
 
         cache.update_visibility(
             &world,
@@ -2641,7 +2606,6 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_draw_distance(0.0);
-        cache.set_max_gen_per_frame(1000);
 
         cache.update_visibility(
             &world,
@@ -2670,7 +2634,6 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_draw_distance(0.0);
-        cache.set_max_gen_per_frame(100);
 
         // Set cutoff below the voxel — chunk generates empty mesh.
         cache.set_y_cutoff(Some(2));
@@ -2708,7 +2671,6 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_draw_distance(0.0);
-        cache.set_max_gen_per_frame(1000);
 
         cache.update_visibility(
             &world,
@@ -2734,7 +2696,6 @@ mod tests {
 
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
-        cache.set_max_gen_per_frame(100);
         cache.update_visibility(
             &world,
             [8.0, 8.0, 8.0],
@@ -2889,7 +2850,6 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_draw_distance(0.0); // unlimited
-        cache.set_max_gen_per_frame(100);
         // Light shines straight down.
         cache.set_light_direction(Some([0.0, -1.0, 0.0]));
 
@@ -2944,7 +2904,6 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_draw_distance(0.0);
-        cache.set_max_gen_per_frame(100);
         // No light direction set.
 
         let frustum = vec![
@@ -2981,7 +2940,6 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_draw_distance(0.0);
-        cache.set_max_gen_per_frame(100);
         cache.set_light_direction(Some([0.0, -1.0, 0.0]));
 
         // Frame 1: frustum excludes Y=3 → shadow-only.
@@ -3031,7 +2989,6 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_draw_distance(0.0);
-        cache.set_max_gen_per_frame(100);
         cache.set_light_direction(Some([0.0, -1.0, 0.0]));
 
         // Frame 1: shadow-only.
@@ -3076,7 +3033,6 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_draw_distance(0.0);
-        cache.set_max_gen_per_frame(100);
         cache.set_light_direction(Some([0.0, -1.0, 0.0]));
 
         // Frame 1: open frustum → chunk is visible.
@@ -3130,7 +3086,6 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_draw_distance(0.0);
-        cache.set_max_gen_per_frame(100);
         cache.set_light_direction(Some([0.0, -1.0, 0.0]));
 
         // Frame 1: open frustum → visible.
@@ -3176,7 +3131,6 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_draw_distance(0.0);
-        cache.set_max_gen_per_frame(100);
         cache.set_light_direction(Some([0.0, -1.0, 0.0]));
 
         let narrow_frustum = vec![
@@ -3235,7 +3189,6 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_draw_distance(50.0); // 50 voxels — chunk at x=200 is out of range
-        cache.set_max_gen_per_frame(100);
         cache.set_light_direction(Some([0.0, -1.0, 0.0]));
 
         let narrow_frustum = vec![
@@ -3267,7 +3220,6 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_draw_distance(0.0);
-        cache.set_max_gen_per_frame(100);
         cache.set_light_direction(Some([0.0, -1.0, 0.0]));
 
         // Narrow frustum: chunk at Y=3 is outside frustum but in shadow volume.
@@ -3308,7 +3260,6 @@ mod tests {
 
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
-        cache.set_max_gen_per_frame(100);
 
         // Generate the chunk and flush so it's cached.
         cache.update_visibility(
@@ -3344,7 +3295,6 @@ mod tests {
 
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
-        cache.set_max_gen_per_frame(100);
 
         let coord = ChunkCoord::new(0, 0, 0);
         let grassless = std::collections::BTreeSet::new();
@@ -3369,7 +3319,6 @@ mod tests {
 
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
-        cache.set_max_gen_per_frame(100);
 
         // Generate and flush so chunk is visible and cached.
         cache.update_visibility(
@@ -3416,7 +3365,6 @@ mod tests {
 
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
-        cache.set_max_gen_per_frame(100);
 
         // Generate and flush so chunk is visible and cached.
         cache.update_visibility(
@@ -3469,7 +3417,6 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_draw_distance(50.0);
-        cache.set_max_gen_per_frame(100);
 
         // Frame 1: camera near chunk 0 — chunk 0 submitted.
         cache.update_visibility(
@@ -3518,7 +3465,6 @@ mod tests {
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         cache.set_draw_distance(50.0);
-        cache.set_max_gen_per_frame(100);
 
         // Frame 1: camera near chunk 0 — submit chunk 0.
         cache.update_visibility(

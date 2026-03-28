@@ -65,7 +65,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-carve-dirt           Carving pure dirt voxels rejected as nothing to carve
 [ ] B-carve-perf           Carving dirt causes severe CPU stall, possibly structural checks
 [ ] B-chamfer-nonmfld      Chamfer produces non-manifold edges for diagonally-adjacent voxels
-[ ] B-dead-max-gen         Remove vestigial max_gen_per_frame field and ~40 test calls
 [ ] B-dead-owner-items     Dead creature items retain ownership, becoming invisible to all systems
 [ ] B-dine-orphan-task     DineAtHall speculative task leaves orphaned Complete rows
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
@@ -284,6 +283,7 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [x] B-dead-enums           Remove dead GrownStairs/Bridge code and add explicit enum discriminants
+[x] B-dead-max-gen         Remove vestigial max_gen_per_frame field and ~40 test calls
 [x] B-dead-node-panic      Panic on dead nav node in pathfinding
 [x] B-dirt-not-pinned      Dirt unpinned in fast structural validator
 [x] B-erratic-movement     Erratic/too-fast creature movement after move commands
@@ -5827,7 +5827,7 @@ GrownStairs, Bridge (VoxelType), and Stairs, Bridge (BuildType) exist in code bu
 Additionally, add explicit integer discriminants to all serializable enums (at minimum VoxelType and BuildType) so that inserting or removing variants in the future does not silently change the serialized representation of existing variants.
 
 #### B-dead-max-gen — Remove vestigial max_gen_per_frame field and ~40 test calls
-**Status:** Todo
+**Status:** Done
 
 #### B-sim-floats — Remaining f32/f64 in sim logic threaten determinism
 **Status:** Done
