@@ -1812,6 +1812,7 @@ mod tests {
             required_species: Some(Species::Elf),
             execution_start_tick: None,
             pause_started_tick: None,
+            assembly_started_tick: None,
         };
         let json = serde_json::to_string(&activity).unwrap();
         let restored: Activity = serde_json::from_str(&json).unwrap();

@@ -1176,6 +1176,11 @@ pub struct Activity {
     /// Tick when the activity entered the Paused phase (`PauseAndWait` only).
     /// Cleared when resuming to Executing.
     pub pause_started_tick: Option<u64>,
+
+    /// Tick when the activity entered the Assembling phase.
+    /// Used to enforce `ActivityConfig::assembly_timeout_ticks`.
+    #[serde(default)]
+    pub assembly_started_tick: Option<u64>,
 }
 
 /// Links a creature to an activity with role and commitment status.

@@ -461,14 +461,33 @@ impl SimState {
                 Some(crate::types::ActivityPhase::Paused) => {
                     // Idle in place. Check pause timeout for PauseAndWait.
                     self.check_activity_pause_timeout(activity_id, events);
-                    self.schedule_reactivation(creature_id);
+                    // Only schedule reactivation if the activity wasn't cancelled
+                    // by the timeout — cancel_activity already handles reactivation
+                    // for all participants (B-erratic-movement).
+                    if self.db.activities.get(&activity_id).is_some() {
+                        self.schedule_reactivation(creature_id);
+                    }
                 }
                 Some(crate::types::ActivityPhase::Assembling) => {
-                    // Check if this creature is a Traveling participant whose
-                    // GoTo task was preempted (e.g., by moping). If so, re-create
-                    // the GoTo task so they resume walking to the assembly point.
-                    self.reissue_activity_goto_if_needed(activity_id, creature_id, events);
-                    self.schedule_reactivation(creature_id);
+                    // Check assembly timeout before re-issuing GoTo.
+                    self.check_activity_assembly_timeout(activity_id, events);
+                    match self.db.activities.get(&activity_id).map(|a| a.phase) {
+                        Some(crate::types::ActivityPhase::Assembling) => {
+                            // Still assembling — re-issue GoTo if needed.
+                            self.reissue_activity_goto_if_needed(activity_id, creature_id, events);
+                            self.schedule_reactivation(creature_id);
+                        }
+                        Some(_) => {
+                            // Timeout started execution — reactivate normally.
+                            self.schedule_reactivation(creature_id);
+                        }
+                        None => {
+                            // Timeout cancelled the activity — cancel_activity
+                            // already scheduled reactivation for all participants,
+                            // so skip here to avoid double-activation
+                            // (B-erratic-movement).
+                        }
+                    }
                 }
                 _ => {
                     // Activity is gone or in an unexpected phase (e.g., Recruiting

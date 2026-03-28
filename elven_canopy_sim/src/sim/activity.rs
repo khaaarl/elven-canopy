@@ -90,6 +90,7 @@ impl SimState {
             required_species,
             execution_start_tick: None,
             pause_started_tick: None,
+            assembly_started_tick: None,
         };
         self.db.insert_activity(activity).unwrap();
         activity_id
@@ -451,17 +452,8 @@ impl SimState {
             .count() as u16;
         let min = activity.min_count.unwrap_or(1);
 
-        if arrived_count >= min
-            && let Some(mut a) = self.db.activities.get(&activity_id)
-        {
-            a.phase = ActivityPhase::Executing;
-            a.execution_start_tick = Some(self.tick);
-            let _ = self.db.update_activity(a);
-
-            // Dance-specific: generate the choreography plan.
-            if activity.kind == ActivityKind::Dance {
-                self.generate_dance_plan(activity_id);
-            }
+        if arrived_count >= min {
+            self.begin_execution(activity_id);
         }
     }
 
@@ -1181,6 +1173,66 @@ impl SimState {
         }
     }
 
+    /// Check if an Assembling activity's timeout has expired.
+    ///
+    /// If enough participants have arrived (>= min_count), the activity starts
+    /// execution despite stragglers. Non-arrived participants are either kept
+    /// (if `allows_late_join`) or removed. If too few participants arrived,
+    /// the activity is cancelled.
+    pub(crate) fn check_activity_assembly_timeout(
+        &mut self,
+        activity_id: ActivityId,
+        events: &mut Vec<SimEvent>,
+    ) {
+        let activity = match self.db.activities.get(&activity_id) {
+            Some(a) => a.clone(),
+            None => return,
+        };
+        if activity.phase != ActivityPhase::Assembling {
+            return;
+        }
+        let assembly_tick = match activity.assembly_started_tick {
+            Some(t) => t,
+            None => return,
+        };
+        if self.tick.saturating_sub(assembly_tick) < self.config.activity.assembly_timeout_ticks {
+            return;
+        }
+
+        // Timeout has expired. Check if we have enough arrivals to start.
+        let participants = self
+            .db
+            .activity_participants
+            .by_activity_id(&activity_id, tabulosity::QueryOpts::ASC);
+        let arrived_count = participants
+            .iter()
+            .filter(|p| p.status == ParticipantStatus::Arrived)
+            .count() as u16;
+        let min = activity.min_count.unwrap_or(1);
+
+        if arrived_count < min {
+            // Not enough participants arrived — cancel.
+            self.cancel_activity(activity_id, events);
+            return;
+        }
+
+        // Enough arrived — start execution. Handle stragglers based on
+        // allows_late_join: keep Traveling participants if true, remove if false.
+        if !activity.allows_late_join {
+            let stragglers: Vec<CreatureId> = participants
+                .iter()
+                .filter(|p| p.status != ParticipantStatus::Arrived)
+                .map(|p| p.creature_id)
+                .collect();
+            for cid in stragglers {
+                self.remove_participant(activity_id, cid, events);
+            }
+        }
+
+        // Transition to Executing.
+        self.begin_execution(activity_id);
+    }
+
     /// Resume a Paused activity back to Executing (e.g., when a replacement arrives).
     #[allow(dead_code)] // Will be called when PauseAndWait replacement logic is wired.
     pub(crate) fn resume_activity(&mut self, activity_id: ActivityId) {
@@ -1193,11 +1245,34 @@ impl SimState {
         }
     }
 
+    /// Transition an Assembling activity to the Executing phase. Sets the
+    /// execution start tick and triggers kind-specific setup (e.g., dance
+    /// choreography generation). Used by both `check_assembly_complete` (all
+    /// participants arrived) and `check_activity_assembly_timeout` (timeout
+    /// with enough arrivals).
+    fn begin_execution(&mut self, activity_id: ActivityId) {
+        let kind = match self.db.activities.get(&activity_id) {
+            Some(a) => a.kind,
+            None => return,
+        };
+        if let Some(mut a) = self.db.activities.get(&activity_id) {
+            a.phase = ActivityPhase::Executing;
+            a.execution_start_tick = Some(self.tick);
+            let _ = self.db.update_activity(a);
+        }
+        if kind == ActivityKind::Dance {
+            self.generate_dance_plan(activity_id);
+        }
+    }
+
     /// Helper: update the activity phase. Uses `update_activity` because `phase`
     /// is an indexed field.
     fn set_activity_phase(&mut self, activity_id: ActivityId, phase: ActivityPhase) {
         if let Some(mut a) = self.db.activities.get(&activity_id) {
             a.phase = phase;
+            if phase == ActivityPhase::Assembling {
+                a.assembly_started_tick = Some(self.tick);
+            }
             let _ = self.db.update_activity(a);
         }
     }

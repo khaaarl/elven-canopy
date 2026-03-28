@@ -1369,6 +1369,7 @@ fn recruiting_activity_reference_cleared_on_activation() {
             required_species: None,
             execution_start_tick: None,
             pause_started_tick: None,
+            assembly_started_tick: None,
         })
         .unwrap();
     let mut c0 = sim.db.creatures.get(&elves[0]).unwrap();
@@ -3681,6 +3682,7 @@ fn elf_with_current_activity_cannot_organize() {
             required_species: None,
             execution_start_tick: None,
             pause_started_tick: None,
+            assembly_started_tick: None,
         })
         .unwrap();
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
@@ -3963,5 +3965,652 @@ fn elf_cooldown_expires_allows_organizing() {
     assert!(
         sim.try_organize_spontaneous_dance(elf_id, &mut events),
         "elf cooldown should expire at tick 1100"
+    );
+}
+
+// ===========================================================================
+// Assembly timeout tests (B-assembly-timeout)
+// ===========================================================================
+
+#[test]
+fn assembly_started_tick_set_on_phase_transition() {
+    // When an activity transitions to Assembling, assembly_started_tick
+    // should be set to the current sim tick.
+    let mut sim = test_sim(42);
+    let elves = spawn_test_elves(&mut sim, 5);
+    let location = sim.db.creatures.get(&elves[0]).unwrap().position;
+    let activity_id = create_debug_dance(&mut sim, location);
+
+    for eid in &elves {
+        let mut c = sim.db.creatures.get(eid).unwrap();
+        c.current_task = None;
+        sim.db.update_creature(c).unwrap();
+    }
+
+    // Activity starts in Recruiting.
+    let a = sim.db.activities.get(&activity_id).unwrap();
+    assert_eq!(a.phase, ActivityPhase::Recruiting);
+    assert_eq!(a.assembly_started_tick, None);
+
+    // Transition to Assembling by reaching quorum.
+    sim.tick = 5000;
+    let mut events = Vec::new();
+    for i in 0..3 {
+        sim.volunteer_for_activity(activity_id, elves[i], &mut events);
+    }
+
+    let a = sim.db.activities.get(&activity_id).unwrap();
+    assert_eq!(a.phase, ActivityPhase::Assembling);
+    assert_eq!(a.assembly_started_tick, Some(5000));
+}
+
+#[test]
+fn assembly_timeout_cancels_below_min_count() {
+    // If assembly times out with fewer than min_count arrivals, cancel.
+    let mut sim = test_sim(42);
+    let elves = spawn_test_elves(&mut sim, 5);
+    let location = sim.db.creatures.get(&elves[0]).unwrap().position;
+    let activity_id = create_debug_dance(&mut sim, location);
+
+    for eid in &elves {
+        let mut c = sim.db.creatures.get(eid).unwrap();
+        c.current_task = None;
+        sim.db.update_creature(c).unwrap();
+    }
+
+    sim.config.activity.assembly_timeout_ticks = 100;
+    sim.tick = 1000;
+    let mut events = Vec::new();
+
+    // 3 volunteers → Assembling phase.
+    for i in 0..3 {
+        sim.volunteer_for_activity(activity_id, elves[i], &mut events);
+    }
+    assert_eq!(
+        sim.db.activities.get(&activity_id).unwrap().phase,
+        ActivityPhase::Assembling,
+    );
+
+    // Only 1 participant arrives (below min_count=3).
+    sim.on_activity_participant_arrived(activity_id, elves[0], &mut events);
+
+    // Advance past timeout.
+    sim.tick = 1101;
+    sim.check_activity_assembly_timeout(activity_id, &mut events);
+
+    // Activity should be cancelled.
+    assert!(
+        sim.db.activities.get(&activity_id).is_none(),
+        "activity should be cancelled when assembly times out below min_count"
+    );
+}
+
+#[test]
+fn assembly_timeout_starts_at_min_count_kicks_stragglers() {
+    // If assembly times out with arrived >= min_count, start the activity
+    // and kick non-arrived participants (when allows_late_join = false).
+    //
+    // We use directed recruitment with min_count=3, desired=4. Three of
+    // four participants arrive — check_assembly_complete fires and transitions
+    // to Executing. But the 4th is still Traveling (stuck). We set up the
+    // state so check_assembly_complete did NOT fire (simulating a stuck
+    // participant scenario where arrivals == min but the check was missed
+    // due to ordering).
+    let mut sim = test_sim(42);
+    let elves = spawn_test_elves(&mut sim, 5);
+    let location = sim.db.creatures.get(&elves[0]).unwrap().position;
+
+    // Create a non-late-join activity (ConstructionChoir).
+    let activity_id = sim.handle_create_activity(
+        ActivityKind::ConstructionChoir,
+        location,
+        Some(3),
+        Some(4),
+        TaskOrigin::PlayerDirected,
+        &mut Vec::new(),
+    );
+    assert!(
+        !sim.db
+            .activities
+            .get(&activity_id)
+            .unwrap()
+            .allows_late_join
+    );
+
+    sim.config.activity.assembly_timeout_ticks = 100;
+    sim.tick = 1000;
+    let mut events = Vec::new();
+
+    // Assign 4 participants via directed recruitment.
+    for i in 0..4 {
+        sim.handle_assign_to_activity(activity_id, elves[i], &mut events);
+    }
+    assert_eq!(
+        sim.db.activities.get(&activity_id).unwrap().phase,
+        ActivityPhase::Assembling,
+    );
+
+    // Manually mark 3 participants as Arrived (simulating arrival without
+    // triggering check_assembly_complete, e.g., they reached the position
+    // but check was skipped because they were stuck on an adjacent voxel).
+    for i in 0..3 {
+        if let Some(mut p) = sim.db.activity_participants.get(&(activity_id, elves[i])) {
+            p.status = ParticipantStatus::Arrived;
+            p.travel_task = None;
+            sim.db.update_activity_participant(p).unwrap();
+        }
+    }
+
+    // Advance past timeout.
+    sim.tick = 1101;
+    sim.check_activity_assembly_timeout(activity_id, &mut events);
+
+    // Activity should now be Executing.
+    let a = sim.db.activities.get(&activity_id).unwrap();
+    assert_eq!(a.phase, ActivityPhase::Executing);
+
+    // The straggler (elves[3], still Traveling) should be removed.
+    assert!(
+        sim.db
+            .activity_participants
+            .get(&(activity_id, elves[3]))
+            .is_none(),
+        "straggler should be kicked when allows_late_join=false"
+    );
+
+    // The 3 arrived participants should still be there.
+    for i in 0..3 {
+        assert!(
+            sim.db
+                .activity_participants
+                .get(&(activity_id, elves[i]))
+                .is_some()
+        );
+    }
+}
+
+#[test]
+fn assembly_timeout_keeps_travelers_when_late_join_allowed() {
+    // If assembly times out with arrived >= min_count and allows_late_join=true,
+    // start the activity but keep Traveling participants so they can join later.
+    let mut sim = test_sim(42);
+    let elves = spawn_test_elves(&mut sim, 5);
+    let location = sim.db.creatures.get(&elves[0]).unwrap().position;
+
+    // Create a Dance activity (allows_late_join=true by default) with
+    // min_count=3 and desired_count=5.
+    let activity_id = sim.handle_create_activity(
+        ActivityKind::Dance,
+        location,
+        Some(3),
+        Some(5),
+        TaskOrigin::PlayerDirected,
+        &mut Vec::new(),
+    );
+    assert!(
+        sim.db
+            .activities
+            .get(&activity_id)
+            .unwrap()
+            .allows_late_join
+    );
+
+    sim.config.activity.assembly_timeout_ticks = 100;
+    sim.tick = 1000;
+    let mut events = Vec::new();
+
+    // Assign 5 participants via directed recruitment.
+    for i in 0..5 {
+        sim.handle_assign_to_activity(activity_id, elves[i], &mut events);
+    }
+    assert_eq!(
+        sim.db.activities.get(&activity_id).unwrap().phase,
+        ActivityPhase::Assembling,
+    );
+
+    // Manually mark 3 as Arrived (without triggering check_assembly_complete).
+    for i in 0..3 {
+        if let Some(mut p) = sim.db.activity_participants.get(&(activity_id, elves[i])) {
+            p.status = ParticipantStatus::Arrived;
+            p.travel_task = None;
+            sim.db.update_activity_participant(p).unwrap();
+        }
+    }
+
+    // Advance past timeout.
+    sim.tick = 1101;
+    sim.check_activity_assembly_timeout(activity_id, &mut events);
+
+    // Activity should now be Executing.
+    let a = sim.db.activities.get(&activity_id).unwrap();
+    assert_eq!(a.phase, ActivityPhase::Executing);
+
+    // All 5 participants should still exist (late joiners kept).
+    for i in 0..5 {
+        assert!(
+            sim.db
+                .activity_participants
+                .get(&(activity_id, elves[i]))
+                .is_some(),
+            "participant {} should be kept when allows_late_join=true",
+            i
+        );
+    }
+}
+
+#[test]
+fn assembly_timeout_not_triggered_before_expiry() {
+    // Assembly timeout should not fire before the timeout period has elapsed.
+    let mut sim = test_sim(42);
+    let elves = spawn_test_elves(&mut sim, 5);
+    let location = sim.db.creatures.get(&elves[0]).unwrap().position;
+    let activity_id = create_debug_dance(&mut sim, location);
+
+    for eid in &elves {
+        let mut c = sim.db.creatures.get(eid).unwrap();
+        c.current_task = None;
+        sim.db.update_creature(c).unwrap();
+    }
+
+    sim.config.activity.assembly_timeout_ticks = 100;
+    sim.tick = 1000;
+    let mut events = Vec::new();
+
+    for i in 0..3 {
+        sim.volunteer_for_activity(activity_id, elves[i], &mut events);
+    }
+    assert_eq!(
+        sim.db.activities.get(&activity_id).unwrap().phase,
+        ActivityPhase::Assembling,
+    );
+
+    // No arrivals. Check just before timeout.
+    sim.tick = 1099;
+    sim.check_activity_assembly_timeout(activity_id, &mut events);
+
+    // Should still be assembling.
+    assert_eq!(
+        sim.db.activities.get(&activity_id).unwrap().phase,
+        ActivityPhase::Assembling,
+    );
+}
+
+#[test]
+fn serde_roundtrip_preserves_assembly_started_tick() {
+    let mut sim = test_sim(42);
+    let elves = spawn_test_elves(&mut sim, 5);
+    let location = sim.db.creatures.get(&elves[0]).unwrap().position;
+    let activity_id = create_debug_dance(&mut sim, location);
+
+    // Manually set assembly_started_tick.
+    if let Some(mut a) = sim.db.activities.get(&activity_id) {
+        a.assembly_started_tick = Some(42_000);
+        sim.db.update_activity(a).unwrap();
+    }
+
+    let json = serde_json::to_string(&sim).unwrap();
+    let restored: SimState = serde_json::from_str(&json).unwrap();
+
+    let a = restored.db.activities.get(&activity_id).unwrap();
+    assert_eq!(a.assembly_started_tick, Some(42_000));
+}
+
+#[test]
+fn assembly_timeout_fires_at_exact_boundary() {
+    // Timeout should fire when elapsed == assembly_timeout_ticks (not off-by-one).
+    let mut sim = test_sim(42);
+    let elves = spawn_test_elves(&mut sim, 3);
+    let location = sim.db.creatures.get(&elves[0]).unwrap().position;
+    let activity_id = create_debug_dance(&mut sim, location);
+
+    for eid in &elves {
+        let mut c = sim.db.creatures.get(eid).unwrap();
+        c.current_task = None;
+        sim.db.update_creature(c).unwrap();
+    }
+
+    sim.config.activity.assembly_timeout_ticks = 100;
+    sim.tick = 1000;
+    let mut events = Vec::new();
+
+    for i in 0..3 {
+        sim.volunteer_for_activity(activity_id, elves[i], &mut events);
+    }
+    assert_eq!(
+        sim.db.activities.get(&activity_id).unwrap().phase,
+        ActivityPhase::Assembling,
+    );
+
+    // No arrivals. At exactly tick 1100 (elapsed=100, timeout=100), should fire.
+    sim.tick = 1100;
+    sim.check_activity_assembly_timeout(activity_id, &mut events);
+
+    // Below min_count → cancelled.
+    assert!(
+        sim.db.activities.get(&activity_id).is_none(),
+        "timeout should fire at exact boundary (elapsed == timeout)"
+    );
+}
+
+#[test]
+fn assembly_timeout_sets_execution_start_tick() {
+    // When timeout starts execution, execution_start_tick must be set.
+    let mut sim = test_sim(42);
+    let elves = spawn_test_elves(&mut sim, 5);
+    let location = sim.db.creatures.get(&elves[0]).unwrap().position;
+
+    let activity_id = sim.handle_create_activity(
+        ActivityKind::Dance,
+        location,
+        Some(3),
+        Some(5),
+        TaskOrigin::PlayerDirected,
+        &mut Vec::new(),
+    );
+
+    sim.config.activity.assembly_timeout_ticks = 100;
+    sim.tick = 1000;
+    let mut events = Vec::new();
+
+    for i in 0..5 {
+        sim.handle_assign_to_activity(activity_id, elves[i], &mut events);
+    }
+
+    // 3 arrive manually.
+    for i in 0..3 {
+        if let Some(mut p) = sim.db.activity_participants.get(&(activity_id, elves[i])) {
+            p.status = ParticipantStatus::Arrived;
+            p.travel_task = None;
+            sim.db.update_activity_participant(p).unwrap();
+        }
+    }
+
+    sim.tick = 1101;
+    sim.check_activity_assembly_timeout(activity_id, &mut events);
+
+    let a = sim.db.activities.get(&activity_id).unwrap();
+    assert_eq!(a.phase, ActivityPhase::Executing);
+    assert_eq!(
+        a.execution_start_tick,
+        Some(1101),
+        "execution_start_tick should be set to the tick when timeout fired"
+    );
+}
+
+#[test]
+fn assembly_timeout_skipped_when_assembly_started_tick_none() {
+    // Old saves may have activities in Assembling with assembly_started_tick=None.
+    // The timeout check should be a no-op (graceful backward compat).
+    let mut sim = test_sim(42);
+    let elves = spawn_test_elves(&mut sim, 3);
+    let location = sim.db.creatures.get(&elves[0]).unwrap().position;
+    let activity_id = create_debug_dance(&mut sim, location);
+
+    for eid in &elves {
+        let mut c = sim.db.creatures.get(eid).unwrap();
+        c.current_task = None;
+        sim.db.update_creature(c).unwrap();
+    }
+
+    sim.tick = 1000;
+    let mut events = Vec::new();
+    for i in 0..3 {
+        sim.volunteer_for_activity(activity_id, elves[i], &mut events);
+    }
+    assert_eq!(
+        sim.db.activities.get(&activity_id).unwrap().phase,
+        ActivityPhase::Assembling,
+    );
+
+    // Simulate old save: clear assembly_started_tick.
+    if let Some(mut a) = sim.db.activities.get(&activity_id) {
+        a.assembly_started_tick = None;
+        sim.db.update_activity(a).unwrap();
+    }
+
+    // Advance far past any reasonable timeout.
+    sim.config.activity.assembly_timeout_ticks = 1;
+    sim.tick = 999_999;
+    sim.check_activity_assembly_timeout(activity_id, &mut events);
+
+    // Activity should still be assembling — timeout skipped.
+    assert_eq!(
+        sim.db.activities.get(&activity_id).unwrap().phase,
+        ActivityPhase::Assembling,
+        "timeout should be skipped when assembly_started_tick is None"
+    );
+}
+
+#[test]
+fn assembly_timeout_generates_dance_plan() {
+    // When a Dance activity starts via timeout, a dance plan should be generated.
+    let mut sim = test_sim(42);
+    let elves = spawn_test_elves(&mut sim, 5);
+    let location = sim.db.creatures.get(&elves[0]).unwrap().position;
+
+    let activity_id = sim.handle_create_activity(
+        ActivityKind::Dance,
+        location,
+        Some(3),
+        Some(5),
+        TaskOrigin::PlayerDirected,
+        &mut Vec::new(),
+    );
+
+    sim.config.activity.assembly_timeout_ticks = 100;
+    sim.tick = 1000;
+    let mut events = Vec::new();
+
+    for i in 0..5 {
+        sim.handle_assign_to_activity(activity_id, elves[i], &mut events);
+    }
+
+    // 3 arrive manually.
+    for i in 0..3 {
+        if let Some(mut p) = sim.db.activity_participants.get(&(activity_id, elves[i])) {
+            p.status = ParticipantStatus::Arrived;
+            p.travel_task = None;
+            sim.db.update_activity_participant(p).unwrap();
+        }
+    }
+
+    // No dance data before timeout.
+    assert!(sim.db.activity_dance_data.get(&activity_id).is_none());
+
+    sim.tick = 1101;
+    sim.check_activity_assembly_timeout(activity_id, &mut events);
+
+    // Dance plan should be generated.
+    assert!(
+        sim.db.activity_dance_data.get(&activity_id).is_some(),
+        "dance plan should be generated when timeout starts a Dance activity"
+    );
+}
+
+#[test]
+fn assembly_timeout_cancel_no_double_reactivation() {
+    // B-erratic-movement: when assembly timeout cancels the activity via the
+    // activation loop, cancel_activity schedules reactivation for all
+    // participants. The activation loop must NOT add a second one.
+    let mut sim = test_sim(42);
+    let elves = spawn_test_elves(&mut sim, 3);
+    let location = sim.db.creatures.get(&elves[0]).unwrap().position;
+    let activity_id = create_debug_dance(&mut sim, location);
+
+    for eid in &elves {
+        let mut c = sim.db.creatures.get(eid).unwrap();
+        c.current_task = None;
+        sim.db.update_creature(c).unwrap();
+    }
+
+    sim.config.activity.assembly_timeout_ticks = 100;
+    sim.tick = 1000;
+    let mut events = Vec::new();
+
+    // 3 volunteers → Assembling, all Traveling.
+    for i in 0..3 {
+        sim.volunteer_for_activity(activity_id, elves[i], &mut events);
+    }
+    assert_eq!(
+        sim.db.activities.get(&activity_id).unwrap().phase,
+        ActivityPhase::Assembling,
+    );
+
+    // No arrivals. Advance past timeout.
+    sim.tick = 1101;
+
+    // Clear elves[0]'s current_task so it enters the activity-phase branch
+    // (the Assembling branch is only reached when current_task is None,
+    // i.e., the GoTo was preempted or completed).
+    if let Some(mut c) = sim.db.creatures.get(&elves[0]) {
+        c.current_task = None;
+        sim.db.update_creature(c).unwrap();
+    }
+
+    // Clear pending activations so we can count fresh ones.
+    sim.event_queue.cancel_creature_activations(elves[0]);
+    assert_eq!(sim.event_queue.count_creature_activations(elves[0]), 0);
+
+    // Trigger activation loop for elves[0] — this will hit the Assembling
+    // branch, fire the timeout (arrived=0 < min=3), and cancel the activity.
+    sim.process_creature_activation(elves[0], &mut events);
+
+    // Activity should be cancelled.
+    assert!(sim.db.activities.get(&activity_id).is_none());
+
+    // elves[0] should have exactly 1 pending activation, not 2.
+    assert_eq!(
+        sim.event_queue.count_creature_activations(elves[0]),
+        1,
+        "cancel via assembly timeout should produce exactly 1 reactivation, not 2 (B-erratic-movement)"
+    );
+}
+
+#[test]
+fn assembly_timeout_start_no_double_reactivation() {
+    // B-erratic-movement: when assembly timeout starts execution via the
+    // activation loop, the creature should get exactly 1 reactivation.
+    let mut sim = test_sim(42);
+    let elves = spawn_test_elves(&mut sim, 5);
+    let location = sim.db.creatures.get(&elves[0]).unwrap().position;
+
+    let activity_id = sim.handle_create_activity(
+        ActivityKind::Dance,
+        location,
+        Some(3),
+        Some(5),
+        TaskOrigin::PlayerDirected,
+        &mut Vec::new(),
+    );
+
+    sim.config.activity.assembly_timeout_ticks = 100;
+    sim.tick = 1000;
+    let mut events = Vec::new();
+
+    // Assign 5 participants via directed recruitment.
+    for i in 0..5 {
+        sim.handle_assign_to_activity(activity_id, elves[i], &mut events);
+    }
+
+    // 3 arrive manually.
+    for i in 0..3 {
+        if let Some(mut p) = sim.db.activity_participants.get(&(activity_id, elves[i])) {
+            p.status = ParticipantStatus::Arrived;
+            p.travel_task = None;
+            sim.db.update_activity_participant(p).unwrap();
+        }
+    }
+
+    // Advance past timeout.
+    sim.tick = 1101;
+
+    // Clear elves[0]'s current_task so it enters the activity-phase branch.
+    // (Arrived participants already had travel_task cleared, but current_task
+    // may still reference a completed GoTo.)
+    if let Some(mut c) = sim.db.creatures.get(&elves[0]) {
+        c.current_task = None;
+        sim.db.update_creature(c).unwrap();
+    }
+
+    // Clear pending activations for an arrived participant.
+    sim.event_queue.cancel_creature_activations(elves[0]);
+    assert_eq!(sim.event_queue.count_creature_activations(elves[0]), 0);
+
+    // Trigger activation — timeout fires, transitions to Executing.
+    sim.process_creature_activation(elves[0], &mut events);
+
+    assert_eq!(
+        sim.db.activities.get(&activity_id).unwrap().phase,
+        ActivityPhase::Executing,
+    );
+    assert_eq!(
+        sim.event_queue.count_creature_activations(elves[0]),
+        1,
+        "start via assembly timeout should produce exactly 1 reactivation (B-erratic-movement)"
+    );
+}
+
+#[test]
+fn pause_timeout_cancel_no_double_reactivation() {
+    // B-erratic-movement: when pause timeout cancels the activity via the
+    // activation loop, cancel_activity schedules reactivation. The Paused
+    // branch must NOT add a second one.
+    let mut sim = test_sim(42);
+    let location = VoxelCoord::new(32, 1, 32);
+
+    let mut events = Vec::new();
+    sim.handle_create_activity(
+        ActivityKind::ConstructionChoir,
+        location,
+        Some(3),
+        Some(3),
+        TaskOrigin::Automated,
+        &mut events,
+    );
+    let activity_id = sim.db.activities.iter_all().next().unwrap().id;
+    let elves = spawn_test_elves(&mut sim, 5);
+
+    for eid in &elves {
+        let mut c = sim.db.creatures.get(eid).unwrap();
+        c.current_task = None;
+        sim.db.update_creature(c).unwrap();
+    }
+
+    for i in 0..3 {
+        sim.handle_assign_to_activity(activity_id, elves[i], &mut events);
+    }
+    for i in 0..3 {
+        sim.on_activity_participant_arrived(activity_id, elves[i], &mut events);
+    }
+
+    // Pause via departure.
+    sim.remove_participant(activity_id, elves[0], &mut events);
+    let activity = sim.db.activities.get(&activity_id).unwrap();
+    assert_eq!(activity.phase, ActivityPhase::Paused);
+
+    let timeout = match activity.departure_policy {
+        DeparturePolicy::PauseAndWait { timeout_ticks } => timeout_ticks,
+        _ => panic!("expected PauseAndWait"),
+    };
+
+    // Advance past timeout.
+    sim.tick += timeout + 1;
+
+    // elves[1] is an Arrived participant still in the activity.
+    // Clear pending activations so we can count fresh ones.
+    sim.event_queue.cancel_creature_activations(elves[1]);
+    assert_eq!(sim.event_queue.count_creature_activations(elves[1]), 0);
+
+    // Trigger activation — pause timeout fires, cancels the activity.
+    sim.process_creature_activation(elves[1], &mut events);
+
+    // Activity should be cancelled.
+    assert!(sim.db.activities.get(&activity_id).is_none());
+
+    // elves[1] should have exactly 1 pending activation, not 2.
+    assert_eq!(
+        sim.event_queue.count_creature_activations(elves[1]),
+        1,
+        "cancel via pause timeout should produce exactly 1 reactivation, not 2 (B-erratic-movement)"
     );
 }

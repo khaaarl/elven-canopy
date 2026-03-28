@@ -61,7 +61,6 @@ This reduces merge conflicts when parallel work streams add items.
 ### Todo
 
 ```
-[ ] B-assembly-timeout     Activity assembly timeout not enforced
 [ ] B-carve-dirt           Carving pure dirt voxels rejected as nothing to carve
 [ ] B-carve-perf           Carving dirt causes severe CPU stall, possibly structural checks
 [ ] B-chamfer-nonmfld      Chamfer produces non-manifold edges for diagonally-adjacent voxels
@@ -282,6 +281,7 @@ This reduces merge conflicts when parallel work streams add items.
 ### Done
 
 ```
+[x] B-assembly-timeout     Activity assembly timeout not enforced
 [x] B-dead-enums           Remove dead GrownStairs/Bridge code and add explicit enum discriminants
 [x] B-dead-max-gen         Remove vestigial max_gen_per_frame field and ~40 test calls
 [x] B-dead-node-panic      Panic on dead nav node in pathfinding
@@ -5788,7 +5788,7 @@ cutaway, or hide-upper-levels toggle. Open design question (§27).
 ### Sim Engine
 
 #### B-assembly-timeout — Activity assembly timeout not enforced
-**Status:** Todo
+**Status:** Done
 
 ActivityConfig::assembly_timeout_ticks is defined (default 300,000) but
 never checked. An activity stuck in Assembling phase (e.g., participants
