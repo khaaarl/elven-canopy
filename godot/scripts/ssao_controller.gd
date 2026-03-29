@@ -42,4 +42,13 @@ func _process(_delta: float) -> void:
 ## Apply SSAO state to the Environment resource.
 func _apply(enabled: bool) -> void:
 	_environment.ssao_enabled = enabled
+	if enabled:
+		# EXPERIMENTAL — cranked up for visibility testing. Do not merge these
+		# values to main. Default ssao_light_affect is 0.0 (ambient only), which
+		# is nearly invisible with our low ambient_light_energy. Setting it to
+		# 1.0 makes SSAO darken direct light too. High intensity + radius make
+		# the effect unmissable so we can evaluate whether SSAO is worth keeping.
+		_environment.ssao_radius = 4.0  # default 1.0
+		_environment.ssao_intensity = 5.0  # default 2.0
+		_environment.ssao_light_affect = 1.0  # default 0.0
 	_cached_enabled = enabled
