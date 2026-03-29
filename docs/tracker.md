@@ -237,6 +237,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-spell-summon         Conjure temporary allied creature
 [ ] F-spell-system         Core spell casting infrastructure (SpellId, commands, mana costs)
 [ ] F-spell-thornbriar     Thornbriar zone spell (slow + damage area)
+[ ] F-ssao                 Screen-space ambient occlusion toggle
 [ ] F-stairs               Stairs and ramps for vertical movement
 [ ] F-starvation-rework    Starvation rework: incapacitation interaction and bleed-out
 [ ] F-status-effects       Generic creature status effect system
@@ -5843,6 +5844,13 @@ controller handles click-to-place with nav node highlighting.
 
 **Related:** F-debug-menu
 
+#### F-ssao — Screen-space ambient occlusion toggle
+**Status:** Todo
+
+Experimental: expose Godot's built-in SSAO as a user-facing toggle in the settings panel. Adds a checkbox to the Visual section (like the existing fog toggle) plus optional radius/intensity sliders. Settings persisted in config.json, applied to the WorldEnvironment's Environment resource at runtime (same pattern as fog_controller.gd). Supplements any future baked per-vertex AO (F-voxel-ao) by catching medium-scale occlusion (room interiors, canopy undersides) and darkening dynamic objects (creatures, items) that have no baked AO. May be removed if the visual benefit doesn't justify the per-frame GPU cost or if it conflicts with the art style.
+
+**Related:** F-voxel-ao
+
 #### F-status-bar — Persistent status bar (population, idle count, active tasks)
 **Status:** Done · **Phase:** 2
 
@@ -5948,13 +5956,20 @@ accidental designations.
 #### F-voxel-ao — Per-vertex ambient occlusion baked into chunk meshes
 **Status:** Todo
 
-Per-vertex ambient occlusion baked into chunk meshes at generation time. For each face vertex, sample the 3 corner-adjacent voxels (the classic 0-1-2-3 smooth voxel AO algorithm). Store AO factor per vertex — either in vertex color alpha or a dedicated attribute — and let the GPU interpolate smoothly across each face. Zero per-frame cost since AO is baked into the mesh and only recomputed when the chunk is dirtied. Cross-chunk border sampling uses the same neighbor-chunk reads already done for face culling. The shader multiplies AO into the final color to darken corners, crevices, undersides of branches, and interior spaces. High visual impact for minimal computational cost — transforms flat-shaded voxels into something with depth and presence.
+Per-pixel ambient occlusion baked into chunk meshes at generation time. The shader multiplies AO into the final color to darken corners, crevices, undersides of branches, and interior spaces. High visual impact for minimal computational cost.
 
-**Interaction with F-visual-smooth:** The cubic 0-1-2-3 corner AO algorithm assumes axis-aligned geometry with vertices on grid corners. When smooth rendering lands, vertices sit at interpolated positions along voxel edges. The AO algorithm must adapt to a hybrid approach: for each smooth-mesh vertex, find the nearest voxel position(s), sample the 3×3×3 neighborhood in the voxel grid, and compute occlusion weighted by distance and the vertex normal (soft falloff instead of hard binary). This is still bounded and cacheable — same core idea, just with continuous rather than discrete sampling. Implement cubic AO first, then adapt when F-visual-smooth lands.
+**Why not per-vertex AO:** The original plan assumed flat-shaded cubic geometry (the classic 0-1-2-3 corner AO algorithm). That no longer applies — F-visual-smooth has landed and meshes go through subdivision, chamfer, optional curvature smoothing, and QEM decimation. After decimation, triangles can be long, thin, and irregularly shaped, so per-vertex AO values would produce stretched interpolation artifacts across large triangles. The AO solution needs to be per-pixel, not per-vertex.
 
-**Supplementary SSAO:** Godot's built-in screen-space AO (`Environment.ssao_enabled`) can supplement baked AO for dynamic objects (elves, creatures) that don't have per-vertex AO. Works regardless of cubic vs smooth geometry.
+**Candidate approaches (no decision yet):**
 
-**Related:** F-mesh-par, F-visual-smooth
+- **3D volume texture AO.** Bake AO values into a 3D texture (one texel per voxel or sub-voxel), sample per-pixel in the fragment shader using world-space position (already available for triplanar noise). Godot 4 supports `ImageTexture3D` / `sampler3D` with hardware trilinear filtering. Concern: 1 texel per voxel (2m) is likely too coarse, but higher resolution grows cubically — 2x is 8x the data, 4x is 64x.
+- **GPU voxel occupancy sampling.** Upload raw voxel occupancy as a 3D texture. The fragment shader counts occupied neighbors per-pixel at runtime — no CPU bake step, always current with voxel changes. Tradeoff is 26+ texture samples per fragment every frame.
+- **SDF-based AO.** Bake a signed distance field into a 3D texture. Shader samples the SDF at a few points along the normal to estimate occlusion. Smooth results with ~5 texture reads per fragment. SDF is reusable for other effects (soft shadows, subsurface). More complex to bake (jump flooding algorithm). Same cubic resolution scaling concern as 3D volume texture.
+- **Voxel-grid raymarching (CPU bake).** Cast short DDA rays from each vertex/texel into the voxel neighborhood during async mesh generation. Works with arbitrary positions. Could feed into any of the above storage formats.
+
+The async mesh generation pipeline (rayon workers with ChunkNeighborhood snapshots) provides a natural place to bake AO — the voxel data is already available on the worker thread.
+
+**Related:** F-mesh-par, F-ssao, F-visual-smooth
 
 #### F-world-boundary — World boundary visualization
 **Status:** Todo · **Phase:** 2
