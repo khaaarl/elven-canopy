@@ -70,7 +70,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-ghost-chunks         Ghost chunks in distance remain visible after they should be hidden
 [ ] B-leaf-diagonal        Leaf blobs sometimes only diagonally connected, looks bad
 [ ] B-mesh-global-cfg      Mesh pipeline global atomics cause test flakiness risk
-[ ] B-safe-api-tests       Additional safe API test coverage from once-over
 [ ] B-start-paused-ui      start_paused_on_load UI desync and missing new-game support
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-adventure-mode       Control individual elf (RPG-like)
