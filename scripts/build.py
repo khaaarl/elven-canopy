@@ -14,6 +14,7 @@ Usage:
     python3 scripts/build.py run-branch NAME  # fetch, checkout branch, sync, build+run
     python3 scripts/build.py relay      # optimized standalone relay binary (LTO, stripped)
     python3 scripts/build.py check      # run fmt, clippy, gdformat, gdlint checks
+    python3 scripts/build.py check-and-fix  # autoformat, then check non-autofixable issues
     python3 scripts/build.py coverage   # generate HTML code coverage report
 
 Run from the repo root.
@@ -595,6 +596,58 @@ def cmd_check() -> None:
     print("All checks passed.")
 
 
+def cmd_check_and_fix() -> None:
+    """Auto-fix what can be fixed (formatting), then check the rest (clippy, gdlint)."""
+    ensure_symlink()
+
+    # Auto-fix: run formatters without --check.
+    print("Formatting Rust code...")
+    run("cargo", "fmt", "--all")
+    print()
+
+    gdformat, gdlint = ensure_gd_tools()
+    files = gd_files()
+    if not files:
+        print("No .gd files found, skipping GDScript checks.")
+    else:
+        print("Formatting GDScript...")
+        run(gdformat, "--line-length", "100", *files)
+    print()
+
+    # Non-autofixable: clippy + gdlint (same logic as cmd_check).
+    current_branch = git_output("branch", "--show-current")
+    clippy_args: list[str] = ["--workspace"]
+    skip_clippy = False
+
+    if current_branch and current_branch != "main":
+        changed = get_changed_files()
+        clippy_packages: list[str] = []
+        for crate_dir in ALL_CRATES:
+            if any(f.startswith(f"{crate_dir}/") for f in changed.splitlines()):
+                clippy_packages.extend(["-p", crate_dir])
+        if clippy_packages:
+            clippy_args = clippy_packages
+        elif any(f.endswith((".rs", "Cargo.toml")) for f in changed.splitlines()):
+            clippy_args = ["--workspace"]
+        else:
+            skip_clippy = True
+
+    if skip_clippy:
+        print("No Rust changes detected, skipping Clippy.")
+    else:
+        scope_str = " ".join(clippy_args)
+        print(f"Running Clippy ({scope_str})...")
+        run("cargo", "clippy", *clippy_args, "--", "-D", "warnings")
+    print()
+
+    if files:
+        print("Running GDScript linter...")
+        run(gdlint, *files)
+    print()
+
+    print("All checks passed.")
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -617,6 +670,7 @@ def main() -> None:
     rb.add_argument("branch", help="Branch name (exact or partial)")
     sub.add_parser("relay", help="Optimized standalone relay binary")
     sub.add_parser("check", help="Run fmt, clippy, gdformat, gdlint checks")
+    sub.add_parser("check-and-fix", help="Autoformat, then check non-autofixable issues")
     sub.add_parser("coverage", help="Generate HTML code coverage report")
 
     args = parser.parse_args()
@@ -641,6 +695,8 @@ def main() -> None:
             cmd_relay()
         elif command == "check":
             cmd_check()
+        elif command == "check-and-fix":
+            cmd_check_and_fix()
         elif command == "coverage":
             cmd_coverage()
         else:

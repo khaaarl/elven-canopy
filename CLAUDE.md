@@ -38,11 +38,12 @@ Use `scripts/build.py` for all build operations. It ensures the `godot/target` s
 scripts/build.py            # Debug build
 scripts/build.py release    # Release build
 scripts/build.py test       # Run all crate tests
-scripts/build.py quicktest  # Test only changed code vs main (includes Rust and GDScript)
+scripts/build.py quicktest  # Test only crates changed vs main (slow — prefer targeted tests + CI)
 scripts/build.py gdtest     # Run GDScript unit tests (GUT)
 scripts/build.py relay      # Optimized standalone relay binary (LTO, stripped)
 scripts/build.py run        # Debug build, then launch the game
 scripts/build.py run-branch NAME  # Fetch, checkout branch, sync to remote, build+run
+scripts/build.py check-and-fix   # Autoformat, then check non-autofixable issues (clippy, gdlint)
 ```
 
 Individual crate tests: `cargo test -p elven_canopy_sim`, `cargo test -p elven_canopy_lang`, `cargo test -p elven_canopy_music`, `cargo test -p tabulosity -p tabulosity_derive`. Tabulosity serde tests: `cargo test -p tabulosity --features serde --test serde`. Music CLI: `cargo run -p elven_canopy_music -- --help`.
@@ -144,7 +145,7 @@ ALWAYS ASK FOR PERMISSION BEFORE COMMITTING TO MAIN/MASTER, BUT COMMITTING TO FE
 
 **Testability (CRITICAL):** Never present work as complete or ready for testing if the user cannot actually exercise the feature through normal game interaction. If a feature requires manual config file editing, debug commands, or other non-obvious steps to activate, either add the necessary UI/activation path first, or explicitly warn the user before they attempt to test. "It works but you can't reach it" is not done.
 
-**Pre-commit checks (CRITICAL):** Before every commit that includes code changes (Rust or GDScript), run `scripts/build.py check` and fix any issues. Do NOT commit code that fails formatting or linting. For commits that change code, also run `scripts/build.py quicktest` and ensure all tests pass (`quicktest` automatically detects which crates and GDScript files changed and runs the appropriate tests). Non-code changes (e.g., docs, config, CLAUDE.md) can skip these steps.
+**Pre-commit checks (CRITICAL):** Before every commit that includes code changes (Rust or GDScript), run `scripts/build.py check-and-fix` (autoformats, then runs clippy and gdlint). Do NOT commit code that fails formatting, clippy, or linting. Do NOT run whole-crate test suites locally — they are too slow. Instead, run only the specific tests relevant to your changes (e.g., `cargo test -p elven_canopy_sim -- test_name` or `cargo test -p elven_canopy_sim -- test_file_name::`). On feature branches, commit, push, then run `scripts/wait-for-ci.sh` for full regression coverage. Non-code changes (e.g., docs, config, CLAUDE.md) can skip these steps.
 
 **Commit message procedure:** Always write the commit message to `.tmp/commit-msg.txt` using the Write tool, then commit with `-F`:
 
@@ -196,10 +197,10 @@ When the user asks to merge a feature branch to main, use the `/merge-to-main` s
 **Applies to:** Bug fixes and new features that affect simulator behavior.
 
 1. **Write a failing unit test** that captures the bug or specifies the new behavior. Do NOT use `xfail`, `skip`, or any other marker — write a plain test that runs and fails.
-   Confirm the new test **fails for the expected reason** — read the failure output and verify it fails because the behavior under test is wrong/missing, not because of a typo, import error, or unrelated issue.
+   Confirm the new test **fails for the expected reason** by running it specifically (e.g., `cargo test -p elven_canopy_sim -- test_name`). Read the failure output and verify it fails because the behavior under test is wrong/missing, not because of a typo, import error, or unrelated issue. Do NOT run whole-crate test suites — run the specific test(s), test file(s), and/or other tests of relevance.
 
 2. **Write code** to make the test pass.
-   Confirm the new test **passes** and no existing tests regress.
+   Confirm the new test **passes** by running it specifically, along with any other relevant tests. Do not run whole-crate suites to verify.
 
 3. Repeat steps 1–2 as needed until the fix or feature is complete.
 
@@ -228,7 +229,7 @@ GDScript unit tests use the [GUT](https://github.com/bitwes/Gut) (Godot Unit Tes
 
 **Test file naming:** `godot/test/test_<module>.gd` — mirrors the source file in `godot/scripts/`.
 
-**Pre-commit:** For commits that change `.gd` files, `scripts/build.py check` already covers formatting and linting. `scripts/build.py quicktest` automatically runs GDScript unit tests when `.gd` files are in the changeset, so no separate `gdtest` run is needed.
+**Pre-commit:** For commits that change `.gd` files, `scripts/build.py check-and-fix` covers formatting and linting. For GDScript test verification, rely on CI (`scripts/wait-for-ci.sh`) rather than running `gdtest` locally.
 
 ## Project Tracker (`docs/tracker.md`)
 
