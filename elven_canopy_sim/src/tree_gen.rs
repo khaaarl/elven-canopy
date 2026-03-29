@@ -34,6 +34,13 @@
 // 6-connected path between consecutive step positions. See also
 // `round_to_voxel()`.
 //
+// Leaf voxels have a stronger guarantee: every leaf must be transitively
+// connected to wood via face-adjacent leaf chains. After blob placement,
+// `connect_leaf_voxels()` flood-fills from wood to find connected leaves,
+// then bridges orphan leaves by filling Air voxels that connect them to the
+// connected set. Only truly unreachable leaves (no single-hop bridge exists)
+// are pruned as a last resort.
+//
 // ## Voxel placement priority
 //
 // Trunk > Branch > Root > Leaf. Higher-priority types are never overwritten.
@@ -63,7 +70,7 @@ use crate::prng::GameRng;
 use crate::types::{VoxelCoord, VoxelType};
 use crate::world::VoxelWorld;
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 // ---------------------------------------------------------------------------
 // Fixed-point constants and sine table
@@ -639,6 +646,20 @@ pub fn generate_tree_at(
         t0.elapsed()
     ));
 
+    // Connect leaf voxels to wood — bridge diagonal gaps, prune unreachable.
+    let t0 = std::time::Instant::now();
+    let wood_set: HashSet<VoxelCoord> = trunk_voxels
+        .iter()
+        .chain(branch_voxels.iter())
+        .chain(root_voxels.iter())
+        .copied()
+        .collect();
+    let leaf_voxels = connect_leaf_voxels(leaf_voxels, &wood_set, world);
+    log(&format!(
+        "[worldgen]   leaf connectivity took {:.1?}",
+        t0.elapsed()
+    ));
+
     TreeGenResult {
         trunk_voxels,
         branch_voxels,
@@ -997,6 +1018,175 @@ fn generate_leaf_blobs(
     }
 
     leaf_voxels
+}
+
+/// Face-adjacency offsets for 6-connectivity checks.
+const FACE_OFFSETS: [(i32, i32, i32); 6] = [
+    (1, 0, 0),
+    (-1, 0, 0),
+    (0, 1, 0),
+    (0, -1, 0),
+    (0, 0, 1),
+    (0, 0, -1),
+];
+
+/// Ensure all leaf voxels are transitively face-connected to wood.
+///
+/// After leaf blob placement, some voxels may be only diagonally connected
+/// to the tree. Rather than pruning them, this function tries to connect
+/// them by filling bridge voxels:
+///
+/// 1. **Flood fill** from wood through face-adjacent leaves to find the
+///    "connected" set.
+/// 2. **Bridge** orphan leaves: for each unconnected leaf, find an Air voxel
+///    that is face-adjacent to both the orphan and a connected voxel. Fill
+///    it with Leaf, mark the orphan as connected, and re-flood-fill from
+///    newly connected regions. Prefer bridge candidates with more
+///    face-adjacent connected neighbors.
+/// 3. **Prune** any remaining orphans that couldn't be bridged.
+fn connect_leaf_voxels(
+    leaf_voxels: Vec<VoxelCoord>,
+    wood_set: &HashSet<VoxelCoord>,
+    world: &mut VoxelWorld,
+) -> Vec<VoxelCoord> {
+    if leaf_voxels.is_empty() {
+        return leaf_voxels;
+    }
+
+    let mut leaf_set: HashSet<VoxelCoord> = leaf_voxels.iter().copied().collect();
+    let mut connected: HashSet<VoxelCoord> = HashSet::new();
+
+    // Phase 1: Flood fill from wood through face-adjacent leaves.
+    let mut queue: VecDeque<VoxelCoord> = VecDeque::new();
+    for &leaf in &leaf_voxels {
+        if FACE_OFFSETS.iter().any(|&(dx, dy, dz)| {
+            wood_set.contains(&VoxelCoord::new(leaf.x + dx, leaf.y + dy, leaf.z + dz))
+        }) {
+            connected.insert(leaf);
+            queue.push_back(leaf);
+        }
+    }
+    while let Some(coord) = queue.pop_front() {
+        for &(dx, dy, dz) in &FACE_OFFSETS {
+            let n = VoxelCoord::new(coord.x + dx, coord.y + dy, coord.z + dz);
+            if leaf_set.contains(&n) && !connected.contains(&n) {
+                connected.insert(n);
+                queue.push_back(n);
+            }
+        }
+    }
+
+    // Phase 2: Bridge orphan leaves to the connected set.
+    // Repeat until no new connections are made.
+    let mut made_progress = true;
+    while made_progress {
+        made_progress = false;
+        // Collect orphans each iteration (connected set grows).
+        let mut orphans: Vec<VoxelCoord> = leaf_set
+            .iter()
+            .filter(|c| !connected.contains(c))
+            .copied()
+            .collect();
+        // Sort for deterministic processing order.
+        orphans.sort_by(|a, b| a.x.cmp(&b.x).then(a.y.cmp(&b.y)).then(a.z.cmp(&b.z)));
+        if orphans.is_empty() {
+            break;
+        }
+
+        for &orphan in &orphans {
+            if connected.contains(&orphan) {
+                // Already connected by a previous bridge in this iteration.
+                continue;
+            }
+            // Find candidate Air voxels that are face-adjacent to the orphan
+            // AND face-adjacent to at least one connected voxel (wood or
+            // connected leaf).
+            let mut best_bridge: Option<(VoxelCoord, u32)> = None;
+            for &(dx, dy, dz) in &FACE_OFFSETS {
+                let candidate = VoxelCoord::new(orphan.x + dx, orphan.y + dy, orphan.z + dz);
+                // Must be in-bounds and Air (don't overwrite existing geometry).
+                if candidate.x < 0
+                    || candidate.y < 0
+                    || candidate.z < 0
+                    || candidate.x >= world.size_x as i32
+                    || candidate.y >= world.size_y as i32
+                    || candidate.z >= world.size_z as i32
+                {
+                    continue;
+                }
+                if world.get(candidate) != VoxelType::Air {
+                    continue;
+                }
+                // Count how many connected voxels (wood + connected leaves)
+                // are face-adjacent to this candidate.
+                let connectivity_score: u32 = FACE_OFFSETS
+                    .iter()
+                    .map(|&(dx2, dy2, dz2)| {
+                        let n = VoxelCoord::new(
+                            candidate.x + dx2,
+                            candidate.y + dy2,
+                            candidate.z + dz2,
+                        );
+                        if wood_set.contains(&n) || connected.contains(&n) {
+                            1
+                        } else {
+                            0
+                        }
+                    })
+                    .sum();
+                if connectivity_score > 0 {
+                    let dominated = match best_bridge {
+                        None => true,
+                        Some((prev, best_score)) => {
+                            connectivity_score > best_score
+                                || (connectivity_score == best_score
+                                    && (candidate.x, candidate.y, candidate.z)
+                                        < (prev.x, prev.y, prev.z))
+                        }
+                    };
+                    if dominated {
+                        best_bridge = Some((candidate, connectivity_score));
+                    }
+                }
+            }
+
+            if let Some((bridge, _)) = best_bridge {
+                // Place the bridge voxel.
+                world.set(bridge, VoxelType::Leaf);
+                leaf_set.insert(bridge);
+                connected.insert(bridge);
+                // Mark the orphan as connected.
+                connected.insert(orphan);
+                // Flood-fill from the newly connected orphan to catch any
+                // leaf neighbors that are now transitively connected.
+                let mut flood_queue = VecDeque::new();
+                flood_queue.push_back(orphan);
+                flood_queue.push_back(bridge);
+                while let Some(coord) = flood_queue.pop_front() {
+                    for &(dx, dy, dz) in &FACE_OFFSETS {
+                        let n = VoxelCoord::new(coord.x + dx, coord.y + dy, coord.z + dz);
+                        if leaf_set.contains(&n) && !connected.contains(&n) {
+                            connected.insert(n);
+                            flood_queue.push_back(n);
+                        }
+                    }
+                }
+                made_progress = true;
+            }
+        }
+    }
+
+    // Phase 3: Prune any remaining orphans.
+    for &coord in &leaf_set {
+        if !connected.contains(&coord) {
+            world.set(coord, VoxelType::Air);
+        }
+    }
+
+    // Return all connected leaves (original + bridges) in deterministic order.
+    let mut result: Vec<VoxelCoord> = connected.into_iter().collect();
+    result.sort_by(|a, b| a.x.cmp(&b.x).then(a.y.cmp(&b.y)).then(a.z.cmp(&b.z)));
+    result
 }
 
 #[cfg(test)]
@@ -1428,6 +1618,305 @@ mod tests {
             !result.leaf_voxels.is_empty(),
             "Fantasy mega should produce leaf voxels"
         );
+    }
+
+    #[test]
+    fn leaf_voxels_all_connected_to_wood() {
+        let config = test_config();
+        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut rng = GameRng::new(42);
+        let result = generate_terrain_and_tree(&mut world, &config, &mut rng);
+
+        assert!(
+            !result.leaf_voxels.is_empty(),
+            "Need leaf voxels to test connectivity"
+        );
+
+        let wood_set: HashSet<VoxelCoord> = result
+            .trunk_voxels
+            .iter()
+            .chain(result.branch_voxels.iter())
+            .chain(result.root_voxels.iter())
+            .copied()
+            .collect();
+
+        assert!(
+            all_leaves_connected_to_wood(&result.leaf_voxels, &wood_set),
+            "Every leaf must be transitively connected to wood via face-adjacent chains"
+        );
+    }
+
+    // --- Leaf connectivity unit tests ---
+
+    /// Helper: build a small world and wood_set for connectivity unit tests.
+    fn connect_test_setup(
+        wood_coords: &[VoxelCoord],
+        leaf_coords: &[VoxelCoord],
+    ) -> (VoxelWorld, HashSet<VoxelCoord>, Vec<VoxelCoord>) {
+        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut wood_set = HashSet::new();
+        for &c in wood_coords {
+            world.set(c, VoxelType::Branch);
+            wood_set.insert(c);
+        }
+        for &c in leaf_coords {
+            world.set(c, VoxelType::Leaf);
+        }
+        (world, wood_set, leaf_coords.to_vec())
+    }
+
+    /// Helper: verify all leaves in the result are transitively connected to
+    /// wood via face-adjacent leaf chains. Returns true if the invariant holds.
+    fn all_leaves_connected_to_wood(leaves: &[VoxelCoord], wood_set: &HashSet<VoxelCoord>) -> bool {
+        let leaf_set: HashSet<VoxelCoord> = leaves.iter().copied().collect();
+        // BFS from wood through face-adjacent leaves.
+        let mut connected: HashSet<VoxelCoord> = HashSet::new();
+        let mut queue: VecDeque<VoxelCoord> = VecDeque::new();
+        for &leaf in leaves {
+            let touches_wood = FACE_OFFSETS.iter().any(|&(dx, dy, dz)| {
+                wood_set.contains(&VoxelCoord::new(leaf.x + dx, leaf.y + dy, leaf.z + dz))
+            });
+            if touches_wood {
+                connected.insert(leaf);
+                queue.push_back(leaf);
+            }
+        }
+        while let Some(coord) = queue.pop_front() {
+            for &(dx, dy, dz) in &FACE_OFFSETS {
+                let n = VoxelCoord::new(coord.x + dx, coord.y + dy, coord.z + dz);
+                if leaf_set.contains(&n) && !connected.contains(&n) {
+                    connected.insert(n);
+                    queue.push_back(n);
+                }
+            }
+        }
+        connected.len() == leaves.len()
+    }
+
+    #[test]
+    fn connect_diagonal_leaf_gets_bridge() {
+        // Wood at (5,5,5), leaf at (6,6,5) — diagonal on XY, same Z.
+        // The algorithm should add a bridge voxel (e.g. (6,5,5) or (5,6,5))
+        // to connect the leaf to wood, rather than pruning it.
+        let wood = [VoxelCoord::new(5, 5, 5)];
+        let leaves = [VoxelCoord::new(6, 6, 5)];
+        let (mut world, wood_set, leaf_vec) = connect_test_setup(&wood, &leaves);
+
+        let result = connect_leaf_voxels(leaf_vec, &wood_set, &mut world);
+        // The original leaf should survive (not pruned).
+        assert!(
+            result.contains(&VoxelCoord::new(6, 6, 5)),
+            "Diagonal leaf should be connected, not pruned"
+        );
+        // At least one bridge voxel was added.
+        assert!(
+            result.len() >= 2,
+            "Should have original leaf + at least one bridge"
+        );
+        // All result leaves must be transitively connected to wood.
+        assert!(
+            all_leaves_connected_to_wood(&result, &wood_set),
+            "All leaves must be transitively connected to wood"
+        );
+    }
+
+    #[test]
+    fn connect_face_adjacent_leaf_unchanged() {
+        // Leaf at (5,5,6) is already face-adjacent to wood at (5,5,5).
+        // No bridge needed.
+        let wood = [VoxelCoord::new(5, 5, 5)];
+        let leaves = [VoxelCoord::new(5, 5, 6)];
+        let (mut world, wood_set, leaf_vec) = connect_test_setup(&wood, &leaves);
+
+        let result = connect_leaf_voxels(leaf_vec, &wood_set, &mut world);
+        assert_eq!(result.len(), 1, "No bridge needed for face-adjacent leaf");
+        assert_eq!(result[0], VoxelCoord::new(5, 5, 6));
+    }
+
+    #[test]
+    fn connect_floating_cluster_pruned() {
+        // Wood at (5,5,5). Two face-adjacent leaves at (7,7,7) and (7,7,8)
+        // — far from wood (2+ hops on every axis), no single bridge can span
+        // the gap. Both should be pruned.
+        let wood = [VoxelCoord::new(5, 5, 5)];
+        let leaves = [VoxelCoord::new(7, 7, 7), VoxelCoord::new(7, 7, 8)];
+        let (mut world, wood_set, leaf_vec) = connect_test_setup(&wood, &leaves);
+
+        let result = connect_leaf_voxels(leaf_vec, &wood_set, &mut world);
+        assert!(
+            result.is_empty(),
+            "Floating cluster too far from wood should be entirely pruned"
+        );
+        assert_eq!(world.get(VoxelCoord::new(7, 7, 7)), VoxelType::Air);
+        assert_eq!(world.get(VoxelCoord::new(7, 7, 8)), VoxelType::Air);
+    }
+
+    #[test]
+    fn connect_unreachable_leaf_pruned() {
+        // Wood at (5,5,5). Leaf at (5,5,14) — far away with no possible
+        // single-hop bridge to any connected voxel. Should be pruned.
+        let wood = [VoxelCoord::new(5, 5, 5)];
+        let leaves = [VoxelCoord::new(5, 5, 14)];
+        let (mut world, wood_set, leaf_vec) = connect_test_setup(&wood, &leaves);
+
+        let result = connect_leaf_voxels(leaf_vec, &wood_set, &mut world);
+        assert!(
+            !result.contains(&VoxelCoord::new(5, 5, 14)),
+            "Unreachable leaf should be pruned"
+        );
+        assert_eq!(
+            world.get(VoxelCoord::new(5, 5, 14)),
+            VoxelType::Air,
+            "Pruned leaf should be Air in world"
+        );
+    }
+
+    #[test]
+    fn connect_preserves_already_connected_cluster() {
+        // Wood at (5,5,5). Leaf chain: (5,5,6), (5,5,7), (5,5,8).
+        // All face-connected to wood transitively. No changes needed.
+        let wood = [VoxelCoord::new(5, 5, 5)];
+        let leaves = [
+            VoxelCoord::new(5, 5, 6),
+            VoxelCoord::new(5, 5, 7),
+            VoxelCoord::new(5, 5, 8),
+        ];
+        let (mut world, wood_set, leaf_vec) = connect_test_setup(&wood, &leaves);
+
+        let result = connect_leaf_voxels(leaf_vec, &wood_set, &mut world);
+        assert_eq!(result.len(), 3, "All leaves already connected, no bridges");
+    }
+
+    #[test]
+    fn connect_bridge_voxel_written_to_world() {
+        // Wood at (5,5,5), leaf at (6,6,5). The bridge voxel should be
+        // written as Leaf in the voxel world.
+        let wood = [VoxelCoord::new(5, 5, 5)];
+        let leaves = [VoxelCoord::new(6, 6, 5)];
+        let (mut world, wood_set, leaf_vec) = connect_test_setup(&wood, &leaves);
+
+        let result = connect_leaf_voxels(leaf_vec, &wood_set, &mut world);
+        // Find the bridge voxel(s) — coords in result that weren't in input.
+        let input_set: HashSet<VoxelCoord> = [VoxelCoord::new(6, 6, 5)].into();
+        for &coord in &result {
+            if !input_set.contains(&coord) {
+                assert_eq!(
+                    world.get(coord),
+                    VoxelType::Leaf,
+                    "Bridge voxel at {} should be Leaf in world",
+                    coord
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn connect_empty_input() {
+        let (mut world, wood_set, leaf_vec) = connect_test_setup(&[], &[]);
+        let result = connect_leaf_voxels(leaf_vec, &wood_set, &mut world);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn connect_diagonal_leaf_with_multiple_wood_neighbors() {
+        // Wood at (5,5,5) and (5,6,5). Leaf at (6,6,6) — diagonal to both.
+        // Multiple bridge candidates exist; we verify the structural property:
+        // the leaf survives and everything is connected to wood.
+        let wood = [VoxelCoord::new(5, 5, 5), VoxelCoord::new(5, 6, 5)];
+        let leaves = [VoxelCoord::new(6, 6, 6)];
+        let (mut world, wood_set, leaf_vec) = connect_test_setup(&wood, &leaves);
+
+        let result = connect_leaf_voxels(leaf_vec, &wood_set, &mut world);
+        assert!(
+            result.contains(&VoxelCoord::new(6, 6, 6)),
+            "Original leaf should survive"
+        );
+        assert!(
+            all_leaves_connected_to_wood(&result, &wood_set),
+            "All leaves must connect to wood"
+        );
+    }
+
+    #[test]
+    fn connect_cascading_bridges() {
+        // Wood at (5,5,5). Leaf at (5,5,6) face-adjacent (immediately connected).
+        // Leaf at (5,5,8) — needs bridge at (5,5,7). Leaf at (5,5,10) — needs
+        // bridge at (5,5,9), but that only becomes viable after (5,5,8) is
+        // connected in a prior iteration.
+        let wood = [VoxelCoord::new(5, 5, 5)];
+        let leaves = [
+            VoxelCoord::new(5, 5, 6),
+            VoxelCoord::new(5, 5, 8),
+            VoxelCoord::new(5, 5, 10),
+        ];
+        let (mut world, wood_set, leaf_vec) = connect_test_setup(&wood, &leaves);
+
+        let result = connect_leaf_voxels(leaf_vec, &wood_set, &mut world);
+        // All 3 original leaves should survive.
+        assert!(result.contains(&VoxelCoord::new(5, 5, 6)));
+        assert!(result.contains(&VoxelCoord::new(5, 5, 8)));
+        assert!(result.contains(&VoxelCoord::new(5, 5, 10)));
+        // Bridges placed at (5,5,7) and (5,5,9).
+        assert!(result.contains(&VoxelCoord::new(5, 5, 7)));
+        assert!(result.contains(&VoxelCoord::new(5, 5, 9)));
+        assert!(all_leaves_connected_to_wood(&result, &wood_set));
+    }
+
+    #[test]
+    fn connect_orphan_at_world_edge() {
+        // Wood at (1,5,5). Leaf at (0,6,5) — diagonal, x=0 is world edge.
+        // Some bridge candidates have x=-1 (out of bounds). Should still
+        // find a valid bridge.
+        let wood = [VoxelCoord::new(1, 5, 5)];
+        let leaves = [VoxelCoord::new(0, 6, 5)];
+        let (mut world, wood_set, leaf_vec) = connect_test_setup(&wood, &leaves);
+
+        let result = connect_leaf_voxels(leaf_vec, &wood_set, &mut world);
+        assert!(
+            result.contains(&VoxelCoord::new(0, 6, 5)),
+            "Edge leaf should be connected, not pruned"
+        );
+        assert!(all_leaves_connected_to_wood(&result, &wood_set));
+    }
+
+    #[test]
+    fn connect_orphan_blocked_by_dirt_pruned() {
+        // Wood at (5,5,5). Leaf at (6,6,5) — diagonal to wood. Fill all 6
+        // face-adjacent positions of the leaf with Dirt so no bridge candidate
+        // is Air. The leaf should be pruned.
+        let wood = [VoxelCoord::new(5, 5, 5)];
+        let leaves = [VoxelCoord::new(6, 6, 5)];
+        let (mut world, wood_set, leaf_vec) = connect_test_setup(&wood, &leaves);
+        // Block all bridge candidates with Dirt.
+        for &(dx, dy, dz) in &FACE_OFFSETS {
+            let n = VoxelCoord::new(6 + dx, 6 + dy, 5 + dz);
+            if world.get(n) == VoxelType::Air {
+                world.set(n, VoxelType::Dirt);
+            }
+        }
+
+        let result = connect_leaf_voxels(leaf_vec, &wood_set, &mut world);
+        assert!(
+            !result.contains(&VoxelCoord::new(6, 6, 5)),
+            "Leaf with all bridge candidates blocked should be pruned"
+        );
+    }
+
+    #[test]
+    fn connect_no_wood_all_pruned() {
+        // Leaves exist but no wood. All should be pruned.
+        let leaves = [
+            VoxelCoord::new(5, 5, 5),
+            VoxelCoord::new(5, 5, 6),
+            VoxelCoord::new(5, 5, 7),
+        ];
+        let (mut world, wood_set, leaf_vec) = connect_test_setup(&[], &leaves);
+
+        let result = connect_leaf_voxels(leaf_vec, &wood_set, &mut world);
+        assert!(result.is_empty(), "No wood means all leaves pruned");
+        for &c in &leaves {
+            assert_eq!(world.get(c), VoxelType::Air);
+        }
     }
 
     // --- Terrain generation tests ---

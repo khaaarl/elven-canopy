@@ -28,7 +28,7 @@ Things that are non-obvious or surprising about the Elven Canopy codebase. Read 
 ## Tree Generation
 
 - Trunk is just the first branch — all segments (trunk, branches, roots) use the same growth algorithm with different parameters.
-- Every tree voxel must be face-connected (6-connectivity) to at least one other tree voxel. `bridge_cross_sections()` fills gaps when growth steps diagonally.
+- Every tree voxel must be face-connected (6-connectivity) to at least one other tree voxel. `bridge_cross_sections()` fills gaps when growth steps diagonally. Leaf voxels have a stronger guarantee: every leaf must be transitively connected to wood via face-adjacent chains. `connect_leaf_voxels()` flood-fills from wood, bridges orphan leaves by filling Air voxels, and prunes only truly unreachable leaves.
 - Voxel type priority: Trunk > Branch > Root > Leaf > Air. Higher types are never overwritten by lower ones.
 
 ## GDScript UI

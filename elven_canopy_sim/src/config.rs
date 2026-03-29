@@ -846,8 +846,8 @@ impl TreeProfile {
             },
             leaves: LeafParams {
                 leaf_shape: LeafShape::Sphere,
-                leaf_density: 0.85,
-                leaf_size: 4,
+                leaf_density: 0.95,
+                leaf_size: 5,
                 canopy_density: 1.0,
             },
             trunk: TrunkParams {
@@ -889,8 +889,8 @@ impl TreeProfile {
             },
             leaves: LeafParams {
                 leaf_shape: LeafShape::Cloud,
-                leaf_density: 0.7,
-                leaf_size: 3,
+                leaf_density: 0.85,
+                leaf_size: 4,
                 canopy_density: 1.0,
             },
             trunk: TrunkParams {
@@ -932,9 +932,9 @@ impl TreeProfile {
             },
             leaves: LeafParams {
                 leaf_shape: LeafShape::Sphere,
-                leaf_density: 0.5,
-                leaf_size: 2,
-                canopy_density: 0.8,
+                leaf_density: 0.65,
+                leaf_size: 3,
+                canopy_density: 1.0,
             },
             trunk: TrunkParams {
                 base_flare: 0.2,
@@ -975,8 +975,8 @@ impl TreeProfile {
             },
             leaves: LeafParams {
                 leaf_shape: LeafShape::Sphere,
-                leaf_density: 0.4,
-                leaf_size: 2,
+                leaf_density: 0.55,
+                leaf_size: 3,
                 canopy_density: 1.2,
             },
             trunk: TrunkParams {
@@ -1080,8 +1080,8 @@ impl TreeProfile {
             },
             leaves: LeafParams {
                 leaf_shape: LeafShape::Cloud,
-                leaf_density: 0.9,
-                leaf_size: 4,
+                leaf_density: 1.0,
+                leaf_size: 5,
                 canopy_density: 1.0,
             },
             trunk: TrunkParams {
@@ -1125,7 +1125,7 @@ impl TreeProfile {
             },
             leaves: LeafParams {
                 leaf_shape: LeafShape::Sphere,
-                leaf_density: 0.7,
+                leaf_density: 0.85,
                 leaf_size: 3,
                 canopy_density: 1.0,
             },
@@ -1169,8 +1169,8 @@ impl TreeProfile {
             },
             leaves: LeafParams {
                 leaf_shape: LeafShape::Cloud,
-                leaf_density: 0.7,
-                leaf_size: 2,
+                leaf_density: 0.85,
+                leaf_size: 3,
                 canopy_density: 1.0,
             },
             trunk: TrunkParams {
@@ -1213,8 +1213,8 @@ impl TreeProfile {
             },
             leaves: LeafParams {
                 leaf_shape: LeafShape::Cloud,
-                leaf_density: 0.8,
-                leaf_size: 3,
+                leaf_density: 0.95,
+                leaf_size: 4,
                 canopy_density: 1.0,
             },
             trunk: TrunkParams {
@@ -1257,8 +1257,8 @@ impl TreeProfile {
             },
             leaves: LeafParams {
                 leaf_shape: LeafShape::Sphere,
-                leaf_density: 0.9,
-                leaf_size: 3,
+                leaf_density: 1.0,
+                leaf_size: 4,
                 canopy_density: 1.2,
             },
             trunk: TrunkParams {
@@ -1301,9 +1301,9 @@ impl TreeProfile {
             },
             leaves: LeafParams {
                 leaf_shape: LeafShape::Sphere,
-                leaf_density: 0.6,
+                leaf_density: 0.75,
                 leaf_size: 2,
-                canopy_density: 0.8,
+                canopy_density: 1.0,
             },
             trunk: TrunkParams {
                 base_flare: 0.0,
