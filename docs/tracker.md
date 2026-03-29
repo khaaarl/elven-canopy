@@ -56,6 +56,7 @@ This reduces merge conflicts when parallel work streams add items.
 [~] F-notifications        Player-visible event notifications
 [~] F-parallel-dedup       Radix-partitioned parallel dedup (elven_canopy_utils)
 [~] F-path-ui              Path management UI and notifications
+[~] F-ssao                 Screen-space ambient occlusion toggle
 ```
 
 ### Todo
@@ -237,7 +238,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-spell-summon         Conjure temporary allied creature
 [ ] F-spell-system         Core spell casting infrastructure (SpellId, commands, mana costs)
 [ ] F-spell-thornbriar     Thornbriar zone spell (slow + damage area)
-[ ] F-ssao                 Screen-space ambient occlusion toggle
 [ ] F-stairs               Stairs and ramps for vertical movement
 [ ] F-starvation-rework    Starvation rework: incapacitation interaction and bleed-out
 [ ] F-status-effects       Generic creature status effect system
@@ -5845,9 +5845,11 @@ controller handles click-to-place with nav node highlighting.
 **Related:** F-debug-menu
 
 #### F-ssao — Screen-space ambient occlusion toggle
-**Status:** Todo
+**Status:** In Progress
 
-Experimental: expose Godot's built-in SSAO as a user-facing toggle in the settings panel. Adds a checkbox to the Visual section (like the existing fog toggle) plus optional radius/intensity sliders. Settings persisted in config.json, applied to the WorldEnvironment's Environment resource at runtime (same pattern as fog_controller.gd). Supplements any future baked per-vertex AO (F-voxel-ao) by catching medium-scale occlusion (room interiors, canopy undersides) and darkening dynamic objects (creatures, items) that have no baked AO. May be removed if the visual benefit doesn't justify the per-frame GPU cost or if it conflicts with the art style.
+Experimental: expose Godot's built-in SSAO as a user-facing toggle in the settings panel. Adds a checkbox to the Visual section (like the existing fog toggle). Settings persisted in config.json, applied to the WorldEnvironment's Environment resource at runtime (same pattern as fog_controller.gd). Supplements any future baked per-vertex AO (F-voxel-ao) by catching medium-scale occlusion (room interiors, canopy undersides) and darkening dynamic objects (creatures, items) that have no baked AO. May be removed if the visual benefit doesn't justify the per-frame GPU cost or if it conflicts with the art style.
+
+**WIP branch:** `feature/F-ssao` — toggle, config, controller, and tests are implemented. Initial testing found the effect is subtle and only visible on some creases, not all. Key findings so far: `ssao_light_affect` must be >0 for the effect to show in directly-lit areas (default 0.0 only affects ambient light, which is low in our scene). A small `ssao_radius` (~0.5 world units) works better than large values for catching chamfer-scale crevices. Next step: manually tweak SSAO parameters (`ssao_detail`, `ssao_power`, `ssao_horizon`, `ssao_intensity`) in the Godot editor's Environment inspector to find values that look good before committing final defaults.
 
 **Related:** F-voxel-ao
 
