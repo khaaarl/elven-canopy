@@ -68,6 +68,35 @@ MARKER_TO_STATUS = {v: k for k, v in STATUS_TO_MARKER.items()}
 CLI_TO_STATUS = {"todo": "Todo", "progress": "In Progress", "done": "Done"}
 
 
+def read_description_file(path):
+    """Read and validate a description file. Returns stripped text or exits."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except OSError as e:
+        print(f"Error: cannot read description file '{path}': {e}", file=sys.stderr)
+        sys.exit(1)
+
+    text = text.strip()
+    if not text:
+        print("Error: description file is empty.", file=sys.stderr)
+        sys.exit(1)
+
+    for i, line in enumerate(text.split("\n"), 1):
+        if line.startswith("#"):
+            print(
+                f"Error: description line {i} starts with '#':\n"
+                f"  {line}\n"
+                f"Lines starting with '#' are not allowed in descriptions "
+                f"because they are parsed as markdown headings, which would "
+                f"break the tracker's section structure.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    return text
+
+
 def parse_id_list(text):
     """Parse a comma-separated list of tracker IDs from a field value."""
     return [t.strip() for t in text.split(",") if t.strip()]
@@ -1051,6 +1080,8 @@ def _cmd_add_locked(args, lock_fd):
         )
         sys.exit(1)
 
+    desc_text = read_description_file(args.description_file)
+
     # Build the detail entry
     status_line = f"**Status:** {status}"
     if phase:
@@ -1063,6 +1094,9 @@ def _cmd_add_locked(args, lock_fd):
         f"{status_line}\n",
         "\n",
     ]
+    for dl in desc_text.split("\n"):
+        detail_lines.append(dl + "\n")
+    detail_lines.append("\n")
 
     # Find insertion point: scan #### headings after group_heading_idx until
     # we hit one with ID > ours, or the next ### / ## heading
@@ -1181,26 +1215,9 @@ def _cmd_edit_description_locked(args, lock_fd):
             continue
         break
 
-    # Get new text from file
-    with open(args.file, "r", encoding="utf-8") as f:
-        new_text = f.read()
-
-    # Reject lines starting with '#' — they break markdown heading parsing
-    # in tracker.md (the tracker uses headings to delimit items).
-    for i, line in enumerate(new_text.split("\n"), 1):
-        if line.startswith("#"):
-            print(
-                f"Error: description line {i} starts with '#':\n"
-                f"  {line}\n"
-                f"Lines starting with '#' are not allowed in descriptions "
-                f"because they are parsed as markdown headings, which would "
-                f"break the tracker's section structure.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+    new_text = read_description_file(args.file)
 
     # Build replacement: blank separator line, then prose lines
-    new_text = new_text.rstrip("\n")
     new_prose_lines = ["\n"]
     for l in new_text.split("\n"):
         new_prose_lines.append(l + "\n")
@@ -1441,6 +1458,10 @@ def build_parser():
     p_add.add_argument("--group", required=True, help="Topic group name")
     p_add.add_argument("--phase", default="", help="Phase number")
     p_add.add_argument("--refs", default="", help="Design doc refs (e.g. §11)")
+    p_add.add_argument(
+        "--description-file", required=True, metavar="FILE",
+        help="File to read description from (required)",
+    )
     p_add.add_argument(
         "--status",
         choices=["todo", "progress", "done"],

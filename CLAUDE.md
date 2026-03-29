@@ -245,9 +245,9 @@ python3 scripts/tracker.py search <pattern> [-i]                   # regex searc
 **Mutation commands** (edit in place, auto-run `fix` at end):
 ```bash
 python3 scripts/tracker.py change-state <ID> todo|progress|done
-python3 scripts/tracker.py add <ID> <title> --group <GROUP> [--phase N] [--refs §N] [--status todo|progress|done]
+python3 scripts/tracker.py add <ID> <title> --group <GROUP> --description-file <FILE> [--phase N] [--refs §N] [--status todo|progress|done]
 python3 scripts/tracker.py edit-title <ID> <title>
-python3 scripts/tracker.py edit-description <ID> <FILE>               # read description from file
+python3 scripts/tracker.py edit-description <ID> <FILE>               # replace description from file
 python3 scripts/tracker.py block <ID> --by <ID>
 python3 scripts/tracker.py unblock <ID> --by <ID>
 python3 scripts/tracker.py relate <ID1> <ID2>
@@ -256,6 +256,8 @@ python3 scripts/tracker.py fix                                     # sort, symme
 ```
 
 All mutation commands support `--dry-run` to preview changes as a unified diff.
+
+**Descriptions are required and must be thorough.** The `add` command requires `--description-file`. Write the description to `.tmp/tracker-desc.txt` first. A good description captures enough context for a future conversation — with no other context — to understand and act on the item: what the problem or feature is, why it matters, what specific work is needed, and any examples or details that motivated it. Many existing tracker descriptions are too brief to be useful; do not use them as a template for quality. Err on the side of too much detail.
 
 **Other guidelines:**
 - When a draft design doc is created, link it from the tracker item (`**Draft:** path`).
