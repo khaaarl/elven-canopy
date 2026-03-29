@@ -48,7 +48,7 @@ func _apply(enabled: bool) -> void:
 		# is nearly invisible with our low ambient_light_energy. Setting it to
 		# 1.0 makes SSAO darken direct light too. High intensity + radius make
 		# the effect unmissable so we can evaluate whether SSAO is worth keeping.
-		_environment.ssao_radius = 4.0  # default 1.0
+		_environment.ssao_radius = 0.5  # default 1.0 — small to catch chamfer-scale crevices
 		_environment.ssao_intensity = 5.0  # default 2.0
 		_environment.ssao_light_affect = 1.0  # default 0.0
 	_cached_enabled = enabled
