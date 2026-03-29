@@ -411,13 +411,7 @@ impl SimState {
             ),
         };
 
-        let bell = elven_canopy_prng::quasi_normal(&mut self.rng, 50);
-        let skill_val = self.trait_int(creature_id, skill, 0);
-        let stat_total: i64 = stats
-            .iter()
-            .map(|s| self.trait_int(creature_id, *s, 0))
-            .sum();
-        bell + stat_total + skill_val
+        self.skill_check(creature_id, stats, skill)
     }
 
     /// Clean up a Craft task on node invalidation: release reserved inputs in

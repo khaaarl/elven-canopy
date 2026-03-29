@@ -29,9 +29,7 @@ pub(crate) enum SkillPicker {
     BestSocial,
 }
 
-/// Roll a social impression check for `target_id` and return the opinion
-/// intensity delta. The target's CHA + relevant skill + quasi_normal(50)
-/// determines the roll; the result is mapped to a delta:
+/// Map a social impression roll to an opinion intensity delta.
 ///
 /// | Roll   | Delta |
 /// |--------|-------|
@@ -39,14 +37,7 @@ pub(crate) enum SkillPicker {
 /// | 1–50   | +1    |
 /// | -49–0  | 0     |
 /// | ≤ -50  | -1    |
-///
-/// Always consumes exactly 12 PRNG calls (from `quasi_normal`).
-pub(crate) fn social_impression_delta(
-    cha: i64,
-    skill_value: i64,
-    rng: &mut elven_canopy_prng::GameRng,
-) -> i64 {
-    let roll = cha + skill_value + elven_canopy_prng::quasi_normal(rng, 50);
+pub(crate) fn social_impression_delta(roll: i64) -> i64 {
     match roll {
         51.. => 2,
         1..=50 => 1,
@@ -56,14 +47,22 @@ pub(crate) fn social_impression_delta(
 }
 
 impl SimState {
-    /// Pick the relevant skill value for a social interaction.
-    pub(crate) fn social_skill_value(&self, creature_id: CreatureId, picker: SkillPicker) -> i64 {
+    /// Pick the relevant skill TraitKind for a social interaction.
+    pub(crate) fn social_skill_trait(
+        &self,
+        creature_id: CreatureId,
+        picker: SkillPicker,
+    ) -> TraitKind {
         match picker {
-            SkillPicker::Culture => self.trait_int(creature_id, TraitKind::Culture, 0),
+            SkillPicker::Culture => TraitKind::Culture,
             SkillPicker::BestSocial => {
                 let influence = self.trait_int(creature_id, TraitKind::Influence, 0);
                 let culture = self.trait_int(creature_id, TraitKind::Culture, 0);
-                influence.max(culture)
+                if influence >= culture {
+                    TraitKind::Influence
+                } else {
+                    TraitKind::Culture
+                }
             }
         }
     }
@@ -72,15 +71,10 @@ impl SimState {
     /// their CHA stat and the skill selected by `picker`. Used by
     /// F-social-dance and F-casual-social for runtime social interactions.
     #[expect(dead_code)]
-    pub(crate) fn social_impression(
-        &self,
-        target_id: CreatureId,
-        picker: SkillPicker,
-        rng: &mut elven_canopy_prng::GameRng,
-    ) -> i64 {
-        let cha = self.trait_int(target_id, TraitKind::Charisma, 0);
-        let skill = self.social_skill_value(target_id, picker);
-        social_impression_delta(cha, skill, rng)
+    pub(crate) fn social_impression(&mut self, target_id: CreatureId, picker: SkillPicker) -> i64 {
+        let skill = self.social_skill_trait(target_id, picker);
+        let roll = self.skill_check(target_id, &[TraitKind::Charisma], skill);
+        social_impression_delta(roll)
     }
 
     /// Upsert a creature's opinion: if a row exists, add `delta` to intensity;
@@ -168,9 +162,9 @@ impl SimState {
                 let count = min + (self.rng.next_u64() % range as u64) as u32;
 
                 for _ in 0..count {
-                    let cha = self.trait_int(target, TraitKind::Charisma, 0);
-                    let skill = self.social_skill_value(target, SkillPicker::BestSocial);
-                    let delta = social_impression_delta(cha, skill, &mut self.rng);
+                    let skill_trait = self.social_skill_trait(target, SkillPicker::BestSocial);
+                    let roll = self.skill_check(target, &[TraitKind::Charisma], skill_trait);
+                    let delta = social_impression_delta(roll);
                     self.upsert_opinion(subject, OpinionKind::Friendliness, target, delta);
 
                     // Advance the subject's social skill (whichever is higher).

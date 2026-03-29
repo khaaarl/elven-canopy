@@ -228,6 +228,7 @@ elven-canopy/
 │   ├── project_structure.md    # Annotated directory tree (this file)
 │   ├── implementation_status.md # Detailed per-phase feature status
 │   ├── codebase_patterns.md    # Codebase conventions, patterns, and gotchas
+│   ├── game-mechanics.md       # Skill checks, advancement, speed pairings, armor
 │   ├── music_generator.md      # Music generator user guide + CLI reference
 │   ├── tabulosity.md           # Tabulosity (sim DB) documentation
 │   ├── items.md                # Item system documentation

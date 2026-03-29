@@ -196,14 +196,12 @@ impl super::SimState {
             }
         };
 
-        // Read tamer stats.
-        let wil = self.trait_int(creature_id, TraitKind::Willpower, 0);
-        let cha = self.trait_int(creature_id, TraitKind::Charisma, 0);
-        let beastcraft = self.trait_int(creature_id, TraitKind::Beastcraft, 0);
-
         // Roll: (WIL + CHA + Beastcraft) + quasi_normal(rng, 50) >= tame_difficulty.
-        let tamer_total =
-            wil + cha + beastcraft + elven_canopy_prng::quasi_normal(&mut self.rng, 50);
+        let tamer_total = self.skill_check(
+            creature_id,
+            &[TraitKind::Willpower, TraitKind::Charisma],
+            TraitKind::Beastcraft,
+        );
         let success = tamer_total >= tame_difficulty;
 
         // Advance Beastcraft skill (always, regardless of outcome).

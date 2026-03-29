@@ -381,3 +381,91 @@ fn skill_modified_duration_ignores_cap() {
         "speed should use raw skill (200), not capped (100)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// skill_check (F-skill-check-helper)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn skill_check_sums_stats_and_skill() {
+    // With quasi_normal stdev=50, giving creature very high stats ensures the
+    // roll is positive. We test structural properties, not exact values.
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+
+    // Set known stat and skill values (high enough to overwhelm noise).
+    set_trait(&mut sim, elf_id, TraitKind::Dexterity, 500);
+    set_trait(&mut sim, elf_id, TraitKind::Striking, 300);
+
+    // With DEX=500, Striking=300, base is 800 + quasi_normal(50).
+    // quasi_normal(50) has stdev 50, so ~99.7% chance |noise| < 150.
+    // The roll should be solidly positive.
+    let roll = sim.skill_check(elf_id, &[TraitKind::Dexterity], TraitKind::Striking);
+    assert!(
+        roll > 600,
+        "roll with DEX=500 + Striking=300 should be well above 600, got {roll}"
+    );
+}
+
+#[test]
+fn skill_check_multiple_stats() {
+    // Crafting-style check: DEX + INT + PER + skill.
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+
+    set_trait(&mut sim, elf_id, TraitKind::Dexterity, 200);
+    set_trait(&mut sim, elf_id, TraitKind::Intelligence, 200);
+    set_trait(&mut sim, elf_id, TraitKind::Perception, 200);
+    set_trait(&mut sim, elf_id, TraitKind::Herbalism, 100);
+
+    // Base is 200+200+200+100 = 700 + noise (stdev 50).
+    let roll = sim.skill_check(
+        elf_id,
+        &[
+            TraitKind::Dexterity,
+            TraitKind::Intelligence,
+            TraitKind::Perception,
+        ],
+        TraitKind::Herbalism,
+    );
+    assert!(
+        roll > 500,
+        "roll with 3 stats at 200 + skill 100 should be well above 500, got {roll}"
+    );
+}
+
+#[test]
+fn skill_check_zero_stats_centers_near_zero() {
+    // With all stats and skill at 0, the roll is just quasi_normal(50),
+    // centered at 0. Over many samples, mean should be near 0.
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+
+    set_trait(&mut sim, elf_id, TraitKind::Dexterity, 0);
+    set_trait(&mut sim, elf_id, TraitKind::Striking, 0);
+
+    let mut sum: i64 = 0;
+    let n = 1000;
+    for _ in 0..n {
+        sum += sim.skill_check(elf_id, &[TraitKind::Dexterity], TraitKind::Striking);
+    }
+    let mean = sum / n;
+    assert!(
+        mean.abs() < 10,
+        "mean of 1000 rolls with zero stats should be near 0, got {mean}"
+    );
+}
+
+#[test]
+fn skill_check_empty_stats_slice() {
+    // An empty stats slice should sum to 0, so result is skill + noise.
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    set_trait(&mut sim, elf_id, TraitKind::Striking, 500);
+
+    let roll = sim.skill_check(elf_id, &[], TraitKind::Striking);
+    assert!(
+        roll > 300,
+        "roll with no stats and skill=500 should be well above 300, got {roll}"
+    );
+}

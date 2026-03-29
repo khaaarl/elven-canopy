@@ -482,6 +482,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-sim-db-impl          Tabulosity typed in-memory relational store
 [x] F-sim-speed            Simulation speed controls UI
 [x] F-sim-tab-migrate      Migrate sim entity storage to tabulosity SimDb
+[x] F-skill-check-helper   Unified skill_check helper and game-mechanics doc
 [x] F-social-opinions      Interpersonal opinion table and social skill checks
 [x] F-spatial-index        Creature spatial index for voxel-level position queries
 [x] F-spawn-toolbar        Spawn toolbar and placement UI
@@ -1846,6 +1847,9 @@ Ranged attack as a creature ACTION. Uses the standard ActionKind / next_availabl
 **Draft:** docs/drafts/combat_military.md (§5)
 
 **Related:** F-friendly-fire, F-phased-archery, F-skirmish, F-spell-ench-arrow
+
+#### F-skill-check-helper — Unified skill_check helper and game-mechanics doc
+**Status:** Done
 
 #### F-slow-eating — Slow eating with interruptible consumption and partial restoration
 **Status:** Todo · **Phase:** 4

@@ -14,12 +14,12 @@
 // hit by projectiles from outside their detection range create an autonomous
 // AttackMove toward the arrow's origin voxel.
 //
-// Attack evasion (F-attack-evasion): both melee and ranged attacks roll a hit
-// check comparing attacker (Striking/Archery + DEX) + quasi-normal noise
-// (stdev 50, via `elven_canopy_prng::quasi_normal`) against defender
-// (Evasion + AGI). Equal stats give ~50% hit chance. Exceeding the defender
-// total by `evasion_crit_threshold` (default 100, ≈ 2 stdevs) scores a
-// critical hit for multiplied damage. Misses skip damage entirely but still
+// Attack evasion (F-attack-evasion): both melee and ranged attacks use
+// `skill_check` (see `skills.rs`) to roll attacker (Striking/Archery + DEX)
+// + quasi-normal noise (stdev 50) and compare against defender (Evasion + AGI)
+// via `roll_hit_check`. Equal stats give ~50% hit chance. Exceeding the
+// defender total by `evasion_crit_threshold` (default 100, ≈ 2 stdevs) scores
+// a critical hit for multiplied damage. Misses skip damage entirely but still
 // consume the action cooldown. Successful dodges advance the defender's
 // Evasion skill.
 //
@@ -43,27 +43,22 @@ pub(crate) enum HitResult {
     CriticalHit,
 }
 
-/// Roll a hit check: attacker (attack_skill + dex) + quasi-normal noise
-/// vs defender (evasion_skill + agi). Returns Miss, Hit, or CriticalHit.
+/// Compare a pre-rolled attacker total against a defender's passive total
+/// (evasion_skill + agi). Returns Miss, Hit, or CriticalHit.
 ///
-/// - If attacker_total >= defender_total + crit_threshold → CriticalHit
-/// - If attacker_total >= defender_total → Hit
+/// - If attacker_roll >= defender_total + crit_threshold → CriticalHit
+/// - If attacker_roll >= defender_total → Hit
 /// - Otherwise → Miss
-///
-/// Always consumes exactly 12 PRNG calls (from `quasi_normal`).
 pub(crate) fn roll_hit_check(
-    rng: &mut elven_canopy_prng::GameRng,
-    attack_skill: i64,
-    attacker_dex: i64,
+    attacker_roll: i64,
     evasion_skill: i64,
     defender_agi: i64,
     crit_threshold: i64,
 ) -> HitResult {
-    let attacker_total = attack_skill + attacker_dex + elven_canopy_prng::quasi_normal(rng, 50);
     let defender_total = evasion_skill + defender_agi;
-    if attacker_total >= defender_total + crit_threshold {
+    if attacker_roll >= defender_total + crit_threshold {
         HitResult::CriticalHit
-    } else if attacker_total >= defender_total {
+    } else if attacker_roll >= defender_total {
         HitResult::Hit
     } else {
         HitResult::Miss
@@ -1791,19 +1786,12 @@ impl SimState {
         self.start_simple_action(attacker_id, ActionKind::MeleeStrike, duration);
 
         // Hit check: attacker (Striking + DEX) vs defender (Evasion + AGI).
-        let attack_skill = self.trait_int(attacker_id, TraitKind::Striking, 0);
-        let attacker_dex = self.trait_int(attacker_id, TraitKind::Dexterity, 0);
+        let attacker_roll =
+            self.skill_check(attacker_id, &[TraitKind::Dexterity], TraitKind::Striking);
         let evasion_skill = self.trait_int(target_id, TraitKind::Evasion, 0);
         let defender_agi = self.trait_int(target_id, TraitKind::Agility, 0);
         let crit_threshold = self.config.evasion_crit_threshold;
-        let hit_result = roll_hit_check(
-            &mut self.rng,
-            attack_skill,
-            attacker_dex,
-            evasion_skill,
-            defender_agi,
-            crit_threshold,
-        );
+        let hit_result = roll_hit_check(attacker_roll, evasion_skill, defender_agi, crit_threshold);
 
         match hit_result {
             HitResult::Miss => {
@@ -2284,25 +2272,15 @@ impl SimState {
         // This is the second layer of miss chance — the first is the physical
         // projectile trajectory (DEX deviation). This check represents the
         // target dodging/deflecting a physically-on-target arrow.
-        let (attack_skill, attacker_dex) = if let Some(sid) = shooter_id {
-            (
-                self.trait_int(sid, TraitKind::Archery, 0),
-                self.trait_int(sid, TraitKind::Dexterity, 0),
-            )
+        let attacker_roll = if let Some(sid) = shooter_id {
+            self.skill_check(sid, &[TraitKind::Dexterity], TraitKind::Archery)
         } else {
-            (0, 0)
+            elven_canopy_prng::quasi_normal(&mut self.rng, 50)
         };
         let evasion_skill = self.trait_int(target_id, TraitKind::Evasion, 0);
         let defender_agi = self.trait_int(target_id, TraitKind::Agility, 0);
         let crit_threshold = self.config.evasion_crit_threshold;
-        let hit_result = roll_hit_check(
-            &mut self.rng,
-            attack_skill,
-            attacker_dex,
-            evasion_skill,
-            defender_agi,
-            crit_threshold,
-        );
+        let hit_result = roll_hit_check(attacker_roll, evasion_skill, defender_agi, crit_threshold);
 
         if hit_result == HitResult::Miss {
             // Evaded — no damage, but arrow still drops/breaks normally.

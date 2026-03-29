@@ -7,7 +7,7 @@ use super::*;
 use crate::config::SocialConfig;
 use crate::db::CreatureOpinion;
 use crate::sim::social::{SkillPicker, social_impression_delta};
-use crate::types::OpinionKind;
+use crate::types::{OpinionKind, TraitKind};
 
 // ---------------------------------------------------------------------------
 // Step 1: Schema tests — OpinionKind serde, table CRUD
@@ -180,14 +180,32 @@ fn social_config_default_from_empty_json() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn social_impression_delta_high_cha_mostly_positive() {
-    // With CHA=100 and skill=0, roll centers at 100 — almost always > 50.
-    let mut rng = elven_canopy_prng::GameRng::new(42);
+fn social_impression_delta_maps_roll_to_buckets() {
+    // social_impression_delta now takes a pre-computed roll and maps to
+    // the four intensity delta buckets.
+    assert_eq!(social_impression_delta(100), 2); // > 50
+    assert_eq!(social_impression_delta(51), 2); // > 50
+    assert_eq!(social_impression_delta(50), 1); // 1–50
+    assert_eq!(social_impression_delta(1), 1); // 1–50
+    assert_eq!(social_impression_delta(0), 0); // -49–0
+    assert_eq!(social_impression_delta(-49), 0); // -49–0
+    assert_eq!(social_impression_delta(-50), -1); // ≤ -50
+    assert_eq!(social_impression_delta(-200), -1); // ≤ -50
+}
+
+#[test]
+fn social_impression_high_cha_via_skill_check() {
+    // With CHA=100 and skill=0, skill_check centers at 100 — almost always > 50.
+    let mut sim = test_sim(42);
+    let elf = spawn_creature(&mut sim, Species::Elf);
+    set_trait(&mut sim, elf, TraitKind::Charisma, 100);
+    set_trait(&mut sim, elf, TraitKind::Influence, 0);
+
     let mut total = 0i64;
     for _ in 0..100 {
-        total += social_impression_delta(100, 0, &mut rng);
+        let roll = sim.skill_check(elf, &[TraitKind::Charisma], TraitKind::Influence);
+        total += social_impression_delta(roll);
     }
-    // With center at 100 and stdev 50, the vast majority should be +2.
     assert!(
         total > 150,
         "high CHA should produce mostly +2 deltas, got sum {total}"
@@ -195,12 +213,17 @@ fn social_impression_delta_high_cha_mostly_positive() {
 }
 
 #[test]
-fn social_impression_delta_low_cha_mostly_negative() {
-    // With CHA=-100 and skill=0, roll centers at -100 — almost always ≤ -50.
-    let mut rng = elven_canopy_prng::GameRng::new(42);
+fn social_impression_low_cha_via_skill_check() {
+    // With CHA=-100 and skill=0, skill_check centers at -100 — almost always ≤ -50.
+    let mut sim = test_sim(42);
+    let elf = spawn_creature(&mut sim, Species::Elf);
+    set_trait(&mut sim, elf, TraitKind::Charisma, -100);
+    set_trait(&mut sim, elf, TraitKind::Influence, 0);
+
     let mut total = 0i64;
     for _ in 0..100 {
-        total += social_impression_delta(-100, 0, &mut rng);
+        let roll = sim.skill_check(elf, &[TraitKind::Charisma], TraitKind::Influence);
+        total += social_impression_delta(roll);
     }
     assert!(
         total < -50,
@@ -209,45 +232,44 @@ fn social_impression_delta_low_cha_mostly_negative() {
 }
 
 #[test]
-fn social_impression_delta_deterministic() {
-    let mut rng1 = elven_canopy_prng::GameRng::new(99);
-    let mut rng2 = elven_canopy_prng::GameRng::new(99);
-    for _ in 0..20 {
-        let d1 = social_impression_delta(30, 5, &mut rng1);
-        let d2 = social_impression_delta(30, 5, &mut rng2);
-        assert_eq!(d1, d2);
-    }
+fn social_skill_trait_equal_values_picks_influence() {
+    // When Influence == Culture, BestSocial picks Influence (>= tie-break).
+    let mut sim = test_sim(42);
+    let elf = spawn_creature(&mut sim, Species::Elf);
+    set_trait(&mut sim, elf, TraitKind::Influence, 50);
+    set_trait(&mut sim, elf, TraitKind::Culture, 50);
+    assert_eq!(
+        sim.social_skill_trait(elf, SkillPicker::BestSocial),
+        TraitKind::Influence,
+        "equal Influence and Culture should tie-break to Influence"
+    );
 }
 
 #[test]
-fn social_skill_value_best_social_picks_higher() {
+fn social_skill_trait_best_social_picks_higher() {
     let mut sim = test_sim(42);
     let elf = spawn_creature(&mut sim, Species::Elf);
 
     // Set Influence=20, Culture=10 — BestSocial should pick Influence.
-    use crate::db::CreatureTrait;
-    sim.db.upsert_creature_trait(CreatureTrait {
-        creature_id: elf,
-        trait_kind: TraitKind::Influence,
-        value: TraitValue::Int(20),
-    });
-    sim.db.upsert_creature_trait(CreatureTrait {
-        creature_id: elf,
-        trait_kind: TraitKind::Culture,
-        value: TraitValue::Int(10),
-    });
-    assert_eq!(sim.social_skill_value(elf, SkillPicker::BestSocial), 20);
+    set_trait(&mut sim, elf, TraitKind::Influence, 20);
+    set_trait(&mut sim, elf, TraitKind::Culture, 10);
+    assert_eq!(
+        sim.social_skill_trait(elf, SkillPicker::BestSocial),
+        TraitKind::Influence
+    );
 
     // Flip: Culture=30 — BestSocial should now pick Culture.
-    sim.db.upsert_creature_trait(CreatureTrait {
-        creature_id: elf,
-        trait_kind: TraitKind::Culture,
-        value: TraitValue::Int(30),
-    });
-    assert_eq!(sim.social_skill_value(elf, SkillPicker::BestSocial), 30);
+    set_trait(&mut sim, elf, TraitKind::Culture, 30);
+    assert_eq!(
+        sim.social_skill_trait(elf, SkillPicker::BestSocial),
+        TraitKind::Culture
+    );
 
     // Culture picker always picks Culture regardless of Influence.
-    assert_eq!(sim.social_skill_value(elf, SkillPicker::Culture), 30);
+    assert_eq!(
+        sim.social_skill_trait(elf, SkillPicker::Culture),
+        TraitKind::Culture
+    );
 }
 
 // ---------------------------------------------------------------------------

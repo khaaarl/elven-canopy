@@ -4482,7 +4482,9 @@ fn test_hit_check_equal_stats_about_50_percent() {
     let n = 50_000;
     let mut hits = 0u32;
     for _ in 0..n {
-        match roll_hit_check(&mut rng, 0, 0, 0, 0, 100) {
+        // Attacker stats 0 + quasi_normal(50) vs defender stats 0.
+        let attacker_roll = elven_canopy_prng::quasi_normal(&mut rng, 50);
+        match roll_hit_check(attacker_roll, 0, 0, 100) {
             HitResult::Hit | HitResult::CriticalHit => hits += 1,
             HitResult::Miss => {}
         }
@@ -4501,7 +4503,9 @@ fn test_hit_check_large_attacker_advantage() {
     let n = 10_000;
     let mut hits = 0u32;
     for _ in 0..n {
-        match roll_hit_check(&mut rng, 250, 250, 0, 0, 100) {
+        // Attacker: attack_skill=250, dex=250, total base 500 + noise.
+        let attacker_roll = 500 + elven_canopy_prng::quasi_normal(&mut rng, 50);
+        match roll_hit_check(attacker_roll, 0, 0, 100) {
             HitResult::Hit | HitResult::CriticalHit => hits += 1,
             HitResult::Miss => {}
         }
@@ -4520,7 +4524,9 @@ fn test_hit_check_large_defender_advantage() {
     let n = 10_000;
     let mut hits = 0u32;
     for _ in 0..n {
-        match roll_hit_check(&mut rng, 0, 0, 250, 250, 100) {
+        // Attacker: 0 stats + noise vs defender evasion=250 + agi=250.
+        let attacker_roll = elven_canopy_prng::quasi_normal(&mut rng, 50);
+        match roll_hit_check(attacker_roll, 250, 250, 100) {
             HitResult::Hit | HitResult::CriticalHit => hits += 1,
             HitResult::Miss => {}
         }
@@ -4539,7 +4545,8 @@ fn test_hit_check_crit_rate_equal_stats() {
     let n = 100_000;
     let mut crits = 0u32;
     for _ in 0..n {
-        if roll_hit_check(&mut rng, 0, 0, 0, 0, 100) == HitResult::CriticalHit {
+        let attacker_roll = elven_canopy_prng::quasi_normal(&mut rng, 50);
+        if roll_hit_check(attacker_roll, 0, 0, 100) == HitResult::CriticalHit {
             crits += 1;
         }
     }
@@ -4556,16 +4563,37 @@ fn test_hit_check_deterministic() {
     let results_a: Vec<HitResult> = {
         let mut rng = elven_canopy_prng::GameRng::new(999);
         (0..100)
-            .map(|_| roll_hit_check(&mut rng, 10, 5, 8, 7, 100))
+            .map(|_| {
+                let attacker_roll = 15 + elven_canopy_prng::quasi_normal(&mut rng, 50);
+                roll_hit_check(attacker_roll, 8, 7, 100)
+            })
             .collect()
     };
     let results_b: Vec<HitResult> = {
         let mut rng = elven_canopy_prng::GameRng::new(999);
         (0..100)
-            .map(|_| roll_hit_check(&mut rng, 10, 5, 8, 7, 100))
+            .map(|_| {
+                let attacker_roll = 15 + elven_canopy_prng::quasi_normal(&mut rng, 50);
+                roll_hit_check(attacker_roll, 8, 7, 100)
+            })
             .collect()
     };
     assert_eq!(results_a, results_b);
+}
+
+#[test]
+fn test_hit_check_exact_boundary_values() {
+    use crate::sim::combat::{HitResult, roll_hit_check};
+
+    // Defender total = evasion(50) + agi(30) = 80, crit threshold = 100.
+    // attacker_roll == defender_total → Hit
+    assert_eq!(roll_hit_check(80, 50, 30, 100), HitResult::Hit);
+    // attacker_roll == defender_total - 1 → Miss
+    assert_eq!(roll_hit_check(79, 50, 30, 100), HitResult::Miss);
+    // attacker_roll == defender_total + crit_threshold → CriticalHit
+    assert_eq!(roll_hit_check(180, 50, 30, 100), HitResult::CriticalHit);
+    // attacker_roll == defender_total + crit_threshold - 1 → Hit (not crit)
+    assert_eq!(roll_hit_check(179, 50, 30, 100), HitResult::Hit);
 }
 
 #[test]

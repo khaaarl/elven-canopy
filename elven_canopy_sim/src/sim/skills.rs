@@ -1,4 +1,13 @@
-// Creature skill advancement and speed effects (F-creature-skills, F-path-core).
+// Creature skill checks, advancement, and speed effects (F-creature-skills,
+// F-path-core, F-skill-check-helper).
+//
+// ## Skill checks
+//
+// `skill_check()` is the universal formula for resolving ability-based rolls:
+// sum the creature's relevant ability scores and skill, then add a bell-curve
+// roll via `quasi_normal(rng, 50)`. See `docs/game-mechanics.md` for the full
+// specification. Used by combat (melee/ranged hit checks), taming, crafting
+// quality, and social impressions.
 //
 // ## Advancement
 //
@@ -43,6 +52,23 @@ use crate::db::CreatureTrait;
 use crate::types::{CreatureId, TraitKind, TraitValue};
 
 impl super::SimState {
+    /// Perform a skill check: sum the given ability scores and skill for a
+    /// creature, then add a quasi_normal(50) bell-curve roll. Returns the
+    /// raw total — callers compare against a threshold or bucket the result.
+    pub(crate) fn skill_check(
+        &mut self,
+        creature_id: CreatureId,
+        stats: &[TraitKind],
+        skill: TraitKind,
+    ) -> i64 {
+        let stat_total: i64 = stats
+            .iter()
+            .map(|s| self.trait_int(creature_id, *s, 0))
+            .sum();
+        let skill_val = self.trait_int(creature_id, skill, 0);
+        stat_total + skill_val + elven_canopy_prng::quasi_normal(&mut self.rng, 50)
+    }
+
     /// Roll for skill advancement (learning) after a relevant action. The
     /// skill cap limits how high a creature can *learn* — it does not affect
     /// the benefit of skill already acquired.
