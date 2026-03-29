@@ -67,6 +67,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-floating-dirt        Floating dirt still treated as ground by structural validator
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fragile-tests        Audit and harden tests against PRNG stream shifts and worldgen changes
+[ ] B-ghost-chunks         Ghost chunks in distance remain visible after they should be hidden
 [ ] B-leaf-diagonal        Leaf blobs sometimes only diagonally connected, looks bad
 [ ] B-mesh-global-cfg      Mesh pipeline global atomics cause test flakiness risk
 [ ] B-safe-api-tests       Additional safe API test coverage from once-over
@@ -4806,6 +4807,11 @@ Two related fixes for the ESC menu:
 
 #### B-first-notification — First notification not displayed (ID 0 skipped by polling cursor)
 **Status:** Done
+
+#### B-ghost-chunks — Ghost chunks in distance remain visible after they should be hidden
+**Status:** Todo
+
+Chunks in the distance sometimes remain visible ("ghost" chunks) after they should have had their visibility turned off. This has been attempted to be fixed before but is difficult due to the asynchronous nature of chunk mesh generation. A possible approach: generate the list of chunks that should be visible or shadowed fresh each frame, rather than trying to incrementally track visibility state.
 
 #### B-modifier-hotkeys — Hotkeys should not fire when modifier keys (Ctrl/Shift/Alt) are held
 **Status:** Done
