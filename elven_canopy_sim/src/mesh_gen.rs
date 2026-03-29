@@ -145,6 +145,7 @@ pub const CHUNK_SIZE: i32 = 16;
 
 /// A chunk coordinate in chunk-space (each unit = 16 voxels).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ChunkCoord {
     pub cx: i32,
     pub cy: i32,
@@ -168,6 +169,7 @@ pub fn voxel_to_chunk(coord: VoxelCoord) -> ChunkCoord {
 
 /// Raw mesh data for one surface (material group) of a chunk.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SurfaceMesh {
     /// Vertex positions (3 floats per vertex: x, y, z).
     pub vertices: Vec<f32>,
@@ -205,6 +207,7 @@ impl SurfaceMesh {
 
 /// Mesh data for one chunk, split into bark, ground, and leaf surfaces.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ChunkMesh {
     /// Surface 0: bark voxels (Trunk, Branch, Root, construction types).
     pub bark: SurfaceMesh,
@@ -441,29 +444,36 @@ fn is_smooth_opaque(vt: VoxelType) -> bool {
     vt.is_opaque() || vt == VoxelType::Leaf
 }
 
-/// Generate the mesh data for a single chunk of the world.
+/// Compute the chunk bounds (min/max voxel coordinates) for a chunk.
 ///
-/// All solid opaque voxels and leaf voxels go through the smooth mesh
-/// pipeline: each visible face is subdivided into 8 triangles, chamfered,
-/// and optionally smoothed. Solid and leaf share vertices at boundaries.
-/// Chamfer/smoothing processes solid first, then leaf-only vertices.
-/// Leaf↔leaf interior faces are culled (shell-only). The pipeline reads
-/// voxels in a border around the chunk for cross-boundary consistency.
+/// Used by both the face-generation and post-processing stages for
+/// boundary pinning and output filtering.
+pub fn chunk_bounds(chunk: ChunkCoord) -> ([i32; 3], [i32; 3]) {
+    let base_x = chunk.cx * CHUNK_SIZE;
+    let base_y = chunk.cy * CHUNK_SIZE;
+    let base_z = chunk.cz * CHUNK_SIZE;
+    let chunk_min = [base_x, base_y, base_z];
+    let chunk_max = [
+        base_x + CHUNK_SIZE,
+        base_y + CHUNK_SIZE,
+        base_z + CHUNK_SIZE,
+    ];
+    (chunk_min, chunk_max)
+}
+
+/// Build the raw subdivided `SmoothMesh` from a neighborhood snapshot.
 ///
-/// If `y_cutoff` is `Some(y)`, voxels with world Y ≥ y are treated as air:
-/// they produce no geometry, and neighbors facing them get their faces exposed.
+/// This is the face-generation stage of the mesh pipeline: it iterates
+/// voxels in the chunk + border region, creates 8-triangle subdivided faces
+/// for every visible surface, and returns the resulting `SmoothMesh` before
+/// any smoothing, chamfering, or decimation. Returns `None` if the chunk
+/// is empty or entirely above `y_cutoff`.
 ///
-/// See `smooth_mesh.rs` for the smoothing pipeline and
-/// `docs/drafts/visual_smooth.md` for the full design.
-/// Generate a chunk mesh from a pre-extracted neighborhood snapshot.
-///
-/// This is the core mesh generation entry point for the async pipeline:
-/// the neighborhood is extracted on the main thread (fast), then this
-/// function runs on a background worker with no world access.
-pub fn generate_chunk_mesh(nh: &ChunkNeighborhood) -> ChunkMesh {
+/// Exposed as a public function so benchmarks can measure face generation
+/// independently from the post-processing stages.
+pub fn build_smooth_mesh(nh: &ChunkNeighborhood) -> Option<SmoothMesh> {
     let chunk = nh.chunk;
     let y_cutoff = nh.y_cutoff;
-    let mut mesh = ChunkMesh::default();
 
     let base_x = chunk.cx * CHUNK_SIZE;
     let base_y = chunk.cy * CHUNK_SIZE;
@@ -476,18 +486,10 @@ pub fn generate_chunk_mesh(nh: &ChunkNeighborhood) -> ChunkMesh {
         None => chunk_y_end,
     };
 
-    // If the entire chunk is above the cutoff, produce an empty mesh.
+    // If the entire chunk is above the cutoff, produce nothing.
     if effective_y_end < base_y {
-        return mesh;
+        return None;
     }
-
-    // --- Smooth mesh pass for solid opaque voxels ---
-    // Iterate the chunk + border region, building a single unified SmoothMesh
-    // for all solid surfaces. Using one mesh ensures that vertices shared
-    // between different voxel types (e.g., trunk/dirt boundary) are smoothed
-    // together, preventing seams. The mesh is split into bark and ground
-    // surfaces at the output stage using per-triangle surface tags.
-    let mut solid_smooth = SmoothMesh::new();
 
     let border = SMOOTH_BORDER;
     let smooth_min_x = (base_x - border).max(0);
@@ -496,6 +498,27 @@ pub fn generate_chunk_mesh(nh: &ChunkNeighborhood) -> ChunkMesh {
     let smooth_max_y_unbounded = (base_y + CHUNK_SIZE + border).min(nh.world_size_y as i32);
     let smooth_min_z = (base_z - border).max(0);
     let smooth_max_z = (base_z + CHUNK_SIZE + border).min(nh.world_size_z as i32);
+
+    // Pre-estimate face count to avoid repeated Vec/HashMap reallocations.
+    // The iteration volume covers (chunk + border)³ voxels. Surface voxels
+    // in a typical chunk contribute ~2 visible faces each on average. A chunk
+    // with 20³ = 8000 voxels and ~30% surface exposure gives ~4800 faces —
+    // over-estimating slightly is cheaper than under-estimating and rehashing.
+    let volume = (smooth_max_x - smooth_min_x) as usize
+        * (smooth_max_y_unbounded.min(effective_y_end + 1 + border) - smooth_min_y).max(0) as usize
+        * (smooth_max_z - smooth_min_z) as usize;
+    // Heuristic: ~1 visible face per 3 voxels in the iteration volume.
+    // This over-estimates for solid interiors (fully culled) and under-
+    // estimates for thin shells, but is a good middle ground that avoids
+    // the worst-case reallocation chains.
+    let face_estimate = volume / 3;
+
+    // Iterate the chunk + border region, building a single unified SmoothMesh
+    // for all solid surfaces. Using one mesh ensures that vertices shared
+    // between different voxel types (e.g., trunk/dirt boundary) are smoothed
+    // together, preventing seams. The mesh is split into bark and ground
+    // surfaces at the output stage using per-triangle surface tags.
+    let mut solid_smooth = SmoothMesh::with_estimated_faces(face_estimate);
 
     // Effective Y ceiling for smooth mesh includes the border.
     let smooth_effective_y_end = match y_cutoff {
@@ -599,42 +622,94 @@ pub fn generate_chunk_mesh(nh: &ChunkNeighborhood) -> ChunkMesh {
         }
     }
 
-    // Run the smoothing pipeline on the unified solid mesh.
-    if !solid_smooth.vertices.is_empty() {
-        solid_smooth.resolve_non_manifold();
-        solid_smooth.normalize_initial_normals();
-        solid_smooth.apply_anchoring();
-        solid_smooth.chamfer();
-        if smoothing_enabled() {
-            solid_smooth.smooth();
-        }
-        // Chunk bounds used for both decimation boundary pinning and output filtering.
-        let chunk_min = [base_x, base_y, base_z];
-        let chunk_max = [
-            base_x + CHUNK_SIZE,
-            base_y + CHUNK_SIZE,
-            base_z + CHUNK_SIZE,
-        ];
-        if decimation_enabled() {
-            if !qem_only() {
-                solid_smooth.coplanar_region_retri(Some((chunk_min, chunk_max)));
-                solid_smooth.collapse_collinear_boundary_vertices(Some((chunk_min, chunk_max)));
-            }
-            solid_smooth.decimate(decimation_max_error(), Some((chunk_min, chunk_max)));
-        }
-        let mut surfaces = solid_smooth.to_split_surface_meshes_filtered(chunk_min, chunk_max);
-        if let Some(bark) = surfaces.remove(&TAG_BARK) {
-            mesh.bark = bark;
-        }
-        if let Some(ground) = surfaces.remove(&TAG_GROUND) {
-            mesh.ground = ground;
-        }
-        if let Some(leaf) = surfaces.remove(&TAG_LEAF) {
-            mesh.leaf = leaf;
-        }
+    if solid_smooth.vertices.is_empty() {
+        None
+    } else {
+        Some(solid_smooth)
     }
+}
 
-    mesh
+/// Run the chamfer/smooth pipeline on a `SmoothMesh`.
+///
+/// This performs: resolve non-manifold, normalize initial normals,
+/// apply anchoring, chamfer, and optionally smooth (if `smoothing_enabled()`).
+/// Exposed as a public function so benchmarks can measure this stage
+/// independently.
+pub fn run_chamfer_smooth(mesh: &mut SmoothMesh) {
+    mesh.resolve_non_manifold();
+    mesh.normalize_initial_normals();
+    mesh.apply_anchoring();
+    mesh.chamfer();
+    if smoothing_enabled() {
+        mesh.smooth();
+    }
+}
+
+/// Run the decimation pipeline on a `SmoothMesh`.
+///
+/// This performs: coplanar region re-triangulation, collinear boundary
+/// vertex collapse, and QEM edge-collapse (unless `qem_only()` is set,
+/// in which case only the QEM pass runs). Exposed as a public function
+/// so benchmarks can measure this stage independently.
+pub fn run_decimation(mesh: &mut SmoothMesh, chunk: ChunkCoord) {
+    let (chunk_min, chunk_max) = chunk_bounds(chunk);
+    if !qem_only() {
+        mesh.coplanar_region_retri(Some((chunk_min, chunk_max)));
+        mesh.collapse_collinear_boundary_vertices(Some((chunk_min, chunk_max)));
+    }
+    mesh.decimate(decimation_max_error(), Some((chunk_min, chunk_max)));
+}
+
+/// Flatten a `SmoothMesh` into a `ChunkMesh`, filtering to chunk bounds.
+///
+/// Splits the unified smooth mesh by surface tag into bark, ground, and
+/// leaf surfaces. Only triangles whose source voxel position falls within
+/// the chunk bounds are included. Exposed as a public function so
+/// benchmarks can measure this stage independently.
+pub fn flatten_to_chunk_mesh(mesh: &SmoothMesh, chunk: ChunkCoord) -> ChunkMesh {
+    let (chunk_min, chunk_max) = chunk_bounds(chunk);
+    let mut result = ChunkMesh::default();
+    let mut surfaces = mesh.to_split_surface_meshes_filtered(chunk_min, chunk_max);
+    if let Some(bark) = surfaces.remove(&TAG_BARK) {
+        result.bark = bark;
+    }
+    if let Some(ground) = surfaces.remove(&TAG_GROUND) {
+        result.ground = ground;
+    }
+    if let Some(leaf) = surfaces.remove(&TAG_LEAF) {
+        result.leaf = leaf;
+    }
+    result
+}
+
+/// Generate a chunk mesh from a pre-extracted neighborhood snapshot.
+///
+/// This is the core mesh generation entry point for the async pipeline:
+/// the neighborhood is extracted on the main thread (fast), then this
+/// function runs on a background worker with no world access.
+///
+/// All solid opaque voxels and leaf voxels go through the smooth mesh
+/// pipeline: each visible face is subdivided into 8 triangles, chamfered,
+/// and optionally smoothed. Solid and leaf share vertices at boundaries.
+/// Chamfer/smoothing processes solid first, then leaf-only vertices.
+/// Leaf↔leaf interior faces are culled (shell-only). The pipeline reads
+/// voxels in a border around the chunk for cross-boundary consistency.
+///
+/// If `y_cutoff` is `Some(y)`, voxels with world Y ≥ y are treated as air:
+/// they produce no geometry, and neighbors facing them get their faces exposed.
+///
+/// See `smooth_mesh.rs` for the smoothing pipeline and
+/// `docs/drafts/visual_smooth.md` for the full design.
+pub fn generate_chunk_mesh(nh: &ChunkNeighborhood) -> ChunkMesh {
+    let Some(mut solid_smooth) = build_smooth_mesh(nh) else {
+        return ChunkMesh::default();
+    };
+
+    run_chamfer_smooth(&mut solid_smooth);
+    if decimation_enabled() {
+        run_decimation(&mut solid_smooth, nh.chunk);
+    }
+    flatten_to_chunk_mesh(&solid_smooth, nh.chunk)
 }
 
 #[cfg(test)]
@@ -1020,6 +1095,7 @@ mod tests {
 
     #[test]
     fn strut_voxel_produces_geometry() {
+        set_decimation_enabled(false);
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Strut);
         let mesh =
@@ -1207,5 +1283,64 @@ mod tests {
         assert!(produces_geometry(VoxelType::Strut));
         assert!(!produces_geometry(VoxelType::Air));
         assert!(!produces_geometry(VoxelType::Fruit));
+    }
+
+    #[test]
+    fn chunk_bounds_correctness() {
+        let (min, max) = chunk_bounds(ChunkCoord::new(2, 3, 1));
+        assert_eq!(min, [32, 48, 16]);
+        assert_eq!(max, [48, 64, 32]);
+    }
+
+    #[test]
+    fn chunk_bounds_origin() {
+        let (min, max) = chunk_bounds(ChunkCoord::new(0, 0, 0));
+        assert_eq!(min, [0, 0, 0]);
+        assert_eq!(max, [16, 16, 16]);
+    }
+
+    #[test]
+    fn build_smooth_mesh_empty_returns_none() {
+        set_decimation_enabled(false);
+        let world = VoxelWorld::new(16, 16, 16);
+        let nh =
+            ChunkNeighborhood::extract(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        assert!(build_smooth_mesh(&nh).is_none());
+    }
+
+    #[test]
+    fn sub_stages_match_generate_chunk_mesh() {
+        set_decimation_enabled(true);
+        set_smoothing_enabled(false);
+        let mut world = VoxelWorld::new(16, 16, 16);
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
+        world.set(VoxelCoord::new(9, 8, 8), VoxelType::Branch);
+        world.set(VoxelCoord::new(8, 7, 8), VoxelType::Dirt);
+        let chunk = ChunkCoord::new(0, 0, 0);
+        let nh = ChunkNeighborhood::extract(&world, chunk, None, &no_grassless());
+
+        // Path A: monolithic function.
+        let mesh_a = generate_chunk_mesh(&nh);
+
+        // Path B: composable sub-stages.
+        let mut sm = build_smooth_mesh(&nh).unwrap();
+        run_chamfer_smooth(&mut sm);
+        run_decimation(&mut sm, chunk);
+        let mesh_b = flatten_to_chunk_mesh(&sm, chunk);
+
+        assert_eq!(mesh_a.bark.vertices, mesh_b.bark.vertices);
+        assert_eq!(mesh_a.bark.normals, mesh_b.bark.normals);
+        assert_eq!(mesh_a.bark.indices, mesh_b.bark.indices);
+        assert_eq!(mesh_a.bark.colors, mesh_b.bark.colors);
+        assert_eq!(mesh_a.ground.vertices, mesh_b.ground.vertices);
+        assert_eq!(mesh_a.ground.indices, mesh_b.ground.indices);
+    }
+
+    #[test]
+    fn serde_roundtrip_chunk_coord() {
+        let coord = ChunkCoord::new(3, -1, 7);
+        let json = serde_json::to_string(&coord).unwrap();
+        let restored: ChunkCoord = serde_json::from_str(&json).unwrap();
+        assert_eq!(coord, restored);
     }
 }

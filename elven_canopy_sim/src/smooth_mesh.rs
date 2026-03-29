@@ -37,7 +37,25 @@
 
 use std::collections::BTreeMap;
 
+use rustc_hash::FxHashMap;
+
 use crate::mesh_gen::SurfaceMesh;
+
+/// Deduplicate a `Vec<u32>` in-place, preserving the order of first
+/// occurrences. Uses a simple quadratic scan suitable for small lists
+/// (vertex neighbor lists are typically 6-12 elements).
+pub(crate) fn dedup_preserve_order(vec: &mut Vec<u32>) {
+    let mut write = 0;
+    for read in 0..vec.len() {
+        let val = vec[read];
+        // Check if val already exists in the kept prefix [0..write).
+        if !vec[..write].contains(&val) {
+            vec[write] = val;
+            write += 1;
+        }
+    }
+    vec.truncate(write);
+}
 
 /// A vertex in the smooth mesh intermediate representation.
 #[derive(Clone, Debug)]
@@ -65,7 +83,7 @@ pub struct SmoothVertex {
 /// float keys: a corner at (1, 2, 3) becomes (2, 4, 6), an edge midpoint at
 /// (1.5, 2, 3) becomes (3, 4, 6). This gives exact comparison for all
 /// positions on the half-integer grid.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VertexKey {
     /// 2x the x coordinate.
     x2: i32,
@@ -126,7 +144,7 @@ pub struct SmoothMesh {
     /// used to pair voxel faces into "sides" during non-manifold resolution.
     pub triangle_face_midpoints: Vec<[f32; 3]>,
     /// Deduplication map: grid position → vertex index.
-    pub dedup: BTreeMap<VertexKey, u32>,
+    pub dedup: FxHashMap<VertexKey, u32>,
 }
 
 impl Default for SmoothMesh {
@@ -146,7 +164,30 @@ impl SmoothMesh {
             triangle_voxel_pos: Vec::new(),
             triangle_face_normals: Vec::new(),
             triangle_face_midpoints: Vec::new(),
-            dedup: BTreeMap::new(),
+            dedup: FxHashMap::default(),
+        }
+    }
+
+    /// Create a smooth mesh pre-sized for the given estimated face count.
+    ///
+    /// Each subdivided face produces 8 triangles and up to 9 vertices (with
+    /// dedup reducing to ~5 unique vertices per face on average). Pre-sizing
+    /// avoids repeated reallocations and FxHashMap rehashes during face
+    /// construction.
+    pub fn with_estimated_faces(face_estimate: usize) -> Self {
+        let tri_cap = face_estimate * 8;
+        // ~5 unique vertices per face after dedup (corners and midpoints
+        // are shared between adjacent faces).
+        let vert_cap = face_estimate * 5;
+        Self {
+            vertices: Vec::with_capacity(vert_cap),
+            triangles: Vec::with_capacity(tri_cap),
+            triangle_tags: Vec::with_capacity(tri_cap),
+            triangle_colors: Vec::with_capacity(tri_cap),
+            triangle_voxel_pos: Vec::with_capacity(tri_cap),
+            triangle_face_normals: Vec::with_capacity(tri_cap),
+            triangle_face_midpoints: Vec::with_capacity(tri_cap),
+            dedup: FxHashMap::with_capacity_and_hasher(vert_cap, Default::default()),
         }
     }
 
@@ -178,14 +219,26 @@ impl SmoothMesh {
         }
     }
 
-    /// Add an edge between two vertices (bidirectional). Skips if already
-    /// connected.
+    /// Add an edge between two vertices (bidirectional). Pushes
+    /// unconditionally — duplicates are removed later by
+    /// `deduplicate_neighbors`.
     fn add_edge(&mut self, a: u32, b: u32) {
-        if !self.vertices[a as usize].neighbors.contains(&b) {
-            self.vertices[a as usize].neighbors.push(b);
-        }
-        if !self.vertices[b as usize].neighbors.contains(&a) {
-            self.vertices[b as usize].neighbors.push(a);
+        self.vertices[a as usize].neighbors.push(b);
+        self.vertices[b as usize].neighbors.push(a);
+    }
+
+    /// Deduplicate every vertex's neighbor list, preserving insertion order
+    /// (first occurrence wins). Must be called after bulk edge insertion
+    /// (face construction or `rebuild_neighbors`) before any code that reads
+    /// neighbor lists. Preserving insertion order is critical: sorted order
+    /// changes float accumulation order in chamfer/smoothing, which changes
+    /// decimation collapse sequences and thus mesh output.
+    ///
+    /// Public so test helpers can finalize neighbor lists without running
+    /// the full pipeline.
+    pub fn deduplicate_neighbors(&mut self) {
+        for v in &mut self.vertices {
+            dedup_preserve_order(&mut v.neighbors);
         }
     }
 
@@ -287,6 +340,10 @@ impl SmoothMesh {
     ///   where same-type incident triangles don't form a single connected
     ///   fan. Splits into one vertex per fan component.
     pub fn resolve_non_manifold(&mut self) {
+        // Finalize neighbor lists after bulk edge insertion during face
+        // construction (add_edge pushes unconditionally for speed).
+        self.deduplicate_neighbors();
+
         let mut any_split = false;
         // Resolve solid surfaces (non-leaf).
         any_split |= self.resolve_non_manifold_pass1(false);
@@ -661,19 +718,16 @@ impl SmoothMesh {
         for v in &mut self.vertices {
             v.neighbors.clear();
         }
-        // Inline add_edge logic to avoid borrow conflict (can't call
-        // &mut self method while iterating &self.triangles).
+        // Push edges unconditionally (no contains check). Duplicates are
+        // removed by the deduplicate_neighbors call at the end.
         for ti in 0..self.triangles.len() {
             let [a, b, c] = self.triangles[ti];
             for (x, y) in [(a, b), (a, c), (b, c)] {
-                if !self.vertices[x as usize].neighbors.contains(&y) {
-                    self.vertices[x as usize].neighbors.push(y);
-                }
-                if !self.vertices[y as usize].neighbors.contains(&x) {
-                    self.vertices[y as usize].neighbors.push(x);
-                }
+                self.vertices[x as usize].neighbors.push(y);
+                self.vertices[y as usize].neighbors.push(x);
             }
         }
+        self.deduplicate_neighbors();
     }
 
     /// Recompute `initial_normal`, `has_solid_face`, and `has_leaf_face` for
@@ -952,28 +1006,94 @@ impl SmoothMesh {
             let has_negative = neighbor_signs.iter().any(|&(_, s)| !s);
             let was_saddle = has_positive && has_negative;
 
+            // Precompute centroid of vi's neighbors (constant across offsets
+            // since only vi moves, not its neighbors).
+            let vi_inv_n = 1.0 / neighbors.len() as f32;
+            let mut vi_centroid = [0.0f32; 3];
+            for &ni in &neighbors {
+                let np = self.vertices[ni as usize].position;
+                vi_centroid[0] += np[0];
+                vi_centroid[1] += np[1];
+                vi_centroid[2] += np[2];
+            }
+            vi_centroid[0] *= vi_inv_n;
+            vi_centroid[1] *= vi_inv_n;
+            vi_centroid[2] *= vi_inv_n;
+
+            // Precompute base centroids for each neighbor (using vi's original
+            // position). When vi moves by delta, neighbor ni's centroid shifts
+            // by delta / deg(ni). This avoids recomputing centroids from
+            // scratch for each of the 5 offset candidates.
+            struct NeighborCache {
+                pos: [f32; 3],
+                base_centroid: [f32; 3],
+                inv_deg: f32,
+            }
+            let neighbor_caches: Vec<NeighborCache> = neighbors
+                .iter()
+                .map(|&ni| {
+                    let nv = &self.vertices[ni as usize];
+                    let n_neighbors = &nv.neighbors;
+                    let inv_deg = 1.0 / n_neighbors.len() as f32;
+                    let mut cx = 0.0f32;
+                    let mut cy = 0.0f32;
+                    let mut cz = 0.0f32;
+                    for &nni in n_neighbors {
+                        let nnp = self.vertices[nni as usize].position;
+                        cx += nnp[0];
+                        cy += nnp[1];
+                        cz += nnp[2];
+                    }
+                    cx *= inv_deg;
+                    cy *= inv_deg;
+                    cz *= inv_deg;
+                    NeighborCache {
+                        pos: nv.position,
+                        base_centroid: [cx, cy, cz],
+                        inv_deg,
+                    }
+                })
+                .collect();
+
             for &offset in &offsets {
-                // Temporarily move vertex to candidate position.
-                self.vertices[vi].position = [
+                let candidate_pos = [
                     original_pos[0] + offset * normal[0],
                     original_pos[1] + offset * normal[1],
                     original_pos[2] + offset * normal[2],
                 ];
 
-                // Evaluate total squared pointiness over vi and its 1-ring.
-                let mut cost = 0.0f32;
-                let k = self.laplacian_pointiness(vi as u32);
-                cost += k * k;
-                for &ni in &neighbors {
-                    let k = self.laplacian_pointiness(ni);
+                // Pointiness of vi: distance from candidate_pos to centroid
+                // of vi's neighbors (centroid is constant).
+                let dx = vi_centroid[0] - candidate_pos[0];
+                let dy = vi_centroid[1] - candidate_pos[1];
+                let dz = vi_centroid[2] - candidate_pos[2];
+                let k = (dx * dx + dy * dy + dz * dz).sqrt();
+                let mut cost = k * k;
+
+                // Delta from original position to candidate position.
+                let delta = [
+                    candidate_pos[0] - original_pos[0],
+                    candidate_pos[1] - original_pos[1],
+                    candidate_pos[2] - original_pos[2],
+                ];
+
+                // Pointiness of each neighbor: incrementally adjust centroid.
+                for nc in &neighbor_caches {
+                    let adj_centroid = [
+                        nc.base_centroid[0] + delta[0] * nc.inv_deg,
+                        nc.base_centroid[1] + delta[1] * nc.inv_deg,
+                        nc.base_centroid[2] + delta[2] * nc.inv_deg,
+                    ];
+                    let dx = adj_centroid[0] - nc.pos[0];
+                    let dy = adj_centroid[1] - nc.pos[1];
+                    let dz = adj_centroid[2] - nc.pos[2];
+                    let k = (dx * dx + dy * dy + dz * dz).sqrt();
                     cost += k * k;
                 }
 
                 // If the vertex was NOT a saddle point before, check if
-                // this candidate position creates one. If so, reject it
-                // by setting cost to infinity.
+                // this candidate position creates one. If so, reject it.
                 if !was_saddle {
-                    let candidate_pos = self.vertices[vi].position;
                     let mut cand_pos = false;
                     let mut cand_neg = false;
                     for &(ni, _) in &neighbor_signs {
@@ -1004,8 +1124,6 @@ impl SmoothMesh {
                 }
             }
 
-            // Restore original position (will be updated in batch below).
-            self.vertices[vi].position = original_pos;
             *disp = [
                 best_offset * normal[0],
                 best_offset * normal[1],
@@ -1037,7 +1155,9 @@ impl SmoothMesh {
     }
 
     /// Compute Laplacian pointiness for a vertex: the distance from the
-    /// vertex to the centroid of its neighbors.
+    /// vertex to the centroid of its neighbors. Only used in tests now —
+    /// the production smoothing loop precomputes centroids incrementally.
+    #[cfg(test)]
     fn laplacian_pointiness(&self, vi: u32) -> f32 {
         let v = &self.vertices[vi as usize];
         let n = v.neighbors.len();
@@ -1200,7 +1320,40 @@ impl SmoothMesh {
         tag_filter: Option<SurfaceTag>,
         normals: &[[f32; 3]],
     ) -> SurfaceMesh {
-        let mut surface = SurfaceMesh::default();
+        // Pre-estimate output size: count matching triangles to pre-allocate.
+        // Each triangle emits 3 vertices (no sharing due to per-tri colors).
+        let matching_tris = self
+            .triangles
+            .iter()
+            .enumerate()
+            .filter(|&(ti, _)| {
+                if let Some(tag) = tag_filter
+                    && self.triangle_tags[ti] != tag
+                {
+                    return false;
+                }
+                if let Some((min, max)) = bounds {
+                    let v = self.triangle_voxel_pos[ti];
+                    if v[0] < min[0]
+                        || v[0] >= max[0]
+                        || v[1] < min[1]
+                        || v[1] >= max[1]
+                        || v[2] < min[2]
+                        || v[2] >= max[2]
+                    {
+                        return false;
+                    }
+                }
+                true
+            })
+            .count();
+        let mut surface = SurfaceMesh {
+            vertices: Vec::with_capacity(matching_tris * 9), // 3 verts × 3 floats
+            normals: Vec::with_capacity(matching_tris * 9),  // 3 verts × 3 floats
+            indices: Vec::with_capacity(matching_tris * 3),  // 3 indices
+            colors: Vec::with_capacity(matching_tris * 12),  // 3 verts × 4 floats
+            uvs: Vec::new(),
+        };
 
         // Because colors are per-triangle, we can't share vertices between
         // triangles of different colors. We emit 3 vertices per triangle
@@ -1319,6 +1472,7 @@ mod tests {
             });
             mesh.add_subdivided_face(corners, FACE_NORMALS[face_idx], color, TAG_BARK, vpos);
         }
+        mesh.deduplicate_neighbors();
         mesh.normalize_initial_normals();
         mesh
     }
@@ -1575,6 +1729,7 @@ mod tests {
             [1.0, 0.0, 0.0],
         ];
         mesh.add_subdivided_face(corners, [0.0, 0.0, -1.0], color, TAG_BARK, [0, 0, 0]);
+        mesh.deduplicate_neighbors();
         mesh.normalize_initial_normals();
         mesh.apply_anchoring();
 
@@ -1659,6 +1814,7 @@ mod tests {
                 mesh.add_subdivided_face(corners, FACE_NORMALS[2], color, TAG_BARK, [0, 0, 0]);
             }
         }
+        mesh.deduplicate_neighbors();
         mesh.normalize_initial_normals();
         mesh.apply_anchoring();
 
@@ -1860,6 +2016,7 @@ mod tests {
             }
         }
 
+        mesh.deduplicate_neighbors();
         mesh
     }
 
@@ -2058,6 +2215,7 @@ mod tests {
                 );
             }
         }
+        mesh_with_leaf.deduplicate_neighbors();
         mesh_with_leaf.normalize_initial_normals();
         mesh_with_leaf.apply_anchoring();
         mesh_with_leaf.chamfer();
@@ -2158,6 +2316,7 @@ mod tests {
                 );
             }
         }
+        mesh.deduplicate_neighbors();
         mesh.normalize_initial_normals();
         mesh.apply_anchoring();
         mesh.chamfer();
@@ -2617,6 +2776,7 @@ mod tests {
             }
         }
 
+        mesh.deduplicate_neighbors();
         mesh.normalize_initial_normals();
         mesh.apply_anchoring();
         mesh.chamfer();
@@ -3006,5 +3166,54 @@ mod tests {
             mesh.resolve_non_manifold();
             assert_fully_manifold(&mesh, &format!("3D cluster seed={seed}"));
         }
+    }
+
+    // -- dedup_preserve_order unit tests --
+
+    #[test]
+    fn dedup_preserve_order_empty() {
+        let mut v: Vec<u32> = vec![];
+        dedup_preserve_order(&mut v);
+        assert!(v.is_empty());
+    }
+
+    #[test]
+    fn dedup_preserve_order_no_duplicates() {
+        let mut v = vec![1, 2, 3, 4, 5];
+        dedup_preserve_order(&mut v);
+        assert_eq!(v, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn dedup_preserve_order_preserves_first_occurrence() {
+        let mut v = vec![1, 2, 3, 2, 1, 4];
+        dedup_preserve_order(&mut v);
+        assert_eq!(v, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn dedup_preserve_order_all_same() {
+        let mut v = vec![5, 5, 5, 5];
+        dedup_preserve_order(&mut v);
+        assert_eq!(v, vec![5]);
+    }
+
+    #[test]
+    fn deduplicate_neighbors_idempotent() {
+        let mut mesh = single_voxel_mesh(4.0, 4.0, 4.0, VoxelType::Trunk);
+        let neighbors_after_first: Vec<Vec<u32>> =
+            mesh.vertices.iter().map(|v| v.neighbors.clone()).collect();
+        mesh.deduplicate_neighbors();
+        let neighbors_after_second: Vec<Vec<u32>> =
+            mesh.vertices.iter().map(|v| v.neighbors.clone()).collect();
+        assert_eq!(neighbors_after_first, neighbors_after_second);
+    }
+
+    #[test]
+    fn with_estimated_faces_zero() {
+        let mesh = SmoothMesh::with_estimated_faces(0);
+        assert!(mesh.vertices.is_empty());
+        assert!(mesh.triangles.is_empty());
+        assert!(mesh.dedup.is_empty());
     }
 }

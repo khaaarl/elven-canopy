@@ -28,6 +28,7 @@ const BORDER: i32 = SMOOTH_BORDER;
 
 /// A self-contained snapshot of the voxel data surrounding one chunk,
 /// sufficient to generate its mesh without access to the full `VoxelWorld`.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ChunkNeighborhood {
     /// The chunk this neighborhood was extracted for.
     pub chunk: ChunkCoord,

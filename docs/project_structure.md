@@ -52,6 +52,10 @@ elven-canopy/
 │       ├── tree_gen.rs         # Procedural tree generation (trunk + branches)
 │       ├── world.rs            # RLE column-based voxel grid
 │       └── worldgen.rs         # Worldgen framework — generator sequencing, worldgen PRNG
+│   ├── tests/
+│   │   └── mesh_snapshots.rs   # Snapshot regression test for mesh pipeline (15 fixtures × 4 configs)
+│   └── benches/
+│       └── mesh_pipeline.rs    # Criterion benchmarks for mesh pipeline stages
 ├── elven_canopy_lang/          # Shared Vaelith conlang (types, lexicon, name gen)
 │   └── src/
 │       ├── lib.rs              # Lexicon loader (JSON → typed struct), re-exports
@@ -232,6 +236,9 @@ elven-canopy/
 │   ├── construction_roadmap.md # Construction system roadmap
 │   ├── godot_scroll_sizing.md  # ScrollContainer/PanelContainer sizing guide (required reading for LLMs)
 │   ├── puppet_guide.md         # Puppet remote game control guide (keep updated)
+│   ├── iterative_optimization.md # Guide to agent-driven iterative optimization process
+│   ├── optimization-diaries/   # Persistent records of optimization attempts
+│   │   └── mesh-pipeline-perf.md # Mesh pipeline optimization diary (round 1)
 │   ├── design/                 # Approved/in-progress design documents
 │   └── drafts/                 # Working design documents
 ├── scripts/

@@ -66,6 +66,8 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-floating-dirt        Floating dirt still treated as ground by structural validator
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fragile-tests        Audit and harden tests against PRNG stream shifts and worldgen changes
+[ ] B-leaf-diagonal        Leaf blobs sometimes only diagonally connected, looks bad
+[ ] B-mesh-global-cfg      Mesh pipeline global atomics cause test flakiness risk
 [ ] B-safe-api-tests       Additional safe API test coverage from once-over
 [ ] B-start-paused-ui      start_paused_on_load UI desync and missing new-game support
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
@@ -173,7 +175,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mass-conserve        Wood mass tracking and conservation
 [ ] F-megachunk            MegaChunk spatial hierarchy with draw distance and frustum culling
 [ ] F-mesh-cache-lru       LRU cache for chunk meshes at different Y cutoffs
-[ ] F-mesh-pipeline-perf   Mesh pipeline performance optimization (mesh gen, chamfer, decimation)
+[ ] F-mesh-perf-2          Mesh pipeline performance optimization, round 2
 [ ] F-military-campaign    Send elves on world expeditions
 [ ] F-military-org         Squad management and organization
 [ ] F-mobile-support       Mobile/touch platform support
@@ -421,6 +423,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-mesh-gen-rle         RLE-aware chunk mesh generation
 [x] F-mesh-lod             Mesh level-of-detail for distant chunks
 [x] F-mesh-par             Parallel off-main-thread chunk mesh generation with camera-priority
+[x] F-mesh-pipeline-perf   Mesh pipeline performance optimization (mesh gen, chamfer, decimation)
 [x] F-military-armor       Military equipment auto-equip and slot validation
 [x] F-military-equip       Military group equipment acquisition
 [x] F-military-groups      Military group data model and configuration
@@ -800,7 +803,7 @@ produces it. Conservation of mass prevents infinite building.
 **Related:** F-branch-growth, F-mana-system
 
 #### F-mesh-pipeline-perf — Mesh pipeline performance optimization (mesh gen, chamfer, decimation)
-**Status:** Todo
+**Status:** Done
 
 Pure code-level single-threaded performance optimization of the chunk mesh pipeline: mesh generation, chamfering, and decimation. Bit-fiddling optimization work — algorithmic structure stays the same, but inner loops get faster. Each chunk is already processed on its own thread (F-mesh-par); this work targets the per-chunk cost. No rayon or intra-chunk parallelism.
 
@@ -862,7 +865,7 @@ The agents are not limited to the suggestions below — any single-threaded opti
 
 **Note:** B-qem-deformation and B-chamfer-nonmfld are known bugs in the chamfer/decimation pipeline. If either gets fixed, the expected snapshot outputs will change and the frozen comparisons will need to be regenerated.
 
-**Related:** F-smooth-perf
+**Related:** F-mesh-perf-2, F-smooth-perf
 
 #### F-no-bp-overlap — Reject overlapping blueprint designations
 **Status:** Done · **Phase:** 2
@@ -6033,6 +6036,11 @@ Additionally, add explicit integer discriminants to all serializable enums (at m
 #### B-dead-max-gen — Remove vestigial max_gen_per_frame field and ~40 test calls
 **Status:** Done
 
+#### B-leaf-diagonal — Leaf blobs sometimes only diagonally connected, looks bad
+**Status:** Todo
+
+Leaf blobs generated during tree growth sometimes end up only diagonally connected to other geometry (other leaf blobs, branches, trunk). This looks bad after chamfering/smoothing because diagonal-only voxels produce visible gaps. Branches already have logic to ensure face-to-face (6-connected) adjacency with at least one other solid voxel. Leaf blob placement needs the same treatment: every leaf voxel must be face-adjacent to at least one other leaf or solid voxel.
+
 #### B-sim-floats — Remaining f32/f64 in sim logic threaten determinism
 **Status:** Done
 
@@ -6247,6 +6255,44 @@ user-configurable settings.
 **Status:** Todo · **Phase:** 2
 
 **Related:** F-mesh-lod, F-mesh-par
+
+#### F-mesh-perf-2 — Mesh pipeline performance optimization, round 2
+**Status:** Todo
+
+Continuation of F-mesh-pipeline-perf. The initial round achieved ~1.8x speedup on the heaviest fixtures (worldgen_trunk: ~58ms to ~33ms at release profile) through six optimization attempts. This item continues the iterative agent-driven optimization process.
+
+**Prior work:** See `docs/iterative_optimization.md` for the full guide on the optimization process, agent invocation patterns, and lessons learned. The round-1 diary is at `docs/optimization-diaries/mesh-pipeline-perf.md`. Start a new diary at `.tmp/mesh-perf-diary.md` for round 2 (copy the round-1 diary as a starting point, or start fresh with new baselines). Snapshot regression test at `elven_canopy_sim/tests/mesh_snapshots.rs`, criterion benchmarks at `elven_canopy_sim/benches/mesh_pipeline.rs`.
+
+**Branch:** Start from `feature/F-mesh-pipeline-perf` (or main after merge). The harness infrastructure (snapshot tests, criterion benchmarks, exposed sub-stage functions) is already in place.
+
+**Setup:** Run `cargo test -p elven_canopy_sim --test mesh_snapshots` once to generate fixtures in `.tmp/mesh_fixtures/`. Then `cargo bench -p elven_canopy_sim -- "default/chunk/(worldgen_trunk|worldgen_surface|fully_solid|flat_slab)"` for baseline numbers. Record baselines in `.tmp/mesh-perf-diary.md` before starting optimization agents.
+
+**Required: new fixture scenarios.** Add two new world-generated fixtures to the snapshot test and benchmarks:
+- **Sky chunk**: A chunk coordinate high above the canopy (e.g., cy=3 in a 64-tall world). The chunk itself should be mostly/entirely air, but the `ChunkNeighborhood` extraction should capture a full border region that may include treetop leaves. Tests the early-exit and sparse-chunk paths.
+- **Underground chunk**: A chunk coordinate well below ground level (e.g., cy=0 below floor_y in a world with terrain). The chunk should be fully solid or nearly so. Tests the all-faces-culled path and column iteration overhead on dense chunks.
+These exercise the "boring chunk" fast paths that real gameplay produces many of (most chunks in a large world are empty sky or solid underground).
+
+**Optimization targets to try (non-exhaustive):**
+
+1. **Chamfer inner loop**: `compute_chamfer_offset` in `smooth_mesh.rs` iterates all neighbors to find anchored ones and compute centroid. Pre-computing an anchored-neighbor index list during `apply_anchoring` would avoid repeated filtering in the chamfer loop.
+
+2. **Non-manifold resolution**: `resolve_non_manifold` pass1/pass2 in `smooth_mesh.rs` does vertex splitting with Vec cloning, index remapping, and union-find. Look for redundant allocation or O(n^2) patterns in the splitting logic.
+
+3. **QEM Quadric operations**: `Quadric::evaluate` and `Quadric::add` in `mesh_decimation.rs` operate on 10-element symmetric matrices. SIMD intrinsics or restructured memory layout (SoA vs AoS) could help in the priority queue hot loop.
+
+4. **Coplanar region retri flood-fill**: The retri pass in `mesh_decimation.rs` does flood-fill to find coplanar same-material regions, then re-triangulates. The flood-fill visited tracking and region boundary extraction may have redundant work.
+
+5. **Column span iteration in face gen**: `build_smooth_mesh` in `mesh_gen.rs` iterates `column_spans()` for every (x, z) column in the chunk+border. For chunks that are mostly air (sky) or mostly solid (underground), early-exit or skip-ahead on empty/full columns could help.
+
+6. **SmoothMesh struct-of-arrays**: The per-triangle parallel arrays (triangle_tags, triangle_colors, triangle_voxel_pos, triangle_face_normals, triangle_face_midpoints) are separate Vecs. Merging into a single Vec of a per-triangle struct could improve cache locality during iteration.
+
+7. **Inlining hints**: The face gen inner loop calls `get_or_create_vertex`, `add_subdivided_face`, and `add_edge` per face. If the compiler is not inlining these, `#[inline]` hints could eliminate call overhead.
+
+8. **Reduce neighbor list allocation**: `SmoothVertex.neighbors` is a `Vec<u32>`. Since most vertices have 4-12 neighbors, a `SmallVec<[u32; 8]>` or `SmallVec<[u32; 12]>` could eliminate heap allocation for the common case.
+
+**Process:** Follow the agent loop in `docs/iterative_optimization.md`. Key points: use the same branch (no worktrees), target the default pipeline config (smoothing OFF, decimation ON), benchmark with `default/chunk/...`, record every attempt in the diary.
+
+**Related:** F-mesh-pipeline-perf
 
 #### F-modding — Scripting layer for modding support
 **Status:** Todo · **Refs:** §27
@@ -6960,159 +7006,29 @@ changes. Fruit tests (incident 3) were never hardened — only pinned.
 The audit should examine all test categories for remaining fragility,
 not assume any are fully hardened.
 
-#### B-safe-api-tests — Additional safe API test coverage from once-over
+#### B-mesh-global-cfg — Mesh pipeline global atomics cause test flakiness risk
 **Status:** Todo
 
-Write additional tests identified during the B-unsafe-db-calls once-over to harden coverage of new control flow and FK ordering:
+The mesh pipeline's behavior is controlled by global `AtomicBool`/`AtomicU32` statics in `mesh_gen.rs`: `SMOOTHING_ENABLED`, `DECIMATION_ENABLED`, `SMOOTH_NORMALS_ENABLED`, `QEM_ONLY`, `DECIMATION_MAX_ERROR`. Functions like `set_decimation_enabled(bool)` and `decimation_enabled()` read/write these atomics with `Ordering::Relaxed`. The pipeline functions (`generate_chunk_mesh`, `run_chamfer_smooth`, `run_decimation`) read these globals to decide which stages to run.
 
-**FK ordering assertions:**
-- `designate_build` inserts blueprint before task (all 4 designate variants)
-- `insert_task` creates base row before extension tables
-- Acquire item reserves after task insert (activation heartbeat path)
-- Haul task reserves after task insert (logistics heartbeat path)
-- Strut row created after blueprint (designate_build strut path)
+**The problem:** Unit tests in `mesh_gen.rs` and `chunk_neighborhood.rs` call `set_decimation_enabled(false)` (via the `one_chunk_world()` helper) or `set_decimation_enabled(true)` (in `sub_stages_match_generate_chunk_mesh`). Rust runs `#[test]` functions in parallel by default. If two tests run concurrently where one expects decimation enabled and the other expects it disabled, the global state is a race condition. The tests currently pass because most tests agree on `false` and the race window is tiny, but this is a latent flaky test — any new test that sets a different configuration could trigger nondeterministic failures.
 
-**Graceful degradation:**
-- `claim_task` with nonexistent creature is a no-op
-- `set_recipe_enabled` with nonexistent recipe is a no-op
+Specific call sites that mutate global mesh config in tests:
+- `mesh_gen::tests::one_chunk_world()` calls `set_decimation_enabled(false)` — used by ~20 tests
+- `mesh_gen::tests::sub_stages_match_generate_chunk_mesh` calls `set_decimation_enabled(true)` and `set_smoothing_enabled(false)`
+- `mesh_gen::tests::chunk_boundary_neighbor_check` calls `set_decimation_enabled(false)` directly
+- `chunk_neighborhood::tests::neighborhood_mesh_matches_world_mesh` calls `set_decimation_enabled(false)`
+- The integration test `mesh_snapshots.rs` also mutates these globals but runs in a separate process, so it's safe.
 
-**Upsert correctness:**
-- `upsert_path_assignment` replaces existing assignment
+**Recommended fix: replace global atomics with a config struct parameter.**
 
-**Cancel/cleanup:**
-- `cancel_build` on furnished structure cleans up furniture rows
-- `cancel_build` reverts voxels after blueprint removed from DB
-
-#### B-spawn-creature — spawn_creature test helper finds first creature of species, not newly spawned
-**Status:** Done
-
-#### F-ai-test-harness — Remote game control for AI-driven testing (Puppet)
-**Status:** Done
-
-Remote game control for AI-driven testing ("Puppet"). Three components:
-a GDScript TCP server autoload (puppet_server.gd, activated by
-PUPPET_SERVER=<port> env var, inert otherwise), shared UI helpers
-(puppet_helpers.gd, also used by GUT integration tests), and a
-standalone Python CLI (scripts/puppet.py, stdlib-only) that manages
-the full lifecycle — launch under xvfb-run or --visible, communicate,
-kill.
-
-**Done:** 18 built-in RPC methods — observe (game-state, list-panels,
-is-panel-visible, read-panel-text, find-text, collect-text, tree-info,
-list-structures, ping) and act (click-at-world-pos, press-key,
-press-button, press-button-near, step-ticks, set-sim-speed,
-move-camera-to, quit). Helper extraction from integration tests into
-shared puppet_helpers.gd. 33 unit tests (test_puppet.gd). Python CLI
-with launch (xvfb-run or --visible), kill (graceful+SIGTERM+SIGKILL),
-list, -g session targeting. Orphan guard (300s default). Localhost-only
-TCP binding. Godot output logged to .tmp/puppet-<id>.log. End-to-end
-validated: menu navigation, game-state queries, UI text scraping,
-tree info, military panel, mana tracking across ticks.
-
-**Not yet implemented (from spec):** list-creatures (needs new bridge
-method), creature-info (bridge has get_creature_info_by_id but no RPC
-glue), select-creature (needs SelectionController glue), eval escape
-hatch (arbitrary GDScript execution), -- command chaining in puppet.py.
-
-**Desired features (discovered through use):**
-- wait-for-ready: block until bridge is available after scene load
-  (currently must poll ping manually, 30-120s on constrained systems)
-- wait-until: server-side poll for a condition (panel visible, text
-  appears) — eliminates client-side retry loops
-- collect-text filtering: --node-name flag to return only matching
-  node names (e.g., collect-text UnitsPanel --node-name NameLabel)
-- step-ticks-and-wait: yield a frame after stepping so UI is fresh
-  before responding
-- scene-info: return current scene path/name (menu vs game) so callers
-  know what state they're in without trying bridge calls
-- read-all-by-name: return all nodes matching a name, not just first
-  (solves the NameLabel collision problem)
-
-**Guide:** docs/puppet_guide.md — keep updated when adding RPCs or
-discovering gotchas.
-
-**Draft:** docs/drafts/F-ai-test-harness.md
-
-**Related:** F-bridge-integ-tests, F-gdscript-tests
-
-#### F-bridge-integ-tests — Integration tests for gdext bridge functions
-**Status:** Done
-
-Integration tests that exercise gdext bridge functions from GDScript in a
-running Godot instance. These catch type mismatches at the FFI boundary
-(e.g. Array<GString> vs VarArray), argument passing bugs, and
-GDScript-to-Rust round-trip issues that pure Rust tests can't detect.
-Heavier than unit tests — requires launching Godot headless. Add a CI
-job and a `scripts/build.py integtest` target. Motivated by the
-F-move-spread segfault where an Array type mismatch crashed at runtime.
-
-**Draft:** docs/drafts/F-bridge-integ-tests-and-ai-test-harness.md
-
-**Related:** F-ai-test-harness, F-config-file, F-gdscript-tests
-
-#### F-gdscript-tests — GDScript unit tests (GUT or built-in)
-**Status:** Done
-
-Set up a lightweight GDScript unit testing framework (GUT or Godot 4.6's
-built-in test runner). Cover pure GDScript logic: UI state machines,
-coordinate math, selection helpers, input mode transitions. Add a
-`scripts/build.py gdtest` target and a CI job. These tests don't need
-the sim or bridge — just GDScript in isolation.
-
-**Related:** F-ai-test-harness, F-bridge-integ-tests
-
-#### F-split-sim-tests — Split sim tests.rs into per-module test files
-**Status:** Done
-
-`elven_canopy_sim/src/sim/tests.rs` is 54k lines — too large for parallel editing, slow IDE navigation, and hard to review. Split into per-module test files (e.g., `tests/combat_tests.rs`, `tests/construction_tests.rs`, etc.) mirroring the sim module structure. This unblocks B-unsafe-db-calls test conversion and improves long-term maintainability.
-
-**Unblocked:** B-unsafe-db-calls
-
-#### F-test-perf — Test performance audit: per-test timing
-**Status:** Todo
-
-Audit test suite for slow tests and add per-test timing visibility.
-
-**Rust:** Install `cargo-nextest` (`cargo install cargo-nextest`) and wire it into `build.py`. Drop-in replacement for `cargo test` that shows per-test durations. Alternatively, the built-in `--report-time` flag works on nightly (`cargo test -- -Z unstable-options --report-time`).
-
-**GDScript/GUT:** GUT already tracks `time_taken` per test internally but doesn't print it to console. Two options: (1) enable JUnit XML export via `"junit_xml_file"` in `.gutconfig.json` — each `<testcase>` gets a `time` attribute; (2) patch GUT's `logger.gd` or `summary.gd` to print `time_taken` inline.
-
-**Goal:** Identify slow tests, decide which should be `#[ignore]`d or optimized, and make timing a routine part of test output.
-
-### Platform
-
-#### B-win-freeze — Periodic ~3s freezes on Windows (debug build)
-**Status:** Done
-
-Game freezes for a noticeable duration roughly every 3 seconds on Windows, even while paused. Observed on a debug build running on a powerful system, so unlikely to be raw performance. Possible causes: GC/allocator stutter, vsync/swap chain issue, debug build overhead, or something Windows-specific in the rendering or sim tick path.
-
-Repro: run `scripts/build.py run` on Windows, observe periodic hitches.
-
-#### F-docs-overhaul — Reorganize and consolidate docs/ directory
-**Status:** Todo
-
-#### F-mobile-support — Mobile/touch platform support
-**Status:** Todo · **Phase:** 9
-
-Touch-based input and UI adaptation for mobile phones and tablets. Covers
-camera controls (pinch-to-zoom, two-finger rotate, single-finger pan),
-selection (tap-to-select, lasso gesture for multi-select), command input
-(explicit move/attack/attack-move buttons instead of right-click), and a
-mobile-density UI layout (full-screen slide-in panels, larger touch targets,
-simplified HUD). No keyboard hotkeys — all actions need touch-accessible
-equivalents (toolbars, radial menus, gesture shortcuts).
-
-**Draft:** `docs/drafts/mobile_support.md`
-
-#### F-windows-compat — Windows compatibility for dev tooling
-**Status:** Todo
-
-Ensure all dev tooling works on Windows, not just `scripts/build.py` (done on the `feature/build-py` branch).
-
-Remaining items:
-- `scripts/wait-for-ci.sh` → translate to Python or make cross-platform
-- CLAUDE.md instructions that assume bash (e.g., commit procedure, shell command examples)
-- `.claude/commands/` custom commands — audit for bash-isms
-- `scripts/tracker.py` — likely already fine (pure Python) but verify
-- `scripts/puppet.py` — uses `xvfb-run`, needs Windows path; verify other OS-specific bits
-
+Add a `MeshPipelineConfig` struct:
+```rust
+pub struct MeshPipelineConfig {
+    pub smoothing_enabled: bool,
+    pub smooth_normals_enabled: bool,
+    pub decimation_enabled: bool,
+    pub qem_only: bool,
+    pub decimation_max_error: f32,
+}
+```

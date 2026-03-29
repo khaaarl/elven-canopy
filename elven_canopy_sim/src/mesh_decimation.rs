@@ -22,6 +22,8 @@
 
 use std::collections::BinaryHeap;
 
+use rustc_hash::{FxHashMap, FxHashSet};
+
 use crate::smooth_mesh::SmoothMesh;
 
 /// The 26 canonical normal directions for chamfered voxel meshes:
@@ -289,8 +291,11 @@ impl SmoothMesh {
         }
 
         // Build triangle adjacency: for each edge, which triangles share it.
-        let mut edge_tris: std::collections::BTreeMap<(u32, u32), Vec<usize>> =
-            std::collections::BTreeMap::new();
+        // FxHashMap for O(1) lookups — edge iteration order doesn't matter.
+        // Pre-size: a manifold mesh has ~1.5 edges per triangle.
+        let tri_count = self.triangles.len();
+        let mut edge_tris: FxHashMap<(u32, u32), Vec<usize>> =
+            FxHashMap::with_capacity_and_hasher(tri_count * 3 / 2, Default::default());
         for (ti, tri) in self.triangles.iter().enumerate() {
             for i in 0..3 {
                 let a = tri[i].min(tri[(i + 1) % 3]);
@@ -436,8 +441,7 @@ impl SmoothMesh {
             let ref_tag = self.triangle_tags[region_tris[0]];
             let (ref_normal, _) = tri_planes[region_tris[0]];
 
-            let region_set: std::collections::BTreeSet<usize> =
-                region_tris.iter().copied().collect();
+            let region_set: FxHashSet<usize> = region_tris.iter().copied().collect();
 
             // Find boundary edges: edges shared with exactly one triangle in this region.
             let mut boundary_edges: Vec<(u32, u32)> = Vec::new();
@@ -473,8 +477,7 @@ impl SmoothMesh {
             // Build adjacency: vertex → next vertex along boundary.
             // If any vertex has multiple outgoing boundary edges, this region
             // has complex topology (T-junction, hole) — skip it.
-            let mut next_vert: std::collections::BTreeMap<u32, u32> =
-                std::collections::BTreeMap::new();
+            let mut next_vert: FxHashMap<u32, u32> = FxHashMap::default();
             let mut topology_ok = true;
             for &(a, b) in &boundary_edges {
                 if next_vert.insert(a, b).is_some() {
@@ -641,10 +644,12 @@ impl SmoothMesh {
         }
 
         // Rebuild: keep surviving old triangles + new triangles.
-        let mut result_tris: Vec<[u32; 3]> = Vec::new();
-        let mut result_tags: Vec<u8> = Vec::new();
-        let mut result_colors: Vec<[f32; 4]> = Vec::new();
-        let mut result_vpos: Vec<[i32; 3]> = Vec::new();
+        let surviving = dead_tris.iter().filter(|&&d| !d).count();
+        let total_cap = surviving + new_triangles.len();
+        let mut result_tris: Vec<[u32; 3]> = Vec::with_capacity(total_cap);
+        let mut result_tags: Vec<u8> = Vec::with_capacity(total_cap);
+        let mut result_colors: Vec<[f32; 4]> = Vec::with_capacity(total_cap);
+        let mut result_vpos: Vec<[i32; 3]> = Vec::with_capacity(total_cap);
 
         for (ti, tri) in self.triangles.iter().enumerate() {
             if !dead_tris[ti] {
@@ -692,8 +697,11 @@ impl SmoothMesh {
         let vertex_count = self.vertices.len();
 
         // Build edge → triangle list.
-        let mut edge_tris: std::collections::BTreeMap<(u32, u32), Vec<usize>> =
-            std::collections::BTreeMap::new();
+        // FxHashMap for O(1) lookups — edge iteration order doesn't matter.
+        // Pre-size: a manifold mesh has ~1.5 edges per triangle.
+        let tri_count = self.triangles.len();
+        let mut edge_tris: FxHashMap<(u32, u32), Vec<usize>> =
+            FxHashMap::with_capacity_and_hasher(tri_count * 3 / 2, Default::default());
         for (ti, tri) in self.triangles.iter().enumerate() {
             for i in 0..3 {
                 let a = tri[i].min(tri[(i + 1) % 3]);
@@ -778,8 +786,7 @@ impl SmoothMesh {
             // that appear in triangles from BOTH sides). The centroids only
             // appear on one side each.
             // Collect all neighbor vertices of V in incident triangles.
-            let mut neighbor_counts: std::collections::BTreeMap<u32, u32> =
-                std::collections::BTreeMap::new();
+            let mut neighbor_counts: FxHashMap<u32, u32> = FxHashMap::default();
             for &ti in &incident {
                 for &v in &self.triangles[ti] {
                     if v != vi_u32 {
@@ -1076,8 +1083,10 @@ impl SmoothMesh {
         };
 
         // Build the initial priority queue of edge collapse candidates.
+        // Pre-size: a manifold mesh has ~1.5 edges per triangle.
         let mut heap = BinaryHeap::new();
-        let mut seen_edges = std::collections::BTreeSet::new();
+        let mut seen_edges: FxHashSet<(u32, u32)> =
+            FxHashSet::with_capacity_and_hasher(self.triangles.len() * 3 / 2, Default::default());
         for (vi, v) in self.vertices.iter().enumerate() {
             for &ni in &v.neighbors {
                 let edge = if (vi as u32) < ni {
@@ -1341,16 +1350,12 @@ impl SmoothMesh {
         // removed vertices). For a manifold edge, there should be exactly 2
         // (the "wing" vertices of the two triangles sharing the edge).
         // On a mesh boundary, there may be 1.
-        let v0_neighbors: std::collections::BTreeSet<u32> = self.vertices[v0 as usize]
-            .neighbors
-            .iter()
-            .copied()
-            .filter(|&n| n != v1 && !state.removed[n as usize])
-            .collect();
-
+        // Linear scan: neighbor lists are small (typically 4-12 elements),
+        // so O(n*m) is faster than BTreeSet construction + lookup.
+        let v0_nbrs = &self.vertices[v0 as usize].neighbors;
         let mut common = 0;
         for &ni in &self.vertices[v1 as usize].neighbors {
-            if ni != v0 && !state.removed[ni as usize] && v0_neighbors.contains(&ni) {
+            if ni != v0 && !state.removed[ni as usize] && v0_nbrs.contains(&ni) {
                 common += 1;
             }
         }
@@ -1523,8 +1528,9 @@ impl SmoothMesh {
             }
         }
 
+        let used_count = used.iter().filter(|&&u| u).count();
         let mut remap: Vec<u32> = vec![u32::MAX; self.vertices.len()];
-        let mut new_vertices = Vec::new();
+        let mut new_vertices = Vec::with_capacity(used_count);
         for (old_idx, v) in self.vertices.iter().enumerate() {
             if used[old_idx] {
                 remap[old_idx] = new_vertices.len() as u32;
@@ -1548,21 +1554,23 @@ impl SmoothMesh {
             .collect();
 
         // Rebuild neighbor lists from the remapped triangles.
+        // Push unconditionally (no per-edge contains check), then batch-
+        // deduplicate. This avoids O(degree) scans on every push — the same
+        // optimization applied to add_edge in Attempt 4.
         for tri in &remapped_triangles {
             for i in 0..3 {
                 let a = tri[i];
                 let b = tri[(i + 1) % 3];
-                if !new_vertices[a as usize].neighbors.contains(&b) {
-                    new_vertices[a as usize].neighbors.push(b);
-                }
-                if !new_vertices[b as usize].neighbors.contains(&a) {
-                    new_vertices[b as usize].neighbors.push(a);
-                }
+                new_vertices[a as usize].neighbors.push(b);
+                new_vertices[b as usize].neighbors.push(a);
             }
         }
+        for v in &mut new_vertices {
+            crate::smooth_mesh::dedup_preserve_order(&mut v.neighbors);
+        }
 
-        // Rebuild the dedup map.
-        self.dedup.clear();
+        // Rebuild the dedup map with pre-sized capacity.
+        self.dedup = FxHashMap::with_capacity_and_hasher(new_vertices.len(), Default::default());
         for (idx, v) in new_vertices.iter().enumerate() {
             let key = super::smooth_mesh::VertexKey::from_position(v.position);
             self.dedup.insert(key, idx as u32);
@@ -1807,6 +1815,7 @@ mod tests {
             }
         }
 
+        mesh.deduplicate_neighbors();
         mesh.normalize_initial_normals();
         mesh.apply_anchoring();
         mesh.chamfer();
@@ -1963,6 +1972,7 @@ mod tests {
         });
         mesh.add_subdivided_face(corners1, FACE_NORMALS[2], color_dirt, TAG_GROUND, [1, 0, 0]);
 
+        mesh.deduplicate_neighbors();
         mesh.normalize_initial_normals();
         mesh.apply_anchoring();
         mesh.chamfer();
@@ -2180,6 +2190,7 @@ mod tests {
             });
             mesh.add_subdivided_face(corners, FACE_NORMALS[2], color, TAG_BARK, [x, 0, 0]);
         }
+        mesh.deduplicate_neighbors();
         mesh.normalize_initial_normals();
         mesh.apply_anchoring();
         mesh.chamfer();
