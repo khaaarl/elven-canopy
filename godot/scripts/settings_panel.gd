@@ -8,6 +8,7 @@
 ##   - Player name (LineEdit, max 32 chars)
 ##   - Start paused on load (toggle button)
 ##   - Draw distance (LineEdit, 0–500 voxels, 0 = unlimited)
+##   - Edge scrolling (cycle button: Off → Pan → Rotate)
 ##   - Audio volume (HSlider, 0–100%)
 ##   - Fog enabled (toggle button)
 ##   - Fog begin (LineEdit, voxels)
@@ -30,6 +31,9 @@ extends ColorRect
 
 signal closed
 
+const EDGE_SCROLL_MODES := ["off", "pan", "rotate"]
+const EDGE_SCROLL_LABELS := {"off": "OFF", "pan": "PAN", "rotate": "ROTATE"}
+
 var _config: Node  ## GameConfig (or test stand-in)
 var _name_input: LineEdit
 var _paused_toggle: Button
@@ -39,9 +43,11 @@ var _volume_label: Label
 var _fog_toggle: Button
 var _fog_begin_input: LineEdit
 var _fog_end_input: LineEdit
+var _edge_scroll_toggle: Button
 var _save_btn: Button
 var _paused_value: bool = false
 var _fog_enabled_value: bool = true
+var _edge_scroll_mode: String = "off"
 
 
 func _ready() -> void:
@@ -133,6 +139,21 @@ func _ready() -> void:
 	var draw_dist_unit := Label.new()
 	draw_dist_unit.text = "voxels"
 	draw_dist_row.add_child(draw_dist_unit)
+
+	# Edge scroll mode row.
+	var edge_scroll_row := HBoxContainer.new()
+	edge_scroll_row.add_theme_constant_override("separation", 10)
+	settings_vbox.add_child(edge_scroll_row)
+
+	var edge_scroll_label := Label.new()
+	edge_scroll_label.text = "Edge Scrolling"
+	edge_scroll_label.custom_minimum_size = Vector2(160, 0)
+	edge_scroll_row.add_child(edge_scroll_label)
+
+	_edge_scroll_toggle = Button.new()
+	_edge_scroll_toggle.custom_minimum_size = Vector2(120, 0)
+	_edge_scroll_toggle.pressed.connect(_cycle_edge_scroll)
+	edge_scroll_row.add_child(_edge_scroll_toggle)
 
 	# --- Audio section ---
 	var audio_label := Label.new()
@@ -274,6 +295,16 @@ func _on_volume_changed(value: float) -> void:
 	_volume_label.text = "%d%%" % int(value)
 
 
+func _cycle_edge_scroll() -> void:
+	var idx := EDGE_SCROLL_MODES.find(_edge_scroll_mode)
+	_edge_scroll_mode = EDGE_SCROLL_MODES[(idx + 1) % EDGE_SCROLL_MODES.size()]
+	_update_edge_scroll_label()
+
+
+func _update_edge_scroll_label() -> void:
+	_edge_scroll_toggle.text = EDGE_SCROLL_LABELS.get(_edge_scroll_mode, "OFF")
+
+
 func _toggle_fog() -> void:
 	_fog_enabled_value = not _fog_enabled_value
 	_update_fog_label()
@@ -323,6 +354,10 @@ func open(config: Node) -> void:
 	_update_fog_label()
 	_fog_begin_input.text = str(config.get_setting("fog_begin"))
 	_fog_end_input.text = str(config.get_setting("fog_end"))
+	_edge_scroll_mode = config.get_setting("edge_scroll_mode")
+	if _edge_scroll_mode not in EDGE_SCROLL_MODES:
+		_edge_scroll_mode = "off"
+	_update_edge_scroll_label()
 	_save_btn.disabled = _name_input.text.strip_edges().is_empty()
 
 
@@ -337,6 +372,7 @@ func save_and_close() -> void:
 	_config.set_setting("fog_enabled", _fog_enabled_value)
 	_config.set_setting("fog_begin", _parse_fog_begin())
 	_config.set_setting("fog_end", _parse_fog_end())
+	_config.set_setting("edge_scroll_mode", _edge_scroll_mode)
 	closed.emit()
 	queue_free()
 
@@ -417,3 +453,12 @@ func get_fog_end_value() -> int:
 
 func set_fog_end_value(value: int) -> void:
 	_fog_end_input.text = str(value)
+
+
+func get_edge_scroll_mode() -> String:
+	return _edge_scroll_mode
+
+
+func set_edge_scroll_mode(value: String) -> void:
+	_edge_scroll_mode = value
+	_update_edge_scroll_label()

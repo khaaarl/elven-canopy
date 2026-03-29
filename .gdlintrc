@@ -18,4 +18,4 @@ max-returns: 7
 
 # GUT test files have one method per test case. 20 is too few for files
 # with thorough test coverage.
-max-public-methods: 40
+max-public-methods: 60

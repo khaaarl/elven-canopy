@@ -324,6 +324,53 @@ func test_audio_volume_default() -> void:
 	assert_eq(_panel.get_audio_volume_value(), 25)
 
 
+## Panel populates edge scroll mode from config on open.
+func test_open_populates_edge_scroll_mode() -> void:
+	_config.set_setting("edge_scroll_mode", "rotate")
+	_panel.open(_config)
+	assert_eq(_panel.get_edge_scroll_mode(), "rotate")
+
+
+## Save writes edge scroll mode to config.
+func test_save_writes_edge_scroll_mode() -> void:
+	_panel.set_edge_scroll_mode("rotate")
+	_panel.save_and_close()
+	assert_eq(_config.get_setting("edge_scroll_mode"), "rotate")
+
+
+## Cancel discards edge scroll mode changes.
+func test_cancel_discards_edge_scroll_mode() -> void:
+	_config.set_setting("edge_scroll_mode", "pan")
+	_panel.open(_config)
+	_panel.set_edge_scroll_mode("rotate")
+	_panel.cancel_and_close()
+	assert_eq(_config.get_setting("edge_scroll_mode"), "pan")
+
+
+## Edge scroll mode defaults to "pan".
+func test_edge_scroll_mode_default() -> void:
+	assert_eq(_panel.get_edge_scroll_mode(), "pan")
+
+
+## Opening with an invalid edge scroll mode in config falls back to "off".
+func test_open_invalid_edge_scroll_mode_falls_back_to_off() -> void:
+	_config.set_setting("edge_scroll_mode", "turbo")
+	_panel.open(_config)
+	assert_eq(_panel.get_edge_scroll_mode(), "off")
+
+
+## Edge scroll mode cycles through off -> pan -> rotate -> off.
+func test_edge_scroll_mode_cycles() -> void:
+	_panel.set_edge_scroll_mode("off")
+	assert_eq(_panel.get_edge_scroll_mode(), "off")
+	_panel._cycle_edge_scroll()
+	assert_eq(_panel.get_edge_scroll_mode(), "pan")
+	_panel._cycle_edge_scroll()
+	assert_eq(_panel.get_edge_scroll_mode(), "rotate")
+	_panel._cycle_edge_scroll()
+	assert_eq(_panel.get_edge_scroll_mode(), "off")
+
+
 ## Panel runs with PROCESS_MODE_ALWAYS (required for escape menu paused tree).
 func test_process_mode_always() -> void:
 	assert_eq(

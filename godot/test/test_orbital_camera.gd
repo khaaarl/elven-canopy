@@ -1,7 +1,9 @@
 ## Unit tests for orbital_camera.gd.
 ##
-## Tests get_focus_voxel(), home_requested signal, and Ctrl+MMB pan by
-## constructing a Node3D with the orbital camera script attached.
+## Tests get_focus_voxel(), home_requested signal, Ctrl+MMB pan, Ctrl+scroll
+## elevation, vertical snap, and edge scroll (compute_edge_direction + mode
+## integration for off/pan/rotate) by constructing a Node3D with the orbital
+## camera script attached.
 ##
 ## See also: orbital_camera.gd for the implementation.
 extends GutTest
@@ -262,3 +264,248 @@ func test_vertical_snap_suppressed_during_pan() -> void:
 	_cam._panning = true
 	_cam._process(0.1)
 	assert_almost_eq(_cam.position.y, 10.3, 0.001, "Vertical snap should not fire while panning")
+
+
+# -- Edge scroll direction computation ----------------------------------------
+
+
+func test_edge_scroll_center_returns_zero() -> void:
+	# Mouse in the center of the screen should produce no scroll direction.
+	var dir := OrbitalCamera.compute_edge_direction(Vector2(500, 400), Vector2(1000, 800), 3)
+	assert_eq(dir, Vector2.ZERO, "Center of screen should not trigger edge scroll")
+
+
+func test_edge_scroll_left_edge() -> void:
+	var dir := OrbitalCamera.compute_edge_direction(Vector2(1, 400), Vector2(1000, 800), 3)
+	assert_eq(dir.x, -1.0, "Left edge should produce -1 X")
+	assert_eq(dir.y, 0.0, "Left edge should not affect Y")
+
+
+func test_edge_scroll_right_edge() -> void:
+	var dir := OrbitalCamera.compute_edge_direction(Vector2(998, 400), Vector2(1000, 800), 3)
+	assert_eq(dir.x, 1.0, "Right edge should produce +1 X")
+	assert_eq(dir.y, 0.0, "Right edge should not affect Y")
+
+
+func test_edge_scroll_top_edge() -> void:
+	var dir := OrbitalCamera.compute_edge_direction(Vector2(500, 1), Vector2(1000, 800), 3)
+	assert_eq(dir.x, 0.0, "Top edge should not affect X")
+	assert_eq(dir.y, -1.0, "Top edge should produce -1 Y")
+
+
+func test_edge_scroll_bottom_edge() -> void:
+	var dir := OrbitalCamera.compute_edge_direction(Vector2(500, 798), Vector2(1000, 800), 3)
+	assert_eq(dir.x, 0.0, "Bottom edge should not affect X")
+	assert_eq(dir.y, 1.0, "Bottom edge should produce +1 Y")
+
+
+func test_edge_scroll_corner() -> void:
+	# Top-left corner should produce both -1 X and -1 Y.
+	var dir := OrbitalCamera.compute_edge_direction(Vector2(0, 0), Vector2(1000, 800), 3)
+	assert_eq(dir.x, -1.0, "Top-left corner should produce -1 X")
+	assert_eq(dir.y, -1.0, "Top-left corner should produce -1 Y")
+
+
+func test_edge_scroll_fixed_speed_no_gradient() -> void:
+	# All positions within the margin produce the same magnitude (no gradient).
+	var dir_edge := OrbitalCamera.compute_edge_direction(Vector2(0, 400), Vector2(1000, 800), 3)
+	var dir_inner := OrbitalCamera.compute_edge_direction(Vector2(2, 400), Vector2(1000, 800), 3)
+	assert_eq(dir_edge.x, dir_inner.x, "Edge and inner margin should have same intensity")
+
+
+func test_edge_scroll_at_exact_margin_boundary() -> void:
+	# At exactly the margin boundary (x=3 with margin=3), should be zero.
+	var dir := OrbitalCamera.compute_edge_direction(Vector2(3, 400), Vector2(1000, 800), 3)
+	assert_eq(dir, Vector2.ZERO, "At margin boundary should produce no scroll")
+
+
+func test_edge_scroll_just_inside_margin() -> void:
+	# At x=2 with margin=3, should produce full -1 X (fixed speed).
+	var dir := OrbitalCamera.compute_edge_direction(Vector2(2, 400), Vector2(1000, 800), 3)
+	assert_eq(dir.x, -1.0, "Just inside margin should produce full scroll")
+
+
+func test_edge_scroll_zero_margin_returns_zero() -> void:
+	# With margin=0, edge scroll is effectively disabled.
+	var dir := OrbitalCamera.compute_edge_direction(Vector2(0, 0), Vector2(1000, 800), 0)
+	assert_eq(dir, Vector2.ZERO, "Zero margin should never trigger")
+
+
+# -- Edge scroll mode integration ---------------------------------------------
+
+
+func test_edge_scroll_mode_off_no_movement() -> void:
+	_cam.position = Vector3(50.0, 20.0, 50.0)
+	_cam._edge_scroll_mode = "off"
+	var start_pos := _cam.position
+	# Simulate mouse at left edge — but mode is off.
+	_cam._override_mouse_pos = Vector2(1, 400)
+	_cam._override_viewport_size = Vector2(1000, 800)
+	_cam._process(0.1)
+	assert_eq(_cam.position, start_pos, "Edge scroll off should not move camera")
+
+
+func test_edge_scroll_pan_moves_focal_point() -> void:
+	_cam.position = Vector3(50.0, 20.0, 50.0)
+	_cam._yaw = 0.0
+	_cam._edge_scroll_mode = "pan"
+	var start_pos := _cam.position
+	# Mouse at left edge.
+	_cam._override_mouse_pos = Vector2(1, 400)
+	_cam._override_viewport_size = Vector2(1000, 800)
+	_cam._process(0.1)
+	assert_ne(_cam.position.x, start_pos.x, "Pan mode should move focal point X")
+	assert_eq(_cam.position.y, start_pos.y, "Pan mode should not change Y")
+
+
+func test_edge_scroll_rotate_changes_yaw() -> void:
+	_cam._yaw = 0.0
+	_cam._pitch = 0.7
+	_cam._edge_scroll_mode = "rotate"
+	# Mouse at right edge.
+	_cam._override_mouse_pos = Vector2(999, 400)
+	_cam._override_viewport_size = Vector2(1000, 800)
+	_cam._process(0.1)
+	assert_ne(_cam._yaw, 0.0, "Rotate mode at right edge should change yaw")
+
+
+func test_edge_scroll_rotate_changes_pitch() -> void:
+	_cam._yaw = 0.0
+	_cam._pitch = 0.7
+	_cam._edge_scroll_mode = "rotate"
+	# Mouse at top edge.
+	_cam._override_mouse_pos = Vector2(500, 1)
+	_cam._override_viewport_size = Vector2(1000, 800)
+	_cam._process(0.1)
+	assert_ne(_cam._pitch, 0.7, "Rotate mode at top edge should change pitch")
+
+
+func test_edge_scroll_pan_breaks_follow() -> void:
+	_cam.start_follow(Vector3(10.0, 5.0, 10.0))
+	assert_true(_cam.is_following(), "Should be following before edge scroll")
+	_cam._edge_scroll_mode = "pan"
+	_cam._override_mouse_pos = Vector2(1, 400)
+	_cam._override_viewport_size = Vector2(1000, 800)
+	_cam._process(0.1)
+	assert_false(_cam.is_following(), "Edge scroll pan should break follow mode")
+
+
+func test_edge_scroll_rotate_does_not_break_follow() -> void:
+	_cam.start_follow(Vector3(10.0, 5.0, 10.0))
+	assert_true(_cam.is_following(), "Should be following before edge scroll")
+	_cam._edge_scroll_mode = "rotate"
+	_cam._override_mouse_pos = Vector2(999, 400)
+	_cam._override_viewport_size = Vector2(1000, 800)
+	_cam._process(0.1)
+	assert_true(_cam.is_following(), "Edge scroll rotate should not break follow")
+
+
+func test_edge_scroll_pan_direction_respects_yaw() -> void:
+	# At yaw = PI/2 (90°), rightward edge scroll should move primarily along Z.
+	_cam.position = Vector3(50.0, 20.0, 50.0)
+	_cam._yaw = PI / 2.0
+	_cam._edge_scroll_mode = "pan"
+	var start_pos := _cam.position
+	# Mouse at right edge.
+	_cam._override_mouse_pos = Vector2(999, 400)
+	_cam._override_viewport_size = Vector2(1000, 800)
+	_cam._process(0.1)
+	var dz := absf(_cam.position.z - start_pos.z)
+	var dx := absf(_cam.position.x - start_pos.x)
+	assert_gt(dz, dx, "At 90° yaw, right-edge pan should move primarily along Z")
+
+
+func test_edge_scroll_pan_top_edge_moves_forward() -> void:
+	# Mouse at top edge should move the focal point forward (like pressing W).
+	_cam.position = Vector3(50.0, 20.0, 50.0)
+	_cam._yaw = 0.0
+	_cam._edge_scroll_mode = "pan"
+	var start_z := _cam.position.z
+	# Mouse at top edge.
+	_cam._override_mouse_pos = Vector2(500, 1)
+	_cam._override_viewport_size = Vector2(1000, 800)
+	_cam._process(0.1)
+	# At yaw=0, forward is (0, 0, -1), so Z should decrease.
+	assert_lt(_cam.position.z, start_z, "Top edge pan should move forward (negative Z at yaw=0)")
+
+
+func test_edge_scroll_pan_center_mouse_no_movement() -> void:
+	_cam.position = Vector3(50.0, 20.0, 50.0)
+	_cam._edge_scroll_mode = "pan"
+	var start_pos := _cam.position
+	# Mouse in center — outside edge margin.
+	_cam._override_mouse_pos = Vector2(500, 400)
+	_cam._override_viewport_size = Vector2(1000, 800)
+	_cam._process(0.1)
+	assert_eq(_cam.position, start_pos, "Pan mode with centered mouse should not move")
+
+
+func test_edge_scroll_rotate_center_mouse_no_change() -> void:
+	_cam._yaw = 0.0
+	_cam._pitch = 0.7
+	_cam._edge_scroll_mode = "rotate"
+	# Mouse in center — outside edge margin.
+	_cam._override_mouse_pos = Vector2(500, 400)
+	_cam._override_viewport_size = Vector2(1000, 800)
+	_cam._process(0.1)
+	assert_eq(_cam._yaw, 0.0, "Rotate mode with centered mouse should not change yaw")
+	assert_eq(_cam._pitch, 0.7, "Rotate mode with centered mouse should not change pitch")
+
+
+func test_edge_scroll_rotate_pitch_clamped_at_max() -> void:
+	_cam._pitch = 1.3  # Near pitch_max (1.396).
+	_cam._edge_scroll_mode = "rotate"
+	# Mouse at bottom edge — should increase pitch, but not beyond max.
+	_cam._override_mouse_pos = Vector2(500, 799)
+	_cam._override_viewport_size = Vector2(1000, 800)
+	_cam._process(1.0)  # Large delta to ensure clamp is hit.
+	assert_le(_cam._pitch, _cam.pitch_max, "Pitch should not exceed pitch_max")
+
+
+func test_edge_scroll_rotate_pitch_clamped_at_min() -> void:
+	_cam._pitch = 0.2  # Near pitch_min (0.175).
+	_cam._edge_scroll_mode = "rotate"
+	# Mouse at top edge — should decrease pitch, but not below min.
+	_cam._override_mouse_pos = Vector2(500, 1)
+	_cam._override_viewport_size = Vector2(1000, 800)
+	_cam._process(1.0)
+	assert_ge(_cam._pitch, _cam.pitch_min, "Pitch should not go below pitch_min")
+
+
+func test_edge_scroll_invalid_mode_no_effect() -> void:
+	_cam.position = Vector3(50.0, 20.0, 50.0)
+	_cam._yaw = 0.0
+	_cam._pitch = 0.7
+	_cam._edge_scroll_mode = "invalid"
+	var start_pos := _cam.position
+	_cam._override_mouse_pos = Vector2(1, 1)
+	_cam._override_viewport_size = Vector2(1000, 800)
+	_cam._process(0.1)
+	assert_eq(_cam.position, start_pos, "Invalid mode should not move camera")
+	assert_eq(_cam._yaw, 0.0, "Invalid mode should not change yaw")
+	assert_eq(_cam._pitch, 0.7, "Invalid mode should not change pitch")
+
+
+func test_edge_scroll_direction_negative_mouse() -> void:
+	# Mouse outside viewport (negative coords) — should still return -1.
+	var dir := OrbitalCamera.compute_edge_direction(Vector2(-50, -50), Vector2(1000, 800), 3)
+	assert_eq(dir.x, -1.0, "Negative mouse X should produce -1")
+	assert_eq(dir.y, -1.0, "Negative mouse Y should produce -1")
+
+
+func test_edge_scroll_direction_oversized_mouse() -> void:
+	# Mouse beyond viewport bounds — should still return +1.
+	var dir := OrbitalCamera.compute_edge_direction(Vector2(1100, 900), Vector2(1000, 800), 3)
+	assert_eq(dir.x, 1.0, "Oversized mouse X should produce +1")
+	assert_eq(dir.y, 1.0, "Oversized mouse Y should produce +1")
+
+
+func test_edge_scroll_suppressed_when_window_unfocused() -> void:
+	_cam.position = Vector3(50.0, 20.0, 50.0)
+	_cam._edge_scroll_mode = "pan"
+	_cam._window_focused = false
+	var start_pos := _cam.position
+	_cam._override_mouse_pos = Vector2(1, 400)
+	_cam._override_viewport_size = Vector2(1000, 800)
+	_cam._process(0.1)
+	assert_eq(_cam.position, start_pos, "Edge scroll should not move when window unfocused")

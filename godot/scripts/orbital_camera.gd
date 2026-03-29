@@ -19,6 +19,13 @@
 ## break follow automatically; rotation and zoom do not. The creature info
 ## panel's Follow/Unfollow button drives entry and exit.
 ##
+## Edge scroll mode: when _edge_scroll_mode is "pan" or "rotate", moving the
+## mouse near a screen edge pans the focal point or rotates/tilts the camera.
+## Suppressed when the mouse hovers a UI control (gui_get_hovered_control).
+## Mode is polled from GameConfig each frame (same pattern as fog_controller.gd)
+## so settings changes take effect immediately. The edge detection math is in
+## the static compute_edge_direction() method for testability.
+##
 ## Vertical snap mode: construction_controller.gd calls set_vertical_snap()
 ## to enable/disable. When active and no vertical movement inputs are held,
 ## the focal point's Y smoothly lerps to the nearest voxel center Y
@@ -68,6 +75,12 @@ const SNAP_LERP_SPEED: float = 8.0
 @export var focal_y_max: float = 256.0
 ## Mouse pan sensitivity (world-units per pixel at zoom=1; scaled by current zoom).
 @export var mouse_pan_sensitivity: float = 0.002
+## Edge scroll pan speed in units per second (at full intensity, i.e. mouse at screen edge).
+@export var edge_scroll_speed: float = 15.0
+## Edge scroll rotate speed in radians per second (at full intensity).
+@export var edge_rotate_speed: float = 1.5
+## Screen-edge margin in pixels — mouse within this distance triggers edge scroll.
+@export var edge_scroll_margin: int = 3
 
 ## Current orbit yaw (horizontal rotation), in radians.
 var _yaw: float = 0.0
@@ -89,8 +102,43 @@ var _has_tentative: bool = false
 var _tentative_target_y: float = 0.0
 ## Voxel center Y when vertical movement started in snap mode.
 var _snap_origin_y: float = 0.0
+## Edge scroll mode: "off", "pan", or "rotate". Set from GameConfig on startup.
+var _edge_scroll_mode: String = "off"
+## Whether the application window is focused. Edge scroll is suppressed when
+## the window loses focus to prevent scrolling while interacting with other apps.
+var _window_focused: bool = true
+## Test-only overrides: when non-null, _process uses these instead of real viewport.
+var _override_mouse_pos: Variant = null
+var _override_viewport_size: Variant = null
 
 @onready var _camera: Camera3D = $Camera3D
+
+
+## Compute a scroll direction Vector2 from mouse position relative to screen
+## edges. Returns a vector where each component is -1, 0, or +1 (fixed speed,
+## no gradient — matches classic RTS behavior). Negative X = left, positive
+## X = right, negative Y = top, positive Y = bottom. Returns ZERO if margin
+## is 0 or mouse is outside the edge zones.
+static func compute_edge_direction(
+	mouse_pos: Vector2, viewport_size: Vector2, margin: int
+) -> Vector2:
+	if margin <= 0:
+		return Vector2.ZERO
+	var m := float(margin)
+	var dir := Vector2.ZERO
+	# Left edge.
+	if mouse_pos.x < m:
+		dir.x = -1.0
+	# Right edge.
+	elif mouse_pos.x > viewport_size.x - m:
+		dir.x = 1.0
+	# Top edge.
+	if mouse_pos.y < m:
+		dir.y = -1.0
+	# Bottom edge.
+	elif mouse_pos.y > viewport_size.y - m:
+		dir.y = 1.0
+	return dir
 
 
 ## Enter follow mode: camera pivot snaps to the target and tracks it.
@@ -132,6 +180,13 @@ func get_focus_voxel() -> Vector3i:
 
 func _ready() -> void:
 	_update_camera_transform()
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_APPLICATION_FOCUS_OUT:
+		_window_focused = false
+	elif what == NOTIFICATION_APPLICATION_FOCUS_IN:
+		_window_focused = true
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -268,6 +323,46 @@ func _process(delta: float) -> void:
 			_tentative_target_y = _snap_origin_y + signf(move_dir.y)
 		elif abs(post_move_voxel_y - _snap_origin_y) > 0.01:
 			_has_tentative = false
+
+	# Edge scroll: move/rotate the camera when the mouse is near screen edges.
+	# Poll GameConfig each frame so settings changes take effect immediately
+	# (same pattern as fog_controller.gd).
+	if _override_mouse_pos == null:
+		var cfg_mode: Variant = GameConfig.get_setting("edge_scroll_mode")
+		if cfg_mode is String:
+			_edge_scroll_mode = cfg_mode
+	if _edge_scroll_mode != "off" and (_window_focused or _override_mouse_pos != null):
+		var mouse_pos: Vector2
+		var vp_size: Vector2
+		if _override_mouse_pos != null:
+			mouse_pos = _override_mouse_pos
+			vp_size = _override_viewport_size
+		else:
+			mouse_pos = get_viewport().get_mouse_position()
+			vp_size = get_viewport().get_visible_rect().size
+		# Suppress edge scroll when mouse is over a UI control.
+		var ui_hovered: bool = false
+		if _override_mouse_pos == null:
+			ui_hovered = get_viewport().gui_get_hovered_control() != null
+		if not ui_hovered:
+			var edge_dir := compute_edge_direction(mouse_pos, vp_size, edge_scroll_margin)
+			if edge_dir != Vector2.ZERO:
+				if _edge_scroll_mode == "pan":
+					var forward := Vector3(-sin(_yaw), 0.0, -cos(_yaw))
+					var right := Vector3(cos(_yaw), 0.0, -sin(_yaw))
+					var pan := (
+						(right * edge_dir.x - forward * edge_dir.y) * edge_scroll_speed * delta
+					)
+					position += pan
+					moved = true
+					position_moved = true
+					_following = false
+				elif _edge_scroll_mode == "rotate":
+					_yaw -= edge_dir.x * edge_rotate_speed * delta
+					_pitch = clamp(
+						_pitch + edge_dir.y * edge_rotate_speed * delta, pitch_min, pitch_max
+					)
+					moved = true
 
 	if moved:
 		_update_camera_transform()

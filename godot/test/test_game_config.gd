@@ -254,6 +254,24 @@ func test_audio_volume_save_load_roundtrip() -> void:
 	config2.free()
 
 
+## Edge scroll mode defaults to "pan".
+func test_edge_scroll_mode_default() -> void:
+	assert_eq(_config.get_setting("edge_scroll_mode"), "pan")
+
+
+## Edge scroll mode survives a save/load roundtrip.
+func test_edge_scroll_mode_save_load_roundtrip() -> void:
+	_config.set_setting("edge_scroll_mode", "rotate")
+
+	var config2 := Node.new()
+	config2.set_script(GameConfigScript)
+	config2.config_path = TEST_CONFIG_PATH
+	config2.load_config()
+
+	assert_eq(config2.get_setting("edge_scroll_mode"), "rotate")
+	config2.free()
+
+
 ## Stale fog_density key from a previous version is erased on load.
 func test_stale_fog_density_erased_on_load() -> void:
 	var data := {"fog_density": 0.0015, "fog_enabled": true}

@@ -12,6 +12,7 @@
 ##   fog_begin: int = 40              — distance (voxels) where fog starts
 ##   fog_end: int = 80                — distance (voxels) where fog is fully opaque
 ##   audio_volume: int = 25           — master audio volume (0–100 percent)
+##   edge_scroll_mode: String = "pan" — edge scrolling ("off", "pan", "rotate")
 ##
 ## Unknown keys in the JSON file are preserved across load/save (forward
 ## compatibility — a newer version's settings won't be lost if an older
@@ -37,6 +38,7 @@ const DEFAULTS := {
 	"fog_begin": 40,
 	"fog_end": 80,
 	"audio_volume": 25,
+	"edge_scroll_mode": "pan",
 }
 
 ## File path for the config JSON. Tests can override this to use a temp path.

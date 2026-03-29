@@ -132,7 +132,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-dye-mixing           Dye color mixing recipes
 [ ] F-dye-palette          Named color palette system for dyes
 [ ] F-edge-outline         Edge highlighting shader (depth/normal discontinuity)
-[ ] F-edge-scroll          Configurable edge scrolling (pan, rotate, or off)
 [ ] F-elf-assign           Elf-to-building assignment UI
 [ ] F-elf-leave            Devastated elves permanently leave
 [ ] F-elfcyclopedia-know   Elfcyclopedia civ/fruit knowledge pages
@@ -362,6 +361,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-distance-fog         Depth-based atmospheric fog/haze
 [x] F-dye-crafting         Dye pressing from pigmented fruit components
 [x] F-dynamic-pursuit      Dynamic repathfinding for moving-target tasks
+[x] F-edge-scroll          Configurable edge scrolling (pan, rotate, or off)
 [x] F-elf-acquire          Elf personal item acquisition
 [x] F-elf-mana-pool        Per-elf mana pool wired to WIL/INT stats
 [x] F-elf-names            Elf name generation from conlang rules
@@ -5314,16 +5314,16 @@ Depth-based fog that fades distant geometry toward a sky/haze color. Can use God
 Screen-space post-process or per-material shader that darkens edges at depth/normal discontinuities (Sobel filter on depth+normal buffer). Highlights silhouettes of branches, platforms, and structures against the sky. Makes the world readable at distance without extra geometry. One full-screen pass, minimal cost.
 
 #### F-edge-scroll — Configurable edge scrolling (pan, rotate, or off)
-**Status:** Todo · **Phase:** 5
+**Status:** Done · **Phase:** 5
 
 Moving the mouse to screen edges moves the camera. Three configurable
 modes:
-- Pan: edges scroll the camera horizontally (classic RTS)
+- Pan: edges scroll the camera horizontally (classic RTS, default)
 - Rotate: edges rotate/tilt the camera
-- Off: disabled (default)
+- Off: disabled
 
-Edge scrolling auto-disables when the mouse is over a UI panel to
-prevent accidental camera movement while using menus.
+Edge scrolling auto-disables when the mouse is over a UI panel or when
+the window loses focus, to prevent accidental camera movement.
 
 **Related:** F-controls-config
 
