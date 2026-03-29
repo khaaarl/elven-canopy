@@ -952,28 +952,96 @@ impl SmoothMesh {
             let has_negative = neighbor_signs.iter().any(|&(_, s)| !s);
             let was_saddle = has_positive && has_negative;
 
+            // Precompute centroid of vi's neighbors (constant across offsets
+            // since only vi moves, not its neighbors).
+            let vi_neighbor_count = neighbors.len();
+            let vi_inv_n = 1.0 / vi_neighbor_count as f32;
+            let mut vi_centroid = [0.0f32; 3];
+            for &ni in &neighbors {
+                let np = self.vertices[ni as usize].position;
+                vi_centroid[0] += np[0];
+                vi_centroid[1] += np[1];
+                vi_centroid[2] += np[2];
+            }
+            vi_centroid[0] *= vi_inv_n;
+            vi_centroid[1] *= vi_inv_n;
+            vi_centroid[2] *= vi_inv_n;
+
+            // Precompute base centroids for each neighbor (using vi's original
+            // position). When vi moves by delta, neighbor ni's centroid shifts
+            // by delta / deg(ni). This avoids recomputing centroids from
+            // scratch for each of the 5 offset candidates.
+            struct NeighborCache {
+                pos: [f32; 3],
+                base_centroid: [f32; 3],
+                inv_deg: f32,
+            }
+            let neighbor_caches: Vec<NeighborCache> = neighbors
+                .iter()
+                .map(|&ni| {
+                    let nv = &self.vertices[ni as usize];
+                    let n_neighbors = &nv.neighbors;
+                    let deg = n_neighbors.len() as f32;
+                    let inv_deg = 1.0 / deg;
+                    let mut cx = 0.0f32;
+                    let mut cy = 0.0f32;
+                    let mut cz = 0.0f32;
+                    for &nni in n_neighbors {
+                        let nnp = self.vertices[nni as usize].position;
+                        cx += nnp[0];
+                        cy += nnp[1];
+                        cz += nnp[2];
+                    }
+                    cx *= inv_deg;
+                    cy *= inv_deg;
+                    cz *= inv_deg;
+                    NeighborCache {
+                        pos: nv.position,
+                        base_centroid: [cx, cy, cz],
+                        inv_deg,
+                    }
+                })
+                .collect();
+
             for &offset in &offsets {
-                // Temporarily move vertex to candidate position.
-                self.vertices[vi].position = [
+                let candidate_pos = [
                     original_pos[0] + offset * normal[0],
                     original_pos[1] + offset * normal[1],
                     original_pos[2] + offset * normal[2],
                 ];
 
-                // Evaluate total squared pointiness over vi and its 1-ring.
-                let mut cost = 0.0f32;
-                let k = self.laplacian_pointiness(vi as u32);
-                cost += k * k;
-                for &ni in &neighbors {
-                    let k = self.laplacian_pointiness(ni);
+                // Pointiness of vi: distance from candidate_pos to centroid
+                // of vi's neighbors (centroid is constant).
+                let dx = vi_centroid[0] - candidate_pos[0];
+                let dy = vi_centroid[1] - candidate_pos[1];
+                let dz = vi_centroid[2] - candidate_pos[2];
+                let k = (dx * dx + dy * dy + dz * dz).sqrt();
+                let mut cost = k * k;
+
+                // Delta from original position to candidate position.
+                let delta = [
+                    (candidate_pos[0] - original_pos[0]),
+                    (candidate_pos[1] - original_pos[1]),
+                    (candidate_pos[2] - original_pos[2]),
+                ];
+
+                // Pointiness of each neighbor: incrementally adjust centroid.
+                for nc in &neighbor_caches {
+                    let adj_centroid = [
+                        nc.base_centroid[0] + delta[0] * nc.inv_deg,
+                        nc.base_centroid[1] + delta[1] * nc.inv_deg,
+                        nc.base_centroid[2] + delta[2] * nc.inv_deg,
+                    ];
+                    let dx = adj_centroid[0] - nc.pos[0];
+                    let dy = adj_centroid[1] - nc.pos[1];
+                    let dz = adj_centroid[2] - nc.pos[2];
+                    let k = (dx * dx + dy * dy + dz * dz).sqrt();
                     cost += k * k;
                 }
 
                 // If the vertex was NOT a saddle point before, check if
-                // this candidate position creates one. If so, reject it
-                // by setting cost to infinity.
+                // this candidate position creates one. If so, reject it.
                 if !was_saddle {
-                    let candidate_pos = self.vertices[vi].position;
                     let mut cand_pos = false;
                     let mut cand_neg = false;
                     for &(ni, _) in &neighbor_signs {
@@ -1003,9 +1071,6 @@ impl SmoothMesh {
                     best_offset = offset;
                 }
             }
-
-            // Restore original position (will be updated in batch below).
-            self.vertices[vi].position = original_pos;
             *disp = [
                 best_offset * normal[0],
                 best_offset * normal[1],
@@ -1038,6 +1103,7 @@ impl SmoothMesh {
 
     /// Compute Laplacian pointiness for a vertex: the distance from the
     /// vertex to the centroid of its neighbors.
+    #[cfg(test)]
     fn laplacian_pointiness(&self, vi: u32) -> f32 {
         let v = &self.vertices[vi as usize];
         let n = v.neighbors.len();
