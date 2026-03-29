@@ -324,6 +324,34 @@ func test_audio_volume_default() -> void:
 	assert_eq(_panel.get_audio_volume_value(), 25)
 
 
+## Panel populates SSAO enabled from config on open.
+func test_open_populates_ssao_enabled() -> void:
+	_config.set_setting("ssao_enabled", true)
+	_panel.open(_config)
+	assert_true(_panel.get_ssao_enabled())
+
+
+## Save writes SSAO enabled to config.
+func test_save_writes_ssao_enabled() -> void:
+	_panel.set_ssao_enabled(true)
+	_panel.save_and_close()
+	assert_eq(_config.get_setting("ssao_enabled"), true)
+
+
+## Cancel discards SSAO enabled changes.
+func test_cancel_discards_ssao_enabled() -> void:
+	_config.set_setting("ssao_enabled", false)
+	_panel.open(_config)
+	_panel.set_ssao_enabled(true)
+	_panel.cancel_and_close()
+	assert_eq(_config.get_setting("ssao_enabled"), false)
+
+
+## SSAO defaults to false.
+func test_ssao_enabled_default() -> void:
+	assert_false(_panel.get_ssao_enabled())
+
+
 ## Panel runs with PROCESS_MODE_ALWAYS (required for escape menu paused tree).
 func test_process_mode_always() -> void:
 	assert_eq(

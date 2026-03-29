@@ -44,6 +44,7 @@
 ## and platform placement, selection_controller.gd for click-to-select,
 ## tooltip_controller.gd for hover tooltips,
 ## fog_controller.gd for distance fog applied to WorldEnvironment,
+## ssao_controller.gd for screen-space ambient occlusion on WorldEnvironment,
 ## minimap.gd for the bottom-right zoomable top-down minimap,
 ## notification_display.gd for toast-style notifications,
 ## status_bar.gd for the persistent bottom-left status bar,
@@ -125,6 +126,7 @@ var _minimap: PanelContainer
 var _construction_music: Node
 var _view_toolbar: MarginContainer
 var _fog_controller: Node
+var _ssao_controller: Node
 var _roofs_hidden: bool = false
 var _height_cutoff_active: bool = false
 var _last_cutoff_y: int = -1
@@ -256,6 +258,13 @@ func _setup_common(bridge: SimBridge) -> void:
 	_fog_controller.set_script(fog_script)
 	add_child(_fog_controller)
 	_fog_controller.setup($WorldEnvironment.environment)
+
+	# Set up SSAO controller.
+	var ssao_script = load("res://scripts/ssao_controller.gd")
+	_ssao_controller = Node.new()
+	_ssao_controller.set_script(ssao_script)
+	add_child(_ssao_controller)
+	_ssao_controller.setup($WorldEnvironment.environment)
 
 	# Set up tree renderer (refreshed every frame for carve updates).
 	_tree_renderer = $TreeRenderer

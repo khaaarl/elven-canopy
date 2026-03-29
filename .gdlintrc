@@ -17,5 +17,6 @@ max-file-lines: 40000
 max-returns: 7
 
 # GUT test files have one method per test case. 20 is too few for files
-# with thorough test coverage.
-max-public-methods: 40
+# with thorough test coverage. settings_panel tests have one per setting
+# (open/save/cancel/default/validation × each setting).
+max-public-methods: 50
