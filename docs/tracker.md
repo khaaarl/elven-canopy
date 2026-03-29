@@ -69,7 +69,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-fragile-tests        Audit and harden tests against PRNG stream shifts and worldgen changes
 [ ] B-ghost-chunks         Ghost chunks in distance remain visible after they should be hidden
 [ ] B-leaf-diagonal        Leaf blobs sometimes only diagonally connected, looks bad
-[ ] B-mesh-global-cfg      Mesh pipeline global atomics cause test flakiness risk
+[ ] B-safe-api-tests       Additional safe API test coverage from once-over
 [ ] B-start-paused-ui      start_paused_on_load UI desync and missing new-game support
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-adventure-mode       Control individual elf (RPG-like)
@@ -302,6 +302,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-flying-arrow-chase   Flying creatures excluded from arrow-chase
 [x] B-flying-tasks         Flying creatures skip task system entirely
 [x] B-hostile-detect-nav   detect_hostile_targets panics on flying targets (NavNodeId u32::MAX hack)
+[x] B-mesh-global-cfg      Mesh pipeline global atomics cause test flakiness risk
 [x] B-modifier-hotkeys     Hotkeys should not fire when modifier keys (Ctrl/Shift/Alt) are held
 [x] B-music-floats         Excise f32/f64 from music composition for determinism
 [x] B-preview-blueprints   Preview treats blueprints as complete
@@ -7033,7 +7034,7 @@ The audit should examine all test categories for remaining fragility,
 not assume any are fully hardened.
 
 #### B-mesh-global-cfg — Mesh pipeline global atomics cause test flakiness risk
-**Status:** Todo
+**Status:** Done
 
 The mesh pipeline's behavior is controlled by global `AtomicBool`/`AtomicU32` statics in `mesh_gen.rs`: `SMOOTHING_ENABLED`, `DECIMATION_ENABLED`, `SMOOTH_NORMALS_ENABLED`, `QEM_ONLY`, `DECIMATION_MAX_ERROR`. Functions like `set_decimation_enabled(bool)` and `decimation_enabled()` read/write these atomics with `Ordering::Relaxed`. The pipeline functions (`generate_chunk_mesh`, `run_chamfer_smooth`, `run_decimation`) read these globals to decide which stages to run.
 

@@ -21,8 +21,7 @@ use std::path::PathBuf;
 use elven_canopy_sim::chunk_neighborhood::ChunkNeighborhood;
 use elven_canopy_sim::config::GameConfig;
 use elven_canopy_sim::mesh_gen::{
-    CHUNK_SIZE, ChunkCoord, ChunkMesh, SurfaceMesh, generate_chunk_mesh, set_decimation_enabled,
-    set_smoothing_enabled,
+    CHUNK_SIZE, ChunkCoord, ChunkMesh, MeshPipelineConfig, SurfaceMesh, generate_chunk_mesh,
 };
 use elven_canopy_sim::types::{VoxelCoord, VoxelType};
 use elven_canopy_sim::world::VoxelWorld;
@@ -449,30 +448,36 @@ fn load_expected(name: &str) -> Option<ExpectedOutputs> {
 
 /// Default game pipeline: chamfer + decimation, no smoothing.
 fn run_default(nh: &ChunkNeighborhood) -> ChunkMesh {
-    set_smoothing_enabled(false);
-    set_decimation_enabled(true);
-    generate_chunk_mesh(nh)
+    let cfg = MeshPipelineConfig::default(); // smoothing=false, decimation=true
+    generate_chunk_mesh(nh, &cfg)
 }
 
 /// Debug option: chamfer + smoothing + decimation.
 fn run_smoothed(nh: &ChunkNeighborhood) -> ChunkMesh {
-    set_smoothing_enabled(true);
-    set_decimation_enabled(true);
-    generate_chunk_mesh(nh)
+    let cfg = MeshPipelineConfig {
+        smoothing_enabled: true,
+        ..MeshPipelineConfig::default()
+    };
+    generate_chunk_mesh(nh, &cfg)
 }
 
 /// Chamfer only: no smoothing, no decimation.
 fn run_no_decimation(nh: &ChunkNeighborhood) -> ChunkMesh {
-    set_smoothing_enabled(false);
-    set_decimation_enabled(false);
-    generate_chunk_mesh(nh)
+    let cfg = MeshPipelineConfig {
+        decimation_enabled: false,
+        ..MeshPipelineConfig::default()
+    };
+    generate_chunk_mesh(nh, &cfg)
 }
 
 /// Chamfer + smoothing, no decimation (for smoothing perf tracking).
 fn run_smoothed_no_decimation(nh: &ChunkNeighborhood) -> ChunkMesh {
-    set_smoothing_enabled(true);
-    set_decimation_enabled(false);
-    generate_chunk_mesh(nh)
+    let cfg = MeshPipelineConfig {
+        smoothing_enabled: true,
+        decimation_enabled: false,
+        ..MeshPipelineConfig::default()
+    };
+    generate_chunk_mesh(nh, &cfg)
 }
 
 fn generate_expected(nh: &ChunkNeighborhood) -> ExpectedOutputs {
@@ -632,10 +637,13 @@ fn serde_roundtrip_preserves_mesh() {
     let serialized = bincode::serialize(&fixture.neighborhood).unwrap();
     let deserialized: ChunkNeighborhood = bincode::deserialize(&serialized).unwrap();
 
-    set_decimation_enabled(false);
-    set_smoothing_enabled(true);
-    let mesh_original = generate_chunk_mesh(&fixture.neighborhood);
-    let mesh_roundtrip = generate_chunk_mesh(&deserialized);
+    let cfg = MeshPipelineConfig {
+        smoothing_enabled: true,
+        decimation_enabled: false,
+        ..MeshPipelineConfig::default()
+    };
+    let mesh_original = generate_chunk_mesh(&fixture.neighborhood, &cfg);
+    let mesh_roundtrip = generate_chunk_mesh(&deserialized, &cfg);
 
     assert_chunk_mesh_eq(&mesh_original, &mesh_roundtrip, "serde_roundtrip");
 }

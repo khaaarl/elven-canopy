@@ -338,10 +338,13 @@ mod tests {
         // identical output to the convenience wrapper that reads the world
         // directly. This is the core equivalence guarantee of the feature.
         use crate::mesh_gen::{
-            generate_chunk_mesh, generate_chunk_mesh_from_world, set_decimation_enabled,
+            MeshPipelineConfig, generate_chunk_mesh, generate_chunk_mesh_from_world,
         };
 
-        set_decimation_enabled(false);
+        let cfg = MeshPipelineConfig {
+            decimation_enabled: false,
+            ..MeshPipelineConfig::default()
+        };
         let mut world = VoxelWorld::new(32, 16, 32);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
         world.set(VoxelCoord::new(9, 8, 8), VoxelType::Branch);
@@ -351,11 +354,11 @@ mod tests {
         let grassless = BTreeSet::new();
 
         // Path A: world → generate_chunk_mesh_from_world (extracts + generates).
-        let mesh_a = generate_chunk_mesh_from_world(&world, chunk, None, &grassless);
+        let mesh_a = generate_chunk_mesh_from_world(&world, chunk, None, &grassless, &cfg);
 
         // Path B: manual extract → generate_chunk_mesh.
         let nh = ChunkNeighborhood::extract(&world, chunk, None, &grassless);
-        let mesh_b = generate_chunk_mesh(&nh);
+        let mesh_b = generate_chunk_mesh(&nh, &cfg);
 
         // Meshes must be bit-identical.
         assert_eq!(mesh_a.bark.vertices, mesh_b.bark.vertices);

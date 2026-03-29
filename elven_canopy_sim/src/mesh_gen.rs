@@ -60,85 +60,45 @@
 // produces identical mesh data), but mesh generation is a rendering concern and
 // does not participate in the sim's lockstep determinism contract.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use crate::chunk_neighborhood::ChunkNeighborhood;
 use crate::smooth_mesh::{SmoothMesh, TAG_BARK, TAG_GROUND, TAG_LEAF};
+
+/// Configuration for the mesh generation pipeline. Controls which stages run
+/// (smoothing, decimation) and their parameters. Passed through the pipeline
+/// instead of using global state, enabling safe parallel test execution and
+/// concurrent mesh generation with different settings.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MeshPipelineConfig {
+    /// Enable the iterative smoothing pass after chamfering. When false, only
+    /// chamfering is applied. Debug tool for comparing chamfer-only vs
+    /// chamfer+smoothing output.
+    pub smoothing_enabled: bool,
+    /// Use smooth area-weighted vertex normals instead of flat per-face normals.
+    pub smooth_normals_enabled: bool,
+    /// Enable QEM mesh decimation to reduce triangle count after chamfering
+    /// (and optionally smoothing).
+    pub decimation_enabled: bool,
+    /// When true, skip coplanar retri and collinear passes — only run QEM
+    /// edge-collapse.
+    pub qem_only: bool,
+    /// Maximum quadric error for mesh decimation. Lower values preserve more
+    /// detail; near-zero (1e-6) is lossless for flat-shaded chamfered meshes.
+    pub decimation_max_error: f32,
+}
+
+impl Default for MeshPipelineConfig {
+    fn default() -> Self {
+        Self {
+            smoothing_enabled: false,
+            smooth_normals_enabled: false,
+            decimation_enabled: true,
+            qem_only: false,
+            decimation_max_error: 1e-6,
+        }
+    }
+}
 use crate::types::{VoxelCoord, VoxelType};
 use crate::world::VoxelWorld;
-
-/// Global toggle for the smoothing pass (chamfer always runs).
-/// When false, only chamfering is applied. Debug tool for comparing
-/// chamfer-only vs chamfer+smoothing output.
-static SMOOTHING_ENABLED: AtomicBool = AtomicBool::new(false);
-
-/// Global toggle for smooth vs flat normals. When false, each triangle
-/// gets a flat per-face normal instead of smooth area-weighted normals.
-static SMOOTH_NORMALS_ENABLED: AtomicBool = AtomicBool::new(false);
-
-/// Global toggle for QEM mesh decimation. When enabled, coplanar triangles
-/// are collapsed after chamfer (and optionally smoothing) to reduce triangle
-/// count with minimal visual impact.
-static DECIMATION_ENABLED: AtomicBool = AtomicBool::new(true);
-
-/// When true, skip retri and collinear passes — only run QEM decimate().
-static QEM_ONLY: AtomicBool = AtomicBool::new(false);
-
-/// Enable or disable QEM-only mode (skip retri + collinear).
-pub fn set_qem_only(enabled: bool) {
-    QEM_ONLY.store(enabled, Ordering::Relaxed);
-}
-
-/// Returns whether QEM-only mode is active.
-pub fn qem_only() -> bool {
-    QEM_ONLY.load(Ordering::Relaxed)
-}
-
-/// Maximum quadric error for mesh decimation. Lower values preserve more
-/// detail; near-zero is lossless for flat-shaded chamfered meshes.
-/// Default: 1e-6 (near-zero, lossless for chamfered meshes).
-static DECIMATION_MAX_ERROR: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(0x3586_37BD); // f32::to_bits(1e-6)
-
-/// Enable or disable QEM mesh decimation.
-pub fn set_decimation_enabled(enabled: bool) {
-    DECIMATION_ENABLED.store(enabled, Ordering::Relaxed);
-}
-
-/// Returns whether mesh decimation is currently enabled.
-pub fn decimation_enabled() -> bool {
-    DECIMATION_ENABLED.load(Ordering::Relaxed)
-}
-
-/// Set the maximum error threshold for decimation.
-pub fn set_decimation_max_error(max_error: f32) {
-    DECIMATION_MAX_ERROR.store(max_error.to_bits(), Ordering::Relaxed);
-}
-
-/// Returns the current decimation max error threshold.
-pub fn decimation_max_error() -> f32 {
-    f32::from_bits(DECIMATION_MAX_ERROR.load(Ordering::Relaxed))
-}
-
-/// Enable or disable the smoothing pass (chamfer always runs).
-pub fn set_smoothing_enabled(enabled: bool) {
-    SMOOTHING_ENABLED.store(enabled, Ordering::Relaxed);
-}
-
-/// Returns whether smoothing is currently enabled.
-pub fn smoothing_enabled() -> bool {
-    SMOOTHING_ENABLED.load(Ordering::Relaxed)
-}
-
-/// Enable or disable smooth normals (vs flat per-face normals).
-pub fn set_smooth_normals_enabled(enabled: bool) {
-    SMOOTH_NORMALS_ENABLED.store(enabled, Ordering::Relaxed);
-}
-
-/// Returns whether smooth normals are enabled.
-pub fn smooth_normals_enabled() -> bool {
-    SMOOTH_NORMALS_ENABLED.load(Ordering::Relaxed)
-}
 
 /// Side length of a chunk in voxels.
 pub const CHUNK_SIZE: i32 = 16;
@@ -279,26 +239,19 @@ pub fn chunk_mesh_to_obj(mesh: &ChunkMesh) -> String {
 }
 
 /// Generate a chunk mesh with decimation explicitly enabled or disabled,
-/// regardless of the global toggle. Restores the global state afterward.
-///
-/// **NOT THREAD-SAFE:** temporarily mutates the global `DECIMATION_ENABLED`
-/// atomic. Must only be called from the main thread (or when no background
-/// mesh workers are running). Background workers in the async mesh pipeline
-/// read `DECIMATION_ENABLED` — calling this concurrently could cause them
-/// to generate meshes with the wrong decimation setting. Currently only
-/// used by the debug OBJ export (`export_chunk_obj`).
+/// overriding the config's `decimation_enabled` field. Thread-safe: creates
+/// a modified config copy instead of mutating global state.
 pub fn generate_chunk_mesh_with_decimation(
     world: &VoxelWorld,
     chunk: ChunkCoord,
     y_cutoff: Option<i32>,
     decimate: bool,
     grassless: &std::collections::BTreeSet<VoxelCoord>,
+    config: &MeshPipelineConfig,
 ) -> ChunkMesh {
-    let was_enabled = decimation_enabled();
-    set_decimation_enabled(decimate);
-    let mesh = generate_chunk_mesh_from_world(world, chunk, y_cutoff, grassless);
-    set_decimation_enabled(was_enabled);
-    mesh
+    let mut cfg = *config;
+    cfg.decimation_enabled = decimate;
+    generate_chunk_mesh_from_world(world, chunk, y_cutoff, grassless, &cfg)
 }
 
 /// Convenience wrapper: extracts a `ChunkNeighborhood` from the world and
@@ -309,9 +262,10 @@ pub fn generate_chunk_mesh_from_world(
     chunk: ChunkCoord,
     y_cutoff: Option<i32>,
     grassless: &std::collections::BTreeSet<VoxelCoord>,
+    config: &MeshPipelineConfig,
 ) -> ChunkMesh {
     let neighborhood = ChunkNeighborhood::extract(world, chunk, y_cutoff, grassless);
-    generate_chunk_mesh(&neighborhood)
+    generate_chunk_mesh(&neighborhood, config)
 }
 
 /// Vertex color for grassless (grazed) dirt — earthy brown instead of the
@@ -471,7 +425,10 @@ pub fn chunk_bounds(chunk: ChunkCoord) -> ([i32; 3], [i32; 3]) {
 ///
 /// Exposed as a public function so benchmarks can measure face generation
 /// independently from the post-processing stages.
-pub fn build_smooth_mesh(nh: &ChunkNeighborhood) -> Option<SmoothMesh> {
+pub fn build_smooth_mesh(
+    nh: &ChunkNeighborhood,
+    config: &MeshPipelineConfig,
+) -> Option<SmoothMesh> {
     let chunk = nh.chunk;
     let y_cutoff = nh.y_cutoff;
 
@@ -518,7 +475,7 @@ pub fn build_smooth_mesh(nh: &ChunkNeighborhood) -> Option<SmoothMesh> {
     // between different voxel types (e.g., trunk/dirt boundary) are smoothed
     // together, preventing seams. The mesh is split into bark and ground
     // surfaces at the output stage using per-triangle surface tags.
-    let mut solid_smooth = SmoothMesh::with_estimated_faces(face_estimate);
+    let mut solid_smooth = SmoothMesh::with_estimated_faces(face_estimate, *config);
 
     // Effective Y ceiling for smooth mesh includes the border.
     let smooth_effective_y_end = match y_cutoff {
@@ -632,7 +589,7 @@ pub fn build_smooth_mesh(nh: &ChunkNeighborhood) -> Option<SmoothMesh> {
 /// Run the chamfer/smooth pipeline on a `SmoothMesh`.
 ///
 /// This performs: resolve non-manifold, normalize initial normals,
-/// apply anchoring, chamfer, and optionally smooth (if `smoothing_enabled()`).
+/// apply anchoring, chamfer, and optionally smooth (if `config.smoothing_enabled`).
 /// Exposed as a public function so benchmarks can measure this stage
 /// independently.
 pub fn run_chamfer_smooth(mesh: &mut SmoothMesh) {
@@ -640,7 +597,7 @@ pub fn run_chamfer_smooth(mesh: &mut SmoothMesh) {
     mesh.normalize_initial_normals();
     mesh.apply_anchoring();
     mesh.chamfer();
-    if smoothing_enabled() {
+    if mesh.config.smoothing_enabled {
         mesh.smooth();
     }
 }
@@ -648,16 +605,19 @@ pub fn run_chamfer_smooth(mesh: &mut SmoothMesh) {
 /// Run the decimation pipeline on a `SmoothMesh`.
 ///
 /// This performs: coplanar region re-triangulation, collinear boundary
-/// vertex collapse, and QEM edge-collapse (unless `qem_only()` is set,
+/// vertex collapse, and QEM edge-collapse (unless `config.qem_only` is set,
 /// in which case only the QEM pass runs). Exposed as a public function
 /// so benchmarks can measure this stage independently.
 pub fn run_decimation(mesh: &mut SmoothMesh, chunk: ChunkCoord) {
     let (chunk_min, chunk_max) = chunk_bounds(chunk);
-    if !qem_only() {
+    if !mesh.config.qem_only {
         mesh.coplanar_region_retri(Some((chunk_min, chunk_max)));
         mesh.collapse_collinear_boundary_vertices(Some((chunk_min, chunk_max)));
     }
-    mesh.decimate(decimation_max_error(), Some((chunk_min, chunk_max)));
+    mesh.decimate(
+        mesh.config.decimation_max_error,
+        Some((chunk_min, chunk_max)),
+    );
 }
 
 /// Flatten a `SmoothMesh` into a `ChunkMesh`, filtering to chunk bounds.
@@ -700,13 +660,13 @@ pub fn flatten_to_chunk_mesh(mesh: &SmoothMesh, chunk: ChunkCoord) -> ChunkMesh 
 ///
 /// See `smooth_mesh.rs` for the smoothing pipeline and
 /// `docs/drafts/visual_smooth.md` for the full design.
-pub fn generate_chunk_mesh(nh: &ChunkNeighborhood) -> ChunkMesh {
-    let Some(mut solid_smooth) = build_smooth_mesh(nh) else {
+pub fn generate_chunk_mesh(nh: &ChunkNeighborhood, config: &MeshPipelineConfig) -> ChunkMesh {
+    let Some(mut solid_smooth) = build_smooth_mesh(nh, config) else {
         return ChunkMesh::default();
     };
 
     run_chamfer_smooth(&mut solid_smooth);
-    if decimation_enabled() {
+    if config.decimation_enabled {
         run_decimation(&mut solid_smooth, nh.chunk);
     }
     flatten_to_chunk_mesh(&solid_smooth, nh.chunk)
@@ -722,19 +682,31 @@ mod tests {
         BTreeSet::new()
     }
 
-    /// Helper: create a small world (one chunk = 16x16x16) and return it.
-    /// Also disables decimation — mesh_gen tests check exact triangle counts
-    /// from the subdivision pipeline and should not be affected by decimation.
+    /// Config with decimation disabled — mesh_gen tests check exact triangle
+    /// counts from the subdivision pipeline and should not be affected by
+    /// decimation.
+    fn no_decimate() -> MeshPipelineConfig {
+        MeshPipelineConfig {
+            decimation_enabled: false,
+            ..MeshPipelineConfig::default()
+        }
+    }
+
+    /// Helper: create a small world (one chunk = 16x16x16).
     fn one_chunk_world() -> VoxelWorld {
-        set_decimation_enabled(false);
         VoxelWorld::new(16, 16, 16)
     }
 
     #[test]
     fn empty_chunk_produces_empty_mesh() {
         let world = one_chunk_world();
-        let mesh =
-            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &no_grassless(),
+            &no_decimate(),
+        );
         assert!(mesh.is_empty());
     }
 
@@ -742,8 +714,13 @@ mod tests {
     fn single_trunk_voxel_produces_smooth_mesh() {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
-        let mesh =
-            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &no_grassless(),
+            &no_decimate(),
+        );
 
         // Smooth mesh: 6 faces × 8 triangles = 48 triangles.
         // Per-triangle colors mean 3 verts per triangle = 144 output vertices.
@@ -760,8 +737,13 @@ mod tests {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
         world.set(VoxelCoord::new(9, 8, 8), VoxelType::Branch);
-        let mesh =
-            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &no_grassless(),
+            &no_decimate(),
+        );
 
         // Each voxel has 5 visible faces (shared face culled).
         // 10 faces × 8 triangles = 80 triangles × 3 verts = 240 output verts.
@@ -775,8 +757,13 @@ mod tests {
         // Place Dirt and a trunk voxel above it.
         world.set(VoxelCoord::new(8, 0, 8), VoxelType::Dirt);
         world.set(VoxelCoord::new(8, 1, 8), VoxelType::Trunk);
-        let mesh =
-            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &no_grassless(),
+            &no_decimate(),
+        );
 
         // Both are opaque: the shared face is culled.
         // Trunk = 5 visible faces (bark), Dirt = 5 visible faces (ground).
@@ -790,8 +777,13 @@ mod tests {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Leaf);
         world.set(VoxelCoord::new(9, 8, 8), VoxelType::Leaf);
-        let mesh =
-            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &no_grassless(),
+            &no_decimate(),
+        );
 
         // Leaves are now shell-only: leaf↔leaf shared face is culled.
         // Each leaf has 5 visible faces → 10 faces × 8 tri × 3 verts.
@@ -804,8 +796,13 @@ mod tests {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Leaf);
         world.set(VoxelCoord::new(9, 8, 8), VoxelType::Trunk);
-        let mesh =
-            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &no_grassless(),
+            &no_decimate(),
+        );
 
         // Leaf: 5 faces (face toward trunk culled). Smooth mesh.
         assert_eq!(mesh.leaf.indices.len(), 5 * 8 * 3);
@@ -816,16 +813,26 @@ mod tests {
 
     #[test]
     fn chunk_boundary_neighbor_check() {
-        set_decimation_enabled(false);
+        let cfg = no_decimate();
         // World is 32 voxels wide (2 chunks). Place voxels at chunk boundary.
         let mut world = VoxelWorld::new(32, 16, 16);
         world.set(VoxelCoord::new(15, 8, 8), VoxelType::Trunk); // last voxel in chunk 0
         world.set(VoxelCoord::new(16, 8, 8), VoxelType::Trunk); // first voxel in chunk 1
 
-        let mesh0 =
-            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
-        let mesh1 =
-            generate_chunk_mesh_from_world(&world, ChunkCoord::new(1, 0, 0), None, &no_grassless());
+        let mesh0 = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &no_grassless(),
+            &cfg,
+        );
+        let mesh1 = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(1, 0, 0),
+            None,
+            &no_grassless(),
+            &cfg,
+        );
 
         // Each should have 5 faces (shared face culled across chunk boundary).
         // With smooth mesh and border, both chunks see the other voxel and
@@ -878,8 +885,13 @@ mod tests {
     fn construction_voxels_produce_geometry() {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::GrownPlatform);
-        let mesh =
-            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &no_grassless(),
+            &no_decimate(),
+        );
         // Smooth mesh: 6 faces × 8 triangles = 48 triangles.
         assert_eq!(mesh.bark.indices.len(), 48 * 3);
     }
@@ -888,8 +900,13 @@ mod tests {
     fn vertex_colors_match_voxel_type() {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
-        let mesh =
-            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &no_grassless(),
+            &no_decimate(),
+        );
 
         // Check first vertex color is trunk color.
         let expected = voxel_color(VoxelType::Trunk);
@@ -903,8 +920,13 @@ mod tests {
     fn dirt_goes_to_ground_surface() {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Dirt);
-        let mesh =
-            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &no_grassless(),
+            &no_decimate(),
+        );
 
         // Dirt should be on the ground surface, not bark.
         assert!(mesh.bark.is_empty());
@@ -920,8 +942,13 @@ mod tests {
         // Leaf now uses procedural noise shader — no UVs needed.
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Leaf);
-        let mesh =
-            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &no_grassless(),
+            &no_decimate(),
+        );
         assert!(mesh.leaf.uvs.is_empty());
         // Should have smooth mesh geometry: 6 faces × 8 tri × 3 verts.
         assert_eq!(mesh.leaf.indices.len(), 6 * 8 * 3);
@@ -931,8 +958,13 @@ mod tests {
     fn fruit_does_not_produce_geometry() {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Fruit);
-        let mesh =
-            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &no_grassless(),
+            &no_decimate(),
+        );
         assert!(mesh.is_empty());
     }
 
@@ -940,8 +972,13 @@ mod tests {
     fn building_interior_does_not_produce_geometry() {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::BuildingInterior);
-        let mesh =
-            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &no_grassless(),
+            &no_decimate(),
+        );
         assert!(mesh.is_empty());
     }
 
@@ -959,6 +996,7 @@ mod tests {
             ChunkCoord::new(0, 0, 0),
             Some(8),
             &no_grassless(),
+            &no_decimate(),
         );
         // Only the y=5 voxel should produce geometry (6 faces, smooth).
         assert_eq!(mesh.bark.indices.len(), 48 * 3);
@@ -972,8 +1010,13 @@ mod tests {
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
 
         // Without cutoff: shared +Y/-Y face is culled → 10 faces total.
-        let mesh_no_cutoff =
-            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh_no_cutoff = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &no_grassless(),
+            &no_decimate(),
+        );
         assert_eq!(mesh_no_cutoff.bark.indices.len(), 10 * 8 * 3);
 
         // With cutoff at y=8: upper voxel hidden, lower voxel's +Y face exposed.
@@ -982,6 +1025,7 @@ mod tests {
             ChunkCoord::new(0, 0, 0),
             Some(8),
             &no_grassless(),
+            &no_decimate(),
         );
         // Lower voxel now has all 6 faces visible (upper neighbor treated as air).
         assert_eq!(mesh_cutoff.bark.indices.len(), 6 * 8 * 3);
@@ -992,13 +1036,19 @@ mod tests {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
 
-        let mesh_none =
-            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh_none = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &no_grassless(),
+            &no_decimate(),
+        );
         let mesh_some = generate_chunk_mesh_from_world(
             &world,
             ChunkCoord::new(0, 0, 0),
             Some(100),
             &no_grassless(),
+            &no_decimate(),
         );
 
         assert_eq!(mesh_none.bark.vertex_count(), mesh_some.bark.vertex_count());
@@ -1015,6 +1065,7 @@ mod tests {
             ChunkCoord::new(0, 0, 0),
             Some(8),
             &no_grassless(),
+            &no_decimate(),
         );
         assert!(mesh.is_empty());
     }
@@ -1030,6 +1081,7 @@ mod tests {
             ChunkCoord::new(0, 0, 0),
             Some(8),
             &no_grassless(),
+            &no_decimate(),
         );
         // Only y=5 leaf visible (6 faces, smooth mesh).
         assert_eq!(mesh.leaf.indices.len(), 6 * 8 * 3);
@@ -1040,7 +1092,6 @@ mod tests {
 
     #[test]
     fn span_clips_to_chunk_y_range() {
-        set_decimation_enabled(false);
         // World with 2 vertical chunks (32 tall). Place a tall column of trunk
         // spanning y=10..25 (crosses the chunk boundary at y=16).
         let mut world = VoxelWorld::new(16, 32, 16);
@@ -1048,10 +1099,20 @@ mod tests {
             world.set(VoxelCoord::new(4, y, 4), VoxelType::Trunk);
         }
 
-        let mesh0 =
-            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
-        let mesh1 =
-            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 1, 0), None, &no_grassless());
+        let mesh0 = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &no_grassless(),
+            &no_decimate(),
+        );
+        let mesh1 = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 1, 0),
+            None,
+            &no_grassless(),
+            &no_decimate(),
+        );
 
         // Both chunks should produce non-empty bark geometry. With smooth mesh
         // and the border, exact counts depend on deduplication across the
@@ -1066,14 +1127,18 @@ mod tests {
 
     #[test]
     fn empty_chunk_in_tall_world() {
-        set_decimation_enabled(false);
         // A tall world where a chunk far above the content is empty.
         let mut world = VoxelWorld::new(16, 128, 16);
         world.set(VoxelCoord::new(8, 0, 8), VoxelType::Trunk);
 
         // Chunk at y=64..79 should be empty.
-        let mesh =
-            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 4, 0), None, &no_grassless());
+        let mesh = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 4, 0),
+            None,
+            &no_grassless(),
+            &no_decimate(),
+        );
         assert!(mesh.is_empty());
     }
 
@@ -1089,17 +1154,22 @@ mod tests {
             ChunkCoord::new(0, 0, 0),
             Some(0),
             &no_grassless(),
+            &no_decimate(),
         );
         assert!(mesh.is_empty());
     }
 
     #[test]
     fn strut_voxel_produces_geometry() {
-        set_decimation_enabled(false);
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Strut);
-        let mesh =
-            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &no_grassless(),
+            &no_decimate(),
+        );
         // 6 faces × 8 triangles (smooth mesh).
         assert_eq!(mesh.bark.indices.len(), 48 * 3);
     }
@@ -1108,11 +1178,15 @@ mod tests {
     fn world_smaller_than_chunk_skips_out_of_bounds_columns() {
         // World is only 8×16×8 but chunk footprint is 16×16. The 8 columns
         // outside the world in each dimension should be skipped.
-        set_decimation_enabled(false);
         let mut world = VoxelWorld::new(8, 16, 8);
         world.set(VoxelCoord::new(4, 4, 4), VoxelType::Trunk);
-        let mesh =
-            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &no_grassless(),
+            &no_decimate(),
+        );
         assert_eq!(mesh.bark.indices.len(), 48 * 3); // 6 faces smooth
     }
 
@@ -1129,6 +1203,7 @@ mod tests {
             ChunkCoord::new(0, 0, 0),
             Some(5),
             &no_grassless(),
+            &no_decimate(),
         );
 
         // 5 visible voxels (y=0..4). Internal ±Y faces are culled.
@@ -1147,6 +1222,7 @@ mod tests {
             ChunkCoord::new(-1, 0, 0),
             None,
             &no_grassless(),
+            &no_decimate(),
         );
         assert!(mesh.is_empty());
     }
@@ -1161,8 +1237,13 @@ mod tests {
     fn estimate_byte_size_single_voxel() {
         let mut world = one_chunk_world();
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
-        let mesh =
-            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
+        let mesh = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &no_grassless(),
+            &no_decimate(),
+        );
         let size = mesh.estimate_byte_size();
         // Smooth mesh: 26 verts, 48 triangles.
         // vertices: 26*3*4=312, normals: 312, indices: 144*4=576,
@@ -1203,7 +1284,6 @@ mod tests {
         // code. For two adjacent chunks sharing a boundary at x=16, every
         // vertex that appears in BOTH chunks' output must have IDENTICAL
         // position AND normal (within float epsilon).
-        set_decimation_enabled(false);
         let mut world = VoxelWorld::new(32, 16, 16);
         for x in 0..32 {
             let height = 3 + (x % 3);
@@ -1214,10 +1294,20 @@ mod tests {
             }
         }
 
-        let mesh0 =
-            generate_chunk_mesh_from_world(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
-        let mesh1 =
-            generate_chunk_mesh_from_world(&world, ChunkCoord::new(1, 0, 0), None, &no_grassless());
+        let mesh0 = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &no_grassless(),
+            &no_decimate(),
+        );
+        let mesh1 = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(1, 0, 0),
+            None,
+            &no_grassless(),
+            &no_decimate(),
+        );
 
         assert!(!mesh0.ground.is_empty(), "chunk 0 should have ground");
         assert!(!mesh1.ground.is_empty(), "chunk 1 should have ground");
@@ -1301,17 +1391,19 @@ mod tests {
 
     #[test]
     fn build_smooth_mesh_empty_returns_none() {
-        set_decimation_enabled(false);
         let world = VoxelWorld::new(16, 16, 16);
         let nh =
             ChunkNeighborhood::extract(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
-        assert!(build_smooth_mesh(&nh).is_none());
+        assert!(build_smooth_mesh(&nh, &no_decimate()).is_none());
     }
 
     #[test]
     fn sub_stages_match_generate_chunk_mesh() {
-        set_decimation_enabled(true);
-        set_smoothing_enabled(false);
+        let cfg = MeshPipelineConfig {
+            decimation_enabled: true,
+            smoothing_enabled: false,
+            ..MeshPipelineConfig::default()
+        };
         let mut world = VoxelWorld::new(16, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
         world.set(VoxelCoord::new(9, 8, 8), VoxelType::Branch);
@@ -1320,10 +1412,10 @@ mod tests {
         let nh = ChunkNeighborhood::extract(&world, chunk, None, &no_grassless());
 
         // Path A: monolithic function.
-        let mesh_a = generate_chunk_mesh(&nh);
+        let mesh_a = generate_chunk_mesh(&nh, &cfg);
 
         // Path B: composable sub-stages.
-        let mut sm = build_smooth_mesh(&nh).unwrap();
+        let mut sm = build_smooth_mesh(&nh, &cfg).unwrap();
         run_chamfer_smooth(&mut sm);
         run_decimation(&mut sm, chunk);
         let mesh_b = flatten_to_chunk_mesh(&sm, chunk);
@@ -1342,5 +1434,194 @@ mod tests {
         let json = serde_json::to_string(&coord).unwrap();
         let restored: ChunkCoord = serde_json::from_str(&json).unwrap();
         assert_eq!(coord, restored);
+    }
+
+    #[test]
+    fn mesh_pipeline_config_defaults_match_legacy_globals() {
+        let cfg = MeshPipelineConfig::default();
+        assert!(!cfg.smoothing_enabled);
+        assert!(!cfg.smooth_normals_enabled);
+        assert!(cfg.decimation_enabled);
+        assert!(!cfg.qem_only);
+        assert!((cfg.decimation_max_error - 1e-6).abs() < f32::EPSILON);
+    }
+
+    /// Helper: create a multi-voxel world for config-variation tests.
+    /// Returns (world, chunk, neighborhood) with 3 opaque voxels.
+    fn config_test_world() -> (VoxelWorld, ChunkCoord, ChunkNeighborhood) {
+        let mut world = VoxelWorld::new(16, 16, 16);
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
+        world.set(VoxelCoord::new(9, 8, 8), VoxelType::Branch);
+        world.set(VoxelCoord::new(8, 7, 8), VoxelType::Dirt);
+        let chunk = ChunkCoord::new(0, 0, 0);
+        let nh = ChunkNeighborhood::extract(&world, chunk, None, &no_grassless());
+        (world, chunk, nh)
+    }
+
+    #[test]
+    fn config_smoothing_enabled_changes_vertex_positions() {
+        let (_, _, nh) = config_test_world();
+        let no_smooth = MeshPipelineConfig {
+            smoothing_enabled: false,
+            decimation_enabled: false,
+            ..MeshPipelineConfig::default()
+        };
+        let with_smooth = MeshPipelineConfig {
+            smoothing_enabled: true,
+            decimation_enabled: false,
+            ..MeshPipelineConfig::default()
+        };
+        let mesh_a = generate_chunk_mesh(&nh, &no_smooth);
+        let mesh_b = generate_chunk_mesh(&nh, &with_smooth);
+
+        // Both should produce geometry, but smoothing moves vertices.
+        assert!(!mesh_a.bark.is_empty());
+        assert!(!mesh_b.bark.is_empty());
+        assert_ne!(
+            mesh_a.bark.vertices, mesh_b.bark.vertices,
+            "smoothing should move vertex positions"
+        );
+    }
+
+    #[test]
+    fn config_smooth_normals_changes_normal_output() {
+        let (_, _, nh) = config_test_world();
+        let flat = MeshPipelineConfig {
+            smooth_normals_enabled: false,
+            decimation_enabled: false,
+            ..MeshPipelineConfig::default()
+        };
+        let smooth = MeshPipelineConfig {
+            smooth_normals_enabled: true,
+            decimation_enabled: false,
+            ..MeshPipelineConfig::default()
+        };
+        let mesh_flat = generate_chunk_mesh(&nh, &flat);
+        let mesh_smooth = generate_chunk_mesh(&nh, &smooth);
+
+        assert!(!mesh_flat.bark.is_empty());
+        assert!(!mesh_smooth.bark.is_empty());
+        // Same triangle count (normals don't change topology).
+        assert_eq!(mesh_flat.bark.indices.len(), mesh_smooth.bark.indices.len());
+        // But normals differ (flat = per-face, smooth = area-weighted).
+        assert_ne!(
+            mesh_flat.bark.normals, mesh_smooth.bark.normals,
+            "smooth vs flat normals should produce different normal vectors"
+        );
+    }
+
+    #[test]
+    fn config_qem_only_skips_retri_and_collinear() {
+        let (_, _, nh) = config_test_world();
+        let full_decimate = MeshPipelineConfig {
+            decimation_enabled: true,
+            qem_only: false,
+            ..MeshPipelineConfig::default()
+        };
+        let qem_only = MeshPipelineConfig {
+            decimation_enabled: true,
+            qem_only: true,
+            ..MeshPipelineConfig::default()
+        };
+        let mesh_full = generate_chunk_mesh(&nh, &full_decimate);
+        let mesh_qem = generate_chunk_mesh(&nh, &qem_only);
+
+        // Both should produce geometry.
+        assert!(!mesh_full.bark.is_empty());
+        assert!(!mesh_qem.bark.is_empty());
+        // Retri + collinear passes reduce triangle count further than QEM
+        // alone, so full decimation should have fewer or equal triangles.
+        assert!(
+            mesh_full.bark.indices.len() <= mesh_qem.bark.indices.len(),
+            "full decimation ({}) should produce <= triangles than QEM-only ({})",
+            mesh_full.bark.indices.len(),
+            mesh_qem.bark.indices.len()
+        );
+    }
+
+    #[test]
+    fn generate_chunk_mesh_with_decimation_overrides_config() {
+        let mut world = one_chunk_world();
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
+        world.set(VoxelCoord::new(9, 8, 8), VoxelType::Branch);
+        world.set(VoxelCoord::new(8, 7, 8), VoxelType::Dirt);
+
+        // Base config has decimation disabled.
+        let cfg = MeshPipelineConfig {
+            decimation_enabled: false,
+            ..MeshPipelineConfig::default()
+        };
+
+        // Override to enable decimation.
+        let mesh_decimated = generate_chunk_mesh_with_decimation(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            true,
+            &no_grassless(),
+            &cfg,
+        );
+        // Override to disable decimation (matching the base config).
+        let mesh_no_decimate = generate_chunk_mesh_with_decimation(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            false,
+            &no_grassless(),
+            &cfg,
+        );
+
+        assert!(!mesh_decimated.bark.is_empty());
+        assert!(!mesh_no_decimate.bark.is_empty());
+        // Decimation reduces triangle count.
+        assert!(
+            mesh_decimated.bark.indices.len() <= mesh_no_decimate.bark.indices.len(),
+            "decimated ({}) should have <= triangles than undecimated ({})",
+            mesh_decimated.bark.indices.len(),
+            mesh_no_decimate.bark.indices.len()
+        );
+    }
+
+    #[test]
+    fn config_threaded_isolation() {
+        // Two threads generate meshes with different configs concurrently.
+        // This is the core motivation for replacing global atomics.
+        // Extract two separate neighborhoods (ChunkNeighborhood is not Clone).
+        fn make_nh() -> ChunkNeighborhood {
+            let mut world = VoxelWorld::new(16, 16, 16);
+            world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
+            world.set(VoxelCoord::new(9, 8, 8), VoxelType::Branch);
+            world.set(VoxelCoord::new(8, 7, 8), VoxelType::Dirt);
+            ChunkNeighborhood::extract(&world, ChunkCoord::new(0, 0, 0), None, &BTreeSet::new())
+        }
+
+        let handle1 = std::thread::spawn(|| {
+            let cfg = MeshPipelineConfig {
+                smoothing_enabled: true,
+                decimation_enabled: false,
+                ..MeshPipelineConfig::default()
+            };
+            generate_chunk_mesh(&make_nh(), &cfg)
+        });
+        let handle2 = std::thread::spawn(|| {
+            let cfg = MeshPipelineConfig {
+                smoothing_enabled: false,
+                decimation_enabled: false,
+                ..MeshPipelineConfig::default()
+            };
+            generate_chunk_mesh(&make_nh(), &cfg)
+        });
+
+        let mesh1 = handle1.join().unwrap();
+        let mesh2 = handle2.join().unwrap();
+
+        // Both produce geometry but with different vertex positions
+        // (smoothing vs no smoothing).
+        assert!(!mesh1.bark.is_empty());
+        assert!(!mesh2.bark.is_empty());
+        assert_ne!(
+            mesh1.bark.vertices, mesh2.bark.vertices,
+            "concurrent meshes with different configs should produce different results"
+        );
     }
 }

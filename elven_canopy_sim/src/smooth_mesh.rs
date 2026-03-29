@@ -145,6 +145,10 @@ pub struct SmoothMesh {
     pub triangle_face_midpoints: Vec<[f32; 3]>,
     /// Deduplication map: grid position → vertex index.
     pub dedup: FxHashMap<VertexKey, u32>,
+    /// Pipeline configuration (smoothing, decimation, normals). Stored on the
+    /// mesh so that pipeline stages and `SmoothMesh` methods can read it without
+    /// global state.
+    pub config: crate::mesh_gen::MeshPipelineConfig,
 }
 
 impl Default for SmoothMesh {
@@ -154,7 +158,7 @@ impl Default for SmoothMesh {
 }
 
 impl SmoothMesh {
-    /// Create an empty smooth mesh.
+    /// Create an empty smooth mesh with default pipeline config.
     pub fn new() -> Self {
         Self {
             vertices: Vec::new(),
@@ -165,6 +169,7 @@ impl SmoothMesh {
             triangle_face_normals: Vec::new(),
             triangle_face_midpoints: Vec::new(),
             dedup: FxHashMap::default(),
+            config: crate::mesh_gen::MeshPipelineConfig::default(),
         }
     }
 
@@ -174,7 +179,10 @@ impl SmoothMesh {
     /// dedup reducing to ~5 unique vertices per face on average). Pre-sizing
     /// avoids repeated reallocations and FxHashMap rehashes during face
     /// construction.
-    pub fn with_estimated_faces(face_estimate: usize) -> Self {
+    pub fn with_estimated_faces(
+        face_estimate: usize,
+        config: crate::mesh_gen::MeshPipelineConfig,
+    ) -> Self {
         let tri_cap = face_estimate * 8;
         // ~5 unique vertices per face after dedup (corners and midpoints
         // are shared between adjacent faces).
@@ -188,6 +196,7 @@ impl SmoothMesh {
             triangle_face_normals: Vec::with_capacity(tri_cap),
             triangle_face_midpoints: Vec::with_capacity(tri_cap),
             dedup: FxHashMap::with_capacity_and_hasher(vert_cap, Default::default()),
+            config,
         }
     }
 
@@ -1385,7 +1394,7 @@ impl SmoothMesh {
 
             let color = self.triangle_colors[ti];
             let base = surface.vertex_count() as u32;
-            let use_smooth_normals = crate::mesh_gen::smooth_normals_enabled();
+            let use_smooth_normals = self.config.smooth_normals_enabled;
 
             // Compute flat face normal (used when smooth normals are off).
             let flat_n = if !use_smooth_normals {
@@ -3211,7 +3220,8 @@ mod tests {
 
     #[test]
     fn with_estimated_faces_zero() {
-        let mesh = SmoothMesh::with_estimated_faces(0);
+        let mesh =
+            SmoothMesh::with_estimated_faces(0, crate::mesh_gen::MeshPipelineConfig::default());
         assert!(mesh.vertices.is_empty());
         assert!(mesh.triangles.is_empty());
         assert!(mesh.dedup.is_empty());

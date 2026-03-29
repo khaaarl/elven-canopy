@@ -5029,9 +5029,13 @@ impl SimBridge {
             return;
         };
         let old_cutoff = self.mesh_cache.as_ref().and_then(|c| c.y_cutoff());
+        let old_config = self.mesh_cache.as_ref().map(|c| c.mesh_config);
         let mut cache = MeshCache::new();
         if let Some(cutoff) = old_cutoff {
             cache.set_y_cutoff(Some(cutoff));
+        }
+        if let Some(cfg) = old_config {
+            cache.mesh_config = cfg;
         }
         cache.scan_nonempty_chunks(&sim.world);
         self.mesh_cache = Some(cache);
@@ -5045,9 +5049,13 @@ impl SimBridge {
             return;
         };
         let old_cutoff = self.mesh_cache.as_ref().and_then(|c| c.y_cutoff());
+        let old_config = self.mesh_cache.as_ref().map(|c| c.mesh_config);
         let mut cache = MeshCache::new();
         if let Some(cutoff) = old_cutoff {
             cache.set_y_cutoff(Some(cutoff));
+        }
+        if let Some(cfg) = old_config {
+            cache.mesh_config = cfg;
         }
         cache.scan_nonempty_chunks(&sim.world);
         godot_print!(
@@ -5373,29 +5381,37 @@ impl SimBridge {
     /// Requires a full mesh rebuild to take effect.
     #[func]
     fn set_smoothing_enabled(&mut self, enabled: bool) {
-        elven_canopy_sim::mesh_gen::set_smoothing_enabled(enabled);
-        elven_canopy_sim::mesh_gen::set_smooth_normals_enabled(enabled);
+        if let Some(cache) = &mut self.mesh_cache {
+            cache.mesh_config.smoothing_enabled = enabled;
+            cache.mesh_config.smooth_normals_enabled = enabled;
+        }
         self.rebuild_mesh_cache();
     }
 
     /// Returns whether the smoothing pass is currently enabled.
     #[func]
     fn is_smoothing_enabled(&self) -> bool {
-        elven_canopy_sim::mesh_gen::smoothing_enabled()
+        self.mesh_cache
+            .as_ref()
+            .is_some_and(|c| c.mesh_config.smoothing_enabled)
     }
 
     /// Toggle QEM mesh decimation on/off. When enabled, coplanar triangles
     /// are collapsed to reduce triangle count. Requires a full mesh rebuild.
     #[func]
     fn set_decimation_enabled(&mut self, enabled: bool) {
-        elven_canopy_sim::mesh_gen::set_decimation_enabled(enabled);
+        if let Some(cache) = &mut self.mesh_cache {
+            cache.mesh_config.decimation_enabled = enabled;
+        }
         self.rebuild_mesh_cache();
     }
 
     /// Returns whether mesh decimation is currently enabled.
     #[func]
     fn is_decimation_enabled(&self) -> bool {
-        elven_canopy_sim::mesh_gen::decimation_enabled()
+        self.mesh_cache
+            .as_ref()
+            .is_some_and(|c| c.mesh_config.decimation_enabled)
     }
 
     /// Set the maximum quadric error threshold for decimation. Lower values
@@ -5403,7 +5419,9 @@ impl SimBridge {
     /// Requires a full mesh rebuild to take effect.
     #[func]
     fn set_decimation_max_error(&mut self, max_error: f32) {
-        elven_canopy_sim::mesh_gen::set_decimation_max_error(max_error);
+        if let Some(cache) = &mut self.mesh_cache {
+            cache.mesh_config.decimation_max_error = max_error;
+        }
         self.rebuild_mesh_cache();
     }
 
@@ -5411,7 +5429,9 @@ impl SimBridge {
     /// Requires a full mesh rebuild to take effect.
     #[func]
     fn set_qem_only(&mut self, enabled: bool) {
-        elven_canopy_sim::mesh_gen::set_qem_only(enabled);
+        if let Some(cache) = &mut self.mesh_cache {
+            cache.mesh_config.qem_only = enabled;
+        }
         self.rebuild_mesh_cache();
     }
 
@@ -5448,12 +5468,18 @@ impl SimBridge {
         let cz = (world_z as i32).div_euclid(CHUNK_SIZE);
         let chunk = ChunkCoord::new(cx, cy, cz);
 
+        let config = self
+            .mesh_cache
+            .as_ref()
+            .map(|c| c.mesh_config)
+            .unwrap_or_default();
         let mesh = generate_chunk_mesh_with_decimation(
             &sim.world,
             chunk,
             None,
             with_decimation,
             &sim.grassless,
+            &config,
         );
         let obj = chunk_mesh_to_obj(&mesh);
 

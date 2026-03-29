@@ -61,7 +61,8 @@ use rayon::ThreadPool;
 
 use elven_canopy_sim::chunk_neighborhood::ChunkNeighborhood;
 use elven_canopy_sim::mesh_gen::{
-    CHUNK_SIZE, ChunkCoord, ChunkMesh, generate_chunk_mesh, produces_geometry, voxel_to_chunk,
+    CHUNK_SIZE, ChunkCoord, ChunkMesh, MeshPipelineConfig, generate_chunk_mesh, produces_geometry,
+    voxel_to_chunk,
 };
 use elven_canopy_sim::texture_gen::TilingCache;
 use elven_canopy_sim::types::VoxelCoord;
@@ -593,6 +594,9 @@ pub struct MeshCache {
     /// than the total CPU count to leave headroom for the main/render thread
     /// and OS/background tasks.
     mesh_pool: ThreadPool,
+    /// Mesh pipeline configuration (smoothing, decimation, etc.). Cloned into
+    /// each background worker closure so workers don't depend on global state.
+    pub mesh_config: MeshPipelineConfig,
 }
 
 impl MeshCache {
@@ -638,6 +642,7 @@ impl MeshCache {
             in_flight: BTreeSet::new(),
             cached_ticks: BTreeMap::new(),
             mesh_pool,
+            mesh_config: MeshPipelineConfig::default(),
         }
     }
 
@@ -809,6 +814,7 @@ impl MeshCache {
                 coord,
                 self.y_cutoff,
                 grassless,
+                &self.mesh_config,
             );
             if !mesh.is_empty() {
                 let bytes = mesh.estimate_byte_size();
@@ -837,11 +843,12 @@ impl MeshCache {
         }
         let neighborhood = ChunkNeighborhood::extract(world, coord, self.y_cutoff, grassless);
         let tx = self.mesh_tx.clone();
+        let config = self.mesh_config;
         self.in_flight.insert(coord);
         self.dirty.remove(&coord);
         self.mesh_pool.spawn(move || {
             let t = Instant::now();
-            let mesh = generate_chunk_mesh(&neighborhood);
+            let mesh = generate_chunk_mesh(&neighborhood, &config);
             let gen_us = t.elapsed().as_micros() as u32;
             // If the receiver is dropped (MeshCache destroyed), the send
             // silently fails — that's fine.

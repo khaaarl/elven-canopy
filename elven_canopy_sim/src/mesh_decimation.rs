@@ -583,7 +583,7 @@ impl SmoothMesh {
 
                 // In chamfer-only mode, check that the fan triangle's
                 // normal matches one of the 26 canonical directions.
-                if !crate::mesh_gen::smoothing_enabled() {
+                if !self.config.smoothing_enabled {
                     let n = [
                         cross[0] / twice_area,
                         cross[1] / twice_area,
@@ -893,7 +893,7 @@ impl SmoothMesh {
             // Before committing: in chamfer-only mode, verify that the
             // merged triangles would have canonical normals. If not, skip
             // this vertex (the collinear collapse would bridge surfaces).
-            if !crate::mesh_gen::smoothing_enabled() {
+            if !self.config.smoothing_enabled {
                 let mut would_produce_bad_normal = false;
                 for &(centroid, _, _) in &pairs {
                     let new_positions: [[f32; 3]; 3] = [
@@ -1483,7 +1483,7 @@ impl SmoothMesh {
             // normal means the collapse bridges two differently-angled
             // surfaces across a crease edge. This check is skipped in smooth
             // mode where arbitrary normals are expected (future LoD use).
-            if !crate::mesh_gen::smoothing_enabled() {
+            if !self.config.smoothing_enabled {
                 let n_after_normalized = [
                     n_after[0] / len_after,
                     n_after[1] / len_after,

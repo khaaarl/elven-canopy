@@ -28,8 +28,8 @@ use std::time::Duration;
 
 use elven_canopy_sim::chunk_neighborhood::ChunkNeighborhood;
 use elven_canopy_sim::mesh_gen::{
-    build_smooth_mesh, flatten_to_chunk_mesh, generate_chunk_mesh, run_chamfer_smooth,
-    run_decimation, set_decimation_enabled, set_smoothing_enabled,
+    MeshPipelineConfig, build_smooth_mesh, flatten_to_chunk_mesh, generate_chunk_mesh,
+    run_chamfer_smooth, run_decimation,
 };
 
 // ---------------------------------------------------------------------------
@@ -101,6 +101,7 @@ fn load_all_fixtures() -> Vec<NamedFixture> {
 /// Default game pipeline: chamfer + decimation, no smoothing.
 fn bench_default(c: &mut Criterion) {
     let fixtures = load_all_fixtures();
+    let cfg = MeshPipelineConfig::default(); // smoothing=false, decimation=true
     let mut group = c.benchmark_group("default");
     group.measurement_time(Duration::from_secs(10));
     group.sample_size(50);
@@ -109,13 +110,7 @@ fn bench_default(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("chunk", &f.name),
             &f.neighborhood,
-            |b, nh| {
-                b.iter(|| {
-                    set_smoothing_enabled(false);
-                    set_decimation_enabled(true);
-                    generate_chunk_mesh(nh)
-                })
-            },
+            |b, nh| b.iter(|| generate_chunk_mesh(nh, &cfg)),
         );
     }
     group.finish();
@@ -124,6 +119,10 @@ fn bench_default(c: &mut Criterion) {
 /// Debug option: chamfer + smoothing + decimation.
 fn bench_smoothed(c: &mut Criterion) {
     let fixtures = load_all_fixtures();
+    let cfg = MeshPipelineConfig {
+        smoothing_enabled: true,
+        ..MeshPipelineConfig::default()
+    };
     let mut group = c.benchmark_group("smoothed");
     group.measurement_time(Duration::from_secs(10));
     group.sample_size(50);
@@ -132,13 +131,7 @@ fn bench_smoothed(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("chunk", &f.name),
             &f.neighborhood,
-            |b, nh| {
-                b.iter(|| {
-                    set_smoothing_enabled(true);
-                    set_decimation_enabled(true);
-                    generate_chunk_mesh(nh)
-                })
-            },
+            |b, nh| b.iter(|| generate_chunk_mesh(nh, &cfg)),
         );
     }
     group.finish();
@@ -147,6 +140,10 @@ fn bench_smoothed(c: &mut Criterion) {
 /// Chamfer only: no smoothing, no decimation.
 fn bench_no_decimation(c: &mut Criterion) {
     let fixtures = load_all_fixtures();
+    let cfg = MeshPipelineConfig {
+        decimation_enabled: false,
+        ..MeshPipelineConfig::default()
+    };
     let mut group = c.benchmark_group("no_decimation");
     group.measurement_time(Duration::from_secs(10));
     group.sample_size(50);
@@ -155,13 +152,7 @@ fn bench_no_decimation(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("chunk", &f.name),
             &f.neighborhood,
-            |b, nh| {
-                b.iter(|| {
-                    set_smoothing_enabled(false);
-                    set_decimation_enabled(false);
-                    generate_chunk_mesh(nh)
-                })
-            },
+            |b, nh| b.iter(|| generate_chunk_mesh(nh, &cfg)),
         );
     }
     group.finish();
@@ -170,6 +161,11 @@ fn bench_no_decimation(c: &mut Criterion) {
 /// Chamfer + smoothing, no decimation (for smoothing perf tracking).
 fn bench_smoothed_no_decimation(c: &mut Criterion) {
     let fixtures = load_all_fixtures();
+    let cfg = MeshPipelineConfig {
+        smoothing_enabled: true,
+        decimation_enabled: false,
+        ..MeshPipelineConfig::default()
+    };
     let mut group = c.benchmark_group("smoothed_no_decimation");
     group.measurement_time(Duration::from_secs(10));
     group.sample_size(50);
@@ -178,13 +174,7 @@ fn bench_smoothed_no_decimation(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("chunk", &f.name),
             &f.neighborhood,
-            |b, nh| {
-                b.iter(|| {
-                    set_smoothing_enabled(true);
-                    set_decimation_enabled(false);
-                    generate_chunk_mesh(nh)
-                })
-            },
+            |b, nh| b.iter(|| generate_chunk_mesh(nh, &cfg)),
         );
     }
     group.finish();
@@ -196,6 +186,7 @@ fn bench_smoothed_no_decimation(c: &mut Criterion) {
 
 fn bench_stage_face_gen(c: &mut Criterion) {
     let fixtures = load_all_fixtures();
+    let cfg = MeshPipelineConfig::default();
     let mut group = c.benchmark_group("stage_face_gen");
     group.measurement_time(Duration::from_secs(10));
     group.sample_size(50);
@@ -204,7 +195,7 @@ fn bench_stage_face_gen(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("chunk", &f.name),
             &f.neighborhood,
-            |b, nh| b.iter(|| build_smooth_mesh(nh)),
+            |b, nh| b.iter(|| build_smooth_mesh(nh, &cfg)),
         );
     }
     group.finish();
@@ -213,13 +204,17 @@ fn bench_stage_face_gen(c: &mut Criterion) {
 /// Chamfer pass only (no smoothing) on a pre-built SmoothMesh.
 fn bench_stage_chamfer(c: &mut Criterion) {
     let fixtures = load_all_fixtures();
+    let cfg = MeshPipelineConfig {
+        smoothing_enabled: false,
+        ..MeshPipelineConfig::default()
+    };
     let mut group = c.benchmark_group("stage_chamfer");
     group.measurement_time(Duration::from_secs(10));
     group.sample_size(50);
 
     let prepared: Vec<_> = fixtures
         .iter()
-        .filter_map(|f| build_smooth_mesh(&f.neighborhood).map(|sm| (&f.name, sm)))
+        .filter_map(|f| build_smooth_mesh(&f.neighborhood, &cfg).map(|sm| (&f.name, sm)))
         .collect();
 
     for (name, base_mesh) in &prepared {
@@ -227,7 +222,6 @@ fn bench_stage_chamfer(c: &mut Criterion) {
             b.iter_batched(
                 || sm.clone(),
                 |mut mesh| {
-                    set_smoothing_enabled(false);
                     run_chamfer_smooth(&mut mesh);
                     mesh
                 },
@@ -241,13 +235,17 @@ fn bench_stage_chamfer(c: &mut Criterion) {
 /// Chamfer + smoothing on a pre-built SmoothMesh.
 fn bench_stage_chamfer_smooth(c: &mut Criterion) {
     let fixtures = load_all_fixtures();
+    let cfg = MeshPipelineConfig {
+        smoothing_enabled: true,
+        ..MeshPipelineConfig::default()
+    };
     let mut group = c.benchmark_group("stage_chamfer_smooth");
     group.measurement_time(Duration::from_secs(10));
     group.sample_size(50);
 
     let prepared: Vec<_> = fixtures
         .iter()
-        .filter_map(|f| build_smooth_mesh(&f.neighborhood).map(|sm| (&f.name, sm)))
+        .filter_map(|f| build_smooth_mesh(&f.neighborhood, &cfg).map(|sm| (&f.name, sm)))
         .collect();
 
     for (name, base_mesh) in &prepared {
@@ -255,7 +253,6 @@ fn bench_stage_chamfer_smooth(c: &mut Criterion) {
             b.iter_batched(
                 || sm.clone(),
                 |mut mesh| {
-                    set_smoothing_enabled(true);
                     run_chamfer_smooth(&mut mesh);
                     mesh
                 },
@@ -268,6 +265,7 @@ fn bench_stage_chamfer_smooth(c: &mut Criterion) {
 
 fn bench_stage_decimation(c: &mut Criterion) {
     let fixtures = load_all_fixtures();
+    let cfg = MeshPipelineConfig::default(); // smoothing=false, decimation=true
     let mut group = c.benchmark_group("stage_decimation");
     group.measurement_time(Duration::from_secs(10));
     group.sample_size(50);
@@ -276,8 +274,7 @@ fn bench_stage_decimation(c: &mut Criterion) {
     let prepared: Vec<_> = fixtures
         .iter()
         .filter_map(|f| {
-            build_smooth_mesh(&f.neighborhood).map(|mut sm| {
-                set_smoothing_enabled(false);
+            build_smooth_mesh(&f.neighborhood, &cfg).map(|mut sm| {
                 run_chamfer_smooth(&mut sm);
                 (&f.name, f.neighborhood.chunk, sm)
             })
@@ -289,7 +286,6 @@ fn bench_stage_decimation(c: &mut Criterion) {
             b.iter_batched(
                 || sm.clone(),
                 |mut mesh| {
-                    set_decimation_enabled(true);
                     run_decimation(&mut mesh, *chunk);
                     mesh
                 },
@@ -302,6 +298,7 @@ fn bench_stage_decimation(c: &mut Criterion) {
 
 fn bench_stage_flatten(c: &mut Criterion) {
     let fixtures = load_all_fixtures();
+    let cfg = MeshPipelineConfig::default(); // smoothing=false, decimation=true
     let mut group = c.benchmark_group("stage_flatten");
     group.measurement_time(Duration::from_secs(10));
     group.sample_size(50);
@@ -310,9 +307,7 @@ fn bench_stage_flatten(c: &mut Criterion) {
     let prepared: Vec<_> = fixtures
         .iter()
         .filter_map(|f| {
-            build_smooth_mesh(&f.neighborhood).map(|mut sm| {
-                set_smoothing_enabled(false);
-                set_decimation_enabled(true);
+            build_smooth_mesh(&f.neighborhood, &cfg).map(|mut sm| {
                 run_chamfer_smooth(&mut sm);
                 run_decimation(&mut sm, f.neighborhood.chunk);
                 (&f.name, f.neighborhood.chunk, sm)
