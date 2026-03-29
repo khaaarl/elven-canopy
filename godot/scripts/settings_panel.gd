@@ -8,6 +8,7 @@
 ##   - Player name (LineEdit, max 32 chars)
 ##   - Start paused on load (toggle button)
 ##   - Draw distance (LineEdit, 0–500 voxels, 0 = unlimited)
+##   - Audio volume (HSlider, 0–100%)
 ##   - Fog enabled (toggle button)
 ##   - Fog begin (LineEdit, voxels)
 ##   - Fog end (LineEdit, voxels)
@@ -33,6 +34,8 @@ var _config: Node  ## GameConfig (or test stand-in)
 var _name_input: LineEdit
 var _paused_toggle: Button
 var _draw_distance_input: LineEdit
+var _volume_slider: HSlider
+var _volume_label: Label
 var _fog_toggle: Button
 var _fog_begin_input: LineEdit
 var _fog_end_input: LineEdit
@@ -130,6 +133,38 @@ func _ready() -> void:
 	var draw_dist_unit := Label.new()
 	draw_dist_unit.text = "voxels"
 	draw_dist_row.add_child(draw_dist_unit)
+
+	# --- Audio section ---
+	var audio_label := Label.new()
+	audio_label.text = "Audio"
+	audio_label.add_theme_font_size_override("font_size", 18)
+	outer_vbox.add_child(audio_label)
+
+	var audio_vbox := VBoxContainer.new()
+	audio_vbox.add_theme_constant_override("separation", 10)
+	outer_vbox.add_child(audio_vbox)
+
+	# Volume row.
+	var volume_row := HBoxContainer.new()
+	volume_row.add_theme_constant_override("separation", 10)
+	audio_vbox.add_child(volume_row)
+
+	var volume_label := Label.new()
+	volume_label.text = "Volume"
+	volume_label.custom_minimum_size = Vector2(160, 0)
+	volume_row.add_child(volume_label)
+
+	_volume_slider = HSlider.new()
+	_volume_slider.min_value = 0
+	_volume_slider.max_value = 100
+	_volume_slider.step = 1
+	_volume_slider.custom_minimum_size = Vector2(200, 0)
+	_volume_slider.value_changed.connect(_on_volume_changed)
+	volume_row.add_child(_volume_slider)
+
+	_volume_label = Label.new()
+	_volume_label.custom_minimum_size = Vector2(40, 0)
+	volume_row.add_child(_volume_label)
 
 	# --- Visual section ---
 	var visual_label := Label.new()
@@ -235,6 +270,10 @@ func _update_paused_label() -> void:
 	_paused_toggle.text = "\u2713 ENABLED" if _paused_value else "\u2717 DISABLED"
 
 
+func _on_volume_changed(value: float) -> void:
+	_volume_label.text = "%d%%" % int(value)
+
+
 func _toggle_fog() -> void:
 	_fog_enabled_value = not _fog_enabled_value
 	_update_fog_label()
@@ -278,6 +317,8 @@ func open(config: Node) -> void:
 	_paused_value = config.get_setting("start_paused_on_load")
 	_update_paused_label()
 	_draw_distance_input.text = str(config.get_setting("draw_distance"))
+	_volume_slider.value = config.get_setting("audio_volume")
+	_volume_label.text = "%d%%" % config.get_setting("audio_volume")
 	_fog_enabled_value = config.get_setting("fog_enabled")
 	_update_fog_label()
 	_fog_begin_input.text = str(config.get_setting("fog_begin"))
@@ -292,6 +333,7 @@ func save_and_close() -> void:
 		_config.set_setting("player_name", name_text)
 	_config.set_setting("start_paused_on_load", _paused_value)
 	_config.set_setting("draw_distance", _parse_draw_distance())
+	_config.set_setting("audio_volume", int(_volume_slider.value))
 	_config.set_setting("fog_enabled", _fog_enabled_value)
 	_config.set_setting("fog_begin", _parse_fog_begin())
 	_config.set_setting("fog_end", _parse_fog_end())
@@ -341,6 +383,15 @@ func get_draw_distance_value() -> int:
 
 func set_draw_distance_value(value: int) -> void:
 	_draw_distance_input.text = str(value)
+
+
+func get_audio_volume_value() -> int:
+	return int(_volume_slider.value)
+
+
+func set_audio_volume_value(value: int) -> void:
+	_volume_slider.value = value
+	_volume_label.text = "%d%%" % value
 
 
 func get_fog_enabled() -> bool:

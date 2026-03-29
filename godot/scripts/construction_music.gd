@@ -11,6 +11,10 @@
 ## Multiple constructions can play simultaneously (cacophonous overlap is
 ## acceptable for now).
 ##
+## Volume is read from GameConfig's audio_volume setting (0–100 linear
+## percent, converted to dB) and kept in sync every frame so changes from
+## the settings panel take effect immediately on active players.
+##
 ## Wired up by main.gd, which creates this node and calls
 ## poll_compositions() each frame.
 
@@ -81,13 +85,22 @@ func _start_playback(comp_id: int) -> void:
 
 	var player := AudioStreamPlayer.new()
 	player.stream = stream
-	player.volume_db = -6.0
+	player.volume_db = _get_volume_db()
 	add_child(player)
 	player.play()
 
 	_active_players[comp_id] = player
 	_pcm_data[comp_id] = pcm
 	_pcm_cursors[comp_id] = 0
+
+
+## Convert the audio_volume config (0–100 linear percent) to decibels.
+## 0 → muted (-80 dB), 100 → full volume (0 dB).
+func _get_volume_db() -> float:
+	var pct: int = GameConfig.get_setting("audio_volume")
+	if pct <= 0:
+		return -80.0
+	return linear_to_db(float(pct) / 100.0)
 
 
 func _begin_fade_out(comp_id: int) -> void:
@@ -100,9 +113,12 @@ func _begin_fade_out(comp_id: int) -> void:
 
 func _process(_delta: float) -> void:
 	# Feed PCM data into all active generators.
+	var volume_db: float = _get_volume_db()
 	var finished: Array[int] = []
 	for comp_id: int in _active_players:
 		var player: AudioStreamPlayer = _active_players[comp_id]
+		# Keep volume in sync with config (user may change it mid-playback).
+		player.volume_db = volume_db
 		var playback: AudioStreamGeneratorPlayback = player.get_stream_playback()
 		var pcm: PackedFloat32Array = _pcm_data[comp_id]
 		var cursor: int = _pcm_cursors[comp_id]

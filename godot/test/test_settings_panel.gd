@@ -296,6 +296,34 @@ func test_fog_end_clamped() -> void:
 	assert_eq(_panel.get_fog_end_value(), 0)
 
 
+## Panel populates audio volume from config on open.
+func test_open_populates_audio_volume() -> void:
+	_config.set_setting("audio_volume", 60)
+	_panel.open(_config)
+	assert_eq(_panel.get_audio_volume_value(), 60)
+
+
+## Save writes audio volume to config.
+func test_save_writes_audio_volume() -> void:
+	_panel.set_audio_volume_value(80)
+	_panel.save_and_close()
+	assert_eq(_config.get_setting("audio_volume"), 80)
+
+
+## Cancel discards audio volume changes.
+func test_cancel_discards_audio_volume() -> void:
+	_config.set_setting("audio_volume", 40)
+	_panel.open(_config)
+	_panel.set_audio_volume_value(90)
+	_panel.cancel_and_close()
+	assert_eq(_config.get_setting("audio_volume"), 40)
+
+
+## Audio volume defaults to 25.
+func test_audio_volume_default() -> void:
+	assert_eq(_panel.get_audio_volume_value(), 25)
+
+
 ## Panel runs with PROCESS_MODE_ALWAYS (required for escape menu paused tree).
 func test_process_mode_always() -> void:
 	assert_eq(

@@ -43,6 +43,7 @@ func test_defaults_when_no_file() -> void:
 	assert_eq(_config.get_setting("fog_enabled"), true)
 	assert_eq(_config.get_setting("fog_begin"), 40)
 	assert_eq(_config.get_setting("fog_end"), 80)
+	assert_eq(_config.get_setting("audio_volume"), 25)
 
 
 ## Settings can be changed and read back.
@@ -237,6 +238,19 @@ func test_fog_save_load_roundtrip() -> void:
 	assert_eq(config2.get_setting("fog_enabled"), false)
 	assert_eq(config2.get_setting("fog_begin"), 25)
 	assert_eq(config2.get_setting("fog_end"), 60)
+	config2.free()
+
+
+## Audio volume survives a save/load roundtrip.
+func test_audio_volume_save_load_roundtrip() -> void:
+	_config.set_setting("audio_volume", 75)
+
+	var config2 := Node.new()
+	config2.set_script(GameConfigScript)
+	config2.config_path = TEST_CONFIG_PATH
+	config2.load_config()
+
+	assert_eq(config2.get_setting("audio_volume"), 75)
 	config2.free()
 
 
