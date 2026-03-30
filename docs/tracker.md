@@ -64,7 +64,6 @@ This reduces merge conflicts when parallel work streams add items.
 ### Todo
 
 ```
-[ ] B-combat-move-stats    Combat movement timing ignores creature stats
 [ ] B-dijkstra-perf        Unbounded Dijkstra in nearest-X searches scales poorly on large graphs
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
@@ -292,6 +291,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-carve-dirt           Carving pure dirt voxels rejected as nothing to carve
 [x] B-carve-perf           Carving dirt causes severe CPU stall, possibly structural checks
 [x] B-chamfer-nonmfld      Chamfer produces non-manifold edges for diagonally-adjacent voxels
+[x] B-combat-move-stats    Combat movement timing ignores creature stats
 [x] B-dead-enums           Remove dead GrownStairs/Bridge code and add explicit enum discriminants
 [x] B-dead-max-gen         Remove vestigial max_gen_per_frame field and ~40 test calls
 [x] B-dead-node-panic      Panic on dead nav node in pathfinding
@@ -3830,7 +3830,7 @@ infrastructure.
 ### Combat & Defense
 
 #### B-combat-move-stats — Combat movement timing ignores creature stats
-**Status:** Todo
+**Status:** Done
 
 Combat ground movement timing ignores creature stats (agility/strength).
 

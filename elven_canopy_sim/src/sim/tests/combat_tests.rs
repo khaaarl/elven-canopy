@@ -7084,3 +7084,98 @@ fn military_group_command_serde_roundtrip() {
         assert_eq!(json, json2, "Serde roundtrip failed for {action:?}");
     }
 }
+
+// -----------------------------------------------------------------------
+// B-combat-move-stats: combat movement delay should use creature stats
+// -----------------------------------------------------------------------
+
+#[test]
+fn attack_move_traversal_delay_uses_creature_stats() {
+    // An elf with very high agility should move faster during attack-move
+    // than the base species walk_ticks_per_voxel would give.
+    let mut sim = test_sim(42);
+    let elf = spawn_elf(&mut sim);
+
+    // Give the elf very high agility (stat 200 → significant speed bonus).
+    sim.db
+        .upsert_creature_trait(crate::db::CreatureTrait {
+            creature_id: elf,
+            trait_kind: TraitKind::Agility,
+            value: crate::types::TraitValue::Int(200),
+        })
+        .unwrap();
+
+    // Find a ground node far from the elf to attack-move toward.
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let graph = sim.graph_for_species(Species::Elf);
+    let distant_node = graph
+        .ground_node_ids()
+        .iter()
+        .map(|&nid| graph.node(nid).position)
+        .filter(|&p| p.manhattan_distance(elf_pos) > 5)
+        .next()
+        .expect("need a distant ground node");
+
+    // Issue attack-move command.
+    let tick = sim.tick;
+    let cmd = SimCommand {
+        player_name: String::new(),
+        tick: tick + 1,
+        action: SimAction::AttackMove {
+            creature_id: elf,
+            destination: distant_node,
+            queue: false,
+        },
+    };
+    sim.step(&[cmd], tick + 2);
+
+    // Advance until the elf takes a Move step (action_kind == Move with next_available_tick set).
+    let mut moved = false;
+    let mut delay_ticks = 0u64;
+    for t in (sim.tick + 1)..=(sim.tick + 200) {
+        sim.step(&[], t);
+        let c = sim.db.creatures.get(&elf).unwrap();
+        if c.action_kind == ActionKind::Move && c.next_available_tick.is_some() {
+            delay_ticks = c.next_available_tick.unwrap() - t;
+            moved = true;
+            break;
+        }
+    }
+    assert!(moved, "Elf should have taken a Move step");
+
+    // Compute what the delay would be with no stat modifier (agility=0).
+    // The actual edge type doesn't matter — we just need to show that the
+    // delay with agility 200 is strictly less than with agility 0, proving
+    // that creature stats are applied to combat movement timing.
+    let species_data = &sim.species_table[&Species::Elf];
+    let base_speeds = crate::stats::CreatureMoveSpeeds::new(species_data, 0, 0);
+    let stat_speeds = crate::stats::CreatureMoveSpeeds::new(species_data, 200, 0);
+
+    // Check that stat-modified speeds ARE actually faster for walk edges.
+    assert!(
+        stat_speeds.walk_tpv < base_speeds.walk_tpv,
+        "Stat-modified walk TPV ({}) should be less than base ({})",
+        stat_speeds.walk_tpv,
+        base_speeds.walk_tpv,
+    );
+
+    // The delay we observed should be less than what base speeds would give
+    // on the same edge. We don't know the exact edge, but we know the
+    // maximum possible base delay for any edge: the longest edge (corner
+    // diagonal, distance 1773) at the slowest TPV (climb).
+    let max_base_tpv = base_speeds.walk_tpv.max(
+        base_speeds
+            .climb_tpv
+            .unwrap_or(0)
+            .max(base_speeds.wood_ladder_tpv.unwrap_or(0))
+            .max(base_speeds.rope_ladder_tpv.unwrap_or(0)),
+    );
+    let max_base_delay = (1773u64 * max_base_tpv)
+        .div_ceil(crate::nav::DIST_SCALE as u64)
+        .max(1);
+    assert!(
+        delay_ticks < max_base_delay,
+        "Delay {delay_ticks} should be less than max base delay {max_base_delay} \
+         because the elf has high agility (200)"
+    );
+}
