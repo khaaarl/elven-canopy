@@ -1632,10 +1632,30 @@ meaningful tactical tool. Also improves general simulation fidelity.
 #### F-creature-sex — Creature sex/gender field
 **Status:** Todo
 
-Optional sex/gender field on creatures. Initially a simple enum stored
-as a trait or direct field on the Creature row. Used by romance and
-attraction systems to determine eligible pairs. May also affect sprite
-generation and name generation in the future.
+Sex field on creatures, used by romance/attraction to determine eligible
+pairs. May also affect sprite generation and name generation in the future.
+
+**Design:**
+
+`CreatureSex` enum with explicit discriminants: `None = 0`, `Male = 1`,
+`Female = 2`. Stored as a direct field on the Creature row (not a trait),
+since nearly every social system will need it.
+
+**Config:** Each species gets a `sex_weights: [none, male, female]` tuple
+of nonneg integer probability weights (ratio-based, sum >= 1). Most
+species use `[0, 1, 1]` (equal male/female). Future species like golems
+could use `[1, 0, 0]` (always None).
+
+**Spawn:** Weighted random selection from the species config weights
+during `spawn_creature_with_civ()`, deterministic from PRNG.
+
+**UI:** Display ♂/♀ symbol in creature info panel header next to species.
+None shows no symbol.
+
+**Serde:** Old saves without the field deserialize as `CreatureSex::None`.
+
+**Scope (not wired yet):** Attraction filtering (F-romance), gendered
+names, sprite variation — all future work.
 
 **Blocks:** F-romance
 
