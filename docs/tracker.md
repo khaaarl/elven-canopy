@@ -69,7 +69,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fragile-tests        Audit and harden tests against PRNG stream shifts and worldgen changes
 [ ] B-quit-crash           Crash on quit from in-flight rayon mesh workers
-[ ] B-safe-api-tests       Additional safe API test coverage from once-over
 [ ] B-start-paused-ui      start_paused_on_load UI desync and missing new-game support
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-adventure-mode       Control individual elf (RPG-like)
