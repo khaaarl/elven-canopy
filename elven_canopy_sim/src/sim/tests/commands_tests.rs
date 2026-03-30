@@ -12,7 +12,7 @@ use super::*;
 
 #[test]
 fn debug_notification_command_creates_notification() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     assert_eq!(sim.db.notifications.iter_all().count(), 0);
 
     let cmd = SimCommand {
@@ -37,7 +37,7 @@ fn debug_notification_command_creates_notification() {
 /// will skip it (the `<=` filter excludes ID 0).
 #[test]
 fn first_notification_gets_id_zero() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.add_notification("first".to_string());
 
     let notif = sim.db.notifications.iter_all().next().unwrap();
@@ -54,7 +54,7 @@ fn first_notification_gets_id_zero() {
 /// included. With `after_id = 0`, it must be excluded.
 #[test]
 fn notification_polling_cursor_filters_correctly() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.add_notification("first".to_string());
     sim.add_notification("second".to_string());
 
@@ -94,7 +94,7 @@ fn notification_polling_cursor_filters_correctly() {
 
 #[test]
 fn notifications_persist_across_serde_roundtrip() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -132,7 +132,7 @@ fn notifications_persist_across_serde_roundtrip() {
 
 #[test]
 fn register_player_creates_entry() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     assert_eq!(sim.db.players.iter_all().count(), 0);
 
     sim.register_player("alice");
@@ -145,7 +145,7 @@ fn register_player_creates_entry() {
 
 #[test]
 fn register_player_is_idempotent() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.register_player("alice");
     sim.register_player("alice");
     assert_eq!(sim.db.players.iter_all().count(), 1);
@@ -153,7 +153,7 @@ fn register_player_is_idempotent() {
 
 #[test]
 fn register_player_multiple_players() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.register_player("alice");
     sim.register_player("bob");
     assert_eq!(sim.db.players.iter_all().count(), 2);
@@ -163,7 +163,7 @@ fn register_player_multiple_players() {
 
 #[test]
 fn player_persists_across_serde_roundtrip() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.register_player("alice");
     sim.register_player("bob");
 
@@ -179,7 +179,7 @@ fn player_persists_across_serde_roundtrip() {
 
 #[test]
 fn tree_owner_is_civ_id() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     assert_eq!(tree.owner, sim.player_civ_id);
 }
@@ -190,7 +190,7 @@ fn tree_owner_is_civ_id() {
 
 #[test]
 fn set_selection_group_creates_new_group() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.register_player("alice");
     let elf_id = spawn_elf(&mut sim);
 
@@ -215,7 +215,7 @@ fn set_selection_group_creates_new_group() {
 
 #[test]
 fn set_selection_group_overwrites_existing() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.register_player("alice");
     let elf1 = spawn_elf(&mut sim);
     let elf2 = spawn_elf(&mut sim);
@@ -252,7 +252,7 @@ fn set_selection_group_overwrites_existing() {
 
 #[test]
 fn add_to_selection_group_merges_without_duplicates() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.register_player("alice");
     let elf1 = spawn_elf(&mut sim);
     let elf2 = spawn_elf(&mut sim);
@@ -292,7 +292,7 @@ fn add_to_selection_group_merges_without_duplicates() {
 
 #[test]
 fn add_to_nonexistent_group_creates_it() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.register_player("bob");
     let elf = spawn_elf(&mut sim);
 
@@ -316,7 +316,7 @@ fn add_to_nonexistent_group_creates_it() {
 
 #[test]
 fn selection_groups_are_per_player() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.register_player("alice");
     sim.register_player("bob");
     let elf1 = spawn_elf(&mut sim);
@@ -357,7 +357,7 @@ fn selection_groups_are_per_player() {
 
 #[test]
 fn selection_groups_survive_serde_roundtrip() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.register_player("alice");
     let elf = spawn_elf(&mut sim);
 
@@ -384,7 +384,7 @@ fn selection_groups_survive_serde_roundtrip() {
 
 #[test]
 fn set_selection_group_with_structures() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.register_player("alice");
 
     let t = sim.tick + 1;

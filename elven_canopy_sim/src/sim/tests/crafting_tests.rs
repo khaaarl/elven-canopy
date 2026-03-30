@@ -91,7 +91,7 @@ fn craft_task_serde_roundtrip() {
 
 #[test]
 fn add_active_recipe_creates_recipe_and_targets() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
     // Manually add a recipe and verify it was created with correct properties.
@@ -121,7 +121,7 @@ fn add_active_recipe_creates_recipe_and_targets() {
 
 #[test]
 fn add_active_recipe_rejects_duplicate() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
     // Manually add a recipe, then try to add it again.
@@ -155,7 +155,7 @@ fn add_active_recipe_rejects_duplicate() {
 
 #[test]
 fn add_active_recipe_rejects_wrong_furnishing() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Kitchen);
 
     // Try to add a workshop recipe to a kitchen.
@@ -192,7 +192,7 @@ fn add_active_recipe_rejects_wrong_furnishing() {
 
 #[test]
 fn remove_active_recipe_deletes_recipe_and_targets() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
     // Add a grow recipe (not auto-added), then remove it.
@@ -251,7 +251,7 @@ fn remove_active_recipe_deletes_recipe_and_targets() {
 
 #[test]
 fn set_recipe_output_target_updates_quantity() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
     sim.add_active_recipe(structure_id, Recipe::GrowArrow, Some(Material::Oak));
@@ -284,7 +284,7 @@ fn set_recipe_output_target_updates_quantity() {
 
 #[test]
 fn set_crafting_enabled_toggles_building() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
     // Workshop furnishing now auto-enables crafting.
@@ -316,7 +316,7 @@ fn set_crafting_enabled_toggles_building() {
 
 #[test]
 fn set_recipe_enabled_toggles_recipe() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
     sim.add_active_recipe(structure_id, Recipe::GrowArrow, Some(Material::Oak));
@@ -344,7 +344,7 @@ fn set_recipe_enabled_toggles_recipe() {
 }
 #[test]
 fn move_active_recipe_up_down_swaps_sort_order() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
     // Manually add two recipes.
@@ -425,7 +425,7 @@ fn move_active_recipe_up_down_swaps_sort_order() {
 
 #[test]
 fn unified_crafting_monitor_creates_craft_task() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
     // Place furniture so the building is functional.
@@ -502,7 +502,7 @@ fn unified_crafting_monitor_creates_craft_task() {
 
 #[test]
 fn unified_crafting_monitor_skips_when_target_met() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
     let furn_ids: Vec<_> = sim
@@ -593,7 +593,7 @@ fn unified_crafting_monitor_skips_when_target_met() {
 
 #[test]
 fn unified_crafting_monitor_skips_when_disabled() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
     let furn_ids: Vec<_> = sim
@@ -676,7 +676,7 @@ fn unified_crafting_monitor_skips_when_disabled() {
 fn resolve_craft_via_unified_catalog_path() {
     // Test resolve_craft_action by creating a craft task via the unified
     // recipe system.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
     // Place furniture.
@@ -796,7 +796,7 @@ fn resolve_craft_via_unified_catalog_path() {
 
 #[test]
 fn extraction_recipe_resolves_for_worldgen_species() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     let fruits: Vec<_> = sim.db.fruit_species.iter_all().cloned().collect();
     assert!(!fruits.is_empty(), "worldgen should produce fruit species");
 
@@ -824,7 +824,7 @@ fn extraction_recipe_resolves_for_worldgen_species() {
 
 #[test]
 fn extraction_recipe_inputs_and_outputs_match_species() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let species_id = insert_test_fruit_species(&mut sim);
 
     let fruits: Vec<_> = sim.db.fruit_species.iter_all().cloned().collect();
@@ -874,7 +874,7 @@ fn extraction_recipe_inputs_and_outputs_match_species() {
 
 #[test]
 fn extraction_monitor_creates_task_when_fruit_available() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let (structure_id, species_id) = setup_extraction_kitchen(&mut sim);
 
     // Add fruit of the correct species to the kitchen inventory.
@@ -910,7 +910,7 @@ fn extraction_monitor_creates_task_when_fruit_available() {
 
 #[test]
 fn extraction_produces_correct_component_items() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let (structure_id, species_id) = setup_extraction_kitchen(&mut sim);
 
     // Add fruit to kitchen.
@@ -993,7 +993,7 @@ fn extraction_produces_correct_component_items() {
 
 #[test]
 fn extraction_display_names_use_vaelith_species() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let species_id = insert_test_fruit_species(&mut sim);
 
     // Use material_item_display_name which doesn't need an ItemStack.
@@ -1102,7 +1102,7 @@ fn extraction_display_names_use_vaelith_species() {
 
 #[test]
 fn extraction_monitor_skips_when_targets_met() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let (structure_id, species_id) = setup_extraction_kitchen(&mut sim);
 
     // Add fruit to the kitchen.
@@ -1200,7 +1200,7 @@ fn extraction_recipe_serde_roundtrip() {
 
 #[test]
 fn end_to_end_extract_produces_components() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let species_id = insert_full_chain_fruit_species(&mut sim);
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Kitchen);
     let mat = Material::FruitSpecies(species_id);
@@ -1248,7 +1248,7 @@ fn end_to_end_extract_produces_components() {
 
 #[test]
 fn end_to_end_mill_flour_from_pulp() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let species_id = insert_full_chain_fruit_species(&mut sim);
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Kitchen);
     let mat = Material::FruitSpecies(species_id);
@@ -1287,7 +1287,7 @@ fn end_to_end_mill_flour_from_pulp() {
 
 #[test]
 fn end_to_end_grow_arrow_no_input() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
     add_recipe_with_targets(
@@ -1316,7 +1316,7 @@ fn end_to_end_grow_arrow_no_input() {
 
 #[test]
 fn end_to_end_grow_bow_consumes_bowstring() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
     add_recipe_with_targets(
@@ -1358,7 +1358,7 @@ fn end_to_end_grow_bow_consumes_bowstring() {
 
 #[test]
 fn serde_roundtrip_simstate_with_active_recipes() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
     add_recipe_with_targets(
@@ -1411,7 +1411,7 @@ fn serde_roundtrip_simstate_with_active_recipes() {
 
 #[test]
 fn recipe_removal_during_inflight_task() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
     let ar_id = add_recipe_with_targets(
@@ -1455,7 +1455,7 @@ fn recipe_removal_during_inflight_task() {
 
 #[test]
 fn kitchen_furnishing_does_not_auto_add_extraction_recipes() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let _species_id = insert_test_fruit_species(&mut sim);
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Kitchen);
 
@@ -1622,7 +1622,7 @@ fn recipe_sew_footwear_serde_roundtrip() {
 #[test]
 fn sew_sandals_recipe_resolve() {
     let config = crate::config::GameConfig::default();
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let species_id = insert_full_chain_fruit_species(&mut sim);
     let species: Vec<_> = sim.db.fruit_species.iter_all().cloned().collect();
     let params = crate::recipe::RecipeParams {
@@ -1647,7 +1647,7 @@ fn sew_sandals_recipe_resolve() {
 #[test]
 fn sew_shoes_recipe_resolve() {
     let config = crate::config::GameConfig::default();
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let species_id = insert_full_chain_fruit_species(&mut sim);
     let species: Vec<_> = sim.db.fruit_species.iter_all().cloned().collect();
     let params = crate::recipe::RecipeParams {
@@ -1705,7 +1705,7 @@ fn quality_propagation_with_inputs_statistical() {
     // Verify determine_craft_quality_with_inputs applies drag-down:
     // a high-skill elf with all-crude inputs should produce lower quality
     // on average than the same elf with no inputs (extract recipe).
-    let mut sim = test_sim(123);
+    let mut sim = test_sim(legacy_test_seed());
     let creature_id = spawn_creature(&mut sim, Species::Elf);
     // High combined stats+skill = ~200 (mostly Fine/Superior without drag).
     set_trait(&mut sim, creature_id, TraitKind::Dexterity, 50);
@@ -1762,7 +1762,15 @@ fn craft_output_gets_rolled_quality() {
     // Verify that crafted items receive quality from determine_craft_quality,
     // not a hardcoded value. A high-skill elf baking bread should sometimes
     // produce non-zero quality.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
     let species_id = insert_full_chain_fruit_species(&mut sim);
     let mat = Material::FruitSpecies(species_id);
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Kitchen);
@@ -1800,8 +1808,20 @@ fn craft_output_gets_rolled_quality() {
     set_trait(&mut sim, elf_id, TraitKind::Perception, 80);
     set_trait(&mut sim, elf_id, TraitKind::Cuisine, 100);
 
+    // Freeze all other creatures so they don't interfere with task pickup.
+    let other_creatures: Vec<CreatureId> = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.id != elf_id)
+        .map(|c| c.id)
+        .collect();
+    for cid in other_creatures {
+        force_idle_and_cancel_activations(&mut sim, cid);
+    }
+
     // Run sim long enough for several crafts to complete.
-    sim.step(&[], sim.tick + 100_000);
+    sim.step(&[], sim.tick + 200_000);
 
     // Check produced bread. With combined stat+skill ~340, all rolls should
     // land in Superior (+1) range (threshold 250, mean roll ~340).
@@ -1829,7 +1849,7 @@ fn craft_output_gets_rolled_quality() {
 fn determine_craft_quality_statistical() {
     // Elf with combined stat+skill ~100 should produce ~16% Crude, ~84% Fine,
     // ~0% Superior over many trials.
-    let mut sim = test_sim(999);
+    let mut sim = test_sim(legacy_test_seed());
     let creature_id = spawn_creature(&mut sim, Species::Elf);
     // Set DEX=20, INT=20, PER=10 (sum=50) and Herbalism=50 → combined=100.
     set_trait(&mut sim, creature_id, TraitKind::Dexterity, 20);
@@ -1872,7 +1892,7 @@ fn determine_craft_quality_statistical() {
 fn grow_quality_uses_woodcraft_not_singing() {
     // Grow recipes should use DEX + INT + PER + Woodcraft for quality,
     // not CHA + INT + PER + Singing (which is for Construction).
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let creature_id = spawn_creature(&mut sim, Species::Elf);
     // High DEX + Woodcraft, zero CHA + Singing.
     set_trait(&mut sim, creature_id, TraitKind::Dexterity, 100);
@@ -1902,7 +1922,7 @@ fn grow_quality_uses_woodcraft_not_singing() {
 fn subcomponent_records_inherit_parent_quality() {
     // Verify that subcomponent records get the parent item's rolled quality,
     // not a hardcoded 0.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let species_id = insert_full_chain_fruit_species(&mut sim);
     let mat = Material::FruitSpecies(species_id);
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
@@ -1990,7 +2010,7 @@ fn subcomponent_records_inherit_parent_quality() {
 
 #[test]
 fn swap_active_recipe_sort_order_preserves_targets() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
     // Add two recipes that each generate target rows.

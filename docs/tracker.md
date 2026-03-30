@@ -7686,115 +7686,43 @@ maximum performance.
 
 Harden sim tests so they don't break when worldgen or PRNG changes.
 
-**The problem:** Many tests use `test_sim(seed)` and inherit a full
-worldgen result — tree shape, creature stats, nav graph, fruit
-positions. They then implicitly depend on specific details of that
-output: clear air at certain coordinates, specific civ relationships,
-fruit on leaves, particular stat rolls. When anything upstream changes
-(new PRNG calls, config tweaks, algorithm changes), tests break even
-though the feature under test is fine. The seed number doesn't matter
-— the fragility is that tests are coupled to worldgen output they
-didn't ask for.
+**Progress (B-fragile-tests branch, 2026-03-30):**
 
-**General approach:** Each test should be examined for what it actually
-needs from the world and given only that. Many tests don't need a tree
-at all — they need a flat open world with clear air and solid ground,
-like a fighting game training stage. Projectile tests need clear LOS
-between two points. Melee tests need two creatures on adjacent
-walkable tiles. Tests that do need a tree (construction, fruit, nav
-graph connectivity) should create or find what they need explicitly
-rather than relying on the specific shape a particular seed produces.
-The fix is case-by-case.
+Major infrastructure added:
+- `flat_world_sim()` — treeless test world with cached geometry, civs,
+  diplomacy. Most combat/flee/movement tests migrated here.
+- `ensure_tree_has_fruit()` — guarantees fruit on tree for dependent tests.
+- `legacy_test_seed()` / `fresh_test_seed()` — two-tier seed system.
+  Legacy returns 42 (stable); fresh returns random with seed-on-failure
+  printing. All existing tests use legacy; new tests should use fresh.
+- `leaf_size` changed from 3 to 5 (matches game default).
 
-**Historical incidents:**
+Robustness fixes applied across ~25 test files:
+- Activation race prevention (force_idle_and_cancel_activations,
+  suppress_activation before commands)
+- force_guaranteed_hits + zero_creature_stats for deterministic combat
+- Explicit force_position instead of relying on spawn snap
+- food/rest decay disabled on species_table (not config.species)
+- discover_civ idempotency: remove pre-existing relationships first
+- insert_trait → set_trait (upsert) to fix silent duplicate-key failures
+- Bystander creature freezing to prevent task competition
+- Horizontal raycast to avoid tree canopy interference
+- Statistical tests: wider bounds, more trials
 
-- *F-attack-evasion (2026-03-24):* Adding evasion hit-checks (12 extra
-  PRNG calls per attack) broke 28 combat tests. Fix: `zero_creature_stats`
-  + `force_guaranteed_hits`.
-- *quasi-normal-util (2026-03-24):* Changing the quasi-normal sampling
-  range shifted creature stat generation, breaking 14 more combat tests.
-  Same fix.
-- *leaf density (earlier):* Fruit tests broke when tree growth params
-  changed. Pinned `leaf_density` and `leaf_size` in `test_config` — a
-  targeted fix that doesn't address the underlying coupling.
-- *F-creature-sex (2026-03-30):* Adding `roll_creature_sex` at spawn
-  (one extra PRNG call per creature) shifted the stream, breaking 4
-  tests. Band-aid fix: seed changed from 42 to 200 for three tests,
-  bootstrap interactions cranked to 50 for the fourth. All marked with
-  HACK comments.
+Pre-existing bugs found and fixed:
+- config.species vs species_table mutation (23 occurrences, 5 files)
+- insert_trait silent failure on duplicate PK (7 occurrences)
+- discover_civ no-op when relationship exists (multiple tests)
 
----
+Perturbation audit results after fixes:
+- leaf_size 3→5: 0 failures (was 21)
+- seed 42→99: 0 real failures (was 10)
 
-**Empirical validation (2026-03-30):**
-
-Two perturbation experiments, each revealing a different dimension of
-fragility with nearly disjoint failure sets.
-
-*Experiment 1 — leaf_size 3→5:* 21 failures. Dominant mode: leaf blobs
-at larger size fill previously-clear air, blocking projectile LOS at
-hardcoded positions. Tests that use `force_position()` looked hardened
-but the positions were only valid for one tree geometry.
-
-- 13 projectile/LOS tests: `test_shoot_arrow_spawns_projectile`,
-  `test_shoot_arrow_cooldown_prevents_second_shot`,
-  `test_shoot_arrow_cooldown_expiry_allows_second_shot`,
-  `test_shoot_arrow_leaf_does_not_block_los`,
-  `shoot_arrow_hostile_in_path_does_not_block`,
-  `flight_path_blocked_by_friendly_creature`,
-  `arrow_chase_creates_autonomous_attack_move`,
-  `arrow_chase_flying_creature_gets_chase_task`,
-  `arrow_chase_preempts_autonomous_task`,
-  `arrow_chase_second_hit_updates_destination`,
-  `arrow_chase_second_hit_clears_target_creature`,
-  `attack_target_spear_stops_at_extended_range`,
-  `defensive_elf_with_task_interrupts_to_shoot_troll_at_10_voxels`
-- 2 PRNG-shifted combat: `hostile_creature_pursues_and_attacks_elf`,
-  `test_hostile_ai_shoots_when_armed`
-- 1 PRNG-shifted hit check: `attack_target_continues_through_incapacitation_to_death`
-- 2 diplomacy (civ relationships shifted): `diplomatic_relation_hostile_civs`,
-  `is_non_hostile_different_civs_hostile`
-- 2 fruit growth (leaf positions changed): `fruit_grows_during_heartbeat`,
-  `fruit_heartbeat_tracks_species`
-- 1 nav graph topology: `troll_pursues_elf_cross_graph_pathfinding`
-
-*Experiment 2 — seed 42→99:* 10 failures (plus 1 expected checksum
-test). Only 1 overlap with experiment 1.
-
-- 4 hornet spawn at now-solid voxels: `aggressive_elf_vs_hornet_at_heights`,
-  `ordered_elf_vs_hornet_at_heights`, `flying_creature_idle_wanders`,
-  `flying_creature_directed_goto_mid_move_defers`
-- 3 PRNG-shifted combat/pursuit: `hostile_ai_spear_attacks_at_extended_range`,
-  `hostile_pursues_elf_within_detection_range`,
-  `attack_target_continues_through_incapacitation_to_death`
-- 1 projectile trajectory: `projectile_hits_solid_voxel_and_creates_ground_pile`
-- 1 pursuit behavior: `defensive_creature_does_not_chase_far`
-- 1 flying GoTo: `flying_creature_goto_reaches_destination`
-
-~30 unique fragile tests from just 2 perturbations. The true number is
-likely higher — these experiments only probe two dimensions of change.
-
----
-
-**Static analysis findings (2026-03-30):**
-
-5 independent reviewers (cautious, skeptical, veteran, statistical,
-adversarial) audited all ~250 sim tests. These found a smaller set of
-tests with assertion-level fragility that the empirical tests didn't
-catch (different failure mode — not worldgen-coupled but structurally
-flawed):
-
-- `in_flight_arrow_hits_hostile_at_origin_neighbor` — compares HP
-  against species base (100) without zeroing CON; creature's actual
-  HP can exceed 100 from CON bonus
-- `try_advance_skill_deterministic` — `assert_ne` between two seeds
-  with ~4-5% collision probability (~20-30 reachable outcomes)
-- `armor_degradation_non_penetrating_rare` — 100 trials at 5% rate,
-  asserts count >= 1; P(zero) ≈ 0.6%
-- `harvest_task_creates_ground_pile` and
-  `harvest_fruit_carries_species_material` — index `fruit_positions[0]`
-  without creating own fruit
-- `stat_modified_hp_max_survives_serde_roundtrip` — borderline; asserts
-  `hp_max > 100` on unzeroed troll (~2-3% failure probability)
+**What remains (future work):**
+Gradually migrate tests from `legacy_test_seed()` to `fresh_test_seed()`.
+Each migration surfaces new flakes needing individual hardening. The
+infrastructure is in place; the work is case-by-case. Expect ~1-3 flakes
+per batch of ~50 tests migrated.
 
 **Blocks:** F-random-seeds
 

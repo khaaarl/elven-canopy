@@ -38,7 +38,7 @@ fn equip_slot_mapping() {
 
 #[test]
 fn inv_equip_item_sets_slot() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
     sim.inv_add_item(
         inv_id,
@@ -64,7 +64,7 @@ fn inv_equip_item_sets_slot() {
 
 #[test]
 fn inv_equip_rejects_duplicate_slot() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
     // Add two Tunics (qty 1 each).
     sim.inv_add_item(
@@ -101,7 +101,7 @@ fn inv_equip_rejects_duplicate_slot() {
 
 #[test]
 fn inv_equip_rejects_quantity_gt_1() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
     sim.inv_add_item(
         inv_id,
@@ -126,7 +126,7 @@ fn inv_equip_rejects_quantity_gt_1() {
 
 #[test]
 fn inv_equip_rejects_non_clothing() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
     sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bread, 1, None, None);
     let stacks = sim
@@ -141,7 +141,7 @@ fn inv_equip_rejects_non_clothing() {
 
 #[test]
 fn acquire_item_auto_equips_one_from_multi_qty() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
@@ -228,7 +228,7 @@ fn acquire_item_auto_equips_one_from_multi_qty() {
 
 #[test]
 fn equipped_items_dont_merge() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
     // Add equipped Tunic.
     sim.inv_add_item(
@@ -267,7 +267,7 @@ fn equipped_items_dont_merge() {
 
 #[test]
 fn inv_unequip_slot_clears_and_normalizes() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
     // Add equipped Tunic + unequipped Tunic (same properties).
     sim.inv_add_item(
@@ -316,7 +316,7 @@ fn inv_unequip_slot_clears_and_normalizes() {
 fn acquire_item_preserves_material() {
     // Test that acquiring an item via resolve_acquire_item_action
     // preserves material and quality (bug fix verification).
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
@@ -412,7 +412,7 @@ fn acquire_item_preserves_material() {
 
 #[test]
 fn acquire_item_auto_equips_clothing() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
@@ -488,7 +488,7 @@ fn acquire_item_auto_equips_clothing() {
 
 #[test]
 fn acquire_item_does_not_equip_if_slot_occupied() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
@@ -585,7 +585,7 @@ fn acquire_item_does_not_equip_if_slot_occupied() {
 
 #[test]
 fn serde_roundtrip_equipped_slot() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
     sim.inv_add_item(
         inv_id,
@@ -663,7 +663,7 @@ fn clothing_wants_in_default_config() {
 
 #[test]
 fn default_soldiers_group_has_equipment_wants() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     let soldiers = soldiers_group(&sim);
     assert_eq!(
         soldiers.equipment_wants.len(),
@@ -684,7 +684,7 @@ fn default_soldiers_group_has_equipment_wants() {
 
 #[test]
 fn default_civilians_group_has_no_equipment_wants() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     let civilians = civilian_group(&sim);
     assert!(
         civilians.equipment_wants.is_empty(),
@@ -694,7 +694,7 @@ fn default_civilians_group_has_no_equipment_wants() {
 
 #[test]
 fn new_military_group_has_empty_equipment_wants() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let cmd = SimCommand {
         player_name: String::new(),
         tick: sim.tick + 1,
@@ -719,7 +719,7 @@ fn new_military_group_has_empty_equipment_wants() {
 
 #[test]
 fn set_group_equipment_wants_command() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let soldiers = soldiers_group(&sim);
     let new_wants = vec![crate::building::LogisticsWant {
         item_kind: inventory::ItemKind::Arrow,
@@ -746,7 +746,7 @@ fn set_group_equipment_wants_command() {
 
 #[test]
 fn set_group_equipment_wants_rejects_non_player_civ() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     // Find an AI civ's group.
     let ai_group = sim
         .db
@@ -777,13 +777,17 @@ fn set_group_equipment_wants_rejects_non_player_civ() {
 
 #[test]
 fn soldier_acquires_military_equipment_no_ownership_change() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     // Disable hunger/tiredness so elf stays idle.
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
 
     // Create a ground pile with an unowned bow.
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -881,12 +885,16 @@ fn soldier_acquires_military_equipment_no_ownership_change() {
 
 #[test]
 fn soldier_with_owned_bow_satisfies_equipment_want() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
 
     let elf_id = spawn_elf(&mut sim);
     let soldiers = soldiers_group(&sim);
@@ -921,12 +929,16 @@ fn soldier_with_owned_bow_satisfies_equipment_want() {
 
 #[test]
 fn soldier_with_unowned_bow_satisfies_equipment_want() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
 
     let elf_id = spawn_elf(&mut sim);
     let soldiers = soldiers_group(&sim);
@@ -954,12 +966,16 @@ fn soldier_with_unowned_bow_satisfies_equipment_want() {
 
 #[test]
 fn non_soldier_no_military_equipment_acquisition() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
 
     let elf_id = spawn_elf(&mut sim);
     // Elf is NOT assigned to any military group (civilian by default).
@@ -973,12 +989,16 @@ fn non_soldier_no_military_equipment_acquisition() {
 
 #[test]
 fn soldier_in_group_with_empty_wants_no_acquisition() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
 
     // Create a group with no equipment wants.
     let mut events = Vec::new();
@@ -1005,12 +1025,16 @@ fn soldier_in_group_with_empty_wants_no_acquisition() {
 
 #[test]
 fn military_equipment_drop_when_leaving_group() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
 
     let elf_id = spawn_elf(&mut sim);
     let soldiers = soldiers_group(&sim);
@@ -1052,12 +1076,16 @@ fn military_equipment_drop_when_leaving_group() {
 
 #[test]
 fn military_equipment_drop_when_wants_change() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
 
     let elf_id = spawn_elf(&mut sim);
     let soldiers = soldiers_group(&sim);
@@ -1097,12 +1125,16 @@ fn military_equipment_drop_when_wants_change() {
 
 #[test]
 fn military_equipment_drop_does_not_drop_owned_items() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
 
     let elf_id = spawn_elf(&mut sim);
     // Elf is civilian (no military group).
@@ -1128,12 +1160,16 @@ fn military_equipment_drop_does_not_drop_owned_items() {
 
 #[test]
 fn military_equipment_drop_keeps_wanted_unowned_items() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
 
     let elf_id = spawn_elf(&mut sim);
     let soldiers = soldiers_group(&sim);
@@ -1162,12 +1198,16 @@ fn military_equipment_drop_keeps_wanted_unowned_items() {
 
 #[test]
 fn military_equipment_drop_drops_other_owned_creature_items() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
 
     let elf_a = spawn_elf(&mut sim);
     let elf_b = spawn_elf(&mut sim);
@@ -1212,12 +1252,16 @@ fn military_equipment_drop_drops_other_owned_creature_items() {
 
 #[test]
 fn military_equipment_drop_excess_unowned() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
 
     let elf_id = spawn_elf(&mut sim);
     let soldiers = soldiers_group(&sim);
@@ -1244,7 +1288,7 @@ fn military_equipment_drop_excess_unowned() {
 #[test]
 fn military_group_equipment_wants_serde_roundtrip() {
     use crate::building::LogisticsWant;
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let soldiers = soldiers_group(&sim);
 
     // Set up some wants.
@@ -1287,13 +1331,17 @@ fn military_group_equipment_wants_serde_roundtrip() {
 
 #[test]
 fn heartbeat_military_equip_creates_task_for_missing_bow() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     // Disable hunger/tiredness.
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
 
     // Create a ground pile with a bow.
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -1338,7 +1386,7 @@ fn heartbeat_military_equip_creates_task_for_missing_bow() {
 
 #[test]
 fn elves_spawn_without_bows_and_arrows() {
-    let mut sim = SimState::with_config(77, test_config());
+    let mut sim = SimState::with_config(legacy_test_seed(), test_config());
     // The default config gives 0 starting bows/arrows.
     assert_eq!(sim.config.elf_starting_bows, 0);
     assert_eq!(sim.config.elf_starting_arrows, 0);
@@ -1354,11 +1402,15 @@ fn elves_spawn_without_bows_and_arrows() {
 
 #[test]
 fn military_equipment_drop_does_not_drop_equipped_items() {
-    let mut sim = test_sim(42);
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    let mut sim = test_sim(legacy_test_seed());
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
 
     let elf_id = spawn_elf(&mut sim);
     // Elf is civilian — no military wants.
@@ -1390,11 +1442,15 @@ fn military_equipment_drop_does_not_drop_equipped_items() {
 
 #[test]
 fn military_equipment_drop_does_not_drop_task_reserved_items() {
-    let mut sim = test_sim(42);
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    let mut sim = test_sim(legacy_test_seed());
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
 
     let elf_id = spawn_elf(&mut sim);
     // No military group — civilian.
@@ -1435,11 +1491,15 @@ fn military_equipment_drop_does_not_drop_task_reserved_items() {
 
 #[test]
 fn military_equipment_drop_respects_material_filter() {
-    let mut sim = test_sim(42);
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    let mut sim = test_sim(legacy_test_seed());
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
 
     let elf_id = spawn_elf(&mut sim);
     let soldiers = soldiers_group(&sim);
@@ -1480,11 +1540,15 @@ fn check_military_equipment_wants_overwrites_task_on_non_idle_elf() {
     // the heartbeat gates it with a still_idle check before calling. Verify
     // that the function CAN overwrite an existing task when called directly,
     // which confirms that the heartbeat's idle gate is load-bearing.
-    let mut sim = test_sim(42);
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    let mut sim = test_sim(legacy_test_seed());
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
 
     // Create a ground pile with a bow.
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -1525,11 +1589,15 @@ fn military_equip_phase_runs_before_personal_wants() {
     // wants, running both phases in sequence should result in the military
     // equipment task (Phase 2b¾ runs first, makes elf non-idle, Phase 2c
     // is skipped).
-    let mut sim = test_sim(42);
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    let mut sim = test_sim(legacy_test_seed());
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
 
     // Create piles with both a bow and bread (for personal wants).
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -1579,11 +1647,15 @@ fn military_equip_phase_runs_before_personal_wants() {
 
 #[test]
 fn cleanup_acquire_military_equipment_clears_reservations() {
-    let mut sim = test_sim(42);
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    let mut sim = test_sim(legacy_test_seed());
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
 
     // Create a ground pile with a bow.
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -1735,7 +1807,7 @@ fn military_group_equipment_wants_serde_backward_compat() {
 
 #[test]
 fn set_group_equipment_wants_rejects_duplicate_equip_slot() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let soldiers = soldiers_group(&sim);
     let initial_notif_count = sim.db.notifications.len();
 
@@ -1788,7 +1860,7 @@ fn set_group_equipment_wants_rejects_duplicate_equip_slot() {
 
 #[test]
 fn set_group_equipment_wants_allows_different_slots() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let soldiers = soldiers_group(&sim);
 
     // Helmet (Head) and Breastplate (Torso) — different slots, should succeed.
@@ -1820,7 +1892,7 @@ fn set_group_equipment_wants_allows_different_slots() {
 
 #[test]
 fn set_group_equipment_wants_allows_non_wearable_duplicates() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let soldiers = soldiers_group(&sim);
 
     // Bow and Arrow — neither is wearable, no slot conflict possible.
@@ -1852,11 +1924,15 @@ fn set_group_equipment_wants_allows_non_wearable_duplicates() {
 
 #[test]
 fn military_equipment_auto_equips_wearable_on_pickup() {
-    let mut sim = test_sim(42);
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    let mut sim = test_sim(legacy_test_seed());
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
 
     // Place a helmet on the ground.
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -1948,11 +2024,15 @@ fn military_equipment_auto_equips_wearable_on_pickup() {
 
 #[test]
 fn military_equipment_auto_equip_displaces_existing_clothing() {
-    let mut sim = test_sim(42);
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    let mut sim = test_sim(legacy_test_seed());
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
 
     // Place a helmet on the ground.
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -2078,11 +2158,15 @@ fn military_equipment_auto_equip_displaces_existing_clothing() {
 
 #[test]
 fn military_equipment_non_wearable_not_equipped() {
-    let mut sim = test_sim(42);
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    let mut sim = test_sim(legacy_test_seed());
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
 
     // Place a bow on the ground.
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -2166,7 +2250,7 @@ fn military_equipment_non_wearable_not_equipped() {
 
 #[test]
 fn inv_force_equip_item_displaces_existing() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let inv_id = sim.creature_inv(elf_id);
 
@@ -2224,7 +2308,7 @@ fn inv_force_equip_item_displaces_existing() {
 
 #[test]
 fn inv_force_equip_rejects_non_wearable() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let inv_id = sim.creature_inv(elf_id);
 
@@ -2259,7 +2343,7 @@ fn weapons_have_no_equip_slot() {
 fn creature_death_drops_preserve_durability() {
     // When a creature dies, its items should drop on the ground
     // with all properties (durability, material, quality) preserved.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
 
@@ -2319,7 +2403,7 @@ fn creature_death_drops_preserve_durability() {
 #[test]
 fn creature_death_drops_clear_equipped_slot() {
     // Equipped items should have equipped_slot cleared when dropped on death.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
 

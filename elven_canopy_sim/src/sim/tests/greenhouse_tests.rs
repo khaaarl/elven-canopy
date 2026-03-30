@@ -28,7 +28,7 @@ fn first_non_cultivable_species(sim: &SimState) -> Option<FruitSpeciesId> {
 
 #[test]
 fn furnish_greenhouse_sets_species_and_creates_task() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
     let structure_id = insert_completed_building(&mut sim, anchor);
@@ -65,7 +65,7 @@ fn furnish_greenhouse_sets_species_and_creates_task() {
 
 #[test]
 fn furnish_greenhouse_rejects_non_cultivable_species() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
     let structure_id = insert_completed_building(&mut sim, anchor);
@@ -94,7 +94,7 @@ fn furnish_greenhouse_rejects_non_cultivable_species() {
 
 #[test]
 fn furnish_greenhouse_rejects_missing_species() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
     let structure_id = insert_completed_building(&mut sim, anchor);
@@ -120,7 +120,7 @@ fn furnish_greenhouse_rejects_missing_species() {
 
 #[test]
 fn furnish_greenhouse_rejects_unknown_species() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
     let structure_id = insert_completed_building(&mut sim, anchor);
@@ -146,7 +146,7 @@ fn furnish_greenhouse_rejects_unknown_species() {
 
 #[test]
 fn greenhouse_produces_fruit_after_interval() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
     let structure_id = insert_completed_building(&mut sim, anchor);
@@ -200,7 +200,7 @@ fn greenhouse_produces_fruit_after_interval() {
 
 #[test]
 fn greenhouse_display_name() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
     let structure_id = insert_completed_building(&mut sim, anchor);
@@ -228,7 +228,7 @@ fn greenhouse_display_name() {
 
 #[test]
 fn greenhouse_serde_roundtrip() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
     let structure_id = insert_completed_building(&mut sim, anchor);
@@ -258,7 +258,7 @@ fn greenhouse_serde_roundtrip() {
 
 #[test]
 fn greenhouse_fruit_haul_to_extraction_kitchen() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let (kitchen_id, species_id) = setup_extraction_kitchen(&mut sim);
 
     // Pre-fill bread so the bread recipe doesn't interfere.

@@ -11,7 +11,7 @@ use super::*;
 
 #[test]
 fn spawned_elf_gets_player_civ_id() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
@@ -38,7 +38,7 @@ fn spawned_elf_gets_player_civ_id() {
 
 #[test]
 fn spawned_non_elf_has_no_civ_id() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
@@ -65,7 +65,7 @@ fn spawned_non_elf_has_no_civ_id() {
 
 #[test]
 fn discover_civ_creates_relationship() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     // Get two existing civ IDs from worldgen.
     let civs: Vec<_> = sim.db.civilizations.iter_all().collect();
@@ -108,7 +108,7 @@ fn discover_civ_creates_relationship() {
 
 #[test]
 fn discover_civ_is_idempotent() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let civs: Vec<_> = sim.db.civilizations.iter_all().collect();
     assert!(civs.len() >= 2);
 
@@ -155,7 +155,7 @@ fn discover_civ_is_idempotent() {
 
 #[test]
 fn discover_civ_noop_for_nonexistent_civ() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let rel_count_before = sim.db.civ_relationships.iter_all().count();
 
     // Use a CivId that doesn't exist.
@@ -179,7 +179,7 @@ fn discover_civ_noop_for_nonexistent_civ() {
 
 #[test]
 fn set_civ_opinion_updates_relationship() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     // Find an existing relationship from worldgen.
     let rel = sim.db.civ_relationships.iter_all().next();
@@ -213,7 +213,7 @@ fn set_civ_opinion_updates_relationship() {
 
 #[test]
 fn set_civ_opinion_noop_for_unknown_pair() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     // Use a CivId pair with no relationship.
     // CivId(999) doesn't exist, so this should be a no-op.
@@ -232,7 +232,7 @@ fn set_civ_opinion_noop_for_unknown_pair() {
 
 #[test]
 fn get_known_civs_returns_player_relationships() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
 
     let known = sim.get_known_civs();
     // Should contain entries from worldgen diplomacy (player civ's outgoing rels).
@@ -355,7 +355,7 @@ fn civ_opinion_shift_hostile() {
 
 #[test]
 fn diplomatic_relation_same_civ_is_friendly() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     let player_civ = sim.player_civ_id.unwrap();
     assert_eq!(
         sim.diplomatic_relation(Some(player_civ), None, Some(player_civ), None),
@@ -365,11 +365,15 @@ fn diplomatic_relation_same_civ_is_friendly() {
 
 #[test]
 fn diplomatic_relation_hostile_civs() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let civs: Vec<_> = sim.db.civilizations.iter_all().collect();
     assert!(civs.len() >= 2);
     let civ_a = civs[0].id;
     let civ_b = civs[1].id;
+
+    // Remove any pre-existing relationship from worldgen so DiscoverCiv
+    // can insert a fresh Hostile one (discover_civ is a no-op if already aware).
+    let _ = sim.db.remove_civ_relationship(&(civ_a, civ_b));
 
     // Discover civ_b as Hostile from civ_a's perspective.
     let tick = sim.tick;
@@ -394,7 +398,7 @@ fn diplomatic_relation_hostile_civs() {
 
 #[test]
 fn diplomatic_relation_neutral_civs() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let civs: Vec<_> = sim.db.civilizations.iter_all().collect();
     assert!(civs.len() >= 2);
     let civ_a = civs[0].id;
@@ -421,7 +425,7 @@ fn diplomatic_relation_neutral_civs() {
 
 #[test]
 fn diplomatic_relation_civ_vs_aggressive_nonciv() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     let player_civ = sim.player_civ_id.unwrap();
     // Goblin is Aggressive — should be Hostile from any civ's perspective.
     assert_eq!(
@@ -432,7 +436,7 @@ fn diplomatic_relation_civ_vs_aggressive_nonciv() {
 
 #[test]
 fn diplomatic_relation_civ_vs_passive_nonciv() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     let player_civ = sim.player_civ_id.unwrap();
     // Deer is Passive — should be Neutral.
     assert_eq!(
@@ -443,7 +447,7 @@ fn diplomatic_relation_civ_vs_passive_nonciv() {
 
 #[test]
 fn diplomatic_relation_nonciv_aggressive_vs_civ() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     let player_civ = sim.player_civ_id.unwrap();
     // Aggressive non-civ creature looking at a civ → Hostile.
     assert_eq!(
@@ -454,7 +458,7 @@ fn diplomatic_relation_nonciv_aggressive_vs_civ() {
 
 #[test]
 fn diplomatic_relation_nonciv_passive_vs_civ() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     let player_civ = sim.player_civ_id.unwrap();
     // Passive non-civ looking at a civ → Neutral.
     assert_eq!(
@@ -465,7 +469,7 @@ fn diplomatic_relation_nonciv_passive_vs_civ() {
 
 #[test]
 fn diplomatic_relation_nonciv_vs_nonciv() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     // Neither has a civ → always Neutral.
     assert_eq!(
         sim.diplomatic_relation(None, Some(Species::Goblin), None, Some(Species::Deer)),
@@ -475,7 +479,7 @@ fn diplomatic_relation_nonciv_vs_nonciv() {
 
 #[test]
 fn diplomatic_relation_no_info() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     // Both sides have no info at all → Neutral.
     assert_eq!(
         sim.diplomatic_relation(None, None, None, None),
@@ -485,7 +489,7 @@ fn diplomatic_relation_no_info() {
 
 #[test]
 fn creature_relation_self_is_friendly() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let elf = spawn_elf(&mut sim);
@@ -497,7 +501,7 @@ fn creature_relation_self_is_friendly() {
 
 #[test]
 fn creature_relation_same_civ_is_friendly() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let elf_a = spawn_elf(&mut sim);
@@ -510,7 +514,7 @@ fn creature_relation_same_civ_is_friendly() {
 
 #[test]
 fn creature_relation_missing_creature_is_neutral() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     // Spawn an elf, then remove it so the ID exists but creature is gone.
@@ -538,7 +542,7 @@ fn creature_relation_missing_creature_is_neutral() {
 
 #[test]
 fn player_relation_friendly_for_elf() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let elf = spawn_elf(&mut sim);
@@ -547,21 +551,21 @@ fn player_relation_friendly_for_elf() {
 
 #[test]
 fn player_relation_hostile_for_aggressive_nonciv() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     assert_eq!(sim.player_relation(goblin), DiplomaticRelation::Hostile);
 }
 
 #[test]
 fn player_relation_neutral_for_passive_nonciv() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let deer = spawn_species(&mut sim, Species::Deer);
     assert_eq!(sim.player_relation(deer), DiplomaticRelation::Neutral);
 }
 
 #[test]
 fn civ_creature_relation_matches_player_relation() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let player_civ = sim.player_civ_id.unwrap();
@@ -585,7 +589,7 @@ fn civ_creature_relation_matches_player_relation() {
 
 #[test]
 fn is_non_hostile_same_creature() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let elf = spawn_elf(&mut sim);
@@ -594,7 +598,7 @@ fn is_non_hostile_same_creature() {
 
 #[test]
 fn is_non_hostile_same_civ() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let elf_a = spawn_elf(&mut sim);
@@ -605,7 +609,7 @@ fn is_non_hostile_same_civ() {
 
 #[test]
 fn is_non_hostile_civ_vs_passive_non_civ() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let elf = spawn_elf(&mut sim);
@@ -616,7 +620,7 @@ fn is_non_hostile_civ_vs_passive_non_civ() {
 
 #[test]
 fn is_non_hostile_civ_vs_aggressive_non_civ() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let elf = spawn_elf(&mut sim);
@@ -627,7 +631,7 @@ fn is_non_hostile_civ_vs_aggressive_non_civ() {
 
 #[test]
 fn is_non_hostile_non_civ_same_species() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let goblin_a = spawn_species(&mut sim, Species::Goblin);
     let goblin_b = spawn_species(&mut sim, Species::Goblin);
     assert!(sim.is_non_hostile(goblin_a, goblin_b));
@@ -638,7 +642,7 @@ fn is_non_hostile_non_civ_different_species() {
     // Non-civ creatures are always non-hostile to each other, even across
     // species. This matches detect_hostile_targets: non-civ aggressors
     // only target civ creatures.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let deer = spawn_species(&mut sim, Species::Deer);
     assert!(sim.is_non_hostile(goblin, deer));
@@ -648,7 +652,7 @@ fn is_non_hostile_non_civ_different_species() {
 fn is_non_hostile_different_civs_neutral() {
     // Two creatures from different civs with no Hostile relationship
     // should be non-hostile.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
 
@@ -689,7 +693,7 @@ fn is_non_hostile_different_civs_neutral() {
 fn is_non_hostile_different_civs_hostile() {
     // Two creatures from different civs with a Hostile relationship
     // should be hostile.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
 
@@ -707,6 +711,10 @@ fn is_non_hostile_different_civs_hostile() {
         c.civ_id = Some(civ_b);
         sim.db.update_creature(c).unwrap();
     }
+
+    // Remove any pre-existing worldgen relationship so DiscoverCiv creates
+    // a fresh Hostile one (discover_civ is a no-op if already aware).
+    let _ = sim.db.remove_civ_relationship(&(elf_a_civ, civ_b));
 
     // Discover civ_b as Hostile.
     let tick = sim.tick;
@@ -746,7 +754,7 @@ fn civ_species_to_species_conversion() {
 /// Verify CivRelationship compound PK operations: get, contains, update.
 #[test]
 fn civ_relationship_compound_pk_operations() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     let civ_a = CivId(0);
     // Find a target civ that exists.

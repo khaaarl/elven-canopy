@@ -7,7 +7,7 @@ use super::*;
 
 #[test]
 fn logistics_heartbeat_creates_haul_tasks() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     // Place a ground pile with bread.
     let pile_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -74,7 +74,7 @@ fn logistics_heartbeat_creates_haul_tasks() {
 
 #[test]
 fn logistics_respects_priority() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     // Place bread on the ground.
     let pile_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -146,7 +146,7 @@ fn logistics_respects_priority() {
 
 #[test]
 fn logistics_skips_reserved_items() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     // Place bread on the ground, some already reserved.
     let pile_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -201,7 +201,7 @@ fn logistics_skips_reserved_items() {
 
 #[test]
 fn logistics_counts_in_transit() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     // Place 10 bread on ground.
     let pile_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -272,7 +272,7 @@ fn logistics_counts_in_transit() {
 
 #[test]
 fn logistics_pulls_from_lower_priority_building() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
@@ -325,7 +325,7 @@ fn logistics_pulls_from_lower_priority_building() {
 
 #[test]
 fn logistics_surplus_source_from_higher_priority_building() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
@@ -385,7 +385,7 @@ fn logistics_surplus_source_from_higher_priority_building() {
 
 #[test]
 fn logistics_caps_tasks_per_heartbeat() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     // Override max tasks to 2.
     sim.config.max_haul_tasks_per_heartbeat = 2;
 
@@ -430,15 +430,8 @@ fn logistics_caps_tasks_per_heartbeat() {
 
 #[test]
 fn harvest_task_creates_ground_pile() {
-    let mut sim = test_sim(42);
-
-    // Find a fruit voxel on the tree.
-    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
-    assert!(
-        !tree.fruit_positions.is_empty(),
-        "Tree should have fruit for this test"
-    );
-    let fruit_pos = tree.fruit_positions[0];
+    let mut sim = test_sim(legacy_test_seed());
+    let fruit_pos = ensure_tree_has_fruit(&mut sim);
 
     // Spawn an elf near the fruit.
     let elf_id = spawn_elf(&mut sim);
@@ -522,12 +515,12 @@ fn harvest_task_creates_ground_pile() {
 
 #[test]
 fn logistics_heartbeat_creates_harvest_tasks() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
+    ensure_tree_has_fruit(&mut sim);
 
-    // Verify the tree has fruit voxels.
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     let fruit_count = tree.fruit_positions.len();
-    assert!(fruit_count > 0, "Tree should have fruit for this test");
+    assert!(fruit_count > 0);
 
     // Ensure no ground piles with fruit exist.
     assert_eq!(sim.db.ground_piles.len(), 0);
@@ -585,7 +578,7 @@ fn logistics_heartbeat_creates_harvest_tasks() {
 
 #[test]
 fn haul_source_empty_cancels() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
@@ -655,7 +648,7 @@ fn haul_source_empty_cancels() {
 #[test]
 fn logistics_ignores_owned_items_in_ground_pile() {
     // Owned bread in a ground pile must NOT be hauled to a building.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     let pile_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = spawn_elf(&mut sim);
@@ -706,7 +699,7 @@ fn logistics_ignores_owned_items_in_ground_pile() {
 fn logistics_hauls_unowned_but_skips_owned_in_same_pile() {
     // A ground pile with 3 owned + 5 unowned bread: only the 5 unowned
     // should be hauled.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     let pile_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = spawn_elf(&mut sim);
@@ -767,7 +760,7 @@ fn logistics_hauls_unowned_but_skips_owned_in_same_pile() {
 fn logistics_ignores_owned_items_in_lower_priority_building() {
     // Phase 2 source (lower-priority building): owned items must not be
     // pulled from it.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = spawn_elf(&mut sim);
@@ -817,7 +810,7 @@ fn logistics_surplus_ignores_owned_items() {
     // Phase 3 surplus source: a building with 10 bread (5 owned + 5 unowned)
     // and want target of 5 should have surplus of 0 (only 5 unowned, all
     // needed to meet the want).
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = spawn_elf(&mut sim);
@@ -878,7 +871,7 @@ fn logistics_surplus_ignores_owned_items() {
 fn logistics_current_inventory_excludes_owned_items() {
     // A building that wants 5 bread and has 5 owned bread should still
     // create a haul task because the owned bread doesn't satisfy the want.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = spawn_elf(&mut sim);
@@ -940,7 +933,7 @@ fn logistics_current_inventory_excludes_owned_items() {
 #[test]
 fn logistics_reserve_haul_items_skips_owned_stacks() {
     // Directly test that reserve_haul_items only reserves unowned items.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     let pile_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = spawn_elf(&mut sim);
@@ -1004,7 +997,7 @@ fn crafting_reserve_skips_owned_items() {
     // inv_reserve_items (used by crafting) should also skip owned items
     // so that an elf's personal belongings stored in a workshop aren't
     // consumed by a recipe.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = spawn_elf(&mut sim);
@@ -1056,12 +1049,16 @@ fn crafting_reserve_skips_owned_items() {
 fn personal_acquisition_prefers_owned_items_in_ground_pile() {
     // An elf who wants bread and has owned bread in a ground pile should
     // reclaim it rather than acquiring different unowned bread.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.elf_starting_bread = 0;
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
     sim.species_table = sim
         .config
         .species
@@ -1158,12 +1155,16 @@ fn personal_acquisition_prefers_owned_items_in_ground_pile() {
 #[test]
 fn personal_acquisition_falls_back_to_unowned() {
     // When no owned items exist elsewhere, the elf should acquire unowned items.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.elf_starting_bread = 0;
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
     sim.species_table = sim
         .config
         .species
@@ -1199,12 +1200,16 @@ fn personal_acquisition_falls_back_to_unowned() {
 #[test]
 fn personal_acquisition_skips_other_creatures_owned_items() {
     // Elf A's owned bread should not be reclaimed by elf B.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.elf_starting_bread = 0;
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
     sim.species_table = sim
         .config
         .species
@@ -1249,12 +1254,16 @@ fn personal_acquisition_skips_other_creatures_owned_items() {
 fn military_acquisition_prefers_owned_items() {
     // A soldier with owned bow in a ground pile should reclaim it rather
     // than acquiring a different unowned bow.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.elf_starting_bread = 0;
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
     sim.species_table = sim
         .config
         .species
@@ -1358,7 +1367,7 @@ fn military_acquisition_prefers_owned_items() {
 #[test]
 fn find_owned_item_source_searches_buildings() {
     // Owned items in a building should be found by find_owned_item_source.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
@@ -1386,14 +1395,18 @@ fn find_owned_item_source_searches_buildings() {
 fn military_acquisition_suppressed_during_combat() {
     // When hostiles are in detection range, check_military_equipment_wants
     // should skip acquisition entirely so the creature stays idle for combat.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.elf_starting_bread = 0;
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
     sim.species_table = sim
         .config
         .species
@@ -1446,14 +1459,18 @@ fn military_acquisition_suppressed_during_combat() {
 fn military_acquisition_falls_back_to_unowned() {
     // When no owned items exist elsewhere, military acquisition should
     // fall back to acquiring unowned items.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.elf_starting_bread = 0;
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
     sim.species_table = sim
         .config
         .species
@@ -1498,14 +1515,18 @@ fn military_acquisition_falls_back_to_unowned() {
 #[test]
 fn military_acquisition_skips_other_creatures_owned_items() {
     // Soldier B should not reclaim soldier A's owned equipment.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.elf_starting_bread = 0;
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
     sim.species_table = sim
         .config
         .species
@@ -1558,7 +1579,7 @@ fn military_acquisition_skips_other_creatures_owned_items() {
 fn find_owned_item_source_skips_reserved_owned_items() {
     // Owned items already reserved by another task should not be found
     // by find_owned_item_source (prevents double-reservation).
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
@@ -1602,7 +1623,7 @@ fn find_owned_item_source_skips_reserved_owned_items() {
 fn inv_reserve_owned_items_splits_stack_preserving_owner() {
     // When reserving a partial owned stack, both the remaining and reserved
     // halves should preserve the owner field.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
@@ -1663,7 +1684,7 @@ fn inv_reserve_owned_items_splits_stack_preserving_owner() {
 
 #[test]
 fn set_recipe_auto_logistics_updates_fields() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
     sim.add_active_recipe(structure_id, Recipe::GrowBow, Some(Material::Oak));
@@ -1692,7 +1713,7 @@ fn set_recipe_auto_logistics_updates_fields() {
 
 #[test]
 fn auto_logistics_generates_wants_from_active_recipe() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
     // Clear old workshop explicit wants and enable crafting.
@@ -1750,7 +1771,7 @@ fn auto_logistics_generates_wants_from_active_recipe() {
 
 #[test]
 fn auto_logistics_spare_iterations_add_extra_wants() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
     // Clear old workshop explicit wants and enable crafting.
@@ -1818,7 +1839,7 @@ fn auto_logistics_spare_iterations_add_extra_wants() {
 
 #[test]
 fn auto_logistics_sums_with_explicit_wants() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
     let enable_cmd = SimCommand {
@@ -1888,7 +1909,7 @@ fn auto_logistics_sums_with_explicit_wants() {
 
 #[test]
 fn auto_logistics_disabled_when_crafting_disabled() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
     // Clear explicit wants (crafting starts enabled, we disable it below).
@@ -1947,7 +1968,7 @@ fn auto_logistics_disabled_when_crafting_disabled() {
 
 #[test]
 fn auto_logistics_disabled_per_recipe() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
     let setup_cmds = vec![
@@ -2016,7 +2037,7 @@ fn auto_logistics_disabled_per_recipe() {
 
 #[test]
 fn auto_logistics_no_input_recipe_generates_no_wants() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
     let setup_cmds = vec![
@@ -2073,7 +2094,7 @@ fn auto_logistics_no_input_recipe_generates_no_wants() {
 
 #[test]
 fn auto_logistics_spare_iterations_when_target_met() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
     let setup_cmds = vec![
@@ -2156,7 +2177,7 @@ fn auto_logistics_spare_iterations_when_target_met() {
 
 #[test]
 fn remove_active_recipe_cleans_up_pending_craft_task() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
     // Place furniture so the building is functional.
@@ -2250,7 +2271,7 @@ fn remove_active_recipe_cleans_up_pending_craft_task() {
 
 #[test]
 fn overlapping_wants_additive() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim
         .db
         .insert_inventory_auto(|id| crate::db::Inventory {
@@ -2305,7 +2326,7 @@ fn overlapping_wants_additive() {
 
 #[test]
 fn gap_calculation_with_material_filter() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim
         .db
         .insert_inventory_auto(|id| crate::db::Inventory {
@@ -2365,7 +2386,7 @@ fn gap_calculation_with_material_filter() {
 
 #[test]
 fn surplus_uses_want_target_total() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim
         .db
         .insert_inventory_auto(|id| crate::db::Inventory {
@@ -2431,7 +2452,7 @@ fn task_haul_data_serde_backward_compat() {
 
 #[test]
 fn material_item_display_name_fruit_species() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     // The test_sim worldgen should have created fruit species.
     // Verify that material_item_display_name uses the Vaelith name.
     if let Some(species) = sim.db.fruit_species.iter_all().next() {
@@ -2448,14 +2469,14 @@ fn material_item_display_name_fruit_species() {
 
 #[test]
 fn material_item_display_name_wood() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     let name = sim.material_item_display_name(inventory::ItemKind::Bow, inventory::Material::Oak);
     assert_eq!(name, "Oak Bow");
 }
 
 #[test]
 fn logistics_heartbeat_specific_filter_hauls_correct_species() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     let species_a = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(1));
     let species_b = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(2));
@@ -2546,7 +2567,7 @@ fn logistics_heartbeat_specific_filter_hauls_correct_species() {
 
 #[test]
 fn in_transit_counting_uses_hauled_material() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     let species_a = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(1));
     let species_b = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(2));
@@ -2652,7 +2673,7 @@ fn in_transit_counting_uses_hauled_material() {
 
 #[test]
 fn haul_preserves_material_through_pickup_and_dropoff() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     let species_a = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(1));
 
@@ -2732,7 +2753,7 @@ fn haul_preserves_material_through_pickup_and_dropoff() {
 fn elf_wanting_shoes_ignores_boots() {
     // Boots and Shoes are distinct item kinds. An elf wanting Shoes
     // should not pick up Boots (which are armor, not clothing).
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     sim.config.elf_default_wants = vec![crate::building::LogisticsWant {
         item_kind: inventory::ItemKind::Shoes,
@@ -2773,7 +2794,7 @@ fn elf_wanting_shoes_ignores_boots() {
 #[test]
 fn elf_acquires_shoes_as_clothing() {
     // Shoes are clothing — elves wanting shoes should pick them up.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     sim.config.elf_default_wants = vec![crate::building::LogisticsWant {
         item_kind: inventory::ItemKind::Shoes,
@@ -2820,7 +2841,7 @@ fn elf_acquires_shoes_as_clothing() {
 fn haul_dropoff_preserves_durability() {
     // Items moved between inventories via inv_move_items must preserve
     // all properties including quality and durability.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let src = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
     let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
 
@@ -2875,7 +2896,7 @@ fn haul_dropoff_does_not_move_owned_bread_into_building() {
     // An elf carrying 3 personally-owned bread + 5 reserved-for-haul bread
     // resolves a dropoff. Only the 5 reserved items should land in the
     // building; the 3 owned bread must stay in the elf's inventory.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.elf_starting_bread = 0;
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = spawn_elf(&mut sim);
@@ -2993,7 +3014,7 @@ fn haul_dropoff_does_not_move_owned_bread_into_building() {
 fn haul_pickup_preserves_reservation_on_carried_items() {
     // After pickup, the hauled items in the creature's inventory must
     // retain reserved_by == task_id so that dropoff can identify them.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.elf_starting_bread = 0;
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = spawn_elf(&mut sim);
@@ -3087,7 +3108,7 @@ fn haul_cleanup_going_to_dest_drops_only_reserved_items() {
     // When a haul task is abandoned in GoingToDestination phase, only the
     // items reserved by that task should be dropped. The creature's
     // personally owned items must stay in their inventory.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.elf_starting_bread = 0;
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = spawn_elf(&mut sim);
@@ -3203,7 +3224,7 @@ fn haul_cleanup_going_to_source_clears_reservation_at_source() {
     // When a haul task is abandoned in GoingToSource phase, the reserved
     // items at the source must be unreserved so they become available for
     // other tasks.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.elf_starting_bread = 0;
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = spawn_elf(&mut sim);
@@ -3282,7 +3303,7 @@ fn haul_cleanup_going_to_source_clears_reservation_at_source() {
 fn inv_move_reserved_items_no_matching_stacks_returns_zero() {
     // When no stacks in the source are reserved by the given task,
     // inv_move_reserved_items should return 0 and leave everything intact.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
 
@@ -3317,7 +3338,7 @@ fn inv_move_reserved_items_clears_reservation_and_merges_at_dest() {
     // After inv_move_reserved_items deposits items, the reservation should
     // be cleared and the items should merge with any existing matching
     // unreserved stacks at the destination.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
 
@@ -3361,7 +3382,7 @@ fn two_concurrent_haul_tasks_dropoff_only_moves_own_reserved_items() {
     // Two elves each carry bread reserved by their own haul task. When
     // elf A drops off, only task A's items should move — elf B's reserved
     // items (in a different inventory) are unaffected.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.elf_starting_bread = 0;
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_a = spawn_elf(&mut sim);
@@ -3506,7 +3527,7 @@ fn two_concurrent_haul_tasks_dropoff_only_moves_own_reserved_items() {
 fn death_during_haul_drops_all_items_unreserved_and_unowned() {
     // An elf carrying 3 owned bread + 5 reserved (hauled) bread dies.
     // All 8 bread should end up in a ground pile, unowned and unreserved.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.elf_starting_bread = 0;
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = spawn_elf(&mut sim);
@@ -3615,7 +3636,7 @@ fn death_during_haul_drops_all_items_unreserved_and_unowned() {
 fn haul_dropoff_does_not_affect_other_item_kinds_in_inventory() {
     // An elf carrying a personally-owned spear + reserved bread drops off
     // the bread. The spear must remain in the elf's inventory.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.elf_starting_bread = 0;
     sim.config.elf_starting_bows = 0;
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -3726,7 +3747,7 @@ fn haul_dropoff_does_not_affect_other_item_kinds_in_inventory() {
 /// rows using the new compound PK (inventory_id, seq).
 #[test]
 fn logistics_want_row_remove_and_reinsert_with_compound_pk() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let pos = VoxelCoord::new(10, 1, 20);
     let pile_id = sim.ensure_ground_pile(pos);
     let inv_id = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
@@ -3773,7 +3794,7 @@ fn logistics_want_row_remove_and_reinsert_with_compound_pk() {
 
 #[test]
 fn acquire_item_picks_up_and_owns() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     // Create a ground pile with unowned bread.
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -3877,13 +3898,17 @@ fn acquire_item_picks_up_and_owns() {
 
 #[test]
 fn idle_elf_below_want_target_acquires_item() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     // Disable hunger/tiredness so elf stays idle.
     sim.config.elf_starting_bread = 0;
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
     sim.species_table = sim
         .config
         .species
@@ -3944,13 +3969,17 @@ fn idle_elf_below_want_target_acquires_item() {
 
 #[test]
 fn acquire_item_reserves_prevent_double_claim() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     // Disable hunger/tiredness.
     sim.config.elf_starting_bread = 0;
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
     sim.species_table = sim
         .config
         .species
@@ -4009,12 +4038,16 @@ fn acquire_item_reserves_prevent_double_claim() {
 
 #[test]
 fn elf_at_want_target_does_not_acquire() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     // Disable hunger/tiredness.
-    if let Some(elf_data) = sim.config.species.get_mut(&Species::Elf) {
-        elf_data.food_decay_per_tick = 0;
-        elf_data.rest_decay_per_tick = 0;
-    }
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
     sim.species_table = sim
         .config
         .species
@@ -4083,7 +4116,7 @@ fn logistics_want_serde_backward_compat() {
 
 #[test]
 fn set_inv_wants_deduplicates_by_kind_filter() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim
         .db
         .insert_inventory_auto(|id| crate::db::Inventory {

@@ -15,7 +15,7 @@ fn mope_test_setup(
     let elf_species = config.species.get_mut(&Species::Elf).unwrap();
     elf_species.food_decay_per_tick = 0;
     elf_species.rest_decay_per_tick = 0;
-    let mut sim = SimState::with_config(99, config);
+    let mut sim = SimState::with_config(legacy_test_seed(), config);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
@@ -44,7 +44,7 @@ fn mope_test_setup(
 
 /// Helper: create a sim_with_elf for thought tests.
 fn sim_with_elf_for_thoughts() -> (SimState, CreatureId) {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     sim.tick = 1000;
     (sim, elf_id)
@@ -52,7 +52,7 @@ fn sim_with_elf_for_thoughts() -> (SimState, CreatureId) {
 
 #[test]
 fn thought_insert_after_roundtrip_continues_seq() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     sim.tick = 1000;
     sim.add_creature_thought(elf_id, ThoughtKind::AteDining);
@@ -94,7 +94,7 @@ fn thought_insert_after_roundtrip_continues_seq() {
 /// load don't collide with existing PKs.
 #[test]
 fn thought_seq_counter_survives_old_format_roundtrip() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     sim.tick = 1000;
     sim.add_creature_thought(elf_id, ThoughtKind::AteDining);
@@ -139,7 +139,7 @@ fn thought_seq_counter_survives_old_format_roundtrip() {
 
 #[test]
 fn eat_bread_generates_thought() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let food_max = sim.species_table[&Species::Elf].food_max;
 
@@ -436,7 +436,7 @@ fn mood_config_serde_roundtrip() {
 #[test]
 fn mood_config_backward_compat() {
     // A GameConfig JSON without a "mood" key should deserialize with defaults.
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     let json = serde_json::to_string(&sim).unwrap();
     // Strip the "mood" key from the JSON to simulate an old save.
     let mut val: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -459,7 +459,7 @@ fn ground_sleep_generates_thought() {
     let elf_species = config.species.get_mut(&Species::Elf).unwrap();
     elf_species.food_decay_per_tick = 0; // No hunger interference.
     elf_species.rest_decay_per_tick = 0; // Manual control of rest.
-    let mut sim = SimState::with_config(42, config);
+    let mut sim = SimState::with_config(legacy_test_seed(), config);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
@@ -525,18 +525,13 @@ fn ground_sleep_generates_thought() {
 #[test]
 fn eating_generates_thought() {
     // Integration test: elf eats fruit → has AteAlone thought.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let food_max = sim.species_table[&Species::Elf].food_max;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
-    assert!(
-        sim.db
-            .trees
-            .iter_all()
-            .any(|t| !t.fruit_positions.is_empty()),
-        "Tree must have fruit for this test"
-    );
+    // Ensure the tree has fruit — some seeds produce trees without any.
+    ensure_tree_has_fruit(&mut sim);
 
     // Spawn an elf.
     let cmd = SimCommand {
@@ -591,7 +586,7 @@ fn dormitory_sleep_generates_thought() {
     let elf_species = config.species.get_mut(&Species::Elf).unwrap();
     elf_species.food_decay_per_tick = 0;
     elf_species.rest_decay_per_tick = 0;
-    let mut sim = SimState::with_config(42, config);
+    let mut sim = SimState::with_config(legacy_test_seed(), config);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
 
@@ -700,7 +695,7 @@ fn home_sleep_generates_thought() {
     let elf_species = config.species.get_mut(&Species::Elf).unwrap();
     elf_species.food_decay_per_tick = 0;
     elf_species.rest_decay_per_tick = 0;
-    let mut sim = SimState::with_config(42, config);
+    let mut sim = SimState::with_config(legacy_test_seed(), config);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
 
@@ -821,7 +816,7 @@ fn low_ceiling_generates_thought() {
     let elf_species = config.species.get_mut(&Species::Elf).unwrap();
     elf_species.food_decay_per_tick = 0;
     elf_species.rest_decay_per_tick = 0;
-    let mut sim = SimState::with_config(42, config);
+    let mut sim = SimState::with_config(legacy_test_seed(), config);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
 
@@ -1019,7 +1014,7 @@ fn mope_config_serde_roundtrip() {
 #[test]
 fn mope_config_backward_compat() {
     // A GameConfig JSON without "mood_consequences" key → defaults.
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     let json = serde_json::to_string(&sim).unwrap();
     let mut val: serde_json::Value = serde_json::from_str(&json).unwrap();
     val.get_mut("config")
@@ -1084,7 +1079,7 @@ fn mope_does_not_interrupt_autonomous_sleep() {
     elf_species.food_decay_per_tick = 0;
     elf_species.rest_decay_per_tick = 0;
     elf_species.rest_per_sleep_tick = 1; // Tiny restore so rest_full won't trigger.
-    let mut sim = SimState::with_config(99, config);
+    let mut sim = SimState::with_config(legacy_test_seed(), config);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
@@ -1281,7 +1276,7 @@ fn mope_task_location_is_home_when_assigned() {
     let elf_species = config.species.get_mut(&Species::Elf).unwrap();
     elf_species.food_decay_per_tick = 0;
     elf_species.rest_decay_per_tick = 0;
-    let mut sim = SimState::with_config(99, config);
+    let mut sim = SimState::with_config(legacy_test_seed(), config);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Create a home.
@@ -1501,7 +1496,7 @@ fn mope_interrupts_build_action() {
     let elf_species = config.species.get_mut(&Species::Elf).unwrap();
     elf_species.food_decay_per_tick = 0;
     elf_species.rest_decay_per_tick = 0;
-    let mut sim = SimState::with_config(99, config);
+    let mut sim = SimState::with_config(legacy_test_seed(), config);
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;

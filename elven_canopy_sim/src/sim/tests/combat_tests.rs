@@ -118,7 +118,7 @@ pub(super) fn give_spear(sim: &mut SimState, creature_id: CreatureId) {
 fn fire_arrow_at_goblin_with_hp(seed: u64, arrow_hp: i32) -> i64 {
     use crate::db::CreatureTrait;
     use crate::types::TraitValue;
-    let mut sim = test_sim(seed);
+    let mut sim = flat_world_sim(seed);
     sim.config.arrow_gravity = 0;
     sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
     // Disable arrow durability damage on impact so it doesn't interfere.
@@ -254,7 +254,7 @@ fn test_in_melee_range_large_footprint() {
 
 #[test]
 fn test_melee_strike_deals_damage() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
@@ -300,7 +300,7 @@ fn test_melee_strike_deals_damage() {
 
 #[test]
 fn test_melee_strike_incapacitates_target() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
@@ -342,7 +342,7 @@ fn test_melee_strike_incapacitates_target() {
 
 #[test]
 fn test_melee_strike_out_of_range() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
@@ -371,7 +371,7 @@ fn test_melee_strike_out_of_range() {
 
 #[test]
 fn test_melee_strike_cooldown() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
@@ -427,7 +427,7 @@ fn test_melee_strike_cooldown() {
 
 #[test]
 fn test_melee_strike_dead_target() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
@@ -486,7 +486,7 @@ fn test_melee_strike_dead_target() {
 
 #[test]
 fn test_melee_strike_zero_damage_species() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     // Capybara has melee_damage = 0 — cannot melee.
     let capybara = spawn_species(&mut sim, Species::Capybara);
     let elf = spawn_elf(&mut sim);
@@ -526,7 +526,7 @@ fn test_melee_strike_cooldown_expires() {
     // After the cooldown elapses, the creature can strike again. With
     // hostile AI, a goblin adjacent to an elf will automatically re-strike
     // once the cooldown resolves.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
@@ -588,7 +588,7 @@ fn test_melee_strike_cooldown_expires() {
 
 #[test]
 fn test_melee_strike_dead_attacker() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
@@ -636,7 +636,7 @@ fn test_melee_strike_dead_attacker() {
 
 #[test]
 fn armor_reduces_melee_damage() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
@@ -690,7 +690,7 @@ fn armor_reduces_melee_damage() {
 #[test]
 fn armor_enforces_minimum_damage() {
     // Even with massive armor, at least armor_min_damage (1) gets through.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
@@ -742,7 +742,7 @@ fn armor_enforces_minimum_damage() {
 #[test]
 fn no_armor_means_full_damage() {
     // Unarmored creature takes full melee damage.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     // Disable starting equipment to ensure no armor.
     sim.config.elf_default_wants = vec![];
     let goblin = spawn_species(&mut sim, Species::Goblin);
@@ -800,7 +800,7 @@ fn no_armor_means_full_damage() {
 
 #[test]
 fn worn_armor_provides_less_protection() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
@@ -890,7 +890,7 @@ fn worn_armor_provides_less_protection() {
 
 #[test]
 fn damaged_armor_provides_even_less_protection() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
@@ -982,7 +982,7 @@ fn damaged_armor_provides_even_less_protection() {
 fn armor_reduces_projectile_damage() {
     use crate::db::CreatureTrait;
     // Verify armor reduces damage from projectile (arrow) hits, not just melee.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     // Set target's evasion stats deeply negative so the no-shooter projectile
     // (0 attack + quasi_normal) always exceeds defender_total and hits.
@@ -1076,7 +1076,7 @@ fn armor_config_serde_roundtrip() {
 #[test]
 fn armor_config_backward_compat_missing_fields() {
     // Old saves without armor config fields should deserialize with defaults.
-    let sim = test_sim(42);
+    let sim = flat_world_sim(legacy_test_seed());
     let json = serde_json::to_string(&sim).unwrap();
     let mut val: serde_json::Value = serde_json::from_str(&json).unwrap();
     let config_obj = val
@@ -1106,16 +1106,20 @@ fn armor_config_backward_compat_missing_fields() {
 #[test]
 fn armor_degradation_penetrating_hit_reduces_durability() {
     // With a penetrating hit, armor at the targeted location should degrade.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+    force_guaranteed_hits(&mut sim, goblin);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
     force_position(
         &mut sim,
         goblin,
         VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z),
     );
-    force_idle(&mut sim, goblin);
+    force_idle_and_cancel_activations(&mut sim, elf);
+    suppress_activation(&mut sim, goblin);
 
     // Unequip all slots.
     let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
@@ -1155,7 +1159,10 @@ fn armor_degradation_penetrating_hit_reduces_durability() {
             .inv_equipped_in_slot(inv_id, inventory::EquipSlot::Torso)
             .map(|s| s.current_hp);
         // Reset goblin so it can strike again.
-        force_idle(&mut sim, goblin);
+        suppress_activation(&mut sim, goblin);
+        let mut g = sim.db.creatures.get(&goblin).unwrap();
+        g.action_kind = ActionKind::NoAction;
+        sim.db.update_creature(g).unwrap();
         // Heal the elf to survive.
         let mut elf_creature = sim.db.creatures.get(&elf).unwrap();
         elf_creature.hp = elf_creature.hp_max;
@@ -1207,7 +1214,7 @@ fn armor_degradation_penetrating_hit_reduces_durability() {
 #[test]
 fn armor_degradation_non_penetrating_rare() {
     // With a non-penetrating hit (armor >= raw damage), degradation is rare (1/20).
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
@@ -1217,6 +1224,16 @@ fn armor_degradation_non_penetrating_rare() {
         VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z),
     );
     force_idle(&mut sim, goblin);
+
+    // Prevent autonomous activations from racing with DebugMeleeAttack.
+    // Use u64::MAX so the suppression persists across all 500 loop iterations.
+    force_idle_and_cancel_activations(&mut sim, elf);
+    suppress_activation_until(&mut sim, elf, u64::MAX);
+    suppress_activation_until(&mut sim, goblin, u64::MAX);
+    // Guarantee the goblin always hits (seed-dependent evasion rolls could
+    // cause all 500 strikes to miss, yielding zero degradation events).
+    force_guaranteed_hits(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
 
     // Unequip all slots.
     let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
@@ -1242,9 +1259,18 @@ fn armor_degradation_non_penetrating_rare() {
     sim.config.armor_degrade_location_weights = [1, 0, 0, 0, 0];
 
     let mut degrade_count = 0;
-    let strikes = 100;
+    // 500 trials at 5% rate: P(zero) ≈ 7e-12, P(>100) ≈ 0.
+    // Previous 100 trials had P(zero) ≈ 0.6% — a flaky failure source.
+    let strikes = 500;
     for _ in 0..strikes {
-        force_idle(&mut sim, goblin);
+        // Reset goblin to idle without clearing next_available_tick (which
+        // would make it activatable and race with the DebugMeleeAttack).
+        let mut goblin_c = sim.db.creatures.get(&goblin).unwrap();
+        goblin_c.action_kind = ActionKind::NoAction;
+        goblin_c.current_task = None;
+        goblin_c.path = None;
+        sim.db.update_creature(goblin_c).unwrap();
+
         let mut elf_creature = sim.db.creatures.get(&elf).unwrap();
         elf_creature.hp = elf_creature.hp_max;
         sim.db.update_creature(elf_creature).unwrap();
@@ -1276,17 +1302,17 @@ fn armor_degradation_non_penetrating_rare() {
         }
     }
 
-    // Expected ~5 out of 100 (1/20 chance). Allow 1–20 range.
+    // Expected ~25 out of 500 (1/20 chance). Allow 1–100 range.
     assert!(
-        degrade_count >= 1 && degrade_count <= 20,
-        "Non-penetrating degradation count ({degrade_count}/100) should be rare (~5%)"
+        degrade_count >= 1 && degrade_count <= 100,
+        "Non-penetrating degradation count ({degrade_count}/500) should be rare (~5%)"
     );
 }
 
 #[test]
 fn armor_degradation_empty_slot_no_crash() {
     // When the random location picks an empty slot, nothing degrades.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
@@ -1327,7 +1353,7 @@ fn armor_degradation_empty_slot_no_crash() {
 #[test]
 fn clothing_degrades_from_combat_hit() {
     // Clothing (not armor) in a targeted slot also degrades.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
@@ -1428,7 +1454,7 @@ fn clothing_degrades_from_combat_hit() {
 #[test]
 fn armor_degradation_destroys_item() {
     // When degradation reduces armor HP to 0, the item is removed.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
@@ -1514,7 +1540,7 @@ fn armor_degradation_destroys_item() {
 #[test]
 fn armor_mixed_condition_pieces_sum_correctly() {
     // Multiple pieces in different conditions should sum correctly.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
@@ -1604,7 +1630,7 @@ fn armor_mixed_condition_pieces_sum_correctly() {
 #[test]
 fn armor_extreme_penetrating_damage_no_overflow() {
     // Extreme raw damage should not cause overflow in degradation math.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
@@ -1661,8 +1687,10 @@ fn armor_extreme_penetrating_damage_no_overflow() {
 #[test]
 fn armor_projectile_degrades_equipment() {
     // Verify armor/clothing degrades from projectile hits.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
+    // Zero stats so Evasion/Agility don't cause projectile misses.
+    zero_creature_stats(&mut sim, elf);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
 
     // Unequip all, equip only a breastplate.
@@ -1750,7 +1778,7 @@ fn armor_projectile_degrades_equipment() {
 #[test]
 fn armor_melee_incapacitate_with_armor_equipped() {
     // Incapacitating an armored creature should not corrupt state.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
@@ -1800,7 +1828,7 @@ fn armor_melee_incapacitate_with_armor_equipped() {
 fn armor_save_load_roundtrip_preserves_combat() {
     // Equipped armor with varying durability must survive serde roundtrip
     // and still reduce damage correctly.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
@@ -1881,7 +1909,7 @@ fn armor_save_load_roundtrip_preserves_combat() {
 #[test]
 fn armor_non_penetrating_degrade_disabled_when_recip_zero() {
     // Setting recip to 0 should completely disable non-penetrating degradation.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
@@ -1952,7 +1980,7 @@ fn armor_non_penetrating_degrade_disabled_when_recip_zero() {
 #[test]
 fn armor_degradation_targets_hands_slot() {
     // Verify weight-to-slot mapping: weights[4] = Hands.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
@@ -2072,7 +2100,7 @@ fn armor_degradation_targets_hands_slot() {
 
 #[test]
 fn test_shoot_arrow_spawns_projectile() {
-    let mut sim = test_sim(200);
+    let mut sim = flat_world_sim(legacy_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let elf = spawn_elf(&mut sim);
@@ -2141,7 +2169,7 @@ fn test_shoot_arrow_spawns_projectile() {
 
 #[test]
 fn test_shoot_arrow_no_bow_fails() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let elf = spawn_elf(&mut sim);
@@ -2182,7 +2210,7 @@ fn test_shoot_arrow_no_bow_fails() {
 
 #[test]
 fn test_shoot_arrow_no_arrows_fails() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let elf = spawn_elf(&mut sim);
@@ -2215,7 +2243,7 @@ fn test_shoot_arrow_no_arrows_fails() {
 
 #[test]
 fn test_shoot_arrow_cooldown_prevents_second_shot() {
-    let mut sim = test_sim(200);
+    let mut sim = flat_world_sim(legacy_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let elf = spawn_elf(&mut sim);
@@ -2271,7 +2299,7 @@ fn test_shoot_arrow_cooldown_prevents_second_shot() {
 
 #[test]
 fn test_shoot_arrow_blocked_los_fails() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -2307,7 +2335,7 @@ fn test_shoot_arrow_blocked_los_fails() {
 
 #[test]
 fn test_shoot_arrow_leaf_does_not_block_los() {
-    let mut sim = test_sim(200);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -2343,7 +2371,7 @@ fn test_shoot_arrow_leaf_does_not_block_los() {
 
 #[test]
 fn test_shoot_arrow_dead_target_fails() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -2385,7 +2413,7 @@ fn test_shoot_arrow_dead_target_fails() {
 
 #[test]
 fn test_shoot_arrow_dead_attacker_fails() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -2432,7 +2460,7 @@ fn test_shoot_action_serde_roundtrip() {
 
 #[test]
 fn test_shoot_arrow_cooldown_expiry_allows_second_shot() {
-    let mut sim = test_sim(200);
+    let mut sim = flat_world_sim(legacy_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let elf = spawn_elf(&mut sim);
@@ -2503,7 +2531,7 @@ fn test_shoot_arrow_cooldown_expiry_allows_second_shot() {
 
 #[test]
 fn test_shoot_arrow_rejected_when_not_idle() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -2537,13 +2565,21 @@ fn test_shoot_arrow_rejected_when_not_idle() {
 
 #[test]
 fn test_hostile_ai_shoots_when_armed() {
-    let mut sim = test_sim(300);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf_id = spawn_species(&mut sim, Species::Elf);
     let goblin_id = spawn_species(&mut sim, Species::Goblin);
     force_guaranteed_hits(&mut sim, goblin_id);
 
-    // Arm the goblin with bow + arrows. Don't reposition — let the sim's
-    // natural spawn placement and nav graph handle positions.
+    // Place goblin and elf 5 voxels apart at known positions with clear LOS.
+    let elf_pos = VoxelCoord::new(32, 1, 32);
+    let goblin_pos = VoxelCoord::new(37, 1, 32);
+    force_position(&mut sim, elf_id, elf_pos);
+    force_position(&mut sim, goblin_id, goblin_pos);
+
+    // Freeze the elf so it doesn't flee.
+    force_idle_and_cancel_activations(&mut sim, elf_id);
+
+    // Arm the goblin with bow + arrows.
     arm_with_bow_and_arrows(&mut sim, goblin_id, 10);
 
     // Run the sim long enough for the goblin to activate and find elves.
@@ -2575,7 +2611,7 @@ fn test_hostile_ai_shoots_when_armed() {
 #[test]
 fn flight_path_clear_no_creatures() {
     // Arrow through empty space should not be blocked.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let elf = spawn_elf(&mut sim);
@@ -2599,7 +2635,7 @@ fn flight_path_clear_no_creatures() {
 #[test]
 fn flight_path_blocked_by_friendly_creature() {
     // An elf between the shooter and the target should block the shot.
-    let mut sim = test_sim(200);
+    let mut sim = flat_world_sim(legacy_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let shooter = spawn_elf(&mut sim);
@@ -2628,7 +2664,7 @@ fn flight_path_blocked_by_friendly_creature() {
 fn flight_path_origin_area_excluded_for_friendlies() {
     // A friendly creature at the origin voxel (immediate neighbor) should
     // NOT block the shot — squads can stand together.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let shooter = spawn_elf(&mut sim);
@@ -2656,7 +2692,7 @@ fn flight_path_origin_area_excluded_for_friendlies() {
 #[test]
 fn shoot_arrow_blocked_by_friendly_in_path() {
     // Full integration: elf should NOT shoot through a friendly elf.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let shooter = spawn_elf(&mut sim);
@@ -2708,7 +2744,7 @@ fn shoot_arrow_blocked_by_friendly_in_path() {
 fn shoot_arrow_hostile_in_path_does_not_block() {
     // A hostile creature in the flight path should NOT block the shot
     // (they're a valid target the arrow can hit).
-    let mut sim = test_sim(200);
+    let mut sim = flat_world_sim(legacy_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let shooter = spawn_elf(&mut sim);
@@ -2750,7 +2786,7 @@ fn shoot_arrow_hostile_in_path_does_not_block() {
 fn try_combat_redirects_to_alternate_target() {
     // When primary target is blocked by friendly, the attacker should
     // redirect to an alternate hostile target with a clear path.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let shooter = spawn_elf(&mut sim);
@@ -2804,7 +2840,7 @@ fn try_combat_redirects_to_alternate_target() {
 fn in_flight_arrow_passes_through_friendly_near_origin() {
     // An arrow should pass through a friendly creature standing adjacent
     // to the shooter (origin neighbor) and hit a hostile further away.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let shooter = spawn_elf(&mut sim);
@@ -2893,7 +2929,7 @@ fn in_flight_arrow_passes_through_friendly_near_origin() {
 fn position_blocks_friendly_archer_on_line() {
     // A candidate position directly between a friendly archer and their
     // target should be detected as blocking.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let mover = spawn_elf(&mut sim);
@@ -2957,12 +2993,17 @@ fn position_blocks_friendly_archer_on_line() {
 fn in_flight_arrow_hits_hostile_at_origin_neighbor() {
     // Point-blank: a hostile creature adjacent to the shooter (origin
     // neighbor) should still be hit by the arrow.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
+    // Disable evasion so the arrow always hits (evasion is PRNG-dependent).
+    sim.config.evasion_crit_threshold = 100_000;
     let shooter = spawn_elf(&mut sim);
+    force_guaranteed_hits(&mut sim, shooter);
     let goblin_near = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, goblin_near);
     let goblin_far = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, goblin_far);
 
     // Place on flat ground away from the tree.
     let base = VoxelCoord::new(5, 1, 32);
@@ -2978,6 +3019,10 @@ fn in_flight_arrow_hits_hostile_at_origin_neighbor() {
     force_idle(&mut sim, shooter);
     suppress_activation(&mut sim, shooter);
     arm_with_bow_and_arrows(&mut sim, shooter, 5);
+
+    // Record the near goblin's actual HP before the shot (may differ from
+    // species base due to CON bonus).
+    let near_hp_before = sim.db.creatures.get(&goblin_near).unwrap().hp;
 
     // Fire at the far goblin.
     let tick = sim.tick;
@@ -3003,10 +3048,9 @@ fn in_flight_arrow_hits_hostile_at_origin_neighbor() {
     // Near hostile should have been hit (arrow doesn't skip hostiles
     // even near origin).
     let near_hp = sim.db.creatures.get(&goblin_near).unwrap().hp;
-    let goblin_max = sim.species_table[&Species::Goblin].hp_max;
     assert!(
-        near_hp < goblin_max,
-        "Hostile near origin should be hit by arrow"
+        near_hp < near_hp_before,
+        "Hostile near origin should be hit by arrow (hp {near_hp} should be less than {near_hp_before})"
     );
 }
 
@@ -3047,7 +3091,7 @@ fn indestructible_arrow_deals_full_damage() {
     use crate::db::CreatureTrait;
     use crate::types::TraitValue;
     // An arrow with max_hp=0 (indestructible) should deal full damage.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     sim.config.arrow_gravity = 0;
     sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
     sim.config.arrow_impact_damage_min = 0;
@@ -3112,7 +3156,7 @@ fn indestructible_arrow_deals_full_damage() {
 
 #[test]
 fn melee_weapon_club_replaces_species_damage() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     let target = spawn_species(&mut sim, Species::Goblin);
     zero_creature_stats(&mut sim, elf);
@@ -3122,7 +3166,8 @@ fn melee_weapon_club_replaces_species_damage() {
     let target_pos = sim.db.creatures.get(&target).unwrap().position;
     let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
     force_position(&mut sim, elf, elf_pos);
-    force_idle(&mut sim, elf);
+    force_idle_and_cancel_activations(&mut sim, elf);
+    force_idle_and_cancel_activations(&mut sim, target);
 
     // Give the elf a club.
     let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
@@ -3171,7 +3216,7 @@ fn melee_weapon_club_replaces_species_damage() {
 /// Spear should reach but bare hands (range_sq=3) should not.
 #[test]
 fn melee_weapon_spear_extended_range() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     let target = spawn_species(&mut sim, Species::Goblin);
     zero_creature_stats(&mut sim, elf);
@@ -3248,7 +3293,7 @@ fn melee_weapon_spear_extended_range() {
 /// prefer the club (higher damage).
 #[test]
 fn melee_weapon_prefers_highest_damage_when_both_in_range() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     let target = spawn_species(&mut sim, Species::Goblin);
     zero_creature_stats(&mut sim, elf);
@@ -3312,7 +3357,7 @@ fn melee_weapon_prefers_highest_damage_when_both_in_range() {
 /// (club range_sq=3) — club should not be selected.
 #[test]
 fn melee_weapon_spear_only_at_extended_range() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     let target = spawn_species(&mut sim, Species::Goblin);
     zero_creature_stats(&mut sim, elf);
@@ -3375,7 +3420,7 @@ fn melee_weapon_spear_only_at_extended_range() {
 /// Melee weapons degrade on use (0-2 HP per strike).
 #[test]
 fn melee_weapon_degrades_on_strike() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     // Force degradation to always apply by setting min = max = 1.
     sim.config.melee_weapon_impact_damage_min = 1;
     sim.config.melee_weapon_impact_damage_max = 1;
@@ -3448,7 +3493,7 @@ fn melee_weapon_degrades_on_strike() {
 /// Bare-handed melee still works when creature has no weapons.
 #[test]
 fn melee_bare_hands_fallback() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
@@ -3487,7 +3532,7 @@ fn melee_bare_hands_fallback() {
 /// weapon range when weapons extend it.
 #[test]
 fn max_melee_range_sq_accounts_for_weapons() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf);
 
@@ -3540,7 +3585,7 @@ fn max_melee_range_sq_accounts_for_weapons() {
 /// Creatures with zero species melee_damage can still melee with a weapon.
 #[test]
 fn melee_weapon_enables_attack_for_zero_damage_species() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     // Capybara has melee_damage = 0.
     let capybara = spawn_species(&mut sim, Species::Capybara);
     let target = spawn_species(&mut sim, Species::Goblin);
@@ -3600,7 +3645,7 @@ fn melee_weapon_enables_attack_for_zero_damage_species() {
 /// back to bare hands (or another weapon).
 #[test]
 fn melee_weapon_breaks_then_fallback_to_bare_hands() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     // Force degradation to always break (1 HP weapon, 1 damage per strike).
     sim.config.melee_weapon_impact_damage_min = 1;
     sim.config.melee_weapon_impact_damage_max = 1;
@@ -3688,7 +3733,7 @@ fn melee_weapon_breaks_then_fallback_to_bare_hands() {
 /// Weapon stacks with quantity 0 should be ignored by weapon selection.
 #[test]
 fn melee_weapon_zero_quantity_stack_ignored() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf);
 
@@ -3720,7 +3765,7 @@ fn melee_weapon_zero_quantity_stack_ignored() {
 /// When melee_weapon_impact_damage_min > max, degradation is a no-op.
 #[test]
 fn melee_weapon_degradation_noop_when_min_greater_than_max() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     sim.config.melee_weapon_impact_damage_min = 5;
     sim.config.melee_weapon_impact_damage_max = 2;
 
@@ -3778,7 +3823,7 @@ fn melee_weapon_degradation_noop_when_min_greater_than_max() {
 /// When melee_weapon_impact_damage_max = 0, degradation is disabled.
 #[test]
 fn melee_weapon_degradation_disabled_when_max_zero() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     sim.config.melee_weapon_impact_damage_min = 0;
     sim.config.melee_weapon_impact_damage_max = 0;
 
@@ -3891,7 +3936,7 @@ fn melee_distance_sq_consistent_with_in_melee_range() {
 /// species base, is what armor subtracts from).
 #[test]
 fn weapon_damage_reduced_by_armor() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     let target = spawn_species(&mut sim, Species::Goblin);
     zero_creature_stats(&mut sim, elf);
@@ -3950,7 +3995,7 @@ fn weapon_damage_reduced_by_armor() {
 /// STR scaling applies on top of weapon base damage, not species base.
 #[test]
 fn weapon_damage_scales_with_strength() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     let target = spawn_species(&mut sim, Species::Goblin);
     zero_creature_stats(&mut sim, elf);
@@ -4018,11 +4063,12 @@ fn weapon_damage_scales_with_strength() {
 /// closing to adjacent.
 #[test]
 fn attack_target_spear_stops_at_extended_range() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
     zero_creature_stats(&mut sim, elf);
     zero_creature_stats(&mut sim, goblin);
+    force_guaranteed_hits(&mut sim, elf);
 
     // Give the elf a spear.
     let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
@@ -4082,7 +4128,7 @@ fn attack_target_spear_stops_at_extended_range() {
 /// should attack at spear range without closing further.
 #[test]
 fn hostile_ai_spear_attacks_at_extended_range() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
@@ -4141,8 +4187,11 @@ fn hostile_ai_spear_attacks_at_extended_range() {
 
 #[test]
 fn arrow_chase_creates_autonomous_attack_move() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
+    // Zero stats so Perception doesn't inflate detection range beyond
+    // the 20-voxel origin distance (base detection_range_sq=225 < 400).
+    zero_creature_stats(&mut sim, goblin);
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
     let detection_range_sq = sim.species_table[&Species::Goblin].hostile_detection_range_sq;
 
@@ -4168,7 +4217,7 @@ fn arrow_chase_creates_autonomous_attack_move() {
 
 #[test]
 fn arrow_chase_no_chase_within_detection_range() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
 
@@ -4188,7 +4237,7 @@ fn arrow_chase_no_chase_within_detection_range() {
 
 #[test]
 fn arrow_chase_passive_creature_does_not_chase() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let capybara = spawn_species(&mut sim, Species::Capybara);
     let capy_pos = sim.db.creatures.get(&capybara).unwrap().position;
 
@@ -4207,9 +4256,14 @@ fn arrow_chase_passive_creature_does_not_chase() {
 
 #[test]
 fn arrow_chase_second_hit_updates_destination() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    // Zero stats so Perception doesn't inflate detection range beyond
+    // the 20-voxel origin distance (base detection_range_sq=225 < 400).
+    zero_creature_stats(&mut sim, goblin);
+    // Place goblin at a known central position so +/- 20 stays within world bounds.
+    let goblin_pos = VoxelCoord::new(32, 1, 32);
+    force_position(&mut sim, goblin, goblin_pos);
 
     let origin1 = VoxelCoord::new(goblin_pos.x + 20, goblin_pos.y, goblin_pos.z);
     let origin2 = VoxelCoord::new(goblin_pos.x - 20, goblin_pos.y, goblin_pos.z);
@@ -4240,7 +4294,7 @@ fn arrow_chase_second_hit_updates_destination() {
 
 #[test]
 fn arrow_chase_dead_creature_does_not_chase() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
 
@@ -4263,7 +4317,7 @@ fn arrow_chase_dead_creature_does_not_chase() {
 
 #[test]
 fn arrow_chase_does_not_preempt_player_combat() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
 
@@ -4287,7 +4341,7 @@ fn arrow_chase_does_not_preempt_player_combat() {
 
 #[test]
 fn arrow_chase_integration_projectile_triggers_chase() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     zero_creature_stats(&mut sim, goblin);
 
@@ -4337,10 +4391,13 @@ fn arrow_chase_integration_projectile_triggers_chase() {
 
 #[test]
 fn arrow_chase_flying_creature_gets_chase_task() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let air_pos = VoxelCoord::new(tree_pos.x + 10, tree_pos.y + 30, tree_pos.z);
     let hornet = spawn_hornet_at(&mut sim, air_pos);
+    // Zero stats so Perception doesn't inflate detection range beyond
+    // the 20-voxel origin distance used below.
+    zero_creature_stats(&mut sim, hornet);
     let hornet_pos = sim.db.creatures.get(&hornet).unwrap().position;
 
     assert!(
@@ -4367,7 +4424,7 @@ fn arrow_chase_flying_creature_gets_chase_task() {
 
 #[test]
 fn arrow_chase_nonexistent_creature_is_noop() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let fake_id = CreatureId::new(&mut sim.rng);
     let origin = VoxelCoord::new(100, 51, 100);
     sim.maybe_arrow_chase(fake_id, origin);
@@ -4376,8 +4433,13 @@ fn arrow_chase_nonexistent_creature_is_noop() {
 
 #[test]
 fn arrow_chase_preempts_autonomous_task() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
+    // Zero stats so Perception doesn't inflate detection range beyond
+    // the 20-voxel origin distance (base detection_range_sq=225 < 400).
+    zero_creature_stats(&mut sim, goblin);
+    // Freeze goblin so it doesn't get activated before we call maybe_arrow_chase.
+    force_idle_and_cancel_activations(&mut sim, goblin);
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
 
     // Create a low-priority autonomous GoTo task.
@@ -4399,6 +4461,7 @@ fn arrow_chase_preempts_autonomous_task() {
     sim.insert_task(goto_task);
     if let Some(mut c) = sim.db.creatures.get(&goblin) {
         c.current_task = Some(task_id);
+        c.next_available_tick = Some(u64::MAX);
         sim.db.update_creature(c).unwrap();
     }
 
@@ -4419,8 +4482,9 @@ fn arrow_chase_preempts_autonomous_task() {
 
 #[test]
 fn arrow_chase_second_hit_clears_target_creature() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
+    zero_creature_stats(&mut sim, goblin);
     let elf = spawn_elf(&mut sim);
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
 
@@ -4449,7 +4513,7 @@ fn arrow_chase_second_hit_clears_target_creature() {
 
 #[test]
 fn arrow_chase_creates_task_for_flying_creature() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let air_pos = VoxelCoord::new(tree_pos.x + 10, tree_pos.y + 30, tree_pos.z);
     let hornet = spawn_hornet_at(&mut sim, air_pos);
@@ -4598,7 +4662,7 @@ fn test_hit_check_exact_boundary_values() {
 
 #[test]
 fn test_melee_miss_high_evasion() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
@@ -4666,7 +4730,7 @@ fn test_melee_miss_high_evasion() {
 
 #[test]
 fn test_melee_crit_doubles_damage() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
@@ -4745,7 +4809,7 @@ fn test_melee_crit_doubles_damage() {
 
 #[test]
 fn test_melee_miss_still_consumes_cooldown() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
@@ -4800,7 +4864,7 @@ fn test_melee_miss_still_consumes_cooldown() {
 
 #[test]
 fn test_evasion_skill_advances_on_dodge() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
@@ -4847,7 +4911,7 @@ fn test_evasion_skill_advances_on_dodge() {
 
 #[test]
 fn test_projectile_evaded_by_high_agi_target() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf);
 
@@ -4903,7 +4967,7 @@ fn test_projectile_evaded_by_high_agi_target() {
 fn test_projectile_crit_doubles_damage() {
     use crate::db::CreatureTrait;
     use crate::types::TraitValue;
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf);
     let shooter = spawn_species(&mut sim, Species::Goblin);
@@ -4964,7 +5028,7 @@ fn test_projectile_crit_doubles_damage() {
 fn test_projectile_evasion_with_shooter_stats() {
     use crate::db::CreatureTrait;
     use crate::types::TraitValue;
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let target = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, target);
     let shooter = spawn_species(&mut sim, Species::Goblin);
@@ -4972,35 +5036,35 @@ fn test_projectile_evasion_with_shooter_stats() {
 
     // Target has moderate evasion.
     sim.db
-        .insert_creature_trait(CreatureTrait {
+        .upsert_creature_trait(CreatureTrait {
             creature_id: target,
             trait_kind: TraitKind::Evasion,
             value: TraitValue::Int(200),
         })
         .unwrap();
-    let mut target_agility = sim
-        .db
-        .creature_traits
-        .get(&(target, TraitKind::Agility))
+    sim.db
+        .upsert_creature_trait(CreatureTrait {
+            creature_id: target,
+            trait_kind: TraitKind::Agility,
+            value: TraitValue::Int(200),
+        })
         .unwrap();
-    target_agility.value = TraitValue::Int(200);
-    sim.db.update_creature_trait(target_agility).unwrap();
 
     // Shooter has high Archery + DEX to overcome the evasion.
     sim.db
-        .insert_creature_trait(CreatureTrait {
+        .upsert_creature_trait(CreatureTrait {
             creature_id: shooter,
             trait_kind: TraitKind::Archery,
             value: TraitValue::Int(500),
         })
         .unwrap();
-    let mut shooter_dexterity = sim
-        .db
-        .creature_traits
-        .get(&(shooter, TraitKind::Dexterity))
+    sim.db
+        .upsert_creature_trait(CreatureTrait {
+            creature_id: shooter,
+            trait_kind: TraitKind::Dexterity,
+            value: TraitValue::Int(500),
+        })
         .unwrap();
-    shooter_dexterity.value = TraitValue::Int(500);
-    sim.db.update_creature_trait(shooter_dexterity).unwrap();
     sim.config.evasion_crit_threshold = 100_000;
 
     let mut target_creature = sim.db.creatures.get(&target).unwrap();
@@ -5013,7 +5077,9 @@ fn test_projectile_evasion_with_shooter_stats() {
     sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
 
     let mut hits = 0;
-    let total = 20;
+    // 200 trials with Archery+DEX=500 vs Evasion+AGI=200 should hit
+    // well over 80%. Allow >= 120 (~60%) to avoid flakiness from random seeds.
+    let total = 200;
     for _ in 0..total {
         let origin = VoxelCoord::new(target_pos.x - 10, target_pos.y, target_pos.z);
         sim.spawn_projectile(origin, target_pos, Some(shooter));
@@ -5033,7 +5099,7 @@ fn test_projectile_evasion_with_shooter_stats() {
     }
 
     assert!(
-        hits > 18,
+        hits > 120,
         "high-skill shooter should hit evasive target most of the time, got {hits}/{total}"
     );
 }
@@ -5041,7 +5107,7 @@ fn test_projectile_evasion_with_shooter_stats() {
 #[test]
 fn test_melee_miss_no_armor_degradation() {
     use crate::db::CreatureTrait;
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
@@ -5109,7 +5175,7 @@ fn test_melee_miss_no_armor_degradation() {
 
 #[test]
 fn test_ranged_evasion_skill_advances_on_projectile_dodge() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf);
 
@@ -5171,7 +5237,7 @@ fn test_evasion_config_serde_roundtrip() {
 
 #[test]
 fn test_evaded_arrow_still_triggers_chase() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     zero_creature_stats(&mut sim, goblin);
 
@@ -5225,7 +5291,7 @@ fn test_evaded_arrow_still_triggers_chase() {
 
 #[test]
 fn test_melee_weapon_no_degrade_on_miss() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
@@ -5309,7 +5375,7 @@ fn test_melee_weapon_no_degrade_on_miss() {
 #[test]
 fn engagement_style_config() {
     use crate::species::EngagementInitiative;
-    let sim = test_sim(42);
+    let sim = flat_world_sim(legacy_test_seed());
     // Aggressive species.
     assert_eq!(
         sim.species_table[&Species::Goblin]
@@ -5389,18 +5455,21 @@ fn engagement_style_config() {
 
 #[test]
 fn hostile_creature_pursues_and_attacks_elf() {
-    let mut sim = test_sim(300);
-    let elf_id = spawn_species(&mut sim, Species::Elf);
+    let mut sim = flat_world_sim(legacy_test_seed());
+
+    let elf_id = spawn_elf(&mut sim);
     let goblin_id = spawn_species(&mut sim, Species::Goblin);
     force_guaranteed_hits(&mut sim, goblin_id);
 
-    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
-    let goblin_start = sim.db.creatures.get(&goblin_id).unwrap().position;
-
-    assert_ne!(
-        elf_pos, goblin_start,
-        "Elf and goblin spawned at same position — adjust test seed"
-    );
+    // Place creatures at known positions: elf at center, goblin 5 voxels away.
+    // Goblin has no civ (default for non-elves), so it targets any civ creature
+    // of a different species — i.e., the elf.
+    let elf_pos = VoxelCoord::new(32, 1, 32);
+    let goblin_start = VoxelCoord::new(37, 1, 32);
+    force_position(&mut sim, elf_id, elf_pos);
+    force_position(&mut sim, goblin_id, goblin_start);
+    // Freeze elf so it doesn't flee, letting goblin pursue unimpeded.
+    force_idle_and_cancel_activations(&mut sim, elf_id);
 
     let elf_hp_before = sim.db.creatures.get(&elf_id).unwrap().hp;
 
@@ -5425,7 +5494,16 @@ fn hostile_creature_pursues_and_attacks_elf() {
 
 #[test]
 fn hostile_creature_wanders_without_elves() {
-    let mut sim = test_sim(99);
+    let mut sim = flat_world_sim(legacy_test_seed());
+    // Disable food/rest so the goblin wanders instead of seeking food.
+    sim.species_table
+        .get_mut(&Species::Goblin)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Goblin)
+        .unwrap()
+        .rest_decay_per_tick = 0;
     let goblin_id = spawn_species(&mut sim, Species::Goblin);
 
     // Place goblin on a nav node with neighbors so it can wander.
@@ -5451,7 +5529,7 @@ fn hostile_creature_wanders_without_elves() {
 
 #[test]
 fn hostile_creature_attacks_adjacent_elf() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
@@ -5488,7 +5566,7 @@ fn hostile_creature_attacks_adjacent_elf() {
 
 #[test]
 fn spawn_projectile_creates_entity_and_inventory() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let origin = VoxelCoord::new(40, 5, 40);
     let target = VoxelCoord::new(50, 5, 40);
 
@@ -5510,7 +5588,7 @@ fn spawn_projectile_creates_entity_and_inventory() {
 
 #[test]
 fn spawn_projectile_schedules_tick_event() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let initial_events = sim.event_queue.len();
     sim.spawn_projectile(VoxelCoord::new(40, 5, 40), VoxelCoord::new(50, 5, 40), None);
     // Should have scheduled exactly one ProjectileTick.
@@ -5519,7 +5597,7 @@ fn spawn_projectile_schedules_tick_event() {
 
 #[test]
 fn second_spawn_does_not_duplicate_tick_event() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let initial_events = sim.event_queue.len();
     sim.spawn_projectile(VoxelCoord::new(40, 5, 40), VoxelCoord::new(50, 5, 40), None);
     sim.spawn_projectile(VoxelCoord::new(40, 5, 40), VoxelCoord::new(45, 5, 40), None);
@@ -5529,7 +5607,7 @@ fn second_spawn_does_not_duplicate_tick_event() {
 
 #[test]
 fn projectile_hits_solid_voxel_and_creates_ground_pile() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     // Place a solid wall at x=45.
     for y in 1..=5 {
         sim.world
@@ -5537,8 +5615,12 @@ fn projectile_hits_solid_voxel_and_creates_ground_pile() {
     }
 
     // Spawn projectile heading +x toward the wall (flat, no gravity).
+    // Disable arrow impact damage so the arrow always survives and creates
+    // a ground pile (impact damage is PRNG-dependent).
     sim.config.arrow_gravity = 0;
     sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
+    sim.config.arrow_impact_damage_min = 0;
+    sim.config.arrow_impact_damage_max = 0;
     sim.spawn_projectile(VoxelCoord::new(40, 3, 40), VoxelCoord::new(45, 3, 40), None);
 
     // Run until the projectile resolves (max 500 ticks).
@@ -5577,7 +5659,7 @@ fn projectile_hits_solid_voxel_and_creates_ground_pile() {
 fn projectile_hits_creature_and_deals_damage() {
     use crate::db::CreatureTrait;
     use crate::types::TraitValue;
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     // Spawn a goblin at a known position.
     let goblin = spawn_species(&mut sim, Species::Goblin);
     zero_creature_stats(&mut sim, goblin);
@@ -5638,7 +5720,7 @@ fn projectile_hits_creature_and_deals_damage() {
 
 #[test]
 fn projectile_out_of_bounds_despawns_silently() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     // Shoot a projectile off the edge of the world.
     sim.config.arrow_gravity = 0;
     sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 5; // very fast
@@ -5679,7 +5761,7 @@ fn projectile_out_of_bounds_despawns_silently() {
 
 #[test]
 fn projectile_does_not_hit_shooter() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     // Spawn an elf and shoot from their position.
     let elf = spawn_species(&mut sim, Species::Elf);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
@@ -5719,7 +5801,7 @@ fn projectile_does_not_hit_shooter() {
 
 #[test]
 fn hostile_creature_wanders_after_killing_elf() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
@@ -5754,7 +5836,7 @@ fn hostile_creature_wanders_after_killing_elf() {
 
 #[test]
 fn projectile_skips_origin_voxel_creatures() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     // Spawn shooter and bystander at the same position.
     let shooter = spawn_species(&mut sim, Species::Elf);
     let shooter_pos = sim.db.creatures.get(&shooter).unwrap().position;
@@ -5813,43 +5895,61 @@ fn projectile_skips_origin_voxel_creatures() {
 fn hostile_waits_on_cooldown_near_elf() {
     // When a hostile is in melee range but on cooldown, it should not
     // wander away — it should wait and re-strike when the cooldown expires.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
+    sim.species_table
+        .get_mut(&Species::Goblin)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Goblin)
+        .unwrap()
+        .rest_decay_per_tick = 0;
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+    force_guaranteed_hits(&mut sim, goblin);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
-    force_idle(&mut sim, goblin);
+    force_idle_and_cancel_activations(&mut sim, elf);
+    force_idle_and_cancel_activations(&mut sim, goblin);
 
-    // First strike via command puts goblin on cooldown.
-    let tick = sim.tick;
-    sim.step(
-        &[SimCommand {
-            player_name: String::new(),
-            tick: tick + 1,
-            action: SimAction::DebugMeleeAttack {
-                attacker_id: goblin,
-                target_id: elf,
-            },
-        }],
-        tick + 1,
-    );
-    assert_eq!(
-        sim.db.creatures.get(&goblin).unwrap().action_kind,
-        ActionKind::MeleeStrike,
-    );
+    // Freeze all bystander creatures.
+    let bystanders: Vec<CreatureId> = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.id != goblin && c.id != elf)
+        .map(|c| c.id)
+        .collect();
+    for cid in bystanders {
+        force_idle_and_cancel_activations(&mut sim, cid);
+    }
 
-    // Advance past cooldown. Goblin should stay near elf and strike again,
-    // NOT wander away.
-    let interval = sim.species_table[&Species::Goblin].melee_interval_ticks;
-    sim.step(&[], sim.tick + interval + 100);
+    // First strike via try_melee_strike (bypasses activation/step races).
+    let mut events = Vec::new();
+    let hit = sim.try_melee_strike(goblin, elf, &mut events);
+    assert!(hit, "First strike should succeed");
 
-    let goblin_final = sim.db.creatures.get(&goblin).unwrap().position;
-    let dist = goblin_final.manhattan_distance(elf_pos);
-    // Should still be within melee range (manhattan dist ≤ 2 for range_sq=3).
+    let elf_hp_after_first = sim.db.creatures.get(&elf).unwrap().hp;
     assert!(
-        dist <= 2,
-        "Goblin should stay near elf on cooldown, not wander away (dist={dist})"
+        elf_hp_after_first < 100,
+        "First strike should have dealt damage"
+    );
+
+    // Goblin is now on MeleeStrike cooldown. Schedule its activation
+    // for after cooldown expires.
+    let interval = sim.species_table[&Species::Goblin].melee_interval_ticks;
+    let activation_tick = sim.tick + interval + 1;
+    schedule_activation_at(&mut sim, goblin, activation_tick);
+    sim.step(&[], activation_tick + 100);
+
+    let elf_hp_after_second = sim.db.creatures.get(&elf).unwrap().hp;
+    assert!(
+        elf_hp_after_second < elf_hp_after_first,
+        "Goblin should strike again after cooldown expires \
+         (elf HP: {elf_hp_after_first} -> {elf_hp_after_second})"
     );
 }
 
@@ -5857,7 +5957,7 @@ fn hostile_waits_on_cooldown_near_elf() {
 fn hostile_ignores_elf_outside_detection_range() {
     // A goblin with detection_range_sq=225 (15 voxels) should NOT pursue
     // an elf that is >15 voxels away in euclidean distance.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
 
@@ -5894,19 +5994,21 @@ fn hostile_ignores_elf_outside_detection_range() {
 fn hostile_pursues_elf_within_detection_range() {
     // A goblin with detection_range_sq=225 (15 voxels) SHOULD pursue
     // an elf within 10 voxels (10² = 100 < 225).
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
+    force_guaranteed_hits(&mut sim, goblin);
 
     // Place elf 5 voxels from goblin on X axis (5² = 25 < 225).
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
     let near_pos = VoxelCoord::new(goblin_pos.x + 5, goblin_pos.y, goblin_pos.z);
     force_position(&mut sim, elf, near_pos);
+    // Freeze elf so it doesn't flee away from the goblin.
+    force_idle_and_cancel_activations(&mut sim, elf);
 
     // Schedule activation.
     let tick = sim.tick;
     schedule_activation_at(&mut sim, goblin, tick + 1);
-    force_idle(&mut sim, goblin);
 
     let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
     let initial_dist = goblin_pos.manhattan_distance(near_pos);
@@ -5931,7 +6033,7 @@ fn hostile_pursues_elf_within_detection_range() {
 #[test]
 fn hostile_does_not_attack_same_species() {
     // Two non-civ goblins adjacent to each other should NOT attack.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let g1 = spawn_species(&mut sim, Species::Goblin);
     let g2 = spawn_species(&mut sim, Species::Goblin);
 
@@ -5966,7 +6068,7 @@ fn hostile_does_not_attack_same_species() {
 #[test]
 fn all_hostile_species_pursue_elves() {
     for &hostile_species in &[Species::Goblin, Species::Orc, Species::Troll] {
-        let mut sim = test_sim(99);
+        let mut sim = flat_world_sim(legacy_test_seed());
         let elf_id = spawn_species(&mut sim, Species::Elf);
         let hostile_id = spawn_species(&mut sim, hostile_species);
 
@@ -6012,7 +6114,7 @@ fn all_hostile_species_pursue_elves() {
 #[test]
 fn projectile_hits_creature_beyond_origin_voxel() {
     use crate::db::CreatureTrait;
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     // Place a target creature a few voxels away from the origin.
     let target = spawn_species(&mut sim, Species::Elf);
     // Set target's evasion stats deeply negative so the no-shooter projectile
@@ -6084,7 +6186,7 @@ fn projectile_hits_creature_beyond_origin_voxel() {
 
 #[test]
 fn projectile_cleanup_removes_inventory() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     sim.spawn_projectile(VoxelCoord::new(40, 5, 40), VoxelCoord::new(50, 5, 40), None);
     let proj = sim.db.projectiles.iter_all().next().unwrap();
     let inv_id = proj.inventory_id;
@@ -6108,7 +6210,7 @@ fn projectile_cleanup_removes_inventory() {
 
 #[test]
 fn projectile_serde_roundtrip() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     sim.spawn_projectile(VoxelCoord::new(40, 5, 40), VoxelCoord::new(50, 5, 40), None);
 
     let json = sim.to_json().unwrap();
@@ -6126,7 +6228,7 @@ fn projectile_serde_roundtrip() {
 
 #[test]
 fn debug_spawn_projectile_command() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let origin = VoxelCoord::new(40, 5, 40);
     let target = VoxelCoord::new(50, 5, 40);
     let tick = sim.tick;
@@ -6153,7 +6255,7 @@ fn debug_spawn_projectile_command() {
 
 #[test]
 fn attack_creature_command_creates_task_and_assigns() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -6195,7 +6297,7 @@ fn attack_creature_command_creates_task_and_assigns() {
 
 #[test]
 fn attack_target_task_pursues_and_strikes() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -6238,7 +6340,7 @@ fn attack_target_task_pursues_and_strikes() {
 
 #[test]
 fn attack_target_completes_when_target_dies() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -6292,7 +6394,7 @@ fn attack_target_completes_when_target_dies() {
 
 #[test]
 fn attack_target_preempts_lower_priority_task() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -6334,7 +6436,7 @@ fn attack_target_preempts_lower_priority_task() {
 
 #[test]
 fn attack_target_cannot_attack_self() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     force_idle(&mut sim, elf);
 
@@ -6360,7 +6462,7 @@ fn attack_target_cannot_attack_self() {
 
 #[test]
 fn attack_target_cannot_attack_dead_creature() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
     force_idle(&mut sim, elf);
@@ -6447,7 +6549,7 @@ fn attack_target_preemption_is_player_combat() {
 
 #[test]
 fn worldgen_creates_default_military_groups() {
-    let sim = test_sim(42);
+    let sim = flat_world_sim(legacy_test_seed());
     let civ_id = sim.player_civ_id.unwrap();
     let groups = sim
         .db
@@ -6476,7 +6578,7 @@ fn worldgen_creates_default_military_groups() {
 
 #[test]
 fn worldgen_all_civs_have_military_groups() {
-    let sim = test_sim(42);
+    let sim = flat_world_sim(legacy_test_seed());
     for civ in sim.db.civilizations.iter_all() {
         let groups = sim
             .db
@@ -6498,7 +6600,7 @@ fn worldgen_all_civs_have_military_groups() {
 
 #[test]
 fn create_military_group_command() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let cmd = SimCommand {
         player_name: String::new(),
         tick: 1,
@@ -6536,7 +6638,7 @@ fn create_military_group_command() {
 
 #[test]
 fn creature_reassignment_to_group_and_back() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let mut events = Vec::new();
 
     // Spawn an elf.
@@ -6584,7 +6686,7 @@ fn creature_reassignment_to_group_and_back() {
 
 #[test]
 fn reassign_between_non_civilian_groups() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let mut events = Vec::new();
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -6645,7 +6747,7 @@ fn reassign_between_non_civilian_groups() {
 
 #[test]
 fn delete_military_group_nullifies_members() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let mut events = Vec::new();
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -6723,7 +6825,7 @@ fn delete_military_group_nullifies_members() {
 
 #[test]
 fn civilian_group_deletion_rejected() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let civ_group = civilian_group(&sim);
 
     let cmd = SimCommand {
@@ -6744,7 +6846,7 @@ fn civilian_group_deletion_rejected() {
 
 #[test]
 fn dead_creature_not_counted_in_member_count() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let mut events = Vec::new();
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -6791,7 +6893,7 @@ fn dead_creature_not_counted_in_member_count() {
 
 #[test]
 fn cross_civ_reassignment_rejected() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let mut events = Vec::new();
 
     // Get a non-player civ.
@@ -6836,7 +6938,7 @@ fn cross_civ_reassignment_rejected() {
 
 #[test]
 fn non_civ_creature_reassignment_rejected() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let mut events = Vec::new();
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -6864,7 +6966,7 @@ fn non_civ_creature_reassignment_rejected() {
 
 #[test]
 fn rename_civilian_group() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let civ_group = civilian_group(&sim);
 
     let cmd = SimCommand {
@@ -6886,7 +6988,7 @@ fn set_group_engagement_style() {
     use crate::species::{
         AmmoExhaustedBehavior, EngagementInitiative, EngagementStyle, WeaponPreference,
     };
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let civ_group = civilian_group(&sim);
 
     // Change civilian group to aggressive.
@@ -6916,7 +7018,7 @@ fn set_group_engagement_style() {
 
 #[test]
 fn fk_cascade_civ_delete_removes_groups() {
-    let mut sim = test_sim(99);
+    let mut sim = flat_world_sim(legacy_test_seed());
 
     // Find an AI civ (not the player civ, which might cause issues).
     let ai_civ = sim
@@ -6956,7 +7058,7 @@ fn fk_cascade_civ_delete_removes_groups() {
 fn aggressive_group_civ_creature_auto_engages() {
     // This test verifies that an aggressive-group civ creature will attempt to
     // pursue hostiles via wander(), not just avoid them.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let mut events = Vec::new();
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -6979,7 +7081,7 @@ fn aggressive_group_civ_creature_auto_engages() {
 
 #[test]
 fn resolve_engagement_style_implicit_civilian() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let mut events = Vec::new();
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -6997,7 +7099,7 @@ fn resolve_engagement_style_implicit_civilian() {
 
 #[test]
 fn resolve_engagement_style_non_civ_creature() {
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let mut events = Vec::new();
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -7020,7 +7122,7 @@ fn resolve_engagement_style_non_civ_creature() {
 
 #[test]
 fn military_group_serde_roundtrip() {
-    let sim = test_sim(42);
+    let sim = flat_world_sim(legacy_test_seed());
 
     // Serialize and deserialize the full SimDb.
     let json = serde_json::to_string(&sim.db).unwrap();
@@ -7093,7 +7195,15 @@ fn military_group_command_serde_roundtrip() {
 fn attack_move_traversal_delay_uses_creature_stats() {
     // An elf with very high agility should move faster during attack-move
     // than the base species walk_ticks_per_voxel would give.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
     let elf = spawn_elf(&mut sim);
 
     // Give the elf very high agility (stat 200 → significant speed bonus).

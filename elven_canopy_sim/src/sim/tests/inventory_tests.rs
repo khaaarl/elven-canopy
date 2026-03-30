@@ -10,7 +10,7 @@ use super::*;
 
 #[test]
 fn elf_spawns_with_starting_items() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let inv_id = sim.creature_inv(elf_id);
     // Bread.
@@ -40,7 +40,7 @@ fn elf_spawns_with_starting_items() {
 
 #[test]
 fn creature_add_and_query_bread() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.elf_starting_bread = 0;
     let elf_id = spawn_elf(&mut sim);
 
@@ -62,7 +62,7 @@ fn creature_add_and_query_bread() {
 
 #[test]
 fn creature_inventory_serialization_roundtrip() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.elf_starting_bread = 0;
     let elf_id = spawn_elf(&mut sim);
 
@@ -89,7 +89,7 @@ fn creature_inventory_serialization_roundtrip() {
 
 #[test]
 fn ground_piles_in_sim_state() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let pos = VoxelCoord::new(10, 1, 20);
     {
         let pile_id = sim.ensure_ground_pile(pos);
@@ -122,7 +122,7 @@ fn ground_piles_in_sim_state() {
 
 #[test]
 fn ground_piles_serialization_roundtrip() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let pos1 = VoxelCoord::new(10, 1, 20);
     let pos2 = VoxelCoord::new(3, 1, 7);
     {
@@ -188,7 +188,7 @@ fn ground_piles_serialization_roundtrip() {
 
 #[test]
 fn ground_piles_serde_roundtrip() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let pos = VoxelCoord::new(10, 1, 20);
     {
         let pile_id = sim.ensure_ground_pile(pos);
@@ -297,7 +297,7 @@ fn item_stack_serde_backward_compat() {
 
 #[test]
 fn inv_add_simple_item_stacks_correctly() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bread, 3, None, None);
     sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bread, 2, None, None);
@@ -312,7 +312,7 @@ fn inv_add_simple_item_stacks_correctly() {
 
 #[test]
 fn inv_add_item_material_creates_separate_stacks() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     sim.inv_add_item(
         inv_id,
@@ -345,7 +345,7 @@ fn inv_add_item_material_creates_separate_stacks() {
 
 #[test]
 fn inv_add_item_quality_creates_separate_stacks() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     sim.inv_add_item(
         inv_id,
@@ -378,7 +378,7 @@ fn inv_add_item_quality_creates_separate_stacks() {
 
 #[test]
 fn inv_normalize_respects_material_quality() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     // Create two stacks with same kind but different quality.
     sim.inv_add_item(
@@ -421,7 +421,7 @@ fn inv_normalize_respects_material_quality() {
 
 #[test]
 fn item_subcomponent_cascade_delete() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bow, 1, None, None);
     let stacks = sim
@@ -455,7 +455,7 @@ fn item_subcomponent_cascade_delete() {
 
 #[test]
 fn enchantment_effect_cascade_delete() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     // Create an enchantment.
     let ench_id = sim
@@ -491,7 +491,7 @@ fn enchantment_effect_cascade_delete() {
 
 #[test]
 fn inv_item_count_respects_material_filter() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let pos = VoxelCoord::new(10, 1, 20);
     let pile_id = sim.ensure_ground_pile(pos);
     let inv_id = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
@@ -562,7 +562,7 @@ fn inv_item_count_respects_material_filter() {
 
 #[test]
 fn inv_reserve_items_single_material_lock() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let pos = VoxelCoord::new(10, 1, 20);
     let pile_id = sim.ensure_ground_pile(pos);
     let inv_id = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
@@ -617,7 +617,7 @@ fn inv_reserve_items_single_material_lock() {
 
 #[test]
 fn inv_reserve_items_specific_filter() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let pos = VoxelCoord::new(10, 1, 20);
     let pile_id = sim.ensure_ground_pile(pos);
     let inv_id = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
@@ -686,7 +686,7 @@ fn inv_reserve_items_specific_filter() {
 
 #[test]
 fn inv_split_stack_preserves_properties() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
     sim.inv_add_item(
         inv_id,
@@ -725,7 +725,7 @@ fn inv_split_stack_preserves_properties() {
 
 #[test]
 fn inv_split_stack_whole_stack() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
     sim.inv_add_item(
         inv_id,
@@ -760,7 +760,7 @@ fn inv_split_stack_whole_stack() {
 
 #[test]
 fn pile_on_solid_ground_does_not_fall() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     // Place a pile on y=1 (above terrain at y=0 — always solid).
     let pos = VoxelCoord::new(10, 1, 10);
     let pile_id = sim.ensure_ground_pile(pos);
@@ -782,7 +782,7 @@ fn pile_on_solid_ground_does_not_fall() {
 
 #[test]
 fn floating_pile_falls_to_surface() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     // Create a solid platform at y=5 by setting (10, 5, 10) to Platform.
     let platform_pos = VoxelCoord::new(10, 5, 10);
     sim.world.set(platform_pos, VoxelType::GrownPlatform);
@@ -825,7 +825,7 @@ fn floating_pile_falls_to_surface() {
 
 #[test]
 fn floating_pile_merges_with_existing_pile() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     // Place a pile on the ground at y=1.
     let ground_pos = VoxelCoord::new(15, 1, 15);
     let ground_pile_id = sim.ensure_ground_pile(ground_pos);
@@ -872,7 +872,7 @@ fn floating_pile_merges_with_existing_pile() {
 
 #[test]
 fn merge_stacks_same_item_kind() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     // Both piles have Bread — after merge, the ground pile should have a
     // single Bread stack with the combined quantity.
     let ground_pos = VoxelCoord::new(20, 1, 20);
@@ -904,7 +904,7 @@ fn merge_stacks_same_item_kind() {
 
 #[test]
 fn pile_falls_to_intermediate_surface() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     // Two platforms stacked: y=3 and y=6. Pile at y=7.
     // Remove y=6 — pile should fall to y=4 (on top of y=3 platform), not y=1.
     let lower_platform = VoxelCoord::new(25, 3, 25);
@@ -937,7 +937,7 @@ fn pile_falls_to_intermediate_surface() {
 
 #[test]
 fn multiple_floating_piles_in_same_column() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     // Two platforms at y=3 and y=6. Piles at y=4 and y=7.
     // Remove both platforms — both piles should fall to y=1, merging.
     // Use coordinates far from the tree trunk (~32,32) to avoid overlap.
@@ -980,7 +980,7 @@ fn multiple_floating_piles_in_same_column() {
 
 #[test]
 fn empty_floating_pile_is_cleaned_up() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     // A floating pile with no items should still be moved.
     let platform_pos = VoxelCoord::new(35, 3, 35);
     sim.world.set(platform_pos, VoxelType::GrownPlatform);
@@ -1002,7 +1002,7 @@ fn empty_floating_pile_is_cleaned_up() {
 
 #[test]
 fn inv_merge_combines_inventories() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let src = sim.create_inventory(crate::db::InventoryOwnerKind::GroundPile);
     let dst = sim.create_inventory(crate::db::InventoryOwnerKind::GroundPile);
 
@@ -1034,7 +1034,7 @@ fn inv_merge_combines_inventories() {
 
 #[test]
 fn ensure_ground_pile_snaps_floating_position_to_surface() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     // Request a pile at y=10 with no solid voxel below (except floor at y=0).
     let floating_pos = VoxelCoord::new(40, 10, 40);
     let pile_id = sim.ensure_ground_pile(floating_pos);
@@ -1046,7 +1046,7 @@ fn ensure_ground_pile_snaps_floating_position_to_surface() {
 
 #[test]
 fn ensure_ground_pile_snaps_to_intermediate_platform() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     // Platform at y=5, request pile at y=10.
     sim.world
         .set(VoxelCoord::new(42, 5, 42), VoxelType::GrownPlatform);
@@ -1058,7 +1058,7 @@ fn ensure_ground_pile_snaps_to_intermediate_platform() {
 
 #[test]
 fn ensure_ground_pile_merges_when_snapped_to_existing() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     // Create a pile at y=1.
     let ground_pos = VoxelCoord::new(44, 1, 44);
     let ground_pile_id = sim.ensure_ground_pile(ground_pos);
@@ -1089,7 +1089,7 @@ fn ensure_ground_pile_merges_when_snapped_to_existing() {
 
 #[test]
 fn inv_add_item_assigns_durability_from_config() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     // Arrow has default durability of 3 in config.
     sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 5, None, None);
@@ -1104,7 +1104,7 @@ fn inv_add_item_assigns_durability_from_config() {
 
 #[test]
 fn inv_add_item_no_durability_for_unconfigured_kinds() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     // Bread has no durability config — should be 0/0 (indestructible).
     sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bread, 3, None, None);
@@ -1118,7 +1118,7 @@ fn inv_add_item_no_durability_for_unconfigured_kinds() {
 
 #[test]
 fn durability_stacking_same_hp_merges() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     // Two batches of arrows with same durability should merge.
     sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 3, None, None);
@@ -1133,7 +1133,7 @@ fn durability_stacking_same_hp_merges() {
 
 #[test]
 fn durability_stacking_different_hp_separate() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     // Add arrows at full HP.
     sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 3, None, None);
@@ -1164,7 +1164,7 @@ fn durability_stacking_different_hp_separate() {
 
 #[test]
 fn inv_split_stack_preserves_durability() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
     sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 5, None, None);
     let stacks = sim
@@ -1187,7 +1187,7 @@ fn inv_split_stack_preserves_durability() {
 
 #[test]
 fn inv_merge_preserves_durability() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     sim.inv_add_simple_item(src, inventory::ItemKind::Arrow, 3, None, None);
@@ -1206,7 +1206,7 @@ fn inv_merge_preserves_durability() {
 
 #[test]
 fn inv_merge_keeps_different_durability_separate() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     // Full-HP arrows in dst.
@@ -1240,7 +1240,7 @@ fn inv_merge_keeps_different_durability_separate() {
 
 #[test]
 fn inv_damage_item_reduces_hp() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
     sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 1, None, None);
     let stacks = sim
@@ -1260,7 +1260,7 @@ fn inv_damage_item_reduces_hp() {
 
 #[test]
 fn inv_damage_item_breaks_at_zero() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
     sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 1, None, None);
     let stacks = sim
@@ -1282,7 +1282,7 @@ fn inv_damage_item_breaks_at_zero() {
 
 #[test]
 fn inv_damage_item_noop_on_indestructible() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bread, 5, None, None);
     let stacks = sim
@@ -1301,7 +1301,7 @@ fn inv_damage_item_noop_on_indestructible() {
 
 #[test]
 fn inv_damage_item_breaks_one_from_stack() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
     sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 5, None, None);
     let stacks = sim
@@ -1326,7 +1326,7 @@ fn inv_damage_item_breaks_one_from_stack() {
 fn inv_damage_item_partial_on_multi_stack_splits() {
     // Partial damage on a multi-item stack should split off one item
     // and only damage that one, leaving the rest at full HP.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
     sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 5, None, None);
     let stacks = sim
@@ -1354,7 +1354,7 @@ fn inv_damage_item_partial_on_multi_stack_splits() {
 
 #[test]
 fn inv_damage_item_zero_amount_noop() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
     sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 3, None, None);
     let stacks = sim
@@ -1445,7 +1445,7 @@ fn item_durability_config_defaults() {
 
 #[test]
 fn inv_add_item_with_durability_explicit() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     sim.inv_add_item_with_durability(
         inv_id,
@@ -1471,7 +1471,7 @@ fn inv_add_item_with_durability_explicit() {
 
 #[test]
 fn inv_reserve_items_preserves_durability() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 5, None, None);
 
@@ -1502,7 +1502,7 @@ fn inv_reserve_items_preserves_durability() {
 
 #[test]
 fn inv_move_stack_basic() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     sim.inv_add_item_with_durability(
@@ -1547,7 +1547,7 @@ fn inv_move_stack_basic() {
 
 #[test]
 fn inv_move_stack_whole_stack() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     sim.inv_add_simple_item(src, inventory::ItemKind::Arrow, 3, None, None);
@@ -1579,7 +1579,7 @@ fn inv_move_stack_whole_stack() {
 #[test]
 fn inv_move_stack_preserves_owner_and_reserved() {
     // inv_move_stack should NOT clear owner or reserved_by.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let src = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
     let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     let fake_owner = spawn_elf(&mut sim);
@@ -1615,7 +1615,7 @@ fn inv_move_stack_preserves_owner_and_reserved() {
 #[test]
 fn inv_move_stack_merges_at_destination() {
     // If dst already has matching items, the moved stack should merge.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     sim.inv_add_simple_item(src, inventory::ItemKind::Arrow, 3, None, None);
@@ -1638,7 +1638,7 @@ fn inv_move_stack_merges_at_destination() {
 
 #[test]
 fn inv_move_stack_zero_quantity_noop() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     sim.inv_add_simple_item(src, inventory::ItemKind::Arrow, 3, None, None);
@@ -1659,7 +1659,7 @@ fn inv_move_stack_zero_quantity_noop() {
 
 #[test]
 fn inv_move_items_basic() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     sim.inv_add_item_with_durability(
@@ -1709,7 +1709,7 @@ fn inv_move_items_basic() {
 
 #[test]
 fn inv_move_items_filter_by_material() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     sim.inv_add_item(
@@ -1764,7 +1764,7 @@ fn inv_move_items_filter_by_material() {
 
 #[test]
 fn inv_move_items_no_kind_filter_moves_all() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     sim.inv_add_simple_item(src, inventory::ItemKind::Arrow, 3, None, None);
@@ -1789,7 +1789,7 @@ fn inv_move_items_no_kind_filter_moves_all() {
 
 #[test]
 fn inv_move_items_partial_when_not_enough() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     sim.inv_add_simple_item(src, inventory::ItemKind::Arrow, 3, None, None);
@@ -1801,7 +1801,7 @@ fn inv_move_items_partial_when_not_enough() {
 
 #[test]
 fn inv_move_stack_nonexistent_returns_none() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     let fake_id = ItemStackId(999_999);
     assert!(sim.inv_move_stack(fake_id, 5, dst).is_none());
@@ -1815,7 +1815,7 @@ fn inv_move_stack_nonexistent_returns_none() {
 
 #[test]
 fn inv_damage_item_nonexistent_returns_false() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let fake_id = ItemStackId(999_999);
     let mut events = Vec::new();
     assert!(!sim.inv_damage_item(fake_id, 5, &mut events));
@@ -1826,7 +1826,7 @@ fn inv_damage_item_nonexistent_returns_false() {
 fn inv_move_items_multi_durability_stacks() {
     // Moving items that span multiple stacks with different durability
     // should preserve each stack's durability independently.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let src = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     let dst = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
 
@@ -1943,7 +1943,7 @@ fn condition_label_current_hp_exceeds_max_hp() {
 
 #[test]
 fn item_display_name_shows_condition_worn() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
     sim.inv_add_item_with_durability(
         inv_id,
@@ -1967,7 +1967,7 @@ fn item_display_name_shows_condition_worn() {
 
 #[test]
 fn item_display_name_shows_condition_damaged() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
     sim.inv_add_item_with_durability(
         inv_id,
@@ -1991,7 +1991,7 @@ fn item_display_name_shows_condition_damaged() {
 
 #[test]
 fn item_display_name_no_condition_at_full_hp() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
     sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 1, None, None);
     let stacks = sim
@@ -2003,7 +2003,7 @@ fn item_display_name_no_condition_at_full_hp() {
 
 #[test]
 fn item_display_name_equipped_and_damaged() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
     sim.inv_add_item_with_durability(
         inv_id,
@@ -2030,7 +2030,7 @@ fn item_display_name_equipped_and_damaged() {
 
 #[test]
 fn item_display_name_indestructible_no_condition() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
     // Bread has no durability (max_hp=0).
     sim.inv_add_simple_item(inv_id, inventory::ItemKind::Bread, 1, None, None);
@@ -2043,7 +2043,7 @@ fn item_display_name_indestructible_no_condition() {
 
 #[test]
 fn item_display_name_shows_equipped_suffix() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
     // Unequipped item.
     sim.inv_add_item(
@@ -2087,7 +2087,7 @@ fn item_display_name_shows_equipped_suffix() {
 
 #[test]
 fn item_display_name_dye_color_prefix() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
     // Undyed oak helmet.
     sim.inv_add_item(
@@ -2171,7 +2171,7 @@ fn item_display_name_dye_color_prefix() {
 
 #[test]
 fn arrow_surface_hit_always_destroyed_when_min_equals_max_hp() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.arrow_gravity = 0;
     sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
     sim.config.arrow_impact_damage_min = 3;
@@ -2228,7 +2228,7 @@ fn arrow_surface_hit_always_destroyed_when_min_equals_max_hp() {
 
 #[test]
 fn arrow_surface_hit_survives_when_no_damage() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.arrow_gravity = 0;
     sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
     sim.config.arrow_impact_damage_min = 0;
@@ -2272,7 +2272,7 @@ fn arrow_surface_hit_survives_when_no_damage() {
 
 #[test]
 fn arrow_creature_hit_always_destroyed_when_min_equals_max_hp() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.arrow_gravity = 0;
     sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
     sim.config.arrow_impact_damage_min = 3;
@@ -2324,7 +2324,7 @@ fn arrow_creature_hit_always_destroyed_when_min_equals_max_hp() {
 
 #[test]
 fn arrow_creature_hit_survives_when_no_damage() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.arrow_gravity = 0;
     sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
     sim.config.arrow_impact_damage_min = 0;
@@ -2412,14 +2412,15 @@ fn arrow_impact_damage_is_deterministic() {
         }
     };
 
-    let r1 = run(99);
-    let r2 = run(99);
+    let seed = legacy_test_seed();
+    let r1 = run(seed);
+    let r2 = run(seed);
     assert_eq!(r1, r2, "Same seed must produce identical results");
 }
 
 #[test]
 fn arrow_impact_partial_damage_reduces_hp() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.arrow_gravity = 0;
     sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
     // Force exactly 1 damage.
@@ -2493,7 +2494,7 @@ fn arrow_impact_config_missing_fields_use_defaults() {
 #[test]
 fn arrow_cumulative_damage_across_impacts() {
     // An arrow that took 1 damage (2/3 HP) should break when it takes 2 more.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::GroundPile);
     sim.inv_add_item_with_durability(
         inv_id,
@@ -2527,7 +2528,7 @@ fn arrow_cumulative_damage_across_impacts() {
 
 #[test]
 fn damaged_and_full_hp_arrows_stay_separate_in_ground_pile() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::GroundPile);
     // Add full-HP arrows.
     sim.inv_add_simple_item(inv_id, inventory::ItemKind::Arrow, 5, None, None);
@@ -2569,7 +2570,7 @@ fn damaged_and_full_hp_arrows_stay_separate_in_ground_pile() {
 
 #[test]
 fn damaged_arrow_survives_serde_roundtrip() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     // Place a damaged arrow in a ground pile.
     let pos = VoxelCoord::new(128, 1, 128);
     let pile_id = sim.ensure_ground_pile(pos);
@@ -2606,7 +2607,7 @@ fn damaged_arrow_survives_serde_roundtrip() {
 
 #[test]
 fn arrow_impact_no_damage_when_min_exceeds_max() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.arrow_gravity = 0;
     sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
     sim.config.arrow_impact_damage_min = 5;
@@ -2677,14 +2678,14 @@ fn fake_stack(
 
 #[test]
 fn item_color_no_material_returns_default() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     let stack = fake_stack(inventory::ItemKind::Bread, None, None);
     assert_eq!(sim.item_color(&stack), inventory::DEFAULT_ITEM_COLOR);
 }
 
 #[test]
 fn item_color_wood_material_returns_muted_base() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     let stack = fake_stack(
         inventory::ItemKind::Bow,
         Some(inventory::Material::Oak),
@@ -2697,7 +2698,7 @@ fn item_color_wood_material_returns_muted_base() {
 
 #[test]
 fn item_color_dye_overrides_material() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     let dye = inventory::ItemColor::new(200, 50, 50);
     let stack = fake_stack(
         inventory::ItemKind::Tunic,
@@ -2710,7 +2711,7 @@ fn item_color_dye_overrides_material() {
 
 #[test]
 fn item_color_fruit_material_uses_appearance_color_muted() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     let species = sim.db.fruit_species.iter_all().next().unwrap().clone();
     let expected = inventory::ItemColor::from(species.appearance.exterior_color).muted();
     let stack = fake_stack(
@@ -2723,7 +2724,7 @@ fn item_color_fruit_material_uses_appearance_color_muted() {
 
 #[test]
 fn item_color_unknown_fruit_species_uses_generic_fallback() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     // Use a fruit species ID that doesn't exist in the DB.
     let bogus_id = crate::fruit::FruitSpeciesId(65535);
     assert!(sim.db.fruit_species.get(&bogus_id).is_none());
@@ -2740,7 +2741,7 @@ fn item_color_unknown_fruit_species_uses_generic_fallback() {
 
 #[test]
 fn inv_normalize_keeps_differently_dyed_stacks_separate() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let inv_id = sim.creature_inv(elf_id);
     // Add two stacks of the same item with different dye colors.
@@ -2797,7 +2798,7 @@ fn inv_normalize_keeps_differently_dyed_stacks_separate() {
 
 #[test]
 fn inv_normalize_merges_same_dye_color_stacks() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let inv_id = sim.creature_inv(elf_id);
     let dye = inventory::ItemColor::new(0, 100, 200);
@@ -2853,7 +2854,7 @@ fn inv_normalize_merges_same_dye_color_stacks() {
 
 #[test]
 fn item_color_each_wood_type_distinct() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     let colors: Vec<_> = inventory::Material::WOOD_TYPES
         .iter()
         .map(|wood| {
@@ -2956,7 +2957,7 @@ fn quality_label_returns_correct_strings() {
 
 #[test]
 fn item_display_name_shows_quality_prefix() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
 
     // Crude bread.
@@ -3020,7 +3021,7 @@ fn item_display_name_shows_quality_prefix() {
 
 #[test]
 fn item_display_name_quality_with_dye_color() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
 
     // Crude blue tunic.
@@ -3069,7 +3070,7 @@ fn quality_from_roll_thresholds() {
 
 #[test]
 fn elf_starting_gear_is_crude() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     let inv_id = sim.creature_inv(elf_id);
     let stacks = sim
@@ -3103,7 +3104,7 @@ fn initial_equipment_is_crude() {
             dye_color: None,
         }]];
     }
-    let mut sim = SimState::with_config(42, config);
+    let mut sim = SimState::with_config(legacy_test_seed(), config);
     let mut events = Vec::new();
     sim.spawn_initial_creatures(&mut events);
 
@@ -3131,7 +3132,7 @@ fn initial_equipment_is_crude() {
 
 #[test]
 fn items_different_quality_do_not_stack() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Creature);
     // Add crude and fine bread.
     sim.inv_add_item(
@@ -3178,7 +3179,7 @@ fn items_different_quality_do_not_stack() {
 #[test]
 fn starting_ground_pile_items_are_crude() {
     let config = test_config();
-    let mut sim = SimState::with_config(42, config);
+    let mut sim = SimState::with_config(legacy_test_seed(), config);
     let mut events = Vec::new();
     sim.spawn_initial_creatures(&mut events);
 
@@ -3216,17 +3217,20 @@ fn starting_ground_pile_items_are_crude() {
 
 #[test]
 fn new_sim_has_initial_fruit() {
-    let sim = test_sim(42);
+    // Verify that we can always produce fruit on the home tree,
+    // either from worldgen or via ensure_tree_has_fruit.
+    let mut sim = test_sim(legacy_test_seed());
+    let fruit_pos = ensure_tree_has_fruit(&mut sim);
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     assert!(
-        !tree.fruit_positions.is_empty(),
-        "Tree should have some initial fruit (got 0)"
+        tree.fruit_positions.contains(&fruit_pos),
+        "Tree should have fruit after ensure_tree_has_fruit"
     );
 }
 
 #[test]
 fn fruit_hangs_below_leaf_voxels() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     for fruit_pos in &tree.fruit_positions {
         // The leaf above the fruit should be in the tree's leaf_voxels.
@@ -3242,7 +3246,7 @@ fn fruit_hangs_below_leaf_voxels() {
 
 #[test]
 fn fruit_set_in_world_grid() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     for fruit_pos in &tree.fruit_positions {
         assert_eq!(
@@ -3261,8 +3265,32 @@ fn fruit_grows_during_heartbeat() {
     config.fruit_initial_attempts = 0;
     config.fruit_production_rate_ppm = 1_000_000; // Always spawn
     config.fruit_max_per_tree = 100;
-    let mut sim = SimState::with_config(42, config);
+    let mut sim = SimState::with_config(legacy_test_seed(), config);
     let tree_id = sim.player_tree_id;
+
+    // Replace the tree's leaf list with a single known-good leaf that has
+    // air below it.  Random worldgen leaf voxels often lack air beneath
+    // them, causing `attempt_fruit_spawn` to silently fail every heartbeat.
+    {
+        let tree = sim.db.trees.get(&tree_id).unwrap();
+        let leaf_pos = VoxelCoord::new(tree.position.x + 3, tree.position.y + 8, tree.position.z);
+        let needs_species = tree.fruit_species_id.is_none();
+        sim.set_voxel(leaf_pos, VoxelType::Leaf);
+        let below = VoxelCoord::new(leaf_pos.x, leaf_pos.y - 1, leaf_pos.z);
+        sim.set_voxel(below, VoxelType::Air);
+
+        if needs_species {
+            let species_id = insert_test_fruit_species(&mut sim);
+            let mut t = sim.db.trees.get(&tree_id).unwrap();
+            t.leaf_voxels = vec![leaf_pos];
+            t.fruit_species_id = Some(species_id);
+            let _ = sim.db.update_tree(t);
+        } else {
+            let mut t = sim.db.trees.get(&tree_id).unwrap();
+            t.leaf_voxels = vec![leaf_pos];
+            let _ = sim.db.update_tree(t);
+        }
+    }
 
     assert!(
         sim.db
@@ -3294,7 +3322,7 @@ fn fruit_respects_max_count() {
     config.fruit_max_per_tree = 3;
     config.fruit_initial_attempts = 100; // Many attempts, but max is 3.
     config.fruit_production_rate_ppm = 1_000_000;
-    let sim = SimState::with_config(42, config);
+    let sim = SimState::with_config(legacy_test_seed(), config);
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
 
     assert!(
@@ -3306,8 +3334,9 @@ fn fruit_respects_max_count() {
 
 #[test]
 fn fruit_deterministic() {
-    let sim_a = test_sim(42);
-    let sim_b = test_sim(42);
+    let seed = legacy_test_seed();
+    let sim_a = test_sim(seed);
+    let sim_b = test_sim(seed);
     let tree_a = sim_a.db.trees.get(&sim_a.player_tree_id).unwrap();
     let tree_b = sim_b.db.trees.get(&sim_b.player_tree_id).unwrap();
     assert_eq!(tree_a.fruit_positions, tree_b.fruit_positions);
@@ -3315,7 +3344,7 @@ fn fruit_deterministic() {
 
 #[test]
 fn tree_has_fruit_species_assigned() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     assert!(
         tree.fruit_species_id.is_some(),
@@ -3332,7 +3361,7 @@ fn tree_has_fruit_species_assigned() {
 
 #[test]
 fn fruit_voxels_have_species_tracked() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     // Every fruit voxel should have a species entry in the map.
     for &fruit_pos in &tree.fruit_positions {
@@ -3356,7 +3385,7 @@ fn fruit_voxels_have_species_tracked() {
 
 #[test]
 fn fruit_species_at_returns_species() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     if let Some(first_fruit) = tree.fruit_positions.first() {
         let species = sim.fruit_species_at(*first_fruit);
@@ -3378,9 +3407,9 @@ fn fruit_species_at_returns_species() {
 
 #[test]
 fn fruit_voxel_species_roundtrip() {
-    let sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
+    ensure_tree_has_fruit(&mut sim);
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
-    assert!(!tree.fruit_positions.is_empty(), "need fruit for this test");
 
     let json = sim.to_json().unwrap();
     let loaded = SimState::from_json(&json).unwrap();
@@ -3409,9 +3438,9 @@ fn fruit_voxel_species_roundtrip() {
 
 #[test]
 fn harvest_fruit_carries_species_material() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
+    let fruit_pos = ensure_tree_has_fruit(&mut sim);
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
-    let fruit_pos = tree.fruit_positions[0];
     let tree_species = tree.fruit_species_id.unwrap();
 
     // Spawn an elf near the fruit.
@@ -3470,7 +3499,31 @@ fn fruit_heartbeat_tracks_species() {
     config.fruit_initial_attempts = 0;
     config.fruit_production_rate_ppm = 1_000_000;
     config.fruit_max_per_tree = 100;
-    let mut sim = SimState::with_config(42, config);
+    let mut sim = SimState::with_config(legacy_test_seed(), config);
+
+    // Replace the tree's leaf list with a single known-good leaf that has
+    // air below it.  Random worldgen leaf voxels often lack air beneath
+    // them, causing `attempt_fruit_spawn` to silently fail every heartbeat.
+    {
+        let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
+        let leaf_pos = VoxelCoord::new(tree.position.x + 3, tree.position.y + 8, tree.position.z);
+        let needs_species = tree.fruit_species_id.is_none();
+        sim.set_voxel(leaf_pos, VoxelType::Leaf);
+        let below = VoxelCoord::new(leaf_pos.x, leaf_pos.y - 1, leaf_pos.z);
+        sim.set_voxel(below, VoxelType::Air);
+
+        if needs_species {
+            let species_id = insert_test_fruit_species(&mut sim);
+            let mut t = sim.db.trees.get(&sim.player_tree_id).unwrap();
+            t.leaf_voxels = vec![leaf_pos];
+            t.fruit_species_id = Some(species_id);
+            let _ = sim.db.update_tree(t);
+        } else {
+            let mut t = sim.db.trees.get(&sim.player_tree_id).unwrap();
+            t.leaf_voxels = vec![leaf_pos];
+            let _ = sim.db.update_tree(t);
+        }
+    }
 
     assert!(
         sim.fruit_voxel_species.is_empty(),
@@ -3497,7 +3550,7 @@ fn fruit_heartbeat_tracks_species() {
 
 #[test]
 fn add_creature_item() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.elf_starting_bread = 0;
     let elf_id = spawn_elf(&mut sim);
 
@@ -3522,7 +3575,7 @@ fn add_creature_item() {
 
 #[test]
 fn add_ground_pile_item() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let pos = VoxelCoord::new(32, 1, 32);
 
     let cmd = SimCommand {
@@ -3615,7 +3668,7 @@ fn material_filter_default_is_any() {
 fn death_drop_preserves_preexisting_pile_items() {
     // If a ground pile already exists at the death position with items
     // from another source, those items must not be affected.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
     let elf_inv = sim.db.creatures.get(&elf).unwrap().inventory_id;

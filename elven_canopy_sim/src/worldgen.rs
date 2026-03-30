@@ -34,6 +34,10 @@
 // for worldgen generators (holds `FruitConfig` and `CivConfig`). The existing
 // tree profile config stays at the top level of `GameConfig`.
 //
+// The test helper `flat_world_sim()` (in `sim/tests/test_helpers.rs`) creates
+// treeless flat worlds for tests by calling `generate_civilizations()` and
+// `generate_diplomacy()` directly with cached geometry.
+//
 // **Critical constraint: determinism.** All generators use the worldgen PRNG
 // exclusively. No iterated HashMap — use BTreeMap for ordered iteration,
 // LookupMap for point queries. No system time, no OS entropy. The generator
@@ -478,7 +482,7 @@ fn generate_lesser_trees(
 /// are drawn from the weighted species distribution.
 ///
 /// Returns the player's `CivId`.
-fn generate_civilizations(
+pub(crate) fn generate_civilizations(
     rng: &mut GameRng,
     config: &CivConfig,
     db: &mut SimDb,
@@ -796,7 +800,7 @@ fn pick_minority_species(rng: &mut GameRng, primary: CivSpecies) -> Vec<CivSpeci
 /// **Guarantee:** After generation, the player civ (CivId(0)) will know at
 /// least one hostile civ. If the random rolls don't produce one, a post-pass
 /// forces awareness of the first available hostile-species civ.
-fn generate_diplomacy(rng: &mut GameRng, config: &CivConfig, db: &mut SimDb) {
+pub(crate) fn generate_diplomacy(rng: &mut GameRng, config: &CivConfig, db: &mut SimDb) {
     let civ_ids: Vec<(CivId, CivSpecies)> = db
         .civilizations
         .iter_all()

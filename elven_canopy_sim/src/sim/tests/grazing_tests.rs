@@ -10,7 +10,7 @@ use super::*;
 
 #[test]
 fn is_grassy_dirt_returns_true_for_exposed_dirt() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     // Test world has dirt at y=0, air at y=1 (floor_y=0, terrain_max_height=0).
     // Find a dirt voxel that's not under the tree trunk.
     let coord = VoxelCoord::new(10, 0, 10);
@@ -20,14 +20,14 @@ fn is_grassy_dirt_returns_true_for_exposed_dirt() {
 
 #[test]
 fn is_grassy_dirt_returns_false_for_air() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     let coord = VoxelCoord::new(10, 1, 10);
     assert!(!sim.is_grassy_dirt(coord));
 }
 
 #[test]
 fn is_grassy_dirt_returns_false_for_grassless_dirt() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let coord = VoxelCoord::new(10, 0, 10);
     assert!(sim.is_grassy_dirt(coord));
     sim.grassless.insert(coord);
@@ -36,7 +36,7 @@ fn is_grassy_dirt_returns_false_for_grassless_dirt() {
 
 #[test]
 fn is_grassy_dirt_returns_false_for_covered_dirt() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     // Place a solid voxel above dirt to cover it.
     let dirt = VoxelCoord::new(5, 0, 5);
     let above = VoxelCoord::new(5, 1, 5);
@@ -46,7 +46,7 @@ fn is_grassy_dirt_returns_false_for_covered_dirt() {
 
 #[test]
 fn capybara_is_herbivore() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     let species_data = &sim.species_table[&Species::Capybara];
     assert!(species_data.is_herbivore);
     assert!(species_data.graze_food_restore_pct > 0);
@@ -54,14 +54,14 @@ fn capybara_is_herbivore() {
 
 #[test]
 fn elf_is_not_herbivore() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     let species_data = &sim.species_table[&Species::Elf];
     assert!(!species_data.is_herbivore);
 }
 
 #[test]
 fn find_nearest_grass_returns_some_for_herbivore() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let capybara_id = spawn_creature(&mut sim, Species::Capybara);
     let result = sim.find_nearest_grass(capybara_id);
     assert!(result.is_some(), "Capybara should find nearby grass");
@@ -69,7 +69,7 @@ fn find_nearest_grass_returns_some_for_herbivore() {
 
 #[test]
 fn find_nearest_grass_avoids_grassless() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let capybara_id = spawn_creature(&mut sim, Species::Capybara);
 
     // Mark a huge radius of dirt as grassless.
@@ -84,7 +84,7 @@ fn find_nearest_grass_avoids_grassless() {
 
 #[test]
 fn resolve_graze_action_restores_food() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let capybara_id = spawn_creature(&mut sim, Species::Capybara);
 
     // Drain the capybara's food and assign a graze task.
@@ -129,7 +129,7 @@ fn resolve_graze_action_restores_food() {
 
 #[test]
 fn resolve_graze_action_marks_voxel_grassless() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let capybara_id = spawn_creature(&mut sim, Species::Capybara);
 
     let grass_pos = VoxelCoord::new(8, 0, 8);
@@ -160,7 +160,7 @@ fn resolve_graze_action_marks_voxel_grassless() {
 
 #[test]
 fn grass_regrowth_removes_from_grassless() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     // Insert a grassless voxel.
     let coord = VoxelCoord::new(10, 0, 10);
     sim.grassless.insert(coord);
@@ -176,7 +176,7 @@ fn grass_regrowth_removes_from_grassless() {
 
 #[test]
 fn grass_regrowth_zero_chance_does_nothing() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let coord = VoxelCoord::new(10, 0, 10);
     sim.grassless.insert(coord);
 
@@ -188,7 +188,7 @@ fn grass_regrowth_zero_chance_does_nothing() {
 
 #[test]
 fn hungry_herbivore_creates_graze_task() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let capybara_id = spawn_creature(&mut sim, Species::Capybara);
 
     // Set food just below the hunger threshold so the heartbeat triggers
@@ -220,7 +220,7 @@ fn hungry_herbivore_creates_graze_task() {
 
 #[test]
 fn hungry_elf_does_not_create_graze_task() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
     // Make the elf hungry.
@@ -281,7 +281,7 @@ fn graze_task_serde_roundtrip() {
 
 #[test]
 fn grassless_set_serde_roundtrip() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     // Add some grassless entries.
     sim.grassless.insert(VoxelCoord::new(10, 0, 10));
     sim.grassless.insert(VoxelCoord::new(20, 0, 20));
@@ -316,7 +316,7 @@ fn graze_preemption_level_is_survival() {
 
 #[test]
 fn resolve_graze_food_capped_at_food_max() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let capybara_id = spawn_creature(&mut sim, Species::Capybara);
     let species_data = sim.species_table[&Species::Capybara].clone();
 
@@ -355,7 +355,7 @@ fn resolve_graze_food_capped_at_food_max() {
 
 #[test]
 fn herbivore_does_not_fall_back_to_fruit() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let capybara_id = spawn_creature(&mut sim, Species::Capybara);
 
     // Deplete all grass in the world.
@@ -392,7 +392,7 @@ fn herbivore_does_not_fall_back_to_fruit() {
 
 #[test]
 fn grass_regrowth_event_fires_via_sim_step() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     // Add a grassless entry.
     let coord = VoxelCoord::new(10, 0, 10);
@@ -422,7 +422,7 @@ fn grass_regrowth_event_fires_via_sim_step() {
 
 #[test]
 fn two_herbivores_graze_same_tile() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let cap1 = spawn_creature(&mut sim, Species::Capybara);
     let cap2 = spawn_creature(&mut sim, Species::Capybara);
 
@@ -468,7 +468,7 @@ fn two_herbivores_graze_same_tile() {
 
 #[test]
 fn all_herbivore_species_flagged_correctly() {
-    let sim = test_sim(42);
+    let sim = test_sim(legacy_test_seed());
     let herbivores = [
         Species::Capybara,
         Species::Boar,
@@ -496,7 +496,7 @@ fn all_herbivore_species_flagged_correctly() {
 
 #[test]
 fn backfill_grass_regrowth_event_on_load() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let json = sim.to_json().unwrap();
     let restored = SimState::from_json(&json).unwrap();
 
@@ -510,7 +510,7 @@ fn backfill_grass_regrowth_event_on_load() {
 
 #[test]
 fn set_voxel_exposes_dirt_marks_grassless() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let dirt = VoxelCoord::new(10, 0, 10);
     let above = VoxelCoord::new(10, 1, 10);
 
@@ -535,7 +535,7 @@ fn set_voxel_exposes_dirt_marks_grassless() {
 
 #[test]
 fn set_voxel_covering_dirt_removes_from_grassless() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let dirt = VoxelCoord::new(10, 0, 10);
     let above = VoxelCoord::new(10, 1, 10);
 
@@ -553,7 +553,7 @@ fn set_voxel_covering_dirt_removes_from_grassless() {
 
 #[test]
 fn set_voxel_non_dirt_below_no_effect() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     // Place trunk at y=0, then remove solid above at y=1.
     let coord = VoxelCoord::new(10, 1, 10);
     sim.world.set(VoxelCoord::new(10, 0, 10), VoxelType::Trunk);

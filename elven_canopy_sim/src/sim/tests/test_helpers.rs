@@ -5,11 +5,72 @@
 use super::*;
 use std::sync::LazyLock;
 
-/// Cached seed-42 SimState. Constructed once (tree gen + nav graph + lexicon),
-/// then cloned by `test_sim(42)`. ~155 call sites go from full construction
-/// to a cheap ~256KB memcpy.
+/// The fresh seed for this test run — generated once, shared by all tests.
+/// Printed on first access so any failure in the run can be reproduced.
+static FRESH_SEED: LazyLock<u64> = LazyLock::new(|| {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+    // Mix with PID to differentiate parallel CI runners on the same machine.
+    let pid = std::process::id() as u64;
+    let seed = nanos.wrapping_add(pid.wrapping_mul(0x517cc1b727220a95));
+    eprintln!("fresh_test_seed for this run: {seed}");
+    seed
+});
+
+/// Hardcoded seed for existing tests. These tests have been hardened
+/// against many fragility patterns (activation races, stat-dependent
+/// behavior, fruit existence, etc.) but haven't yet been validated
+/// with fully random seeds. To advance them to `fresh_test_seed()`,
+/// switch them one at a time and fix any flakes that surface.
+pub(super) fn legacy_test_seed() -> u64 {
+    42
+}
+
+/// Return the fresh seed for this test run. The seed is generated once
+/// per process (via `FRESH_SEED`) and reused by all tests, so
+/// `test_sim(fresh_test_seed())` and `flat_world_sim(fresh_test_seed())`
+/// hit their respective caches. Printed to stderr on first use (always
+/// visible, even for passing runs) so any failure can be reproduced.
+///
+/// Use this for NEW tests. Existing tests use `legacy_test_seed()`.
+#[allow(dead_code)] // Will be used as new tests are added.
+pub(super) fn fresh_test_seed() -> u64 {
+    *FRESH_SEED
+}
+
+/// Cached seed-42 SimState for test_sim(42) performance. Most legacy tests
+/// use seed 42 via legacy_test_seed(), so this cache covers them all.
 pub(super) static CACHED_SIM_42: LazyLock<SimState> =
     LazyLock::new(|| SimState::with_config(42, test_config()));
+
+/// Cached fresh-seed SimState for test_sim(fresh_test_seed()) performance.
+/// Built once per test run with the fresh seed.
+static CACHED_SIM_FRESH: LazyLock<SimState> =
+    LazyLock::new(|| SimState::with_config(*FRESH_SEED, test_config()));
+
+/// Cached flat-world geometry (world + nav graphs). These are seed-independent
+/// (terrain_max_height=0 makes zero PRNG calls), so one copy serves all seeds.
+/// The expensive nav graph build (~150ms) runs once; `flat_world_sim` clones
+/// the geometry and overlays seed-dependent civs/diplomacy/RNG.
+static FLAT_GEOMETRY: LazyLock<(
+    crate::world::VoxelWorld,
+    crate::nav::NavGraph,
+    crate::nav::NavGraph,
+)> = LazyLock::new(|| {
+    use crate::nav;
+    let config = flat_world_config();
+    let (ws_x, ws_y, ws_z) = config.world_size;
+    let mut world = crate::world::VoxelWorld::new(ws_x, ws_y, ws_z);
+    // terrain_max_height=0: flat ground, no PRNG calls.
+    crate::tree_gen::generate_terrain(&mut world, &config, &mut elven_canopy_prng::GameRng::new(0));
+    world.clear_dirty_voxels();
+    world.repack_all();
+    let nav_graph = nav::build_nav_graph(&world, &BTreeMap::new());
+    let large_nav_graph = nav::build_large_nav_graph(&world);
+    (world, nav_graph, large_nav_graph)
+});
 
 /// Test config with a small 64^3 world and reduced tree energy.
 /// Matches the approach used by nav::tests and tree_gen::tests.
@@ -27,7 +88,7 @@ pub(super) fn test_config() -> GameConfig {
     config.terrain_max_height = 0;
     // Pin leaf config so tests don't break when visual defaults change.
     config.tree_profile.leaves.leaf_density = 0.65;
-    config.tree_profile.leaves.leaf_size = 3;
+    config.tree_profile.leaves.leaf_size = 5;
     // Disable lesser trees in tests to avoid PRNG sequence shifts when the
     // default count changes. Tests that specifically exercise lesser trees
     // enable them explicitly.
@@ -43,13 +104,146 @@ pub(super) fn test_config() -> GameConfig {
 }
 
 /// Create a test SimState with a small world for fast tests.
-/// Seed 42 clones from a cached instance; other seeds construct fresh.
+/// Seed 42 and the fresh seed clone from cached instances; other seeds
+/// construct fresh.
 pub(super) fn test_sim(seed: u64) -> SimState {
     if seed == 42 {
         CACHED_SIM_42.clone()
+    } else if seed == *FRESH_SEED {
+        CACHED_SIM_FRESH.clone()
     } else {
         SimState::with_config(seed, test_config())
     }
+}
+
+/// Config for a flat, treeless test world. Same small 64^3 dimensions as
+/// `test_config()`, but the resulting world has no tree geometry — just
+/// flat ground at `floor_y` with open air above. Ideal for combat,
+/// projectile, and movement tests that need clear LOS and predictable
+/// terrain without coupling to tree generation output.
+pub(super) fn flat_world_config() -> GameConfig {
+    let mut config = GameConfig {
+        world_size: (64, 64, 64),
+        floor_y: 0,
+        ..GameConfig::default()
+    };
+    config.terrain_max_height = 0;
+    // Spawn positions adjusted for the small world center.
+    for spec in &mut config.initial_creatures {
+        spec.spawn_position = VoxelCoord::new(32, 1, 32);
+    }
+    for pile in &mut config.initial_ground_piles {
+        pile.position = VoxelCoord::new(32, 1, 42);
+    }
+    config
+}
+
+/// Create a test SimState with a flat, treeless world. Clones cached
+/// geometry (world + nav graphs) and overlays seed-dependent state
+/// (civs, diplomacy, tree row, RNG). Fast because the expensive nav
+/// graph build is amortized across all callers.
+///
+/// The home tree DB row exists (for `player_tree_id` lookups) but has no
+/// voxels. Creatures can be spawned and will snap to the flat ground's
+/// nav nodes.
+pub(super) fn flat_world_sim(seed: u64) -> SimState {
+    use crate::db::{GreatTreeInfo, SimDb, Tree};
+    use crate::types::TreeId;
+    use crate::worldgen;
+    use elven_canopy_prng::GameRng;
+
+    let config = flat_world_config();
+    let (ref world, ref nav, ref large_nav) = *FLAT_GEOMETRY;
+
+    // Seed-dependent: IDs, civs, diplomacy, runtime RNG.
+    let mut rng = GameRng::new(seed);
+    let _compat = rng.next_128_bits();
+    let player_tree_id = TreeId::new(&mut rng);
+    // Terrain generation is a no-op for flat worlds (terrain_max_height=0),
+    // but call it anyway to keep the PRNG sequence in sync with
+    // run_worldgen_flat.
+    crate::tree_gen::generate_terrain(
+        &mut crate::world::VoxelWorld::new(1, 1, 1),
+        &config,
+        &mut rng,
+    );
+
+    let lexicon = elven_canopy_lang::default_lexicon();
+    let mut db = SimDb::new();
+    let player_civ_id =
+        worldgen::generate_civilizations(&mut rng, &config.worldgen.civs, &mut db, &lexicon);
+    worldgen::generate_diplomacy(&mut rng, &config.worldgen.civs, &mut db);
+
+    let center_x = config.world_size.0 as i32 / 2;
+    let center_z = config.world_size.2 as i32 / 2;
+    let home_tree = Tree {
+        id: player_tree_id,
+        position: VoxelCoord::new(center_x, config.floor_y, center_z),
+        health: 100,
+        growth_level: 1,
+        owner: Some(player_civ_id),
+        trunk_voxels: Vec::new(),
+        branch_voxels: Vec::new(),
+        leaf_voxels: Vec::new(),
+        root_voxels: Vec::new(),
+        fruit_positions: Vec::new(),
+        fruit_species_id: None,
+    };
+    let great_tree_info = GreatTreeInfo {
+        id: player_tree_id,
+        mana_stored: config.starting_mana_mm,
+        mana_capacity: config.starting_mana_capacity_mm,
+        fruit_production_rate_ppm: config.fruit_production_rate_ppm,
+        carrying_capacity: 20,
+        current_load: 0,
+    };
+    let _ = db.insert_tree(home_tree);
+    let _ = db.insert_great_tree_info(great_tree_info);
+
+    let runtime_seed = rng.next_u64();
+    let species_table = config.species.clone();
+
+    let mut state = SimState {
+        tick: 0,
+        rng: GameRng::new(runtime_seed),
+        config,
+        event_queue: EventQueue::new(),
+        db,
+        placed_voxels: Vec::new(),
+        carved_voxels: Vec::new(),
+        face_data_list: Vec::new(),
+        face_data: BTreeMap::new(),
+        ladder_orientations_list: Vec::new(),
+        ladder_orientations: BTreeMap::new(),
+        next_structure_id: 0,
+        player_tree_id,
+        player_civ_id: Some(player_civ_id),
+        world: world.clone(),
+        nav_graph: nav.clone(),
+        large_nav_graph: large_nav.clone(),
+        species_table,
+        lexicon: Some(lexicon),
+        last_build_message: None,
+        structure_voxels: BTreeMap::new(),
+        spatial_index: BTreeMap::new(),
+        fruit_voxel_species_list: Vec::new(),
+        fruit_voxel_species: BTreeMap::new(),
+        mana_wasted_positions: Vec::new(),
+        grassless: BTreeSet::new(),
+    };
+
+    // Schedule heartbeats (logistics, grass regrowth). No tree heartbeat
+    // since the tree has no voxels to grow.
+    let logistics_interval = state.config.logistics_heartbeat_interval_ticks;
+    state
+        .event_queue
+        .schedule(logistics_interval, ScheduledEventKind::LogisticsHeartbeat);
+    let grass_interval = state.config.grass_regrowth_interval_ticks;
+    state
+        .event_queue
+        .schedule(grass_interval, ScheduledEventKind::GrassRegrowth);
+
+    state
 }
 
 // ---------------------------------------------------------------------------
@@ -613,9 +807,42 @@ pub(super) fn ensure_hostile_civ(sim: &mut SimState) -> CivId {
         })
         .map(|c| c.id);
 
-    let hostile_civ_id = hostile_civ.expect("worldgen should produce at least one hostile civ");
+    // If worldgen didn't produce a hostile-species civ (possible with some
+    // random seeds), create one explicitly so raid tests are not flaky.
+    let hostile_civ_id = hostile_civ.unwrap_or_else(|| {
+        let max_id = sim
+            .db
+            .civilizations
+            .iter_all()
+            .map(|c| c.id.0)
+            .max()
+            .unwrap_or(0);
+        let new_id = CivId(max_id + 1);
+        sim.db
+            .insert_civilization(crate::db::Civilization {
+                id: new_id,
+                name: "Test Goblins".to_string(),
+                primary_species: CivSpecies::Goblin,
+                minority_species: Vec::new(),
+                culture_tag: CultureTag::Martial,
+                player_controlled: false,
+            })
+            .unwrap();
+        new_id
+    });
 
     remove_all_hostile_rels(sim);
+
+    // Remove any existing (possibly non-hostile) relationships between the
+    // hostile civ and the player so discover_civ can insert Hostile ones.
+    // Without this, discover_civ returns early if a Neutral/Friendly
+    // relationship already exists from worldgen.
+    let _ = sim
+        .db
+        .remove_civ_relationship(&(hostile_civ_id, player_civ));
+    let _ = sim
+        .db
+        .remove_civ_relationship(&(player_civ, hostile_civ_id));
 
     sim.discover_civ(hostile_civ_id, player_civ, CivOpinion::Hostile);
     sim.discover_civ(player_civ, hostile_civ_id, CivOpinion::Hostile);
@@ -900,6 +1127,53 @@ pub(super) fn insert_test_fruit_species(sim: &mut SimState) -> crate::fruit::Fru
     };
     sim.db.insert_fruit_species(species).unwrap();
     id
+}
+
+/// Ensure the home tree has at least one fruit. If the tree already has
+/// fruit, does nothing. Otherwise, finds a leaf voxel and places a Fruit
+/// one voxel below it, registers it in the tree's fruit_positions and the
+/// fruit_voxel_species map. Panics if the tree has no leaves (which would
+/// indicate a broken worldgen for any test_sim seed).
+///
+/// This guarantees fruit-dependent tests always have fruit to work with,
+/// regardless of PRNG-dependent fruit spawning during worldgen.
+pub(super) fn ensure_tree_has_fruit(sim: &mut SimState) -> VoxelCoord {
+    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
+    if let Some(&pos) = tree.fruit_positions.first() {
+        return pos;
+    }
+
+    // Tree has no fruit — place one manually.
+    assert!(
+        !tree.leaf_voxels.is_empty(),
+        "Tree must have leaf voxels to place fruit"
+    );
+
+    // Find a leaf with air below it (valid fruit position).
+    let fruit_pos = tree
+        .leaf_voxels
+        .iter()
+        .map(|&leaf| VoxelCoord::new(leaf.x, leaf.y - 1, leaf.z))
+        .find(|&pos| sim.world.in_bounds(pos) && sim.world.get(pos) == VoxelType::Air)
+        .expect("No valid fruit position found (all positions below leaves are blocked)");
+
+    // Ensure the tree has a fruit species. If not, insert a test one.
+    let species_id = tree.fruit_species_id.unwrap_or_else(|| {
+        let id = insert_test_fruit_species(sim);
+        let mut t = sim.db.trees.get(&sim.player_tree_id).unwrap();
+        t.fruit_species_id = Some(id);
+        let _ = sim.db.update_tree(t);
+        id
+    });
+
+    // Place the fruit voxel and register it.
+    sim.set_voxel(fruit_pos, VoxelType::Fruit);
+    let mut tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
+    tree.fruit_positions.push(fruit_pos);
+    let _ = sim.db.update_tree(tree);
+    sim.fruit_voxel_species.insert(fruit_pos, species_id);
+    sim.fruit_voxel_species_list.push((fruit_pos, species_id));
+    fruit_pos
 }
 
 /// Set up an extraction kitchen: furnish a building as Kitchen, add an

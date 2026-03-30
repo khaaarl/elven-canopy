@@ -11,7 +11,7 @@ use super::*;
 
 #[test]
 fn elf_wanders_after_spawn() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn elf.
@@ -45,8 +45,9 @@ fn elf_wanders_after_spawn() {
 
 #[test]
 fn determinism_with_elf_after_1000_ticks() {
-    let mut sim_a = test_sim(42);
-    let mut sim_b = test_sim(42);
+    let seed = legacy_test_seed();
+    let mut sim_a = test_sim(seed);
+    let mut sim_b = test_sim(seed);
 
     let tree_pos = sim_a.db.trees.get(&sim_a.player_tree_id).unwrap().position;
 
@@ -78,7 +79,7 @@ fn determinism_with_elf_after_1000_ticks() {
 
 #[test]
 fn creature_claims_available_task() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
 
     // Far ground-level location — elf spawns near (32,1,32), this is ~20
@@ -103,7 +104,7 @@ fn creature_claims_available_task() {
 
 #[test]
 fn creature_walks_to_task_location() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
 
     // Far ground-level location so the elf has a long walk.
@@ -156,7 +157,7 @@ fn action_state_set_during_work_actions() {
     let elf_species = config.species.get_mut(&Species::Elf).unwrap();
     elf_species.food_decay_per_tick = 0;
     elf_species.rest_decay_per_tick = 0;
-    let mut sim = SimState::with_config(42, config);
+    let mut sim = SimState::with_config(legacy_test_seed(), config);
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     let elf_id = spawn_elf(&mut sim);
@@ -201,7 +202,7 @@ fn action_state_set_during_work_actions() {
 /// deleted.
 #[test]
 fn move_action_cleaned_up_after_arrival() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
 
     // Let the elf wander once to create a MoveAction.
@@ -248,7 +249,7 @@ fn task_removed_during_build_action_creature_wanders() {
     let elf_species = config.species.get_mut(&Species::Elf).unwrap();
     elf_species.food_decay_per_tick = 0;
     elf_species.rest_decay_per_tick = 0;
-    let mut sim = SimState::with_config(42, config);
+    let mut sim = SimState::with_config(legacy_test_seed(), config);
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     let elf_id = spawn_elf(&mut sim);
@@ -309,12 +310,17 @@ fn task_removed_during_build_action_creature_wanders() {
 /// verify the task transitions through GoingToDestination.
 #[test]
 fn pickup_action_transitions_haul_phase() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.config.haul_pickup_action_ticks = 500;
     sim.config.haul_dropoff_action_ticks = 500;
-    let elf_species = sim.config.species.get_mut(&Species::Elf).unwrap();
-    elf_species.food_decay_per_tick = 0;
-    elf_species.rest_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
@@ -410,7 +416,7 @@ fn sleep_adaptive_completion_rest_full_exits_early() {
     elf_species.heartbeat_interval_ticks = 1_000_000;
     config.sleep_action_ticks = 1000;
     config.sleep_ticks_ground = 1_000_000; // Very long sleep by progress.
-    let mut sim = SimState::with_config(42, config);
+    let mut sim = SimState::with_config(legacy_test_seed(), config);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
 
@@ -489,7 +495,7 @@ fn sleep_adaptive_completion_rest_full_exits_early() {
 /// High-priority #7: ActionKind + MoveAction serde roundtrip.
 #[test]
 fn action_state_survives_serde_roundtrip() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
 
     // Let the elf wander to create a Move action + MoveAction row.
@@ -518,7 +524,7 @@ fn action_state_survives_serde_roundtrip() {
 /// Medium-priority #8: abort_current_action with Move cleans up MoveAction.
 #[test]
 fn abort_move_action_cleans_up_move_action_row() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
 
     // Let the elf wander to create a Move action.
@@ -547,7 +553,7 @@ fn abort_move_action_cleans_up_move_action_row() {
 /// (creature_id), we verify the cascade path works.
 #[test]
 fn creature_removal_cleans_up_move_action() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
 
     // Let the elf wander to create a MoveAction.
@@ -574,7 +580,7 @@ fn eat_action_ticks_controls_timing() {
     let elf_species = config.species.get_mut(&Species::Elf).unwrap();
     elf_species.food_decay_per_tick = 0;
     elf_species.rest_decay_per_tick = 0;
-    let mut sim = SimState::with_config(42, config);
+    let mut sim = SimState::with_config(legacy_test_seed(), config);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn elf.
@@ -659,7 +665,7 @@ fn config_backward_compat_action_ticks_defaults() {
 /// Lower-priority #20: abort_current_action is harmless with NoAction.
 #[test]
 fn abort_no_action_is_harmless() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn elf but only step to tick 1 (before first activation).
@@ -728,7 +734,7 @@ fn action_kind_serde_roundtrip_all_variants() {
 /// MoveAction deletion attempt.
 #[test]
 fn abort_build_action_clears_state_only() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn elf but only step to tick 1 (before first activation).
@@ -775,7 +781,7 @@ fn abort_build_action_clears_state_only() {
 
 #[test]
 fn interrupt_goto_completes_task_and_clears_creature() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
 
     let nav_count = sim.nav_graph.node_count();
@@ -812,7 +818,7 @@ fn interrupt_goto_completes_task_and_clears_creature() {
 
 #[test]
 fn interrupt_build_returns_task_to_available() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
@@ -857,7 +863,7 @@ fn interrupt_build_returns_task_to_available() {
 
 #[test]
 fn interrupt_craft_clears_reservations() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
 
     // Spawn elf near building.
@@ -960,7 +966,7 @@ fn interrupt_craft_clears_reservations() {
 
 #[test]
 fn interrupt_sleep_completes_task() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
 
     let current_node = creature_node(&sim, elf_id);
@@ -998,7 +1004,7 @@ fn interrupt_sleep_completes_task() {
 
 #[test]
 fn interrupt_task_clears_creature_fields() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
 
     // Assign creature to a stub task, then interrupt it.
@@ -1019,7 +1025,7 @@ fn interrupt_task_clears_creature_fields() {
 
 #[test]
 fn interrupt_clears_move_action() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
 
     let current_node = creature_node(&sim, elf_id);
@@ -1091,7 +1097,7 @@ fn attack_target_autonomous_preemption_is_autonomous_combat() {
 
 #[test]
 fn find_available_task_respects_civ_filter() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let hostile_civ = ensure_hostile_civ(&mut sim);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let player_civ = sim.player_civ_id.unwrap();
@@ -1161,7 +1167,7 @@ fn find_available_task_unaffiliated_creature_blocked_by_civ_filter() {
     // A creature with civ_id = None (wild/unaffiliated) cannot claim a
     // player-civ task. This is the same filter path as hostile creatures,
     // but exercises the None vs Some comparison.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let player_civ = sim.player_civ_id.unwrap();
 
@@ -1226,7 +1232,7 @@ fn find_available_task_unaffiliated_creature_blocked_by_civ_filter() {
 #[test]
 fn insert_task_propagates_required_civ_id() {
     // Verify that insert_task copies required_civ_id from the DTO to the DB row.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let player_civ = sim.player_civ_id.unwrap();
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
@@ -1258,7 +1264,7 @@ fn insert_task_propagates_required_civ_id() {
 #[test]
 fn find_available_task_no_civ_filter_allows_any() {
     // Tasks with required_civ_id = None should be claimable by anyone.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let hostile_civ = ensure_hostile_civ(&mut sim);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
@@ -1315,7 +1321,7 @@ fn directed_goto_on_wandering_creature_does_not_schedule_extra_activation() {
     // mid-wander-move (no task, action_kind == Move) should NOT schedule
     // an extra CreatureActivation. The existing wander activation should
     // resolve the move, then the creature picks up the new GoTo task.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     force_idle_and_cancel_activations(&mut sim, elf);
 
@@ -1367,7 +1373,7 @@ fn directed_goto_on_wandering_creature_preserves_move_action() {
     // mid-wander-move should preserve the in-progress Move action.
     // The move should complete at its original next_available_tick, then
     // the creature starts walking toward the new GoTo destination.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     force_idle_and_cancel_activations(&mut sim, elf);
 
@@ -1440,7 +1446,7 @@ fn directed_goto_spam_does_not_accumulate_activations() {
     // while the creature is mid-move should never accumulate multiple
     // pending activations. Each command should recognize the in-flight
     // move and skip scheduling.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     force_idle_and_cancel_activations(&mut sim, elf);
 
@@ -1526,7 +1532,7 @@ fn directed_goto_spam_does_not_accumulate_activations() {
 #[test]
 fn attack_move_on_wandering_creature_does_not_schedule_extra_activation() {
     // B-erratic-movement-2: same issue as DirectedGoTo but for AttackMove.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     force_idle_and_cancel_activations(&mut sim, elf);
 
@@ -1575,7 +1581,7 @@ fn attack_move_creature_reactivates_after_arriving_at_destination() {
     // An elf attack-moves to a location with no hostiles. After arriving
     // and completing the task, the elf must still have a pending activation
     // so it can wander or pick up new work.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     force_idle_and_cancel_activations(&mut sim, elf);
 
@@ -1615,7 +1621,15 @@ fn attack_move_creature_reactivates_after_arriving_at_destination() {
 fn attack_move_creature_wanders_after_arriving_at_destination() {
     // After attack-move completes, advance the sim and verify the elf
     // actually moves (wanders), proving it didn't get stuck.
-    let mut sim = test_sim(200);
+    let mut sim = flat_world_sim(legacy_test_seed());
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
     let elf = spawn_elf(&mut sim);
     force_idle_and_cancel_activations(&mut sim, elf);
 
@@ -1655,7 +1669,7 @@ fn attack_target_creature_reactivates_after_target_dies() {
     // An elf is ordered to attack a goblin. The goblin is killed (via
     // debug command). The elf's task completes, and it must still have
     // a pending activation so it doesn't become permanently inert.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
     force_idle_and_cancel_activations(&mut sim, elf);
@@ -1708,7 +1722,16 @@ fn attack_target_creature_reactivates_after_target_dies() {
 fn attack_target_creature_wanders_after_target_dies() {
     // After the attack target dies and the task completes, the elf should
     // actually do something (wander) rather than sitting frozen.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
+    // Disable food/rest so the elf wanders instead of eating/sleeping.
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
     force_idle_and_cancel_activations(&mut sim, elf);
@@ -1760,7 +1783,7 @@ fn attack_target_creature_wanders_after_target_dies() {
 
 #[test]
 fn queue_directed_goto_creates_linked_task() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
 
     // Issue a non-queued DirectedGoTo first to give the elf a current task.
@@ -1820,7 +1843,7 @@ fn queue_directed_goto_creates_linked_task() {
 
 #[test]
 fn unshifted_command_cancels_queue() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
 
     // Issue a non-queued GoTo to give the elf a task.
@@ -1896,7 +1919,7 @@ fn unshifted_command_cancels_queue() {
 
 #[test]
 fn find_queue_tail_follows_chain() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
 
     // Issue initial command + two queued commands.
@@ -1953,7 +1976,7 @@ fn find_queue_tail_follows_chain() {
 
 #[test]
 fn queue_completion_flows_to_next_task() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
 
     // Get the elf's position for nearby GoTo commands.
@@ -2018,7 +2041,7 @@ fn queue_completion_flows_to_next_task() {
 
 #[test]
 fn creature_death_cancels_queued_tasks() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
 
     // Issue a GoTo and queue a second one.
@@ -2074,7 +2097,7 @@ fn creature_death_cancels_queued_tasks() {
 
 #[test]
 fn queue_on_idle_creature_falls_through_to_immediate() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
 
     // Ensure elf has no current task.
@@ -2109,7 +2132,7 @@ fn queue_on_idle_creature_falls_through_to_immediate() {
 
 #[test]
 fn queue_attack_move_creates_linked_task_with_extension_data() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
 
     // Issue a non-queued GoTo first.
@@ -2165,7 +2188,7 @@ fn queue_attack_move_creates_linked_task_with_extension_data() {
 
 #[test]
 fn deleted_prerequisite_unblocks_dependent_task() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
 
     // Create prerequisite task A.
@@ -2216,7 +2239,7 @@ fn deleted_prerequisite_unblocks_dependent_task() {
 
 #[test]
 fn queue_attack_creature_creates_linked_task() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
 
     // Issue a GoTo to give the elf a current task.
@@ -2348,7 +2371,7 @@ fn sim_action_queue_backward_compat() {
 
 #[test]
 fn two_queue_commands_same_tick_form_linear_chain() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
 
     // Give elf a current task.
@@ -2416,7 +2439,7 @@ fn two_queue_commands_same_tick_form_linear_chain() {
 
 #[test]
 fn find_queue_tail_terminates_on_cycle() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
 
     // Create two tasks that form a prerequisite cycle (corrupted data).
@@ -2470,7 +2493,7 @@ fn find_queue_tail_terminates_on_cycle() {
 
 #[test]
 fn flee_interrupt_preserves_command_queue() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
 
     // Issue a GoTo and queue a second one.
@@ -2535,7 +2558,7 @@ fn flee_interrupt_preserves_command_queue() {
 
 #[test]
 fn shift_click_during_flee_preserves_and_extends_queue() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
 
     // Issue GoTo A + queue GoTo B.
@@ -2632,7 +2655,7 @@ fn shift_click_during_flee_preserves_and_extends_queue() {
 
 #[test]
 fn creature_wanders_via_activation_chain() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
@@ -2684,7 +2707,7 @@ fn creature_wanders_via_activation_chain() {
 
 #[test]
 fn goto_task_completes_on_arrival() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
 
     // Put the task at the elf's current location for instant completion.
@@ -2709,7 +2732,7 @@ fn goto_task_completes_on_arrival() {
 
 #[test]
 fn completed_task_creature_resumes_wandering() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
 
     // Put the task at the elf's current location for instant completion.
@@ -2741,7 +2764,7 @@ fn completed_task_creature_resumes_wandering() {
 
 #[test]
 fn create_task_command_adds_task() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
@@ -2763,7 +2786,7 @@ fn create_task_command_adds_task() {
 
 #[test]
 fn end_to_end_summon_task() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn an elf.
@@ -2814,7 +2837,7 @@ fn end_to_end_summon_task() {
 
 #[test]
 fn only_one_creature_claims_goto_task() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn multiple elves and capybaras.
@@ -2890,7 +2913,7 @@ fn abort_current_action_clears_activation_state() {
     // B-erratic-movement safety net: when abort_current_action is called
     // (death, flee, nav invalidation), the creature's next_available_tick
     // should be cleared so it won't be polled for activation.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     force_idle_and_cancel_activations(&mut sim, elf);
 
@@ -2936,7 +2959,7 @@ fn abort_current_action_clears_activation_state() {
 
 #[test]
 fn find_available_task_skips_task_restricted_to_other_creature() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_a = spawn_elf(&mut sim);
     let elf_b = spawn_elf(&mut sim);
 
@@ -2974,7 +2997,7 @@ fn find_available_task_skips_task_restricted_to_other_creature() {
 
 #[test]
 fn find_available_task_skips_incomplete_prerequisite() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
 
     // Create prerequisite task A (Available, not Complete).
@@ -3038,7 +3061,7 @@ fn find_available_task_skips_incomplete_prerequisite() {
 
 #[test]
 fn cancel_creature_queue_cancels_entire_chain() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
 
     // Create a chain: A -> B -> C (B depends on A, C depends on B).
@@ -3117,7 +3140,7 @@ fn cancel_creature_queue_cancels_entire_chain() {
 
 #[test]
 fn cancel_creature_queue_only_cancels_player_directed() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
 
     // Create a player-directed queued task.
@@ -3178,7 +3201,7 @@ fn cancel_creature_queue_only_cancels_player_directed() {
 
 #[test]
 fn activation_ready_index_returns_alive_creatures_at_or_before_tick() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     // Spawn two elves and force them idle with specific next_available_tick values.
     let elf_a = spawn_elf(&mut sim);
@@ -3221,7 +3244,7 @@ fn activation_ready_index_returns_alive_creatures_at_or_before_tick() {
 
 #[test]
 fn activation_ready_index_excludes_dead_creatures() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     force_idle_and_cancel_activations(&mut sim, elf);
 
@@ -3246,7 +3269,7 @@ fn activation_ready_index_excludes_dead_creatures() {
 
 #[test]
 fn activation_ready_index_excludes_incapacitated_creatures() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     force_idle_and_cancel_activations(&mut sim, elf);
 
@@ -3274,7 +3297,7 @@ fn activation_ready_index_excludes_incapacitated_creatures() {
 
 #[test]
 fn activation_ready_index_includes_none_next_available_tick() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     // Directly set next_available_tick to None to test the index behavior.
     // (force_idle_and_cancel_activations uses Some(u64::MAX) to suppress.)
@@ -3297,7 +3320,7 @@ fn activation_ready_index_includes_none_next_available_tick() {
 
 #[test]
 fn activation_ready_index_returns_sorted_by_creature_id() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_a = spawn_elf(&mut sim);
     let elf_b = spawn_elf(&mut sim);
     let elf_c = spawn_elf(&mut sim);
@@ -3355,7 +3378,7 @@ fn legacy_creature_activation_deserializes_from_old_format() {
 
 #[test]
 fn next_creature_activation_tick_returns_earliest() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_a = spawn_elf(&mut sim);
     let elf_b = spawn_elf(&mut sim);
     let elf_c = spawn_elf(&mut sim);
@@ -3389,7 +3412,7 @@ fn next_creature_activation_tick_returns_earliest() {
 
 #[test]
 fn next_creature_activation_tick_none_means_immediate() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     force_idle_and_cancel_activations(&mut sim, elf);
 
@@ -3409,7 +3432,7 @@ fn next_creature_activation_tick_none_means_immediate() {
 
 #[test]
 fn next_creature_activation_tick_no_alive_returns_no_creatures() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
 
     // Kill all creatures so no living creatures exist.
     let all_ids: Vec<_> = sim.db.creatures.iter_all().map(|c| c.id).collect();

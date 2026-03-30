@@ -11,7 +11,7 @@ use super::*;
 
 #[test]
 fn taming_designate_creates_task_and_designation() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let capy_id = spawn_creature(&mut sim, Species::Capybara);
 
     // Verify no tame tasks or designations yet.
@@ -46,7 +46,7 @@ fn taming_designate_creates_task_and_designation() {
 
 #[test]
 fn taming_designate_untameable_is_noop() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let goblin_id = spawn_creature(&mut sim, Species::Goblin);
 
     designate_tame(&mut sim, goblin_id);
@@ -63,7 +63,7 @@ fn taming_designate_untameable_is_noop() {
 
 #[test]
 fn taming_designate_own_civ_creature_is_noop() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
 
     // Elves are player-civ and have tame_difficulty: None, so doubly rejected.
@@ -73,7 +73,7 @@ fn taming_designate_own_civ_creature_is_noop() {
 
 #[test]
 fn taming_cancel_removes_designation_and_task() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let capy_id = spawn_creature(&mut sim, Species::Capybara);
 
     designate_tame(&mut sim, capy_id);
@@ -106,7 +106,7 @@ fn taming_cancel_removes_designation_and_task() {
 
 #[test]
 fn taming_only_scouts_can_claim() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let capy_id = spawn_creature(&mut sim, Species::Capybara);
     let warrior_id = spawn_elf(&mut sim);
     assign_path(&mut sim, warrior_id, PathId::Warrior);
@@ -147,7 +147,7 @@ fn taming_only_scouts_can_claim() {
 
 #[test]
 fn taming_roll_succeeds_with_high_stats() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let capy_id = spawn_creature(&mut sim, Species::Capybara);
     let scout_id = spawn_elf(&mut sim);
     assign_path(&mut sim, scout_id, PathId::Scout);
@@ -182,7 +182,7 @@ fn taming_roll_succeeds_with_high_stats() {
 
 #[test]
 fn taming_roll_fails_with_zero_stats() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elephant_id = spawn_creature(&mut sim, Species::Elephant);
     let scout_id = spawn_elf(&mut sim);
     assign_path(&mut sim, scout_id, PathId::Scout);
@@ -222,7 +222,15 @@ fn taming_roll_fails_with_zero_stats() {
 
 #[test]
 fn taming_advances_beastcraft_skill() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
     // Use an elephant (difficulty 250) to ensure many attempts before success.
     let elephant_id = spawn_creature(&mut sim, Species::Elephant);
     let scout_id = spawn_elf(&mut sim);
@@ -257,7 +265,7 @@ fn taming_advances_beastcraft_skill() {
 
 #[test]
 fn taming_target_death_cleans_up() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let capy_id = spawn_creature(&mut sim, Species::Capybara);
     let scout_id = spawn_elf(&mut sim);
     assign_path(&mut sim, scout_id, PathId::Scout);
@@ -300,7 +308,7 @@ fn taming_target_death_cleans_up() {
 
 #[test]
 fn taming_designate_dead_creature_is_noop() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let capy_id = spawn_creature(&mut sim, Species::Capybara);
 
     // Kill the capybara first.
@@ -327,7 +335,7 @@ fn taming_designate_dead_creature_is_noop() {
 
 #[test]
 fn taming_double_designate_is_idempotent() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let capy_id = spawn_creature(&mut sim, Species::Capybara);
 
     designate_tame(&mut sim, capy_id);
@@ -346,7 +354,7 @@ fn taming_double_designate_is_idempotent() {
 
 #[test]
 fn taming_cancel_nonexistent_is_noop() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let fake_id = CreatureId::new(&mut elven_canopy_prng::GameRng::new(999));
 
     // Should not panic or error.
@@ -357,7 +365,7 @@ fn taming_cancel_nonexistent_is_noop() {
 
 #[test]
 fn taming_outcast_cannot_claim() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let capy_id = spawn_creature(&mut sim, Species::Capybara);
     let outcast_id = spawn_elf(&mut sim);
     // Outcast is the default — no path assignment needed.
@@ -380,7 +388,7 @@ fn taming_outcast_cannot_claim() {
 
 #[test]
 fn taming_success_emits_event_and_notification() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let capy_id = spawn_creature(&mut sim, Species::Capybara);
     let scout_id = spawn_elf(&mut sim);
     assign_path(&mut sim, scout_id, PathId::Scout);
@@ -433,7 +441,7 @@ fn taming_success_emits_event_and_notification() {
 
 #[test]
 fn taming_task_resumable_after_preemption() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let capy_id = spawn_creature(&mut sim, Species::Capybara);
     let scout_id = spawn_elf(&mut sim);
     assign_path(&mut sim, scout_id, PathId::Scout);
@@ -482,7 +490,7 @@ fn taming_task_resumable_after_preemption() {
 
 #[test]
 fn taming_target_already_tamed_completes_task() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let capy_id = spawn_creature(&mut sim, Species::Capybara);
     let scout_id = spawn_elf(&mut sim);
     assign_path(&mut sim, scout_id, PathId::Scout);
@@ -531,7 +539,7 @@ fn taming_target_already_tamed_completes_task() {
 
 #[test]
 fn taming_serde_roundtrip_preserves_designations_and_tasks() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let capy_id = spawn_creature(&mut sim, Species::Capybara);
 
     designate_tame(&mut sim, capy_id);

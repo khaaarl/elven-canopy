@@ -9,7 +9,7 @@ use super::*;
 
 #[test]
 fn spawn_sets_hp_from_species_data() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf_id);
     let creature = sim.db.creatures.get(&elf_id).unwrap();
@@ -21,7 +21,7 @@ fn spawn_sets_hp_from_species_data() {
 
 #[test]
 fn debug_kill_sets_dead_and_emits_event() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let tick = sim.tick;
 
@@ -54,7 +54,7 @@ fn debug_kill_sets_dead_and_emits_event() {
 
 #[test]
 fn dead_creature_excluded_from_count() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     assert_eq!(sim.creature_count(Species::Elf), 1);
 
@@ -77,7 +77,7 @@ fn dead_creature_excluded_from_count() {
 
 #[test]
 fn damage_reduces_hp() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf_id);
     let hp_max = sim.species_table[&Species::Elf].hp_max;
@@ -102,7 +102,7 @@ fn damage_reduces_hp() {
 
 #[test]
 fn damage_incapacitates_at_zero_hp() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf_id);
     let creature_hp = sim.db.creatures.get(&elf_id).unwrap().hp;
@@ -133,7 +133,7 @@ fn damage_incapacitates_at_zero_hp() {
 
 #[test]
 fn overkill_damage_kills_outright() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let tick = sim.tick;
 
@@ -157,7 +157,7 @@ fn overkill_damage_kills_outright() {
 
 #[test]
 fn heal_restores_hp_clamped_to_max() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf_id);
     let hp_max = sim.species_table[&Species::Elf].hp_max;
@@ -195,7 +195,7 @@ fn heal_restores_hp_clamped_to_max() {
 
 #[test]
 fn heal_does_not_revive_dead() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let tick = sim.tick;
 
@@ -236,7 +236,7 @@ fn heal_does_not_revive_dead() {
 
 #[test]
 fn hp_regen_restores_hp_over_heartbeats() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     // ticks_per_hp_regen=100 means 1 HP per 100 ticks. With heartbeat=5000,
     // each heartbeat regens 5000/100 = 50 HP. Two heartbeats = 100 HP.
     let troll_data = sim.species_table.get_mut(&Species::Troll).unwrap();
@@ -278,7 +278,7 @@ fn hp_regen_restores_hp_over_heartbeats() {
 
 #[test]
 fn hp_regen_clamps_to_max() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     // Very fast regen (1 HP per tick) so it overshoots easily.
     sim.species_table
         .get_mut(&Species::Troll)
@@ -310,7 +310,7 @@ fn hp_regen_clamps_to_max() {
 
 #[test]
 fn hp_regen_does_not_revive_dead() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.species_table
         .get_mut(&Species::Troll)
         .unwrap()
@@ -347,7 +347,7 @@ fn hp_regen_does_not_revive_dead() {
 
 #[test]
 fn zero_hp_regen_does_not_heal() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     // Default regen is 0 (disabled).
     assert_eq!(sim.species_table[&Species::Elf].ticks_per_hp_regen, 0);
     let elf_id = spawn_elf(&mut sim);
@@ -376,7 +376,7 @@ fn zero_hp_regen_does_not_heal() {
 
 #[test]
 fn hp_regen_at_full_hp_is_noop() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.species_table
         .get_mut(&Species::Troll)
         .unwrap()
@@ -392,7 +392,7 @@ fn hp_regen_at_full_hp_is_noop() {
 
 #[test]
 fn hp_regen_integer_division_truncates() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     // 5000 / 3000 = 1 (truncated, not rounded to 2).
     let troll_data = sim.species_table.get_mut(&Species::Troll).unwrap();
     troll_data.ticks_per_hp_regen = 3000;
@@ -423,7 +423,7 @@ fn hp_regen_integer_division_truncates() {
 
 #[test]
 fn hp_regen_slower_than_heartbeat_yields_zero() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     // ticks_per_hp_regen > heartbeat → 5000 / 10000 = 0.
     let troll_data = sim.species_table.get_mut(&Species::Troll).unwrap();
     troll_data.ticks_per_hp_regen = 10000;
@@ -452,14 +452,20 @@ fn hp_regen_slower_than_heartbeat_yields_zero() {
 
 #[test]
 fn hp_regen_concurrent_with_combat_damage() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let troll_data = sim.species_table.get_mut(&Species::Troll).unwrap();
     troll_data.ticks_per_hp_regen = 100;
     let heartbeat = troll_data.heartbeat_interval_ticks;
     let regen_per_heartbeat = heartbeat as i64 / 100;
 
     let troll_id = spawn_creature(&mut sim, Species::Troll);
-    let hp_max = sim.db.creatures.get(&troll_id).unwrap().hp_max;
+    // Set HP to a known high value so the 200-damage hit doesn't kill
+    // the troll (random CON could produce hp_max < 200).
+    let mut troll = sim.db.creatures.get(&troll_id).unwrap();
+    troll.hp_max = 500;
+    troll.hp = 500;
+    sim.db.update_creature(troll).unwrap();
+    let hp_max: i64 = 500;
 
     // Initial damage.
     let tick = sim.tick;
@@ -508,7 +514,7 @@ fn hp_regen_concurrent_with_combat_damage() {
 fn hp_regen_huge_ticks_per_hp_regen_no_negative_heal() {
     // Regression: u64 values > i64::MAX must not wrap to negative in the
     // division, which would turn regen into damage.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     sim.species_table
         .get_mut(&Species::Troll)
         .unwrap()
@@ -543,7 +549,7 @@ fn hp_regen_huge_ticks_per_hp_regen_no_negative_heal() {
 
 #[test]
 fn death_drops_inventory_as_ground_pile() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let tick = sim.tick;
 
@@ -612,7 +618,7 @@ fn death_drops_inventory_as_ground_pile() {
 #[test]
 fn damage_to_zero_hp_incapacitates_not_kills() {
     // Test that damage bringing HP to exactly 0 results in Incapacitated, not Dead.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
@@ -657,7 +663,7 @@ fn damage_to_zero_hp_incapacitates_not_kills() {
 
 #[test]
 fn incapacitated_creature_bleeds_out_to_death() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf);
 
@@ -679,7 +685,7 @@ fn incapacitated_creature_bleeds_out_to_death() {
 
 #[test]
 fn further_damage_on_incapacitated_pushes_hp_negative() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
@@ -722,7 +728,7 @@ fn further_damage_on_incapacitated_pushes_hp_negative() {
 
 #[test]
 fn massive_single_hit_kills_outright() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf);
 
@@ -751,7 +757,7 @@ fn massive_single_hit_kills_outright() {
 
 #[test]
 fn heal_revives_incapacitated_creature() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf);
 
@@ -780,7 +786,7 @@ fn heal_revives_incapacitated_creature() {
 
 #[test]
 fn heal_incapacitated_not_enough_stays_incapacitated() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf);
 
@@ -809,7 +815,7 @@ fn heal_incapacitated_not_enough_stays_incapacitated() {
 
 #[test]
 fn incapacitated_creature_does_not_seek_food() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf);
 
@@ -833,7 +839,7 @@ fn incapacitated_creature_does_not_seek_food() {
 
 #[test]
 fn debug_kill_bypasses_incapacitation() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf);
 
@@ -857,7 +863,7 @@ fn debug_kill_bypasses_incapacitation() {
 
 #[test]
 fn incapacitated_creature_is_targetable_by_melee() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
@@ -906,7 +912,7 @@ fn vital_status_incapacitated_serde_roundtrip() {
 
 #[test]
 fn incapacitation_notification_emitted() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf);
 
@@ -946,7 +952,7 @@ fn incapacitation_notification_emitted() {
 fn heal_to_exactly_zero_stays_incapacitated() {
     // Healing an incapacitated creature to exactly 0 HP should leave it
     // incapacitated (not revive). Revival requires HP > 0.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf);
 
@@ -977,7 +983,7 @@ fn heal_to_exactly_zero_stays_incapacitated() {
 fn incapacitated_creature_not_assigned_available_tasks() {
     // An incapacitated creature should NOT be assigned any tasks, even if
     // tasks are available and the creature is nominally idle.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf);
 
@@ -1028,7 +1034,7 @@ fn starvation_still_kills_directly() {
         .get_mut(&Species::Elf)
         .unwrap()
         .food_decay_per_tick = 1_000_000_000_000_000;
-    let mut sim = SimState::with_config(42, config);
+    let mut sim = SimState::with_config(legacy_test_seed(), config);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
@@ -1061,7 +1067,7 @@ fn starvation_still_kills_directly() {
 #[test]
 fn bleed_out_precise_hp_per_heartbeat() {
     // Verify bleed-out loses exactly 1 HP per heartbeat, not more or less.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf);
 
@@ -1085,7 +1091,7 @@ fn bleed_out_precise_hp_per_heartbeat() {
 fn save_load_roundtrip_preserves_incapacitation() {
     // A creature that is incapacitated mid-game should survive a
     // save->load roundtrip with correct vital_status and HP.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf);
 
@@ -1107,7 +1113,7 @@ fn save_load_roundtrip_preserves_incapacitation() {
 fn healed_incapacitated_creature_resumes_activation() {
     // A revived creature must have its activation chain restarted so it can
     // act again. Without this, the creature would be permanently frozen.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf);
 
@@ -1156,7 +1162,7 @@ fn healed_incapacitated_creature_resumes_activation() {
 fn incapacitated_creature_in_spatial_index_after_save_load() {
     // After save/load, incapacitated creatures must remain in the spatial
     // index so they can be targeted by hostiles and hit by projectiles.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf);
 
@@ -1191,7 +1197,7 @@ fn incapacitated_troll_recovers_via_regen() {
     // A troll with HP regen should recover from incapacitation: regen (6 HP)
     // outpaces bleed-out (1 HP), so HP climbs back above 0 and the troll
     // revives to Alive.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let troll_id = spawn_creature(&mut sim, Species::Troll);
     zero_creature_stats(&mut sim, troll_id);
 
@@ -1228,7 +1234,7 @@ fn incapacitated_troll_recovers_via_regen() {
 fn incapacitated_troll_dies_if_finished_off() {
     // Even though trolls regen, sustained damage can push HP past -hp_max
     // and kill them during incapacitation.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let troll_id = spawn_creature(&mut sim, Species::Troll);
     zero_creature_stats(&mut sim, goblin);
@@ -1264,7 +1270,7 @@ fn incapacitated_troll_dies_if_finished_off() {
 fn non_regen_creature_does_not_recover() {
     // An elf (no HP regen) should NOT recover from incapacitation —
     // it just bleeds out. Sanity check against the troll recovery test.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf);
 
@@ -1294,7 +1300,7 @@ fn non_regen_creature_does_not_recover() {
 fn troll_regen_recovery_clamped_to_hp_max() {
     // When a troll recovers from incapacitation via regen, HP must not
     // exceed hp_max. With very fast regen the raw calculation could overshoot.
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     // Set regen extremely fast: 1 tick per HP → regen = interval HP/heartbeat.
     sim.species_table
         .get_mut(&Species::Troll)
@@ -1335,7 +1341,7 @@ fn troll_regen_recovery_clamped_to_hp_max() {
 fn attack_target_continues_through_incapacitation_to_death() {
     // An AttackTarget task should NOT be abandoned when the target becomes
     // incapacitated — the attacker keeps swinging until the target is Dead.
-    let mut sim = test_sim(42);
+    let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, goblin);
@@ -1350,11 +1356,15 @@ fn attack_target_continues_through_incapacitation_to_death() {
         .get_mut(&Species::Goblin)
         .unwrap()
         .rest_decay_per_tick = 0;
+    force_guaranteed_hits(&mut sim, goblin);
 
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
-    force_idle(&mut sim, goblin);
+    // Freeze elf so it doesn't flee; suppress goblin activation until the
+    // AttackCreature command assigns the task.
+    force_idle_and_cancel_activations(&mut sim, elf);
+    suppress_activation(&mut sim, goblin);
 
     // Set elf HP low enough that melee will incapacitate quickly but not
     // kill outright (needs multiple hits to push past -hp_max).
@@ -1403,7 +1413,7 @@ fn attack_target_continues_through_incapacitation_to_death() {
 
 #[test]
 fn dead_creature_heartbeat_does_not_reschedule() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let tick = sim.tick;
 
@@ -1442,7 +1452,7 @@ fn dead_creature_heartbeat_does_not_reschedule() {
 
 #[test]
 fn dead_creature_not_assigned_tasks() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let tick = sim.tick;
 
@@ -1487,7 +1497,7 @@ fn dead_creature_not_assigned_tasks() {
 
 #[test]
 fn damage_dead_creature_is_noop() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let tick = sim.tick;
 
@@ -1529,7 +1539,7 @@ fn damage_dead_creature_is_noop() {
 
 #[test]
 fn death_creates_notification() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let initial_notifications = sim.db.notifications.len();
     let tick = sim.tick;
@@ -1559,7 +1569,7 @@ fn death_creates_notification() {
 
 #[test]
 fn death_interrupts_current_task() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
 
     // Create and claim a GoTo task.
@@ -1605,7 +1615,7 @@ fn death_interrupts_current_task() {
 
 #[test]
 fn kill_nonexistent_creature_is_noop() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let mut rng = GameRng::new(999);
     let fake_id = CreatureId::new(&mut rng);
     let tick = sim.tick;
@@ -1633,7 +1643,7 @@ fn kill_nonexistent_creature_is_noop() {
 
 #[test]
 fn death_removes_from_spatial_index() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let pos = sim.db.creatures.get(&elf_id).unwrap().position;
 
@@ -1669,7 +1679,7 @@ fn death_removes_from_spatial_index() {
 
 #[test]
 fn hp_death_serde_roundtrip() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf_id);
     let tick = sim.tick;
@@ -1698,7 +1708,7 @@ fn hp_death_serde_roundtrip() {
 
 #[test]
 fn hp_death_serde_roundtrip_dead() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let tick = sim.tick;
 
@@ -1724,7 +1734,7 @@ fn hp_death_serde_roundtrip_dead() {
 
 #[test]
 fn zero_and_negative_damage_is_noop() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let hp_before = sim.db.creatures.get(&elf_id).unwrap().hp;
     let tick = sim.tick;
@@ -1761,7 +1771,7 @@ fn zero_and_negative_damage_is_noop() {
 
 #[test]
 fn zero_and_negative_heal_is_noop() {
-    let mut sim = test_sim(42);
+    let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let tick = sim.tick;
 
