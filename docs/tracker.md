@@ -63,7 +63,6 @@ This reduces merge conflicts when parallel work streams add items.
 ### Todo
 
 ```
-[ ] B-dead-owner-items     Dead creature items retain ownership, becoming invisible to all systems
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-floating-dirt        Floating dirt still treated as ground by structural validator
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
@@ -292,6 +291,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-dead-enums           Remove dead GrownStairs/Bridge code and add explicit enum discriminants
 [x] B-dead-max-gen         Remove vestigial max_gen_per_frame field and ~40 test calls
 [x] B-dead-node-panic      Panic on dead nav node in pathfinding
+[x] B-dead-owner-items     Dead creature items retain ownership, becoming invisible to all systems
 [x] B-dine-orphan-task     DineAtHall speculative task leaves orphaned Complete rows
 [x] B-dirt-not-pinned      Dirt unpinned in fast structural validator
 [x] B-erratic-movement     Erratic/too-fast creature movement after move commands
@@ -2000,7 +2000,7 @@ Requires F-flying-nav-big.
 ### Economy & Logistics
 
 #### B-dead-owner-items — Dead creature items retain ownership, becoming invisible to all systems
-**Status:** Todo
+**Status:** Done
 
 #### B-dine-orphan-task — DineAtHall speculative task leaves orphaned Complete rows
 **Status:** Done
