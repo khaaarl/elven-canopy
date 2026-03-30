@@ -29,7 +29,7 @@
 ## PanelContainer positioned left of the main panel, same pattern as crafting)
 ## containing:
 ## - An enable checkbox + priority controls (1-10)
-## - A scrollable wants list (kind + material filter + quantity, with remove)
+## - A scrollable wants list (kind + material filter + quantity controls + remove)
 ## - An "Add Item..." two-step picker (item kind -> material filter)
 ## Emits logistics_priority_changed and logistics_wants_changed.
 ##
@@ -531,6 +531,17 @@ func _add_details_panel_to_parent() -> void:
 		panel.offset_left = -688
 		panel.offset_top = 0
 		panel.offset_bottom = 0
+	# PanelContainer shrinks to content minimum, and ScrollContainer has zero
+	# minimum height — force full viewport height so the scroll area is visible.
+	# See docs/godot_scroll_sizing.md.
+	_match_details_viewport_height()
+	get_viewport().size_changed.connect(_match_details_viewport_height)
+
+
+func _match_details_viewport_height() -> void:
+	var h: float = get_viewport().get_visible_rect().size.y
+	_logistics_details_panel.custom_minimum_size.y = h
+	_crafting_details_panel.custom_minimum_size.y = h
 
 
 ## Cache the recipe catalog for the current building. Called by main.gd

@@ -1,7 +1,8 @@
 ## Reusable wants list editor (item kind + material filter + quantity).
 ##
-## Displays a scrollable list of wants with add/remove controls and a
-## two-step picker (item kind → material filter). Used by both building
+## Displays a scrollable list of wants with per-row quantity controls
+## (-/+ buttons, editable quantity field, remove button) and a two-step
+## add-item picker (item kind → material filter). Used by both building
 ## logistics (structure_info_panel.gd) and military equipment
 ## (military_panel.gd).
 ##
@@ -52,6 +53,12 @@ var _material_picker: VBoxContainer
 var _error_label: Label
 var _pending_item_kind: String = ""
 var _pickers_added: bool = false
+## Guard against spurious focus_exited signals during update_wants() rebuild.
+var _rebuilding: bool = false
+## Last wants data passed to update_wants(). Skip rebuild when unchanged —
+## newly-created buttons have no valid layout rect until the next frame, so
+## rebuilding every frame means clicks always fall through.
+var _last_wants: Array = []
 
 
 func _ready() -> void:
@@ -118,6 +125,10 @@ func set_picker_data(item_kinds: Array, material_options: Dictionary) -> void:
 ## Update the displayed wants list from an array of want dictionaries.
 ## Each dict: { kind: String, material_filter: String, target_quantity: int, label: String }
 func update_wants(wants: Array) -> void:
+	if wants == _last_wants:
+		return
+	_last_wants = wants.duplicate(true)
+	_rebuilding = true
 	for child in _wants_vbox.get_children():
 		child.queue_free()
 	for want in wants:
@@ -126,18 +137,44 @@ func update_wants(wants: Array) -> void:
 		var kind: String = want.get("kind", "?")
 		var mat_filter: String = want.get("material_filter", '"Any"')
 		var row := HBoxContainer.new()
-		var label := Label.new()
-		label.text = "%s: %d" % [display_label, qty]
-		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_theme_constant_override("separation", 2)
 		row.set_meta("kind", kind)
 		row.set_meta("material_filter", mat_filter)
 		row.set_meta("quantity", qty)
+
+		var label := Label.new()
+		label.text = display_label
+		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		row.add_child(label)
+
+		var minus_btn := Button.new()
+		minus_btn.text = "-"
+		minus_btn.custom_minimum_size.x = 28
+		minus_btn.pressed.connect(_on_quantity_changed.bind(kind, mat_filter, -1))
+		row.add_child(minus_btn)
+
+		var qty_edit := LineEdit.new()
+		qty_edit.text = str(qty)
+		qty_edit.custom_minimum_size.x = 40
+		qty_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
+		qty_edit.text_submitted.connect(_on_quantity_submitted.bind(kind, mat_filter, qty_edit))
+		qty_edit.focus_exited.connect(_on_quantity_focus_exited.bind(kind, mat_filter, qty_edit))
+		row.add_child(qty_edit)
+
+		var plus_btn := Button.new()
+		plus_btn.text = "+"
+		plus_btn.custom_minimum_size.x = 28
+		plus_btn.pressed.connect(_on_quantity_changed.bind(kind, mat_filter, 1))
+		row.add_child(plus_btn)
+
 		var remove_btn := Button.new()
 		remove_btn.text = "X"
+		remove_btn.custom_minimum_size.x = 28
 		remove_btn.pressed.connect(_on_want_removed.bind(kind, mat_filter))
 		row.add_child(remove_btn)
+
 		_wants_vbox.add_child(row)
+	_rebuilding = false
 
 
 ## Hide the pickers and notify the parent to close the picker panel.
@@ -212,6 +249,27 @@ func _on_want_removed(kind: String, filter_str: String) -> void:
 	_emit_wants_without(kind, filter_str)
 
 
+func _on_quantity_changed(kind: String, filter_str: String, delta: int) -> void:
+	_emit_wants_with_quantity(kind, filter_str, delta)
+
+
+func _on_quantity_submitted(
+	_text: String, kind: String, filter_str: String, edit: LineEdit
+) -> void:
+	var new_qty := maxi(int(edit.text), 1)
+	edit.text = str(new_qty)
+	edit.release_focus()
+	_emit_wants_with_set_quantity(kind, filter_str, new_qty)
+
+
+func _on_quantity_focus_exited(kind: String, filter_str: String, edit: LineEdit) -> void:
+	if _rebuilding:
+		return
+	var new_qty := maxi(int(edit.text), 1)
+	edit.text = str(new_qty)
+	_emit_wants_with_set_quantity(kind, filter_str, new_qty)
+
+
 # --- Slot conflict detection ---
 
 
@@ -284,6 +342,36 @@ func _emit_wants_without(kind: String, filter_str: String) -> void:
 			var mf_val: Variant = JSON.parse_string(mf)
 			if k != kind or not _variant_eq(mf_val, filter_val):
 				wants.append(_make_want_entry(k, mf_val, q))
+	wants_changed.emit(JSON.stringify(wants))
+
+
+func _emit_wants_with_quantity(kind: String, filter_str: String, delta: int) -> void:
+	var wants: Array = []
+	var filter_val: Variant = JSON.parse_string(filter_str)
+	for child in _wants_vbox.get_children():
+		if child is HBoxContainer and child.has_meta("kind"):
+			var k: String = child.get_meta("kind")
+			var mf: String = child.get_meta("material_filter")
+			var q: int = child.get_meta("quantity")
+			var mf_val: Variant = JSON.parse_string(mf)
+			if k == kind and _variant_eq(mf_val, filter_val):
+				q = maxi(q + delta, 1)
+			wants.append(_make_want_entry(k, mf_val, q))
+	wants_changed.emit(JSON.stringify(wants))
+
+
+func _emit_wants_with_set_quantity(kind: String, filter_str: String, new_qty: int) -> void:
+	var wants: Array = []
+	var filter_val: Variant = JSON.parse_string(filter_str)
+	for child in _wants_vbox.get_children():
+		if child is HBoxContainer and child.has_meta("kind"):
+			var k: String = child.get_meta("kind")
+			var mf: String = child.get_meta("material_filter")
+			var q: int = child.get_meta("quantity")
+			var mf_val: Variant = JSON.parse_string(mf)
+			if k == kind and _variant_eq(mf_val, filter_val):
+				q = new_qty
+			wants.append(_make_want_entry(k, mf_val, q))
 	wants_changed.emit(JSON.stringify(wants))
 
 

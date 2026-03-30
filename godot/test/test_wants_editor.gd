@@ -1,8 +1,12 @@
-## Unit tests for wants_editor.gd slot conflict detection.
+## Unit tests for wants_editor.gd.
 ##
-## Tests the equip slot conflict logic used by military equipment wants.
+## Tests equip slot conflict detection, quantity editing emission, and
+## the _last_wants dedup that prevents per-frame row rebuilds (which would
+## break button click handling due to newly-created nodes having no valid
+## layout rect until the next frame).
+##
 ## The editor is instantiated as a real node so its _ready() runs, then
-## we exercise the conflict detection paths.
+## we exercise the conflict detection and emission paths.
 ##
 ## See also: wants_editor.gd for the implementation,
 ## military_panel.gd for how enforce_unique_equip_slots is enabled.
@@ -104,3 +108,138 @@ func test_emit_not_enforced_when_disabled() -> void:
 	# Helmet + Hat conflict, but enforcement is off (logistics mode).
 	_editor._emit_wants_with_added("Helmet", '"Any"', 1)
 	assert_signal_emitted(_editor, "wants_changed")
+
+
+# -- Quantity editing emission --------------------------------------------------
+
+
+func _get_emitted_wants() -> Array:
+	var params = get_signal_parameters(_editor, "wants_changed")
+	if params == null or params.is_empty():
+		return []
+	return JSON.parse_string(params[0])
+
+
+func test_emit_quantity_increment() -> void:
+	_editor.update_wants([{"kind": "Bow", "material_filter": '"Any"', "target_quantity": 5}])
+	watch_signals(_editor)
+	_editor._emit_wants_with_quantity("Bow", '"Any"', 1)
+	assert_signal_emitted(_editor, "wants_changed")
+	var wants := _get_emitted_wants()
+	assert_eq(wants.size(), 1)
+	assert_eq(wants[0]["quantity"], 6)
+
+
+func test_emit_quantity_decrement() -> void:
+	_editor.update_wants([{"kind": "Bow", "material_filter": '"Any"', "target_quantity": 5}])
+	watch_signals(_editor)
+	_editor._emit_wants_with_quantity("Bow", '"Any"', -1)
+	assert_signal_emitted(_editor, "wants_changed")
+	var wants := _get_emitted_wants()
+	assert_eq(wants.size(), 1)
+	assert_eq(wants[0]["quantity"], 4)
+
+
+func test_emit_quantity_clamps_to_one() -> void:
+	_editor.update_wants([{"kind": "Bow", "material_filter": '"Any"', "target_quantity": 1}])
+	watch_signals(_editor)
+	_editor._emit_wants_with_quantity("Bow", '"Any"', -1)
+	assert_signal_emitted(_editor, "wants_changed")
+	var wants := _get_emitted_wants()
+	assert_eq(wants.size(), 1)
+	assert_eq(wants[0]["quantity"], 1)
+
+
+func test_emit_set_quantity() -> void:
+	_editor.update_wants([{"kind": "Bow", "material_filter": '"Any"', "target_quantity": 5}])
+	watch_signals(_editor)
+	_editor._emit_wants_with_set_quantity("Bow", '"Any"', 20)
+	assert_signal_emitted(_editor, "wants_changed")
+	var wants := _get_emitted_wants()
+	assert_eq(wants.size(), 1)
+	assert_eq(wants[0]["quantity"], 20)
+
+
+func test_emit_quantity_only_affects_matching_row() -> void:
+	(
+		_editor
+		. update_wants(
+			[
+				{"kind": "Bow", "material_filter": '"Any"', "target_quantity": 5},
+				{"kind": "Helmet", "material_filter": '"Any"', "target_quantity": 3},
+			]
+		)
+	)
+	watch_signals(_editor)
+	_editor._emit_wants_with_set_quantity("Bow", '"Any"', 99)
+	assert_signal_emitted(_editor, "wants_changed")
+	var wants := _get_emitted_wants()
+	assert_eq(wants.size(), 2)
+	# Bow was changed.
+	assert_eq(wants[0]["kind"], "Bow")
+	assert_eq(wants[0]["quantity"], 99)
+	# Helmet was NOT changed.
+	assert_eq(wants[1]["kind"], "Helmet")
+	assert_eq(wants[1]["quantity"], 3)
+
+
+func test_emit_quantity_preserves_other_rows() -> void:
+	(
+		_editor
+		. update_wants(
+			[
+				{"kind": "Bow", "material_filter": '"Any"', "target_quantity": 10},
+				{"kind": "Helmet", "material_filter": '"Any"', "target_quantity": 2},
+			]
+		)
+	)
+	watch_signals(_editor)
+	_editor._emit_wants_with_quantity("Helmet", '"Any"', 1)
+	assert_signal_emitted(_editor, "wants_changed")
+	var wants := _get_emitted_wants()
+	assert_eq(wants.size(), 2)
+	assert_eq(wants[0]["kind"], "Bow")
+	assert_eq(wants[0]["quantity"], 10)
+	assert_eq(wants[1]["kind"], "Helmet")
+	assert_eq(wants[1]["quantity"], 3)
+
+
+# -- Dedup / rebuild skip ------------------------------------------------------
+
+
+func test_update_wants_skips_rebuild_when_unchanged() -> void:
+	var data: Array = [{"kind": "Bow", "material_filter": '"Any"', "target_quantity": 5}]
+	_editor.update_wants(data)
+	# Grab a reference to the first row.
+	var first_row := _editor._wants_vbox.get_child(0)
+	# Call again with identical data — should be a no-op.
+	_editor.update_wants(data)
+	# The same row object should still be there (not queue_free'd and replaced).
+	assert_eq(_editor._wants_vbox.get_child(0), first_row)
+
+
+func test_update_wants_rebuilds_when_data_changes() -> void:
+	_editor.update_wants([{"kind": "Bow", "material_filter": '"Any"', "target_quantity": 5}])
+	var first_row := _editor._wants_vbox.get_child(0)
+	# Update with different data.
+	_editor.update_wants([{"kind": "Bow", "material_filter": '"Any"', "target_quantity": 10}])
+	# Row should have been replaced (different object).
+	var new_row := _editor._wants_vbox.get_child(0)
+	assert_ne(new_row, first_row)
+	assert_eq(new_row.get_meta("quantity"), 10)
+
+
+# -- Rebuilding guard -----------------------------------------------------------
+
+
+func test_focus_exited_ignored_during_rebuild() -> void:
+	_editor.update_wants([{"kind": "Bow", "material_filter": '"Any"', "target_quantity": 5}])
+	watch_signals(_editor)
+	# Simulate the state during a rebuild (flag stays true until rows are built).
+	_editor._rebuilding = true
+	# Create a dummy LineEdit to pass to the handler.
+	var edit := LineEdit.new()
+	edit.text = "99"
+	add_child_autofree(edit)
+	_editor._on_quantity_focus_exited("Bow", '"Any"', edit)
+	assert_signal_not_emitted(_editor, "wants_changed")
