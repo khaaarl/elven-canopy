@@ -154,6 +154,101 @@ func test_quantity_row_visibility() -> void:
 	assert_eq(_panel._quantity_label.text, "5")
 
 
+func test_reserved_row_hidden_when_not_reserved() -> void:
+	var info := _make_info()
+	_panel.show_item(1, info)
+	assert_false(_panel._reserved_row.visible, "Row should hide when no reservation")
+
+
+func test_reserved_row_shows_kind_and_state() -> void:
+	var info := _make_info()
+	info["reserved_task_kind"] = "Haul"
+	info["reserved_task_state"] = "In Progress"
+	_panel.show_item(1, info)
+	assert_true(_panel._reserved_row.visible)
+	assert_eq(_panel._reserved_kind_label.text, "Reserved: Haul (In Progress)")
+
+
+func test_reserved_assignee_visible_when_present() -> void:
+	var info := _make_info()
+	info["reserved_task_kind"] = "Craft"
+	info["reserved_task_state"] = "In Progress"
+	info["reserved_task_assignee"] = "Aelindra"
+	_panel.show_item(1, info)
+	assert_true(_panel._reserved_detail_label.visible)
+	assert_eq(_panel._reserved_detail_label.text, "Assignee: Aelindra")
+
+
+func test_reserved_assignee_hidden_when_absent() -> void:
+	var info := _make_info()
+	info["reserved_task_kind"] = "Haul"
+	info["reserved_task_state"] = "Available"
+	_panel.show_item(1, info)
+	assert_false(
+		_panel._reserved_detail_label.visible,
+		"Assignee label should hide when no creature is assigned"
+	)
+
+
+func test_reserved_row_hides_on_transition_to_unreserved() -> void:
+	var info := _make_info()
+	info["reserved_task_kind"] = "Haul"
+	info["reserved_task_state"] = "In Progress"
+	info["reserved_task_assignee"] = "Aelindra"
+	_panel.show_item(1, info)
+	assert_true(_panel._reserved_row.visible)
+
+	# Update with no reservation info — row should hide.
+	_panel.update_item(_make_info())
+	assert_false(_panel._reserved_row.visible)
+
+
+func test_reserved_assignee_transition_between_names() -> void:
+	var info := _make_info()
+	info["reserved_task_kind"] = "Craft"
+	info["reserved_task_state"] = "In Progress"
+	info["reserved_task_assignee"] = "Aelindra"
+	_panel.show_item(1, info)
+	assert_eq(_panel._reserved_detail_label.text, "Assignee: Aelindra")
+
+	info["reserved_task_assignee"] = "Brindle"
+	_panel.update_item(info)
+	assert_eq(_panel._reserved_detail_label.text, "Assignee: Brindle")
+
+
+func test_reserved_assignee_removed_while_still_reserved() -> void:
+	var info := _make_info()
+	info["reserved_task_kind"] = "Haul"
+	info["reserved_task_state"] = "In Progress"
+	info["reserved_task_assignee"] = "Aelindra"
+	_panel.show_item(1, info)
+	assert_true(_panel._reserved_detail_label.visible)
+
+	# Task still reserved, but creature unassigned.
+	var info2 := _make_info()
+	info2["reserved_task_kind"] = "Haul"
+	info2["reserved_task_state"] = "Available"
+	_panel.update_item(info2)
+	assert_true(_panel._reserved_row.visible)
+	assert_false(_panel._reserved_detail_label.visible)
+	assert_eq(_panel._reserved_kind_label.text, "Reserved: Haul (Available)")
+
+
+func test_reserved_row_updates_via_update_item() -> void:
+	_panel.show_item(1, _make_info())
+	assert_false(_panel._reserved_row.visible)
+
+	# Add reservation via update_item (not show_item).
+	var info := _make_info()
+	info["reserved_task_kind"] = "Build"
+	info["reserved_task_state"] = "In Progress"
+	info["reserved_task_assignee"] = "Caelith"
+	_panel.update_item(info)
+	assert_true(_panel._reserved_row.visible)
+	assert_eq(_panel._reserved_kind_label.text, "Reserved: Build (In Progress)")
+	assert_eq(_panel._reserved_detail_label.text, "Assignee: Caelith")
+
+
 # -- Signal emission ----------------------------------------------------------
 
 

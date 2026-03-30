@@ -2,7 +2,8 @@
 ##
 ## Shows detailed information about a single item stack: display name, kind,
 ## material, quality, durability (HP bar), equipped slot, owner (clickable
-## button to select and zoom), dye color, and quantity.
+## button to select and zoom), dye color, quantity, and task reservation status
+## (task kind, state, and assignee — shown when the item is reserved by a task).
 ##
 ## Opened when the user clicks an item row in any inventory list (creature,
 ## structure, or ground pile info panels). Updated every frame by main.gd
@@ -42,6 +43,9 @@ var _dye_row: HBoxContainer
 var _dye_label: Label
 var _quantity_row: HBoxContainer
 var _quantity_label: Label
+var _reserved_row: VBoxContainer
+var _reserved_kind_label: Label
+var _reserved_detail_label: Label
 
 
 func _ready() -> void:
@@ -128,6 +132,20 @@ func _ready() -> void:
 	# Dye color (hidden when no dye).
 	_dye_row = _build_row(vbox, "Dye:")
 	_dye_label = _dye_row.get_child(1)
+
+	# Reserved by task (hidden when not reserved).
+	_reserved_row = VBoxContainer.new()
+	_reserved_row.add_theme_constant_override("separation", 2)
+	vbox.add_child(_reserved_row)
+
+	_reserved_kind_label = Label.new()
+	_reserved_kind_label.add_theme_color_override("font_color", Color(1.0, 0.8, 0.4))
+	_reserved_row.add_child(_reserved_kind_label)
+
+	_reserved_detail_label = Label.new()
+	_reserved_detail_label.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+	_reserved_detail_label.add_theme_font_size_override("font_size", 13)
+	_reserved_row.add_child(_reserved_detail_label)
 
 
 ## Build a simple "Label: Value" row and add it to the parent.
@@ -231,6 +249,19 @@ func _update(info: Dictionary) -> void:
 	var dye: String = info.get("dye_color", "")
 	_dye_row.visible = not dye.is_empty()
 	_dye_label.text = dye
+
+	# Reserved by task.
+	var reserved_kind: String = info.get("reserved_task_kind", "")
+	_reserved_row.visible = not reserved_kind.is_empty()
+	if not reserved_kind.is_empty():
+		var reserved_state: String = info.get("reserved_task_state", "")
+		_reserved_kind_label.text = "Reserved: %s (%s)" % [reserved_kind, reserved_state]
+		var assignee: String = info.get("reserved_task_assignee", "")
+		if not assignee.is_empty():
+			_reserved_detail_label.text = "Assignee: %s" % assignee
+			_reserved_detail_label.visible = true
+		else:
+			_reserved_detail_label.visible = false
 
 
 func _on_close_pressed() -> void:

@@ -3559,6 +3559,35 @@ impl SimBridge {
         dict.set("dye_color", GString::from(dye_str.as_str()));
 
         dict.set("quantity", stack.quantity as i64);
+
+        // Reservation — if the item is reserved by a task, include task info.
+        if let Some(task_id) = stack.reserved_by
+            && let Some(task) = sim.db.tasks.get(&task_id)
+        {
+            dict.set(
+                "reserved_task_kind",
+                GString::from(task.kind_tag.display_name()),
+            );
+            let state_str = match task.state {
+                elven_canopy_sim::task::TaskState::Available => "Available",
+                elven_canopy_sim::task::TaskState::InProgress => "In Progress",
+                elven_canopy_sim::task::TaskState::Complete => "Complete",
+            };
+            dict.set("reserved_task_state", GString::from(state_str));
+            // Include the name of the creature assigned to the task, if any.
+            if let Some(assignee) = sim
+                .db
+                .creatures
+                .by_current_task(&Some(task_id), elven_canopy_sim::tabulosity::QueryOpts::ASC)
+                .first()
+            {
+                dict.set(
+                    "reserved_task_assignee",
+                    GString::from(assignee.name.as_str()),
+                );
+            }
+        }
+
         dict
     }
 
