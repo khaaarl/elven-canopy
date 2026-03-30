@@ -222,12 +222,14 @@ impl SimState {
         let project_id = ProjectId::new(&mut self.rng);
 
         // Create a Build task at the nearest nav node to the blueprint.
-        if self.nav_graph.find_nearest_node(build_voxels[0]).is_none() {
-            return;
-        }
+        // Snap the task location to the nav node position so that find_path
+        // (which uses node_at) can resolve it exactly.
+        let task_location = match self.nav_graph.find_nearest_node(build_voxels[0]) {
+            Some(node) => self.nav_graph.node(node).position,
+            None => return,
+        };
         let task_id = TaskId::new(&mut self.rng);
         let num_voxels = build_voxels.len() as u64;
-        let task_location = build_voxels[0];
 
         // Insert blueprint before task — task_blueprint_ref has FK to blueprints.
         // Blueprint initially has task_id: None; updated after task insertion.
@@ -878,15 +880,18 @@ impl SimState {
         position: VoxelCoord,
         required_species: Option<Species>,
     ) {
-        if self.nav_graph.find_nearest_node(position).is_none() {
-            return;
-        }
+        // Snap task location to the nearest nav node position so that
+        // find_path (which uses node_at) can resolve it exactly.
+        let task_location = match self.nav_graph.find_nearest_node(position) {
+            Some(node) => self.nav_graph.node(node).position,
+            None => return,
+        };
         let task_id = TaskId::new(&mut self.rng);
         let new_task = task::Task {
             id: task_id,
             kind,
             state: task::TaskState::Available,
-            location: position,
+            location: task_location,
             progress: 0,
             total_cost: 0,
             required_species,

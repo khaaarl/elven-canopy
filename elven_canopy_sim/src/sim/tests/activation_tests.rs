@@ -1809,7 +1809,13 @@ fn queue_directed_goto_creates_linked_task() {
     let task_b = &queued[0];
     assert_eq!(task_b.prerequisite_task_id, Some(task_a));
     assert_eq!(task_b.state, TaskState::Available);
-    assert_eq!(task_b.location, pos_b);
+    // Location is snapped to the nearest nav node by command_directed_goto.
+    let expected_b = sim
+        .nav_graph
+        .find_nearest_node(pos_b)
+        .map(|n| sim.nav_graph.node(n).position)
+        .unwrap();
+    assert_eq!(task_b.location, expected_b);
 }
 
 #[test]
@@ -1930,11 +1936,17 @@ fn find_queue_tail_follows_chain() {
     };
     sim.step(&[cmd_c], sim.tick + 2);
 
-    // find_queue_tail should return the last task (at pos_c).
+    // find_queue_tail should return the last task (at pos_c, snapped to
+    // nearest nav node by command_directed_goto).
     let tail_id = sim.find_queue_tail(elf).unwrap();
     let tail_task = sim.db.tasks.get(&tail_id).unwrap();
+    let expected_c = sim
+        .nav_graph
+        .find_nearest_node(pos_c)
+        .map(|n| sim.nav_graph.node(n).position)
+        .unwrap();
     assert_eq!(
-        tail_task.location, pos_c,
+        tail_task.location, expected_c,
         "Tail should be the last queued task"
     );
 }

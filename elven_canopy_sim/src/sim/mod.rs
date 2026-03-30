@@ -586,6 +586,141 @@ impl SimState {
         }
     }
 
+    /// Find a path from a creature's current position to `goal`.
+    ///
+    /// Dispatches to nav-graph A* (ground creatures) or flight A* (flying
+    /// creatures) based on species. Uses stat-modified movement speeds.
+    /// Returns `None` if the creature doesn't exist, the goal is unreachable,
+    /// or all paths exceed `max_path_len`.
+    ///
+    /// For ground creatures, the returned `PathResult` has `nav_nodes` and
+    /// `nav_edges` populated. For flyers, those fields are empty.
+    ///
+    /// Named `find_path` rather than `creature_path` to avoid collision with
+    /// the elf life-path method in `paths.rs`.
+    pub fn find_path(
+        &self,
+        creature_id: CreatureId,
+        goal: VoxelCoord,
+        max_path_len: u32,
+    ) -> Option<crate::pathfinding::PathResult> {
+        let creature = self.db.creatures.get(&creature_id)?;
+        let species = creature.species;
+        let species_data = &self.species_table[&species];
+        let position = creature.position;
+
+        if let Some(flight_tpv) = species_data.flight_ticks_per_voxel {
+            // Flying creature: A* on voxel grid.
+            let footprint = species_data.footprint;
+            crate::pathfinding::astar_fly(
+                &self.world,
+                position,
+                goal,
+                flight_tpv,
+                max_path_len,
+                footprint,
+            )
+        } else {
+            // Ground creature: A* on nav graph with stat-modified speeds.
+            let graph = self.graph_for_species(species);
+            let start_node = graph.node_at(position)?;
+            let goal_node = graph.node_at(goal)?;
+            let agility = self.trait_int(creature_id, TraitKind::Agility, 0);
+            let strength = self.trait_int(creature_id, TraitKind::Strength, 0);
+            let move_speeds =
+                crate::stats::CreatureMoveSpeeds::new(species_data, agility, strength);
+            let nav_speeds = crate::pathfinding::NavGraphSpeeds::from_move_speeds(
+                &move_speeds,
+                species_data.allowed_edge_types.as_deref(),
+            );
+            crate::pathfinding::astar_navgraph(
+                graph,
+                start_node,
+                goal_node,
+                &nav_speeds,
+                max_path_len,
+            )
+        }
+    }
+
+    /// Find the nearest reachable candidate from a creature's current position.
+    ///
+    /// Dispatches to nav-graph Dijkstra (ground creatures) or sequential
+    /// flight A* (flying creatures) based on species. Uses stat-modified
+    /// movement speeds and the species' edge-type filter.
+    ///
+    /// Returns the *index* into `candidates` of the nearest reachable one,
+    /// or `None` if the creature doesn't exist or no candidate is reachable.
+    pub fn find_nearest(
+        &self,
+        creature_id: CreatureId,
+        candidates: &[VoxelCoord],
+        max_path_len: u32,
+    ) -> Option<usize> {
+        if candidates.is_empty() {
+            return None;
+        }
+
+        let creature = self.db.creatures.get(&creature_id)?;
+        let species = creature.species;
+        let species_data = &self.species_table[&species];
+        let position = creature.position;
+
+        if let Some(flight_tpv) = species_data.flight_ticks_per_voxel {
+            // Flying creature: run A* to each candidate, pick cheapest.
+            let footprint = species_data.footprint;
+            let nearest_coord = crate::pathfinding::nearest_fly(
+                &self.world,
+                position,
+                candidates,
+                flight_tpv,
+                max_path_len,
+                footprint,
+            )?;
+            candidates.iter().position(|&c| c == nearest_coord)
+        } else {
+            // Ground creature: Dijkstra on nav graph.
+            let graph = self.graph_for_species(species);
+            let start_node = graph.node_at(position)?;
+
+            // Convert candidate VoxelCoords to NavNodeIds, tracking the mapping.
+            // Candidates must be at nav node positions (use node_at). Callers
+            // whose candidates aren't on nav nodes (e.g., fruit positions)
+            // should resolve to nav nodes before calling this function.
+            let mut target_nodes = Vec::with_capacity(candidates.len());
+            let mut index_map = Vec::with_capacity(candidates.len());
+            for (i, &coord) in candidates.iter().enumerate() {
+                if let Some(nav_node) = graph.node_at(coord) {
+                    target_nodes.push(nav_node);
+                    index_map.push(i);
+                }
+            }
+            if target_nodes.is_empty() {
+                return None;
+            }
+
+            let agility = self.trait_int(creature_id, TraitKind::Agility, 0);
+            let strength = self.trait_int(creature_id, TraitKind::Strength, 0);
+            let move_speeds =
+                crate::stats::CreatureMoveSpeeds::new(species_data, agility, strength);
+            let nav_speeds = crate::pathfinding::NavGraphSpeeds::from_move_speeds(
+                &move_speeds,
+                species_data.allowed_edge_types.as_deref(),
+            );
+
+            let nearest_node = crate::pathfinding::nearest_dijkstra_navgraph(
+                graph,
+                start_node,
+                &target_nodes,
+                &nav_speeds,
+            )?;
+
+            // Map the NavNodeId back to the original candidate index.
+            let target_idx = target_nodes.iter().position(|&n| n == nearest_node)?;
+            Some(index_map[target_idx])
+        }
+    }
+
     /// Remove a fruit position from whichever tree owns it.
     pub(crate) fn remove_fruit_from_trees(&mut self, fruit_pos: VoxelCoord) {
         // Find the tree containing this fruit position and remove it.

@@ -636,14 +636,18 @@ impl SimState {
         needed: u32,
         owner: CreatureId,
     ) -> Option<(task::HaulSource, u32, VoxelCoord)> {
-        // Check ground piles.
+        // Check ground piles. Return the nav node position (snapped) so that
+        // find_path (which uses node_at) can resolve the task location exactly.
         for pile in self.db.ground_piles.iter_all() {
             let available = self.inv_count_owned_unreserved(pile.inventory_id, kind, filter, owner);
-            if available > 0 && self.nav_graph.find_nearest_node(pile.position).is_some() {
+            if available > 0
+                && let Some(node) = self.nav_graph.find_nearest_node(pile.position)
+            {
+                let nav_pos = self.nav_graph.node(node).position;
                 return Some((
                     task::HaulSource::GroundPile(pile.position),
                     available.min(needed),
-                    pile.position,
+                    nav_pos,
                 ));
             }
         }
@@ -653,11 +657,14 @@ impl SimState {
             let sid = structure.id;
             let available =
                 self.inv_count_owned_unreserved(structure.inventory_id, kind, filter, owner);
-            if available > 0 && self.nav_graph.find_nearest_node(structure.anchor).is_some() {
+            if available > 0
+                && let Some(node) = self.nav_graph.find_nearest_node(structure.anchor)
+            {
+                let nav_pos = self.nav_graph.node(node).position;
                 return Some((
                     task::HaulSource::Building(sid),
                     available.min(needed),
-                    structure.anchor,
+                    nav_pos,
                 ));
             }
         }
@@ -669,7 +676,8 @@ impl SimState {
     ///
     /// Searches ground piles first (deterministic BTreeMap order), then any
     /// building inventory (ignoring logistics priority — personal acquisition
-    /// pulls from anywhere). Returns the source, capped quantity, and nav node.
+    /// pulls from anywhere). Returns the source, capped quantity, and nav node
+    /// position (snapped to the nearest nav node).
     pub(crate) fn find_unowned_item_source(
         &self,
         kind: inventory::ItemKind,
@@ -679,11 +687,14 @@ impl SimState {
         // Check ground piles.
         for pile in self.db.ground_piles.iter_all() {
             let available = self.inv_count_unowned_unreserved(pile.inventory_id, kind, filter);
-            if available > 0 && self.nav_graph.find_nearest_node(pile.position).is_some() {
+            if available > 0
+                && let Some(node) = self.nav_graph.find_nearest_node(pile.position)
+            {
+                let nav_pos = self.nav_graph.node(node).position;
                 return Some((
                     task::HaulSource::GroundPile(pile.position),
                     available.min(needed),
-                    pile.position,
+                    nav_pos,
                 ));
             }
         }
@@ -692,11 +703,14 @@ impl SimState {
         for structure in self.db.structures.iter_all() {
             let sid = structure.id;
             let available = self.inv_count_unowned_unreserved(structure.inventory_id, kind, filter);
-            if available > 0 && self.nav_graph.find_nearest_node(structure.anchor).is_some() {
+            if available > 0
+                && let Some(node) = self.nav_graph.find_nearest_node(structure.anchor)
+            {
+                let nav_pos = self.nav_graph.node(node).position;
                 return Some((
                     task::HaulSource::Building(sid),
                     available.min(needed),
-                    structure.anchor,
+                    nav_pos,
                 ));
             }
         }

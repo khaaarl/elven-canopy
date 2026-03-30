@@ -64,6 +64,7 @@ This reduces merge conflicts when parallel work streams add items.
 ### Todo
 
 ```
+[ ] B-combat-move-stats    Combat movement timing ignores creature stats
 [ ] B-dead-owner-items     Dead creature items retain ownership, becoming invisible to all systems
 [ ] B-dijkstra-perf        Unbounded Dijkstra in nearest-X searches scales poorly on large graphs
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
@@ -265,7 +266,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-two-click-build      Two-click construction designation (click start, click end)
 [ ] F-undo-designate       Undo last construction designation
 [ ] F-unfurnish            Unfurnish/refurnish a building
-[ ] F-unified-pathing      Unified pathfinding API for ground (nav graph) and flying (voxel grid) creatures
+[ ] F-unified-pursuit      Unify pursue_closest_target ground/flight paths via find_nearest
 [ ] F-uplift-tree          Uplift lesser tree into bonded great tree
 [ ] F-vaelith-expand       Expand Vaelith language for runtime use
 [ ] F-vertical-garden      Vertical gardens on the tree
@@ -526,6 +527,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-tree-overlap         Construction overlap with tree geometry
 [x] F-troll-regen          Troll health regeneration over time
 [x] F-unified-craft-ui     Unified data-driven building crafting UI
+[x] F-unified-pathing      Unified pathfinding API for ground (nav graph) and flying (voxel grid) creatures
 [x] F-visual-smooth        Smooth voxel surface rendering
 [x] F-voice-subsets        Variable voice count (SATB subsets)
 [x] F-voxel-exclusion      Creatures cannot enter voxels occupied by hostile creatures
@@ -1584,7 +1586,7 @@ Both return the same result type.
 `find_nearest_bed()`, `find_available_task()`, and any future nearest-X
 searches for both ground and flying creatures.
 
-**Blocked by:** F-unified-pathing
+**Unblocked by:** F-unified-pathing
 **Related:** B-dijkstra-perf, B-dining-perf
 
 #### F-large-nav-tolerance — 1-voxel height tolerance for large nav
@@ -1643,7 +1645,7 @@ A* search with euclidean heuristic over the nav graph. Movement cost
 computed from edge distance and per-species speed config.
 
 #### F-unified-pathing — Unified pathfinding API for ground (nav graph) and flying (voxel grid) creatures
-**Status:** Todo · **Refs:** §4
+**Status:** Done · **Refs:** §4
 
 Unify the two separate pathfinding implementations — `pathfinding.rs` (nav graph
 for ground creatures) and `flight_pathfinding.rs` (voxel grid for flyers) — into
@@ -1707,7 +1709,7 @@ F-interleaved-astar depends on this — the interleaved nearest-among-N algorith
 should be implemented once using the sibling functions, not duplicated for each
 travel mode.
 
-**Blocks:** F-interleaved-astar
+**Unblocked:** F-interleaved-astar
 **Related:** B-dijkstra-perf, B-dining-perf
 
 ### Creatures & Needs
@@ -3827,6 +3829,50 @@ infrastructure.
 
 ### Combat & Defense
 
+#### B-combat-move-stats — Combat movement timing ignores creature stats
+**Status:** Todo
+
+Combat ground movement timing ignores creature stats (agility/strength).
+
+In `combat.rs`, the edge traversal delay after pathfinding uses
+`CreatureMoveSpeeds::new(species_data, 0, 0).tpv_for_edge(edge.edge_type)`,
+hardcoding agility=0 and strength=0. This means the actual movement speed
+on each edge uses base species values, ignoring the creature's stats.
+
+Meanwhile, `find_path` (which computed the path) uses stat-modified speeds
+via `CreatureMoveSpeeds::new(species_data, agility, strength)`. So the path
+is optimized for the creature's real speed (e.g., a fast climber might prefer
+a shorter climb route), but then the creature traverses each edge at base
+speed. This mismatch means path selection and movement timing are inconsistent.
+
+The issue affects two call sites in `combat.rs`:
+1. `execute_attack_move` (~line 792): ground movement toward attack-move destination
+2. `walk_toward_attack_target` (~line 1168): ground movement toward attack target
+
+Both have the same pattern:
+```rust
+let tpv = crate::stats::CreatureMoveSpeeds::new(species_data, 0, 0)
+    .tpv_for_edge(edge.edge_type);
+```
+
+
+// ... later ...
+For reference, `movement.rs` `walk_toward_task` does it correctly:
+The fix: look up the creature's agility and strength stats (via `self.trait_int`)
+```rust
+and pass them to `CreatureMoveSpeeds::new`, matching what `find_path` does
+internally and what `walk_toward_task` in `movement.rs` does (which correctly
+let agility = self.trait_int(creature_id, TraitKind::Agility, 0);
+let speeds = crate::stats::CreatureMoveSpeeds::new(species_data, agility, strength);
+let strength = self.trait_int(creature_id, TraitKind::Strength, 0);
+let tpv = speeds.tpv_for_edge(edge.edge_type);
+uses stat-modified speeds for both pathfinding and traversal timing).
+```
+
+This is a pre-existing issue (combat always used raw species speeds), but the
+F-unified-pathing refactor made it more visible by introducing `find_path`
+which consistently uses stat-modified speeds.
+
 #### B-flying-arrow-chase — Flying creatures excluded from arrow-chase
 **Status:** Done
 
@@ -4611,6 +4657,43 @@ user: Thornbriar spell. Future: ice walls, fire zones, magical barriers.
 
 **Blocked by:** F-spell-system
 **Blocks:** F-spell-thornbriar
+
+#### F-unified-pursuit — Unify pursue_closest_target ground/flight paths via find_nearest
+**Status:** Todo
+
+`pursue_closest_target` in `combat.rs` has separate code paths for ground and
+flying creatures that should be unified using `find_nearest()`.
+
+**Current behavior:**
+
+- **Ground creatures:** Build a list of NavNodeIds near each target (using
+  `find_nearest_node` or `find_melee_reachable_node` for flying targets),
+  convert to VoxelCoords, call `find_nearest` to pick the closest, then
+  `find_path` to path there. This involves a wasteful NavNodeId → VoxelCoord
+  → NavNodeId round-trip through `find_nearest`.
+
+- **Flying creatures:** Use squared Euclidean distance to pick the nearest
+  target (no actual pathfinding), then call `fly_toward_target` to close
+  distance. This is a heuristic approximation that ignores obstacles.
+
+**Desired behavior:**
+
+Unify both paths by using `find_nearest()` with a set of VoxelCoords that
+are locations in melee range of the various target creatures. For each target,
+compute the set of positions from which a melee attack could reach the target
+(using melee range and footprint geometry — similar to what
+`find_melee_reachable_node` already does for ground vs flying targets). Collect
+all such positions into a single candidate list and call `find_nearest()`.
+
+The result: if there is any reachable path to a location from which the
+attacker could make a melee attack at any target, the attacker walks/flies
+toward the closest such location. This works uniformly for ground and flying
+attackers, eliminates the Euclidean approximation for flyers, and removes
+the NavNodeId round-trip for ground creatures.
+
+**Affected code:** `pursue_closest_target` in `sim/combat.rs` (~line 3192),
+including the ground-specific `find_melee_reachable_node` helper and the
+flying-specific Euclidean distance branch.
 
 #### F-voxel-exclusion — Creatures cannot enter voxels occupied by hostile creatures
 **Status:** Done · **Phase:** 3

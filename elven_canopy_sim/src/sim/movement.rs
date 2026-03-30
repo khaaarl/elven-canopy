@@ -5,13 +5,11 @@
 // movement execution with voxel exclusion, idle wandering, and command queue
 // management (`find_queue_tail` for shift+right-click sequential queuing).
 //
-// See also: `pathfinding.rs` (A* implementation), `nav.rs` (graph structure),
-// `combat.rs` (attack-move walking, flee steps),
-// `flight_pathfinding.rs` (vanilla A* on voxel grid for flying creatures).
+// See also: `pathfinding.rs` (A* for ground and flight), `nav.rs` (graph
+// structure), `combat.rs` (attack-move walking, flee steps).
 use super::*;
 use crate::db::{ActionKind, MoveAction};
 use crate::event::SimEvent;
-use crate::pathfinding;
 use crate::preemption;
 use crate::task;
 use crate::types::NavEdgeId;
@@ -32,15 +30,22 @@ impl SimState {
         };
 
         // Ground creatures need a reachable nav node at the destination.
+        // Snap the task location to the nav node position so that find_path
+        // (which uses node_at) can resolve it exactly.
         // Flying creatures can go anywhere in open air.
-        let is_flying = self.species_table[&creature.species]
+        let species = creature.species;
+        let is_flying = self.species_table[&species]
             .flight_ticks_per_voxel
             .is_some();
-        if !is_flying && self.nav_graph.find_nearest_node(position).is_none() {
-            return;
-        }
-
-        let species = creature.species;
+        let task_location = if is_flying {
+            position
+        } else {
+            let graph = self.graph_for_species(species);
+            match graph.find_nearest_node(position) {
+                Some(node) => graph.node(node).position,
+                None => return,
+            }
+        };
 
         // Queue mode: append to the creature's command queue instead of preempting.
         if queue && let Some(tail_id) = self.find_queue_tail(creature_id) {
@@ -49,7 +54,7 @@ impl SimState {
                 id: task_id,
                 kind: task::TaskKind::GoTo,
                 state: task::TaskState::Available,
-                location: position,
+                location: task_location,
                 progress: 0,
                 total_cost: 0,
                 required_species: Some(species),
@@ -105,7 +110,7 @@ impl SimState {
             id: task_id,
             kind: task::TaskKind::GoTo,
             state: task::TaskState::InProgress,
-            location: position,
+            location: task_location,
             progress: 0,
             total_cost: 0,
             required_species: Some(species),
@@ -325,21 +330,13 @@ impl SimState {
             return;
         }
 
-        // Ground creatures: resolve target to nav node and use graph A*.
+        // Ground creatures: use graph A* via find_path.
         let current_node = match current_node {
             Some(n) => n,
             None => return,
         };
         let species_data = &self.species_table[&species];
         let graph = self.graph_for_species(species);
-        let task_location = match graph.find_nearest_node(target_coord) {
-            Some(n) => n,
-            None => {
-                self.unassign_creature_from_task(creature_id);
-                self.ground_wander(creature_id, current_node, events);
-                return;
-            }
-        };
 
         // Check if we already have a path. If so, resolve the next position
         // to a nav node + edge. If not (or path is exhausted), compute a new one.
@@ -362,44 +359,19 @@ impl SimState {
             None
         };
 
-        // Apply creature stats to movement speeds.
+        // Apply creature stats to movement speeds (for edge traversal timing).
         let agility = self.trait_int(creature_id, TraitKind::Agility, 0);
         let strength = self.trait_int(creature_id, TraitKind::Strength, 0);
         let speeds = crate::stats::CreatureMoveSpeeds::new(species_data, agility, strength);
-        let walk_tpv = speeds.walk_tpv;
-        let climb_tpv = speeds.climb_tpv;
-        let wood_ladder_tpv = speeds.wood_ladder_tpv;
-        let rope_ladder_tpv = speeds.rope_ladder_tpv;
 
         let (edge_idx, dest_node) = if let Some(step) = next_step {
             step
         } else {
             // Compute path to task location.
-            let path_result = if let Some(ref allowed) = species_data.allowed_edge_types {
-                pathfinding::astar_filtered(
-                    graph,
-                    current_node,
-                    task_location,
-                    walk_tpv,
-                    climb_tpv,
-                    wood_ladder_tpv,
-                    rope_ladder_tpv,
-                    allowed,
-                )
-            } else {
-                pathfinding::astar(
-                    graph,
-                    current_node,
-                    task_location,
-                    walk_tpv,
-                    climb_tpv,
-                    wood_ladder_tpv,
-                    rope_ladder_tpv,
-                )
-            };
+            let path_result = self.find_path(creature_id, target_coord, u32::MAX);
 
             let path_result = match path_result {
-                Some(r) if r.nodes.len() >= 2 => r,
+                Some(r) if r.nav_nodes.len() >= 2 => r,
                 _ => {
                     // Can't reach task — unassign and wander.
                     self.unassign_creature_from_task(creature_id);
@@ -408,14 +380,11 @@ impl SimState {
                 }
             };
 
-            let first_edge = path_result.edge_indices[0];
-            let first_dest = path_result.nodes[1];
+            let first_edge = path_result.nav_edges[0];
+            let first_dest = path_result.nav_nodes[1];
 
             // Store remaining path as positions for future activations.
-            let remaining_positions: Vec<VoxelCoord> = path_result.nodes[1..]
-                .iter()
-                .map(|&nid| graph.node(nid).position)
-                .collect();
+            let remaining_positions: Vec<VoxelCoord> = path_result.positions[1..].to_vec();
             if let Some(mut creature) = self.db.creatures.get(&creature_id) {
                 creature.path = Some(CreaturePath {
                     remaining_positions,
@@ -664,7 +633,7 @@ impl SimState {
     }
 
     // -----------------------------------------------------------------------
-    // Flying creature movement (flight_pathfinding.rs — vanilla A* on voxel grid)
+    // Flying creature movement (pathfinding.rs — A* on voxel grid)
     // -----------------------------------------------------------------------
 
     /// Move a flying creature one step along its flight path toward `target_pos`.
@@ -685,14 +654,12 @@ impl SimState {
             Some(tpv) => tpv,
             None => return false,
         };
-        let current_pos = creature.position;
-
         // Check if we have a cached flight path with remaining steps.
         let next_pos = if let Some(ref path) = creature.path {
             if let Some(&next) = path.remaining_positions.first() {
                 // Validate that the next position is still flyable (full footprint).
                 let footprint = self.species_table[&species].footprint;
-                if !crate::flight_pathfinding::footprint_flyable(&self.world, next, footprint) {
+                if !crate::pathfinding::footprint_flyable(&self.world, next, footprint) {
                     None // obstacle appeared; repath
                 } else {
                     Some(next)
@@ -708,25 +675,16 @@ impl SimState {
             p
         } else {
             // Compute a new flight path.
-            let max_nodes = 10_000;
-            let footprint = self.species_table[&species].footprint;
-            let path_result = crate::flight_pathfinding::astar_fly(
-                &self.world,
-                current_pos,
-                target_pos,
-                flight_tpv,
-                max_nodes,
-                footprint,
-            );
+            let path_result = self.find_path(creature_id, target_pos, u32::MAX);
             let path_result = match path_result {
-                Some(r) if r.waypoints.len() >= 2 => r,
+                Some(r) if r.positions.len() >= 2 => r,
                 _ => return false, // no path
             };
 
-            let next = path_result.waypoints[1];
+            let next = path_result.positions[1];
 
             // Store remaining path (skip start, which is current position).
-            let remaining_positions: Vec<VoxelCoord> = path_result.waypoints[1..].to_vec();
+            let remaining_positions: Vec<VoxelCoord> = path_result.positions[1..].to_vec();
             if let Some(mut creature) = self.db.creatures.get(&creature_id) {
                 creature.path = Some(CreaturePath {
                     remaining_positions,
@@ -833,7 +791,7 @@ impl SimState {
         let mut candidates: Vec<VoxelCoord> = Vec::new();
         for &(dx, dy, dz) in &offsets {
             let neighbor = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
-            if crate::flight_pathfinding::footprint_flyable(&self.world, neighbor, footprint) {
+            if crate::pathfinding::footprint_flyable(&self.world, neighbor, footprint) {
                 candidates.push(neighbor);
             }
         }

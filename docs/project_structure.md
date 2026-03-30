@@ -46,8 +46,7 @@ elven-canopy/
 │       ├── mesh_decimation.rs  # QEM edge-collapse decimation + coplanar retri + collinear collapse
 │       ├── texture_gen.rs      # Prime-period tiling textures (kept for reference, not active)
 │       ├── nav.rs              # NavGraph, NavNode, NavEdge, graph construction
-│       ├── pathfinding.rs      # A* search over NavGraph
-│       ├── flight_pathfinding.rs # Vanilla A* on voxel grid for flying creatures
+│       ├── pathfinding.rs      # Unified pathfinding for ground (nav graph) and flying (voxel grid) creatures
 │       ├── projectile.rs       # Integer-only ballistic trajectories, aim solver
 │       ├── tree_gen.rs         # Procedural tree generation (trunk + branches)
 │       ├── world.rs            # RLE column-based voxel grid

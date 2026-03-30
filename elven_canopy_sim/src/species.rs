@@ -15,7 +15,7 @@
 //   ticks/sec, a value of 1250 means 0.8 voxels per second climbing.
 // - `flight_ticks_per_voxel` — ticks per 1.0 units of 3D flight. `None`
 //   means the species cannot fly. Flying creatures use vanilla A* on the
-//   voxel grid (`flight_pathfinding.rs`) instead of the nav graph.
+//   voxel grid (`pathfinding.rs`) instead of the nav graph.
 // - `heartbeat_interval_ticks` — interval for `CreatureHeartbeat` events.
 //   Note: heartbeats do NOT drive movement (that's the activation chain in
 //   `sim/activation.rs`); they handle periodic non-movement checks like mood and mana.

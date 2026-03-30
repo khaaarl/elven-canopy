@@ -13,7 +13,6 @@
 use super::*;
 use crate::db::ActionKind;
 use crate::inventory;
-use crate::pathfinding;
 use crate::task;
 
 impl SimState {
@@ -27,46 +26,31 @@ impl SimState {
         creature_id: CreatureId,
     ) -> Option<(VoxelCoord, NavNodeId)> {
         let creature = self.db.creatures.get(&creature_id)?;
-        let start_node = self
-            .graph_for_species(creature.species)
-            .node_at(creature.position)?;
-        let species_data = &self.species_table[&creature.species];
         let graph = self.graph_for_species(creature.species);
 
-        // Map each fruit position to its nearest nav node, keeping the association.
-        let mut nav_to_fruit: Vec<(NavNodeId, VoxelCoord)> = Vec::new();
-        let mut target_nodes: Vec<NavNodeId> = Vec::new();
+        // Resolve fruit positions to nav node positions. Fruit may not sit
+        // exactly on a nav node, so use find_nearest_node here (before
+        // passing to find_nearest which expects nav-node-exact coords).
+        let mut fruit_candidates: Vec<(VoxelCoord, NavNodeId, VoxelCoord)> = Vec::new();
         for tree in self.db.trees.iter_all() {
             for &fruit_pos in &tree.fruit_positions {
                 if let Some(nav_node) = graph.find_nearest_node(fruit_pos) {
-                    target_nodes.push(nav_node);
-                    nav_to_fruit.push((nav_node, fruit_pos));
+                    let nav_pos = graph.node(nav_node).position;
+                    fruit_candidates.push((fruit_pos, nav_node, nav_pos));
                 }
             }
         }
 
-        if target_nodes.is_empty() {
+        if fruit_candidates.is_empty() {
             return None;
         }
 
-        let nearest_node = pathfinding::dijkstra_nearest(
-            graph,
-            start_node,
-            &target_nodes,
-            species_data.walk_ticks_per_voxel,
-            species_data.climb_ticks_per_voxel,
-            species_data.wood_ladder_tpv,
-            species_data.rope_ladder_tpv,
-            species_data.allowed_edge_types.as_deref(),
-        )?;
+        let nav_positions: Vec<VoxelCoord> =
+            fruit_candidates.iter().map(|&(_, _, np)| np).collect();
+        let idx = self.find_nearest(creature_id, &nav_positions, u32::MAX)?;
+        let (fruit_pos, nav_node, _) = fruit_candidates[idx];
 
-        // Find the fruit_pos associated with this nav node.
-        let fruit_pos = nav_to_fruit
-            .iter()
-            .find(|(n, _)| *n == nearest_node)
-            .map(|(_, fp)| *fp)?;
-
-        Some((fruit_pos, nearest_node))
+        Some((fruit_pos, nav_node))
     }
 
     /// Resolve a completed Eat action for fruit: restore food, remove fruit
@@ -548,46 +532,9 @@ impl SimState {
         creature_id: CreatureId,
     ) -> Option<(VoxelCoord, NavNodeId, StructureId)> {
         let creature = self.db.creatures.get(&creature_id)?;
-        let start_node = self
-            .graph_for_species(creature.species)
-            .node_at(creature.position)?;
-        let species_data = &self.species_table[&creature.species];
         let graph = self.graph_for_species(creature.species);
 
-        // Step 1: Cheap structure scan — collect placed beds in dormitories.
-        // Gates the expensive task_voxel_refs scan (B-dijkstra-perf).
-        struct BedCandidate {
-            coord: VoxelCoord,
-            nav_node: NavNodeId,
-            structure_id: StructureId,
-        }
-        let mut candidates: Vec<BedCandidate> = Vec::new();
-        for structure in self.db.structures.iter_all() {
-            if structure.furnishing != Some(FurnishingType::Dormitory) {
-                continue;
-            }
-            for furn in self
-                .db
-                .furniture
-                .by_structure_id(&structure.id, tabulosity::QueryOpts::ASC)
-            {
-                if !furn.placed {
-                    continue;
-                }
-                if let Some(nav_node) = graph.find_nearest_node(furn.coord) {
-                    candidates.push(BedCandidate {
-                        coord: furn.coord,
-                        nav_node,
-                        structure_id: structure.id,
-                    });
-                }
-            }
-        }
-        if candidates.is_empty() {
-            return None;
-        }
-
-        // Step 2: Remove occupied beds — only reached when dormitories exist.
+        // Step 1: Collect occupied beds (active Sleep tasks).
         let occupied_beds: Vec<VoxelCoord> = self
             .db
             .task_voxel_refs
@@ -601,56 +548,43 @@ impl SimState {
             })
             .map(|r| r.coord)
             .collect();
-        candidates.retain(|c| !occupied_beds.contains(&c.coord));
-        if candidates.is_empty() {
-            return None;
-        }
 
-        // Step 3: Per-candidate A* instead of multi-target Dijkstra
-        // (B-dijkstra-perf). Dormitories are rare, so a few A* calls
-        // terminate much faster than Dijkstra flooding the graph.
-        let mut best: Option<(i64, &BedCandidate)> = None;
-        for candidate in &candidates {
-            let result = if let Some(allowed) = species_data.allowed_edge_types.as_deref() {
-                pathfinding::astar_filtered(
-                    graph,
-                    start_node,
-                    candidate.nav_node,
-                    species_data.walk_ticks_per_voxel,
-                    species_data.climb_ticks_per_voxel,
-                    species_data.wood_ladder_tpv,
-                    species_data.rope_ladder_tpv,
-                    allowed,
-                )
-            } else {
-                pathfinding::astar(
-                    graph,
-                    start_node,
-                    candidate.nav_node,
-                    species_data.walk_ticks_per_voxel,
-                    species_data.climb_ticks_per_voxel,
-                    species_data.wood_ladder_tpv,
-                    species_data.rope_ladder_tpv,
-                )
-            };
-            if let Some(path) = result
-                && best
-                    .as_ref()
-                    .is_none_or(|(cost, _)| path.total_cost < *cost)
+        // Collect unoccupied bed positions from all dormitory structures.
+        let mut bed_candidates: Vec<(VoxelCoord, StructureId)> = Vec::new();
+        for structure in self.db.structures.iter_all() {
+            if structure.furnishing != Some(FurnishingType::Dormitory) {
+                continue;
+            }
+            for furn in self
+                .db
+                .furniture
+                .by_structure_id(&structure.id, tabulosity::QueryOpts::ASC)
             {
-                best = Some((path.total_cost, candidate));
+                if !furn.placed || occupied_beds.contains(&furn.coord) {
+                    continue;
+                }
+                bed_candidates.push((furn.coord, structure.id));
             }
         }
 
-        let (_, winner) = best?;
-        Some((winner.coord, winner.nav_node, winner.structure_id))
+        if bed_candidates.is_empty() {
+            return None;
+        }
+
+        let coords: Vec<VoxelCoord> = bed_candidates.iter().map(|&(c, _)| c).collect();
+        let idx = self.find_nearest(creature_id, &coords, u32::MAX)?;
+        let (bed_pos, structure_id) = bed_candidates[idx];
+        // Beds are placed on nav nodes, so node_at is correct here.
+        let nav_node = graph.node_at(bed_pos)?;
+
+        Some((bed_pos, nav_node, structure_id))
     }
 
     /// Find the nearest dining hall with at least one free seat and one
     /// unreserved edible food item. Returns `(table_coord, nav_node,
     /// structure_id)` or `None` if no valid dining hall is reachable.
     ///
-    /// Uses per-candidate A* (not multi-target Dijkstra) to find the closest
+    /// Uses the unified `find_nearest` dispatch to find the closest
     /// reachable table by travel cost. Capacity per table is
     /// `config.dining_seats_per_table`; occupied seats are counted from active
     /// `DiningSeat` task voxel refs.
@@ -659,59 +593,10 @@ impl SimState {
         creature_id: CreatureId,
     ) -> Option<(VoxelCoord, NavNodeId, StructureId)> {
         let creature = self.db.creatures.get(&creature_id)?;
-        let start_node = self
-            .graph_for_species(creature.species)
-            .node_at(creature.position)?;
-        let species_data = &self.species_table[&creature.species];
         let graph = self.graph_for_species(creature.species);
         let seats_per_table = self.config.dining_seats_per_table;
 
-        // Step 1: Cheap structure scan — find dining halls with stocked food
-        // and collect their placed tables. This gates the expensive
-        // task_voxel_refs scan behind the food check (B-dining-perf).
-        struct TableCandidate {
-            coord: VoxelCoord,
-            nav_node: NavNodeId,
-            structure_id: StructureId,
-        }
-        let mut candidates: Vec<TableCandidate> = Vec::new();
-        for structure in self.db.structures.iter_all() {
-            if structure.furnishing != Some(FurnishingType::DiningHall) {
-                continue;
-            }
-            let has_food = inventory::ItemKind::EDIBLE_KINDS.iter().any(|kind| {
-                self.inv_unreserved_item_count(
-                    structure.inventory_id,
-                    *kind,
-                    inventory::MaterialFilter::Any,
-                ) > 0
-            });
-            if !has_food {
-                continue;
-            }
-            for furn in self
-                .db
-                .furniture
-                .by_structure_id(&structure.id, tabulosity::QueryOpts::ASC)
-            {
-                if !furn.placed {
-                    continue;
-                }
-                if let Some(nav_node) = graph.find_nearest_node(furn.coord) {
-                    candidates.push(TableCandidate {
-                        coord: furn.coord,
-                        nav_node,
-                        structure_id: structure.id,
-                    });
-                }
-            }
-        }
-        if candidates.is_empty() {
-            return None;
-        }
-
-        // Step 2: Count occupied dining seats — only reached when at least
-        // one dining hall has food (the common "no halls" case skips this).
+        // Step 1: Count occupied dining seats.
         let mut occupied_seats: std::collections::BTreeMap<VoxelCoord, u32> =
             std::collections::BTreeMap::new();
         for r in self.db.task_voxel_refs.iter_all() {
@@ -726,51 +611,52 @@ impl SimState {
             }
         }
 
-        // Filter out full tables.
-        candidates.retain(|c| occupied_seats.get(&c.coord).copied().unwrap_or(0) < seats_per_table);
-        if candidates.is_empty() {
-            return None;
-        }
+        // Collect tables with free seats in dining halls that have stocked food.
+        let mut table_candidates: Vec<(VoxelCoord, StructureId)> = Vec::new();
+        for structure in self.db.structures.iter_all() {
+            if structure.furnishing != Some(FurnishingType::DiningHall) {
+                continue;
+            }
+            // Check for unreserved edible food in this building's inventory.
+            let has_food = inventory::ItemKind::EDIBLE_KINDS.iter().any(|kind| {
+                self.inv_unreserved_item_count(
+                    structure.inventory_id,
+                    *kind,
+                    inventory::MaterialFilter::Any,
+                ) > 0
+            });
+            if !has_food {
+                continue;
+            }
 
-        // Step 3: Per-candidate A* instead of multi-target Dijkstra
-        // (B-dining-perf). Dining halls are rare (typically 1–3), so a
-        // few A* calls with heuristic guidance terminate much faster than
-        // a single Dijkstra that may flood the entire reachable graph.
-        let mut best: Option<(i64, &TableCandidate)> = None;
-        for candidate in &candidates {
-            let result = if let Some(allowed) = species_data.allowed_edge_types.as_deref() {
-                pathfinding::astar_filtered(
-                    graph,
-                    start_node,
-                    candidate.nav_node,
-                    species_data.walk_ticks_per_voxel,
-                    species_data.climb_ticks_per_voxel,
-                    species_data.wood_ladder_tpv,
-                    species_data.rope_ladder_tpv,
-                    allowed,
-                )
-            } else {
-                pathfinding::astar(
-                    graph,
-                    start_node,
-                    candidate.nav_node,
-                    species_data.walk_ticks_per_voxel,
-                    species_data.climb_ticks_per_voxel,
-                    species_data.wood_ladder_tpv,
-                    species_data.rope_ladder_tpv,
-                )
-            };
-            if let Some(path) = result
-                && best
-                    .as_ref()
-                    .is_none_or(|(cost, _)| path.total_cost < *cost)
+            // Check tables for free seats.
+            for furn in self
+                .db
+                .furniture
+                .by_structure_id(&structure.id, tabulosity::QueryOpts::ASC)
             {
-                best = Some((path.total_cost, candidate));
+                if !furn.placed {
+                    continue;
+                }
+                let occupied = occupied_seats.get(&furn.coord).copied().unwrap_or(0);
+                if occupied >= seats_per_table {
+                    continue;
+                }
+                table_candidates.push((furn.coord, structure.id));
             }
         }
 
-        let (_, winner) = best?;
-        Some((winner.coord, winner.nav_node, winner.structure_id))
+        if table_candidates.is_empty() {
+            return None;
+        }
+
+        let coords: Vec<VoxelCoord> = table_candidates.iter().map(|&(c, _)| c).collect();
+        let idx = self.find_nearest(creature_id, &coords, u32::MAX)?;
+        let (table_coord, structure_id) = table_candidates[idx];
+        // Tables are placed on nav nodes, so node_at is correct here.
+        let nav_node = graph.node_at(table_coord)?;
+
+        Some((table_coord, nav_node, structure_id))
     }
 
     /// Start a Sleep action: set action kind and schedule next activation

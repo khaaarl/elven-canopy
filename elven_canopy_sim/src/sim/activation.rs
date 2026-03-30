@@ -20,7 +20,6 @@ use super::*;
 use crate::db::ActionKind;
 use crate::event::SimEvent;
 use crate::inventory;
-use crate::pathfinding;
 use crate::preemption;
 use crate::task;
 
@@ -569,15 +568,6 @@ impl SimState {
     pub(crate) fn find_available_task(&self, creature_id: CreatureId) -> Option<TaskId> {
         let creature = self.db.creatures.get(&creature_id)?;
         let species = creature.species;
-        let is_flying = self.species_table[&species]
-            .flight_ticks_per_voxel
-            .is_some();
-        let creature_pos = creature.position;
-        let current_node = if is_flying {
-            None
-        } else {
-            Some(self.graph_for_species(species).node_at(creature_pos)?)
-        };
         let is_nonmagical = creature.mp_max == 0;
         // Minimum mana needed to attempt one mana-requiring work action.
         let min_mana_cost = self.mana_cost_per_action(None);
@@ -656,54 +646,9 @@ impl SimState {
             return Some(candidates[0].0);
         }
 
-        // Flying creatures: pick nearest task by squared Euclidean distance.
-        // Ground creatures: use Dijkstra on the nav graph for true path cost.
-        if is_flying {
-            let nearest = candidates
-                .iter()
-                .map(|&(id, loc)| {
-                    let dx = creature_pos.x as i64 - loc.x as i64;
-                    let dy = creature_pos.y as i64 - loc.y as i64;
-                    let dz = creature_pos.z as i64 - loc.z as i64;
-                    (id, dx * dx + dy * dy + dz * dz)
-                })
-                .min_by_key(|&(id, dist)| (dist, id))?;
-            return Some(nearest.0);
-        }
-
-        let current_node = current_node.unwrap();
-        let species_data = &self.species_table[&species];
-        let graph = self.graph_for_species(species);
-
-        // Resolve VoxelCoords to NavNodeIds for Dijkstra, keeping the association.
-        let resolved: Vec<(TaskId, NavNodeId)> = candidates
-            .iter()
-            .filter_map(|&(id, coord)| graph.find_nearest_node(coord).map(|nav| (id, nav)))
-            .collect();
-
-        if resolved.is_empty() {
-            return None;
-        }
-
-        let target_nodes: Vec<NavNodeId> = resolved.iter().map(|&(_, nav)| nav).collect();
-
-        let nearest_node = pathfinding::dijkstra_nearest(
-            graph,
-            current_node,
-            &target_nodes,
-            species_data.walk_ticks_per_voxel,
-            species_data.climb_ticks_per_voxel,
-            species_data.wood_ladder_tpv,
-            species_data.rope_ladder_tpv,
-            None, // no edge filter
-        )?;
-
-        // Find the task at the nearest node. If multiple tasks share a location,
-        // the first in iteration order wins (deterministic tiebreaker).
-        resolved
-            .iter()
-            .find(|&&(_, nav)| nav == nearest_node)
-            .map(|&(id, _)| id)
+        let coords: Vec<VoxelCoord> = candidates.iter().map(|&(_, loc)| loc).collect();
+        let idx = self.find_nearest(creature_id, &coords, u32::MAX)?;
+        Some(candidates[idx].0)
     }
 
     /// Assign a creature to a task.
@@ -789,10 +734,15 @@ impl SimState {
 
         // Ground creatures: resolve task location to nav node and check liveness.
         // Flying creatures skip nav-node resolution entirely.
+        // For ground creatures, snap task_location_coord to the nav node
+        // position so that find_path (which uses node_at) can resolve it.
         let task_location_node: Option<NavNodeId> = if !is_flying {
             let graph = self.graph_for_species(species);
             match graph.find_nearest_node(task_location_coord) {
-                Some(n) => Some(n),
+                Some(n) => {
+                    task_location_coord = graph.node(n).position;
+                    Some(n)
+                }
                 None => {
                     // No reachable nav node for the task location — abandon.
                     self.interrupt_task(creature_id, task_id);

@@ -64,7 +64,7 @@ impl SimState {
         // flyable); ground creatures snap to the nearest nav node.
         let node_pos = if is_flyer {
             let footprint = species_data.footprint;
-            if !crate::flight_pathfinding::footprint_flyable(&self.world, position, footprint) {
+            if !crate::pathfinding::footprint_flyable(&self.world, position, footprint) {
                 return None;
             }
             position

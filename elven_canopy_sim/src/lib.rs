@@ -16,8 +16,7 @@
 // - `mesh_decimation.rs`: QEM edge-collapse decimation + coplanar retri + collinear collapse.
 // - `texture_gen.rs`: Procedural face texture generation (kept for reference, not active).
 // - `nav.rs`:         Navigation graph structures + construction from tree geometry.
-// - `flight_pathfinding.rs`: Vanilla A* on voxel grid for flying creatures (26-connected).
-// - `pathfinding.rs`: A* pathfinding over the nav graph.
+// - `pathfinding.rs`: Unified pathfinding for ground (nav graph) and flying (voxel grid) creatures.
 // - `preemption.rs`:  Task priority levels and preemption rules (Mood vs Survival, PlayerDirected override, etc.).
 // - `projectile.rs`:  Integer-only ballistic trajectory math (sub-voxel coords, aim solver).
 // - `command.rs`:     SimCommand / SimAction — all sim mutations.
@@ -58,7 +57,6 @@ pub mod config;
 pub mod dance;
 pub mod db;
 pub mod event;
-pub mod flight_pathfinding;
 pub mod fruit;
 pub mod inventory;
 pub mod local_relay;

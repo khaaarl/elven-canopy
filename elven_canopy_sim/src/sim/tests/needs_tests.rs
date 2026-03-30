@@ -98,13 +98,22 @@ fn busy_tired_elf_does_not_create_sleep_task() {
         sim.db.update_creature(c).unwrap();
     }
 
-    // Give the elf a GoTo task so it's busy.
+    // Give the elf a GoTo task so it's busy. Use a valid nav node position
+    // so the elf doesn't immediately fail pathfinding and drop the task.
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let goto_target = sim
+        .nav_graph
+        .ground_node_ids()
+        .iter()
+        .map(|&nid| sim.nav_graph.node(nid).position)
+        .find(|&p| p != elf_pos)
+        .expect("need a distant ground nav node");
     let task_id = TaskId::new(&mut sim.rng);
     let goto_task = Task {
         id: task_id,
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
-        location: VoxelCoord::new(0, 0, 0),
+        location: goto_target,
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -730,13 +739,22 @@ fn busy_hungry_elf_does_not_create_eat_fruit_task() {
         sim.db.update_creature(c).unwrap();
     }
 
-    // Give the elf a GoTo task so it's busy.
+    // Give the elf a GoTo task so it's busy. Use a valid nav node position
+    // so the elf doesn't immediately fail pathfinding and drop the task.
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let goto_target = sim
+        .nav_graph
+        .ground_node_ids()
+        .iter()
+        .map(|&nid| sim.nav_graph.node(nid).position)
+        .find(|&p| p != elf_pos)
+        .expect("need a distant ground nav node");
     let task_id = TaskId::new(&mut sim.rng);
     let goto_task = Task {
         id: task_id,
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
-        location: VoxelCoord::new(0, 0, 0),
+        location: goto_target,
         progress: 0,
         total_cost: 0,
         required_species: None,

@@ -29,7 +29,6 @@ use super::*;
 use crate::db::{ActionKind, MoveAction};
 use crate::event::{ScheduledEventKind, SimEvent, SimEventKind};
 use crate::inventory;
-use crate::pathfinding;
 use crate::preemption;
 use crate::projectile::SubVoxelVec;
 use crate::task;
@@ -220,15 +219,20 @@ impl SimState {
         };
 
         // Ground creatures need a reachable nav node at the destination.
-        // Flying creatures can go anywhere.
-        let is_flying = self.species_table[&creature.species]
+        // Snap to nav node position so find_path can resolve it exactly.
+        let species = creature.species;
+        let is_flying = self.species_table[&species]
             .flight_ticks_per_voxel
             .is_some();
-        if !is_flying && self.nav_graph.find_nearest_node(destination).is_none() {
-            return;
-        }
-
-        let species = creature.species;
+        let destination = if is_flying {
+            destination
+        } else {
+            let graph = self.graph_for_species(species);
+            match graph.find_nearest_node(destination) {
+                Some(node) => graph.node(node).position,
+                None => return,
+            }
+        };
 
         // Queue mode: append to the creature's command queue.
         if queue && let Some(tail_id) = self.find_queue_tail(creature_id) {
@@ -715,20 +719,11 @@ impl SimState {
         }
 
         // Ground creatures: nav-graph pathfinding.
-        let current_node = match current_node {
-            Some(n) => n,
-            None => return,
-        };
+        if current_node.is_none() {
+            return;
+        }
         let species_data = &self.species_table[&species];
         let graph = self.graph_for_species(species);
-        let task_location = match graph.find_nearest_node(task_location_coord) {
-            Some(n) => n,
-            None => {
-                self.disengage_attack_move(task_id, destination, creature_id, dest_nav_node);
-                self.set_creature_activation_tick(creature_id, self.tick + 1);
-                return;
-            }
-        };
 
         // Check for cached path.
         let creature = self.db.creatures.get(&creature_id).unwrap();
@@ -749,40 +744,14 @@ impl SimState {
             None
         };
 
-        let walk_tpv = species_data.walk_ticks_per_voxel;
-        let climb_tpv = species_data.climb_ticks_per_voxel;
-        let wood_ladder_tpv = species_data.wood_ladder_tpv;
-        let rope_ladder_tpv = species_data.rope_ladder_tpv;
-
         let (edge_idx, dest_node) = if let Some(step) = next_step {
             step
         } else {
             // Compute a new path.
-            let path_result = if let Some(ref allowed) = species_data.allowed_edge_types {
-                pathfinding::astar_filtered(
-                    graph,
-                    current_node,
-                    task_location,
-                    walk_tpv,
-                    climb_tpv,
-                    wood_ladder_tpv,
-                    rope_ladder_tpv,
-                    allowed,
-                )
-            } else {
-                pathfinding::astar(
-                    graph,
-                    current_node,
-                    task_location,
-                    walk_tpv,
-                    climb_tpv,
-                    wood_ladder_tpv,
-                    rope_ladder_tpv,
-                )
-            };
+            let path_result = self.find_path(creature_id, task_location_coord, u32::MAX);
 
             let path_result = match path_result {
-                Some(r) if r.nodes.len() >= 2 => r,
+                Some(r) if r.nav_nodes.len() >= 2 => r,
                 _ => {
                     // Path failure during engagement — immediately disengage.
                     self.disengage_attack_move(task_id, destination, creature_id, dest_nav_node);
@@ -791,13 +760,10 @@ impl SimState {
                 }
             };
 
-            let first_edge = path_result.edge_indices[0];
-            let first_dest = path_result.nodes[1];
+            let first_edge = path_result.nav_edges[0];
+            let first_dest = path_result.nav_nodes[1];
 
-            let remaining_positions: Vec<VoxelCoord> = path_result.nodes[1..]
-                .iter()
-                .map(|&nid| graph.node(nid).position)
-                .collect();
+            let remaining_positions: Vec<VoxelCoord> = path_result.positions[1..].to_vec();
             if let Some(mut creature) = self.db.creatures.get(&creature_id) {
                 creature.path = Some(CreaturePath {
                     remaining_positions,
@@ -826,14 +792,8 @@ impl SimState {
             return;
         }
 
-        let tpv = match edge.edge_type {
-            crate::nav::EdgeType::TrunkClimb | crate::nav::EdgeType::GroundToTrunk => {
-                climb_tpv.unwrap_or(walk_tpv)
-            }
-            crate::nav::EdgeType::WoodLadderClimb => wood_ladder_tpv.unwrap_or(walk_tpv),
-            crate::nav::EdgeType::RopeLadderClimb => rope_ladder_tpv.unwrap_or(walk_tpv),
-            _ => walk_tpv,
-        };
+        let tpv =
+            crate::stats::CreatureMoveSpeeds::new(species_data, 0, 0).tpv_for_edge(edge.edge_type);
         let delay = (edge.distance as u64 * tpv)
             .div_ceil(crate::nav::DIST_SCALE as u64)
             .max(1);
@@ -1122,14 +1082,6 @@ impl SimState {
         };
         let species_data = &self.species_table[&species];
         let graph = self.graph_for_species(species);
-        let task_location = match graph.find_nearest_node(task_location_coord) {
-            Some(n) => n,
-            None => {
-                self.interrupt_task(creature_id, task_id);
-                self.ground_wander(creature_id, current_node, events);
-                return;
-            }
-        };
 
         // Check for cached path.
         let creature = self.db.creatures.get(&creature_id).unwrap();
@@ -1150,11 +1102,6 @@ impl SimState {
             None
         };
 
-        let walk_tpv = species_data.walk_ticks_per_voxel;
-        let climb_tpv = species_data.climb_ticks_per_voxel;
-        let wood_ladder_tpv = species_data.wood_ladder_tpv;
-        let rope_ladder_tpv = species_data.rope_ladder_tpv;
-
         let (edge_idx, dest_node) = if let Some(step) = next_step {
             // Reset failure counter on successful path usage.
             if let Some(mut data) = self.task_attack_target_data(task_id)
@@ -1166,31 +1113,10 @@ impl SimState {
             step
         } else {
             // Compute a new path.
-            let path_result = if let Some(ref allowed) = species_data.allowed_edge_types {
-                pathfinding::astar_filtered(
-                    graph,
-                    current_node,
-                    task_location,
-                    walk_tpv,
-                    climb_tpv,
-                    wood_ladder_tpv,
-                    rope_ladder_tpv,
-                    allowed,
-                )
-            } else {
-                pathfinding::astar(
-                    graph,
-                    current_node,
-                    task_location,
-                    walk_tpv,
-                    climb_tpv,
-                    wood_ladder_tpv,
-                    rope_ladder_tpv,
-                )
-            };
+            let path_result = self.find_path(creature_id, task_location_coord, u32::MAX);
 
             let path_result = match path_result {
-                Some(r) if r.nodes.len() >= 2 => r,
+                Some(r) if r.nav_nodes.len() >= 2 => r,
                 _ => {
                     // Pathfinding failed — increment counter, check limit.
                     if let Some(data) = self.task_attack_target_data(task_id) {
@@ -1211,13 +1137,10 @@ impl SimState {
                 }
             };
 
-            let first_edge = path_result.edge_indices[0];
-            let first_dest = path_result.nodes[1];
+            let first_edge = path_result.nav_edges[0];
+            let first_dest = path_result.nav_nodes[1];
 
-            let remaining_positions: Vec<VoxelCoord> = path_result.nodes[1..]
-                .iter()
-                .map(|&nid| graph.node(nid).position)
-                .collect();
+            let remaining_positions: Vec<VoxelCoord> = path_result.positions[1..].to_vec();
             if let Some(mut creature) = self.db.creatures.get(&creature_id) {
                 creature.path = Some(CreaturePath {
                     remaining_positions,
@@ -1245,14 +1168,8 @@ impl SimState {
             return;
         }
 
-        let tpv = match edge.edge_type {
-            crate::nav::EdgeType::TrunkClimb | crate::nav::EdgeType::GroundToTrunk => {
-                climb_tpv.unwrap_or(walk_tpv)
-            }
-            crate::nav::EdgeType::WoodLadderClimb => wood_ladder_tpv.unwrap_or(walk_tpv),
-            crate::nav::EdgeType::RopeLadderClimb => rope_ladder_tpv.unwrap_or(walk_tpv),
-            _ => walk_tpv,
-        };
+        let tpv =
+            crate::stats::CreatureMoveSpeeds::new(species_data, 0, 0).tpv_for_edge(edge.edge_type);
         let delay = (edge.distance as u64 * tpv)
             .div_ceil(crate::nav::DIST_SCALE as u64)
             .max(1);
@@ -3262,9 +3179,16 @@ impl SimState {
     /// Pathfind toward the nearest detected target and take one step.
     /// Returns `true` if a step was taken.
     ///
-    /// Ground creatures use Dijkstra + A* on the nav graph. Flying creatures
-    /// use Euclidean distance to pick the nearest target and `fly_toward_target`
-    /// to close distance.
+    /// Ground creatures use `find_nearest` + `find_path` on nav-node positions
+    /// derived from target creatures. Flying creatures use Euclidean distance
+    /// to pick the nearest target and `fly_toward_target` to close distance.
+    ///
+    /// TODO: Unify the flying and non-flying logic paths by using
+    /// `find_nearest()` with a set of VoxelCoords that are locations in melee
+    /// range of the various target creatures. The result would be that if there
+    /// is any path to a location from which you could make a melee attack at a
+    /// target, you'd go towards the closest such location. This would also
+    /// eliminate the intermediate nav-node conversion step for ground creatures.
     fn pursue_closest_target(
         &mut self,
         creature_id: CreatureId,
@@ -3300,11 +3224,10 @@ impl SimState {
             return self.fly_toward_target(creature_id, target_pos, events);
         }
 
-        // Ground creatures: Dijkstra + A* on nav graph.
-        let current_node = match current_node {
-            Some(n) => n,
-            None => return false,
-        };
+        // Ground creatures: find nearest target, then path to it.
+        if current_node.is_none() {
+            return false;
+        }
         let species_data = &self.species_table[&species];
         let graph = self.graph_for_species(species);
 
@@ -3353,41 +3276,29 @@ impl SimState {
             return false;
         }
 
-        let nearest = crate::pathfinding::dijkstra_nearest(
-            graph,
-            current_node,
-            &target_nodes,
-            species_data.walk_ticks_per_voxel,
-            species_data.climb_ticks_per_voxel,
-            species_data.wood_ladder_tpv,
-            species_data.rope_ladder_tpv,
-            species_data.allowed_edge_types.as_deref(),
-        );
-
-        let target_node = match nearest {
-            Some(n) if n == current_node => return false,
-            Some(n) => n,
+        let target_positions: Vec<VoxelCoord> = target_nodes
+            .iter()
+            .map(|&nid| graph.node(nid).position)
+            .collect();
+        let nearest_idx = match self.find_nearest(creature_id, &target_positions, u32::MAX) {
+            Some(idx) => idx,
             None => return false,
         };
+        let target_pos = target_positions[nearest_idx];
 
-        let graph = self.graph_for_species(species);
-        let path = crate::pathfinding::astar(
-            graph,
-            current_node,
-            target_node,
-            species_data.walk_ticks_per_voxel,
-            species_data.climb_ticks_per_voxel,
-            species_data.wood_ladder_tpv,
-            species_data.rope_ladder_tpv,
-        );
+        // Skip if creature is already at the target.
+        let creature_pos = self.db.creatures.get(&creature_id).unwrap().position;
+        if creature_pos == target_pos {
+            return false;
+        }
 
-        let path = match path {
-            Some(p) if p.edge_indices.is_empty() => return false,
+        let path = match self.find_path(creature_id, target_pos, u32::MAX) {
+            Some(p) if p.nav_edges.is_empty() => return false,
             Some(p) => p,
             None => return false,
         };
 
-        let first_edge_idx = path.edge_indices[0];
+        let first_edge_idx = path.nav_edges[0];
         self.ground_move_one_step(creature_id, species, first_edge_idx);
         true
     }
