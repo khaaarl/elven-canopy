@@ -151,6 +151,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-sprite-ui      Fruit sprites in inventory/logistics/selection UI
 [ ] F-funeral-rites        Funeral rites and mourning
+[ ] F-genetics             Creature genetics (additive SNP bitfield genomes with inheritance)
 [ ] F-grass-rendering      Advanced grass and terrain surface rendering
 [ ] F-greenhouse-revamp    Greenhouse planter growth cycle and pluck tasks
 [ ] F-group-chat           Group chat social activity
@@ -1746,7 +1747,7 @@ offspring with inherited traits. Population management — designating
 breeding pairs, culling. Enables sustainable animal populations without
 continual taming of wild stock.
 
-**Related:** F-animal-husbandry, F-civ-pets
+**Related:** F-animal-husbandry, F-civ-pets, F-genetics
 
 #### F-animal-husbandry — Tamed animal needs and care
 **Status:** Todo
@@ -1863,6 +1864,7 @@ attraction systems to determine eligible pairs. May also affect sprite
 generation and name generation in the future.
 
 **Unblocked:** F-romance
+**Related:** F-genetics
 
 #### F-creature-skills — Creature skill system (17 universal skills with path-gated advancement)
 **Status:** In Progress · **Phase:** 4
@@ -1975,6 +1977,42 @@ Food level per creature, decaying over time. Displayed in creature info
 panel and as overhead bar.
 
 **Related:** F-bread, F-creature-death, F-elf-needs, F-fruit-prod
+
+#### F-genetics — Creature genetics (additive SNP bitfield genomes with inheritance)
+**Status:** Todo · **Refs:** §4
+
+Creature genetics system using additive SNP-based bitfield genomes. Each
+creature carries two immutable bitfields: a generic genome (ability scores
+as 32-bit weighted-prime-sum SNP regions + Big Five personality as 8-bit
+regions) and a species-specific genome (pigmentation via
+Value/Saturation/Hue model, morphological categorical traits). Continuous
+traits use weighted-sum or bit-count scaled to species mean/stdev
+(approximately normal distribution). Categorical traits (hair hue, antler
+style) use max-bit-count selection across competing SNP sections with PRNG
+tiebreak, plus optional hue blending for adjacent categories. Genome is
+immutable after creation; expressed traits stored separately in
+creature_traits table and can diverge (dye, injury, aging). Inheritance
+via per-bit 50/50 parent selection with small mutation rate.
+
+Storage: Genome { bytes: Vec<u8>, bit_len: u32 } — bitvec crate evaluated
+and rejected (unmaintained, broken serde). New creature_genomes tabulosity
+table (1:1 with creatures). Serde uses append-only layout with
+deterministic SplitMix64 backfill for old saves. New
+personality_distributions field on SpeciesData (sibling of
+stat_distributions). New SpeciesGenomeConfig on SpeciesData for bit widths
+and species-specific SNP layout.
+
+Replaces current quasi_normal stat rolling and BioSeed visual trait
+derivation.
+
+Phases: (A) genome infrastructure + bitfield types + serde, (B) wire up
+ability scores replacing quasi_normal, (C) Big Five personality axes,
+(D) pigmentation VSH model + sprite integration for all 12 species,
+(E) inheritance mechanics, (F) species morphology categorical traits.
+
+**Draft:** docs/drafts/genetics.md
+
+**Related:** F-animal-breeding, F-creature-sex
 
 #### F-giant-hornet — Giant hornet hostile flying creature
 **Status:** Done

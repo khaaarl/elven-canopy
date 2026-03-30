@@ -311,7 +311,7 @@ pub struct SpeciesData {
 
     /// Per-stat distribution parameters for rolling creature stats at spawn.
     /// Key: a stat `TraitKind` (Strength through Charisma). Value: mean and
-    /// stdev for the species. Stats not present default to `(0, 5)` (human
+    /// stdev for the species. Stats not present default to `(0, 50)` (human
     /// baseline with moderate variation). See `docs/drafts/creature_stats.md`.
     #[serde(default)]
     pub stat_distributions: std::collections::BTreeMap<TraitKind, StatDistribution>,

@@ -53,37 +53,37 @@ playtesting.
 
 ## Exponential Scaling
 
-**Every +10 in a stat doubles its mechanical intensity.** This is the core
+**Every +100 in a stat doubles its mechanical intensity.** This is the core
 design invariant.
 
-A troll at STR +30 hits 8x as hard as a human at STR 0. A goblin at STR -10
-hits 0.5x as hard. The relationship is `2^(stat/10)`.
+A troll at STR +300 hits 8x as hard as a human at STR 0. A goblin at STR -100
+hits 0.5x as hard. The relationship is `2^(stat/100)`.
 
 ### Integer implementation: flat precomputed lookup table
 
-A compile-time `const` array of 131 `i64` entries maps stat values from -60 to
-+70 to multipliers in 2^20 (1,048,576) fixed-point. This gives ~6 decimal
+A compile-time `const` array of 1301 `i64` entries maps stat values from -600
+to +700 to multipliers in 2^20 (1,048,576) fixed-point. This gives ~6 decimal
 digits of precision with headroom for very negative stats.
 
-Values at multiples of 10 are exact powers of 2:
+Values at multiples of 100 are exact powers of 2:
 
 ```
 stat  | multiplier (x 2^20) | effective ratio
 ------|--------------------|----------------
- -60  |          16384     | 1/64  (0.015625x)
- -50  |          32768     | 1/32  (0.03125x)
- -40  |          65536     | 1/16  (0.0625x)
- -30  |         131072     | 1/8   (0.125x)
- -20  |         262144     | 1/4   (0.25x)
- -10  |         524288     | 1/2   (0.5x)
-   0  |        1048576     | 1x    (human baseline)
-  +10 |        2097152     | 2x
-  +20 |        4194304     | 4x
-  +30 |        8388608     | 8x
-  +40 |       16777216     | 16x
-  +50 |       33554432     | 32x
-  +60 |       67108864     | 64x
-  +70 |      134217728     | 128x
+ -600 |          16384     | 1/64  (0.015625x)
+ -500 |          32768     | 1/32  (0.03125x)
+ -400 |          65536     | 1/16  (0.0625x)
+ -300 |         131072     | 1/8   (0.125x)
+ -200 |         262144     | 1/4   (0.25x)
+ -100 |         524288     | 1/2   (0.5x)
+    0 |        1048576     | 1x    (human baseline)
+ +100 |        2097152     | 2x
+ +200 |        4194304     | 4x
+ +300 |        8388608     | 8x
+ +400 |       16777216     | 16x
+ +500 |       33554432     | 32x
+ +600 |       67108864     | 64x
+ +700 |      134217728     | 128x
 ```
 
 Between multiples of 100, entries are computed via a sub-octave lookup table
