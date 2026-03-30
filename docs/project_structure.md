@@ -145,7 +145,8 @@ elven-canopy/
 │   ├── elven_canopy.gdextension
 │   ├── target -> ../target     # Symlink so Godot can find the compiled .so
 │   ├── shaders/
-│   │   └── bark_ground.gdshader # Prime-period tiling shader for bark/ground surfaces
+│   │   ├── bark_ground.gdshader # Prime-period tiling shader for bark/ground surfaces
+│   │   └── post_process.gdshader # Screen-space edge outline + depth fog post-process
 │   ├── scenes/
 │   │   ├── main.tscn           # Game scene (3D world, camera, renderers)
 │   │   ├── main_menu.tscn      # Main menu (New Game / Load / Quit)
@@ -181,7 +182,7 @@ elven-canopy/
 │       ├── new_game_menu.gd    # New game screen with tree parameter sliders
 │       ├── escape_menu.gd      # In-game escape menu overlay (ESC)
 │       ├── settings_panel.gd    # Modal settings overlay (general + visual settings)
-│       ├── fog_controller.gd   # Distance fog (FOG_MODE_DEPTH on WorldEnvironment)
+│       ├── post_process_controller.gd # Combined edge outline + depth fog post-process
 │       ├── save_dialog.gd      # Modal save-game dialog (name input)
 │       ├── load_dialog.gd      # Modal load-game dialog (file list)
 │       ├── orbital_camera.gd   # Camera controls (orbit, follow, vertical snap)

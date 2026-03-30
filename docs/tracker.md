@@ -126,7 +126,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-dye-application      Apply dye to equipment at workshop
 [ ] F-dye-mixing           Dye color mixing recipes
 [ ] F-dye-palette          Named color palette system for dyes
-[ ] F-edge-outline         Edge highlighting shader (depth/normal discontinuity)
 [ ] F-elaborate-social     Elaborate casual social interactions (visible pauses, variety, personality)
 [ ] F-elf-assign           Elf-to-building assignment UI
 [ ] F-elf-leave            Devastated elves permanently leave
@@ -372,6 +371,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-distance-fog         Depth-based atmospheric fog/haze
 [x] F-dye-crafting         Dye pressing from pigmented fruit components
 [x] F-dynamic-pursuit      Dynamic repathfinding for moving-target tasks
+[x] F-edge-outline         Edge highlighting shader (depth/normal discontinuity)
 [x] F-edge-scroll          Configurable edge scrolling (pan, rotate, or off)
 [x] F-elf-acquire          Elf personal item acquisition
 [x] F-elf-mana-pool        Per-elf mana pool wired to WIL/INT stats
@@ -5999,17 +5999,17 @@ Depth-based fog that fades distant geometry toward a sky/haze color. Can use God
 **Related:** F-day-night-color, F-megachunk, F-mesh-lod
 
 #### F-edge-outline — Edge highlighting shader (depth/normal discontinuity)
-**Status:** Todo
+**Status:** Done
 
 Screen-space post-process shader that darkens edges at depth/normal discontinuities, giving the world a readable, slightly stylized look (similar to cel-shading outlines).
 
-**How it works:** A full-screen pass runs a Sobel filter (3×3 convolution kernel) over the depth and normal buffers. Where depth changes sharply between neighboring pixels → silhouette edge (object against sky, platform edge against distant trunk). Where normals change sharply → crease edge (corner of a platform, ridge where two surfaces meet). Those pixels are darkened in the final image.
+**How it works:** A full-screen pass runs a Sobel filter (3x3 convolution kernel) over the depth and normal buffers. Where depth changes sharply between neighboring pixels → silhouette edge (object against sky, platform edge against distant trunk). Where normals change sharply → crease edge (corner of a platform, ridge where two surfaces meet). Those pixels are darkened using a darker, more saturated version of the underlying surface color (not flat black).
 
 **Why it's a good fit:** Works entirely in screen space — no extra geometry, no mesh topology awareness. Disconnected triangles (our standard mesh output) are a non-issue since the filter only looks at per-pixel depth/normal values, not mesh adjacency. Coplanar adjacent triangles correctly produce no internal outlines; edges against different-depth backgrounds correctly produce outlines. Scales with screen resolution, not world complexity. One full-screen pass, minimal cost.
 
-**Godot implementation path:** Full-screen ShaderMaterial on a ColorRect reading DEPTH_TEXTURE and NORMAL_ROUGHNESS_TEXTURE, or a CompositorEffect. Both are available in Godot 4 screen-space shaders.
+**Godot implementation:** Spatial shader on a MeshInstance3D with a QuadMesh parented to the Camera3D. The vertex shader projects the quad fullscreen. Uses `hint_depth_texture` and `hint_normal_roughness_texture` (only available in spatial shaders, not canvas_item). Combined with depth fog in a single shader pass (post_process.gdshader) — edge detection runs first on raw scene colors, then fog is applied on top, so outlines fade naturally at distance. Godot's built-in Environment fog is disabled; post_process_controller.gd handles both effects via GameConfig polling.
 
-**Tuning considerations:** Sensitivity thresholds need tuning — too sensitive produces noisy outlines on subtle normal variations (e.g., mesh decimation artifacts), too insensitive loses desired creases. Distance fog interaction matters: running the edge pass before fog lets outlines get fogged naturally (preferred); running after fog darkens already-fogged areas.
+**Tuning considerations:** Sensitivity thresholds need tuning — too sensitive produces noisy outlines on subtle normal variations (e.g., mesh decimation artifacts), too insensitive loses desired creases. Shader uniforms: depth_threshold, normal_threshold, edge_strength, edge_darken, edge_saturate. Fog uniforms: fog_begin, fog_end, fog_color.
 
 #### F-edge-scroll — Configurable edge scrolling (pan, rotate, or off)
 **Status:** Done · **Phase:** 5
@@ -6555,7 +6555,7 @@ controller handles click-to-place with nav node highlighting.
 #### F-ssao — Screen-space ambient occlusion toggle
 **Status:** In Progress
 
-Experimental: expose Godot's built-in SSAO as a user-facing toggle in the settings panel. Adds a checkbox to the Visual section (like the existing fog toggle). Settings persisted in config.json, applied to the WorldEnvironment's Environment resource at runtime (same pattern as fog_controller.gd). Supplements any future baked per-vertex AO (F-voxel-ao) by catching medium-scale occlusion (room interiors, canopy undersides) and darkening dynamic objects (creatures, items) that have no baked AO. May be removed if the visual benefit doesn't justify the per-frame GPU cost or if it conflicts with the art style.
+Experimental: expose Godot's built-in SSAO as a user-facing toggle in the settings panel. Adds a checkbox to the Visual section (like the existing fog toggle). Settings persisted in config.json, applied to the WorldEnvironment's Environment resource at runtime (same pattern as post_process_controller.gd). Supplements any future baked per-vertex AO (F-voxel-ao) by catching medium-scale occlusion (room interiors, canopy undersides) and darkening dynamic objects (creatures, items) that have no baked AO. May be removed if the visual benefit doesn't justify the per-frame GPU cost or if it conflicts with the art style.
 
 **WIP branch:** `feature/F-ssao` — toggle, config, controller, and tests are implemented. Initial testing found the effect is subtle and only visible on some creases, not all. Key findings so far: `ssao_light_affect` must be >0 for the effect to show in directly-lit areas (default 0.0 only affects ambient light, which is low in our scene). A small `ssao_radius` (~0.5 world units) works better than large values for catching chamfer-scale crevices. Next step: manually tweak SSAO parameters (`ssao_detail`, `ssao_power`, `ssao_horizon`, `ssao_intensity`) in the Godot editor's Environment inspector to find values that look good before committing final defaults.
 

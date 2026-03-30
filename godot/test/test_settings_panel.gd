@@ -371,6 +371,44 @@ func test_edge_scroll_mode_cycles() -> void:
 	assert_eq(_panel.get_edge_scroll_mode(), "off")
 
 
+## Panel populates edge outline from config on open.
+func test_open_populates_edge_outline() -> void:
+	_config.set_setting("edge_outline", false)
+	_panel.open(_config)
+	assert_false(_panel.get_edge_outline_enabled())
+
+
+## Save writes edge outline to config.
+func test_save_writes_edge_outline() -> void:
+	_panel.set_edge_outline_enabled(false)
+	_panel.save_and_close()
+	assert_eq(_config.get_setting("edge_outline"), false)
+
+
+## Cancel discards edge outline changes.
+func test_cancel_discards_edge_outline() -> void:
+	_config.set_setting("edge_outline", true)
+	_panel.open(_config)
+	_panel.set_edge_outline_enabled(false)
+	_panel.cancel_and_close()
+	assert_eq(_config.get_setting("edge_outline"), true)
+
+
+## Edge outline defaults to true.
+func test_edge_outline_default() -> void:
+	assert_true(_panel.get_edge_outline_enabled())
+
+
+## Edge outline toggle cycles between true and false.
+func test_edge_outline_toggle_cycles() -> void:
+	_panel.set_edge_outline_enabled(true)
+	assert_true(_panel.get_edge_outline_enabled())
+	_panel._toggle_edge_outline()
+	assert_false(_panel.get_edge_outline_enabled())
+	_panel._toggle_edge_outline()
+	assert_true(_panel.get_edge_outline_enabled())
+
+
 ## Panel runs with PROCESS_MODE_ALWAYS (required for escape menu paused tree).
 func test_process_mode_always() -> void:
 	assert_eq(

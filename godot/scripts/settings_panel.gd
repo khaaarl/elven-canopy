@@ -13,6 +13,7 @@
 ##   - Fog enabled (toggle button)
 ##   - Fog begin (LineEdit, voxels)
 ##   - Fog end (LineEdit, voxels)
+##   - Edge outline (toggle button)
 ##
 ## On open, reads current values from the provided GameConfig instance.
 ## Save writes values back to GameConfig and closes. Cancel discards edits.
@@ -43,10 +44,12 @@ var _volume_label: Label
 var _fog_toggle: Button
 var _fog_begin_input: LineEdit
 var _fog_end_input: LineEdit
+var _edge_outline_toggle: Button
 var _edge_scroll_toggle: Button
 var _save_btn: Button
 var _paused_value: bool = false
 var _fog_enabled_value: bool = true
+var _edge_outline_value: bool = true
 var _edge_scroll_mode: String = "off"
 
 
@@ -252,6 +255,21 @@ func _ready() -> void:
 	fog_end_unit.text = "voxels"
 	fog_end_row.add_child(fog_end_unit)
 
+	# Edge outline row.
+	var edge_outline_row := HBoxContainer.new()
+	edge_outline_row.add_theme_constant_override("separation", 10)
+	visual_vbox.add_child(edge_outline_row)
+
+	var edge_outline_label := Label.new()
+	edge_outline_label.text = "Edge Outline"
+	edge_outline_label.custom_minimum_size = Vector2(160, 0)
+	edge_outline_row.add_child(edge_outline_label)
+
+	_edge_outline_toggle = Button.new()
+	_edge_outline_toggle.custom_minimum_size = Vector2(120, 0)
+	_edge_outline_toggle.pressed.connect(_toggle_edge_outline)
+	edge_outline_row.add_child(_edge_outline_toggle)
+
 	# --- Button row ---
 	var spacer := Control.new()
 	spacer.custom_minimum_size = Vector2(0, 8)
@@ -314,6 +332,15 @@ func _update_fog_label() -> void:
 	_fog_toggle.text = "\u2713 ENABLED" if _fog_enabled_value else "\u2717 DISABLED"
 
 
+func _toggle_edge_outline() -> void:
+	_edge_outline_value = not _edge_outline_value
+	_update_edge_outline_label()
+
+
+func _update_edge_outline_label() -> void:
+	_edge_outline_toggle.text = "\u2713 ENABLED" if _edge_outline_value else "\u2717 DISABLED"
+
+
 ## Parse draw distance text to a clamped int (0–500). Invalid input returns
 ## the current config value (or the default 50 if no config is set).
 func _parse_draw_distance() -> int:
@@ -354,6 +381,8 @@ func open(config: Node) -> void:
 	_update_fog_label()
 	_fog_begin_input.text = str(config.get_setting("fog_begin"))
 	_fog_end_input.text = str(config.get_setting("fog_end"))
+	_edge_outline_value = config.get_setting("edge_outline")
+	_update_edge_outline_label()
 	_edge_scroll_mode = config.get_setting("edge_scroll_mode")
 	if _edge_scroll_mode not in EDGE_SCROLL_MODES:
 		_edge_scroll_mode = "off"
@@ -372,6 +401,7 @@ func save_and_close() -> void:
 	_config.set_setting("fog_enabled", _fog_enabled_value)
 	_config.set_setting("fog_begin", _parse_fog_begin())
 	_config.set_setting("fog_end", _parse_fog_end())
+	_config.set_setting("edge_outline", _edge_outline_value)
 	_config.set_setting("edge_scroll_mode", _edge_scroll_mode)
 	closed.emit()
 	queue_free()
@@ -453,6 +483,15 @@ func get_fog_end_value() -> int:
 
 func set_fog_end_value(value: int) -> void:
 	_fog_end_input.text = str(value)
+
+
+func get_edge_outline_enabled() -> bool:
+	return _edge_outline_value
+
+
+func set_edge_outline_enabled(value: bool) -> void:
+	_edge_outline_value = value
+	_update_edge_outline_label()
 
 
 func get_edge_scroll_mode() -> String:

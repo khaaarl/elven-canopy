@@ -22,7 +22,7 @@
 ## Edge scroll mode: when _edge_scroll_mode is "pan" or "rotate", moving the
 ## mouse near a screen edge pans the focal point or rotates/tilts the camera.
 ## Suppressed when the mouse hovers a UI control (gui_get_hovered_control).
-## Mode is polled from GameConfig each frame (same pattern as fog_controller.gd)
+## Mode is polled from GameConfig each frame (same pattern as post_process_controller.gd)
 ## so settings changes take effect immediately. The edge detection math is in
 ## the static compute_edge_direction() method for testability.
 ##
@@ -326,7 +326,7 @@ func _process(delta: float) -> void:
 
 	# Edge scroll: move/rotate the camera when the mouse is near screen edges.
 	# Poll GameConfig each frame so settings changes take effect immediately
-	# (same pattern as fog_controller.gd).
+	# (same pattern as post_process_controller.gd).
 	if _override_mouse_pos == null:
 		var cfg_mode: Variant = GameConfig.get_setting("edge_scroll_mode")
 		if cfg_mode is String:

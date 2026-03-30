@@ -43,7 +43,7 @@
 ## click-to-place logic, construction_controller.gd for construction mode
 ## and platform placement, selection_controller.gd for click-to-select,
 ## tooltip_controller.gd for hover tooltips,
-## fog_controller.gd for distance fog applied to WorldEnvironment,
+## post_process_controller.gd for combined edge outline + depth fog post-process,
 ## minimap.gd for the bottom-right zoomable top-down minimap,
 ## notification_display.gd for toast-style notifications,
 ## status_bar.gd for the persistent bottom-left status bar,
@@ -124,7 +124,7 @@ var _status_bar: PanelContainer
 var _minimap: PanelContainer
 var _construction_music: Node
 var _view_toolbar: MarginContainer
-var _fog_controller: Node
+var _post_process_controller: Node
 var _roofs_hidden: bool = false
 var _height_cutoff_active: bool = false
 var _last_cutoff_y: int = -1
@@ -254,12 +254,15 @@ func _on_mp_game_started() -> void:
 ## Set up renderers, toolbar, controllers, and menus. Called for both
 ## single-player (immediately in _ready) and multiplayer (after game_started).
 func _setup_common(bridge: SimBridge) -> void:
-	# Set up distance fog controller.
-	var fog_script = load("res://scripts/fog_controller.gd")
-	_fog_controller = Node.new()
-	_fog_controller.set_script(fog_script)
-	add_child(_fog_controller)
-	_fog_controller.setup($WorldEnvironment.environment)
+	# Set up combined edge outline + fog post-process controller.
+	# This replaces the old fog_controller.gd — Godot's built-in Environment
+	# fog is disabled and fog is applied by our shader instead, so that edge
+	# outlines are drawn on raw scene colors before fog fades them.
+	var post_process_script = load("res://scripts/post_process_controller.gd")
+	_post_process_controller = Node.new()
+	_post_process_controller.set_script(post_process_script)
+	add_child(_post_process_controller)
+	_post_process_controller.setup($CameraPivot/Camera3D, $WorldEnvironment.environment)
 
 	# Set up tree renderer (refreshed every frame for carve updates).
 	_tree_renderer = $TreeRenderer

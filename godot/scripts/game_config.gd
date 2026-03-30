@@ -13,6 +13,7 @@
 ##   fog_end: int = 80                — distance (voxels) where fog is fully opaque
 ##   audio_volume: int = 25           — master audio volume (0–100 percent)
 ##   edge_scroll_mode: String = "pan" — edge scrolling ("off", "pan", "rotate")
+##   edge_outline: bool = true       — screen-space edge outline post-process
 ##
 ## Unknown keys in the JSON file are preserved across load/save (forward
 ## compatibility — a newer version's settings won't be lost if an older
@@ -39,6 +40,7 @@ const DEFAULTS := {
 	"fog_end": 80,
 	"audio_volume": 25,
 	"edge_scroll_mode": "pan",
+	"edge_outline": true,
 }
 
 ## File path for the config JSON. Tests can override this to use a temp path.
