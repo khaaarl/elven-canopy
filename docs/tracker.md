@@ -65,11 +65,9 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [ ] B-combat-move-stats    Combat movement timing ignores creature stats
-[ ] B-dead-owner-items     Dead creature items retain ownership, becoming invisible to all systems
 [ ] B-dijkstra-perf        Unbounded Dijkstra in nearest-X searches scales poorly on large graphs
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
-[ ] B-quit-crash           Crash on quit from in-flight rayon mesh workers
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-aggro-fauna          Neutral fauna with aggro triggers
@@ -297,6 +295,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-dead-enums           Remove dead GrownStairs/Bridge code and add explicit enum discriminants
 [x] B-dead-max-gen         Remove vestigial max_gen_per_frame field and ~40 test calls
 [x] B-dead-node-panic      Panic on dead nav node in pathfinding
+[x] B-dead-owner-items     Dead creature items retain ownership, becoming invisible to all systems
 [x] B-dine-orphan-task     DineAtHall speculative task leaves orphaned Complete rows
 [x] B-dining-perf          Dining hall search causes intermittent multi-second pauses
 [x] B-dirt-not-pinned      Dirt unpinned in fast structural validator
@@ -312,6 +311,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-modifier-hotkeys     Hotkeys should not fire when modifier keys (Ctrl/Shift/Alt) are held
 [x] B-music-floats         Excise f32/f64 from music composition for determinism
 [x] B-preview-blueprints   Preview treats blueprints as complete
+[x] B-quit-crash           Crash on quit from in-flight rayon mesh workers
 [x] B-raid-spawn           Raiders sometimes spawn inside map instead of at perimeter
 [x] B-sim-floats           Remaining f32/f64 in sim logic threaten determinism
 [x] B-spawn-creature       spawn_creature test helper finds first creature of species, not newly spawned
@@ -2265,7 +2265,7 @@ Requires F-flying-nav-big.
 ### Economy & Logistics
 
 #### B-dead-owner-items — Dead creature items retain ownership, becoming invisible to all systems
-**Status:** Todo
+**Status:** Done
 
 #### B-dine-orphan-task — DineAtHall speculative task leaves orphaned Complete rows
 **Status:** Done
@@ -6556,7 +6556,7 @@ Additionally, add explicit integer discriminants to all serializable enums (at m
 Leaf blobs generated during tree growth sometimes end up only diagonally connected to other geometry (other leaf blobs, branches, trunk). This looks bad after chamfering/smoothing because diagonal-only voxels produce visible gaps. Branches already have logic to ensure face-to-face (6-connected) adjacency with at least one other solid voxel. Leaf blob placement needs the same treatment: every leaf voxel must be face-adjacent to at least one other leaf or solid voxel.
 
 #### B-quit-crash — Crash on quit from in-flight rayon mesh workers
-**Status:** Todo
+**Status:** Done
 
 When quitting the game, Godot may tear down while rayon worker threads are still executing chunk mesh generation tasks. The current `shutdown()` in `sim_bridge.rs` drops `MeshCache` (which drops the rayon `ThreadPool`), but rayon's `ThreadPool::drop` attempts to execute all remaining pending tasks before terminating — there is no built-in cancel API. This can cause crashes if Godot deallocates the process or its resources while workers are still alive.
 
