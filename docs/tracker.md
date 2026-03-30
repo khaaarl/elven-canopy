@@ -68,8 +68,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-floating-dirt        Floating dirt still treated as ground by structural validator
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fragile-tests        Audit and harden tests against PRNG stream shifts and worldgen changes
-[ ] B-quit-crash           Crash on quit from in-flight rayon mesh workers
-[ ] B-start-paused-ui      start_paused_on_load UI desync and missing new-game support
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-aggro-fauna          Neutral fauna with aggro triggers
@@ -306,6 +304,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-modifier-hotkeys     Hotkeys should not fire when modifier keys (Ctrl/Shift/Alt) are held
 [x] B-music-floats         Excise f32/f64 from music composition for determinism
 [x] B-preview-blueprints   Preview treats blueprints as complete
+[x] B-quit-crash           Crash on quit from in-flight rayon mesh workers
 [x] B-raid-spawn           Raiders sometimes spawn inside map instead of at perimeter
 [x] B-sim-floats           Remaining f32/f64 in sim logic threaten determinism
 [x] B-spawn-creature       spawn_creature test helper finds first creature of species, not newly spawned
@@ -6070,7 +6069,7 @@ Additionally, add explicit integer discriminants to all serializable enums (at m
 Leaf blobs generated during tree growth sometimes end up only diagonally connected to other geometry (other leaf blobs, branches, trunk). This looks bad after chamfering/smoothing because diagonal-only voxels produce visible gaps. Branches already have logic to ensure face-to-face (6-connected) adjacency with at least one other solid voxel. Leaf blob placement needs the same treatment: every leaf voxel must be face-adjacent to at least one other leaf or solid voxel.
 
 #### B-quit-crash — Crash on quit from in-flight rayon mesh workers
-**Status:** Todo
+**Status:** Done
 
 When quitting the game, Godot may tear down while rayon worker threads are still executing chunk mesh generation tasks. The current `shutdown()` in `sim_bridge.rs` drops `MeshCache` (which drops the rayon `ThreadPool`), but rayon's `ThreadPool::drop` attempts to execute all remaining pending tasks before terminating — there is no built-in cancel API. This can cause crashes if Godot deallocates the process or its resources while workers are still alive.
 
