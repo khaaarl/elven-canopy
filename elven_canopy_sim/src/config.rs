@@ -3060,6 +3060,7 @@ impl Default for GameConfig {
                 tame_difficulty: None, // sapient — untameable
                 is_herbivore: false,
                 graze_food_restore_pct: 15,
+                sex_weights: [0, 1, 1],
             },
         );
         species.insert(
@@ -3107,6 +3108,7 @@ impl Default for GameConfig {
                 tame_difficulty: Some(100), // easy
                 is_herbivore: true,
                 graze_food_restore_pct: 15,
+                sex_weights: [0, 1, 1],
             },
         );
         species.insert(
@@ -3154,6 +3156,7 @@ impl Default for GameConfig {
                 tame_difficulty: Some(200), // hard — aggressive temperament
                 is_herbivore: true,
                 graze_food_restore_pct: 15,
+                sex_weights: [0, 1, 1],
             },
         );
         species.insert(
@@ -3201,6 +3204,7 @@ impl Default for GameConfig {
                 tame_difficulty: Some(150), // moderate — skittish
                 is_herbivore: true,
                 graze_food_restore_pct: 15,
+                sex_weights: [0, 1, 1],
             },
         );
         species.insert(
@@ -3248,6 +3252,7 @@ impl Default for GameConfig {
                 tame_difficulty: Some(250), // very hard — strong-willed
                 is_herbivore: true,
                 graze_food_restore_pct: 10,
+                sex_weights: [0, 1, 1],
             },
         );
         species.insert(
@@ -3300,6 +3305,7 @@ impl Default for GameConfig {
                 tame_difficulty: None, // sapient — untameable
                 is_herbivore: false,
                 graze_food_restore_pct: 15,
+                sex_weights: [0, 1, 1],
             },
         );
         species.insert(
@@ -3347,6 +3353,7 @@ impl Default for GameConfig {
                 tame_difficulty: Some(150), // moderate — clever, evasive
                 is_herbivore: true,
                 graze_food_restore_pct: 15,
+                sex_weights: [0, 1, 1],
             },
         );
         species.insert(
@@ -3399,6 +3406,7 @@ impl Default for GameConfig {
                 tame_difficulty: None, // sapient — untameable
                 is_herbivore: false,
                 graze_food_restore_pct: 15,
+                sex_weights: [0, 1, 1],
             },
         );
         species.insert(
@@ -3446,6 +3454,7 @@ impl Default for GameConfig {
                 tame_difficulty: Some(100), // easy — small, docile
                 is_herbivore: true,
                 graze_food_restore_pct: 20,
+                sex_weights: [0, 1, 1],
             },
         );
         species.insert(
@@ -3498,6 +3507,7 @@ impl Default for GameConfig {
                 tame_difficulty: None, // sapient — untameable
                 is_herbivore: false,
                 graze_food_restore_pct: 15,
+                sex_weights: [0, 1, 1],
             },
         );
         species.insert(
@@ -3550,6 +3560,7 @@ impl Default for GameConfig {
                 tame_difficulty: Some(350), // extreme — dangerous, alien mind
                 is_herbivore: false,
                 graze_food_restore_pct: 15,
+                sex_weights: [0, 1, 1],
             },
         );
         species.insert(
@@ -3602,6 +3613,7 @@ impl Default for GameConfig {
                 tame_difficulty: Some(350), // extreme — apex predator
                 is_herbivore: false,
                 graze_food_restore_pct: 15,
+                sex_weights: [0, 1, 1],
             },
         );
 

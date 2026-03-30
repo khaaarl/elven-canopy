@@ -70,6 +70,10 @@
 //   Perception). E.g. 225 = 15-voxel radius, 400 = 20-voxel radius. Height
 //   is included, so ground-level goblins cannot detect canopy elves directly.
 //   See `sim/combat.rs` `should_flee()` / `flee_step()`.
+// - `sex_weights` — probability weights `[None, Male, Female]` for
+//   `CreatureSex` assignment at spawn. Ratio-based (any nonneg integers,
+//   sum >= 1). Default `[0, 1, 1]` (equal male/female). See
+//   `roll_creature_sex()` below and `types.rs::CreatureSex`.
 //
 // See also: `config.rs` where the species table lives as part of `GameConfig`,
 // `sim/mod.rs` for the unified `Creature` type and `sim/activation.rs` for the
@@ -335,6 +339,12 @@ pub struct SpeciesData {
     /// Default 15 (15% of food_max per graze).
     #[serde(default = "default_graze_food_restore_pct")]
     pub graze_food_restore_pct: i64,
+
+    /// Probability weights for `CreatureSex` assignment at spawn:
+    /// `[None, Male, Female]`. Ratio-based — any nonneg integers work as long
+    /// as the sum is >= 1. Default `[0, 1, 1]` (equal male/female).
+    #[serde(default = "default_sex_weights")]
+    pub sex_weights: [u32; 3],
 }
 
 /// Species-specific distribution parameters for a single creature stat.
@@ -412,4 +422,30 @@ fn default_raid_size() -> u32 {
 
 fn default_graze_food_restore_pct() -> i64 {
     15
+}
+
+fn default_sex_weights() -> [u32; 3] {
+    [0, 1, 1]
+}
+
+/// Roll a `CreatureSex` from per-species probability weights using weighted
+/// random selection. Weights are `[None, Male, Female]`.
+///
+/// Panics if the sum of weights is 0.
+pub fn roll_creature_sex(
+    weights: &[u32; 3],
+    rng: &mut elven_canopy_prng::GameRng,
+) -> crate::types::CreatureSex {
+    use crate::types::CreatureSex;
+    // Sum as u64 to avoid overflow when weights are large.
+    let total: u64 = weights[0] as u64 + weights[1] as u64 + weights[2] as u64;
+    assert!(total >= 1, "sex_weights sum must be >= 1");
+    let roll = rng.range_u64(0, total);
+    if roll < weights[0] as u64 {
+        CreatureSex::None
+    } else if roll < weights[0] as u64 + weights[1] as u64 {
+        CreatureSex::Male
+    } else {
+        CreatureSex::Female
+    }
 }

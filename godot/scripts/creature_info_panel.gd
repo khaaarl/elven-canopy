@@ -562,7 +562,11 @@ func show_creature(creature_id: String, info: Dictionary) -> void:
 	_selected_creature_id = creature_id
 	_last_inventory = []  # Force rebuild for new creature.
 	var species: String = info.get("species", "")
-	_species_label.text = "Species: %s" % species
+	var sex_symbol: String = info.get("sex_symbol", "")
+	if sex_symbol.is_empty():
+		_species_label.text = "Species: %s" % species
+	else:
+		_species_label.text = "Species: %s %s" % [species, sex_symbol]
 	var creature_name: String = info.get("name", "")
 	if creature_name.is_empty():
 		_name_label.text = "Name: %s" % species

@@ -540,6 +540,36 @@ impl TraitValue {
 }
 
 // ---------------------------------------------------------------------------
+// Creature sex (F-creature-sex)
+// ---------------------------------------------------------------------------
+
+/// Biological sex of a creature. Explicit discriminants for stable
+/// serialization. `None` = sexless or unassigned (golems, future species).
+///
+/// Used by the romance/attraction system to determine eligible pairs.
+/// Rolled at spawn from per-species probability weights in `SpeciesData`.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+pub enum CreatureSex {
+    #[default]
+    None = 0,
+    Male = 1,
+    Female = 2,
+}
+
+impl CreatureSex {
+    /// Unicode symbol for UI display. Returns empty string for `None`.
+    pub fn symbol(&self) -> &'static str {
+        match self {
+            CreatureSex::None => "",
+            CreatureSex::Male => "\u{2642}",   // ♂
+            CreatureSex::Female => "\u{2640}", // ♀
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Social opinions (F-social-opinions)
 // ---------------------------------------------------------------------------
 

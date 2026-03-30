@@ -58,6 +58,7 @@ impl SimState {
         let heartbeat_interval = species_data.heartbeat_interval_ticks;
         let ground_only = species_data.ground_only;
         let is_flyer = species_data.flight_ticks_per_voxel.is_some();
+        let sex_weights = species_data.sex_weights;
 
         // Flying creatures spawn at the raw position (entire footprint must be
         // flyable); ground creatures snap to the nearest nav node.
@@ -103,6 +104,8 @@ impl SimState {
         // Create an inventory for this creature.
         let inv_id = self.create_inventory(crate::db::InventoryOwnerKind::Creature);
 
+        let sex = crate::species::roll_creature_sex(&sex_weights, &mut self.rng);
+
         let creature = crate::db::Creature {
             id: creature_id,
             species,
@@ -127,6 +130,7 @@ impl SimState {
             mp_max,
             wasted_action_count: 0,
             last_dance_tick: 0,
+            sex,
         };
 
         self.db.insert_creature(creature).unwrap();

@@ -412,6 +412,10 @@ pub struct Creature {
     /// 0 = never danced.
     #[serde(default)]
     pub last_dance_tick: u64,
+    /// Biological sex. Rolled at spawn from per-species probability weights.
+    /// Old saves without this field deserialize as `CreatureSex::None`.
+    #[serde(default)]
+    pub sex: crate::types::CreatureSex,
 }
 
 /// A timestamped thought belonging to a creature.

@@ -1842,3 +1842,183 @@ fn spawn_test_elves_helper_returns_only_new_ids() {
         "should not include pre-existing elf"
     );
 }
+
+// -----------------------------------------------------------------------
+// Creature sex (F-creature-sex)
+// -----------------------------------------------------------------------
+
+#[test]
+fn spawned_creature_has_sex_field() {
+    let mut sim = test_sim(42);
+    let id = spawn_test_elf(&mut sim);
+    let creature = sim.db.creatures.get(&id).unwrap();
+    // With default weights [0,1,1], sex must be Male or Female (never None).
+    assert!(
+        creature.sex == CreatureSex::Male || creature.sex == CreatureSex::Female,
+        "elf should have Male or Female sex, got {:?}",
+        creature.sex,
+    );
+}
+
+#[test]
+fn spawned_creatures_have_both_sexes() {
+    // Spawn enough creatures that both sexes must appear (structural property).
+    let mut sim = test_sim(99);
+    let ids = spawn_test_elves(&mut sim, 30);
+    let mut has_male = false;
+    let mut has_female = false;
+    for id in &ids {
+        let creature = sim.db.creatures.get(id).unwrap();
+        match creature.sex {
+            CreatureSex::Male => has_male = true,
+            CreatureSex::Female => has_female = true,
+            CreatureSex::None => panic!("elf should not have CreatureSex::None"),
+        }
+    }
+    assert!(has_male, "expected at least one male in 30 elves");
+    assert!(has_female, "expected at least one female in 30 elves");
+}
+
+#[test]
+fn roll_creature_sex_respects_all_none_weights() {
+    use crate::species::roll_creature_sex;
+    let mut rng = elven_canopy_prng::GameRng::new(123);
+    for _ in 0..20 {
+        let sex = roll_creature_sex(&[1, 0, 0], &mut rng);
+        assert_eq!(
+            sex,
+            CreatureSex::None,
+            "weights [1,0,0] should always produce None"
+        );
+    }
+}
+
+#[test]
+fn roll_creature_sex_respects_all_male_weights() {
+    use crate::species::roll_creature_sex;
+    let mut rng = elven_canopy_prng::GameRng::new(456);
+    for _ in 0..20 {
+        let sex = roll_creature_sex(&[0, 1, 0], &mut rng);
+        assert_eq!(
+            sex,
+            CreatureSex::Male,
+            "weights [0,1,0] should always produce Male"
+        );
+    }
+}
+
+#[test]
+fn roll_creature_sex_respects_all_female_weights() {
+    use crate::species::roll_creature_sex;
+    let mut rng = elven_canopy_prng::GameRng::new(789);
+    for _ in 0..20 {
+        let sex = roll_creature_sex(&[0, 0, 1], &mut rng);
+        assert_eq!(
+            sex,
+            CreatureSex::Female,
+            "weights [0,0,1] should always produce Female"
+        );
+    }
+}
+
+#[test]
+fn roll_creature_sex_equal_weights_produces_both() {
+    use crate::species::roll_creature_sex;
+    let mut rng = elven_canopy_prng::GameRng::new(42);
+    let mut male_count = 0;
+    let mut female_count = 0;
+    for _ in 0..100 {
+        match roll_creature_sex(&[0, 1, 1], &mut rng) {
+            CreatureSex::Male => male_count += 1,
+            CreatureSex::Female => female_count += 1,
+            CreatureSex::None => panic!("weights [0,1,1] should never produce None"),
+        }
+    }
+    assert!(male_count > 0, "expected at least one male in 100 rolls");
+    assert!(
+        female_count > 0,
+        "expected at least one female in 100 rolls"
+    );
+}
+
+#[test]
+fn creature_sex_symbol() {
+    assert_eq!(CreatureSex::None.symbol(), "");
+    assert_eq!(CreatureSex::Male.symbol(), "♂");
+    assert_eq!(CreatureSex::Female.symbol(), "♀");
+}
+
+#[test]
+fn creature_sex_default_is_none() {
+    assert_eq!(CreatureSex::default(), CreatureSex::None);
+}
+
+#[test]
+fn creature_sex_serde_roundtrip() {
+    for sex in &[CreatureSex::None, CreatureSex::Male, CreatureSex::Female] {
+        let json = serde_json::to_string(sex).unwrap();
+        let deserialized: CreatureSex = serde_json::from_str(&json).unwrap();
+        assert_eq!(*sex, deserialized);
+    }
+}
+
+#[test]
+fn creature_sex_default_on_missing_field() {
+    // Verify that a struct with #[serde(default)] on a CreatureSex field
+    // deserializes to CreatureSex::None when the key is absent in JSON.
+    // This is the actual old-save backward-compat guarantee.
+    #[derive(serde::Deserialize)]
+    struct FakeCreature {
+        #[serde(default)]
+        sex: CreatureSex,
+    }
+    let val: FakeCreature = serde_json::from_str(r#"{}"#).unwrap();
+    assert_eq!(val.sex, CreatureSex::None);
+}
+
+#[test]
+fn roll_creature_sex_zero_weight_excluded() {
+    // Weights [0, 5, 1]: None has weight 0, should never appear.
+    use crate::species::roll_creature_sex;
+    let mut rng = elven_canopy_prng::GameRng::new(42);
+    for _ in 0..100 {
+        let sex = roll_creature_sex(&[0, 5, 1], &mut rng);
+        assert_ne!(
+            sex,
+            CreatureSex::None,
+            "weight-0 variant should never be produced"
+        );
+    }
+    // Weights [1, 0, 5]: Male has weight 0, should never appear.
+    for _ in 0..100 {
+        let sex = roll_creature_sex(&[1, 0, 5], &mut rng);
+        assert_ne!(
+            sex,
+            CreatureSex::Male,
+            "weight-0 variant should never be produced"
+        );
+    }
+}
+
+#[test]
+#[should_panic(expected = "sex_weights sum must be >= 1")]
+fn roll_creature_sex_panics_on_zero_sum() {
+    use crate::species::roll_creature_sex;
+    let mut rng = elven_canopy_prng::GameRng::new(42);
+    roll_creature_sex(&[0, 0, 0], &mut rng);
+}
+
+#[test]
+fn sex_weights_in_default_config() {
+    // All species in the default config should have valid sex_weights (sum >= 1).
+    let config = GameConfig::default();
+    for (species, data) in &config.species {
+        let sum: u32 = data.sex_weights.iter().sum();
+        assert!(
+            sum >= 1,
+            "species {:?} has sex_weights sum {} (must be >= 1)",
+            species,
+            sum,
+        );
+    }
+}

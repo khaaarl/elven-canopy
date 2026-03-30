@@ -303,6 +303,7 @@ fn build_creature_info_dict(
     dict.set("rest_max", rest_max);
     dict.set("name", GString::from(c.name.as_str()));
     dict.set("name_meaning", GString::from(c.name_meaning.as_str()));
+    dict.set("sex_symbol", GString::from(c.sex.symbol()));
     let assigned_home = match c.assigned_home {
         Some(sid) => sid.0 as i64,
         None => -1,
