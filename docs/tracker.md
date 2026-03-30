@@ -1645,7 +1645,7 @@ computed from edge distance and per-species speed config.
 
 Unify the two separate pathfinding implementations — `pathfinding.rs` (nav graph
 for ground creatures) and `flight_pathfinding.rs` (voxel grid for flyers) — into
-a single module with a consistent API.
+a single file with a consistent API, plus a single test file.
 
 **Current state:** The two files have independent A* implementations with
 different signatures, different result types, and no shared abstraction. Callers
@@ -1657,11 +1657,11 @@ graph; flight pathfinding has no multi-target search).
 
 1. **Sibling functions with parallel APIs:** Each pathfinding operation has a
    nav-graph version and a voxel-grid version with consistent naming:
-   - `astar_navgraph(graph, start, goal, species_data, max_path_len)` — current `astar()`
+   - `astar_navgraph(graph, start, goal, species_data, max_path_len, allowed_edges)` — replaces both current `astar()` and `astar_filtered()` (the only difference between them is edge filtering; use `Option<&[EdgeType]>` to unify)
    - `astar_fly(world, start, goal, footprint, max_path_len)` — current `astar_fly()`
-   - `nearest_navgraph(graph, start, candidates, species_data, max_path_len)` — replaces `dijkstra_nearest()`
+   - `nearest_dijkstra_navgraph(...)` — renamed from current `dijkstra_nearest()`
+   - `nearest_navgraph(graph, start, candidates, species_data, max_path_len)` — thin wrapper around `nearest_dijkstra_navgraph` for now (F-interleaved-astar will later add A* as an alternative strategy the wrapper can pick)
    - `nearest_fly(world, start, candidates, footprint, max_path_len)` — new, currently missing
-   - etc.
 
    Where one sibling exists and the other doesn't, add the missing one.
 
@@ -1672,7 +1672,14 @@ graph; flight pathfinding has no multi-target search).
 
    These are convenience wrappers so callers don't need to branch on creature
    type. They live alongside the siblings, not replacing them — callers that
-   already know the travel mode can call the sibling directly.
+   already know the travel mode can call the sibling directly. The unified file
+   may depend on sim types (species, creature) as needed for these wrappers.
+
+**Unified result type:** All pathfinding functions return a `PathResult` that
+contains VoxelCoords for the path, plus *optionally* NavNodeIds and NavEdgeIds
+(populated for nav-graph paths, empty for flight paths). Callers use whichever
+fields they find convenient. This replaces the current situation where nav-graph
+and flight paths have incompatible result types.
 
 **Max-path-len parameter:** All pathfinding functions take a `max_path_len`
 parameter — the maximum number of edges the resulting path may traverse. The
@@ -1682,13 +1689,11 @@ found if `max_path_len` is 50, regardless of how many dead ends or cul-de-sacs
 the search explores along the way. The caller picks a number comfortably above
 the longest path they'd ever want (e.g., manhattan distance in voxels + buffer
 for detours), and the search returns None if no path exists within that length.
+If there is no obvious max for a given call site, pass `u32::MAX` or similar.
 
-**Shared result type:** Both siblings should return the same `PathResult` (or a
-compatible type) so callers don't need to handle two different result shapes.
-The nav-graph version currently returns node IDs and edge IDs; the flight
-version returns voxel coordinates. A unified result might carry both (with one
-being empty), or use an enum, or just carry the path as coordinates (which both
-can produce). Design decision to be made during implementation.
+**File structure:** One unified file for all pathfinding business code, one
+unified file for all pathfinding tests. The current `pathfinding.rs` and
+`flight_pathfinding.rs` merge into the single file.
 
 **Scope:** This is a refactoring of existing code plus adding missing
 functionality (e.g., `nearest_fly`). All existing callers of `astar()`,
