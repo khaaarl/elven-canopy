@@ -119,6 +119,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-day-night-color      Color grading shift by time of day
 [ ] F-defense-struct       Defensive structures (ballista, wards)
 [ ] F-demolish             Structure demolition
+[ ] F-dining-furnishing    Dining hall tables and seating furnishings
 [ ] F-dinner-party         Organized group dining social activity
 [ ] F-docs-overhaul        Reorganize and consolidate docs/ directory
 [ ] F-dwarf-fort-gen       Underground dwarf fortress generation
@@ -220,6 +221,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-smooth-ycutoff       Post-smoothing Y-cutoff with cap faces
 [ ] F-social-dance         Dance integration with social opinions
 [ ] F-social-graph         Relationships and social contagion
+[ ] F-social-intensity     Context-dependent social impression strength tuning
 [ ] F-social-prefer        Social preference in group activity recruitment
 [ ] F-social-ui            Social tab on creature info panel
 [ ] F-soul-mech            Death, soul passage, resurrection
@@ -606,7 +608,7 @@ arrival. Interrupted elves release reservations, food preserved.
 
 **Draft:** docs/drafts/F-bldg-dining.md
 
-**Related:** F-bldg-concert, F-bldg-kitchen, F-food-chain, F-food-quality-mood, F-slow-eating
+**Related:** F-bldg-concert, F-bldg-kitchen, F-dining-furnishing, F-dinner-party, F-food-chain, F-food-quality-mood, F-slow-eating
 
 #### F-bldg-dormitory — Dormitory (unassigned elf sleep)
 **Status:** Done · **Phase:** 3
@@ -762,6 +764,27 @@ load-bearing structure could affect structures above it (warn or block).
 
 **Related:** F-carve-holes, F-cascade-fail, F-construction, F-select-struct, F-struct-upgrade, F-unfurnish
 
+#### F-dining-furnishing — Dining hall tables and seating furnishings
+**Status:** Todo
+
+Better dining room furnishing with proper tables and seating. Currently
+dining halls use generic eating locations — there's no concept of tables
+with chairs arranged around them. This feature would introduce table
+furnishings that organize seats spatially, so elves sit across from or
+beside each other at a table rather than at arbitrary spots in a room.
+
+**Why:** Visual and mechanical fidelity — a dining hall should look like
+a place where people eat together, not just a room with food in it.
+Table arrangement could also feed into social mechanics (e.g., who you
+sit next to matters more than who's across the room).
+
+**Scope:** New furnishing types (table, chair/bench), spatial seat
+assignment relative to tables, and rendering. May interact with dinner
+party seat selection (F-dinner-party) and future social preference
+systems (F-social-prefer).
+
+**Related:** F-bldg-dining, F-dinner-party, F-furnish, F-sung-furniture, F-unfurnish
+
 #### F-furnish — Building furnishing framework (dormitories)
 **Status:** Done · **Phase:** 3 · **Refs:** §11
 
@@ -779,7 +802,7 @@ floor area (density varies by type). Auto-renames the building to e.g.
 
 **New files:** `furniture_renderer.gd`
 
-**Related:** F-batch-craft, F-bldg-dormitory, F-building, F-greenhouse-revamp, F-unfurnish
+**Related:** F-batch-craft, F-bldg-dormitory, F-building, F-dining-furnishing, F-greenhouse-revamp, F-unfurnish
 
 #### F-infra-decay — Infrastructure decay with automated maintenance
 **Status:** Todo
@@ -1009,7 +1032,7 @@ itself. Distinct from manufactured furniture (crafted from harvested wood).
 Costs mana instead of materials. Higher quality from skilled singers.
 Unique to the tree-spirit concept and reinforces the symbiotic theme.
 
-**Related:** F-choir-build, F-item-quality, F-mana-system
+**Related:** F-choir-build, F-dining-furnishing, F-item-quality, F-mana-system
 
 #### F-support-struts — Support strut construction
 **Status:** Done · **Phase:** 3 · **Refs:** §9
@@ -1077,7 +1100,7 @@ Should remove placed furniture objects (beds, etc.) and reset the
 building's furnishing type. May require an Unfurnish task where an elf
 walks to the building and removes furniture incrementally.
 
-**Related:** F-demolish, F-furnish
+**Related:** F-demolish, F-dining-furnishing, F-furnish
 
 #### F-visual-smooth — Smooth voxel surface rendering
 **Status:** Done · **Phase:** 2 · **Refs:** §8
@@ -2126,7 +2149,7 @@ food item is destroyed and elf gets partial hunger restoration proportional
 to progress. Applies to all eating paths (dining hall, carried food,
 foraging). Currently all eating is instant on arrival.
 
-**Related:** F-bldg-dining
+**Related:** F-bldg-dining, F-dinner-party
 
 #### F-starvation-rework — Starvation rework: incapacitation interaction and bleed-out
 **Status:** Todo
@@ -2506,7 +2529,7 @@ above give progressively larger boosts. Applies to dining hall meals
 and possibly carried-food eating. Depends on F-item-quality for the
 quality tiers and F-bldg-dining for the dining mood system.
 
-**Related:** F-bldg-dining, F-item-quality
+**Related:** F-bldg-dining, F-dinner-party, F-item-quality
 
 #### F-footwear-split — Sandals/shoes as footwear, boots as armor
 **Status:** Done
@@ -3206,7 +3229,7 @@ Disliked ≤-5, Enemy ≤-15) are currently hardcoded in GDScript
 
 **Unblocked by:** F-social-opinions
 **Unblocked:** F-elaborate-social, F-social-graph
-**Related:** F-animal-bonds, F-social-dance
+**Related:** F-animal-bonds, F-social-dance, F-social-intensity
 
 #### F-combat-opinions — Respect and fear from combat events
 **Status:** Todo
@@ -3227,12 +3250,101 @@ Organized group dining as a social activity. Unlike routine individual
 dining (which only gets incidental casual socialization from proximity),
 a dinner party is a coordinated group activity where elves gather, eat
 together, and socialize — upserting Friendliness opinions between
-participants and providing mood boosts scaled by how much they like
-their dining companions.
+participants and providing mood boosts.
+
+**Spontaneous only — no player-directed dinner parties.** An eligible elf
+(hungry enough, not on cooldown) rolls a PPM chance during heartbeat.
+On success, they become the organizer and create a DinnerParty activity
+at a dining hall with sufficient food and free seats. Other elves in the
+hunger-eligible range can volunteer to join (Open recruitment mode).
+
+**Timer mechanism (mirrors dance halls).** Per-hall and per-elf cooldowns
+prevent constant dinner parties. A newly-furnished hall (one that has
+never hosted a completed dinner party) bypasses the hall cooldown so the
+player sees a dinner party soon after building the hall. Config fields:
+`dinner_party_hall_cooldown_ticks`, `dinner_party_elf_cooldown_ticks`,
+`dinner_party_organize_chance_ppm`.
+
+**Revised hunger bands.** To make dinner parties viable, the hunger
+thresholds are restructured into a gradient. New config fields control
+dinner-party-specific thresholds alongside the existing dining/hunger
+fields (which shift downward):
+
+| Food % | Behavior |
+|--------|----------|
+| 70–100% | Not hungry |
+| 60–70% | Willing to **join** an existing dinner party if invited |
+| 40–60% | Willing to **organize** a dinner party (also willing to join) |
+| 30–40% | **Solo dining** — go eat at a dining hall alone |
+| 0–30% | **Emergency** — eat rations/fruit immediately |
+
+New config fields: `food_dinner_party_organize_threshold_pct` (default
+60), `food_dinner_party_join_threshold_pct` (default 70). Existing
+fields shift: `food_dining_threshold_pct` drops to 40,
+`food_hunger_threshold_pct` drops to 30.
+
+**Lifecycle (standard group activity pattern):**
+
+1. *Recruiting* — Organizer selects a dining hall with sufficient food
+   (≥ min_count items). Food is reserved from the hall's inventory at
+   recruitment time. Open recruitment: idle or low-priority elves in the
+   civ whose food level is below the join threshold can volunteer.
+
+2. *Assembling* — Participants get GoTo tasks to assigned seats (using
+   the existing TaskVoxelRef / DiningSeat pattern for seat reservations).
+   Standard assembly timeout applies — if not enough participants arrive,
+   the activity cancels and reserved food is released.
+
+3. *Executing (the dinner)* — Two interleaved concerns:
+   - **Eating:** Each participant consumes one reserved food item,
+     restoring hunger. A dinner party satisfies the hunger need — an elf
+     who attends doesn't need to separately solo-dine.
+   - **Socializing:** Over the dinner's duration, each participant makes
+     a fixed number of social impression checks (configurable, e.g. 2–3)
+     on randomly selected other participants at the table. Uses the
+     standard `social_impression` / `upsert_opinion(Friendliness)` pattern
+     from casual social. Each check also triggers skill advancement on
+     the creature's best social skill (max of Influence, Culture). A
+     thought is generated: positive ("Enjoyed dinner with [Name]") or
+     negative ("Awkward dinner with [Name]") based on net impression
+     delta. An overall mood thought ("Enjoyed a dinner party") is also
+     awarded, potentially scaled by average Friendliness toward
+     tablemates in the future.
+   - Config: `dinner_party_impressions_per_elf` (number of impression
+     checks each participant makes), `dinner_party_duration_secs`.
+
+4. *Complete* — Release seat reservations, apply per-elf cooldown,
+   clean up activity rows.
+
+**Seat assignment:** Uses the same dining seat locations as conventional
+solo dining (existing TaskVoxelRef / DiningSeat pattern). No new
+furnishing types needed. Better dining room furnishing with proper
+tables and chairs is deferred to a separate tracker item.
+
+**Interaction density:** Each elf makes a fixed number of impression
+checks (`dinner_party_impressions_per_elf`) on randomly selected other
+participants, regardless of party size. This keeps the cost bounded and
+predictable. For a table of 4 with 2 impressions each, that's 8 checks
+total — comparable to 8 casual social interactions but concentrated in
+one social event.
+
+**Impression strength:** Uses the same `social_impression_delta` function
+as casual social for now. Tuning relative strength (e.g., dinner
+impressions being stronger than passing-in-the-hallway, or different
+effectiveness at different friendship tiers) is deferred to future work
+on social intensity scaling.
+
+**Deferred concerns:**
+- Food quality affecting mood boost (future, once quality system is
+  more mature).
+- Preferential invites — organizer biasing toward friends (deferred to
+  F-social-prefer as a general group-activity system).
+- Better dining room furnishing / table layouts (separate tracker item).
+- Impression strength tuning vs casual social (future social balancing).
 
 **Blocks:** F-social-graph
 **Unblocked by:** F-group-activity, F-social-opinions
-**Related:** F-social-dance, F-social-prefer
+**Related:** F-bldg-dining, F-dining-furnishing, F-food-quality-mood, F-group-chat, F-slow-eating, F-social-dance, F-social-intensity, F-social-prefer
 
 #### F-elaborate-social — Elaborate casual social interactions (visible pauses, variety, personality)
 **Status:** Todo
@@ -3266,6 +3378,7 @@ This is speculative and will be scoped more tightly when F-casual-social
 has been in the game long enough to see how it feels.
 
 **Unblocked by:** F-casual-social
+**Related:** F-social-intensity
 
 #### F-emotions — Multi-dimensional emotional state
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
@@ -3334,6 +3447,7 @@ with social maneuvering, whichever you're better at).
 
 **Blocks:** F-social-graph
 **Unblocked by:** F-group-activity, F-social-opinions
+**Related:** F-dinner-party, F-social-intensity
 
 #### F-group-dance — Group dance and social singing activities
 **Status:** Done
@@ -3542,7 +3656,7 @@ upward when dancing with creatures you already like.
 
 **Blocks:** F-social-graph
 **Unblocked by:** F-social-opinions
-**Related:** F-casual-social, F-dinner-party, F-group-dance, F-social-prefer
+**Related:** F-casual-social, F-dinner-party, F-group-dance, F-social-intensity, F-social-prefer
 
 #### F-social-graph — Relationships and social contagion
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
@@ -3560,6 +3674,32 @@ which requires F-emotions.
 **Blocked by:** F-combat-opinions, F-dinner-party, F-emotions, F-formal-bonds, F-group-chat, F-romance, F-social-dance, F-social-prefer, F-social-ui
 **Unblocked by:** F-casual-social, F-social-opinions
 **Related:** F-emotions, F-funeral-rites, F-personality
+
+#### F-social-intensity — Context-dependent social impression strength tuning
+**Status:** Todo
+
+Tuning the relative strength of social impression sources. Different
+social contexts should build relationships at different rates and have
+different effectiveness at different friendship tiers. For example,
+passing-in-the-hallway (casual social) might be effective at building
+acquaintanceship but plateau before reaching friendship, while dinner
+parties and dances are effective at deepening existing relationships
+toward friendship.
+
+**Why:** Currently all social impression sources use the same
+`social_impression_delta` function, which means a hallway chat and a
+dinner party have identical social impact per interaction. This feels
+wrong — shared experiences like meals and dances should matter more.
+But getting the basic mechanics working first is more important than
+fine-tuning the numbers.
+
+**Scope:** Per-context impression delta functions or modifiers,
+possibly tier-aware scaling (e.g., diminishing returns for casual
+social above Acquaintance threshold). Affects casual social
+(F-casual-social), dinner parties (F-dinner-party), dance social
+(F-social-dance), and any future social interaction sources.
+
+**Related:** F-casual-social, F-dinner-party, F-elaborate-social, F-group-chat, F-social-dance
 
 #### F-social-opinions — Interpersonal opinion table and social skill checks
 **Status:** Done · **Phase:** 4 · **Refs:** §18
