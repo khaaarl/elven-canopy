@@ -47,6 +47,7 @@ This reduces merge conflicts when parallel work streams add items.
 ### In Progress
 
 ```
+[~] B-fragile-tests        Audit and harden tests against PRNG stream shifts and worldgen changes
 [~] B-ghost-chunks         Ghost chunks in distance remain visible after they should be hidden
 [~] B-qem-deformation      QEM decimation visual artifacts
 [~] F-creature-skills      Creature skill system (17 universal skills with path-gated advancement)
@@ -63,10 +64,11 @@ This reduces merge conflicts when parallel work streams add items.
 ### Todo
 
 ```
+[ ] B-dead-owner-items     Dead creature items retain ownership, becoming invisible to all systems
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-floating-dirt        Floating dirt still treated as ground by structural validator
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
-[ ] B-fragile-tests        Audit and harden tests against PRNG stream shifts and worldgen changes
+[ ] B-quit-crash           Crash on quit from in-flight rayon mesh workers
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-aggro-fauna          Neutral fauna with aggro triggers
@@ -127,7 +129,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-dye-mixing           Dye color mixing recipes
 [ ] F-dye-palette          Named color palette system for dyes
 [ ] F-edge-outline         Edge highlighting shader (depth/normal discontinuity)
-[ ] F-elaborate-social     Elaborate casual social interactions (visible pauses, variety, personality)
 [ ] F-elf-assign           Elf-to-building assignment UI
 [ ] F-elf-leave            Devastated elves permanently leave
 [ ] F-elfcyclopedia-know   Elfcyclopedia civ/fruit knowledge pages
@@ -200,6 +201,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-quality-filters      Quality filters for logistics wants and active recipes
 [ ] F-raid-detection       Raid detection gating and stealth spawning
 [ ] F-raid-polish          Raid polish: military groups, provisions for long treks
+[ ] F-random-seeds         Parameterized random-seed testing for hardened sim tests
 [ ] F-recipe-any-mat       Any-material recipe parameter support
 [ ] F-rescue               Rescue and stabilize incapacitated creatures
 [ ] F-retire-events        Retire event queue: poll-based heartbeats and periodic systems
@@ -291,7 +293,6 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-dead-enums           Remove dead GrownStairs/Bridge code and add explicit enum discriminants
 [x] B-dead-max-gen         Remove vestigial max_gen_per_frame field and ~40 test calls
 [x] B-dead-node-panic      Panic on dead nav node in pathfinding
-[x] B-dead-owner-items     Dead creature items retain ownership, becoming invisible to all systems
 [x] B-dine-orphan-task     DineAtHall speculative task leaves orphaned Complete rows
 [x] B-dirt-not-pinned      Dirt unpinned in fast structural validator
 [x] B-erratic-movement     Erratic/too-fast creature movement after move commands
@@ -305,7 +306,6 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-modifier-hotkeys     Hotkeys should not fire when modifier keys (Ctrl/Shift/Alt) are held
 [x] B-music-floats         Excise f32/f64 from music composition for determinism
 [x] B-preview-blueprints   Preview treats blueprints as complete
-[x] B-quit-crash           Crash on quit from in-flight rayon mesh workers
 [x] B-raid-spawn           Raiders sometimes spawn inside map instead of at perimeter
 [x] B-sim-floats           Remaining f32/f64 in sim logic threaten determinism
 [x] B-spawn-creature       spawn_creature test helper finds first creature of species, not newly spawned
@@ -1632,30 +1632,10 @@ meaningful tactical tool. Also improves general simulation fidelity.
 #### F-creature-sex — Creature sex/gender field
 **Status:** Todo
 
-Sex field on creatures, used by romance/attraction to determine eligible
-pairs. May also affect sprite generation and name generation in the future.
-
-**Design:**
-
-`CreatureSex` enum with explicit discriminants: `None = 0`, `Male = 1`,
-`Female = 2`. Stored as a direct field on the Creature row (not a trait),
-since nearly every social system will need it.
-
-**Config:** Each species gets a `sex_weights: [none, male, female]` tuple
-of nonneg integer probability weights (ratio-based, sum >= 1). Most
-species use `[0, 1, 1]` (equal male/female). Future species like golems
-could use `[1, 0, 0]` (always None).
-
-**Spawn:** Weighted random selection from the species config weights
-during `spawn_creature_with_civ()`, deterministic from PRNG.
-
-**UI:** Display ♂/♀ symbol in creature info panel header next to species.
-None shows no symbol.
-
-**Serde:** Old saves without the field deserialize as `CreatureSex::None`.
-
-**Scope (not wired yet):** Attraction filtering (F-romance), gendered
-names, sprite variation — all future work.
+Optional sex/gender field on creatures. Initially a simple enum stored
+as a trait or direct field on the Creature row. Used by romance and
+attraction systems to determine eligible pairs. May also affect sprite
+generation and name generation in the future.
 
 **Blocks:** F-romance
 
@@ -2020,7 +2000,7 @@ Requires F-flying-nav-big.
 ### Economy & Logistics
 
 #### B-dead-owner-items — Dead creature items retain ownership, becoming invisible to all systems
-**Status:** Done
+**Status:** Todo
 
 #### B-dine-orphan-task — DineAtHall speculative task leaves orphaned Complete rows
 **Status:** Done
@@ -2846,93 +2826,13 @@ emergent social/economic system.
 
 Quick, lightweight social interactions that happen opportunistically when
 creatures are near each other without interrupting their current activities.
-Two elves of the same civ walking past each other might have a brief chat;
-an elf at a workstation notices a colleague nearby. These micro-interactions
-upsert Friendliness opinions and award Thoughts, providing a baseline
-social fabric even when creatures aren't engaged in formal group activities.
-This is the Dwarf Fortress-style "relationships form in the background"
-system — invisible to the player except through its cumulative effects on
-opinions and mood.
+Examples: two elves of the same civ walking past each other might have a
+brief chat or flirtation; a Scout might pet a tamed animal in passing.
+These micro-interactions upsert social opinions (small Friendliness bumps,
+occasional Attraction rolls) and provide a baseline social fabric even
+when creatures aren't engaged in formal group activities.
 
-**Scope:** Same-civ creatures only. Cross-civ casual interactions and
-animal-petting (F-animal-bonds) are deferred to later work.
-Attraction rolls are deferred to F-romance.
-
-**Trigger mechanism: heartbeat-driven**
-
-During each creature's heartbeat, roll an independent random chance
-(configurable PPM). On success, scan nearby voxels (Manhattan distance
-≤ `casual_social_radius`, default 3 — about 6 meters) for other alive
-same-civ creatures. If one or more are found, pick one (deterministic
-selection — e.g., nearest, then CreatureId tiebreak) and run a
-**bidirectional** interaction: both creatures perform a BestSocial skill
-check (`max(Influence, Culture)` + CHA + `quasi_normal(50)`) and the
-resulting delta is upserted as Friendliness on the other creature. Both
-creatures also attempt skill advancement on their better social skill.
-
-No per-pair cooldown — frequency is controlled entirely by the PPM
-chance. Two elves stationed near each other will build a relationship
-faster than two who rarely cross paths, which is the desired behavior.
-
-Because both A and B have independent heartbeats, a pair standing
-together may trigger from either side. This is intentional and fine
-at low PPM values.
-
-The interaction takes **zero sim time** — no pausing, no task
-interruption, no action cost. The creature's heartbeat simply includes
-a social check alongside its existing need/decay checks. More elaborate
-visible interactions (pauses, conversation animations) are deferred to
-F-elaborate-social.
-
-**Thoughts**
-
-Each interaction awards a Thought to both creatures:
-- Positive net delta (≥ +1): a small positive mood thought
-  ("Had a pleasant chat with [Name]").
-- Negative net delta (≤ -1): a small negative mood thought
-  ("Had an awkward exchange with [Name]").
-- Zero delta: no thought.
-
-Thought intensity should be small — this is ambient social warmth/friction,
-not a major event.
-
-**Friendship threshold refactoring**
-
-The friendliness_label thresholds (Acquaintance ≥5, Friend ≥15,
-Disliked ≤-5, Enemy ≤-15) are currently hardcoded in GDScript
-(`creature_info_panel.gd`). As part of this feature:
-
-1. Define a `FriendshipCategory` enum in Rust (Enemy, Disliked, Neutral,
-   Acquaintance, Friend — extensible to Close Friend later if needed).
-2. Define the threshold values in `SocialConfig` so they're tunable.
-3. Add a `friendship_category(intensity) -> FriendshipCategory` function
-   in the sim.
-4. Expose the thresholds through the sim bridge so GDScript reads them
-   from Rust rather than hardcoding its own copy.
-5. On each `upsert_opinion` for Friendliness, compare the before/after
-   `FriendshipCategory`. If they differ, emit a SimEvent (e.g.,
-   `FriendshipChanged { creature_id, target_id, old_category,
-   new_category }`). This drives player-visible notifications like
-   "Aelindra now considers Thaeron a friend."
-
-**Config fields (SocialConfig)**
-
-- `casual_social_chance_ppm`: probability per heartbeat (e.g., 15,000 = 1.5%)
-- `casual_social_radius`: Manhattan distance in voxels (default 3)
-- Friendship category thresholds: `friendship_acquaintance_threshold` (5),
-  `friendship_friend_threshold` (15), and their negative counterparts
-  for Disliked/Enemy.
-
-**What this feature does NOT include**
-
-- Attraction rolls or romance (→ F-romance)
-- Animal-petting or cross-species bonds (→ F-animal-bonds)
-- Cross-civ interactions (→ F-elaborate-social or future work)
-- Visible pauses, conversation animations, interaction variety
-  (→ F-elaborate-social)
-- Personality-driven frequency/radius (→ F-elaborate-social + F-personality)
-
-**Blocks:** F-elaborate-social, F-social-graph
+**Blocks:** F-social-graph
 **Unblocked by:** F-social-opinions
 **Related:** F-animal-bonds, F-social-dance
 
@@ -2961,39 +2861,6 @@ their dining companions.
 **Blocks:** F-social-graph
 **Unblocked by:** F-group-activity, F-social-opinions
 **Related:** F-social-dance, F-social-prefer
-
-#### F-elaborate-social — Elaborate casual social interactions (visible pauses, variety, personality)
-**Status:** Todo
-
-Richer casual social interactions that build on F-casual-social's
-behind-the-scenes micro-interactions. Where F-casual-social is invisible
-and zero-cost, this feature makes some interactions visible and
-meaningful: creatures occasionally pause their current activity for a
-longer conversation, exchange gossip, tell stories, argue, or flirt.
-
-Possible scope (loosely specified, to be refined later):
-- **Interaction variety:** Different interaction types beyond generic
-  "chat" — storytelling (Culture skill), debate (Influence skill),
-  gossip (spreads opinions about third parties), commiseration (shared
-  negative thoughts create bonding).
-- **Visible pauses:** Some interactions cause both creatures to stop
-  briefly (a few seconds of sim time). Cosmetic idle animations or
-  speech bubbles could accompany these.
-- **Cross-civ interactions:** Extend casual social to creatures of
-  different civilizations when diplomatic relations permit (e.g.,
-  visiting traders, allied elves from other trees).
-- **Personality influence:** Extraverted creatures initiate more often
-  and with a wider radius; introverted creatures initiate rarely but
-  form deeper impressions when they do. Requires F-personality.
-- **Context-sensitive interactions:** Creatures working the same task
-  or in the same building have different conversation topics than
-  those passing on a bridge. Working together could build Respect
-  faster than hallway chats.
-
-This is speculative and will be scoped more tightly when F-casual-social
-has been in the game long enough to see how it feels.
-
-**Blocked by:** F-casual-social
 
 #### F-emotions — Multi-dimensional emotional state
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
@@ -6203,7 +6070,7 @@ Additionally, add explicit integer discriminants to all serializable enums (at m
 Leaf blobs generated during tree growth sometimes end up only diagonally connected to other geometry (other leaf blobs, branches, trunk). This looks bad after chamfering/smoothing because diagonal-only voxels produce visible gaps. Branches already have logic to ensure face-to-face (6-connected) adjacency with at least one other solid voxel. Leaf blob placement needs the same treatment: every leaf voxel must be face-adjacent to at least one other leaf or solid voxel.
 
 #### B-quit-crash — Crash on quit from in-flight rayon mesh workers
-**Status:** Done
+**Status:** Todo
 
 When quitting the game, Godot may tear down while rayon worker threads are still executing chunk mesh generation tasks. The current `shutdown()` in `sim_bridge.rs` drops `MeshCache` (which drops the rayon `ThreadPool`), but rayon's `ThreadPool::drop` attempts to execute all remaining pending tasks before terminating — there is no built-in cancel API. This can cause crashes if Godot deallocates the process or its resources while workers are still alive.
 
@@ -7118,71 +6985,116 @@ maximum performance.
 ### Testing Infrastructure
 
 #### B-fragile-tests — Audit and harden tests against PRNG stream shifts and worldgen changes
-**Status:** Todo
+**Status:** In Progress
 
-Audit and harden sim tests against PRNG stream shifts and worldgen changes.
+Harden sim tests so they don't break when worldgen or PRNG changes.
 
-Many combat and projectile tests are fragile: they rely on specific
-creature stat values produced by a particular PRNG seed, so any change
-to PRNG consumption during worldgen or creature spawn causes cascading
-test failures. These tests pass for the wrong reason — they happen to
-get the right random numbers, not because they've isolated the behavior
-under test.
-
-**Incident 1 (F-attack-evasion, 2026-03-24):** Adding the evasion
-hit-check (12 extra PRNG calls per attack) shifted the PRNG stream,
-breaking 28 combat tests that asserted exact damage values. All 28
-needed `zero_creature_stats` + `force_guaranteed_hits` to make them
-deterministic regardless of PRNG state.
-
-**Incident 2 (quasi-normal-util, 2026-03-24):** Extracting the
-quasi-normal distribution function changed the internal sampling range
-used during creature stat generation (from [-stdev, stdev] to
-[-100M, 100M] with scaling). This shifted the PRNG stream during
-spawn, breaking 14 more combat tests that still depended on the
-specific stat rolls from seed 42. Same fix: zero stats + force hits.
-
-**Incident 3 (leaf density, earlier):** The test_config already pins
-`leaf_density` and `leaf_size` with the comment "Pin leaf config so
-tests don't break when visual defaults change." This was added after
-fruit tests broke when tree growth parameters changed — fruit positions
-depend on leaf voxel positions which depend on tree growth which
-depends on PRNG state. The pin was a targeted fix but the underlying
-pattern (tests depending on specific worldgen output) persists. The
-fruit tests remain fragile — they are merely pinned, not hardened.
-
-**The general problem:** Tests that use `test_sim(42)` inherit a full
+**The problem:** Many tests use `test_sim(seed)` and inherit a full
 worldgen result — tree shape, creature stats, nav graph, fruit
-positions — and some tests implicitly depend on specific details of
-that worldgen output. When anything upstream in the PRNG stream changes
-(new PRNG calls, different sampling ranges, reordered operations), the
-entire worldgen output shifts and these tests break.
+positions. They then implicitly depend on specific details of that
+output: clear air at certain coordinates, specific civ relationships,
+fruit on leaves, particular stat rolls. When anything upstream changes
+(new PRNG calls, config tweaks, algorithm changes), tests break even
+though the feature under test is fine. The seed number doesn't matter
+— the fragility is that tests are coupled to worldgen output they
+didn't ask for.
 
-**What "hardened" looks like:**
-- Combat tests should always `zero_creature_stats` on both attacker and
-  defender, then set only the specific stats the test needs. The
-  `force_guaranteed_hits` helper should be used whenever exact damage
-  values are asserted.
-- Tests that assert positions or coordinates should use positions
-  derived from the test setup (e.g., "place creature at X, check
-  result at X+1") not positions inherited from worldgen.
-- Tests that depend on tree shape (fruit positions, nav graph
-  connectivity) should either pin all relevant config parameters or
-  build a minimal test-specific world rather than relying on the
-  cached seed-42 sim's exact tree.
-- No test should break when: (a) a new PRNG call is added anywhere in
-  worldgen/spawn, (b) an existing PRNG sampling range changes, (c)
-  tree growth parameters or algorithms change, (d) species stat
-  distributions change.
+**General approach:** Each test should be examined for what it actually
+needs from the world and given only that. Many tests don't need a tree
+at all — they need a flat open world with clear air and solid ground,
+like a fighting game training stage. Projectile tests need clear LOS
+between two points. Melee tests need two creatures on adjacent
+walkable tiles. Tests that do need a tree (construction, fruit, nav
+graph connectivity) should create or find what they need explicitly
+rather than relying on the specific shape a particular seed produces.
+The fix is case-by-case.
 
-**Audit scope:** All tests in `elven_canopy_sim/src/sim/tests.rs` that
-use `test_sim(42)` and make assertions about exact numeric values
-(HP, damage, positions, counts of specific items). The combat tests
-fixed in incidents 1-2 above were hardened against stat-related PRNG
-shifts specifically, but may still be fragile to other worldgen
-changes. Fruit tests (incident 3) were never hardened — only pinned.
-The audit should examine all test categories for remaining fragility,
-not assume any are fully hardened.
+**Historical incidents:**
+
+- *F-attack-evasion (2026-03-24):* Adding evasion hit-checks (12 extra
+  PRNG calls per attack) broke 28 combat tests. Fix: `zero_creature_stats`
+  + `force_guaranteed_hits`.
+- *quasi-normal-util (2026-03-24):* Changing the quasi-normal sampling
+  range shifted creature stat generation, breaking 14 more combat tests.
+  Same fix.
+- *leaf density (earlier):* Fruit tests broke when tree growth params
+  changed. Pinned `leaf_density` and `leaf_size` in `test_config` — a
+  targeted fix that doesn't address the underlying coupling.
+
+---
+
+**Empirical validation (2026-03-30):**
+
+Two perturbation experiments, each revealing a different dimension of
+fragility with nearly disjoint failure sets.
+
+*Experiment 1 — leaf_size 3→5:* 21 failures. Dominant mode: leaf blobs
+at larger size fill previously-clear air, blocking projectile LOS at
+hardcoded positions. Tests that use `force_position()` looked hardened
+but the positions were only valid for one tree geometry.
+
+- 13 projectile/LOS tests: `test_shoot_arrow_spawns_projectile`,
+  `test_shoot_arrow_cooldown_prevents_second_shot`,
+  `test_shoot_arrow_cooldown_expiry_allows_second_shot`,
+  `test_shoot_arrow_leaf_does_not_block_los`,
+  `shoot_arrow_hostile_in_path_does_not_block`,
+  `flight_path_blocked_by_friendly_creature`,
+  `arrow_chase_creates_autonomous_attack_move`,
+  `arrow_chase_flying_creature_gets_chase_task`,
+  `arrow_chase_preempts_autonomous_task`,
+  `arrow_chase_second_hit_updates_destination`,
+  `arrow_chase_second_hit_clears_target_creature`,
+  `attack_target_spear_stops_at_extended_range`,
+  `defensive_elf_with_task_interrupts_to_shoot_troll_at_10_voxels`
+- 2 PRNG-shifted combat: `hostile_creature_pursues_and_attacks_elf`,
+  `test_hostile_ai_shoots_when_armed`
+- 1 PRNG-shifted hit check: `attack_target_continues_through_incapacitation_to_death`
+- 2 diplomacy (civ relationships shifted): `diplomatic_relation_hostile_civs`,
+  `is_non_hostile_different_civs_hostile`
+- 2 fruit growth (leaf positions changed): `fruit_grows_during_heartbeat`,
+  `fruit_heartbeat_tracks_species`
+- 1 nav graph topology: `troll_pursues_elf_cross_graph_pathfinding`
+
+*Experiment 2 — seed 42→99:* 10 failures (plus 1 expected checksum
+test). Only 1 overlap with experiment 1.
+
+- 4 hornet spawn at now-solid voxels: `aggressive_elf_vs_hornet_at_heights`,
+  `ordered_elf_vs_hornet_at_heights`, `flying_creature_idle_wanders`,
+  `flying_creature_directed_goto_mid_move_defers`
+- 3 PRNG-shifted combat/pursuit: `hostile_ai_spear_attacks_at_extended_range`,
+  `hostile_pursues_elf_within_detection_range`,
+  `attack_target_continues_through_incapacitation_to_death`
+- 1 projectile trajectory: `projectile_hits_solid_voxel_and_creates_ground_pile`
+- 1 pursuit behavior: `defensive_creature_does_not_chase_far`
+- 1 flying GoTo: `flying_creature_goto_reaches_destination`
+
+~30 unique fragile tests from just 2 perturbations. The true number is
+likely higher — these experiments only probe two dimensions of change.
+
+---
+
+**Static analysis findings (2026-03-30):**
+
+5 independent reviewers (cautious, skeptical, veteran, statistical,
+adversarial) audited all ~250 sim tests. These found a smaller set of
+tests with assertion-level fragility that the empirical tests didn't
+catch (different failure mode — not worldgen-coupled but structurally
+flawed):
+
+- `in_flight_arrow_hits_hostile_at_origin_neighbor` — compares HP
+  against species base (100) without zeroing CON; creature's actual
+  HP can exceed 100 from CON bonus
+- `try_advance_skill_deterministic` — `assert_ne` between two seeds
+  with ~4-5% collision probability (~20-30 reachable outcomes)
+- `armor_degradation_non_penetrating_rare` — 100 trials at 5% rate,
+  asserts count >= 1; P(zero) ≈ 0.6%
+- `harvest_task_creates_ground_pile` and
+  `harvest_fruit_carries_species_material` — index `fruit_positions[0]`
+  without creating own fruit
+- `stat_modified_hp_max_survives_serde_roundtrip` — borderline; asserts
+  `hp_max > 100` on unzeroed troll (~2-3% failure probability)
+
+**Blocks:** F-random-seeds
 
 #### B-mesh-global-cfg — Mesh pipeline global atomics cause test flakiness risk
 **Status:** Done

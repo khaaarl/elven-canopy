@@ -1410,9 +1410,9 @@ impl SimState {
         }
 
         // 2. Drop all inventory items as a ground pile at death position.
-        // inv_move_items preserves all item properties (material, quality,
-        // durability, enchantment). inv_move_stack clears equipped_slot on
-        // transfer, so dropped items are automatically unequipped.
+        // Use inv_move_items to preserve all item properties (material,
+        // quality, durability, enchantment). Then clear owner/reserved_by
+        // on the moved stacks.
         let inv_id = self.db.creatures.get(&creature_id).map(|c| c.inventory_id);
         if let Some(inv_id) = inv_id {
             let has_items = !self
@@ -1424,27 +1424,23 @@ impl SimState {
                 let pile_id = self.ensure_ground_pile(position);
                 let pile_inv_id = self.db.ground_piles.get(&pile_id).unwrap().inventory_id;
                 self.inv_move_items(inv_id, pile_inv_id, None, None, None);
+                // Clear owner, reserved_by, and equipped_slot on the dead
+                // creature's stacks only (filter by owner to avoid clobbering
+                // pre-existing items in the same ground pile).
+                let pile_stacks: Vec<_> = self
+                    .db
+                    .item_stacks
+                    .by_inventory_id(&pile_inv_id, tabulosity::QueryOpts::ASC);
+                for mut stack in pile_stacks {
+                    if stack.owner == Some(creature_id) {
+                        stack.owner = None;
+                        stack.reserved_by = None;
+                        stack.equipped_slot = None;
+                        let _ = self.db.update_item_stack(stack);
+                    }
+                }
                 self.inv_normalize(pile_inv_id);
             }
-        }
-
-        // 2b. Clear ownership and reserved_by on ALL items in the world
-        // owned by the dead creature — not just items that were in the
-        // creature's inventory. Items may have ended up in ground piles
-        // or building inventories through prior task interruptions, haul
-        // drops, etc. Without this sweep, orphaned ownership makes items
-        // invisible to logistics systems that filter on `owner.is_none()`.
-        // Reservations are also cleared as a safety net — task interruption
-        // (step 1) should have already cleared them, but stale reservations
-        // would permanently lock items out of the logistics pool.
-        let orphaned: Vec<_> = self
-            .db
-            .item_stacks
-            .by_owner(&Some(creature_id), tabulosity::QueryOpts::ASC);
-        for mut stack in orphaned {
-            stack.owner = None;
-            stack.reserved_by = None;
-            let _ = self.db.update_item_stack(stack);
         }
 
         // 3. Remove from spatial index.

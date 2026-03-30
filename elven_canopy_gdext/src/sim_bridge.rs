@@ -556,12 +556,9 @@ impl SimBridge {
         drop(self.relay_handle.take());
         drop(self.net_client.take());
 
-        // Gracefully shut down background mesh workers before dropping
-        // the cache. This sets a cancel flag so pending workers bail early,
-        // then blocks until all in-flight tasks have reported back.
-        if let Some(cache) = &mut self.mesh_cache {
+        // Print accumulated perf stats before tearing down.
+        if let Some(cache) = &self.mesh_cache {
             cache.perf.print_summary();
-            cache.shutdown();
         }
 
         // Clear sim state.

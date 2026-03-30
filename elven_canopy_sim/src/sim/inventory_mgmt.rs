@@ -246,9 +246,6 @@ impl SimState {
         for stack in stacks {
             let mut moved = stack;
             moved.inventory_id = dst;
-            // Equip state is a property of being in a specific creature's
-            // inventory — clear it when transferring between inventories.
-            moved.equipped_slot = None;
             let _ = self.db.update_item_stack(moved);
         }
         self.inv_normalize(dst);
@@ -750,9 +747,8 @@ impl SimState {
 
     /// Move `quantity` items from `stack_id` to `dst` inventory, preserving
     /// all properties (material, quality, durability, enchantment, owner,
-    /// reserved_by, dye_color) except `equipped_slot` which is always cleared
-    /// (equip state is a property of being in a specific creature's inventory).
-    /// Uses `inv_split_stack` when moving a partial stack.
+    /// reserved_by, dye_color). Uses `inv_split_stack` when moving a partial
+    /// stack.
     ///
     /// - If `quantity == 0`: returns `None`.
     /// - If `quantity >= stack.quantity`: moves the entire stack.
@@ -770,9 +766,6 @@ impl SimState {
         let split_id = self.inv_split_stack(stack_id, quantity)?;
         if let Some(mut stack) = self.db.item_stacks.get(&split_id) {
             stack.inventory_id = dst;
-            // Equip state is a property of being in a specific creature's
-            // inventory — clear it when transferring between inventories.
-            stack.equipped_slot = None;
             let _ = self.db.update_item_stack(stack);
         }
         self.inv_normalize(dst);
@@ -781,7 +774,7 @@ impl SimState {
 
     /// Move up to `quantity` items from `src` to `dst`, filtered by kind and
     /// material. Preserves all properties (quality, durability, enchantment,
-    /// owner, reserved_by) except `equipped_slot` which is cleared on transfer.
+    /// owner, reserved_by).
     ///
     /// - `kind`: if `Some`, only move items of this kind. If `None`, any kind.
     /// - `material`: if `Some(m)`, only move items with that exact material

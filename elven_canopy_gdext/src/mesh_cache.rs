@@ -54,8 +54,7 @@
 // GDScript rendering side.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::mpsc;
 use std::time::Instant;
 
 use rayon::ThreadPool;
@@ -500,8 +499,7 @@ impl PerfStats {
 struct MeshWorkResult {
     coord: ChunkCoord,
     sim_tick: u64,
-    /// `None` when the worker bailed early due to cancellation.
-    mesh: Option<ChunkMesh>,
+    mesh: ChunkMesh,
     gen_us: u32,
 }
 
@@ -596,10 +594,6 @@ pub struct MeshCache {
     /// than the total CPU count to leave headroom for the main/render thread
     /// and OS/background tasks.
     mesh_pool: ThreadPool,
-    /// Cancellation flag for background workers. Set to `true` during
-    /// shutdown so pending/in-progress workers bail early instead of
-    /// running the full mesh pipeline.
-    cancel: Arc<AtomicBool>,
     /// Mesh pipeline configuration (smoothing, decimation, etc.). Cloned into
     /// each background worker closure so workers don't depend on global state.
     pub mesh_config: MeshPipelineConfig,
@@ -648,7 +642,6 @@ impl MeshCache {
             in_flight: BTreeSet::new(),
             cached_ticks: BTreeMap::new(),
             mesh_pool,
-            cancel: Arc::new(AtomicBool::new(false)),
             mesh_config: MeshPipelineConfig::default(),
         }
     }
@@ -704,21 +697,6 @@ impl MeshCache {
         // Re-send results so drain_completed can pick them up.
         for result in buffered {
             let _ = self.mesh_tx.send(result);
-        }
-    }
-
-    /// Graceful shutdown: signal all background workers to bail early, then
-    /// block until every in-flight task has reported back. After this returns,
-    /// the thread pool can be safely dropped without racing Godot teardown.
-    pub fn shutdown(&mut self) {
-        self.cancel.store(true, Ordering::Relaxed);
-        // Block until every in-flight worker has sent its result (real or
-        // cancelled). Workers always send exactly one MeshWorkResult, so we
-        // just need to drain `in_flight.len()` results.
-        while !self.in_flight.is_empty() {
-            if let Ok(result) = self.mesh_rx.recv() {
-                self.in_flight.remove(&result.coord);
-            }
         }
     }
 
@@ -866,22 +844,9 @@ impl MeshCache {
         let neighborhood = ChunkNeighborhood::extract(world, coord, self.y_cutoff, grassless);
         let tx = self.mesh_tx.clone();
         let config = self.mesh_config;
-        let cancel = Arc::clone(&self.cancel);
         self.in_flight.insert(coord);
         self.dirty.remove(&coord);
         self.mesh_pool.spawn(move || {
-            // Bail early if shutdown has been requested. The main thread is
-            // waiting for all in_flight tasks to report back, so we still
-            // send a result (with mesh: None) even when cancelled.
-            if cancel.load(Ordering::Relaxed) {
-                let _ = tx.send(MeshWorkResult {
-                    coord: neighborhood.chunk,
-                    sim_tick: neighborhood.sim_tick,
-                    mesh: None,
-                    gen_us: 0,
-                });
-                return;
-            }
             let t = Instant::now();
             let mesh = generate_chunk_mesh(&neighborhood, &config);
             let gen_us = t.elapsed().as_micros() as u32;
@@ -890,7 +855,7 @@ impl MeshCache {
             let _ = tx.send(MeshWorkResult {
                 coord: neighborhood.chunk,
                 sim_tick: neighborhood.sim_tick,
-                mesh: Some(mesh),
+                mesh,
                 gen_us,
             });
         });
@@ -917,12 +882,6 @@ impl MeshCache {
     /// mesh was inserted into the cache.
     fn handle_completed_result(&mut self, result: MeshWorkResult) -> bool {
         self.in_flight.remove(&result.coord);
-
-        // Cancelled workers send mesh: None — just clear in_flight.
-        let Some(mesh) = result.mesh else {
-            return false;
-        };
-
         self.perf.gen_single_chunk_us.push(result.gen_us);
 
         // Freshness check: discard if a newer version is already cached.
@@ -935,7 +894,7 @@ impl MeshCache {
         }
 
         let coord = result.coord;
-        if mesh.is_empty() {
+        if result.mesh.is_empty() {
             // Chunk produces no geometry — remember it so we don't
             // regenerate every frame.
             self.chunks.remove(&coord);
@@ -963,11 +922,11 @@ impl MeshCache {
             if let Some(old_bytes) = self.chunk_bytes.remove(&coord) {
                 self.total_cached_bytes = self.total_cached_bytes.saturating_sub(old_bytes);
             }
-            let bytes = mesh.estimate_byte_size();
+            let bytes = result.mesh.estimate_byte_size();
             self.total_cached_bytes += bytes;
             self.chunk_bytes.insert(coord, bytes);
             self.lru_stamps.insert(coord, self.frame_counter);
-            self.chunks.insert(coord, mesh);
+            self.chunks.insert(coord, result.mesh);
             self.cached_ticks.insert(coord, result.sim_tick);
             self.chunks_generated.push(coord);
             true

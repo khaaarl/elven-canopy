@@ -1454,20 +1454,19 @@ impl SimState {
             None => return,
         };
 
-        // Move items to the ground pile via inv_move_stack (which clears
-        // equipped_slot on transfer), then clear owner and reserved_by.
+        // Move items to the ground pile.
         for (stack_id, qty) in stacks_to_drop {
-            if let Some(moved_id) = self.inv_move_stack(stack_id, qty, pile_inv)
-                && let Some(mut moved) = self.db.item_stacks.get(&moved_id)
+            if let Some(split_id) = self.inv_split_stack(stack_id, qty)
+                && let Some(mut moved) = self.db.item_stacks.get(&split_id)
             {
+                moved.inventory_id = pile_inv;
                 moved.owner = None;
                 moved.reserved_by = None;
                 let _ = self.db.update_item_stack(moved);
             }
         }
 
-        // Normalize both inventories (inv_move_stack normalizes dst per
-        // call, but the source needs a final normalize after all moves).
+        // Normalize both inventories.
         self.inv_normalize(inv_id);
         self.inv_normalize(pile_inv);
     }
