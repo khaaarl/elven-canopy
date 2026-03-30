@@ -92,7 +92,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-bridges              Bridge construction between tree parts
 [ ] F-buff-system          Generic timed stat modifier buffs on creatures
 [ ] F-build-queue-ui       Construction queue/progress UI
-[ ] F-building-civ         Building civilization ownership and civ-filtered dining
+[ ] F-building-civ         Building civilization ownership and civ-filtered building access
 [ ] F-building-door        Player-controlled building door orientation
 [ ] F-cascade-fail         Cascading structural failure
 [ ] F-cavalry              Mount tamed creatures as cavalry
@@ -2313,43 +2313,106 @@ bakery.
 **Unblocked by:** F-recipe-params
 **Related:** F-furnish, F-manufacturing, F-recipes, F-unified-craft-ui
 
-#### F-building-civ — Building civilization ownership and civ-filtered dining
+#### F-building-civ — Building civilization ownership and civ-filtered building access
 **Status:** Todo · **Refs:** §4
 
-Add a `civ_id: Option<CivId>` field to `CompletedStructure` so that buildings
-are owned by a specific civilization. Use this field to restrict dining hall
-access: only creatures whose `civ_id` matches the dining hall's `civ_id` can
-seek and use that hall.
+Add a `civ_id: Option<CivId>` field to `CompletedStructure` so that every
+building is owned by a specific civilization. Use this field to restrict
+building access across all building-creature interactions: only creatures
+whose `civ_id` matches the building's `civ_id` can use that building.
+Buildings with `civ_id: None` are orphaned (unusable by anyone).
 
-**Current state:** `CompletedStructure` has no civ ownership. The dining hall
-civ gate (added in B-dining-perf) checks `creature.civ_id.is_some()`, which
-prevents wild animals from dining but doesn't distinguish between rival civs.
+**Design decisions:**
+- `civ_id: None` means orphaned — no creature can use the building. This
+  breaks old saves (pre-existing buildings will have `None` via serde
+  default), which is acceptable at this stage of development.
+- No cross-civ logistics. Hauling only moves items between buildings of the
+  same civ.
+- Cross-civ home assignment is rejected (the AssignHome command silently
+  fails if creature and home have different civs).
+- Greenhouses only produce for their owning civ's logistics pipeline.
+- Dances are only organized at and joined at the owning civ's dance halls.
+
+**Current state:** `CompletedStructure` has no civ ownership. The only
+civ-awareness is: (a) task-level `required_civ_id` on Craft/Haul tasks
+(set to `self.player_civ_id` at creation), which `find_available_task()`
+already filters; (b) a `creature.civ_id.is_some()` gate in the dining
+heartbeat that prevents wild animals from dining but doesn't distinguish
+between rival civs.
 
 **Work needed:**
 
-1. Add `civ_id: Option<CivId>` to `CompletedStructure` in `db.rs`. Default to
-   `None` for serde backwards compatibility with existing saves.
+1. **Data model** — Add `civ_id: Option<CivId>` (indexed, serde default
+   `None`) to `CompletedStructure` in `db.rs`. Add `civ_id: Option<CivId>`
+   parameter to `CompletedStructure::from_blueprint()`.
 
-2. Set `civ_id` to the building player's civ when a structure is completed
-   (in `complete_build()` in `construction.rs`). The player's civ is available
-   via `self.player_civ_id`.
+2. **Construction** — In `complete_build()` (`construction.rs`), pass the
+   player's `civ_id` when creating the `CompletedStructure`. The player's
+   civ is available via `self.player_civ_id`.
 
-3. Update `find_nearest_dining_hall()` in `needs.rs` to filter structures by
-   matching `structure.civ_id == creature.civ_id` (when both are `Some`).
-   Replace the current `creature.civ_id.is_some()` gate in the heartbeat
-   (`mod.rs`) with this per-structure check.
+3. **Dining halls** (`needs.rs:616`) — In `find_nearest_dining_hall()`, add
+   a `structure.civ_id == creature_civ_id` filter to the structure iteration
+   loop. Remove the existing `creature.civ_id.is_some()` gate in the
+   heartbeat (`mod.rs`) since per-structure matching subsumes it.
 
-4. Consider whether `find_nearest_bed()` should also filter by civ (dormitories
-   should probably only be used by the owning civ's creatures too).
+4. **Dormitory beds** (`needs.rs:554`) — In `find_nearest_bed()`, add
+   `structure.civ_id == creature_civ_id` filter to the dormitory iteration.
 
-5. Add tests: creature from civ A cannot dine at civ B's hall, creature from
-   civ A can dine at civ A's hall, wild creatures (no civ) still excluded.
+5. **Assigned home beds** (`needs.rs:508`) — In `find_assigned_home_bed()`,
+   after validating the home exists, verify `structure.civ_id ==
+   creature_civ_id`. If mismatched, treat as no home (return None).
 
-6. Serde roundtrip test for the new `civ_id` field on `CompletedStructure`.
+6. **Home assignment** (`construction.rs:1520`) — In `assign_home()`, after
+   validating the structure is a Home, check that `structure.civ_id ==
+   creature.civ_id`. If mismatched, return early (reject the assignment).
 
-**Future considerations:** Other structure-level operations (logistics, crafting,
-task assignment) may also want civ-based filtering once multi-civ gameplay is
-implemented. This feature lays the groundwork.
+7. **Logistics heartbeat — building collection** (`logistics.rs:380`) — In
+   `process_logistics_heartbeat()`, filter the logistics buildings vec to
+   only include buildings matching the player civ. (The heartbeat already
+   uses `self.player_civ_id` for task creation, so this is consistent.)
+
+8. **Logistics — fruit availability count** (`logistics.rs:296`) — In the
+   fruit availability loop over structures, filter by civ.
+
+9. **Logistics — haul source selection** (`logistics.rs:547, 573`) — In
+   `find_source_for_want()` phases 2 and 3 (lower-priority buildings,
+   surplus detection), add `structure.civ_id == requester_civ` filter to
+   both structure iteration loops. The requester civ comes from the
+   destination building's civ_id.
+
+10. **Logistics — personal item sources** (`logistics.rs:656, 703`) — In
+    `find_owned_item_source()` and `find_unowned_item_source()`, add
+    `structure.civ_id == creature_civ_id` filter to both building iterations.
+
+11. **Greenhouses** (`greenhouse.rs:22`) — In `process_greenhouse_monitor()`,
+    filter the greenhouse collection to only include structures whose
+    `civ_id` matches a player civ. (Greenhouses owned by no one or a
+    non-player civ don't produce.)
+
+12. **Dance halls — debug command** (`activity.rs:103`) — In the debug
+    start-dance handler, filter `structure.civ_id` to match the player civ.
+
+13. **Dance halls — volunteer organization** (`activity.rs:1327`) — In
+    `try_volunteer_dance_organization()`, add `structure.civ_id ==
+    creature_civ_id` filter to the dance hall search loop.
+
+14. **Crafting** (`crafting.rs:474`) — The active recipe scan iterates
+    structures by ID. Add a civ filter: only process recipes for structures
+    whose `civ_id` matches `self.player_civ_id`. (Task-level
+    `required_civ_id` already handles worker filtering, but without this
+    check, orphaned buildings would still generate craft tasks.)
+
+15. **Tests:**
+    - Creature from civ A cannot dine at civ B's dining hall.
+    - Creature from civ A can dine at civ A's dining hall.
+    - Wild creature (no civ) excluded from all dining halls.
+    - Creature cannot sleep in a different civ's dormitory.
+    - Creature cannot be assigned to a different civ's home.
+    - Hauling only moves items between same-civ buildings.
+    - Orphaned building (`civ_id: None`) is not used by any creature.
+    - Greenhouse with non-matching civ does not produce.
+    - Dance organization only targets own-civ dance halls.
+    - Serde roundtrip for the new `civ_id` field on `CompletedStructure`.
 
 #### F-cloak-slot — Cloak/cape equipment slot
 **Status:** Todo
