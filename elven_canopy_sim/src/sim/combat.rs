@@ -792,8 +792,10 @@ impl SimState {
             return;
         }
 
-        let tpv =
-            crate::stats::CreatureMoveSpeeds::new(species_data, 0, 0).tpv_for_edge(edge.edge_type);
+        let agility = self.trait_int(creature_id, TraitKind::Agility, 0);
+        let strength = self.trait_int(creature_id, TraitKind::Strength, 0);
+        let tpv = crate::stats::CreatureMoveSpeeds::new(species_data, agility, strength)
+            .tpv_for_edge(edge.edge_type);
         let delay = (edge.distance as u64 * tpv)
             .div_ceil(crate::nav::DIST_SCALE as u64)
             .max(1);
@@ -1168,8 +1170,10 @@ impl SimState {
             return;
         }
 
-        let tpv =
-            crate::stats::CreatureMoveSpeeds::new(species_data, 0, 0).tpv_for_edge(edge.edge_type);
+        let agility = self.trait_int(creature_id, TraitKind::Agility, 0);
+        let strength = self.trait_int(creature_id, TraitKind::Strength, 0);
+        let tpv = crate::stats::CreatureMoveSpeeds::new(species_data, agility, strength)
+            .tpv_for_edge(edge.edge_type);
         let delay = (edge.distance as u64 * tpv)
             .div_ceil(crate::nav::DIST_SCALE as u64)
             .max(1);
