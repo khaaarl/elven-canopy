@@ -65,6 +65,8 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [ ] B-dead-owner-items     Dead creature items retain ownership, becoming invisible to all systems
+[ ] B-dijkstra-perf        Unbounded Dijkstra in nearest-X searches scales poorly on large graphs
+[ ] B-dining-perf          Dining hall search causes intermittent multi-second pauses
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-quit-crash           Crash on quit from in-flight rayon mesh workers
@@ -158,6 +160,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-infra-decay          Infrastructure decay with automated maintenance
 [ ] F-insect-husbandry     Beekeeping and insect husbandry
 [ ] F-instinctual-flee     Instinctual flee thresholds (species-level fear overrides)
+[ ] F-interleaved-astar    Interleaved A* for efficient nearest-among-N-candidates pathfinding
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-labor-panel          DF/Rimworld-style labor assignment UI
 [ ] F-leaf-sway            Foliage vertex sway shader (wind simulation)
@@ -261,6 +264,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-two-click-build      Two-click construction designation (click start, click end)
 [ ] F-undo-designate       Undo last construction designation
 [ ] F-unfurnish            Unfurnish/refurnish a building
+[ ] F-unified-pathing      Unified pathfinding API for ground (nav graph) and flying (voxel grid) creatures
 [ ] F-uplift-tree          Uplift lesser tree into bonded great tree
 [ ] F-vaelith-expand       Expand Vaelith language for runtime use
 [ ] F-vertical-garden      Vertical gardens on the tree
@@ -1346,6 +1350,91 @@ data passing to Godot), `tree_renderer.gd` (per-chunk material creation).
 
 ### Navigation & Pathfinding
 
+#### B-dijkstra-perf — Unbounded Dijkstra in nearest-X searches scales poorly on large graphs
+**Status:** Todo · **Refs:** §4
+
+Several nearest-X search functions use `dijkstra_nearest()` with the creature
+as source and target locations as multi-target sinks. Dijkstra explores outward
+with no heuristic, so when targets are far away or rare, it searches the entire
+reachable nav graph. This is O(V log V + E) on the graph regardless of target
+distance.
+
+**Affected callers (all in needs.rs unless noted):**
+
+- `find_nearest_fruit()` (line 52) — nearest harvestable fruit
+- `find_nearest_bed()` (line 598) — nearest dormitory bed with free slot
+- `find_nearest_dining_hall()` (line 621) — tracked separately as B-dining-perf
+- `find_available_task()` (activation.rs:690) — nearest claimable idle task
+
+**Preferred fix:** Same pattern as B-dining-perf — gather candidates first
+(cheap filter), then run point-to-point A* to each candidate. A* with the
+existing chebyshev heuristic terminates much faster for point-to-point queries.
+The number of candidates is typically small (a few fruit trees, a few beds),
+so multiple A* calls will still be far cheaper than one unbounded Dijkstra.
+
+**Priority:** Lower than B-dining-perf. Fruit and beds are more numerous and
+more evenly distributed than dining halls, so the Dijkstra tends to find them
+sooner. But on large maps with sparse resources, the same O(entire graph)
+worst case applies.
+
+**Verification:** F-sim-perf-timing instrumentation will surface these if they
+become a bottleneck.
+
+**Related:** B-dining-perf, F-interleaved-astar, F-unified-pathing
+
+#### B-dining-perf — Dining hall search causes intermittent multi-second pauses
+**Status:** Todo · **Refs:** §4
+
+Intermittent 2-second pauses observed during gameplay, likely when a creature
+triggers `find_nearest_dining_hall()` (needs.rs:621). The function has two
+scaling concerns:
+
+1. **Full scan of task_voxel_refs:** Line 636 does `iter_all()` over the entire
+   `task_voxel_refs` table to count occupied dining seats. This grows with total
+   active tasks across all systems, not just dining tasks. However, this scan
+   is only meaningful when there are valid dining hall candidates, so the fix
+   is ordering: gate it after the cheap structure/food check, not before.
+
+2. **Unbounded Dijkstra on the nav graph:** Line 691 calls `dijkstra_nearest()`
+   with the creature's position as source and all candidate table nodes as
+   targets. Dijkstra explores the graph outward from the source with no
+   heuristic, so if dining halls are far away or the graph is large, it searches
+   the entire reachable graph before finding the nearest target. This is the
+   likely main cost — a large nav graph with distant dining halls means
+   exploring thousands of nodes per hungry creature, and multiple creatures can
+   get hungry in the same tick window.
+
+**Preferred fix:**
+
+1. **Reorder the function:** First, gather candidate dining halls using the
+   cheap structure scan (filter for food + free seats). If no candidates,
+   return None immediately — no seat counting, no pathfinding.
+
+2. **Gate the seat count scan:** Only run the `task_voxel_refs` iteration
+   after confirming there are dining halls with food. Do not add a new
+   tabulosity index for this — the write-side cost on every task voxel ref
+   mutation outweighs the read-side benefit for this infrequent query. The
+   existing `iter_all()` filtered by role is fine once it's behind the cheap
+   gate.
+
+3. **Replace Dijkstra with candidate-first A\*:** Instead of multi-target
+   Dijkstra from the creature outward, run point-to-point A* (already
+   implemented in pathfinding.rs with chebyshev heuristic) to each candidate
+   dining hall and pick the one with lowest cost. A* with a good heuristic
+   terminates much faster than Dijkstra for point-to-point queries, and dining
+   halls are rare enough that the number of A* calls will be small (typically
+   1–3). If there's exactly one candidate, a single A* call suffices.
+
+The same Dijkstra pattern exists in `find_nearest_fruit()`, `find_nearest_bed()`,
+and `find_available_task()` — those are tracked separately in B-dijkstra-perf.
+
+**Verification:** Once F-sim-perf-timing is implemented, the timing
+instrumentation should catch this if it recurs. A targeted before/after
+benchmark (time `find_nearest_dining_hall` on a world with distant dining halls)
+would also confirm the fix.
+
+**Related:** B-dijkstra-perf, F-interleaved-astar, F-unified-pathing
+
 #### B-erratic-movement — Erratic/too-fast creature movement after move commands
 **Status:** Done
 
@@ -1430,6 +1519,66 @@ F-flying-nav with multi-voxel clearance checks.
 **Unblocked by:** F-flying-nav
 **Unblocked:** F-wyvern
 
+#### F-interleaved-astar — Interleaved A* for efficient nearest-among-N-candidates pathfinding
+**Status:** Todo · **Refs:** §4
+
+A general-purpose "find nearest among N candidates" pathfinding algorithm that
+interleaves multiple A* searches to terminate early when a close candidate is
+found and distant candidates can be pruned.
+
+**Algorithm:**
+
+1. **Pre-filter by heuristic:** Compute `h(creature, candidate)` for all
+   candidates and sort ascending. Any candidate whose heuristic lower bound
+   already exceeds the best completed path cost can be skipped without
+   searching.
+
+2. **Interleaved expansion:** Maintain separate A* open sets for remaining
+   candidates. On each step, expand the candidate with the globally smallest
+   `f` value. When any search completes with cost `x`, prune all other
+   searches whose minimum `f ≥ x` — they can't beat the known solution.
+
+3. **Early out:** If only one candidate survives pruning, switch to normal
+   single-target A* for that candidate (no interleaving overhead).
+
+**Degrades gracefully:** One candidate = normal A*. Obvious closest candidate
+by heuristic = others pruned without graph work. Worst case (equidistant
+candidates) = no worse than sequential A* to each.
+
+**Max-path-len parameter:** Like all pathfinding functions (see F-unified-pathing),
+takes a `max_path_len` parameter — the maximum number of edges the resulting
+path may traverse. Cul-de-sacs don't consume the allowance; only the final
+path length matters. Per-candidate, not shared — the caller shouldn't need to
+multiply their ceiling by the number of candidates.
+
+**Must support both pathfinding modes:**
+
+- **Nav graph (ground creatures):** A* on the nav graph with edge-type
+  filtering and species-specific traversal costs (walk/climb/ladder TPV),
+  using chebyshev heuristic. This replaces the current `dijkstra_nearest()`
+  calls.
+
+- **Voxel grid (flying creatures):** A* on the 3D voxel grid with footprint
+  clearance checks (1×1×1 for hornets, 2×2×2 for wyverns). The existing
+  flight A* already works this way — the interleaved version needs the same
+  neighbor generation and clearance logic.
+
+Both modes use the same interleaving/pruning logic; only the neighbor
+generation and cost functions differ. A clean design would be generic over
+a trait or closure that provides `neighbors(node)` and `heuristic(node, goal)`.
+
+**API sketch:** `nearest_by_astar(start, candidates, neighbor_fn, heuristic_fn, max_path_len)`
+returning `Option<(target, cost, path)>`. Lives in `pathfinding.rs` alongside
+the existing `dijkstra_nearest()` and `astar()`.
+
+**Users:** `find_nearest_dining_hall()`, `find_nearest_fruit()`,
+`find_nearest_bed()`, `find_available_task()`, and any future nearest-X
+searches for both ground and flying creatures. This is the preferred
+replacement for all `dijkstra_nearest()` call sites.
+
+**Blocked by:** F-unified-pathing
+**Related:** B-dijkstra-perf, B-dining-perf
+
 #### F-large-nav-tolerance — 1-voxel height tolerance for large nav
 **Status:** Done · **Phase:** 8+
 
@@ -1484,6 +1633,69 @@ creature resnapping.
 
 A* search with euclidean heuristic over the nav graph. Movement cost
 computed from edge distance and per-species speed config.
+
+#### F-unified-pathing — Unified pathfinding API for ground (nav graph) and flying (voxel grid) creatures
+**Status:** Todo · **Refs:** §4
+
+Unify the two separate pathfinding implementations — `pathfinding.rs` (nav graph
+for ground creatures) and `flight_pathfinding.rs` (voxel grid for flyers) — into
+a single module with a consistent API.
+
+**Current state:** The two files have independent A* implementations with
+different signatures, different result types, and no shared abstraction. Callers
+must know which system to use and handle them separately. Some operations exist
+for one mode but not the other (e.g., `dijkstra_nearest` exists only for nav
+graph; flight pathfinding has no multi-target search).
+
+**Goal — two layers:**
+
+1. **Sibling functions with parallel APIs:** Each pathfinding operation has a
+   nav-graph version and a voxel-grid version with consistent naming:
+   - `astar_navgraph(graph, start, goal, species_data, max_path_len)` — current `astar()`
+   - `astar_fly(world, start, goal, footprint, max_path_len)` — current `astar_fly()`
+   - `nearest_navgraph(graph, start, candidates, species_data, max_path_len)` — replaces `dijkstra_nearest()`
+   - `nearest_fly(world, start, candidates, footprint, max_path_len)` — new, currently missing
+   - etc.
+
+   Where one sibling exists and the other doesn't, add the missing one.
+
+2. **Unified wrappers:** Functions that take a creature (or enough creature
+   info to determine travel mode) and dispatch to the appropriate sibling:
+   - `astar_for(sim, creature_id, goal, max_path_len)` → calls `astar_navgraph` or `astar_fly`
+   - `nearest_for(sim, creature_id, candidates, max_path_len)` → calls `nearest_navgraph` or `nearest_fly`
+
+   These are convenience wrappers so callers don't need to branch on creature
+   type. They live alongside the siblings, not replacing them — callers that
+   already know the travel mode can call the sibling directly.
+
+**Max-path-len parameter:** All pathfinding functions take a `max_path_len`
+parameter — the maximum number of edges the resulting path may traverse. The
+search discards any node whose edge count from the start exceeds this limit.
+This is a path-length cutoff, not a work budget — a path of 40 edges is always
+found if `max_path_len` is 50, regardless of how many dead ends or cul-de-sacs
+the search explores along the way. The caller picks a number comfortably above
+the longest path they'd ever want (e.g., manhattan distance in voxels + buffer
+for detours), and the search returns None if no path exists within that length.
+
+**Shared result type:** Both siblings should return the same `PathResult` (or a
+compatible type) so callers don't need to handle two different result shapes.
+The nav-graph version currently returns node IDs and edge IDs; the flight
+version returns voxel coordinates. A unified result might carry both (with one
+being empty), or use an enum, or just carry the path as coordinates (which both
+can produce). Design decision to be made during implementation.
+
+**Scope:** This is a refactoring of existing code plus adding missing
+functionality (e.g., `nearest_fly`). All existing callers of `astar()`,
+`astar_filtered()`, `dijkstra_nearest()`, and `astar_fly()` should be migrated
+to the new API. The old functions can become private or be removed once all
+callers are migrated.
+
+F-interleaved-astar depends on this — the interleaved nearest-among-N algorithm
+should be implemented once using the sibling functions, not duplicated for each
+travel mode.
+
+**Blocks:** F-interleaved-astar
+**Related:** B-dijkstra-perf, B-dining-perf
 
 ### Creatures & Needs
 
