@@ -68,7 +68,9 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-floating-dirt        Floating dirt still treated as ground by structural validator
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fragile-tests        Audit and harden tests against PRNG stream shifts and worldgen changes
+[ ] B-quit-crash           Crash on quit from in-flight rayon mesh workers
 [ ] B-safe-api-tests       Additional safe API test coverage from once-over
+[ ] B-start-paused-ui      start_paused_on_load UI desync and missing new-game support
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-aggro-fauna          Neutral fauna with aggro triggers
@@ -6067,6 +6069,23 @@ Additionally, add explicit integer discriminants to all serializable enums (at m
 **Status:** Done
 
 Leaf blobs generated during tree growth sometimes end up only diagonally connected to other geometry (other leaf blobs, branches, trunk). This looks bad after chamfering/smoothing because diagonal-only voxels produce visible gaps. Branches already have logic to ensure face-to-face (6-connected) adjacency with at least one other solid voxel. Leaf blob placement needs the same treatment: every leaf voxel must be face-adjacent to at least one other leaf or solid voxel.
+
+#### B-quit-crash — Crash on quit from in-flight rayon mesh workers
+**Status:** Todo
+
+When quitting the game, Godot may tear down while rayon worker threads are still executing chunk mesh generation tasks. The current `shutdown()` in `sim_bridge.rs` drops `MeshCache` (which drops the rayon `ThreadPool`), but rayon's `ThreadPool::drop` attempts to execute all remaining pending tasks before terminating — there is no built-in cancel API. This can cause crashes if Godot deallocates the process or its resources while workers are still alive.
+
+**Observed:** Occasional crash on game quit.
+
+**Root cause:** No cancellation mechanism for in-flight mesh generation tasks. Rayon issue #544 confirms there is no native "clear pending tasks" API.
+
+**Proposed fix:**
+1. Add an `Arc<AtomicBool>` cancellation flag to `MeshCache`, cloned into each spawned closure.
+2. Workers check the flag at the top of the spawn closure (before `generate_chunk_mesh`) and bail early if set.
+3. In `shutdown()`, set the cancel flag, then drain the mpsc channel until all `in_flight` tasks are accounted for (each bailed worker still sends a result or a cancellation sentinel). This ensures all workers have exited before the pool is dropped.
+4. Consider whether the global rayon pool needs similar treatment — it's used for synchronous data-parallel ops (nav building, tree gen, world gen) so it's less likely to be in-flight during quit, but worth auditing.
+
+**References:** rayon issues #544 (no cancel API), #688 (no sync shutdown), #776 (hang on drop).
 
 #### B-sim-floats — Remaining f32/f64 in sim logic threaten determinism
 **Status:** Done
