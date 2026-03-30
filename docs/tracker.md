@@ -5798,7 +5798,15 @@ Depth-based fog that fades distant geometry toward a sky/haze color. Can use God
 #### F-edge-outline — Edge highlighting shader (depth/normal discontinuity)
 **Status:** Todo
 
-Screen-space post-process or per-material shader that darkens edges at depth/normal discontinuities (Sobel filter on depth+normal buffer). Highlights silhouettes of branches, platforms, and structures against the sky. Makes the world readable at distance without extra geometry. One full-screen pass, minimal cost.
+Screen-space post-process shader that darkens edges at depth/normal discontinuities, giving the world a readable, slightly stylized look (similar to cel-shading outlines).
+
+**How it works:** A full-screen pass runs a Sobel filter (3×3 convolution kernel) over the depth and normal buffers. Where depth changes sharply between neighboring pixels → silhouette edge (object against sky, platform edge against distant trunk). Where normals change sharply → crease edge (corner of a platform, ridge where two surfaces meet). Those pixels are darkened in the final image.
+
+**Why it's a good fit:** Works entirely in screen space — no extra geometry, no mesh topology awareness. Disconnected triangles (our standard mesh output) are a non-issue since the filter only looks at per-pixel depth/normal values, not mesh adjacency. Coplanar adjacent triangles correctly produce no internal outlines; edges against different-depth backgrounds correctly produce outlines. Scales with screen resolution, not world complexity. One full-screen pass, minimal cost.
+
+**Godot implementation path:** Full-screen ShaderMaterial on a ColorRect reading DEPTH_TEXTURE and NORMAL_ROUGHNESS_TEXTURE, or a CompositorEffect. Both are available in Godot 4 screen-space shaders.
+
+**Tuning considerations:** Sensitivity thresholds need tuning — too sensitive produces noisy outlines on subtle normal variations (e.g., mesh decimation artifacts), too insensitive loses desired creases. Distance fog interaction matters: running the edge pass before fog lets outlines get fogged naturally (preferred); running after fog darkens already-fogged areas.
 
 #### F-edge-scroll — Configurable edge scrolling (pan, rotate, or off)
 **Status:** Done · **Phase:** 5
