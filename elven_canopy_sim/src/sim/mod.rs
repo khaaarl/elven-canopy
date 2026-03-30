@@ -1314,8 +1314,11 @@ impl SimState {
                         species_data.food_max * species_data.food_dining_threshold_pct / 100;
                     let emergency_threshold =
                         species_data.food_max * species_data.food_hunger_threshold_pct / 100;
-                    let wants_dining =
-                        creature.food < dining_threshold && creature.food >= emergency_threshold;
+                    // Only civilized creatures (those with a civ) use dining
+                    // halls. Wild animals forage instead.
+                    let wants_dining = creature.civ_id.is_some()
+                        && creature.food < dining_threshold
+                        && creature.food >= emergency_threshold;
                     let is_hungry = creature.food < emergency_threshold;
 
                     let rest_threshold =

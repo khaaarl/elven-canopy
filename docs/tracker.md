@@ -66,7 +66,6 @@ This reduces merge conflicts when parallel work streams add items.
 ```
 [ ] B-dead-owner-items     Dead creature items retain ownership, becoming invisible to all systems
 [ ] B-dijkstra-perf        Unbounded Dijkstra in nearest-X searches scales poorly on large graphs
-[ ] B-dining-perf          Dining hall search causes intermittent multi-second pauses
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-quit-crash           Crash on quit from in-flight rayon mesh workers
@@ -95,6 +94,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-bridges              Bridge construction between tree parts
 [ ] F-buff-system          Generic timed stat modifier buffs on creatures
 [ ] F-build-queue-ui       Construction queue/progress UI
+[ ] F-building-civ         Building civilization ownership and civ-filtered dining
 [ ] F-building-door        Player-controlled building door orientation
 [ ] F-cascade-fail         Cascading structural failure
 [ ] F-cavalry              Mount tamed creatures as cavalry
@@ -296,6 +296,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-dead-max-gen         Remove vestigial max_gen_per_frame field and ~40 test calls
 [x] B-dead-node-panic      Panic on dead nav node in pathfinding
 [x] B-dine-orphan-task     DineAtHall speculative task leaves orphaned Complete rows
+[x] B-dining-perf          Dining hall search causes intermittent multi-second pauses
 [x] B-dirt-not-pinned      Dirt unpinned in fast structural validator
 [x] B-erratic-movement     Erratic/too-fast creature movement after move commands
 [x] B-escape-menu          Rename pause_menu to escape_menu and block hotkeys/buttons while it's open
@@ -1362,8 +1363,8 @@ distance.
 **Affected callers (all in needs.rs unless noted):**
 
 - `find_nearest_fruit()` (line 52) — nearest harvestable fruit
-- `find_nearest_bed()` (line 598) — nearest dormitory bed with free slot
-- `find_nearest_dining_hall()` (line 621) — tracked separately as B-dining-perf
+- `find_nearest_bed()` — **fixed** by B-dining-perf (now uses per-candidate A*)
+- `find_nearest_dining_hall()` — **fixed** by B-dining-perf (now uses per-candidate A*)
 - `find_available_task()` (activation.rs:690) — nearest claimable idle task
 
 **Preferred fix:** Same pattern as B-dining-perf — gather candidates first
@@ -1383,7 +1384,7 @@ become a bottleneck.
 **Related:** B-dining-perf, F-interleaved-astar, F-unified-pathing
 
 #### B-dining-perf — Dining hall search causes intermittent multi-second pauses
-**Status:** Todo · **Refs:** §4
+**Status:** Done · **Refs:** §4
 
 Intermittent 2-second pauses observed during gameplay, likely when a creature
 triggers `find_nearest_dining_hall()` (needs.rs:621). The function has two
@@ -2248,6 +2249,44 @@ bakery.
 
 **Unblocked by:** F-recipe-params
 **Related:** F-furnish, F-manufacturing, F-recipes, F-unified-craft-ui
+
+#### F-building-civ — Building civilization ownership and civ-filtered dining
+**Status:** Todo · **Refs:** §4
+
+Add a `civ_id: Option<CivId>` field to `CompletedStructure` so that buildings
+are owned by a specific civilization. Use this field to restrict dining hall
+access: only creatures whose `civ_id` matches the dining hall's `civ_id` can
+seek and use that hall.
+
+**Current state:** `CompletedStructure` has no civ ownership. The dining hall
+civ gate (added in B-dining-perf) checks `creature.civ_id.is_some()`, which
+prevents wild animals from dining but doesn't distinguish between rival civs.
+
+**Work needed:**
+
+1. Add `civ_id: Option<CivId>` to `CompletedStructure` in `db.rs`. Default to
+   `None` for serde backwards compatibility with existing saves.
+
+2. Set `civ_id` to the building player's civ when a structure is completed
+   (in `complete_build()` in `construction.rs`). The player's civ is available
+   via `self.player_civ_id`.
+
+3. Update `find_nearest_dining_hall()` in `needs.rs` to filter structures by
+   matching `structure.civ_id == creature.civ_id` (when both are `Some`).
+   Replace the current `creature.civ_id.is_some()` gate in the heartbeat
+   (`mod.rs`) with this per-structure check.
+
+4. Consider whether `find_nearest_bed()` should also filter by civ (dormitories
+   should probably only be used by the owning civ's creatures too).
+
+5. Add tests: creature from civ A cannot dine at civ B's hall, creature from
+   civ A can dine at civ A's hall, wild creatures (no civ) still excluded.
+
+6. Serde roundtrip test for the new `civ_id` field on `CompletedStructure`.
+
+**Future considerations:** Other structure-level operations (logistics, crafting,
+task assignment) may also want civ-based filtering once multi-civ gameplay is
+implemented. This feature lays the groundwork.
 
 #### F-cloak-slot — Cloak/cape equipment slot
 **Status:** Todo

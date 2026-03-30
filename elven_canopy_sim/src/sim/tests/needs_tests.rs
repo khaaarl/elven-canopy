@@ -6,9 +6,13 @@
 use super::*;
 
 /// Helper: create a furnished dining hall at `pos` with one table and stock
-/// `food_count` bread items. Returns the structure ID.
-fn create_dining_hall(sim: &mut SimState, pos: VoxelCoord, food_count: u32) -> StructureId {
-    let structure_id = StructureId(900);
+/// `food_count` bread items, using a caller-chosen structure ID.
+fn create_dining_hall_with_id(
+    sim: &mut SimState,
+    pos: VoxelCoord,
+    food_count: u32,
+    structure_id: StructureId,
+) -> StructureId {
     let project_id = ProjectId::new(&mut sim.rng);
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     insert_stub_blueprint(sim, project_id);
@@ -47,6 +51,12 @@ fn create_dining_hall(sim: &mut SimState, pos: VoxelCoord, food_count: u32) -> S
         sim.inv_add_simple_item(inv_id, ItemKind::Bread, food_count, None, None);
     }
     structure_id
+}
+
+/// Helper: create a furnished dining hall at `pos` with one table and stock
+/// `food_count` bread items. Returns the structure ID.
+fn create_dining_hall(sim: &mut SimState, pos: VoxelCoord, food_count: u32) -> StructureId {
+    create_dining_hall_with_id(sim, pos, food_count, StructureId(900))
 }
 
 // -----------------------------------------------------------------------
@@ -3294,4 +3304,285 @@ fn set_creature_rest() {
     sim.step(&[cmd], sim.tick + 2);
 
     assert_eq!(sim.db.creatures.get(&elf_id).unwrap().rest, 99_000);
+}
+
+// ---------------------------------------------------------------------------
+// Nearest-selection tests (B-dining-perf)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn find_nearest_dining_hall_picks_closer_of_two() {
+    // Place two dining halls at different distances from the creature and
+    // verify the closer one is returned. This validates that the
+    // nearest-selection logic is correct regardless of pathfinding strategy
+    // (Dijkstra vs per-candidate A*).
+    let mut sim = test_sim(42);
+    let graph = sim.graph_for_species(Species::Elf);
+
+    // Find two distinct nav nodes — the creature starts at tree_pos, so
+    // pick nodes at varying distances from it.
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let elf_node = graph.find_nearest_node(tree_pos).unwrap();
+    let elf_pos = graph.node(elf_node).position;
+
+    // Collect all nav nodes sorted by distance from elf_pos.
+    let mut nodes: Vec<_> = (0..graph.node_slot_count())
+        .filter_map(|i| {
+            let nid = NavNodeId(i as u32);
+            if !graph.is_node_alive(nid) {
+                return None;
+            }
+            let pos = graph.node(nid).position;
+            let dist = pos.manhattan_distance(elf_pos);
+            Some((dist, nid, pos))
+        })
+        .collect();
+    nodes.sort_by_key(|(d, _, _)| *d);
+
+    // Pick a close node and a far node (skip index 0 which is elf_pos itself).
+    // We need nodes that are far enough apart that distance ordering is unambiguous.
+    let close = nodes.iter().find(|(d, _, _)| *d >= 2).unwrap();
+    let far = nodes.iter().find(|(d, _, _)| *d >= close.0 + 5).unwrap();
+    let close_pos = close.2;
+    let far_pos = far.2;
+
+    // Create two dining halls — the far one first to ensure ordering isn't
+    // just "first found wins".
+    create_dining_hall_with_id(&mut sim, far_pos, 3, StructureId(901));
+    create_dining_hall_with_id(&mut sim, close_pos, 3, StructureId(902));
+
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+
+    let result = sim.find_nearest_dining_hall(elf_id);
+    assert!(result.is_some(), "Should find a dining hall");
+    let (coord, _, sid) = result.unwrap();
+    assert_eq!(
+        sid,
+        StructureId(902),
+        "Should pick the closer dining hall (902 at {close_pos:?}), \
+         not the farther one (901 at {far_pos:?}). Got coord={coord:?}"
+    );
+}
+
+#[test]
+fn find_nearest_dining_hall_skips_closer_hall_without_food() {
+    // The closer hall has no food, the farther hall does.
+    // Should return the farther hall.
+    let mut sim = test_sim(42);
+    let graph = sim.graph_for_species(Species::Elf);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let elf_node = graph.find_nearest_node(tree_pos).unwrap();
+    let elf_pos = graph.node(elf_node).position;
+
+    let mut nodes: Vec<_> = (0..graph.node_slot_count())
+        .filter_map(|i| {
+            let nid = NavNodeId(i as u32);
+            if !graph.is_node_alive(nid) {
+                return None;
+            }
+            let pos = graph.node(nid).position;
+            let dist = pos.manhattan_distance(elf_pos);
+            Some((dist, nid, pos))
+        })
+        .collect();
+    nodes.sort_by_key(|(d, _, _)| *d);
+
+    let close = nodes.iter().find(|(d, _, _)| *d >= 2).unwrap();
+    let far = nodes.iter().find(|(d, _, _)| *d >= close.0 + 5).unwrap();
+
+    // Close hall: no food. Far hall: has food.
+    create_dining_hall_with_id(&mut sim, close.2, 0, StructureId(901));
+    create_dining_hall_with_id(&mut sim, far.2, 3, StructureId(902));
+
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+
+    let result = sim.find_nearest_dining_hall(elf_id);
+    assert!(
+        result.is_some(),
+        "Should find the far dining hall with food"
+    );
+    let (_, _, sid) = result.unwrap();
+    assert_eq!(
+        sid,
+        StructureId(902),
+        "Should skip closer hall without food and pick the farther one"
+    );
+}
+
+#[test]
+fn find_nearest_dining_hall_skips_closer_full_table() {
+    // Two halls with food, but the closer one has all seats occupied.
+    // Should pick the farther hall.
+    let mut sim = test_sim(42);
+    let graph = sim.graph_for_species(Species::Elf);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let elf_node = graph.find_nearest_node(tree_pos).unwrap();
+    let elf_pos = graph.node(elf_node).position;
+
+    let mut nodes: Vec<_> = (0..graph.node_slot_count())
+        .filter_map(|i| {
+            let nid = NavNodeId(i as u32);
+            if !graph.is_node_alive(nid) {
+                return None;
+            }
+            let pos = graph.node(nid).position;
+            let dist = pos.manhattan_distance(elf_pos);
+            Some((dist, nid, pos))
+        })
+        .collect();
+    nodes.sort_by_key(|(d, _, _)| *d);
+
+    let close = nodes.iter().find(|(d, _, _)| *d >= 2).unwrap();
+    let far = nodes.iter().find(|(d, _, _)| *d >= close.0 + 5).unwrap();
+    let close_pos = close.2;
+    let far_pos = far.2;
+
+    create_dining_hall_with_id(&mut sim, close_pos, 5, StructureId(901));
+    create_dining_hall_with_id(&mut sim, far_pos, 5, StructureId(902));
+
+    // Fill all seats at the closer hall.
+    let seats = sim.config.dining_seats_per_table;
+    for _ in 0..seats {
+        let fake_task_id = TaskId::new(&mut sim.rng);
+        let fake_task = Task {
+            id: fake_task_id,
+            kind: TaskKind::DineAtHall {
+                structure_id: StructureId(901),
+            },
+            state: TaskState::InProgress,
+            location: close_pos,
+            progress: 0,
+            total_cost: 0,
+            required_species: None,
+            origin: TaskOrigin::Autonomous,
+            target_creature: None,
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
+            required_civ_id: None,
+        };
+        sim.insert_task(fake_task);
+        let seq = sim.db.task_voxel_refs.next_seq();
+        sim.db
+            .insert_task_voxel_ref(crate::db::TaskVoxelRef {
+                seq,
+                task_id: fake_task_id,
+                coord: close_pos,
+                role: crate::db::TaskVoxelRole::DiningSeat,
+            })
+            .unwrap();
+    }
+
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    let result = sim.find_nearest_dining_hall(elf_id);
+    assert!(result.is_some(), "Should find the farther dining hall");
+    let (_, _, sid) = result.unwrap();
+    assert_eq!(
+        sid,
+        StructureId(902),
+        "Should skip closer full hall and pick the farther one"
+    );
+}
+
+#[test]
+fn find_nearest_dining_hall_returns_none_when_no_halls_exist() {
+    // No dining halls at all — the fast path should return None without
+    // scanning task_voxel_refs.
+    let mut sim = test_sim(42);
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    let result = sim.find_nearest_dining_hall(elf_id);
+    assert!(
+        result.is_none(),
+        "Should return None when no dining halls exist"
+    );
+}
+
+#[test]
+fn find_nearest_dining_hall_unplaced_table_ignored() {
+    // A dining hall with food but its only table is unplaced.
+    let mut sim = test_sim(42);
+    let graph = sim.graph_for_species(Species::Elf);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_pos = graph.node(table_node).position;
+
+    let structure_id = StructureId(900);
+    let project_id = ProjectId::new(&mut sim.rng);
+    let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
+    insert_stub_blueprint(&mut sim, project_id);
+    sim.db
+        .insert_structure(CompletedStructure {
+            id: structure_id,
+            project_id,
+            build_type: BuildType::Building,
+            anchor: table_pos,
+            width: 3,
+            depth: 3,
+            height: 3,
+            completed_tick: 0,
+            name: None,
+            furnishing: Some(FurnishingType::DiningHall),
+            inventory_id: inv_id,
+            logistics_priority: None,
+            crafting_enabled: false,
+            greenhouse_species: None,
+            greenhouse_enabled: false,
+            greenhouse_last_production_tick: 0,
+            last_dance_completed_tick: 0,
+        })
+        .unwrap();
+    // Insert one table with placed=false.
+    sim.db
+        .insert_furniture_auto(|id| crate::db::Furniture {
+            id,
+            structure_id,
+            coord: table_pos,
+            placed: false,
+        })
+        .unwrap();
+    sim.inv_add_simple_item(inv_id, ItemKind::Bread, 5, None, None);
+
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    let result = sim.find_nearest_dining_hall(elf_id);
+    assert!(
+        result.is_none(),
+        "Should return None when only table is unplaced"
+    );
+}
+
+#[test]
+fn wild_creature_does_not_seek_dining_hall() {
+    // Wild creatures (no civ_id) should never attempt to dine, even when
+    // hungry and a stocked dining hall exists.
+    let mut sim = test_sim(42);
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let graph = sim.graph_for_species(Species::Squirrel);
+    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_pos = graph.node(table_node).position;
+
+    let food_max = sim.species_table[&Species::Squirrel].food_max;
+    let heartbeat = sim.species_table[&Species::Squirrel].heartbeat_interval_ticks;
+
+    let squirrel_id = spawn_creature(&mut sim, Species::Squirrel);
+    create_dining_hall(&mut sim, table_pos, 10);
+
+    // Set squirrel food to 50% — in the dining band for elves.
+    {
+        let mut c = sim.db.creatures.get(&squirrel_id).unwrap();
+        c.food = food_max * 50 / 100;
+        sim.db.update_creature(c).unwrap();
+    }
+
+    // Advance one heartbeat.
+    sim.step(&[], 1 + heartbeat);
+
+    // Squirrel should NOT have a DineAtHall task.
+    let creature = sim.db.creatures.get(&squirrel_id).unwrap();
+    if let Some(task_id) = creature.current_task {
+        let task = sim.db.tasks.get(&task_id).unwrap();
+        assert_ne!(
+            task.kind_tag,
+            TaskKindTag::DineAtHall,
+            "Wild creature (squirrel) should never get a DineAtHall task"
+        );
+    }
 }
