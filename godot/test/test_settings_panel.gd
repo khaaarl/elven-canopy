@@ -46,7 +46,7 @@ func after_each() -> void:
 ## Panel populates controls with current GameConfig values on open.
 func test_open_populates_from_config() -> void:
 	_config.set_setting("player_name", "Legolas")
-	_config.set_setting("start_paused_on_load", true)
+	_config.set_setting("start_paused", true)
 	_panel.open(_config)
 
 	assert_eq(_panel.get_player_name_text(), "Legolas")
@@ -60,7 +60,7 @@ func test_save_writes_to_config() -> void:
 	_panel.save_and_close()
 
 	assert_eq(_config.get_setting("player_name"), "Gimli")
-	assert_eq(_config.get_setting("start_paused_on_load"), true)
+	assert_eq(_config.get_setting("start_paused"), true)
 
 
 ## Cancel discards edits — GameConfig retains original values.
@@ -73,7 +73,7 @@ func test_cancel_discards_changes() -> void:
 	_panel.cancel_and_close()
 
 	assert_eq(_config.get_setting("player_name"), "Aragorn")
-	assert_eq(_config.get_setting("start_paused_on_load"), false)
+	assert_eq(_config.get_setting("start_paused"), false)
 
 
 ## Save with empty player name does not overwrite a non-empty name.
@@ -111,7 +111,7 @@ func test_cancel_emits_closed_signal() -> void:
 	assert_true(result[0])
 
 
-## Save with empty name still persists the start_paused_on_load change.
+## Save with empty name still persists the start_paused change.
 func test_save_empty_name_still_writes_paused() -> void:
 	_config.set_setting("player_name", "Frodo")
 	_panel.open(_config)
@@ -121,7 +121,7 @@ func test_save_empty_name_still_writes_paused() -> void:
 	_panel.save_and_close()
 
 	assert_eq(_config.get_setting("player_name"), "Frodo")
-	assert_eq(_config.get_setting("start_paused_on_load"), true)
+	assert_eq(_config.get_setting("start_paused"), true)
 
 
 ## Save button is disabled when name is empty on open.

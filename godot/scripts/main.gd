@@ -204,10 +204,6 @@ func _ready() -> void:
 			get_tree().change_scene_to_file("res://scenes/main_menu.tscn")
 			return
 
-	# If loading a save with start_paused_on_load enabled, pause immediately.
-	if is_loaded_game and GameConfig.get_setting("start_paused_on_load"):
-		bridge.set_sim_speed("Paused")
-
 	if not is_loaded_game:
 		# Normal new-game flow.
 		if GameSession.sim_seed >= 0:
@@ -221,6 +217,12 @@ func _ready() -> void:
 		print("Elven Canopy: sim initialized (seed=%d)" % sim_seed)
 
 	_setup_common(bridge)
+
+	# If start_paused is enabled, pause immediately after setup. The toolbar
+	# and status bar poll bridge state each frame, so they pick this up
+	# automatically — no explicit UI sync needed.
+	if GameConfig.get_setting("start_paused"):
+		bridge.set_sim_speed("Paused")
 
 
 ## Show the lobby overlay and wait for the game to start.
@@ -241,6 +243,8 @@ func _show_lobby(bridge: SimBridge) -> void:
 ## Called when the multiplayer game starts (lobby's game_started signal).
 ## Now the sim is initialized (initial creatures spawned via config) — set
 ## up renderers and UI.
+## NOTE: start_paused is intentionally not checked here — in multiplayer,
+## pausing is shared state and unilateral pause on join would be disruptive.
 func _on_mp_game_started() -> void:
 	var bridge: SimBridge = $SimBridge
 	_setup_common(bridge)
@@ -311,6 +315,7 @@ func _setup_common(bridge: SimBridge) -> void:
 	var toolbar := MarginContainer.new()
 	toolbar.name = "ActionToolbar"
 	toolbar.set_script(toolbar_script)
+	toolbar.bridge = bridge
 	canvas_layer.add_child(toolbar)
 
 	# Set up notification display (toast-style, bottom-right corner).
@@ -890,13 +895,10 @@ func _setup_common(bridge: SimBridge) -> void:
 		func(enabled: bool): _tree_renderer.set_face_tint_enabled(enabled)
 	)
 
-	# Wire speed controls.
-	toolbar.speed_changed.connect(
-		func(speed_name: String):
-			bridge.set_sim_speed(speed_name)
-			if _status_bar:
-				_status_bar.set_speed(speed_name)
-	)
+	# Wire speed controls. Toolbar emits the requested speed; main forwards it
+	# to the bridge. The toolbar and status bar poll bridge state each frame,
+	# so the UI updates automatically on the next frame.
+	toolbar.speed_changed.connect(func(speed_name: String): bridge.set_sim_speed(speed_name))
 
 	# Wire toolbar actions -> panel toggles.
 	toolbar.action_requested.connect(

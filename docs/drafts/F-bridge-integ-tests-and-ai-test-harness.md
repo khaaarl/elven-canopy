@@ -60,7 +60,7 @@ testing the actual player experience. Tests mix both layers freely.
    - Deep assertions on sim truth that aren't visible in UI (e.g.,
      verifying internal creature state)
    - The game starts **paused on load** via F-config-file's
-     `start_paused_on_load` setting (see "Start-paused behavior" below)
+     `start_paused` setting (see "Start-paused behavior" below)
 
 6. **Hybrid approach with strong UI preference.** When testing something,
    prefer UI interaction over bridge calls. Use bridge calls when the UI
@@ -193,7 +193,7 @@ UI state.
 
 When tests load a save, the game starts paused so tests can set up
 assertions before time advances. This uses F-config-file's
-`start_paused_on_load` setting — a standard game option (useful for
+`start_paused` setting — a standard game option (useful for
 players loading saves in dangerous situations, not just tests). The
 GameConfig autoload reads it on startup; `main.gd` checks it and calls
 `bridge.set_sim_speed("Paused")` in `_setup_common()`.
@@ -201,7 +201,7 @@ GameConfig autoload reads it on startup; `main.gd` checks it and calls
 **Note:** The GameConfig autoload does not exist yet — it is part of
 F-config-file and must be implemented as a prerequisite (see
 "Prerequisites"). Tests enable it via
-`GameConfig.override_setting("start_paused_on_load", true)` before
+`GameConfig.override_setting("start_paused", true)` before
 loading a save. The override lives only in memory — no file writes, no
 cleanup needed.
 
@@ -261,7 +261,7 @@ func _load_game_scene(save_json: String) -> void:
     # Configure GameSession for load
     GameSession.load_save_path = path
     if GameConfig:
-        GameConfig.override_setting("start_paused_on_load", true)
+        GameConfig.override_setting("start_paused", true)
     # Instantiate main scene as child (not change_scene)
     var packed := load("res://scenes/main.tscn") as PackedScene
     _main_scene = packed.instantiate()
@@ -816,7 +816,7 @@ native class is available.
 
 - **F-config-file** (or minimal subset): GameConfig GDScript autoload
   (does not exist today) with `override_setting()` support and
-  `start_paused_on_load` option. Can be deferred if using the
+  `start_paused` option. Can be deferred if using the
   `set_sim_speed("Paused")` fallback.
 - **`setup_complete` signal** in `main.gd` (does not exist today).
 - **Named nodes** in `main.gd`'s `_setup_common()` (most dynamic nodes

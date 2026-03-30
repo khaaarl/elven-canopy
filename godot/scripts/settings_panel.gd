@@ -6,7 +6,7 @@
 ##
 ## Current settings:
 ##   - Player name (LineEdit, max 32 chars)
-##   - Start paused on load (toggle button)
+##   - Start paused (toggle button)
 ##   - Draw distance (LineEdit, 0–500 voxels, 0 = unlimited)
 ##   - Edge scrolling (cycle button: Off → Pan → Rotate)
 ##   - Audio volume (HSlider, 0–100%)
@@ -102,7 +102,7 @@ func _ready() -> void:
 	_name_input.placeholder_text = "Enter your name..."
 	name_row.add_child(_name_input)
 
-	# Start paused on load row.
+	# Start paused row.
 	# NOTE: Avoid CheckBox — Godot's default theme renders checkboxes as
 	# near-invisible dark marks on dark background with no outline. Use a
 	# text-based toggle button instead.
@@ -111,7 +111,7 @@ func _ready() -> void:
 	settings_vbox.add_child(paused_row)
 
 	var paused_label := Label.new()
-	paused_label.text = "Start Paused on Load"
+	paused_label.text = "Start Paused"
 	paused_label.custom_minimum_size = Vector2(160, 0)
 	paused_row.add_child(paused_label)
 
@@ -345,7 +345,7 @@ func _parse_fog_end() -> int:
 func open(config: Node) -> void:
 	_config = config
 	_name_input.text = config.get_setting("player_name")
-	_paused_value = config.get_setting("start_paused_on_load")
+	_paused_value = config.get_setting("start_paused")
 	_update_paused_label()
 	_draw_distance_input.text = str(config.get_setting("draw_distance"))
 	_volume_slider.value = config.get_setting("audio_volume")
@@ -366,7 +366,7 @@ func save_and_close() -> void:
 	var name_text := _name_input.text.strip_edges()
 	if not name_text.is_empty():
 		_config.set_setting("player_name", name_text)
-	_config.set_setting("start_paused_on_load", _paused_value)
+	_config.set_setting("start_paused", _paused_value)
 	_config.set_setting("draw_distance", _parse_draw_distance())
 	_config.set_setting("audio_volume", int(_volume_slider.value))
 	_config.set_setting("fog_enabled", _fog_enabled_value)

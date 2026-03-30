@@ -4,6 +4,10 @@
 ## without a SimBridge. The status bar is instantiated as a real node so its
 ## _ready() runs, then we exercise the formatting paths.
 ##
+## Speed display is now bridge-driven (status_bar polls bridge.get_sim_speed()
+## every frame), so we cannot test speed formatting here without a real bridge.
+## The formatting is trivial ("VeryFast" -> "Very Fast"), covered by inspection.
+##
 ## See also: status_bar.gd for the implementation.
 extends GutTest
 
@@ -17,32 +21,16 @@ func before_each() -> void:
 	add_child_autofree(_bar)
 
 
-# -- Speed display ---------------------------------------------------------
-
-
-func test_speed_normal() -> void:
-	_bar.set_speed("Normal")
+## Initial speed label shows "Speed: Normal" before any bridge is connected.
+func test_initial_speed_label() -> void:
 	var label: Label = _get_speed_label()
 	assert_eq(label.text, "Speed: Normal")
 
 
-func test_speed_very_fast_is_split() -> void:
-	# "VeryFast" should display as "Very Fast" with a space.
-	_bar.set_speed("VeryFast")
-	var label: Label = _get_speed_label()
-	assert_eq(label.text, "Speed: Very Fast")
-
-
-func test_speed_paused() -> void:
-	_bar.set_speed("Paused")
-	var label: Label = _get_speed_label()
-	assert_eq(label.text, "Speed: Paused")
-
-
-func test_speed_fast() -> void:
-	_bar.set_speed("Fast")
-	var label: Label = _get_speed_label()
-	assert_eq(label.text, "Speed: Fast")
+## Without a bridge, _process does nothing (no crash).
+func test_process_without_bridge_no_crash() -> void:
+	_bar._process(0.016)
+	assert_eq(_get_speed_label().text, "Speed: Normal")
 
 
 ## Get the speed label (4th label = index 3 among Label children in the HBox).

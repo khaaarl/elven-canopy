@@ -68,7 +68,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-floating-dirt        Floating dirt still treated as ground by structural validator
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fragile-tests        Audit and harden tests against PRNG stream shifts and worldgen changes
-[ ] B-start-paused-ui      start_paused_on_load UI desync and missing new-game support
+[ ] B-safe-api-tests       Additional safe API test coverage from once-over
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-aggro-fauna          Neutral fauna with aggro triggers
@@ -308,6 +308,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-raid-spawn           Raiders sometimes spawn inside map instead of at perimeter
 [x] B-sim-floats           Remaining f32/f64 in sim logic threaten determinism
 [x] B-spawn-creature       spawn_creature test helper finds first creature of species, not newly spawned
+[x] B-start-paused-ui      start_paused_on_load UI desync and missing new-game support
 [x] B-tab-serde-tests      Fix tabulosity test compilation under feature unification
 [x] B-task-civ-filter      Tasks lack civilization-level eligibility filtering
 [x] B-unsafe-db-calls      Replace _no_fk and modify_unchecked calls with safe database-level methods
@@ -4854,7 +4855,7 @@ Added a canonical normal check to `collapse_would_flip` in `mesh_decimation.rs`.
 **Related:** B-chamfer-nonmfld, F-mesh-lod
 
 #### B-start-paused-ui — start_paused_on_load UI desync and missing new-game support
-**Status:** Todo
+**Status:** Done
 
 start_paused_on_load pauses the sim on load but has two issues:
 
@@ -5105,7 +5106,7 @@ can read settings.
 Settings:
 - player_name: String (default "") — persistent player display name
   (migrated from the old user://player.cfg used by F-player-identity)
-- start_paused_on_load: bool (default false) — load saves in paused state
+- start_paused: bool (default false) — pause sim immediately on game start
 
 The autoload exposes get_setting/set_setting methods (set_setting
 auto-saves) and override_setting(key, value) for test harness use —

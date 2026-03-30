@@ -38,7 +38,7 @@ func after_each() -> void:
 ## When no config file exists, all settings should return their defaults.
 func test_defaults_when_no_file() -> void:
 	assert_eq(_config.get_setting("player_name"), "")
-	assert_eq(_config.get_setting("start_paused_on_load"), false)
+	assert_eq(_config.get_setting("start_paused"), false)
 	assert_eq(_config.get_setting("draw_distance"), 50)
 	assert_eq(_config.get_setting("fog_enabled"), true)
 	assert_eq(_config.get_setting("fog_begin"), 40)
@@ -51,14 +51,14 @@ func test_set_and_get() -> void:
 	_config.set_setting("player_name", "Legolas")
 	assert_eq(_config.get_setting("player_name"), "Legolas")
 
-	_config.set_setting("start_paused_on_load", true)
-	assert_eq(_config.get_setting("start_paused_on_load"), true)
+	_config.set_setting("start_paused", true)
+	assert_eq(_config.get_setting("start_paused"), true)
 
 
 ## After set + reload, values persist (set_setting auto-saves).
 func test_save_load_roundtrip() -> void:
 	_config.set_setting("player_name", "Thranduil")
-	_config.set_setting("start_paused_on_load", true)
+	_config.set_setting("start_paused", true)
 
 	# Create a fresh instance and load from the same path.
 	var config2 := Node.new()
@@ -67,7 +67,7 @@ func test_save_load_roundtrip() -> void:
 	config2.load_config()
 
 	assert_eq(config2.get_setting("player_name"), "Thranduil")
-	assert_eq(config2.get_setting("start_paused_on_load"), true)
+	assert_eq(config2.get_setting("start_paused"), true)
 	config2.free()
 
 
@@ -90,9 +90,9 @@ func test_override_setting_is_memory_only() -> void:
 
 ## override_setting value survives a set_setting call (override takes priority).
 func test_override_takes_priority_over_set() -> void:
-	_config.override_setting("start_paused_on_load", true)
-	_config.set_setting("start_paused_on_load", false)
-	assert_eq(_config.get_setting("start_paused_on_load"), true)
+	_config.override_setting("start_paused", true)
+	_config.set_setting("start_paused", false)
+	assert_eq(_config.get_setting("start_paused"), true)
 
 
 ## Unknown keys in the JSON file are preserved across load/save.
@@ -107,7 +107,7 @@ func test_unknown_keys_preserved() -> void:
 	assert_eq(_config.get_setting("player_name"), "Elrond")
 
 	# Change a known setting and save.
-	_config.set_setting("start_paused_on_load", true)
+	_config.set_setting("start_paused", true)
 	_config.save_config()
 
 	# Re-read raw JSON and verify unknown key survived.
@@ -115,7 +115,7 @@ func test_unknown_keys_preserved() -> void:
 	var raw: Dictionary = JSON.parse_string(file2.get_as_text())
 	file2.close()
 	assert_eq(raw.get("future_setting"), 42)
-	assert_eq(raw.get("start_paused_on_load"), true)
+	assert_eq(raw.get("start_paused"), true)
 	assert_eq(raw.get("player_name"), "Elrond")
 
 
@@ -129,7 +129,7 @@ func test_missing_keys_filled_from_defaults() -> void:
 
 	_config.load_config()
 	assert_eq(_config.get_setting("player_name"), "Celeborn")
-	assert_eq(_config.get_setting("start_paused_on_load"), false)
+	assert_eq(_config.get_setting("start_paused"), false)
 
 
 ## Requesting an unknown setting returns null.
@@ -147,14 +147,14 @@ func test_save_creates_file() -> void:
 
 ## Null values in JSON for known keys fall back to the default, not null.
 func test_null_value_in_json_uses_default() -> void:
-	var data := {"player_name": null, "start_paused_on_load": null}
+	var data := {"player_name": null, "start_paused": null}
 	var file := FileAccess.open(TEST_CONFIG_PATH, FileAccess.WRITE)
 	file.store_string(JSON.stringify(data))
 	file.close()
 
 	_config.load_config()
 	assert_eq(_config.get_setting("player_name"), "")
-	assert_eq(_config.get_setting("start_paused_on_load"), false)
+	assert_eq(_config.get_setting("start_paused"), false)
 
 
 ## Invalid JSON (not parseable) falls back to defaults.
@@ -165,7 +165,7 @@ func test_invalid_json_falls_back_to_defaults() -> void:
 
 	_config.load_config()
 	assert_eq(_config.get_setting("player_name"), "")
-	assert_eq(_config.get_setting("start_paused_on_load"), false)
+	assert_eq(_config.get_setting("start_paused"), false)
 
 
 ## A JSON array (valid JSON but not an object) falls back to defaults.
@@ -176,7 +176,7 @@ func test_non_dict_json_falls_back_to_defaults() -> void:
 
 	_config.load_config()
 	assert_eq(_config.get_setting("player_name"), "")
-	assert_eq(_config.get_setting("start_paused_on_load"), false)
+	assert_eq(_config.get_setting("start_paused"), false)
 
 
 ## An empty file falls back to defaults.
@@ -187,7 +187,7 @@ func test_empty_file_falls_back_to_defaults() -> void:
 
 	_config.load_config()
 	assert_eq(_config.get_setting("player_name"), "")
-	assert_eq(_config.get_setting("start_paused_on_load"), false)
+	assert_eq(_config.get_setting("start_paused"), false)
 
 
 ## load_config clears any previous overrides.
@@ -281,3 +281,57 @@ func test_stale_fog_density_erased_on_load() -> void:
 
 	_config.load_config()
 	assert_null(_config.get_setting("fog_density"))
+
+
+## Old start_paused_on_load key migrates to start_paused on load.
+func test_start_paused_on_load_migrates() -> void:
+	var data := {"start_paused_on_load": true}
+	var file := FileAccess.open(TEST_CONFIG_PATH, FileAccess.WRITE)
+	file.store_string(JSON.stringify(data))
+	file.close()
+
+	_config.load_config()
+	assert_eq(_config.get_setting("start_paused"), true)
+	# Old key should be gone.
+	assert_false(_config._data.has("start_paused_on_load"))
+
+
+## Migration does not overwrite an explicit start_paused value.
+func test_start_paused_migration_does_not_overwrite_new_key() -> void:
+	var data := {"start_paused_on_load": true, "start_paused": false}
+	var file := FileAccess.open(TEST_CONFIG_PATH, FileAccess.WRITE)
+	file.store_string(JSON.stringify(data))
+	file.close()
+
+	_config.load_config()
+	assert_eq(_config.get_setting("start_paused"), false)
+	assert_false(_config._data.has("start_paused_on_load"))
+
+
+## Null start_paused_on_load in old config does not corrupt the new key.
+func test_start_paused_on_load_null_does_not_corrupt() -> void:
+	var data := {"start_paused_on_load": null}
+	var file := FileAccess.open(TEST_CONFIG_PATH, FileAccess.WRITE)
+	file.store_string(JSON.stringify(data))
+	file.close()
+
+	_config.load_config()
+	assert_eq(_config.get_setting("start_paused"), false)
+	assert_false(_config._data.has("start_paused_on_load"))
+
+
+## After migration, saving produces a clean file without the old key.
+func test_start_paused_migration_roundtrip_clean_file() -> void:
+	var data := {"start_paused_on_load": true}
+	var file := FileAccess.open(TEST_CONFIG_PATH, FileAccess.WRITE)
+	file.store_string(JSON.stringify(data))
+	file.close()
+
+	_config.load_config()
+	_config.save_config()
+
+	var file2 := FileAccess.open(TEST_CONFIG_PATH, FileAccess.READ)
+	var raw: Dictionary = JSON.parse_string(file2.get_as_text())
+	file2.close()
+	assert_eq(raw.get("start_paused"), true)
+	assert_false(raw.has("start_paused_on_load"))

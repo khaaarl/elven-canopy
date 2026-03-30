@@ -2,8 +2,9 @@
 ##
 ## Displays population count, idle elf count, active task count, current
 ## sim speed, and FPS in a semi-transparent bar at the bottom-left of the screen.
-## Updates are throttled to every 0.25 seconds to avoid per-frame overhead
-## from bridge queries.
+## All values refresh every frame. Speed is read directly from the bridge
+## (source of truth), so it reflects changes from any source (local buttons,
+## other players in multiplayer).
 ##
 ## Sits on the base CanvasLayer (layer 1) alongside the action toolbar and
 ## notification display. Positioned at bottom-left, below the minimap. The
@@ -14,9 +15,6 @@
 
 extends PanelContainer
 
-## Throttle: only query the bridge every UPDATE_INTERVAL seconds.
-const UPDATE_INTERVAL := 0.25
-
 var bridge: SimBridge
 
 var _pop_label: Label
@@ -24,10 +22,6 @@ var _idle_label: Label
 var _tasks_label: Label
 var _speed_label: Label
 var _fps_label: Label
-var _update_timer: float = 0.0
-
-## Cached speed name from toolbar signal (avoids extra bridge call).
-var _current_speed: String = "Normal"
 
 
 func _ready() -> void:
@@ -94,21 +88,11 @@ func _ready() -> void:
 	_fps_label.text = "FPS: --"
 
 
-func _process(delta: float) -> void:
+func _process(_delta: float) -> void:
 	if not bridge:
 		return
-	# FPS updates every frame (cheap, no bridge call).
 	_fps_label.text = "FPS: " + str(Engine.get_frames_per_second())
-	_update_timer += delta
-	if _update_timer < UPDATE_INTERVAL:
-		return
-	_update_timer = 0.0
 	_refresh()
-
-
-func set_speed(speed_name: String) -> void:
-	_current_speed = speed_name
-	_update_speed_display()
 
 
 func _refresh() -> void:
@@ -120,6 +104,8 @@ func _refresh() -> void:
 		_pop_label.text = str(elf_count) + " Elves"
 
 	# Idle elves (no current task).
+	# NOTE: If this becomes a perf bottleneck (many creatures), switch to a
+	# dedicated bridge method that returns idle citizen count directly.
 	var summary: Array = bridge.get_all_creatures_summary()
 	var idle_count := 0
 	for entry in summary:
@@ -128,6 +114,8 @@ func _refresh() -> void:
 	_idle_label.text = str(idle_count) + " Idle"
 
 	# Active tasks.
+	# NOTE: Same perf consideration as idle count — switch to a dedicated
+	# bridge method returning just the count if this becomes a bottleneck.
 	var tasks: Array = bridge.get_active_tasks()
 	var task_count: int = tasks.size()
 	if task_count == 1:
@@ -139,10 +127,10 @@ func _refresh() -> void:
 
 
 func _update_speed_display() -> void:
-	var display_name: String = _current_speed
-	if display_name == "VeryFast":
-		display_name = "Very Fast"
-	_speed_label.text = "Speed: " + display_name
+	var speed_name: String = bridge.get_sim_speed()
+	if speed_name == "VeryFast":
+		speed_name = "Very Fast"
+	_speed_label.text = "Speed: " + speed_name
 
 
 func _make_label() -> Label:

@@ -6,7 +6,7 @@
 ##
 ## Known settings (with defaults):
 ##   player_name: String = ""         — persistent player display name
-##   start_paused_on_load: bool = false — pause sim immediately after loading a save
+##   start_paused: bool = false         — pause sim immediately on game start
 ##   draw_distance: int = 50          — chunk draw distance in voxels (0 = unlimited)
 ##   fog_enabled: bool = true         — depth-based atmospheric fog
 ##   fog_begin: int = 40              — distance (voxels) where fog starts
@@ -32,7 +32,7 @@ const DEFAULT_CONFIG_PATH := "user://config.json"
 ## Defaults for all known settings. Missing keys are filled from here on load.
 const DEFAULTS := {
 	"player_name": "",
-	"start_paused_on_load": false,
+	"start_paused": false,
 	"draw_distance": 50,
 	"fog_enabled": true,
 	"fog_begin": 40,
@@ -79,6 +79,11 @@ func load_config() -> void:
 			if parsed[key] == null and DEFAULTS.has(key):
 				continue
 			_data[key] = parsed[key]
+		# Migrate renamed keys from previous versions.
+		if _data.has("start_paused_on_load"):
+			if not parsed.has("start_paused") and _data["start_paused_on_load"] != null:
+				_data["start_paused"] = _data["start_paused_on_load"]
+			_data.erase("start_paused_on_load")
 		# Remove stale keys from previous versions.
 		_data.erase("fog_density")
 	else:

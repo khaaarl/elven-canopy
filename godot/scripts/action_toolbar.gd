@@ -18,6 +18,12 @@
 ## [B] Build, [T] Tasks, [U] Units, [M] Military, [I] Tree Info, [?] Help, [F12] Toggle debug panel
 ## [1-9] Selection groups (see selection_controller.gd)
 ##
+## Speed display is poll-driven: _process() reads bridge.get_sim_speed() every
+## frame and updates the button highlight to match. Button presses and keyboard
+## shortcuts only emit the speed_changed signal — the highlight updates on the
+## next frame when the bridge reflects the new state. This keeps the UI correct
+## in multiplayer (another player can change speed) and eliminates desync bugs.
+##
 ## Emits six signals:
 ## - spawn_requested(species_name: String) — for creature spawns. Picked up
 ##   by placement_controller.gd to enter placement mode.
@@ -55,6 +61,9 @@ signal face_tint_toggled(enabled: bool)
 ## Ordered list of speed names for +/- cycling (excludes Paused).
 const SPEED_ORDER: Array = ["Normal", "Fast", "VeryFast"]
 
+## Bridge reference for polling sim speed. Set by main.gd after creation.
+var bridge: SimBridge
+
 var _debug_row: HFlowContainer
 var _debug_button: Button
 var _debug_visible: bool = false
@@ -65,7 +74,7 @@ var _low_res: bool = false
 var _speed_buttons: Dictionary = {}
 ## The last non-paused speed, for spacebar toggle.
 var _last_nonpause_speed: String = "Normal"
-## The currently active speed name.
+## The currently displayed speed (from bridge polling). Used for change detection.
 var _current_speed: String = "Normal"
 
 
@@ -289,6 +298,15 @@ func _ready() -> void:
 	_update_speed_highlight()
 
 
+func _process(_delta: float) -> void:
+	if not bridge:
+		return
+	var bridge_speed: String = bridge.get_sim_speed()
+	if bridge_speed != _current_speed:
+		_current_speed = bridge_speed
+		_update_speed_highlight()
+
+
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		var key := event as InputEventKey
@@ -332,10 +350,8 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _set_speed(speed_name: String) -> void:
-	if speed_name != "Paused" and speed_name != _current_speed:
+	if speed_name != "Paused":
 		_last_nonpause_speed = speed_name
-	_current_speed = speed_name
-	_update_speed_highlight()
 	speed_changed.emit(speed_name)
 
 
