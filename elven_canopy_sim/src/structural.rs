@@ -31,6 +31,11 @@
 // - `validate_blueprint_fast()`: Lightweight blueprint validation using BFS +
 //   weight-flow-only analysis (~700x faster). Used by `sim/construction.rs` for interactive
 //   placement; the full solver is reserved for tree validation at startup.
+// - `dirt_reaches_bedrock()`: Checks whether a dirt voxel can reach the bedrock
+//   layer (y=0) through face-adjacent dirt. Fast-path O(1) via RLE column spans;
+//   slow-path A* with downward-biased heuristic and RLE column jumping. Used by
+//   all network builders and BFS validators to avoid treating floating dirt as
+//   ground (B-floating-dirt).
 // - `validate_carve_fast()`: Like `validate_blueprint_fast()` but checks whether
 //   *removing* voxels would compromise remaining structure. Seeds BFS from
 //   neighbors of carved voxels rather than the carved voxels themselves.
@@ -315,6 +320,11 @@ fn should_skip_ladder_spring(
 /// per node to avoid duplicate springs.
 ///
 /// `face_data` provides per-face structural data for BuildingInterior voxels.
+///
+/// **Dirt connectivity (B-floating-dirt):** Dirt voxels are only pinned if they
+/// can reach the bedrock layer (y=0) through a contiguous path of face-adjacent
+/// dirt. Floating dirt (isolated by carving) is included in the network but not
+/// pinned, so structures resting on it will correctly fail stress analysis.
 pub fn build_network(
     world: &VoxelWorld,
     face_data: &BTreeMap<VoxelCoord, FaceData>,
@@ -392,7 +402,14 @@ pub fn build_network(
             pinned = force_pinned;
         } else if let Some(mat) = structural.materials.get(&vt) {
             mass = f32_to_fp(mat.density);
-            pinned = force_pinned || is_terrain(vt);
+            let world_type = |c: VoxelCoord| world.get(c);
+            // B-floating-dirt: both force_pinned terrain anchors and
+            // regular terrain must verify bedrock connectivity.
+            pinned = if is_terrain(vt) {
+                dirt_reaches_bedrock(coord, world, &world_type)
+            } else {
+                force_pinned
+            };
         } else {
             continue;
         }
@@ -1040,10 +1057,18 @@ pub fn validate_blueprint(
 /// operates only on a provided set of voxels. This is much faster for
 /// blueprint validation where we only need the connected component around
 /// the proposed construction, not the whole 8.4M-voxel world.
+///
+/// **Dirt connectivity (B-floating-dirt):** `world` and `get_type` are used
+/// by `dirt_reaches_bedrock()` to verify dirt voxels can actually reach the
+/// bedrock layer. `world` provides RLE column spans for the fast path;
+/// `get_type` provides hypothetical-world lookups (e.g., with carved voxels
+/// treated as Air).
 fn build_network_from_set(
     voxels: &BTreeMap<VoxelCoord, VoxelType>,
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     config: &GameConfig,
+    world: &VoxelWorld,
+    get_type: &impl Fn(VoxelCoord) -> VoxelType,
 ) -> StructuralNetwork {
     let mut nodes = Vec::new();
     let mut coord_to_node = BTreeMap::new();
@@ -1074,7 +1099,7 @@ fn build_network_from_set(
             pinned = false;
         } else if let Some(mat) = structural.materials.get(&vt) {
             mass = f32_to_fp(mat.density);
-            pinned = vt == VoxelType::Dirt;
+            pinned = vt == VoxelType::Dirt && dirt_reaches_bedrock(coord, world, get_type);
         } else {
             continue;
         }
@@ -1283,7 +1308,7 @@ pub fn validate_blueprint_fast(
         if is_structural(vt) {
             visited.insert(coord, vt);
             queue.push_back(coord);
-            if vt == VoxelType::Dirt {
+            if vt == VoxelType::Dirt && dirt_reaches_bedrock(coord, world, &hypo_type) {
                 reached_ground = true;
             }
         }
@@ -1306,7 +1331,8 @@ pub fn validate_blueprint_fast(
             let vt = hypo_type(neighbor);
             if is_structural(vt) {
                 visited.insert(neighbor, vt);
-                let is_terrain = vt == VoxelType::Dirt;
+                let is_terrain =
+                    vt == VoxelType::Dirt && dirt_reaches_bedrock(neighbor, world, &hypo_type);
                 if is_terrain {
                     // Terrain acts as a pinned ground anchor but we don't
                     // flood through it — on a large world the terrain layer
@@ -1355,7 +1381,8 @@ pub fn validate_blueprint_fast(
     }
 
     // Build network from visited set and run weight-flow-only analysis.
-    let mut network = build_network_from_set(&visited, &merged_face_data, config);
+    let mut network =
+        build_network_from_set(&visited, &merged_face_data, config, world, &hypo_type);
 
     // Add rod springs along strut axes for structural benefit.
     add_rod_springs(&mut network, struts, &visited, config);
@@ -1473,6 +1500,164 @@ pub fn validate_blueprint_fast(
     }
 }
 
+/// Check whether a dirt voxel can reach the bedrock layer (y=0) through a
+/// contiguous path of face-adjacent dirt voxels.
+///
+/// `get_type` provides voxel types — it can be the real world or a
+/// hypothetical world (e.g., with carved voxels treated as Air).
+///
+/// **Fast path (O(1)):** Reads column spans from `world`. If the column at
+/// `(coord.x, coord.z)` has a contiguous dirt span from y=0 through
+/// `coord.y` *and* `get_type` agrees the voxel is dirt, returns `true`
+/// immediately.
+///
+/// **Slow path (A\*):** If the column is carved, runs A\* from `coord`
+/// toward y=0 through face-adjacent dirt (via `get_type`), with heuristic
+/// `h = y` (downward bias). Uses RLE column-span jumping to skip entire
+/// contiguous dirt runs vertically.
+fn dirt_reaches_bedrock(
+    coord: VoxelCoord,
+    world: &VoxelWorld,
+    get_type: &impl Fn(VoxelCoord) -> VoxelType,
+) -> bool {
+    // The voxel itself must be dirt.
+    if get_type(coord) != VoxelType::Dirt {
+        return false;
+    }
+
+    // y=0 is bedrock by definition.
+    if coord.y == 0 {
+        return true;
+    }
+
+    // --- Fast path: check column spans for a contiguous dirt run to y=0 ---
+    if coord.x >= 0
+        && coord.z >= 0
+        && (coord.x as u32) < world.size_x
+        && (coord.z as u32) < world.size_z
+    {
+        let mut contiguous_to_zero = false;
+        for (vt, y_start, y_end) in world.column_spans(coord.x as u32, coord.z as u32) {
+            if vt == VoxelType::Dirt && y_start == 0 && (y_end as i32) >= coord.y {
+                contiguous_to_zero = true;
+                break;
+            }
+            if (y_start as i32) > coord.y {
+                break;
+            }
+        }
+        // If the raw column has contiguous dirt from y=0 through coord.y,
+        // AND the hypothetical world agrees (no carves in this column),
+        // we can skip the search entirely.
+        if contiguous_to_zero {
+            // Verify the hypothetical world hasn't carved any of these.
+            // Check coord.y down to 0 — but only if the column is short
+            // enough that this is cheaper than A*. For tall columns we
+            // could still short-circuit by checking just the carved set,
+            // but a simple linear scan of height ≤ ~50 is fine.
+            let mut all_dirt = true;
+            for y in 0..=coord.y {
+                if get_type(VoxelCoord::new(coord.x, y, coord.z)) != VoxelType::Dirt {
+                    all_dirt = false;
+                    break;
+                }
+            }
+            if all_dirt {
+                return true;
+            }
+        }
+    }
+
+    // --- Slow path: A* search toward y=0 through face-adjacent dirt ---
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+
+    // A* node: (Reverse(f), g, coord) — min-heap on f = g + h.
+    // h = y (Manhattan distance to y=0).
+    let mut open: BinaryHeap<(Reverse<i32>, i32, VoxelCoord)> = BinaryHeap::new();
+    let mut closed: BTreeMap<VoxelCoord, ()> = BTreeMap::new();
+
+    let h = |c: VoxelCoord| c.y;
+    let g0 = 0;
+    open.push((Reverse(g0 + h(coord)), g0, coord));
+
+    while let Some((_, g, current)) = open.pop() {
+        if current.y == 0 {
+            return true;
+        }
+        if closed.contains_key(&current) {
+            continue;
+        }
+        closed.insert(current, ());
+
+        let next_g = g + 1;
+        for &dir in &FaceDirection::ALL {
+            let (dx, dy, dz) = dir.to_offset();
+            let neighbor = VoxelCoord::new(current.x + dx, current.y + dy, current.z + dz);
+
+            if !world.in_bounds(neighbor) || closed.contains_key(&neighbor) {
+                continue;
+            }
+
+            if get_type(neighbor) != VoxelType::Dirt {
+                continue;
+            }
+
+            // RLE column jump: if moving vertically downward (-Y) and the
+            // column has a contiguous dirt span, jump to the bottom of it.
+            if dy == -1
+                && neighbor.x >= 0
+                && neighbor.z >= 0
+                && (neighbor.x as u32) < world.size_x
+                && (neighbor.z as u32) < world.size_z
+            {
+                // Find the dirt span containing `neighbor.y` in this column.
+                let mut span_bottom = neighbor.y;
+                for (vt, y_start, y_end) in world.column_spans(neighbor.x as u32, neighbor.z as u32)
+                {
+                    if vt == VoxelType::Dirt
+                        && (y_start as i32) <= neighbor.y
+                        && (y_end as i32) >= neighbor.y
+                    {
+                        // Verify the hypothetical world agrees this span
+                        // is unbroken down to y_start.
+                        span_bottom = y_start as i32;
+                        for check_y in (y_start as i32)..neighbor.y {
+                            if get_type(VoxelCoord::new(neighbor.x, check_y, neighbor.z))
+                                != VoxelType::Dirt
+                            {
+                                span_bottom = check_y + 1;
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                    if (y_start as i32) > neighbor.y {
+                        break;
+                    }
+                }
+
+                if span_bottom == 0 {
+                    return true; // Reached bedrock!
+                }
+
+                if span_bottom < neighbor.y {
+                    // Jump to the bottom of the contiguous dirt span.
+                    let jump_target = VoxelCoord::new(neighbor.x, span_bottom, neighbor.z);
+                    if !closed.contains_key(&jump_target) {
+                        let jump_g = next_g + (neighbor.y - span_bottom);
+                        open.push((Reverse(jump_g + h(jump_target)), jump_g, jump_target));
+                    }
+                }
+            }
+
+            open.push((Reverse(next_g + h(neighbor)), next_g, neighbor));
+        }
+    }
+
+    false
+}
+
 /// Fast carve validation using BFS + weight-flow-only analysis.
 ///
 /// **Blueprint-aware:** Accepts a `BlueprintOverlay` so that existing
@@ -1534,12 +1719,15 @@ pub fn validate_carve_fast(
 
             let vt = hypo_type(neighbor);
             if is_structural(vt) {
-                // Seed from non-ground structural neighbors only.
-                // Dirt is ground — the question is whether the
-                // remaining *above-ground* structure can still reach it.
-                // If ground were a seed, disconnected voxels above
-                // would appear connected via the shared BFS frontier.
-                let is_ground = vt == VoxelType::Dirt;
+                // Dirt is ground only if it can reach bedrock (y=0)
+                // through contiguous dirt in the hypothetical world
+                // (B-floating-dirt). Bedrock-connected dirt is a ground
+                // anchor (visited but not enqueued). Floating dirt is
+                // enqueued so BFS can traverse through it to reach
+                // structures (or other dirt) on the other side — but
+                // it's NOT a ground anchor.
+                let is_ground =
+                    vt == VoxelType::Dirt && dirt_reaches_bedrock(neighbor, world, &hypo_type);
                 if is_ground {
                     // Mark as visited so BFS reaching this coord counts
                     // as reaching ground, but don't enqueue — we don't
@@ -1554,8 +1742,9 @@ pub fn validate_carve_fast(
     }
 
     // No structural neighbors → carving non-structural or isolated voxels.
-    // BFS queue empty but visited non-empty → all neighbors are dirt
-    // (ground). No above-ground structure is affected by the carve.
+    // BFS queue empty but visited non-empty → all neighbors are
+    // bedrock-connected dirt (ground). No above-ground structure is
+    // affected by the carve.
     if visited.is_empty() || queue.is_empty() {
         return BlueprintValidation {
             tier: ValidationTier::Ok,
@@ -1573,11 +1762,11 @@ pub fn validate_carve_fast(
             if carved_set.contains_key(&neighbor) {
                 continue;
             }
-            // If this neighbor was a dirt seed (already visited during
-            // seeding), the BFS reaching it proves the above-ground
-            // structure is connected to ground.
+            // If this neighbor was already visited, check if it proves
+            // ground connectivity. Bedrock-connected dirt in the visited
+            // set was confirmed during seeding or a prior BFS step.
             if let Some(&vt) = visited.get(&neighbor) {
-                if vt == VoxelType::Dirt {
+                if vt == VoxelType::Dirt && dirt_reaches_bedrock(neighbor, world, &hypo_type) {
                     reached_ground = true;
                 }
                 continue;
@@ -1588,18 +1777,26 @@ pub fn validate_carve_fast(
 
             let vt = hypo_type(neighbor);
             if is_structural(vt) {
-                visited.insert(neighbor, vt);
-                let is_terrain = vt == VoxelType::Dirt;
-                if is_terrain {
+                // Same logic as seeding: bedrock-connected dirt is a
+                // ground anchor (visited, not enqueued); floating dirt
+                // is enqueued so BFS can traverse through it; non-dirt
+                // is enqueued normally.
+                let is_ground =
+                    vt == VoxelType::Dirt && dirt_reaches_bedrock(neighbor, world, &hypo_type);
+                if is_ground {
+                    visited.insert(neighbor, vt);
                     reached_ground = true;
                 } else {
+                    visited.insert(neighbor, vt);
                     queue.push_back(neighbor);
                 }
             }
         }
     }
 
-    // Connectivity check: remaining structure must reach ground.
+    // Connectivity check: remaining structure (including floating dirt)
+    // must reach ground. Floating dirt is a cave-in hazard and must be
+    // blocked even if no above-ground structures are present.
     if !reached_ground {
         return BlueprintValidation {
             tier: ValidationTier::Blocked,
@@ -1636,7 +1833,8 @@ pub fn validate_carve_fast(
     }
 
     // Build network from visited set and run weight-flow-only analysis.
-    let mut network = build_network_from_set(&visited, &merged_face_data, config);
+    let mut network =
+        build_network_from_set(&visited, &merged_face_data, config, world, &hypo_type);
 
     // Add rod springs along strut axes for structural benefit.
     add_rod_springs(&mut network, struts, &visited, config);
@@ -3793,5 +3991,327 @@ mod tests {
         assert_eq!(fp_sqrt(4 * FP_ONE), 2 * FP_ONE);
         assert_eq!(fp_sqrt(0), 0);
         assert_eq!(fp_sqrt(-1), 0);
+    }
+
+    // --- B-floating-dirt: dirt connectivity tests ---
+
+    /// Helper: fill a rectangular dirt region.
+    fn fill_dirt(
+        world: &mut VoxelWorld,
+        x_range: std::ops::Range<i32>,
+        y_range: std::ops::Range<i32>,
+        z_range: std::ops::Range<i32>,
+    ) {
+        for x in x_range {
+            for y in y_range.clone() {
+                for z in z_range.clone() {
+                    world.set(VoxelCoord::new(x, y, z), VoxelType::Dirt);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dirt_reaches_bedrock_uncarved_column() {
+        // A contiguous dirt column from y=0 to y=3 — every voxel trivially
+        // reaches bedrock via the fast-path (single column span).
+        let mut world = VoxelWorld::new(8, 8, 8);
+        fill_dirt(&mut world, 2..6, 0..4, 2..6);
+
+        let get_type = |c: VoxelCoord| world.get(c);
+        for y in 0..4 {
+            assert!(
+                dirt_reaches_bedrock(VoxelCoord::new(3, y, 3), &world, &get_type),
+                "Uncarved dirt at y={y} should reach bedrock",
+            );
+        }
+    }
+
+    #[test]
+    fn dirt_reaches_bedrock_floating_after_carve() {
+        // Floating 3×3 dirt island at y=3..5 with no dirt connecting it
+        // to the bedrock layer at y=0.
+        let mut world = VoxelWorld::new(16, 16, 16);
+        // Bedrock layer at y=0.
+        fill_dirt(&mut world, 0..16, 0..1, 0..16);
+        // Floating island — air gap at y=1..2.
+        fill_dirt(&mut world, 6..9, 3..6, 6..9);
+
+        let get_type = |c: VoxelCoord| world.get(c);
+        // y=0 dirt reaches bedrock (it IS bedrock).
+        assert!(
+            dirt_reaches_bedrock(VoxelCoord::new(3, 0, 3), &world, &get_type),
+            "y=0 dirt is bedrock itself",
+        );
+        // Floating island dirt should NOT reach bedrock.
+        for y in 3..6 {
+            assert!(
+                !dirt_reaches_bedrock(VoxelCoord::new(7, y, 7), &world, &get_type),
+                "Floating dirt at y={y} should not reach bedrock",
+            );
+        }
+    }
+
+    #[test]
+    fn dirt_reaches_bedrock_lateral_path() {
+        // Dirt column at x=5 has its lower portion carved, but a lateral
+        // path through neighboring dirt at x=4 reconnects it to y=0.
+        let mut world = VoxelWorld::new(16, 16, 16);
+        // Base layer at y=0..4 for x=4..6, z=5.
+        fill_dirt(&mut world, 4..6, 0..4, 5..6);
+        // Carve out x=5 at y=1 — breaks the direct column.
+        world.set(VoxelCoord::new(5, 1, 5), VoxelType::Air);
+
+        // x=5,y=2,z=5 can still reach y=0 via:
+        //   (5,2,5) → (4,2,5) → (4,1,5) → (4,0,5) [bedrock]
+        let get_type = |c: VoxelCoord| world.get(c);
+        assert!(
+            dirt_reaches_bedrock(VoxelCoord::new(5, 2, 5), &world, &get_type),
+            "Dirt at (5,2,5) should reach bedrock via lateral path through x=4",
+        );
+    }
+
+    #[test]
+    fn dirt_reaches_bedrock_hypothetical_world() {
+        // Test with a closure that simulates carved voxels (hypothetical world).
+        let mut world = VoxelWorld::new(16, 16, 16);
+        fill_dirt(&mut world, 4..7, 0..4, 4..7);
+
+        // Hypothetical: carve all of y=1 in this region, isolating y=2..3.
+        let carved_y = 1;
+        let get_type = |c: VoxelCoord| -> VoxelType {
+            if c.y == carved_y && (4..7).contains(&c.x) && (4..7).contains(&c.z) {
+                VoxelType::Air
+            } else {
+                world.get(c)
+            }
+        };
+
+        // y=0 still reaches bedrock.
+        assert!(
+            dirt_reaches_bedrock(VoxelCoord::new(5, 0, 5), &world, &get_type),
+            "y=0 dirt should still reach bedrock in hypothetical world",
+        );
+        // y=2 is now floating — carved layer at y=1 severs the connection.
+        assert!(
+            !dirt_reaches_bedrock(VoxelCoord::new(5, 2, 5), &world, &get_type),
+            "y=2 dirt should be floating in hypothetical world (y=1 carved)",
+        );
+    }
+
+    #[test]
+    fn carve_blocked_when_creates_floating_dirt_under_structure() {
+        // Trunk sitting on a dirt column. Carving the dirt at y=1 (creating
+        // a gap) would leave floating dirt at y=2 that the trunk rests on.
+        // The carve should be blocked because the trunk's ground connection
+        // goes through dirt that would become floating.
+        let config = GameConfig::default();
+        let mut world = VoxelWorld::new(16, 16, 16);
+        // Dirt at y=0..3.
+        fill_dirt(&mut world, 0..8, 0..3, 0..8);
+        // Trunk column from y=3..6 sitting on the dirt.
+        for y in 3..7 {
+            world.set(VoxelCoord::new(4, y, 4), VoxelType::Trunk);
+        }
+
+        // Carve a complete horizontal slice at y=1, isolating y=2 dirt
+        // (which the trunk sits on) from y=0 bedrock.
+        let mut carved = Vec::new();
+        for x in 0..8 {
+            for z in 0..8 {
+                carved.push(VoxelCoord::new(x, 1, z));
+            }
+        }
+
+        let result = validate_carve_fast(
+            &world,
+            &BTreeMap::new(),
+            &carved,
+            &config,
+            &BlueprintOverlay::empty(),
+            &[],
+        );
+        assert_eq!(
+            result.tier,
+            ValidationTier::Blocked,
+            "Carving y=1 dirt under trunk should be Blocked (floating dirt), got: {}",
+            result.message,
+        );
+    }
+
+    #[test]
+    fn carve_pure_floating_dirt_no_structure_is_ok() {
+        // Carving dirt that only neighbors other dirt (no above-ground
+        // structure) should be Ok, even if it creates floating dirt.
+        // No structures are affected.
+        let config = GameConfig::default();
+        let mut world = VoxelWorld::new(16, 16, 16);
+        fill_dirt(&mut world, 0..8, 0..4, 0..8);
+
+        // Carve a single dirt voxel in the interior — all neighbors are dirt.
+        let carved = vec![VoxelCoord::new(4, 2, 4)];
+        let result = validate_carve_fast(
+            &world,
+            &BTreeMap::new(),
+            &carved,
+            &config,
+            &BlueprintOverlay::empty(),
+            &[],
+        );
+        assert_eq!(
+            result.tier,
+            ValidationTier::Ok,
+            "Carving dirt surrounded by dirt (no structure) should be Ok: {}",
+            result.message,
+        );
+    }
+
+    #[test]
+    fn carve_full_slice_pure_dirt_blocked() {
+        // Carving an entire horizontal slice of dirt creates floating dirt
+        // above — a cave-in hazard. This should be Blocked even though no
+        // above-ground structures are present.
+        let config = GameConfig::default();
+        let mut world = VoxelWorld::new(16, 16, 16);
+        fill_dirt(&mut world, 0..8, 0..4, 0..8);
+
+        // Carve the entire y=1 layer.
+        let mut carved = Vec::new();
+        for x in 0..8 {
+            for z in 0..8 {
+                carved.push(VoxelCoord::new(x, 1, z));
+            }
+        }
+        let result = validate_carve_fast(
+            &world,
+            &BTreeMap::new(),
+            &carved,
+            &config,
+            &BlueprintOverlay::empty(),
+            &[],
+        );
+        assert_eq!(
+            result.tier,
+            ValidationTier::Blocked,
+            "Carving entire y=1 creates floating dirt (cave-in) — should be Blocked: {}",
+            result.message,
+        );
+    }
+
+    #[test]
+    fn build_network_floating_dirt_not_pinned() {
+        // A trunk column on floating dirt — the dirt should NOT be pinned
+        // in the network, so the structure should fail stress analysis.
+        let mut world = VoxelWorld::new(16, 16, 16);
+        // Bedrock at y=0.
+        fill_dirt(&mut world, 0..8, 0..1, 0..8);
+        // Floating dirt island at y=3 (gap at y=1..2).
+        world.set(VoxelCoord::new(4, 3, 4), VoxelType::Dirt);
+        // Trunk on the floating dirt.
+        for y in 4..8 {
+            world.set(VoxelCoord::new(4, y, 4), VoxelType::Trunk);
+        }
+
+        let config = GameConfig::default();
+        let network = build_network(&world, &BTreeMap::new(), &config);
+
+        // The floating dirt at (4,3,4) should be included as an anchor
+        // neighbor but should NOT be pinned.
+        let dirt_coord = VoxelCoord::new(4, 3, 4);
+        let dirt_node_idx = network.coord_to_node.get(&dirt_coord);
+        assert!(
+            dirt_node_idx.is_some(),
+            "Floating dirt should be in the network as a terrain anchor neighbor",
+        );
+        let dirt_node = &network.nodes[*dirt_node_idx.unwrap()];
+        assert!(
+            !dirt_node.pinned,
+            "Floating dirt at (4,3,4) should NOT be pinned — it can't reach bedrock",
+        );
+    }
+
+    #[test]
+    fn build_network_grounded_dirt_is_pinned() {
+        // Verify that bedrock-connected dirt IS pinned under the new code
+        // path (which routes terrain through dirt_reaches_bedrock instead
+        // of unconditionally pinning).
+        let mut world = VoxelWorld::new(16, 16, 16);
+        fill_dirt(&mut world, 0..8, 0..3, 0..8);
+        // Trunk column sitting on the dirt.
+        for y in 3..7 {
+            world.set(VoxelCoord::new(4, y, 4), VoxelType::Trunk);
+        }
+
+        let config = GameConfig::default();
+        let network = build_network(&world, &BTreeMap::new(), &config);
+
+        // The dirt at (4,2,4) is directly below the trunk and connected to
+        // y=0 — it should be pinned.
+        let dirt_coord = VoxelCoord::new(4, 2, 4);
+        let dirt_node_idx = network
+            .coord_to_node
+            .get(&dirt_coord)
+            .expect("Grounded dirt should be in the network");
+        assert!(
+            network.nodes[*dirt_node_idx].pinned,
+            "Grounded dirt at (4,2,4) should be pinned",
+        );
+    }
+
+    #[test]
+    fn blueprint_blocked_on_floating_dirt() {
+        // Placing a structure on floating dirt should be Blocked — the
+        // dirt is not connected to bedrock so it cannot anchor anything.
+        let config = GameConfig::default();
+        let mut world = VoxelWorld::new(16, 16, 16);
+        fill_dirt(&mut world, 0..8, 0..1, 0..8);
+        // Floating dirt island at y=4 (gap at y=1..3).
+        world.set(VoxelCoord::new(4, 4, 4), VoxelType::Dirt);
+
+        // Propose a Trunk on top of the floating dirt.
+        let proposed = vec![VoxelCoord::new(4, 5, 4)];
+        let result = validate_blueprint_fast(
+            &world,
+            &BTreeMap::new(),
+            &proposed,
+            VoxelType::Trunk,
+            &BTreeMap::new(),
+            &config,
+            &BlueprintOverlay::empty(),
+            &[],
+        );
+        assert_eq!(
+            result.tier,
+            ValidationTier::Blocked,
+            "Blueprint on floating dirt should be Blocked: {}",
+            result.message,
+        );
+    }
+
+    #[test]
+    fn blueprint_ok_on_grounded_dirt() {
+        // Placing a structure on bedrock-connected dirt should pass.
+        let config = GameConfig::default();
+        let mut world = VoxelWorld::new(16, 16, 16);
+        fill_dirt(&mut world, 0..8, 0..3, 0..8);
+
+        // Propose a Trunk on top of grounded dirt.
+        let proposed = vec![VoxelCoord::new(4, 3, 4)];
+        let result = validate_blueprint_fast(
+            &world,
+            &BTreeMap::new(),
+            &proposed,
+            VoxelType::Trunk,
+            &BTreeMap::new(),
+            &config,
+            &BlueprintOverlay::empty(),
+            &[],
+        );
+        assert_ne!(
+            result.tier,
+            ValidationTier::Blocked,
+            "Blueprint on grounded dirt should not be Blocked: {}",
+            result.message,
+        );
     }
 }

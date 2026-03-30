@@ -66,7 +66,6 @@ This reduces merge conflicts when parallel work streams add items.
 ```
 [ ] B-dead-owner-items     Dead creature items retain ownership, becoming invisible to all systems
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
-[ ] B-floating-dirt        Floating dirt still treated as ground by structural validator
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-quit-crash           Crash on quit from in-flight rayon mesh workers
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
@@ -297,6 +296,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-erratic-movement     Erratic/too-fast creature movement after move commands
 [x] B-escape-menu          Rename pause_menu to escape_menu and block hotkeys/buttons while it's open
 [x] B-first-notification   First notification not displayed (ID 0 skipped by polling cursor)
+[x] B-floating-dirt        Floating dirt still treated as ground by structural validator
 [x] B-flying-arrow-chase   Flying creatures excluded from arrow-chase
 [x] B-flying-tasks         Flying creatures skip task system entirely
 [x] B-hostile-detect-nav   detect_hostile_targets panics on flying targets (NavNodeId u32::MAX hack)
@@ -1147,7 +1147,7 @@ structures near hilly terrain to fail validation. One-line fix: add
 `|| vt == VoxelType::Dirt` to match the full solver's pinning logic.
 
 #### B-floating-dirt — Floating dirt still treated as ground by structural validator
-**Status:** Todo
+**Status:** Done
 
 Dirt voxels are unconditionally pinned (immovable ground) in the structural
 model (`structural.rs:1073`). The only protection against carving all
