@@ -342,32 +342,6 @@ func test_switch_to_social_tab() -> void:
 	assert_true(_panel._tab_contents[CreatureInfoPanel.TAB_SOCIAL].visible)
 
 
-func test_friendliness_label_friend() -> void:
-	assert_eq(CreatureInfoPanel.friendliness_label(15), "Friend")
-	assert_eq(CreatureInfoPanel.friendliness_label(30), "Friend")
-
-
-func test_friendliness_label_acquaintance() -> void:
-	assert_eq(CreatureInfoPanel.friendliness_label(5), "Acquaintance")
-	assert_eq(CreatureInfoPanel.friendliness_label(14), "Acquaintance")
-
-
-func test_friendliness_label_disliked() -> void:
-	assert_eq(CreatureInfoPanel.friendliness_label(-5), "Disliked")
-	assert_eq(CreatureInfoPanel.friendliness_label(-14), "Disliked")
-
-
-func test_friendliness_label_enemy() -> void:
-	assert_eq(CreatureInfoPanel.friendliness_label(-15), "Enemy")
-	assert_eq(CreatureInfoPanel.friendliness_label(-30), "Enemy")
-
-
-func test_friendliness_label_neutral() -> void:
-	assert_eq(CreatureInfoPanel.friendliness_label(0), "")
-	assert_eq(CreatureInfoPanel.friendliness_label(4), "")
-	assert_eq(CreatureInfoPanel.friendliness_label(-4), "")
-
-
 func test_social_tab_shows_opinions() -> void:
 	_panel._switch_tab(CreatureInfoPanel.TAB_SOCIAL)
 	var info := _minimal_info()

@@ -96,7 +96,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-build-queue-ui       Construction queue/progress UI
 [ ] F-building-door        Player-controlled building door orientation
 [ ] F-cascade-fail         Cascading structural failure
-[ ] F-casual-social        Opportunistic passing social interactions
 [ ] F-cavalry              Mount tamed creatures as cavalry
 [ ] F-choir-build          Choir-based construction singing
 [ ] F-choir-harmony        Ensemble harmony in construction singing
@@ -129,6 +128,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-dye-mixing           Dye color mixing recipes
 [ ] F-dye-palette          Named color palette system for dyes
 [ ] F-edge-outline         Edge highlighting shader (depth/normal discontinuity)
+[ ] F-elaborate-social     Elaborate casual social interactions (visible pauses, variety, personality)
 [ ] F-elf-assign           Elf-to-building assignment UI
 [ ] F-elf-leave            Devastated elves permanently leave
 [ ] F-elfcyclopedia-know   Elfcyclopedia civ/fruit knowledge pages
@@ -337,6 +337,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-cam-follow           Camera follow mode for creatures
 [x] F-capybara             Capybara species
 [x] F-carve-holes          Remove material (doors, storage hollows)
+[x] F-casual-social        Opportunistic passing social interactions
 [x] F-child-table-pks      Convert child tables to natural compound primary keys
 [x] F-civilizations        Procedural civilization generation and diplomacy
 [x] F-clothing             Wearable clothing system
@@ -2822,7 +2823,7 @@ emergent social/economic system.
 **Related:** F-creature-skills, F-path-core
 
 #### F-casual-social — Opportunistic passing social interactions
-**Status:** Todo
+**Status:** Done
 
 Quick, lightweight social interactions that happen opportunistically when
 creatures are near each other without interrupting their current activities.
@@ -2832,8 +2833,77 @@ These micro-interactions upsert social opinions (small Friendliness bumps,
 occasional Attraction rolls) and provide a baseline social fabric even
 when creatures aren't engaged in formal group activities.
 
-**Blocks:** F-social-graph
+**Scope:** Same-civ creatures only. Cross-civ casual interactions and
+animal-petting (F-animal-bonds) are deferred to later work.
+Attraction rolls are deferred to F-romance.
+
+**Trigger mechanism: heartbeat-driven**
+
+During each creature's heartbeat, roll an independent random chance
+(configurable PPM). On success, scan nearby voxels (Manhattan distance
+≤ `casual_social_radius`, default 3 — about 6 meters) for other alive
+same-civ creatures. If one or more are found, pick one (deterministic
+selection — e.g., nearest, then CreatureId tiebreak) and run a
+**bidirectional** interaction: both creatures perform a BestSocial skill
+check (`max(Influence, Culture)` + CHA + `quasi_normal(50)`) and the
+resulting delta is upserted as Friendliness on the other creature. Both
+creatures also attempt skill advancement on their better social skill.
+
+No per-pair cooldown — frequency is controlled entirely by the PPM
+chance. Two elves stationed near each other will build a relationship
+faster than two who rarely cross paths, which is the desired behavior.
+
+Because both A and B have independent heartbeats, a pair standing
+together may trigger from either side. This is intentional and fine
+at low PPM values.
+
+The interaction takes **zero sim time** — no pausing, no task
+interruption, no action cost. The creature's heartbeat simply includes
+a social check alongside its existing need/decay checks. More elaborate
+visible interactions (pauses, conversation animations) are deferred to
+F-elaborate-social.
+
+**Thoughts**
+
+Each interaction awards a Thought to both creatures:
+- Positive net delta (≥ +1): a small positive mood thought
+  ("Had a pleasant chat with [Name]").
+- Negative net delta (≤ -1): a small negative mood thought
+  ("Had an awkward exchange with [Name]").
+- Zero delta: no thought.
+
+Thought intensity should be small — this is ambient social warmth/friction,
+not a major event.
+
+**Friendship threshold refactoring**
+
+The friendliness_label thresholds (Acquaintance ≥5, Friend ≥15,
+Disliked ≤-5, Enemy ≤-15) are currently hardcoded in GDScript
+(`creature_info_panel.gd`). As part of this feature:
+
+1. Define a `FriendshipCategory` enum in Rust (Enemy, Disliked, Neutral,
+   Acquaintance, Friend — extensible to Close Friend later if needed).
+2. Define the threshold values in `SocialConfig` so they're tunable.
+3. Add a `friendship_category(intensity) -> FriendshipCategory` function
+   in the sim.
+4. Expose the thresholds through the sim bridge so GDScript reads them
+   from Rust rather than hardcoding its own copy.
+5. On each `upsert_opinion` for Friendliness, compare the before/after
+   `FriendshipCategory`. If they differ, emit a SimEvent (e.g.,
+   `FriendshipChanged { creature_id, target_id, old_category,
+   new_category }`). This drives player-visible notifications like
+   "Aelindra now considers Thaeron a friend."
+
+**Config fields (SocialConfig)**
+
+- `casual_social_chance_ppm`: probability per heartbeat (e.g., 15,000 = 1.5%)
+- `casual_social_radius`: Manhattan distance in voxels (default 3)
+- Friendship category thresholds: `friendship_acquaintance_threshold` (5),
+  `friendship_friend_threshold` (15), and their negative counterparts
+  for Disliked/Enemy.
+
 **Unblocked by:** F-social-opinions
+**Unblocked:** F-elaborate-social, F-social-graph
 **Related:** F-animal-bonds, F-social-dance
 
 #### F-combat-opinions — Respect and fear from combat events
@@ -2861,6 +2931,39 @@ their dining companions.
 **Blocks:** F-social-graph
 **Unblocked by:** F-group-activity, F-social-opinions
 **Related:** F-social-dance, F-social-prefer
+
+#### F-elaborate-social — Elaborate casual social interactions (visible pauses, variety, personality)
+**Status:** Todo
+
+Richer casual social interactions that build on F-casual-social's
+behind-the-scenes micro-interactions. Where F-casual-social is invisible
+and zero-cost, this feature makes some interactions visible and
+meaningful: creatures occasionally pause their current activity for a
+longer conversation, exchange gossip, tell stories, argue, or flirt.
+
+Possible scope (loosely specified, to be refined later):
+- **Interaction variety:** Different interaction types beyond generic
+  "chat" — storytelling (Culture skill), debate (Influence skill),
+  gossip (spreads opinions about third parties), commiseration (shared
+  negative thoughts create bonding).
+- **Visible pauses:** Some interactions cause both creatures to stop
+  briefly (a few seconds of sim time). Cosmetic idle animations or
+  speech bubbles could accompany these.
+- **Cross-civ interactions:** Extend casual social to creatures of
+  different civilizations when diplomatic relations permit (e.g.,
+  visiting traders, allied elves from other trees).
+- **Personality influence:** Extraverted creatures initiate more often
+  and with a wider radius; introverted creatures initiate rarely but
+  form deeper impressions when they do. Requires F-personality.
+- **Context-sensitive interactions:** Creatures working the same task
+  or in the same building have different conversation topics than
+  those passing on a bridge. Working together could build Respect
+  faster than hallway chats.
+
+This is speculative and will be scoped more tightly when F-casual-social
+has been in the game long enough to see how it feels.
+
+**Unblocked by:** F-casual-social
 
 #### F-emotions — Multi-dimensional emotional state
 **Status:** Todo · **Phase:** 4 · **Refs:** §18
@@ -3152,8 +3255,8 @@ pieces are done and integrated — including emotional contagion (mood
 spreading through social connections, weighted by relationship intensity)
 which requires F-emotions.
 
-**Blocked by:** F-casual-social, F-combat-opinions, F-dinner-party, F-emotions, F-formal-bonds, F-group-chat, F-romance, F-social-dance, F-social-prefer, F-social-ui
-**Unblocked by:** F-social-opinions
+**Blocked by:** F-combat-opinions, F-dinner-party, F-emotions, F-formal-bonds, F-group-chat, F-romance, F-social-dance, F-social-prefer, F-social-ui
+**Unblocked by:** F-casual-social, F-social-opinions
 **Related:** F-emotions, F-funeral-rites, F-personality
 
 #### F-social-opinions — Interpersonal opinion table and social skill checks

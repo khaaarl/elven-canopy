@@ -1373,6 +1373,17 @@ impl SimState {
                         }
                     }
 
+                    // Casual social interaction: probabilistic per-heartbeat
+                    // roll triggers a quick impression exchange with a nearby
+                    // same-civ creature (F-casual-social).
+                    let social_ppm = self.config.social.casual_social_chance_ppm;
+                    if social_ppm > 0 {
+                        let roll = self.rng.next_u64() % 1_000_000;
+                        if roll < social_ppm as u64 {
+                            self.try_casual_social(creature_id);
+                        }
+                    }
+
                     // Reschedule the next heartbeat.
                     let next_tick = self.tick + interval;
                     self.event_queue.schedule(

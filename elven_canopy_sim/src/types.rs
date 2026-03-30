@@ -558,6 +558,39 @@ pub enum OpinionKind {
 }
 
 // ---------------------------------------------------------------------------
+// Friendship categories — human-readable tiers for Friendliness intensity
+// (F-casual-social).
+// ---------------------------------------------------------------------------
+
+/// Coarse category derived from a Friendliness opinion intensity. Used for
+/// UI display ("Friend", "Acquaintance", etc.) and for detecting threshold
+/// crossings that generate notifications.
+///
+/// Thresholds are config-driven — see `SocialConfig`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FriendshipCategory {
+    Enemy,
+    Disliked,
+    Neutral,
+    Acquaintance,
+    Friend,
+}
+
+impl FriendshipCategory {
+    /// Human-readable label for UI display. Returns `""` for `Neutral`
+    /// (no label shown when the relationship is unremarkable).
+    pub fn label(self) -> &'static str {
+        match self {
+            FriendshipCategory::Enemy => "Enemy",
+            FriendshipCategory::Disliked => "Disliked",
+            FriendshipCategory::Neutral => "",
+            FriendshipCategory::Acquaintance => "Acquaintance",
+            FriendshipCategory::Friend => "Friend",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Elf paths — discipline a creature walks (F-path-core).
 // ---------------------------------------------------------------------------
 
@@ -1010,20 +1043,31 @@ pub enum ThoughtKind {
     EnjoyingDance,
     /// Moderate mood boost on completing a group dance.
     DancedInGroup,
+    /// Had a pleasant casual chat with another creature (F-casual-social).
+    /// The string is the other creature's name at the time of the interaction.
+    HadPleasantChat(String),
+    /// Had an awkward casual exchange with another creature (F-casual-social).
+    HadAwkwardChat(String),
 }
 
 impl ThoughtKind {
     /// Human-readable description for UI display.
-    pub fn description(&self) -> &'static str {
+    pub fn description(&self) -> String {
         match self {
-            ThoughtKind::SleptInOwnHome(_) => "Slept in own home",
-            ThoughtKind::SleptInDormitory(_) => "Slept in a dormitory",
-            ThoughtKind::SleptOnGround => "Slept on the ground",
-            ThoughtKind::AteDining => "Ate in a dining hall",
-            ThoughtKind::AteAlone => "Ate alone",
-            ThoughtKind::LowCeiling(_) => "Bothered by a low ceiling",
-            ThoughtKind::EnjoyingDance => "Enjoying a group dance",
-            ThoughtKind::DancedInGroup => "Danced with friends",
+            ThoughtKind::SleptInOwnHome(_) => "Slept in own home".into(),
+            ThoughtKind::SleptInDormitory(_) => "Slept in a dormitory".into(),
+            ThoughtKind::SleptOnGround => "Slept on the ground".into(),
+            ThoughtKind::AteDining => "Ate in a dining hall".into(),
+            ThoughtKind::AteAlone => "Ate alone".into(),
+            ThoughtKind::LowCeiling(_) => "Bothered by a low ceiling".into(),
+            ThoughtKind::EnjoyingDance => "Enjoying a group dance".into(),
+            ThoughtKind::DancedInGroup => "Danced with friends".into(),
+            ThoughtKind::HadPleasantChat(name) => {
+                format!("Had a pleasant chat with {name}")
+            }
+            ThoughtKind::HadAwkwardChat(name) => {
+                format!("Had an awkward exchange with {name}")
+            }
         }
     }
 }
@@ -1943,6 +1987,14 @@ mod tests {
         assert_eq!(
             ThoughtKind::LowCeiling(StructureId(2)).description(),
             "Bothered by a low ceiling"
+        );
+        assert_eq!(
+            ThoughtKind::HadPleasantChat("Aelindra".into()).description(),
+            "Had a pleasant chat with Aelindra"
+        );
+        assert_eq!(
+            ThoughtKind::HadAwkwardChat("Thaeron".into()).description(),
+            "Had an awkward exchange with Thaeron"
         );
     }
 

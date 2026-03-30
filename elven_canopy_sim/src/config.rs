@@ -301,6 +301,11 @@ pub struct ThoughtConfig {
     pub dedup_enjoying_dance_ticks: u64,
     #[serde(default = "default_dedup_danced_in_group")]
     pub dedup_danced_in_group_ticks: u64,
+    /// Dedup for HadPleasantChat/HadAwkwardChat (F-casual-social).
+    /// Per-creature-name dedup: same creature pairing won't re-trigger within
+    /// this window. Default: 30,000 (~30 sim-seconds).
+    #[serde(default = "default_dedup_casual_chat")]
+    pub dedup_casual_chat_ticks: u64,
 
     // --- Expiry durations (ticks after which a thought is removed) ---
     pub expiry_slept_home_ticks: u64,
@@ -315,6 +320,10 @@ pub struct ThoughtConfig {
     pub expiry_enjoying_dance_ticks: u64,
     #[serde(default = "default_expiry_danced_in_group")]
     pub expiry_danced_in_group_ticks: u64,
+    /// Expiry for HadPleasantChat/HadAwkwardChat (F-casual-social).
+    /// Default: 150,000 (~2.5 min real time).
+    #[serde(default = "default_expiry_casual_chat")]
+    pub expiry_casual_chat_ticks: u64,
 }
 
 fn default_dedup_enjoying_dance() -> u64 {
@@ -328,6 +337,18 @@ fn default_expiry_enjoying_dance() -> u64 {
 }
 fn default_expiry_danced_in_group() -> u64 {
     300_000
+}
+fn default_dedup_casual_chat() -> u64 {
+    30_000 // ~30 sim-seconds between same-creature-pair chat thoughts
+}
+fn default_expiry_casual_chat() -> u64 {
+    150_000 // ~2.5 min real time
+}
+fn default_weight_pleasant_chat() -> i32 {
+    10 // small ambient positive
+}
+fn default_weight_awkward_chat() -> i32 {
+    -10 // small ambient negative
 }
 fn default_weight_enjoying_dance() -> i32 {
     15
@@ -348,6 +369,9 @@ impl ThoughtConfig {
             ThoughtKind::LowCeiling(_) => self.dedup_low_ceiling_ticks,
             ThoughtKind::EnjoyingDance => self.dedup_enjoying_dance_ticks,
             ThoughtKind::DancedInGroup => self.dedup_danced_in_group_ticks,
+            ThoughtKind::HadPleasantChat(_) | ThoughtKind::HadAwkwardChat(_) => {
+                self.dedup_casual_chat_ticks
+            }
         }
     }
 
@@ -362,6 +386,9 @@ impl ThoughtConfig {
             ThoughtKind::LowCeiling(_) => self.expiry_low_ceiling_ticks,
             ThoughtKind::EnjoyingDance => self.expiry_enjoying_dance_ticks,
             ThoughtKind::DancedInGroup => self.expiry_danced_in_group_ticks,
+            ThoughtKind::HadPleasantChat(_) | ThoughtKind::HadAwkwardChat(_) => {
+                self.expiry_casual_chat_ticks
+            }
         }
     }
 }
@@ -382,6 +409,8 @@ impl Default for ThoughtConfig {
             dedup_enjoying_dance_ticks: 30_000,
             // Danced: one completion thought per day cycle.
             dedup_danced_in_group_ticks: 150_000,
+            // Casual chat: same creature pair can re-trigger after ~30 sim-seconds.
+            dedup_casual_chat_ticks: default_dedup_casual_chat(),
             // Medium expiry (~10 min real time).
             expiry_slept_home_ticks: 600_000,
             expiry_slept_dormitory_ticks: 600_000,
@@ -393,6 +422,8 @@ impl Default for ThoughtConfig {
             // Dance thoughts: enjoying fades quickly, completion lasts longer.
             expiry_enjoying_dance_ticks: 60_000,
             expiry_danced_in_group_ticks: 300_000,
+            // Casual chat: same expiry as food thoughts (~2.5 min real time).
+            expiry_casual_chat_ticks: default_expiry_casual_chat(),
         }
     }
 }
@@ -426,6 +457,12 @@ pub struct MoodConfig {
     /// Weight for DancedInGroup thoughts (moderate, on dance completion).
     #[serde(default = "default_weight_danced_in_group")]
     pub weight_danced_in_group: i32,
+    /// Weight for HadPleasantChat thoughts (small positive, F-casual-social).
+    #[serde(default = "default_weight_pleasant_chat")]
+    pub weight_pleasant_chat: i32,
+    /// Weight for HadAwkwardChat thoughts (small negative, F-casual-social).
+    #[serde(default = "default_weight_awkward_chat")]
+    pub weight_awkward_chat: i32,
 
     /// Scores at or below this are Devastated.
     pub tier_devastated_below: i32,
@@ -453,6 +490,8 @@ impl MoodConfig {
             ThoughtKind::LowCeiling(_) => self.weight_low_ceiling,
             ThoughtKind::EnjoyingDance => self.weight_enjoying_dance,
             ThoughtKind::DancedInGroup => self.weight_danced_in_group,
+            ThoughtKind::HadPleasantChat(_) => self.weight_pleasant_chat,
+            ThoughtKind::HadAwkwardChat(_) => self.weight_awkward_chat,
         }
     }
 
@@ -487,6 +526,8 @@ impl Default for MoodConfig {
             weight_low_ceiling: -50,
             weight_enjoying_dance: 15,
             weight_danced_in_group: 60,
+            weight_pleasant_chat: default_weight_pleasant_chat(),
+            weight_awkward_chat: default_weight_awkward_chat(),
             tier_devastated_below: -300,
             tier_miserable_below: -150,
             tier_unhappy_below: -30,
@@ -664,6 +705,38 @@ pub struct SocialConfig {
     /// acting creature advances their social skill (Influence or Culture).
     #[serde(default = "default_social_skill_advance_probability")]
     pub skill_advance_probability_permille: u32,
+
+    // -- F-casual-social fields --
+    /// Probability (PPM, 0–1_000_000) per creature heartbeat that a casual
+    /// social interaction is attempted with a nearby same-civ creature.
+    #[serde(default = "default_casual_social_chance_ppm")]
+    pub casual_social_chance_ppm: u32,
+
+    /// Manhattan distance in voxels within which a creature can have a
+    /// casual social interaction. Default 3 (~6 meters).
+    #[serde(default = "default_casual_social_radius")]
+    pub casual_social_radius: i32,
+
+    // -- Friendship category thresholds (F-casual-social) --
+    /// Friendliness intensity at or above which a creature is considered
+    /// an Acquaintance. Default 5.
+    #[serde(default = "default_friendship_acquaintance_threshold")]
+    pub friendship_acquaintance_threshold: i64,
+
+    /// Friendliness intensity at or above which a creature is considered
+    /// a Friend. Default 15.
+    #[serde(default = "default_friendship_friend_threshold")]
+    pub friendship_friend_threshold: i64,
+
+    /// Friendliness intensity at or below which a creature is Disliked.
+    /// Default -5 (stored as positive; applied as ≤ -value).
+    #[serde(default = "default_friendship_disliked_threshold")]
+    pub friendship_disliked_threshold: i64,
+
+    /// Friendliness intensity at or below which a creature is an Enemy.
+    /// Default -15 (stored as positive; applied as ≤ -value).
+    #[serde(default = "default_friendship_enemy_threshold")]
+    pub friendship_enemy_threshold: i64,
 }
 
 fn default_opinion_decay_chance_ppm() -> u32 {
@@ -682,6 +755,30 @@ fn default_social_skill_advance_probability() -> u32 {
     50 // 5% per social interaction
 }
 
+fn default_casual_social_chance_ppm() -> u32 {
+    15_000 // 1.5% per heartbeat (~every 3s for elves)
+}
+
+fn default_casual_social_radius() -> i32 {
+    3 // Manhattan distance in voxels (~6 meters)
+}
+
+fn default_friendship_acquaintance_threshold() -> i64 {
+    5
+}
+
+fn default_friendship_friend_threshold() -> i64 {
+    15
+}
+
+fn default_friendship_disliked_threshold() -> i64 {
+    -5
+}
+
+fn default_friendship_enemy_threshold() -> i64 {
+    -15
+}
+
 impl Default for SocialConfig {
     fn default() -> Self {
         Self {
@@ -689,6 +786,12 @@ impl Default for SocialConfig {
             bootstrap_interactions_min: default_bootstrap_interactions_min(),
             bootstrap_interactions_max: default_bootstrap_interactions_max(),
             skill_advance_probability_permille: default_social_skill_advance_probability(),
+            casual_social_chance_ppm: default_casual_social_chance_ppm(),
+            casual_social_radius: default_casual_social_radius(),
+            friendship_acquaintance_threshold: default_friendship_acquaintance_threshold(),
+            friendship_friend_threshold: default_friendship_friend_threshold(),
+            friendship_disliked_threshold: default_friendship_disliked_threshold(),
+            friendship_enemy_threshold: default_friendship_enemy_threshold(),
         }
     }
 }

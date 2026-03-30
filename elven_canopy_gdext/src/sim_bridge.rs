@@ -315,7 +315,7 @@ fn build_creature_info_dict(
         .by_creature_id(&c.id, elven_canopy_sim::tabulosity::QueryOpts::ASC);
     for thought in creature_thoughts.iter().rev() {
         let mut td = VarDictionary::new();
-        td.set("text", GString::from(thought.kind.description()));
+        td.set("text", GString::from(thought.kind.description().as_str()));
         td.set("tick", thought.tick as i64);
         thoughts_arr.push(&td.to_variant());
     }
@@ -467,6 +467,14 @@ fn build_creature_info_dict(
         };
         od.set("kind", kind_str.to_godot());
         od.set("intensity", op.intensity);
+        // For Friendliness, include the category label (Friend, Acquaintance, etc.)
+        // so GDScript doesn't need to duplicate the threshold logic.
+        if op.kind == OpinionKind::Friendliness {
+            od.set(
+                "label",
+                sim.friendship_category(op.intensity).label().to_godot(),
+            );
+        }
         opinion_arr.push(&od.to_variant());
     }
     dict.set("social_opinions", opinion_arr.to_variant());

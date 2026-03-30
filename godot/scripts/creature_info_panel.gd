@@ -885,19 +885,6 @@ func _on_close_pressed() -> void:
 	panel_closed.emit()
 
 
-## Map a Friendliness intensity to a human-readable label.
-static func friendliness_label(intensity: int) -> String:
-	if intensity >= 15:
-		return "Friend"
-	if intensity >= 5:
-		return "Acquaintance"
-	if intensity <= -15:
-		return "Enemy"
-	if intensity <= -5:
-		return "Disliked"
-	return ""
-
-
 func _update_social(info: Dictionary) -> void:
 	# Only rebuild when the Social tab is active — avoids per-frame churn.
 	if _active_tab != TAB_SOCIAL:
@@ -922,11 +909,10 @@ func _update_social(info: Dictionary) -> void:
 
 		var label_text := "%s: %s %d" % [target_name, kind, intensity]
 
-		# Add a relationship label for Friendliness.
-		if kind == "Friendliness":
-			var fl := friendliness_label(intensity)
-			if not fl.is_empty():
-				label_text = "%s: %s (%s, %d)" % [target_name, kind, fl, intensity]
+		# Add a relationship label for Friendliness (label computed by Rust).
+		var fl: String = op.get("label", "")
+		if not fl.is_empty():
+			label_text = "%s: %s (%s, %d)" % [target_name, kind, fl, intensity]
 
 		var lbl := Label.new()
 		lbl.text = label_text

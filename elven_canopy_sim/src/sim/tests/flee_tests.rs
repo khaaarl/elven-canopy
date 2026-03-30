@@ -74,15 +74,24 @@ fn elf_does_not_flee_when_goblin_out_of_range() {
     // Use enough ticks that the elf completes several wander cycles.
     sim.step(&[], sim.tick + 10_000);
 
-    // Elf should have wandered (moved from starting pos) but NOT
-    // systematically moved away from goblin. We just verify it didn't
-    // stay put (wander still works).
-    let elf_final = sim.db.creatures.get(&elf).unwrap().position;
-    // Wander is random, so we can't assert direction — just verify the
-    // elf moved (was not frozen by a broken flee check).
-    assert_ne!(
-        elf_pos, elf_final,
-        "Elf should still wander when goblin is out of range"
+    // The elf should not be frozen by a broken flee check. Verify it
+    // was being activated normally by checking its next_available_tick
+    // advanced (the activation loop updated it). We don't assert
+    // position because random wander can return to the starting voxel.
+    let elf_after = sim.db.creatures.get(&elf).unwrap();
+    assert!(
+        elf_after.next_available_tick.is_some(),
+        "Elf should have a scheduled activation (not frozen)"
+    );
+    // Also verify distance from goblin didn't increase dramatically
+    // (which would indicate fleeing). The elf is 50 voxels from the
+    // goblin and wander moves 1 voxel at a time, so after 10k ticks
+    // it shouldn't have moved more than ~20 voxels in any direction.
+    let dist_before = elf_pos.manhattan_distance(goblin_pos);
+    let dist_after = elf_after.position.manhattan_distance(goblin_pos);
+    assert!(
+        dist_after <= dist_before + 10,
+        "Elf should not be fleeing (dist_before={dist_before}, dist_after={dist_after})"
     );
 }
 

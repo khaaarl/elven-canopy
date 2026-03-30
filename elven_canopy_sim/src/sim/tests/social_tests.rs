@@ -7,7 +7,7 @@ use super::*;
 use crate::config::SocialConfig;
 use crate::db::CreatureOpinion;
 use crate::sim::social::{SkillPicker, social_impression_delta};
-use crate::types::{OpinionKind, TraitKind};
+use crate::types::{FriendshipCategory, OpinionKind, TraitKind};
 
 // ---------------------------------------------------------------------------
 // Step 1: Schema tests — OpinionKind serde, table CRUD
@@ -645,6 +645,81 @@ fn decay_no_opinions_is_noop() {
 }
 
 #[test]
+// ---------------------------------------------------------------------------
+// Friendship categories (F-casual-social)
+// ---------------------------------------------------------------------------
+#[test]
+fn friendship_category_default_thresholds() {
+    let sim = test_sim(42);
+    assert_eq!(sim.friendship_category(0), FriendshipCategory::Neutral);
+    assert_eq!(sim.friendship_category(4), FriendshipCategory::Neutral);
+    assert_eq!(sim.friendship_category(-4), FriendshipCategory::Neutral);
+    assert_eq!(sim.friendship_category(5), FriendshipCategory::Acquaintance);
+    assert_eq!(
+        sim.friendship_category(14),
+        FriendshipCategory::Acquaintance
+    );
+    assert_eq!(sim.friendship_category(15), FriendshipCategory::Friend);
+    assert_eq!(sim.friendship_category(100), FriendshipCategory::Friend);
+    assert_eq!(sim.friendship_category(-5), FriendshipCategory::Disliked);
+    assert_eq!(sim.friendship_category(-14), FriendshipCategory::Disliked);
+    assert_eq!(sim.friendship_category(-15), FriendshipCategory::Enemy);
+    assert_eq!(sim.friendship_category(-100), FriendshipCategory::Enemy);
+}
+
+#[test]
+fn friendship_category_custom_thresholds() {
+    let mut sim = test_sim(42);
+    sim.config.social.friendship_acquaintance_threshold = 10;
+    sim.config.social.friendship_friend_threshold = 30;
+    sim.config.social.friendship_disliked_threshold = -10;
+    sim.config.social.friendship_enemy_threshold = -30;
+
+    assert_eq!(sim.friendship_category(9), FriendshipCategory::Neutral);
+    assert_eq!(
+        sim.friendship_category(10),
+        FriendshipCategory::Acquaintance
+    );
+    assert_eq!(
+        sim.friendship_category(29),
+        FriendshipCategory::Acquaintance
+    );
+    assert_eq!(sim.friendship_category(30), FriendshipCategory::Friend);
+    assert_eq!(sim.friendship_category(-9), FriendshipCategory::Neutral);
+    assert_eq!(sim.friendship_category(-10), FriendshipCategory::Disliked);
+    assert_eq!(sim.friendship_category(-29), FriendshipCategory::Disliked);
+    assert_eq!(sim.friendship_category(-30), FriendshipCategory::Enemy);
+}
+
+#[test]
+fn friendship_category_label_text() {
+    assert_eq!(FriendshipCategory::Friend.label(), "Friend");
+    assert_eq!(FriendshipCategory::Acquaintance.label(), "Acquaintance");
+    assert_eq!(FriendshipCategory::Neutral.label(), "");
+    assert_eq!(FriendshipCategory::Disliked.label(), "Disliked");
+    assert_eq!(FriendshipCategory::Enemy.label(), "Enemy");
+}
+
+#[test]
+fn friendship_category_serde_roundtrip() {
+    for cat in [
+        FriendshipCategory::Enemy,
+        FriendshipCategory::Disliked,
+        FriendshipCategory::Neutral,
+        FriendshipCategory::Acquaintance,
+        FriendshipCategory::Friend,
+    ] {
+        let json = serde_json::to_string(&cat).unwrap();
+        let restored: FriendshipCategory = serde_json::from_str(&json).unwrap();
+        assert_eq!(cat, restored, "roundtrip failed for {cat:?}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bootstrap
+// ---------------------------------------------------------------------------
+
+#[test]
 fn bootstrap_single_elf_creates_no_opinions() {
     let mut sim = test_sim(42);
     let elf = spawn_creature(&mut sim, Species::Elf);
@@ -654,4 +729,365 @@ fn bootstrap_single_elf_creates_no_opinions() {
         .creature_opinions
         .by_creature_id(&elf, tabulosity::QueryOpts::ASC);
     assert!(opinions.is_empty(), "single elf should produce no opinions");
+}
+
+// ---------------------------------------------------------------------------
+// Friendship threshold-crossing notifications (F-casual-social)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn upsert_opinion_notifies_on_threshold_cross() {
+    let mut sim = test_sim(42);
+    // Disable bootstrap to avoid pre-existing opinions.
+    sim.config.social.bootstrap_interactions_min = 0;
+    sim.config.social.bootstrap_interactions_max = 0;
+    let elf_a = spawn_creature(&mut sim, Species::Elf);
+    let elf_b = spawn_creature(&mut sim, Species::Elf);
+
+    // Push intensity from 0 to 5 — crosses into Acquaintance.
+    sim.upsert_opinion(elf_a, OpinionKind::Friendliness, elf_b, 5);
+
+    let notifications: Vec<_> = sim.db.notifications.iter_all().collect();
+    assert!(
+        notifications
+            .iter()
+            .any(|n| n.message.contains("Acquaintance")),
+        "should notify on crossing into Acquaintance: {:?}",
+        notifications
+    );
+}
+
+#[test]
+fn upsert_opinion_no_notify_within_same_category() {
+    let mut sim = test_sim(42);
+    sim.config.social.bootstrap_interactions_min = 0;
+    sim.config.social.bootstrap_interactions_max = 0;
+    let elf_a = spawn_creature(&mut sim, Species::Elf);
+    let elf_b = spawn_creature(&mut sim, Species::Elf);
+
+    // Push to 5 (Acquaintance) then to 6 (still Acquaintance).
+    sim.upsert_opinion(elf_a, OpinionKind::Friendliness, elf_b, 5);
+    let count_after_first = sim.db.notifications.iter_all().count();
+
+    sim.upsert_opinion(elf_a, OpinionKind::Friendliness, elf_b, 1);
+    let count_after_second = sim.db.notifications.iter_all().count();
+
+    assert_eq!(
+        count_after_first, count_after_second,
+        "no notification when staying in same category"
+    );
+}
+
+#[test]
+fn upsert_opinion_notifies_friend_threshold() {
+    let mut sim = test_sim(42);
+    sim.config.social.bootstrap_interactions_min = 0;
+    sim.config.social.bootstrap_interactions_max = 0;
+    let elf_a = spawn_creature(&mut sim, Species::Elf);
+    let elf_b = spawn_creature(&mut sim, Species::Elf);
+
+    // Jump straight to Friend threshold.
+    sim.upsert_opinion(elf_a, OpinionKind::Friendliness, elf_b, 15);
+
+    let notifications: Vec<_> = sim.db.notifications.iter_all().collect();
+    assert!(
+        notifications.iter().any(|n| n.message.contains("Friend")),
+        "should notify on crossing into Friend: {:?}",
+        notifications
+    );
+}
+
+#[test]
+fn upsert_opinion_notifies_negative_threshold() {
+    let mut sim = test_sim(42);
+    sim.config.social.bootstrap_interactions_min = 0;
+    sim.config.social.bootstrap_interactions_max = 0;
+    let elf_a = spawn_creature(&mut sim, Species::Elf);
+    let elf_b = spawn_creature(&mut sim, Species::Elf);
+
+    // Push to -5 — crosses into Disliked.
+    sim.upsert_opinion(elf_a, OpinionKind::Friendliness, elf_b, -5);
+
+    let notifications: Vec<_> = sim.db.notifications.iter_all().collect();
+    assert!(
+        notifications.iter().any(|n| n.message.contains("Disliked")),
+        "should notify on crossing into Disliked: {:?}",
+        notifications
+    );
+}
+
+#[test]
+fn upsert_opinion_no_notify_for_neutral_return() {
+    let mut sim = test_sim(42);
+    sim.config.social.bootstrap_interactions_min = 0;
+    sim.config.social.bootstrap_interactions_max = 0;
+    let elf_a = spawn_creature(&mut sim, Species::Elf);
+    let elf_b = spawn_creature(&mut sim, Species::Elf);
+
+    // Push to Acquaintance (5), then back to Neutral (0).
+    sim.upsert_opinion(elf_a, OpinionKind::Friendliness, elf_b, 5);
+    let count_after_acquire = sim.db.notifications.iter_all().count();
+
+    sim.upsert_opinion(elf_a, OpinionKind::Friendliness, elf_b, -5);
+    let count_after_neutral = sim.db.notifications.iter_all().count();
+
+    // Crossing back to Neutral should NOT generate a notification
+    // (Neutral label is empty, so no notification).
+    assert_eq!(
+        count_after_acquire, count_after_neutral,
+        "returning to Neutral should not notify"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Casual chat thought serde (F-casual-social)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn casual_chat_thought_serde_roundtrip() {
+    let pleasant = ThoughtKind::HadPleasantChat("Aelindra".into());
+    let json = serde_json::to_string(&pleasant).unwrap();
+    let restored: ThoughtKind = serde_json::from_str(&json).unwrap();
+    assert_eq!(pleasant, restored);
+
+    let awkward = ThoughtKind::HadAwkwardChat("Thaeron".into());
+    let json = serde_json::to_string(&awkward).unwrap();
+    let restored: ThoughtKind = serde_json::from_str(&json).unwrap();
+    assert_eq!(awkward, restored);
+}
+
+// ---------------------------------------------------------------------------
+// Casual social interactions (F-casual-social)
+// ---------------------------------------------------------------------------
+
+/// Helper: disable bootstrap opinions and set casual social to fire every
+/// heartbeat (100% chance) for deterministic testing.
+fn setup_casual_social_sim(seed: u64) -> crate::sim::SimState {
+    let mut sim = test_sim(seed);
+    // Disable bootstrap so starting opinions don't interfere.
+    sim.config.social.bootstrap_interactions_min = 0;
+    sim.config.social.bootstrap_interactions_max = 0;
+    // 100% trigger chance for deterministic tests.
+    sim.config.social.casual_social_chance_ppm = 1_000_000;
+    sim.config.social.casual_social_radius = 3;
+    sim
+}
+
+#[test]
+fn casual_social_nearby_elves_gain_opinions() {
+    let mut sim = setup_casual_social_sim(42);
+    let elf_a = spawn_creature(&mut sim, Species::Elf);
+    let elf_b = spawn_creature(&mut sim, Species::Elf);
+
+    // Both elves spawn at the tree position — same voxel, well within radius.
+    // Directly call try_casual_social for elf_a.
+    sim.try_casual_social(elf_a);
+
+    // Both creatures should have opinions about each other (bidirectional).
+    let a_opinions: Vec<_> = sim
+        .db
+        .creature_opinions
+        .by_creature_id(&elf_a, tabulosity::QueryOpts::ASC);
+    let b_opinions: Vec<_> = sim
+        .db
+        .creature_opinions
+        .by_creature_id(&elf_b, tabulosity::QueryOpts::ASC);
+
+    assert!(
+        !a_opinions.is_empty(),
+        "elf_a should have an opinion about elf_b"
+    );
+    assert!(
+        !b_opinions.is_empty(),
+        "elf_b should have an opinion about elf_a"
+    );
+
+    // Verify the opinion targets are correct.
+    assert!(
+        a_opinions
+            .iter()
+            .any(|o| o.target_id == elf_b && o.kind == OpinionKind::Friendliness)
+    );
+    assert!(
+        b_opinions
+            .iter()
+            .any(|o| o.target_id == elf_a && o.kind == OpinionKind::Friendliness)
+    );
+}
+
+#[test]
+fn casual_social_awards_thoughts() {
+    let mut sim = setup_casual_social_sim(42);
+    let elf_a = spawn_creature(&mut sim, Species::Elf);
+    let _elf_b = spawn_creature(&mut sim, Species::Elf);
+
+    sim.try_casual_social(elf_a);
+
+    // At least one of the two elves should have a chat thought.
+    let a_thoughts: Vec<_> = sim
+        .db
+        .thoughts
+        .by_creature_id(&elf_a, tabulosity::QueryOpts::ASC);
+    let b_thoughts: Vec<_> = sim
+        .db
+        .thoughts
+        .by_creature_id(&_elf_b, tabulosity::QueryOpts::ASC);
+
+    let has_chat_thought = |thoughts: &[crate::db::Thought]| {
+        thoughts.iter().any(|t| {
+            matches!(
+                &t.kind,
+                ThoughtKind::HadPleasantChat(_) | ThoughtKind::HadAwkwardChat(_)
+            )
+        })
+    };
+
+    // Both should have thoughts (both got nonzero deltas) or at least one
+    // should — delta=0 produces no thought, but with skill checks the
+    // probability of both being exactly 0 is low.
+    assert!(
+        has_chat_thought(&a_thoughts) || has_chat_thought(&b_thoughts),
+        "at least one elf should have a chat thought"
+    );
+}
+
+#[test]
+fn casual_social_no_interaction_when_alone() {
+    let mut sim = setup_casual_social_sim(42);
+    let elf_a = spawn_creature(&mut sim, Species::Elf);
+    // Only one elf — no one to interact with.
+
+    sim.try_casual_social(elf_a);
+
+    let opinions: Vec<_> = sim
+        .db
+        .creature_opinions
+        .by_creature_id(&elf_a, tabulosity::QueryOpts::ASC);
+    assert!(
+        opinions.is_empty(),
+        "lone elf should have no opinions from casual social"
+    );
+}
+
+#[test]
+fn casual_social_no_interaction_different_civ() {
+    let mut sim = setup_casual_social_sim(42);
+    let elf_a = spawn_creature(&mut sim, Species::Elf);
+    // Spawn a non-civ creature (e.g., capybara) nearby — different civ.
+    let _capybara = spawn_creature(&mut sim, Species::Capybara);
+
+    sim.try_casual_social(elf_a);
+
+    let opinions: Vec<_> = sim
+        .db
+        .creature_opinions
+        .by_creature_id(&elf_a, tabulosity::QueryOpts::ASC);
+    assert!(
+        opinions.is_empty(),
+        "elf should not casually interact with a non-civ creature"
+    );
+}
+
+#[test]
+fn casual_social_fires_via_heartbeat() {
+    let mut sim = setup_casual_social_sim(42);
+    // Disable opinion decay so it doesn't interfere.
+    sim.config.social.opinion_decay_chance_ppm = 0;
+    let elf_a = spawn_creature(&mut sim, Species::Elf);
+    let elf_b = spawn_creature(&mut sim, Species::Elf);
+
+    // Both elves start with no opinions (bootstrap disabled).
+    let a_opinions_before: Vec<_> = sim
+        .db
+        .creature_opinions
+        .by_creature_id(&elf_a, tabulosity::QueryOpts::ASC);
+    let b_opinions_before: Vec<_> = sim
+        .db
+        .creature_opinions
+        .by_creature_id(&elf_b, tabulosity::QueryOpts::ASC);
+    assert!(
+        a_opinions_before.is_empty() && b_opinions_before.is_empty(),
+        "no opinions before heartbeat"
+    );
+
+    // Run enough ticks for several heartbeats (elf heartbeat ~3000 ticks).
+    // With 100% chance, every heartbeat should trigger casual social.
+    let target_tick = sim.tick + 10_000;
+    sim.step(&[], target_tick);
+
+    // After several heartbeats, opinions should have formed.
+    let a_opinions: Vec<_> = sim
+        .db
+        .creature_opinions
+        .by_creature_id(&elf_a, tabulosity::QueryOpts::ASC);
+    let b_opinions: Vec<_> = sim
+        .db
+        .creature_opinions
+        .by_creature_id(&elf_b, tabulosity::QueryOpts::ASC);
+
+    assert!(
+        !a_opinions.is_empty() || !b_opinions.is_empty(),
+        "heartbeat should trigger casual social and produce opinions"
+    );
+}
+
+#[test]
+fn casual_social_advances_skills() {
+    let mut sim = setup_casual_social_sim(42);
+    // 100% skill advancement chance for this test.
+    sim.config.social.skill_advance_probability_permille = 1000;
+    let elf_a = spawn_creature(&mut sim, Species::Elf);
+    let elf_b = spawn_creature(&mut sim, Species::Elf);
+
+    let influence_before_a = sim.trait_int(elf_a, TraitKind::Influence, 0);
+    let culture_before_a = sim.trait_int(elf_a, TraitKind::Culture, 0);
+    let influence_before_b = sim.trait_int(elf_b, TraitKind::Influence, 0);
+    let culture_before_b = sim.trait_int(elf_b, TraitKind::Culture, 0);
+
+    // Run several interactions.
+    for _ in 0..10 {
+        sim.try_casual_social(elf_a);
+    }
+
+    let influence_after_a = sim.trait_int(elf_a, TraitKind::Influence, 0);
+    let culture_after_a = sim.trait_int(elf_a, TraitKind::Culture, 0);
+    let influence_after_b = sim.trait_int(elf_b, TraitKind::Influence, 0);
+    let culture_after_b = sim.trait_int(elf_b, TraitKind::Culture, 0);
+
+    let a_advanced =
+        (influence_after_a > influence_before_a) || (culture_after_a > culture_before_a);
+    let b_advanced =
+        (influence_after_b > influence_before_b) || (culture_after_b > culture_before_b);
+
+    assert!(
+        a_advanced && b_advanced,
+        "both creatures should advance social skills with 100% chance"
+    );
+}
+
+#[test]
+fn casual_social_out_of_range_no_interaction() {
+    let mut sim = setup_casual_social_sim(42);
+    let elf_a = spawn_creature(&mut sim, Species::Elf);
+    let elf_b = spawn_creature(&mut sim, Species::Elf);
+
+    // Move elf_b far away.
+    let far_pos = VoxelCoord::new(100, 51, 100);
+    let old_pos = sim.db.creatures.get(&elf_b).unwrap().position;
+    if let Some(mut c) = sim.db.creatures.get(&elf_b) {
+        c.position = far_pos;
+        let _ = sim.db.update_creature(c);
+    }
+    sim.update_creature_spatial_index(elf_b, Species::Elf, old_pos, far_pos);
+
+    sim.try_casual_social(elf_a);
+
+    let opinions: Vec<_> = sim
+        .db
+        .creature_opinions
+        .by_creature_id(&elf_a, tabulosity::QueryOpts::ASC);
+    assert!(
+        opinions.is_empty(),
+        "elf should not interact with out-of-range creature"
+    );
 }
