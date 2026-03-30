@@ -275,6 +275,7 @@ func _rebuild_chunk(cx: int, cy: int, cz: int) -> void:
 
 	var instance := MeshInstance3D.new()
 	instance.mesh = array_mesh
+	instance.visible = false
 	instance.name = "Chunk_%s" % key
 	add_child(instance)
 	_chunk_instances[key] = instance

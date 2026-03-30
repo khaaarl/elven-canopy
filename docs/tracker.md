@@ -47,6 +47,7 @@ This reduces merge conflicts when parallel work streams add items.
 ### In Progress
 
 ```
+[~] B-ghost-chunks         Ghost chunks in distance remain visible after they should be hidden
 [~] B-qem-deformation      QEM decimation visual artifacts
 [~] F-creature-skills      Creature skill system (17 universal skills with path-gated advancement)
 [~] F-enemy-ai             Hostile creature AI (goblin/orc/troll behavior)
@@ -67,7 +68,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-floating-dirt        Floating dirt still treated as ground by structural validator
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fragile-tests        Audit and harden tests against PRNG stream shifts and worldgen changes
-[ ] B-ghost-chunks         Ghost chunks in distance remain visible after they should be hidden
 [ ] B-start-paused-ui      start_paused_on_load UI desync and missing new-game support
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-adventure-mode       Control individual elf (RPG-like)
@@ -4812,7 +4812,7 @@ Two related fixes for the ESC menu:
 **Status:** Done
 
 #### B-ghost-chunks — Ghost chunks in distance remain visible after they should be hidden
-**Status:** Todo
+**Status:** In Progress
 
 Chunks in the distance sometimes remain visible ("ghost" chunks) after they should have had their visibility turned off. This has been attempted to be fixed before but is difficult due to the asynchronous nature of chunk mesh generation. A possible approach: generate the list of chunks that should be visible or shadowed fresh each frame, rather than trying to incrementally track visibility state.
 
