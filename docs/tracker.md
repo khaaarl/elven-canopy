@@ -1567,14 +1567,18 @@ Both modes use the same interleaving/pruning logic; only the neighbor
 generation and cost functions differ. A clean design would be generic over
 a trait or closure that provides `neighbors(node)` and `heuristic(node, goal)`.
 
-**API sketch:** `nearest_by_astar(start, candidates, neighbor_fn, heuristic_fn, max_path_len)`
-returning `Option<(target, cost, path)>`. Lives in `pathfinding.rs` alongside
-the existing `dijkstra_nearest()` and `astar()`.
+**API sketch:** The interleaved A* is not a separate top-level function —
+it replaces the internals of the `nearest_navgraph` / `nearest_fly` functions
+from F-unified-pathing. Those `nearest_*` functions become wrappers that pick
+the best strategy: interleaved A* in the common case (few candidates, possibly
+distant), or multi-target Dijkstra when it would be more efficient (e.g., many
+nearby candidates where Dijkstra's single sweep wins). The heuristic for
+choosing strategy can be simple — candidate count, max heuristic distance, etc.
+Both paths return the same result type.
 
 **Users:** `find_nearest_dining_hall()`, `find_nearest_fruit()`,
 `find_nearest_bed()`, `find_available_task()`, and any future nearest-X
-searches for both ground and flying creatures. This is the preferred
-replacement for all `dijkstra_nearest()` call sites.
+searches for both ground and flying creatures.
 
 **Blocked by:** F-unified-pathing
 **Related:** B-dijkstra-perf, B-dining-perf
