@@ -1567,14 +1567,16 @@ Both modes use the same interleaving/pruning logic; only the neighbor
 generation and cost functions differ. A clean design would be generic over
 a trait or closure that provides `neighbors(node)` and `heuristic(node, goal)`.
 
-**API sketch:** The interleaved A* is not a separate top-level function —
-it replaces the internals of the `nearest_navgraph` / `nearest_fly` functions
-from F-unified-pathing. Those `nearest_*` functions become wrappers that pick
-the best strategy: interleaved A* in the common case (few candidates, possibly
-distant), or multi-target Dijkstra when it would be more efficient (e.g., many
-nearby candidates where Dijkstra's single sweep wins). The heuristic for
-choosing strategy can be simple — candidate count, max heuristic distance, etc.
-Both paths return the same result type.
+**API sketch:** Both the interleaved A* and multi-target Dijkstra exist as
+standalone public functions that callers can reach for directly:
+- `nearest_astar_navgraph(...)` / `nearest_astar_fly(...)` — interleaved A*
+- `nearest_dijkstra_navgraph(...)` / `nearest_dijkstra_fly(...)` — multi-target Dijkstra
+
+A savvy caller who knows which strategy fits their use case can call the right
+one directly. The `nearest_navgraph` / `nearest_fly` wrapper functions from
+F-unified-pathing pick between them automatically (interleaved A* in the common
+case, Dijkstra when it would be more efficient, e.g., many nearby candidates).
+Both return the same result type.
 
 **Users:** `find_nearest_dining_hall()`, `find_nearest_fruit()`,
 `find_nearest_bed()`, `find_available_task()`, and any future nearest-X
