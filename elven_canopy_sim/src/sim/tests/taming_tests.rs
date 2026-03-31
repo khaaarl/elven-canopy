@@ -538,6 +538,154 @@ fn taming_target_already_tamed_completes_task() {
 }
 
 #[test]
+fn taming_success_assigns_pet_name() {
+    let mut sim = test_sim(fresh_test_seed());
+    let capy_id = spawn_creature(&mut sim, Species::Capybara);
+    let scout_id = spawn_elf(&mut sim);
+    assign_path(&mut sim, scout_id, PathId::Scout);
+
+    // Very high stats for guaranteed success.
+    set_trait(&mut sim, scout_id, TraitKind::Willpower, 500);
+    set_trait(&mut sim, scout_id, TraitKind::Charisma, 500);
+    set_trait(&mut sim, scout_id, TraitKind::Beastcraft, 500);
+
+    // Capybara should start unnamed.
+    let capy = sim.db.creatures.get(&capy_id).unwrap();
+    assert!(capy.name.is_empty(), "Wild capybara should be unnamed");
+
+    designate_tame(&mut sim, capy_id);
+
+    // Run until tamed.
+    let mut tamed = false;
+    for _ in 0..200 {
+        sim.step(&[], sim.tick + 500);
+        if sim
+            .db
+            .creatures
+            .get(&capy_id)
+            .is_some_and(|c| c.civ_id.is_some())
+        {
+            tamed = true;
+            break;
+        }
+    }
+    assert!(tamed, "Capybara should be tamed with very high stats");
+
+    // After taming, the capybara should have a non-empty name and meaning.
+    let capy = sim.db.creatures.get(&capy_id).unwrap();
+    assert!(
+        !capy.name.is_empty(),
+        "Tamed capybara should receive a pet name"
+    );
+    assert!(
+        !capy.name_meaning.is_empty(),
+        "Tamed capybara should receive a name meaning"
+    );
+    // Pet names are single-part (no spaces).
+    assert!(
+        !capy.name.contains(' '),
+        "Pet name '{}' should be a single word",
+        capy.name
+    );
+}
+
+#[test]
+fn taming_notification_includes_pet_name() {
+    let mut sim = test_sim(fresh_test_seed());
+    let capy_id = spawn_creature(&mut sim, Species::Capybara);
+    let scout_id = spawn_elf(&mut sim);
+    assign_path(&mut sim, scout_id, PathId::Scout);
+
+    set_trait(&mut sim, scout_id, TraitKind::Willpower, 500);
+    set_trait(&mut sim, scout_id, TraitKind::Charisma, 500);
+    set_trait(&mut sim, scout_id, TraitKind::Beastcraft, 500);
+
+    let notif_count_before = sim.db.notifications.len();
+
+    designate_tame(&mut sim, capy_id);
+
+    // Run until tamed.
+    for _ in 0..200 {
+        sim.step(&[], sim.tick + 500);
+        if sim
+            .db
+            .creatures
+            .get(&capy_id)
+            .is_some_and(|c| c.civ_id.is_some())
+        {
+            break;
+        }
+    }
+
+    // The notification should include the pet's new name.
+    let capy = sim.db.creatures.get(&capy_id).unwrap();
+    assert!(!capy.name.is_empty());
+
+    let new_notifs: Vec<_> = sim
+        .db
+        .notifications
+        .iter_all()
+        .skip(notif_count_before)
+        .collect();
+    let has_name_notif = new_notifs.iter().any(|n| n.message.contains(&capy.name));
+    assert!(
+        has_name_notif,
+        "Taming notification should include the pet's name '{}', got: {:?}",
+        capy.name,
+        new_notifs.iter().map(|n| &n.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn taming_serde_roundtrip_preserves_pet_name() {
+    let mut sim = test_sim(fresh_test_seed());
+    let capy_id = spawn_creature(&mut sim, Species::Capybara);
+    let scout_id = spawn_elf(&mut sim);
+    assign_path(&mut sim, scout_id, PathId::Scout);
+
+    set_trait(&mut sim, scout_id, TraitKind::Willpower, 500);
+    set_trait(&mut sim, scout_id, TraitKind::Charisma, 500);
+    set_trait(&mut sim, scout_id, TraitKind::Beastcraft, 500);
+
+    designate_tame(&mut sim, capy_id);
+
+    // Run until tamed.
+    for _ in 0..200 {
+        sim.step(&[], sim.tick + 500);
+        if sim
+            .db
+            .creatures
+            .get(&capy_id)
+            .is_some_and(|c| c.civ_id.is_some())
+        {
+            break;
+        }
+    }
+
+    let capy = sim.db.creatures.get(&capy_id).unwrap();
+    assert!(
+        !capy.name.is_empty(),
+        "Capybara should be named after taming"
+    );
+    let name_before = capy.name.clone();
+    let meaning_before = capy.name_meaning.clone();
+
+    // Serde roundtrip.
+    let json = serde_json::to_string(&sim).unwrap();
+    let restored: SimState = serde_json::from_str(&json).unwrap();
+
+    let capy_restored = restored.db.creatures.get(&capy_id).unwrap();
+    assert_eq!(
+        capy_restored.name, name_before,
+        "Pet name should survive serde roundtrip"
+    );
+    assert_eq!(
+        capy_restored.name_meaning, meaning_before,
+        "Pet name meaning should survive serde roundtrip"
+    );
+}
+
+#[test]
 fn taming_serde_roundtrip_preserves_designations_and_tasks() {
     let mut sim = test_sim(legacy_test_seed());
     let capy_id = spawn_creature(&mut sim, Species::Capybara);

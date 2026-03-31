@@ -4,7 +4,7 @@
 // `NameTag` (given vs surname). The generator takes `&mut GameRng` for
 // deterministic output, matching the sim's determinism constraint.
 //
-// Used by `elven_canopy_sim` to name creatures at spawn time and by
+// Used by `elven_canopy_sim` to name elves at spawn and pets at taming, and by
 // `fruit.rs` for world-naming fallback (genitive name parts). Each name
 // carries both the Vaelith text and an English meaning gloss (e.g.,
 // "star-tree" for "Thíraleth").
@@ -101,6 +101,16 @@ pub fn generate_name_part(
     }
 }
 
+/// Generate a single-part Vaelith pet name (1-2 roots, no surname).
+///
+/// Returns `(name, meaning)`. Uses the same Given root pool as elf given
+/// names, with the same ~70/30 two-root/one-root ratio.
+pub fn generate_pet_name(lexicon: &Lexicon, rng: &mut GameRng) -> (String, String) {
+    let pool = lexicon.by_name_tag(NameTag::Given);
+    let (name, meaning, _) = generate_name_part(&pool, rng);
+    (name, meaning)
+}
+
 /// Capitalize the first character of a string.
 fn capitalize(s: &str) -> String {
     let mut chars = s.chars();
@@ -175,6 +185,48 @@ mod tests {
                 name.surname
             );
         }
+    }
+
+    #[test]
+    fn test_generate_pet_name_nonempty_and_single_part() {
+        let json = include_str!("../../data/vaelith_lexicon.json");
+        let lexicon = Lexicon::from_json(json).unwrap();
+
+        for seed in 0..20 {
+            let mut rng = GameRng::new(seed);
+            let (name, meaning) = generate_pet_name(&lexicon, &mut rng);
+            assert!(!name.is_empty(), "Pet name should not be empty");
+            assert!(!meaning.is_empty(), "Pet name meaning should not be empty");
+            assert!(
+                !name.contains(' '),
+                "Pet name '{}' should be a single word (no spaces)",
+                name
+            );
+            assert!(
+                name.starts_with(|c: char| c.is_uppercase()),
+                "Pet name '{}' should be capitalized",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn test_generate_pet_name_variety() {
+        let json = include_str!("../../data/vaelith_lexicon.json");
+        let lexicon = Lexicon::from_json(json).unwrap();
+
+        let mut names = std::collections::BTreeSet::new();
+        for seed in 0..50 {
+            let mut rng = GameRng::new(seed);
+            let (name, _) = generate_pet_name(&lexicon, &mut rng);
+            names.insert(name);
+        }
+
+        assert!(
+            names.len() > 15,
+            "Expected >15 unique pet names from 50 seeds, got {}",
+            names.len()
+        );
     }
 
     #[test]

@@ -10,7 +10,7 @@
 // - `SimAction::DesignateTame` and `SimAction::CancelTameDesignation`
 // - Taming task creation and cancellation
 // - Tame task execution at location (start TameAttempt action)
-// - Taming roll resolution (success/fail, skill advancement, civ change)
+// - Taming roll resolution (success/fail, skill advancement, civ change, pet naming)
 //
 // See also: `db.rs` for `TameDesignation` / `TaskTameData` / `ActionKind::TameAttempt`,
 // `species.rs` for `tame_difficulty` on `SpeciesData`, `config.rs` for
@@ -209,12 +209,23 @@ impl super::SimState {
         self.try_advance_skill(creature_id, TraitKind::Beastcraft, base_prob);
 
         if success {
-            // Tamed! Change target's civ_id to the tamer's.
+            // Tamed! Change target's civ_id and assign a pet name.
             let tamer_civ = self.db.creatures.get(&creature_id).and_then(|c| c.civ_id);
+            let pet_name = if let Some(lexicon) = &self.lexicon {
+                let (name, meaning) =
+                    elven_canopy_lang::names::generate_pet_name(lexicon, &mut self.rng);
+                Some((name, meaning))
+            } else {
+                None
+            };
             if let Some(civ_id) = tamer_civ
                 && let Some(mut target) = self.db.creatures.get(&target_id)
             {
                 target.civ_id = Some(civ_id);
+                if let Some((ref name, ref meaning)) = pet_name {
+                    target.name.clone_from(name);
+                    target.name_meaning.clone_from(meaning);
+                }
                 let _ = self.db.update_creature(target);
             }
 
@@ -229,7 +240,13 @@ impl super::SimState {
                 .map(|c| c.name.clone())
                 .unwrap_or_default();
             let species_name = format!("{target_species:?}");
-            self.add_notification(format!("{tamer_name} tamed {species_name}!"));
+            let pet_display = pet_name
+                .as_ref()
+                .map(|(n, _)| n.as_str())
+                .unwrap_or(&species_name);
+            self.add_notification(format!(
+                "{tamer_name} tamed {species_name} — named {pet_display}!"
+            ));
 
             // Emit event.
             events.push(SimEvent {

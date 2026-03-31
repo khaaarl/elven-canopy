@@ -192,7 +192,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-path-stuck           Deep commitment personality drift and refusal
 [ ] F-patrol               Patrol command for military groups
 [ ] F-personality          Personality axes affecting behavior
-[ ] F-pet-names            Named tamed animals
 [ ] F-phased-archery       Phased archery (nock/draw/loose) with skill-gated mobility
 [ ] F-poetry-reading       Social gatherings and poetry readings
 [ ] F-population           Natural population growth/immigration
@@ -464,6 +463,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-pathfinding          A* pathfinding over nav graph
 [x] F-pause-menu           In-game pause overlay
 [x] F-per-detection        Perception stat modifies hostile detection range
+[x] F-pet-names            Named tamed animals
 [x] F-pile-gravity         Ground pile gravity and merging
 [x] F-placement-ui         Revamp construction placement UX
 [x] F-player-identity      Persistent player identity with username
@@ -2205,12 +2205,12 @@ stores `move_from`/`move_to`/`move_start_tick`/`move_end_tick` as rendering
 metadata. `interpolated_position()` lerps based on `render_tick`.
 
 #### F-pet-names — Named tamed animals
-**Status:** Todo
+**Status:** Done
 
-Tamed animals receive names upon joining the player's civilization.
-Name generation could use the Vaelith conlang system (like elf names)
-or a separate animal naming scheme. Names appear in the creature info
-panel, units panel, and notifications.
+Tamed animals receive a single-part Vaelith name (1-2 roots from the
+Given pool) upon joining the player's civilization. Names are assigned
+in resolve_tame_attempt on success. Names appear in the creature info
+panel, units panel, and taming notifications.
 
 **Related:** F-civ-pets, F-taming
 
