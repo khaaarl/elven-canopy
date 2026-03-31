@@ -2950,7 +2950,7 @@ fn position_blocks_friendly_archer_on_line() {
     arm_with_bow_and_arrows(&mut sim, archer, 5);
 
     // Give archer an attack task targeting the goblin.
-    let goblin_node = sim.nav_graph.find_nearest_node(goblin_pos);
+    let goblin_node = sim.nav_graph.find_nearest_node(goblin_pos, 10);
     if let Some(node) = goblin_node {
         let task_id = TaskId::new(&mut sim.rng);
         let task = Task {

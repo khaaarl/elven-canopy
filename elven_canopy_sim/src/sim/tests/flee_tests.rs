@@ -1115,7 +1115,7 @@ fn aggressive_soldier_interrupts_low_priority_task_to_fight() {
     // The task is at a distant location so the elf would be walking to it.
     let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
     let far_pos = VoxelCoord::new(elf_pos.x + 20, elf_pos.y, elf_pos.z);
-    let task_nav = sim.nav_graph.find_nearest_node(far_pos).unwrap();
+    let task_nav = sim.nav_graph.find_nearest_node(far_pos, 10).unwrap();
     let task_id = TaskId::new(&mut sim.rng);
     let acquire_task = task::Task {
         id: task_id,
@@ -1203,7 +1203,7 @@ fn creature_does_not_freeze_after_combat_preempts_task() {
     // Give elf a low-priority task.
     let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
     let far_pos = VoxelCoord::new(elf_pos.x + 20, elf_pos.y, elf_pos.z);
-    let task_nav = sim.nav_graph.find_nearest_node(far_pos).unwrap();
+    let task_nav = sim.nav_graph.find_nearest_node(far_pos, 10).unwrap();
     let task_id = TaskId::new(&mut sim.rng);
     let acquire_task = task::Task {
         id: task_id,
@@ -1322,7 +1322,7 @@ fn defensive_elf_fights_instead_of_claiming_non_preemptable_task() {
     // autonomous combat). This is the trap: without the fix, the elf claims
     // this and walks away instead of fighting.
     let far_pos = VoxelCoord::new(elf_pos.x + 30, elf_pos.y, elf_pos.z);
-    let far_node = sim.nav_graph.find_nearest_node(far_pos).unwrap();
+    let far_node = sim.nav_graph.find_nearest_node(far_pos, 10).unwrap();
     let goto_task_id = TaskId::new(&mut sim.rng);
     let goto_task = task::Task {
         id: goto_task_id,
@@ -1852,7 +1852,7 @@ fn defensive_elf_with_task_interrupts_to_shoot_troll_at_10_voxels() {
 
     // Give elf a low-priority Autonomous task (walking far away).
     let far_pos = VoxelCoord::new(elf_pos.x + 30, elf_pos.y, elf_pos.z);
-    let task_nav = sim.nav_graph.find_nearest_node(far_pos).unwrap();
+    let task_nav = sim.nav_graph.find_nearest_node(far_pos, 10).unwrap();
     let task_id = TaskId::new(&mut sim.rng);
     let acquire_task = task::Task {
         id: task_id,

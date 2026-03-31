@@ -277,7 +277,7 @@ fn find_nearest_bed_excludes_occupied() {
 
     // Find a valid nav node near tree for the bed position.
     let graph = sim.graph_for_species(Species::Elf);
-    let bed_node = graph.find_nearest_node(tree_pos).unwrap();
+    let bed_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let bed_pos = graph.node(bed_node).position;
 
     // Add a dormitory structure with exactly one bed.
@@ -400,7 +400,7 @@ fn tired_elf_sleeps_and_rest_increases() {
 
     // Add a dormitory with beds near the tree.
     let graph = sim.graph_for_species(Species::Elf);
-    let bed_node = graph.find_nearest_node(tree_pos).unwrap();
+    let bed_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let bed_pos = graph.node(bed_node).position;
 
     let structure_id = StructureId(999);
@@ -1772,7 +1772,7 @@ fn find_nearest_dining_hall_returns_hall_with_food() {
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let elf_id = spawn_creature(&mut sim, Species::Elf);
@@ -1790,7 +1790,7 @@ fn find_nearest_dining_hall_returns_none_when_no_food() {
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let elf_id = spawn_creature(&mut sim, Species::Elf);
@@ -1805,7 +1805,7 @@ fn find_nearest_dining_hall_returns_none_when_seats_full() {
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let elf_id = spawn_creature(&mut sim, Species::Elf);
@@ -1856,7 +1856,7 @@ fn elf_seeks_dining_hall_at_dining_threshold() {
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -1967,7 +1967,7 @@ fn dine_at_hall_reserves_seat_and_food() {
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -2030,7 +2030,7 @@ fn dine_at_hall_completion_restores_food_and_generates_thought() {
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -2091,7 +2091,7 @@ fn dine_at_hall_cleanup_releases_reservations() {
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -2213,7 +2213,7 @@ fn dining_hall_with_fruit_only() {
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let elf_id = spawn_creature(&mut sim, Species::Elf);
@@ -2266,7 +2266,7 @@ fn dine_at_hall_instant_on_arrival() {
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -2384,7 +2384,7 @@ fn dining_preempts_autonomous_task() {
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -2705,7 +2705,7 @@ fn dine_at_hall_no_task_when_food_unavailable() {
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -2786,7 +2786,7 @@ fn two_elves_one_food_only_one_gets_dine_task() {
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -3315,7 +3315,7 @@ fn find_nearest_dining_hall_picks_closer_of_two() {
     // Find two distinct nav nodes — the creature starts at tree_pos, so
     // pick nodes at varying distances from it.
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let elf_node = graph.find_nearest_node(tree_pos).unwrap();
+    let elf_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let elf_pos = graph.node(elf_node).position;
 
     // Collect all nav nodes sorted by distance from elf_pos.
@@ -3364,7 +3364,7 @@ fn find_nearest_dining_hall_skips_closer_hall_without_food() {
     let mut sim = test_sim(legacy_test_seed());
     let graph = sim.graph_for_species(Species::Elf);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let elf_node = graph.find_nearest_node(tree_pos).unwrap();
+    let elf_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let elf_pos = graph.node(elf_node).position;
 
     let mut nodes: Vec<_> = (0..graph.node_slot_count())
@@ -3409,7 +3409,7 @@ fn find_nearest_dining_hall_skips_closer_full_table() {
     let mut sim = test_sim(legacy_test_seed());
     let graph = sim.graph_for_species(Species::Elf);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let elf_node = graph.find_nearest_node(tree_pos).unwrap();
+    let elf_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let elf_pos = graph.node(elf_node).position;
 
     let mut nodes: Vec<_> = (0..graph.node_slot_count())
@@ -3495,7 +3495,7 @@ fn find_nearest_dining_hall_unplaced_table_ignored() {
     let mut sim = test_sim(legacy_test_seed());
     let graph = sim.graph_for_species(Species::Elf);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let structure_id = StructureId(900);
@@ -3550,7 +3550,7 @@ fn wild_creature_does_not_seek_dining_hall() {
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Squirrel);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let food_max = sim.species_table[&Species::Squirrel].food_max;

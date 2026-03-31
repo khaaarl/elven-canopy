@@ -34,7 +34,7 @@ impl SimState {
         let mut fruit_candidates: Vec<(VoxelCoord, NavNodeId, VoxelCoord)> = Vec::new();
         for tree in self.db.trees.iter_all() {
             for &fruit_pos in &tree.fruit_positions {
-                if let Some(nav_node) = graph.find_nearest_node(fruit_pos) {
+                if let Some(nav_node) = graph.find_nearest_node(fruit_pos, 5) {
                     let nav_pos = graph.node(nav_node).position;
                     fruit_candidates.push((fruit_pos, nav_node, nav_pos));
                 }
@@ -517,7 +517,7 @@ impl SimState {
             .into_iter()
             .find(|f| f.placed)?;
         let graph = self.graph_for_species(creature.species);
-        let nav_node = graph.find_nearest_node(bed.coord)?;
+        let nav_node = graph.find_nearest_node(bed.coord, 5)?;
         Some((bed.coord, nav_node, home_id))
     }
 

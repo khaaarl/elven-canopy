@@ -437,7 +437,7 @@ fn harvest_task_creates_ground_pile() {
     let elf_id = spawn_elf(&mut sim);
 
     // Find the nav node nearest to the fruit.
-    let fruit_nav = sim.nav_graph.find_nearest_node(fruit_pos).unwrap();
+    let fruit_nav = sim.nav_graph.find_nearest_node(fruit_pos, 10).unwrap();
 
     // Place the elf at the fruit nav node.
     let elf_pos = sim.nav_graph.node(fruit_nav).position;
@@ -587,8 +587,8 @@ fn haul_source_empty_cancels() {
     // Create a haul task with source pointing to a non-existent ground pile.
     let source_pos = VoxelCoord::new(tree_pos.x, tree_pos.y, tree_pos.z);
     let task_id = TaskId::new(&mut sim.rng);
-    let source_nav = sim.nav_graph.find_nearest_node(source_pos).unwrap();
-    let dest_nav = sim.nav_graph.find_nearest_node(anchor).unwrap();
+    let source_nav = sim.nav_graph.find_nearest_node(source_pos, 10).unwrap();
+    let dest_nav = sim.nav_graph.find_nearest_node(anchor, 10).unwrap();
 
     let haul_task = Task {
         id: task_id,
@@ -3807,7 +3807,7 @@ fn acquire_item_picks_up_and_owns() {
 
     // Spawn elf, position at pile.
     let elf_id = spawn_elf(&mut sim);
-    let pile_nav = sim.nav_graph.find_nearest_node(pile_pos).unwrap();
+    let pile_nav = sim.nav_graph.find_nearest_node(pile_pos, 10).unwrap();
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();

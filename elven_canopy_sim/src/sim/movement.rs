@@ -41,7 +41,7 @@ impl SimState {
             position
         } else {
             let graph = self.graph_for_species(species);
-            match graph.find_nearest_node(position) {
+            match graph.find_nearest_node(position, 5) {
                 Some(node) => graph.node(node).position,
                 None => return,
             }
@@ -233,7 +233,7 @@ impl SimState {
         creature_ids: &[CreatureId],
         target: VoxelCoord,
     ) -> Vec<(CreatureId, VoxelCoord)> {
-        let center = match self.nav_graph.find_nearest_node(target) {
+        let center = match self.nav_graph.find_nearest_node(target, 5) {
             Some(n) => n,
             None => return Vec::new(),
         };
@@ -246,7 +246,7 @@ impl SimState {
                 if c.vital_status != VitalStatus::Alive {
                     return None;
                 }
-                let node = self.nav_graph.find_nearest_node(c.position)?;
+                let node = self.nav_graph.find_nearest_node(c.position, 5)?;
                 let pos = self.nav_graph.node(node).position;
                 Some((cid, pos))
             })

@@ -592,7 +592,7 @@ fn dormitory_sleep_generates_thought() {
 
     // Add a dormitory with beds near the tree.
     let graph = sim.graph_for_species(Species::Elf);
-    let bed_node = graph.find_nearest_node(tree_pos).unwrap();
+    let bed_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let bed_pos = graph.node(bed_node).position;
 
     let structure_id = StructureId(999);
@@ -702,7 +702,7 @@ fn home_sleep_generates_thought() {
 
     // Add a home with a bed near the tree.
     let graph = sim.graph_for_species(Species::Elf);
-    let bed_node = graph.find_nearest_node(tree_pos).unwrap();
+    let bed_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let bed_pos = graph.node(bed_node).position;
 
     let structure_id = StructureId(888);
@@ -824,7 +824,7 @@ fn low_ceiling_generates_thought() {
 
     // Add a dormitory with height=1 (low ceiling).
     let graph = sim.graph_for_species(Species::Elf);
-    let bed_node = graph.find_nearest_node(tree_pos).unwrap();
+    let bed_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let bed_pos = graph.node(bed_node).position;
 
     let structure_id = StructureId(888);
@@ -1295,7 +1295,7 @@ fn mope_task_location_is_home_when_assigned() {
         .find(|f| f.placed)
         .unwrap()
         .coord;
-    let home_nav_node = sim.nav_graph.find_nearest_node(bed_pos).unwrap();
+    let home_nav_node = sim.nav_graph.find_nearest_node(bed_pos, 10).unwrap();
 
     // Spawn an elf.
     let cmd = SimCommand {

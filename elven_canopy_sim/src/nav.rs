@@ -345,36 +345,44 @@ impl NavGraph {
         self.nodes.iter().filter_map(|n| n.as_ref())
     }
 
-    /// Find the nearest node to a given position (by Manhattan distance).
-    /// Returns `None` if the graph is empty.
+    /// Find the nearest node to a given position (by Manhattan distance),
+    /// searching only within `max_distance` voxels. Returns `None` if no
+    /// node is found within range.
     ///
     /// Uses an expanding-box search on the column index when available,
     /// falling back to linear scan for test graphs without a column index.
-    pub fn find_nearest_node(&self, pos: VoxelCoord) -> Option<NavNodeId> {
-        self.expanding_box_search(pos, |_| true)
+    pub fn find_nearest_node(&self, pos: VoxelCoord, max_distance: u32) -> Option<NavNodeId> {
+        self.expanding_box_search(pos, max_distance, |_| true)
     }
 
     /// Find the nearest ground-level node (surface type `Dirt`) to the
-    /// given position. Returns `None` if no ground nodes exist.
+    /// given position, searching only within `max_distance` voxels.
+    /// Returns `None` if no ground node is found within range.
     ///
     /// Uses an expanding-box search on the column index when available.
-    pub fn find_nearest_ground_node(&self, pos: VoxelCoord) -> Option<NavNodeId> {
-        self.expanding_box_search(pos, |n| n.surface_type == VoxelType::Dirt)
+    pub fn find_nearest_ground_node(
+        &self,
+        pos: VoxelCoord,
+        max_distance: u32,
+    ) -> Option<NavNodeId> {
+        self.expanding_box_search(pos, max_distance, |n| n.surface_type == VoxelType::Dirt)
     }
 
     /// Common expanding-box search: starts at the query column, expands radius
-    /// outward checking the perimeter ring. Stops when `radius > best_distance`.
-    /// Falls back to linear scan when `column_index` is empty (test graphs).
+    /// outward checking the perimeter ring. Stops when `radius > best_distance`
+    /// or `radius > max_distance`. Falls back to linear scan when
+    /// `column_index` is empty (test graphs).
     fn expanding_box_search(
         &self,
         pos: VoxelCoord,
+        max_distance: u32,
         filter: impl Fn(&NavNode) -> bool,
     ) -> Option<NavNodeId> {
         if self.column_index.is_empty() {
             // Fallback for test graphs without a column index.
             return self
                 .live_nodes()
-                .filter(|n| filter(n))
+                .filter(|n| filter(n) && n.position.manhattan_distance(pos) <= max_distance)
                 .min_by_key(|n| n.position.manhattan_distance(pos))
                 .map(|n| n.id);
         }
@@ -382,7 +390,7 @@ impl NavGraph {
         let (sx, _, sz) = self.world_size;
         let mut best: Option<(u32, NavNodeId)> = None; // (distance, id)
 
-        let max_radius = (sx.max(sz)) as i32;
+        let max_radius = (sx.max(sz) as u32).min(max_distance) as i32;
 
         for radius in 0..=max_radius {
             // Early termination: if we have a candidate and the minimum
@@ -400,10 +408,24 @@ impl NavGraph {
             // Top and bottom rows of the ring.
             for x in x_min..=x_max {
                 if pos.z - radius >= 0 {
-                    self.check_column_for_nearest(x, pos.z - radius, pos, &filter, &mut best);
+                    self.check_column_for_nearest(
+                        x,
+                        pos.z - radius,
+                        pos,
+                        max_distance,
+                        &filter,
+                        &mut best,
+                    );
                 }
                 if radius > 0 && pos.z + radius < sz as i32 {
-                    self.check_column_for_nearest(x, pos.z + radius, pos, &filter, &mut best);
+                    self.check_column_for_nearest(
+                        x,
+                        pos.z + radius,
+                        pos,
+                        max_distance,
+                        &filter,
+                        &mut best,
+                    );
                 }
             }
             // Left and right columns of the ring (excluding corners already
@@ -414,10 +436,24 @@ impl NavGraph {
                 let side_z_hi = (pos.z + radius - 1).min(sz as i32 - 1);
                 for z in side_z_lo..=side_z_hi {
                     if pos.x - radius >= 0 {
-                        self.check_column_for_nearest(pos.x - radius, z, pos, &filter, &mut best);
+                        self.check_column_for_nearest(
+                            pos.x - radius,
+                            z,
+                            pos,
+                            max_distance,
+                            &filter,
+                            &mut best,
+                        );
                     }
                     if pos.x + radius < sx as i32 {
-                        self.check_column_for_nearest(pos.x + radius, z, pos, &filter, &mut best);
+                        self.check_column_for_nearest(
+                            pos.x + radius,
+                            z,
+                            pos,
+                            max_distance,
+                            &filter,
+                            &mut best,
+                        );
                     }
                 }
             }
@@ -426,12 +462,14 @@ impl NavGraph {
         best.map(|(_, id)| id)
     }
 
-    /// Check all nodes in a column for the nearest match.
+    /// Check all nodes in a column for the nearest match within
+    /// `max_distance`.
     fn check_column_for_nearest(
         &self,
         x: i32,
         z: i32,
         pos: VoxelCoord,
+        max_distance: u32,
         filter: &impl Fn(&NavNode) -> bool,
         best: &mut Option<(u32, NavNodeId)>,
     ) {
@@ -446,6 +484,9 @@ impl NavGraph {
         for &(y, slot) in &self.column_index[col_idx] {
             let coord = VoxelCoord::new(x, y as i32, z);
             let dist = pos.manhattan_distance(coord);
+            if dist > max_distance {
+                continue;
+            }
             let dominated = best.is_some_and(|(best_d, _)| dist >= best_d);
             if dominated {
                 continue;
@@ -2483,14 +2524,14 @@ mod tests {
         graph.add_node(VoxelCoord::new(10, 0, 0), VoxelType::Dirt);
         graph.add_node(VoxelCoord::new(5, 5, 0), VoxelType::Trunk);
 
-        let nearest = graph.find_nearest_node(VoxelCoord::new(4, 4, 0));
+        let nearest = graph.find_nearest_node(VoxelCoord::new(4, 4, 0), 10);
         assert_eq!(nearest, Some(NavNodeId(2))); // (5,5,0) is closest
     }
 
     #[test]
     fn find_nearest_node_empty_graph() {
         let graph = NavGraph::new();
-        assert_eq!(graph.find_nearest_node(VoxelCoord::new(0, 0, 0)), None);
+        assert_eq!(graph.find_nearest_node(VoxelCoord::new(0, 0, 0), 10), None);
     }
 
     #[test]
@@ -2514,7 +2555,7 @@ mod tests {
         graph.add_node(VoxelCoord::new(5, 1, 0), VoxelType::Dirt);
 
         // Closest overall is the Trunk node, but ground search skips it.
-        let nearest = graph.find_nearest_ground_node(VoxelCoord::new(1, 1, 0));
+        let nearest = graph.find_nearest_ground_node(VoxelCoord::new(1, 1, 0), 10);
         assert_eq!(nearest, Some(NavNodeId(0)));
     }
 
@@ -2547,9 +2588,12 @@ mod tests {
     #[test]
     fn expanding_box_empty_graph_with_column_index() {
         let graph = NavGraph::with_world_size(64, 64, 64);
-        assert_eq!(graph.find_nearest_node(VoxelCoord::new(32, 1, 32)), None);
         assert_eq!(
-            graph.find_nearest_ground_node(VoxelCoord::new(0, 1, 0)),
+            graph.find_nearest_node(VoxelCoord::new(32, 1, 32), 10),
+            None
+        );
+        assert_eq!(
+            graph.find_nearest_ground_node(VoxelCoord::new(0, 1, 0), 10),
             None
         );
     }
@@ -2562,7 +2606,7 @@ mod tests {
         let node_id = graph.add_node(far, VoxelType::Dirt);
         graph.spatial_insert(far, node_id.0);
 
-        let result = graph.find_nearest_node(VoxelCoord::new(0, 1, 0));
+        let result = graph.find_nearest_node(VoxelCoord::new(0, 1, 0), 100);
         assert_eq!(result, Some(node_id));
     }
 
@@ -2583,12 +2627,101 @@ mod tests {
         graph.spatial_insert(far, far_id.0);
 
         // Query at (1, 1, 0) — corner node is distance 1, far node is distance 9.
-        let result = graph.find_nearest_node(VoxelCoord::new(1, 1, 0));
+        let result = graph.find_nearest_node(VoxelCoord::new(1, 1, 0), 10);
         assert_eq!(result, Some(corner_id));
 
         // Query at (0, 1, 1) — corner node is distance 1.
-        let result = graph.find_nearest_node(VoxelCoord::new(0, 1, 1));
+        let result = graph.find_nearest_node(VoxelCoord::new(0, 1, 1), 10);
         assert_eq!(result, Some(corner_id));
+    }
+
+    #[test]
+    fn max_distance_rejects_distant_node_linear_scan() {
+        // Linear-scan fallback (no column index): node at manhattan distance 2
+        // should be rejected when max_distance is 1.
+        let mut graph = NavGraph::new();
+        graph.add_node(VoxelCoord::new(5, 5, 0), VoxelType::Trunk);
+
+        let query = VoxelCoord::new(4, 4, 0);
+        // Distance is 2 — should be found with max_distance=2 but not with 1.
+        assert_eq!(graph.find_nearest_node(query, 2), Some(NavNodeId(0)));
+        assert_eq!(graph.find_nearest_node(query, 1), None);
+    }
+
+    #[test]
+    fn max_distance_rejects_distant_node_expanding_box() {
+        // Column-indexed path: node at manhattan distance 6 should be rejected
+        // when max_distance is 5.
+        let mut graph = NavGraph::with_world_size(32, 32, 32);
+        let node_pos = VoxelCoord::new(10, 1, 10);
+        let node_id = graph.add_node(node_pos, VoxelType::Dirt);
+        graph.spatial_insert(node_pos, node_id.0);
+
+        let query = VoxelCoord::new(7, 1, 7); // manhattan distance = 6
+        assert_eq!(graph.find_nearest_node(query, 6), Some(node_id));
+        assert_eq!(graph.find_nearest_node(query, 5), None);
+    }
+
+    #[test]
+    fn max_distance_boundary_inclusive() {
+        // Node at exactly max_distance should be found (<=, not <).
+        let mut graph = NavGraph::with_world_size(16, 16, 16);
+        let node_pos = VoxelCoord::new(5, 1, 0);
+        let node_id = graph.add_node(node_pos, VoxelType::Dirt);
+        graph.spatial_insert(node_pos, node_id.0);
+
+        let query = VoxelCoord::new(0, 1, 0); // manhattan distance = 5
+        assert_eq!(graph.find_nearest_node(query, 5), Some(node_id));
+        // One less — should miss.
+        assert_eq!(graph.find_nearest_node(query, 4), None);
+    }
+
+    #[test]
+    fn max_distance_rejects_y_distant_node_in_same_column() {
+        // Node in the same XZ column but far away in Y should be rejected
+        // even though the column is at radius 0.
+        let mut graph = NavGraph::with_world_size(16, 32, 16);
+        let node_pos = VoxelCoord::new(5, 20, 5);
+        let node_id = graph.add_node(node_pos, VoxelType::Dirt);
+        graph.spatial_insert(node_pos, node_id.0);
+
+        let query = VoxelCoord::new(5, 1, 5); // Y distance = 19
+        assert_eq!(graph.find_nearest_node(query, 19), Some(node_id));
+        assert_eq!(graph.find_nearest_node(query, 18), None);
+    }
+
+    #[test]
+    fn max_distance_zero_only_finds_exact_position() {
+        let mut graph = NavGraph::with_world_size(8, 8, 8);
+        let pos_a = VoxelCoord::new(3, 1, 3);
+        let pos_b = VoxelCoord::new(3, 1, 4);
+        let id_a = graph.add_node(pos_a, VoxelType::Dirt);
+        graph.spatial_insert(pos_a, id_a.0);
+        let id_b = graph.add_node(pos_b, VoxelType::Dirt);
+        graph.spatial_insert(pos_b, id_b.0);
+
+        // Exact match returns the node.
+        assert_eq!(graph.find_nearest_node(pos_a, 0), Some(id_a));
+        // One voxel away returns None with max_distance=0.
+        assert_eq!(graph.find_nearest_node(VoxelCoord::new(3, 1, 2), 0), None);
+    }
+
+    #[test]
+    fn max_distance_ground_node_respects_both_filters() {
+        // Ground-only search: a nearby non-ground node and a distant ground
+        // node. With tight max_distance, neither should match.
+        let mut graph = NavGraph::new();
+        graph.add_node(VoxelCoord::new(1, 1, 0), VoxelType::Trunk); // close, not ground
+        graph.add_node(VoxelCoord::new(10, 1, 0), VoxelType::Dirt); // far, ground
+
+        let query = VoxelCoord::new(0, 1, 0);
+        // max_distance=2: trunk is close but not ground, dirt is ground but far.
+        assert_eq!(graph.find_nearest_ground_node(query, 2), None);
+        // max_distance=10: dirt is now in range.
+        assert_eq!(
+            graph.find_nearest_ground_node(query, 10),
+            Some(NavNodeId(1))
+        );
     }
 
     // --- Surface type derivation tests ---

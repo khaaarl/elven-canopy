@@ -340,7 +340,7 @@ impl SimState {
         for tree in self.db.trees.iter_all() {
             for &fruit_pos in &tree.fruit_positions {
                 if !claimed_positions.contains(&fruit_pos)
-                    && let Some(nav_node) = self.nav_graph.find_nearest_node(fruit_pos)
+                    && let Some(nav_node) = self.nav_graph.find_nearest_node(fruit_pos, 5)
                 {
                     unclaimed_fruit.push((fruit_pos, nav_node));
                 }
@@ -534,7 +534,7 @@ impl SimState {
         // Phase 1: Check ground piles.
         for pile in self.db.ground_piles.iter_all() {
             let available = self.inv_unreserved_item_count(pile.inventory_id, item_kind, filter);
-            if available > 0 && self.nav_graph.find_nearest_node(pile.position).is_some() {
+            if available > 0 && self.nav_graph.find_nearest_node(pile.position, 5).is_some() {
                 return Some((
                     task::HaulSource::GroundPile(pile.position),
                     available.min(needed),
@@ -557,7 +557,12 @@ impl SimState {
             }
             let available =
                 self.inv_unreserved_item_count(structure.inventory_id, item_kind, filter);
-            if available > 0 && self.nav_graph.find_nearest_node(structure.anchor).is_some() {
+            if available > 0
+                && self
+                    .nav_graph
+                    .find_nearest_node(structure.anchor, 5)
+                    .is_some()
+            {
                 return Some((
                     task::HaulSource::Building(sid),
                     available.min(needed),
@@ -581,7 +586,12 @@ impl SimState {
             let held = self.inv_unreserved_item_count(structure.inventory_id, item_kind, filter);
             let wanted = self.inv_want_target_total(structure.inventory_id, item_kind);
             let surplus = held.saturating_sub(wanted);
-            if surplus > 0 && self.nav_graph.find_nearest_node(structure.anchor).is_some() {
+            if surplus > 0
+                && self
+                    .nav_graph
+                    .find_nearest_node(structure.anchor, 5)
+                    .is_some()
+            {
                 return Some((
                     task::HaulSource::Building(sid),
                     surplus.min(needed),
@@ -641,7 +651,7 @@ impl SimState {
         for pile in self.db.ground_piles.iter_all() {
             let available = self.inv_count_owned_unreserved(pile.inventory_id, kind, filter, owner);
             if available > 0
-                && let Some(node) = self.nav_graph.find_nearest_node(pile.position)
+                && let Some(node) = self.nav_graph.find_nearest_node(pile.position, 5)
             {
                 let nav_pos = self.nav_graph.node(node).position;
                 return Some((
@@ -658,7 +668,7 @@ impl SimState {
             let available =
                 self.inv_count_owned_unreserved(structure.inventory_id, kind, filter, owner);
             if available > 0
-                && let Some(node) = self.nav_graph.find_nearest_node(structure.anchor)
+                && let Some(node) = self.nav_graph.find_nearest_node(structure.anchor, 5)
             {
                 let nav_pos = self.nav_graph.node(node).position;
                 return Some((
@@ -688,7 +698,7 @@ impl SimState {
         for pile in self.db.ground_piles.iter_all() {
             let available = self.inv_count_unowned_unreserved(pile.inventory_id, kind, filter);
             if available > 0
-                && let Some(node) = self.nav_graph.find_nearest_node(pile.position)
+                && let Some(node) = self.nav_graph.find_nearest_node(pile.position, 5)
             {
                 let nav_pos = self.nav_graph.node(node).position;
                 return Some((
@@ -704,7 +714,7 @@ impl SimState {
             let sid = structure.id;
             let available = self.inv_count_unowned_unreserved(structure.inventory_id, kind, filter);
             if available > 0
-                && let Some(node) = self.nav_graph.find_nearest_node(structure.anchor)
+                && let Some(node) = self.nav_graph.find_nearest_node(structure.anchor, 5)
             {
                 let nav_pos = self.nav_graph.node(node).position;
                 return Some((

@@ -109,7 +109,8 @@ fn command_round_trip() {
     let (handle, mut host, mut joiner, _addr) = start_test_session();
     start_game(&mut host, &mut joiner);
 
-    // Find a valid spawn position: use the home tree's position at ground level.
+    // Find a valid spawn position: use the home tree's position directly.
+    // spawn_creature snaps to the nearest ground nav node.
     let host_sim = host.sim.as_ref().unwrap();
     let tree_pos = host_sim
         .db
@@ -117,12 +118,11 @@ fn command_round_trip() {
         .get(&host_sim.player_tree_id)
         .unwrap()
         .position;
-    let spawn_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
 
     // Host sends SpawnCreature.
     host.send_action(&SimAction::SpawnCreature {
         species: Species::Elf,
-        position: spawn_pos,
+        position: tree_pos,
     });
 
     // Both poll for the turn containing the command.
@@ -161,8 +161,8 @@ fn bidirectional_commands() {
         .get(&host_sim.player_tree_id)
         .unwrap()
         .position;
-    let spawn_pos_1 = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
-    let spawn_pos_2 = VoxelCoord::new(tree_pos.x + 1, 1, tree_pos.z);
+    let spawn_pos_1 = tree_pos;
+    let spawn_pos_2 = VoxelCoord::new(tree_pos.x + 1, tree_pos.y, tree_pos.z);
 
     // Both send spawn commands in the same turn window.
     host.send_action(&SimAction::SpawnCreature {
@@ -220,12 +220,10 @@ fn multi_turn_determinism() {
         .get(&host_sim.player_tree_id)
         .unwrap()
         .position;
-    let spawn_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
-
     // Turn 1: spawn an elf.
     host.send_action(&SimAction::SpawnCreature {
         species: Species::Elf,
-        position: spawn_pos,
+        position: tree_pos,
     });
     host.poll_until_turn();
     joiner.poll_until_turn();
@@ -235,7 +233,7 @@ fn multi_turn_determinism() {
     assert_eq!(host_json_1, joiner_json_1, "mismatch after turn 1");
 
     // Turn 2: issue a GoTo task.
-    let goto_pos = VoxelCoord::new(tree_pos.x + 2, 1, tree_pos.z);
+    let goto_pos = VoxelCoord::new(tree_pos.x + 2, tree_pos.y, tree_pos.z);
     host.send_action(&SimAction::CreateTask {
         kind: elven_canopy_sim::task::TaskKind::GoTo,
         position: goto_pos,
@@ -251,7 +249,7 @@ fn multi_turn_determinism() {
     // Turn 3: spawn another elf.
     host.send_action(&SimAction::SpawnCreature {
         species: Species::Elf,
-        position: spawn_pos,
+        position: tree_pos,
     });
     host.poll_until_turn();
     joiner.poll_until_turn();
@@ -443,7 +441,7 @@ fn mid_game_join_snapshot() {
         .get(&host_sim.player_tree_id)
         .unwrap()
         .position;
-    let spawn_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+    let spawn_pos = tree_pos;
 
     host.send_action(&SimAction::SpawnCreature {
         species: Species::Elf,
@@ -515,7 +513,7 @@ fn mid_game_join_then_commands() {
         .get(&host_sim.player_tree_id)
         .unwrap()
         .position;
-    let spawn_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+    let spawn_pos = tree_pos;
 
     // Spawn an elf before mid-join.
     host.send_action(&SimAction::SpawnCreature {
@@ -550,8 +548,8 @@ fn mid_game_join_then_commands() {
     late_joiner.poll_until_resumed();
 
     // All three send spawn commands.
-    let spawn_pos_2 = VoxelCoord::new(tree_pos.x + 1, 1, tree_pos.z);
-    let spawn_pos_3 = VoxelCoord::new(tree_pos.x + 2, 1, tree_pos.z);
+    let spawn_pos_2 = VoxelCoord::new(tree_pos.x + 1, tree_pos.y, tree_pos.z);
+    let spawn_pos_3 = VoxelCoord::new(tree_pos.x + 2, tree_pos.y, tree_pos.z);
 
     host.send_action(&SimAction::SpawnCreature {
         species: Species::Elf,
@@ -623,7 +621,7 @@ fn mid_game_join_checksum() {
         .get(&host_sim.player_tree_id)
         .unwrap()
         .position;
-    let spawn_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+    let spawn_pos = tree_pos;
 
     host.send_action(&SimAction::SpawnCreature {
         species: Species::Elf,
@@ -683,7 +681,7 @@ fn disconnect_mid_game() {
         .get(&host_sim.player_tree_id)
         .unwrap()
         .position;
-    let spawn_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
+    let spawn_pos = tree_pos;
 
     host.send_action(&SimAction::SpawnCreature {
         species: Species::Elf,

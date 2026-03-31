@@ -85,7 +85,7 @@ fn creature_claims_available_task() {
     // Far ground-level location — elf spawns near (32,1,32), this is ~20
     // voxels away so it won't arrive within the tick budget.
     let task_pos = VoxelCoord::new(10, 1, 10);
-    let task_node = sim.nav_graph.find_nearest_node(task_pos).unwrap();
+    let task_node = sim.nav_graph.find_nearest_node(task_pos, 10).unwrap();
     let task_id = insert_goto_task(&mut sim, task_node);
 
     // Tick enough for the elf to claim but not finish (~500 ticks per edge
@@ -109,7 +109,7 @@ fn creature_walks_to_task_location() {
 
     // Far ground-level location so the elf has a long walk.
     let task_coord = VoxelCoord::new(10, 1, 10);
-    let far_node = sim.nav_graph.find_nearest_node(task_coord).unwrap();
+    let far_node = sim.nav_graph.find_nearest_node(task_coord, 10).unwrap();
     let task_location = sim.nav_graph.node(far_node).position;
     let _task_id = insert_goto_task(&mut sim, far_node);
 
@@ -1835,7 +1835,7 @@ fn queue_directed_goto_creates_linked_task() {
     // Location is snapped to the nearest nav node by command_directed_goto.
     let expected_b = sim
         .nav_graph
-        .find_nearest_node(pos_b)
+        .find_nearest_node(pos_b, 10)
         .map(|n| sim.nav_graph.node(n).position)
         .unwrap();
     assert_eq!(task_b.location, expected_b);
@@ -1965,7 +1965,7 @@ fn find_queue_tail_follows_chain() {
     let tail_task = sim.db.tasks.get(&tail_id).unwrap();
     let expected_c = sim
         .nav_graph
-        .find_nearest_node(pos_c)
+        .find_nearest_node(pos_c, 10)
         .map(|n| sim.nav_graph.node(n).position)
         .unwrap();
     assert_eq!(

@@ -101,7 +101,7 @@ impl SimState {
             // Both ground: target must have a nav node.
             if self
                 .graph_for_species(target.species)
-                .find_nearest_node(target.position)
+                .find_nearest_node(target.position, 5)
                 .is_none()
             {
                 return;
@@ -228,7 +228,7 @@ impl SimState {
             destination
         } else {
             let graph = self.graph_for_species(species);
-            match graph.find_nearest_node(destination) {
+            match graph.find_nearest_node(destination, 5) {
                 Some(node) => graph.node(node).position,
                 None => return,
             }
@@ -399,7 +399,7 @@ impl SimState {
         // Ground creatures: resolve destination to nav node for location checks.
         // Flying creatures use VoxelCoord directly.
         let dest_nav_node: Option<NavNodeId> = if !is_flying {
-            match self.nav_graph.find_nearest_node(destination) {
+            match self.nav_graph.find_nearest_node(destination, 5) {
                 Some(n) => Some(n),
                 None => {
                     self.complete_task(task_id);
@@ -445,7 +445,7 @@ impl SimState {
                 // ground-creature proximity check (not dest_nav_node, which is
                 // the attack-move destination, not the engaged target).
                 let target_node = if !is_flying {
-                    self.nav_graph.find_nearest_node(task_location_coord)
+                    self.nav_graph.find_nearest_node(task_location_coord, 5)
                 } else {
                     None
                 };
@@ -620,7 +620,7 @@ impl SimState {
         if !is_flying
             && self
                 .graph_for_species(species)
-                .find_nearest_node(origin_voxel)
+                .find_nearest_node(origin_voxel, 20)
                 .is_none()
         {
             return;
@@ -3259,7 +3259,7 @@ impl SimState {
                 // Flying targets: skip find_nearest_node (O(y²) for high-
                 // altitude creatures) and go straight to the bounded
                 // melee-reachable search.
-                if !is_flyer && let Some(node) = graph.find_nearest_node(pos) {
+                if !is_flyer && let Some(node) = graph.find_nearest_node(pos, 5) {
                     return Some(node);
                 }
 
@@ -3393,17 +3393,24 @@ impl SimState {
                 }
                 // Resolve target's position to a nav node on the attacker's graph
                 // (targets may use a different graph, e.g. 1x1 vs 2x2 footprint).
-                // Flying creatures may be in open sky with no nearby nav node, so
-                // use a placeholder — the NavNodeId is unused by flying callers.
-                let is_flyer = self.species_table[&creature.species]
+                // Flying creatures (either attacker or target) may be in open sky
+                // with no nearby nav node, so use a placeholder — the NavNodeId
+                // is unused by flying callers.
+                let attacker_is_flyer = self.species_table[&attacker_species]
                     .flight_ticks_per_voxel
                     .is_some();
-                let node = if is_flyer {
-                    NavNodeId(u32::MAX) // placeholder; flying code uses position, not node
+                let target_is_flyer = self.species_table[&creature.species]
+                    .flight_ticks_per_voxel
+                    .is_some();
+                let node = if attacker_is_flyer || target_is_flyer {
+                    // Flying attackers pathfind in 3D voxel space, not the nav
+                    // graph, so they don't need a ground nav node for the target.
+                    // Flying targets similarly have no ground nav node.
+                    NavNodeId(u32::MAX)
                 } else {
                     match self
                         .graph_for_species(creature.species)
-                        .find_nearest_node(creature.position)
+                        .find_nearest_node(creature.position, 5)
                     {
                         Some(n) => n,
                         None => continue,

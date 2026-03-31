@@ -71,9 +71,9 @@ impl SimState {
         } else {
             let graph = self.graph_for_species(species);
             let nearest_node = if ground_only {
-                graph.find_nearest_ground_node(position)
+                graph.find_nearest_ground_node(position, 10)
             } else {
-                graph.find_nearest_node(position)
+                graph.find_nearest_node(position, 10)
             };
             let nearest_node = nearest_node?;
             graph.node(nearest_node).position
@@ -766,7 +766,7 @@ impl SimState {
                 // Degenerate: no valid landing column. Teleport to nearest
                 // nav node.
                 let graph = self.graph_for_species(species);
-                match graph.find_nearest_node(old_pos) {
+                match graph.find_nearest_node(old_pos, 5) {
                     Some(n) => graph.node(n).position,
                     None => return false, // no nav nodes at all — nothing to do
                 }

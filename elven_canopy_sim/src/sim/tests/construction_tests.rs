@@ -779,7 +779,7 @@ fn build_displaces_creature_on_occupied_voxel() {
     let elf_id = spawn_elf(&mut sim);
 
     // Find the nav node at air_coord (if one exists).
-    let node_at_build = sim.nav_graph.find_nearest_node(air_coord);
+    let node_at_build = sim.nav_graph.find_nearest_node(air_coord, 10);
     if let Some(node_id) = node_at_build {
         let node_pos = sim.nav_graph.node(node_id).position;
         if node_pos == air_coord {
@@ -2304,7 +2304,7 @@ fn test_carve_nav_graph_update() {
     // it should now be a nav node.
     assert_eq!(sim.world.get(solid), VoxelType::Air);
     if sim.world.has_solid_face_neighbor(solid) {
-        let node = sim.nav_graph.find_nearest_node(solid);
+        let node = sim.nav_graph.find_nearest_node(solid, 10);
         assert!(
             node.is_some(),
             "Carved voxel with solid neighbor should be a nav node"

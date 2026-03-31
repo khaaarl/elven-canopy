@@ -523,7 +523,7 @@ impl SimState {
             };
 
             let interior_pos = self.db.structures.get(&sid).unwrap().anchor;
-            if self.nav_graph.find_nearest_node(interior_pos).is_none() {
+            if self.nav_graph.find_nearest_node(interior_pos, 5).is_none() {
                 continue;
             }
             let location = interior_pos;

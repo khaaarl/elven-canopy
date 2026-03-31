@@ -1256,9 +1256,9 @@ impl SimBridge {
         };
 
         let nearest = if ground_only {
-            graph.find_nearest_ground_node(air_pos)
+            graph.find_nearest_ground_node(air_pos, 5)
         } else {
-            graph.find_nearest_node(air_pos)
+            graph.find_nearest_node(air_pos, 5)
         };
 
         match nearest {

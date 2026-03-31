@@ -61,7 +61,7 @@ fn dinner_party_organization_with_eligible_elf() {
     let mut sim = flat_world_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -119,7 +119,7 @@ fn dinner_party_blocked_when_food_above_organize_threshold() {
     let mut sim = flat_world_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -149,7 +149,7 @@ fn dinner_party_blocked_by_elf_cooldown() {
     let mut sim = flat_world_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -179,7 +179,7 @@ fn dinner_party_blocked_by_venue_exclusivity() {
     let mut sim = flat_world_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -216,7 +216,7 @@ fn dinner_party_blocked_by_insufficient_food() {
     let mut sim = flat_world_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -246,7 +246,7 @@ fn dinner_party_new_hall_bypasses_cooldown() {
     let mut sim = flat_world_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -281,7 +281,7 @@ fn dinner_party_volunteer_below_join_threshold() {
     let mut sim = flat_world_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -320,7 +320,7 @@ fn dinner_party_no_volunteer_above_join_threshold() {
     let mut sim = flat_world_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -363,7 +363,7 @@ fn dinner_party_full_lifecycle() {
     let mut sim = flat_world_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -505,7 +505,7 @@ fn dinner_party_social_impressions_generated() {
     let mut sim = flat_world_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -599,7 +599,7 @@ fn dinner_party_hall_cooldown_blocks_after_completion() {
     let mut sim = flat_world_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -669,7 +669,7 @@ fn dinner_party_not_organized_by_non_civ_creature() {
     let mut sim = flat_world_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -702,7 +702,7 @@ fn dinner_party_food_consumed_from_hall_inventory() {
     let mut sim = flat_world_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -780,7 +780,7 @@ fn dinner_party_volunteer_blocked_by_elf_cooldown() {
     let mut sim = flat_world_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -823,7 +823,7 @@ fn dinner_party_eat_graceful_when_no_food_available() {
     let mut sim = flat_world_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -900,7 +900,7 @@ fn dinner_party_zero_impressions_completes_cleanly() {
     let mut sim = flat_world_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos).unwrap();
+    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
     let table_pos = graph.node(table_node).position;
 
     let food_max = sim.species_table[&Species::Elf].food_max;

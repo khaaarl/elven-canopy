@@ -224,7 +224,7 @@ impl SimState {
         // Create a Build task at the nearest nav node to the blueprint.
         // Snap the task location to the nav node position so that find_path
         // (which uses node_at) can resolve it exactly.
-        let task_location = match self.nav_graph.find_nearest_node(build_voxels[0]) {
+        let task_location = match self.nav_graph.find_nearest_node(build_voxels[0], 5) {
             Some(node) => self.nav_graph.node(node).position,
             None => return,
         };
@@ -400,7 +400,7 @@ impl SimState {
         let project_id = ProjectId::new(&mut self.rng);
 
         // Create a Build task at the nearest nav node.
-        if self.nav_graph.find_nearest_node(voxels[0]).is_none() {
+        if self.nav_graph.find_nearest_node(voxels[0], 5).is_none() {
             return;
         }
         let task_id = TaskId::new(&mut self.rng);
@@ -567,7 +567,11 @@ impl SimState {
         let project_id = ProjectId::new(&mut self.rng);
 
         // Create a Build task at the nearest nav node to the bottom of the ladder.
-        if self.nav_graph.find_nearest_node(build_voxels[0]).is_none() {
+        if self
+            .nav_graph
+            .find_nearest_node(build_voxels[0], 5)
+            .is_none()
+        {
             return;
         }
         let task_id = TaskId::new(&mut self.rng);
@@ -702,7 +706,7 @@ impl SimState {
         // Use the nav node's position as the task location so that
         // find_available_task's expanding-box search resolves instantly
         // instead of scanning the entire world from underground dirt.
-        let nav_node = match self.nav_graph.find_nearest_node(carve_voxels[0]) {
+        let nav_node = match self.nav_graph.find_nearest_node(carve_voxels[0], 5) {
             Some(n) => n,
             None => return,
         };
@@ -882,7 +886,7 @@ impl SimState {
     ) {
         // Snap task location to the nearest nav node position so that
         // find_path (which uses node_at) can resolve it exactly.
-        let task_location = match self.nav_graph.find_nearest_node(position) {
+        let task_location = match self.nav_graph.find_nearest_node(position, 5) {
             Some(node) => self.nav_graph.node(node).position,
             None => return,
         };
@@ -1462,7 +1466,7 @@ impl SimState {
         let _ = self.db.update_structure(structure);
         self.set_inv_wants(inv_id, &default_wants);
 
-        if self.nav_graph.find_nearest_node(task_pos).is_none() {
+        if self.nav_graph.find_nearest_node(task_pos, 5).is_none() {
             return;
         }
 
@@ -1631,7 +1635,9 @@ impl SimState {
             .collect();
         for (cid, species, old_pos) in creature_info {
             let graph = self.graph_for_species(species);
-            let new_node = graph.find_nearest_node(old_pos);
+            // Generous limit: resnap happens after major graph rebuilds where
+            // creatures may be far from any surviving node.
+            let new_node = graph.find_nearest_node(old_pos, 20);
             let new_pos = new_node.map(|nid| graph.node(nid).position);
             if let Some(mut creature) = self.db.creatures.get(&cid) {
                 creature.path = None;
@@ -1673,7 +1679,9 @@ impl SimState {
             .collect();
         for (cid, species, old_pos) in to_resnap {
             let graph = self.graph_for_species(species);
-            let new_node = graph.find_nearest_node(old_pos);
+            // Generous limit: resnap happens after incremental graph updates
+            // where the nearest surviving node may be far away.
+            let new_node = graph.find_nearest_node(old_pos, 20);
             let new_pos = new_node.map(|nid| graph.node(nid).position);
             if let Some(mut creature) = self.db.creatures.get(&cid) {
                 creature.path = None;

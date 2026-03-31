@@ -264,7 +264,7 @@ impl SimState {
                 .map(|c| c.position)
                 .unwrap();
             let graph = self.graph_for_species(species);
-            let new_node = match graph.find_nearest_node(pos) {
+            let new_node = match graph.find_nearest_node(pos, 5) {
                 Some(n) => n,
                 None => return,
             };
@@ -741,7 +741,7 @@ impl SimState {
         // position so that find_path (which uses node_at) can resolve it.
         let task_location_node: Option<NavNodeId> = if !is_flying {
             let graph = self.graph_for_species(species);
-            match graph.find_nearest_node(task_location_coord) {
+            match graph.find_nearest_node(task_location_coord, 5) {
                 Some(n) => {
                     task_location_coord = graph.node(n).position;
                     Some(n)
@@ -752,7 +752,7 @@ impl SimState {
                     if let Some(c) = self.db.creatures.get(&creature_id) {
                         let old_pos = c.position;
                         let graph = self.graph_for_species(species);
-                        if let Some(new_node) = graph.find_nearest_node(old_pos) {
+                        if let Some(new_node) = graph.find_nearest_node(old_pos, 5) {
                             self.ground_wander(creature_id, new_node, events);
                         }
                     }
@@ -772,7 +772,7 @@ impl SimState {
                 let graph = self.graph_for_species(species);
                 if let Some(mut c) = self.db.creatures.get(&creature_id) {
                     let old_pos = c.position;
-                    if let Some(new_node) = graph.find_nearest_node(old_pos) {
+                    if let Some(new_node) = graph.find_nearest_node(old_pos, 5) {
                         let new_pos = graph.node(new_node).position;
                         c.position = new_pos;
                         let _ = self.db.update_creature(c);
