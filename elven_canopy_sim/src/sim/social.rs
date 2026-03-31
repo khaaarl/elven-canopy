@@ -29,7 +29,6 @@ use crate::types::{FriendshipCategory, OpinionKind, TraitKind};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SkillPicker {
     /// Use Culture skill (dancing, ceremonies). Used by F-social-dance.
-    #[expect(dead_code)]
     Culture,
     /// Use max(Influence, Culture) — casual social interactions where the
     /// creature plays to their strength.

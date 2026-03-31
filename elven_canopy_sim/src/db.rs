@@ -1263,6 +1263,13 @@ pub struct ActivityParticipant {
     ///   Bits 1+ = number of social impression checks completed.
     #[serde(default)]
     pub waypoint_cursor: u32,
+
+    /// Number of social impression checks this participant has completed during
+    /// the activity's execution phase (F-social-dance). Separate from
+    /// `waypoint_cursor` because dance already uses that field for choreography
+    /// waypoint progress.
+    #[serde(default)]
+    pub impressions_made: u32,
 }
 
 /// Dance-specific extension data (1:1 with Activity, PK = activity_id).

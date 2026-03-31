@@ -312,6 +312,12 @@ pub struct ThoughtConfig {
     /// Dedup for EnjoyedDinnerWith/AwkwardDinnerWith (F-dinner-party).
     #[serde(default = "default_dedup_dinner_chat")]
     pub dedup_dinner_chat_ticks: u64,
+    /// Dedup for EnjoyedDanceWith/AwkwardDanceWith (F-social-dance).
+    #[serde(default = "default_dedup_dance_chat")]
+    pub dedup_dance_chat_ticks: u64,
+    /// Dedup for DancedWithFriend (F-social-dance).
+    #[serde(default = "default_dedup_danced_with_friend")]
+    pub dedup_danced_with_friend_ticks: u64,
 
     // --- Expiry durations (ticks after which a thought is removed) ---
     pub expiry_slept_home_ticks: u64,
@@ -337,6 +343,12 @@ pub struct ThoughtConfig {
     /// Expiry for EnjoyedDinnerWith/AwkwardDinnerWith (F-dinner-party).
     #[serde(default = "default_expiry_dinner_chat")]
     pub expiry_dinner_chat_ticks: u64,
+    /// Expiry for EnjoyedDanceWith/AwkwardDanceWith (F-social-dance).
+    #[serde(default = "default_expiry_dance_chat")]
+    pub expiry_dance_chat_ticks: u64,
+    /// Expiry for DancedWithFriend (F-social-dance).
+    #[serde(default = "default_expiry_danced_with_friend")]
+    pub expiry_danced_with_friend_ticks: u64,
 }
 
 fn default_dedup_enjoying_dance() -> u64 {
@@ -390,6 +402,27 @@ fn default_weight_enjoyed_dinner_with() -> i32 {
 fn default_weight_awkward_dinner_with() -> i32 {
     -10 // same as awkward chat
 }
+fn default_dedup_dance_chat() -> u64 {
+    30_000 // same as casual/dinner chat — same creature pair cooldown
+}
+fn default_dedup_danced_with_friend() -> u64 {
+    150_000 // one per day cycle, same as DancedInGroup
+}
+fn default_expiry_dance_chat() -> u64 {
+    150_000 // ~2.5 min real time, same as casual chat
+}
+fn default_expiry_danced_with_friend() -> u64 {
+    300_000 // ~5 min real time, same as DancedInGroup
+}
+fn default_weight_enjoyed_dance_with() -> i32 {
+    10 // same as pleasant chat / enjoyed dinner with
+}
+fn default_weight_awkward_dance_with() -> i32 {
+    -10 // same as awkward chat / awkward dinner with
+}
+fn default_weight_danced_with_friend() -> i32 {
+    40 // moderate bonus — less than DancedInGroup (60) but stacks with it
+}
 
 impl ThoughtConfig {
     /// Return the dedup cooldown ticks for a given thought kind.
@@ -410,6 +443,10 @@ impl ThoughtConfig {
             ThoughtKind::EnjoyedDinnerWith(_) | ThoughtKind::AwkwardDinnerWith(_) => {
                 self.dedup_dinner_chat_ticks
             }
+            ThoughtKind::EnjoyedDanceWith(_) | ThoughtKind::AwkwardDanceWith(_) => {
+                self.dedup_dance_chat_ticks
+            }
+            ThoughtKind::DancedWithFriend => self.dedup_danced_with_friend_ticks,
         }
     }
 
@@ -431,6 +468,10 @@ impl ThoughtConfig {
             ThoughtKind::EnjoyedDinnerWith(_) | ThoughtKind::AwkwardDinnerWith(_) => {
                 self.expiry_dinner_chat_ticks
             }
+            ThoughtKind::EnjoyedDanceWith(_) | ThoughtKind::AwkwardDanceWith(_) => {
+                self.expiry_dance_chat_ticks
+            }
+            ThoughtKind::DancedWithFriend => self.expiry_danced_with_friend_ticks,
         }
     }
 }
@@ -457,6 +498,9 @@ impl Default for ThoughtConfig {
             dedup_dinner_party_ticks: default_dedup_dinner_party(),
             // Dinner chat: same creature pair cooldown.
             dedup_dinner_chat_ticks: default_dedup_dinner_chat(),
+            // Dance social (F-social-dance).
+            dedup_dance_chat_ticks: default_dedup_dance_chat(),
+            dedup_danced_with_friend_ticks: default_dedup_danced_with_friend(),
             // Medium expiry (~10 min real time).
             expiry_slept_home_ticks: 600_000,
             expiry_slept_dormitory_ticks: 600_000,
@@ -474,6 +518,9 @@ impl Default for ThoughtConfig {
             expiry_dinner_party_ticks: default_expiry_dinner_party(),
             // Dinner chat: same expiry as casual chat (~2.5 min real time).
             expiry_dinner_chat_ticks: default_expiry_dinner_chat(),
+            // Dance social (F-social-dance).
+            expiry_dance_chat_ticks: default_expiry_dance_chat(),
+            expiry_danced_with_friend_ticks: default_expiry_danced_with_friend(),
         }
     }
 }
@@ -522,6 +569,15 @@ pub struct MoodConfig {
     /// Weight for AwkwardDinnerWith thoughts (small negative, F-dinner-party).
     #[serde(default = "default_weight_awkward_dinner_with")]
     pub weight_awkward_dinner_with: i32,
+    /// Weight for EnjoyedDanceWith thoughts (small positive, F-social-dance).
+    #[serde(default = "default_weight_enjoyed_dance_with")]
+    pub weight_enjoyed_dance_with: i32,
+    /// Weight for AwkwardDanceWith thoughts (small negative, F-social-dance).
+    #[serde(default = "default_weight_awkward_dance_with")]
+    pub weight_awkward_dance_with: i32,
+    /// Weight for DancedWithFriend thoughts (moderate positive, F-social-dance).
+    #[serde(default = "default_weight_danced_with_friend")]
+    pub weight_danced_with_friend: i32,
 
     /// Scores at or below this are Devastated.
     pub tier_devastated_below: i32,
@@ -554,6 +610,9 @@ impl MoodConfig {
             ThoughtKind::EnjoyedDinnerParty => self.weight_enjoyed_dinner_party,
             ThoughtKind::EnjoyedDinnerWith(_) => self.weight_enjoyed_dinner_with,
             ThoughtKind::AwkwardDinnerWith(_) => self.weight_awkward_dinner_with,
+            ThoughtKind::EnjoyedDanceWith(_) => self.weight_enjoyed_dance_with,
+            ThoughtKind::AwkwardDanceWith(_) => self.weight_awkward_dance_with,
+            ThoughtKind::DancedWithFriend => self.weight_danced_with_friend,
         }
     }
 
@@ -593,6 +652,9 @@ impl Default for MoodConfig {
             weight_enjoyed_dinner_party: default_weight_enjoyed_dinner_party(),
             weight_enjoyed_dinner_with: default_weight_enjoyed_dinner_with(),
             weight_awkward_dinner_with: default_weight_awkward_dinner_with(),
+            weight_enjoyed_dance_with: default_weight_enjoyed_dance_with(),
+            weight_awkward_dance_with: default_weight_awkward_dance_with(),
+            weight_danced_with_friend: default_weight_danced_with_friend(),
             tier_devastated_below: -300,
             tier_miserable_below: -150,
             tier_unhappy_below: -30,
@@ -735,6 +797,12 @@ pub struct ActivityConfig {
     /// selected other participants during a dinner party.
     #[serde(default = "default_dinner_party_impressions_per_elf")]
     pub dinner_party_impressions_per_elf: u32,
+
+    // --- Dance social (F-social-dance) ---
+    /// Number of social impression checks each participant makes on randomly
+    /// selected other dancers during a group dance.
+    #[serde(default = "default_dance_impressions_per_elf")]
+    pub dance_impressions_per_elf: u32,
 }
 
 fn default_dance_duration_secs() -> f32 {
@@ -781,6 +849,10 @@ fn default_dinner_party_impressions_per_elf() -> u32 {
     2
 }
 
+fn default_dance_impressions_per_elf() -> u32 {
+    2
+}
+
 impl Default for ActivityConfig {
     fn default() -> Self {
         Self {
@@ -806,6 +878,7 @@ impl Default for ActivityConfig {
             dinner_party_min_count: default_dinner_party_min_count(),
             dinner_party_desired_count: default_dinner_party_desired_count(),
             dinner_party_impressions_per_elf: default_dinner_party_impressions_per_elf(),
+            dance_impressions_per_elf: default_dance_impressions_per_elf(),
         }
     }
 }

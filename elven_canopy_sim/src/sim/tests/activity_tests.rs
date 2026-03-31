@@ -3769,6 +3769,7 @@ fn elf_already_volunteer_cannot_organize() {
         travel_task: None,
         dance_slot: None,
         waypoint_cursor: 0,
+        impressions_made: 0,
     };
     sim.db.insert_activity_participant(participant).unwrap();
 

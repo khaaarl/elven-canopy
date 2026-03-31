@@ -37,9 +37,20 @@
 // the hall cooldown (first-dance nudge). The organizer creates an Autonomous
 // Open-recruitment dance and becomes the first participant with Organizer role.
 //
+// ## Social integration (F-social-dance)
+//
+// During dance execution, participants make periodic social impression checks
+// on random fellow dancers using `SkillPicker::Culture`. This upserts
+// Friendliness opinions, advances Culture skill, and awards dance-specific
+// thoughts (EnjoyedDanceWith / AwkwardDanceWith). On completion, dancers who
+// have Acquaintance+ friendships with co-dancers get a bonus DancedWithFriend
+// thought. Impressions are spread across the dance duration using the
+// `impressions_made` counter on `ActivityParticipant`.
+//
 // See also: `activation.rs` for the activation loop integration,
 // `preemption.rs` for activity preemption levels, `db.rs` for the `Activity`
-// and `ActivityParticipant` tables, `types.rs` for enums.
+// and `ActivityParticipant` tables, `types.rs` for enums, `social.rs` for
+// the opinion system and skill check formula.
 
 use crate::event::SimEvent;
 use crate::types::{
@@ -200,6 +211,7 @@ impl SimState {
             travel_task: None,
             dance_slot: None,
             waypoint_cursor: 0,
+            impressions_made: 0,
         };
         self.db.insert_activity_participant(participant).unwrap();
 
@@ -309,6 +321,7 @@ impl SimState {
             travel_task: None,
             dance_slot: None,
             waypoint_cursor: 0,
+            impressions_made: 0,
         };
         self.db.insert_activity_participant(participant).unwrap();
 
@@ -693,9 +706,29 @@ impl SimState {
         // Add mood boost.
         self.add_creature_thought(creature_id, crate::types::ThoughtKind::EnjoyingDance);
 
-        // Check completion: elapsed ticks >= total_ticks.
+        // Social impression checks (F-social-dance): spread evenly across
+        // the dance duration, mirroring the dinner party pattern.
+        let total_ticks = plan.total_ticks;
         let elapsed = self.tick.saturating_sub(execution_start);
-        if elapsed >= plan.total_ticks {
+        let max_impressions = self.config.activity.dance_impressions_per_elf;
+        if participant.impressions_made < max_impressions && total_ticks > 0 {
+            let next_impression_tick =
+                (participant.impressions_made as u64 + 1) * total_ticks / max_impressions as u64;
+            if elapsed >= next_impression_tick {
+                self.dance_social_check(creature_id, activity_id);
+                if let Some(mut p) = self
+                    .db
+                    .activity_participants
+                    .get(&(activity_id, creature_id))
+                {
+                    p.impressions_made += 1;
+                    let _ = self.db.update_activity_participant(p);
+                }
+            }
+        }
+
+        // Check completion: elapsed ticks >= total_ticks.
+        if elapsed >= total_ticks {
             self.complete_activity(activity_id, events);
             return None; // complete_activity schedules reactivation.
         }
@@ -784,6 +817,23 @@ impl SimState {
                 if let Some(mut c) = self.db.creatures.get(cid) {
                     c.last_dance_tick = self.tick;
                     let _ = self.db.update_creature(c);
+                }
+            }
+
+            // DancedWithFriend bonus (F-social-dance): if any co-dancer is an
+            // Acquaintance or Friend, award a bonus mood thought.
+            let acquaintance_threshold = self.config.social.friendship_acquaintance_threshold;
+            for cid in &participant_ids {
+                let has_friend = participant_ids.iter().any(|&other| {
+                    other != *cid
+                        && self
+                            .db
+                            .creature_opinions
+                            .get(&(*cid, crate::types::OpinionKind::Friendliness, other))
+                            .is_some_and(|o| o.intensity >= acquaintance_threshold)
+                });
+                if has_friend {
+                    self.add_creature_thought(*cid, crate::types::ThoughtKind::DancedWithFriend);
                 }
             }
 
@@ -1458,6 +1508,7 @@ impl SimState {
             travel_task: None,
             dance_slot: None,
             waypoint_cursor: 0,
+            impressions_made: 0,
         };
         self.db.insert_activity_participant(participant).unwrap();
 
@@ -1685,6 +1736,62 @@ impl SimState {
         }
     }
 
+    /// Dance: make a social impression check on a random fellow dancer
+    /// (F-social-dance). Uses `SkillPicker::Culture` — dancing is a cultural
+    /// activity, so the Culture skill determines impression quality and is the
+    /// skill that advances.
+    fn dance_social_check(&mut self, creature_id: CreatureId, activity_id: ActivityId) {
+        // Gather other Arrived participants.
+        let participants = self
+            .db
+            .activity_participants
+            .by_activity_id(&activity_id, tabulosity::QueryOpts::ASC);
+        let others: Vec<CreatureId> = participants
+            .iter()
+            .filter(|p| p.creature_id != creature_id && p.status == ParticipantStatus::Arrived)
+            .map(|p| p.creature_id)
+            .collect();
+        if others.is_empty() {
+            return;
+        }
+
+        // Pick a random fellow dancer.
+        let idx = self.rng.next_u32() as usize % others.len();
+        let target_id = others[idx];
+
+        // Make impression check using Culture skill (not BestSocial).
+        let delta = self.social_impression(target_id, super::social::SkillPicker::Culture);
+        self.upsert_opinion(
+            creature_id,
+            crate::types::OpinionKind::Friendliness,
+            target_id,
+            delta,
+        );
+
+        // Culture skill advancement.
+        let skill_prob = self.config.social.skill_advance_probability_permille;
+        self.try_advance_skill(creature_id, crate::types::TraitKind::Culture, skill_prob);
+
+        // Generate dance-specific thought.
+        let name = self
+            .db
+            .creatures
+            .get(&target_id)
+            .map(|c| c.name.clone())
+            .unwrap_or_default();
+        if delta > 0 {
+            self.add_creature_thought(
+                creature_id,
+                crate::types::ThoughtKind::EnjoyedDanceWith(name),
+            );
+        } else if delta < 0 {
+            self.add_creature_thought(
+                creature_id,
+                crate::types::ThoughtKind::AwkwardDanceWith(name),
+            );
+        }
+    }
+
     /// Check whether a dance hall structure currently has an active (non-complete,
     /// non-cancelled) dance activity linked to it. Used for venue exclusivity —
     /// no two dances may run on the same hall simultaneously.
@@ -1904,6 +2011,7 @@ impl SimState {
             travel_task: None,
             dance_slot: None,
             waypoint_cursor: 0,
+            impressions_made: 0,
         };
         self.db.insert_activity_participant(participant).unwrap();
 

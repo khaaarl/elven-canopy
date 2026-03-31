@@ -216,7 +216,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-slow-eating          Slow eating with interruptible consumption and partial restoration
 [ ] F-smooth-perf          Smooth mesh performance optimization
 [ ] F-smooth-ycutoff       Post-smoothing Y-cutoff with cap faces
-[ ] F-social-dance         Dance integration with social opinions
 [ ] F-social-graph         Relationships and social contagion
 [ ] F-social-intensity     Context-dependent social impression strength tuning
 [ ] F-social-prefer        Social preference in group activity recruitment
@@ -495,6 +494,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-sim-speed            Simulation speed controls UI
 [x] F-sim-tab-migrate      Migrate sim entity storage to tabulosity SimDb
 [x] F-skill-check-helper   Unified skill_check helper and game-mechanics doc
+[x] F-social-dance         Dance integration with social opinions
 [x] F-social-opinions      Interpersonal opinion table and social skill checks
 [x] F-spatial-index        Creature spatial index for voxel-level position queries
 [x] F-spawn-toolbar        Spawn toolbar and placement UI
@@ -3768,15 +3768,15 @@ shelter.
 **Related:** F-forest-ecology, F-weather
 
 #### F-social-dance — Dance integration with social opinions
-**Status:** Todo
+**Status:** Done
 
 Integrate group dance with the social opinions system. Dancing together
 upserts Friendliness opinions between dance partners, with intensity
 modulated by Culture skill and CHA. Joy gained from dancing is tweaked
 upward when dancing with creatures you already like.
 
-**Blocks:** F-social-graph
 **Unblocked by:** F-social-opinions
+**Unblocked:** F-social-graph
 **Related:** F-casual-social, F-dinner-party, F-group-dance, F-social-intensity, F-social-prefer
 
 #### F-social-graph — Relationships and social contagion
@@ -3792,8 +3792,8 @@ pieces are done and integrated — including emotional contagion (mood
 spreading through social connections, weighted by relationship intensity)
 which requires F-emotions.
 
-**Blocked by:** F-combat-opinions, F-emotions, F-formal-bonds, F-group-chat, F-romance, F-social-dance, F-social-prefer, F-social-ui
-**Unblocked by:** F-casual-social, F-dinner-party, F-social-opinions
+**Blocked by:** F-combat-opinions, F-emotions, F-formal-bonds, F-group-chat, F-romance, F-social-prefer, F-social-ui
+**Unblocked by:** F-casual-social, F-dinner-party, F-social-dance, F-social-opinions
 **Related:** F-emotions, F-funeral-rites, F-personality
 
 #### F-social-intensity — Context-dependent social impression strength tuning

@@ -1084,6 +1084,12 @@ pub enum ThoughtKind {
     EnjoyedDinnerWith(String),
     /// Awkward dinner with a specific creature (negative impression, F-dinner-party).
     AwkwardDinnerWith(String),
+    /// Enjoyed dancing with a specific creature (positive impression, F-social-dance).
+    EnjoyedDanceWith(String),
+    /// Awkward dance with a specific creature (negative impression, F-social-dance).
+    AwkwardDanceWith(String),
+    /// Bonus mood boost on dance completion when a co-dancer is a friend (F-social-dance).
+    DancedWithFriend,
 }
 
 impl ThoughtKind {
@@ -1111,6 +1117,13 @@ impl ThoughtKind {
             ThoughtKind::AwkwardDinnerWith(name) => {
                 format!("Awkward dinner with {name}")
             }
+            ThoughtKind::EnjoyedDanceWith(name) => {
+                format!("Enjoyed dancing with {name}")
+            }
+            ThoughtKind::AwkwardDanceWith(name) => {
+                format!("Awkward dance with {name}")
+            }
+            ThoughtKind::DancedWithFriend => "Danced with a friend".into(),
         }
     }
 }
@@ -1939,6 +1952,7 @@ mod tests {
             travel_task: None,
             dance_slot: None,
             waypoint_cursor: 0,
+            impressions_made: 0,
         };
         let json = serde_json::to_string(&participant).unwrap();
         let restored: ActivityParticipant = serde_json::from_str(&json).unwrap();
