@@ -618,6 +618,7 @@ fn dormitory_sleep_generates_thought() {
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
             last_dance_completed_tick: 0,
+            last_dinner_party_completed_tick: 0,
         })
         .unwrap();
     sim.db
@@ -727,6 +728,7 @@ fn home_sleep_generates_thought() {
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
             last_dance_completed_tick: 0,
+            last_dinner_party_completed_tick: 0,
         })
         .unwrap();
     sim.db
@@ -848,6 +850,7 @@ fn low_ceiling_generates_thought() {
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
             last_dance_completed_tick: 0,
+            last_dinner_party_completed_tick: 0,
         })
         .unwrap();
     sim.db

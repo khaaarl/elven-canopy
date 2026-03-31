@@ -120,7 +120,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-defense-struct       Defensive structures (ballista, wards)
 [ ] F-demolish             Structure demolition
 [ ] F-dining-furnishing    Dining hall tables and seating furnishings
-[ ] F-dinner-party         Organized group dining social activity
 [ ] F-docs-overhaul        Reorganize and consolidate docs/ directory
 [ ] F-dwarf-fort-gen       Underground dwarf fortress generation
 [ ] F-dye-application      Apply dye to equipment at workshop
@@ -368,6 +367,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-dance-self-org       Elves self-organize dances
 [x] F-dblclick-select      Double-click to select all of same military group
 [x] F-debug-menu           Move spawn/summon into debug menu
+[x] F-dinner-party         Organized group dining social activity
 [x] F-distance-fog         Depth-based atmospheric fog/haze
 [x] F-dye-crafting         Dye pressing from pigmented fruit components
 [x] F-dynamic-pursuit      Dynamic repathfinding for moving-target tasks
@@ -3307,106 +3307,44 @@ triggers from combat events.
 **Unblocked by:** F-social-opinions
 
 #### F-dinner-party — Organized group dining social activity
-**Status:** Todo
+**Status:** Done
 
 Organized group dining as a social activity. Unlike routine individual
 dining (which only gets incidental casual socialization from proximity),
 a dinner party is a coordinated group activity where elves gather, eat
-together, and socialize — upserting Friendliness opinions between
+together, and socialize -- upserting Friendliness opinions between
 participants and providing mood boosts.
 
-**Spontaneous only — no player-directed dinner parties.** An eligible elf
-(hungry enough, not on cooldown) rolls a PPM chance during heartbeat.
-On success, they become the organizer and create a DinnerParty activity
-at a dining hall with sufficient food and free seats. Other elves in the
-hunger-eligible range can volunteer to join (Open recruitment mode).
+**Spontaneous only -- no player-directed dinner parties.** An eligible elf
+(hungry enough, not on cooldown) rolls a PPM chance during idle
+activation. On success, they become the organizer and create a
+DinnerParty activity at a dining hall with sufficient food and free
+seats. Other elves in the hunger-eligible range can volunteer to join
+(Open recruitment mode).
 
 **Timer mechanism (mirrors dance halls).** Per-hall and per-elf cooldowns
 prevent constant dinner parties. A newly-furnished hall (one that has
 never hosted a completed dinner party) bypasses the hall cooldown so the
-player sees a dinner party soon after building the hall. Config fields:
-`dinner_party_hall_cooldown_ticks`, `dinner_party_elf_cooldown_ticks`,
-`dinner_party_organize_chance_ppm`.
+player sees a dinner party soon after building the hall.
 
-**Revised hunger bands.** To make dinner parties viable, the hunger
-thresholds are restructured into a gradient. New config fields control
-dinner-party-specific thresholds alongside the existing dining/hunger
-fields (which shift downward):
+**Revised hunger bands.** Hunger thresholds restructured into a gradient:
+70-100% not hungry, 60-70% willing to join dinner party, 40-60% willing
+to organize, 30-40% solo dining, 0-30% emergency eating.
 
-| Food % | Behavior |
-|--------|----------|
-| 70–100% | Not hungry |
-| 60–70% | Willing to **join** an existing dinner party if invited |
-| 40–60% | Willing to **organize** a dinner party (also willing to join) |
-| 30–40% | **Solo dining** — go eat at a dining hall alone |
-| 0–30% | **Emergency** — eat rations/fruit immediately |
+**Lifecycle:** Recruiting (check food+seats) -> Assembling (GoTo hall) ->
+Executing (eat at start + social impressions over duration) -> Complete
+(thoughts, cooldowns, cleanup).
 
-New config fields: `food_dinner_party_organize_threshold_pct` (default
-60), `food_dinner_party_join_threshold_pct` (default 70). Existing
-fields shift: `food_dining_threshold_pct` drops to 40,
-`food_hunger_threshold_pct` drops to 30.
+**Current simplifications (deferred to future refinement):**
+- Food consumed at execution start rather than reserved at recruitment.
+- Participants gather at hall interior rather than per-seat TaskVoxelRef
+  assignment (deferred to F-dining-furnishing).
+- Impression strength same as casual social (deferred to F-social-intensity).
+- No preferential invites (deferred to F-social-prefer).
+- No food quality mood scaling.
 
-**Lifecycle (standard group activity pattern):**
-
-1. *Recruiting* — Organizer selects a dining hall with sufficient food
-   (≥ min_count items). Food is reserved from the hall's inventory at
-   recruitment time. Open recruitment: idle or low-priority elves in the
-   civ whose food level is below the join threshold can volunteer.
-
-2. *Assembling* — Participants get GoTo tasks to assigned seats (using
-   the existing TaskVoxelRef / DiningSeat pattern for seat reservations).
-   Standard assembly timeout applies — if not enough participants arrive,
-   the activity cancels and reserved food is released.
-
-3. *Executing (the dinner)* — Two interleaved concerns:
-   - **Eating:** Each participant consumes one reserved food item,
-     restoring hunger. A dinner party satisfies the hunger need — an elf
-     who attends doesn't need to separately solo-dine.
-   - **Socializing:** Over the dinner's duration, each participant makes
-     a fixed number of social impression checks (configurable, e.g. 2–3)
-     on randomly selected other participants at the table. Uses the
-     standard `social_impression` / `upsert_opinion(Friendliness)` pattern
-     from casual social. Each check also triggers skill advancement on
-     the creature's best social skill (max of Influence, Culture). A
-     thought is generated: positive ("Enjoyed dinner with [Name]") or
-     negative ("Awkward dinner with [Name]") based on net impression
-     delta. An overall mood thought ("Enjoyed a dinner party") is also
-     awarded, potentially scaled by average Friendliness toward
-     tablemates in the future.
-   - Config: `dinner_party_impressions_per_elf` (number of impression
-     checks each participant makes), `dinner_party_duration_secs`.
-
-4. *Complete* — Release seat reservations, apply per-elf cooldown,
-   clean up activity rows.
-
-**Seat assignment:** Uses the same dining seat locations as conventional
-solo dining (existing TaskVoxelRef / DiningSeat pattern). No new
-furnishing types needed. Better dining room furnishing with proper
-tables and chairs is deferred to a separate tracker item.
-
-**Interaction density:** Each elf makes a fixed number of impression
-checks (`dinner_party_impressions_per_elf`) on randomly selected other
-participants, regardless of party size. This keeps the cost bounded and
-predictable. For a table of 4 with 2 impressions each, that's 8 checks
-total — comparable to 8 casual social interactions but concentrated in
-one social event.
-
-**Impression strength:** Uses the same `social_impression_delta` function
-as casual social for now. Tuning relative strength (e.g., dinner
-impressions being stronger than passing-in-the-hallway, or different
-effectiveness at different friendship tiers) is deferred to future work
-on social intensity scaling.
-
-**Deferred concerns:**
-- Food quality affecting mood boost (future, once quality system is
-  more mature).
-- Preferential invites — organizer biasing toward friends (deferred to
-  F-social-prefer as a general group-activity system).
-- Better dining room furnishing / table layouts (separate tracker item).
-- Impression strength tuning vs casual social (future social balancing).
-
-**Blocks:** F-social-graph
 **Unblocked by:** F-group-activity, F-social-opinions
+**Unblocked:** F-social-graph
 **Related:** F-bldg-dining, F-dining-furnishing, F-food-quality-mood, F-group-chat, F-slow-eating, F-social-dance, F-social-intensity, F-social-prefer
 
 #### F-elaborate-social — Elaborate casual social interactions (visible pauses, variety, personality)
@@ -3734,8 +3672,8 @@ pieces are done and integrated — including emotional contagion (mood
 spreading through social connections, weighted by relationship intensity)
 which requires F-emotions.
 
-**Blocked by:** F-combat-opinions, F-dinner-party, F-emotions, F-formal-bonds, F-group-chat, F-romance, F-social-dance, F-social-prefer, F-social-ui
-**Unblocked by:** F-casual-social, F-social-opinions
+**Blocked by:** F-combat-opinions, F-emotions, F-formal-bonds, F-group-chat, F-romance, F-social-dance, F-social-prefer, F-social-ui
+**Unblocked by:** F-casual-social, F-dinner-party, F-social-opinions
 **Related:** F-emotions, F-funeral-rites, F-personality
 
 #### F-social-intensity — Context-dependent social impression strength tuning

@@ -1,7 +1,8 @@
 // Group activity lifecycle — multi-creature coordination layer.
 //
 // Activities are a coordination layer above the task system for actions that
-// require multiple participants (dances, construction choirs, rituals).
+// require multiple participants (dances, dinner parties, construction choirs,
+// rituals).
 // Activities own tasks (GoTo for assembly) rather than replacing them.
 //
 // ## Lifecycle
@@ -69,7 +70,9 @@ impl SimState {
         // Per-kind eligibility defaults. Dance is restricted to the player's
         // elf civ; other kinds will get their own rules when implemented.
         let (civ_id, required_species) = match kind {
-            ActivityKind::Dance => (self.player_civ_id, Some(Species::Elf)),
+            ActivityKind::Dance | ActivityKind::DinnerParty => {
+                (self.player_civ_id, Some(Species::Elf))
+            }
             _ => (None, None),
         };
 
@@ -433,7 +436,7 @@ impl SimState {
 
     /// Check if enough participants have arrived to transition from
     /// Assembling to Executing.
-    fn check_assembly_complete(&mut self, activity_id: ActivityId) {
+    pub(crate) fn check_assembly_complete(&mut self, activity_id: ActivityId) {
         let activity = match self.db.activities.get(&activity_id) {
             Some(a) => a.clone(),
             None => return,
@@ -476,6 +479,9 @@ impl SimState {
 
         if activity.kind == ActivityKind::Dance {
             return self.execute_dance_behavior(creature_id, activity_id, &activity, events);
+        }
+        if activity.kind == ActivityKind::DinnerParty {
+            return self.execute_dinner_party_behavior(creature_id, activity_id, &activity, events);
         }
         // Other activity kinds will be implemented by their respective features.
         None
@@ -796,6 +802,34 @@ impl SimState {
             }
         }
 
+        if activity.kind == ActivityKind::DinnerParty {
+            for cid in &participant_ids {
+                self.add_creature_thought(*cid, crate::types::ThoughtKind::EnjoyedDinnerParty);
+            }
+
+            // Update per-creature dinner party cooldown.
+            for cid in &participant_ids {
+                if let Some(mut c) = self.db.creatures.get(cid) {
+                    c.last_dinner_party_tick = self.tick;
+                    let _ = self.db.update_creature(c);
+                }
+            }
+
+            // Update per-hall dinner party cooldown.
+            let structure_refs = self
+                .db
+                .activity_structure_refs
+                .by_activity_id(&activity_id, tabulosity::QueryOpts::ASC);
+            for sr in &structure_refs {
+                if sr.role == crate::db::ActivityStructureRole::DinnerPartyVenue
+                    && let Some(mut s) = self.db.structures.get(&sr.structure_id)
+                {
+                    s.last_dinner_party_completed_tick = self.tick;
+                    let _ = self.db.update_structure(s);
+                }
+            }
+        }
+
         // Release all participants and schedule reactivation so they resume
         // normal behavior (find tasks, wander, etc.). schedule_reactivation
         // sets next_available_tick, which is all that's needed in the
@@ -1071,6 +1105,25 @@ impl SimState {
                 continue;
             }
 
+            // Dinner party: hunger gate (food must be below join threshold)
+            // and per-elf cooldown.
+            if activity.kind == ActivityKind::DinnerParty {
+                if let Some(species_data) = self.species_table.get(&creature.species) {
+                    let join_threshold = species_data.food_max
+                        * species_data.food_dinner_party_join_threshold_pct
+                        / 100;
+                    if creature.food >= join_threshold {
+                        continue;
+                    }
+                }
+                if creature.last_dinner_party_tick > 0
+                    && self.tick.saturating_sub(creature.last_dinner_party_tick)
+                        < self.config.activity.dinner_party_elf_cooldown_ticks
+                {
+                    continue;
+                }
+            }
+
             // Check if already volunteered.
             if self
                 .db
@@ -1261,6 +1314,9 @@ impl SimState {
         if kind == ActivityKind::Dance {
             self.generate_dance_plan(activity_id);
         }
+        if kind == ActivityKind::DinnerParty {
+            self.setup_dinner_party(activity_id);
+        }
     }
 
     /// Helper: update the activity phase. Uses `update_activity` because `phase`
@@ -1408,6 +1464,227 @@ impl SimState {
         true
     }
 
+    /// Set up a dinner party when it enters the Executing phase.
+    /// Converts duration_secs to ticks and sets total_cost for progress display.
+    fn setup_dinner_party(&mut self, activity_id: ActivityId) {
+        let tps = 1000 / self.config.tick_duration_ms as u64;
+        let duration_ticks = (self.config.activity.dinner_party_duration_secs * tps as f32) as i64;
+
+        if let Some(mut a) = self.db.activities.get(&activity_id) {
+            a.total_cost = duration_ticks;
+            let _ = self.db.update_activity(a);
+        }
+
+        // All arrived participants eat immediately at the start of the dinner.
+        // This ensures everyone eats before the timer runs and the activity
+        // completes (avoiding the race where the first creature to activate
+        // at the end tick triggers completion before others eat).
+        // Late-joiners (allows_late_join = true) who arrive during execution
+        // eat via the `!has_eaten` fallback in `execute_dinner_party_behavior`.
+        let participants = self
+            .db
+            .activity_participants
+            .by_activity_id(&activity_id, tabulosity::QueryOpts::ASC);
+        let creature_ids: Vec<CreatureId> = participants.iter().map(|p| p.creature_id).collect();
+        for cid in creature_ids {
+            self.dinner_party_eat(cid, activity_id);
+            // Mark as eaten in waypoint_cursor.
+            if let Some(mut p) = self.db.activity_participants.get(&(activity_id, cid)) {
+                p.waypoint_cursor |= 1;
+                let _ = self.db.update_activity_participant(p);
+            }
+        }
+    }
+
+    /// Execute one activation tick of dinner party behavior for a creature.
+    ///
+    /// On each activation during the dinner duration:
+    /// 1. If the creature hasn't eaten yet (waypoint_cursor == 0), consume one
+    ///    food item from the dining hall and restore hunger.
+    /// 2. Make social impression checks on random tablemates (distributed
+    ///    evenly across the dinner duration using waypoint_cursor as a counter
+    ///    for how many checks have been made).
+    /// 3. When elapsed >= total_cost, the first creature to activate triggers
+    ///    completion.
+    fn execute_dinner_party_behavior(
+        &mut self,
+        creature_id: CreatureId,
+        activity_id: ActivityId,
+        activity: &crate::db::Activity,
+        events: &mut Vec<SimEvent>,
+    ) -> Option<u64> {
+        let execution_start = activity.execution_start_tick?;
+        let total_ticks = activity.total_cost.max(0) as u64;
+        let elapsed = self.tick.saturating_sub(execution_start);
+
+        // Check completion.
+        if elapsed >= total_ticks {
+            self.complete_activity(activity_id, events);
+            return None;
+        }
+
+        let participant = match self
+            .db
+            .activity_participants
+            .get(&(activity_id, creature_id))
+        {
+            Some(p) => p.clone(),
+            None => return None,
+        };
+
+        // waypoint_cursor tracks: bit 0 = has eaten, bits 1+ = impressions made.
+        let has_eaten = participant.waypoint_cursor & 1 != 0;
+        let impressions_made = participant.waypoint_cursor >> 1;
+
+        // Step 1: Eat (once, on first activation).
+        if !has_eaten {
+            self.dinner_party_eat(creature_id, activity_id);
+            // Update cursor to mark as eaten.
+            if let Some(mut p) = self
+                .db
+                .activity_participants
+                .get(&(activity_id, creature_id))
+            {
+                p.waypoint_cursor |= 1;
+                let _ = self.db.update_activity_participant(p);
+            }
+        }
+
+        // Step 2: Social impression checks, spread across the dinner duration.
+        let max_impressions = self.config.activity.dinner_party_impressions_per_elf;
+        if impressions_made < max_impressions && total_ticks > 0 {
+            // Distribute impressions evenly across the duration.
+            // The Nth impression should happen at elapsed >= N * total_ticks / max.
+            let next_impression_tick =
+                (impressions_made as u64 + 1) * total_ticks / max_impressions as u64;
+            if elapsed >= next_impression_tick {
+                self.dinner_party_social_check(creature_id, activity_id);
+                // Update cursor.
+                if let Some(mut p) = self
+                    .db
+                    .activity_participants
+                    .get(&(activity_id, creature_id))
+                {
+                    let new_count = impressions_made + 1;
+                    p.waypoint_cursor = (p.waypoint_cursor & 1) | (new_count << 1);
+                    let _ = self.db.update_activity_participant(p);
+                }
+            }
+        }
+
+        // Sleep until the next event: either the next impression check or
+        // the dinner end.
+        let next_impression_tick = if impressions_made < max_impressions && total_ticks > 0 {
+            execution_start + (impressions_made as u64 + 1) * total_ticks / max_impressions as u64
+        } else {
+            execution_start + total_ticks
+        };
+        Some(next_impression_tick.max(self.tick + 1))
+    }
+
+    /// Dinner party: consume one food item from the dining hall, restoring
+    /// the creature's food level.
+    fn dinner_party_eat(&mut self, creature_id: CreatureId, activity_id: ActivityId) {
+        // Find the dining hall linked to this activity.
+        let structure_id = self
+            .db
+            .activity_structure_refs
+            .by_activity_id(&activity_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .find(|r| r.role == crate::db::ActivityStructureRole::DinnerPartyVenue)
+            .map(|r| r.structure_id);
+        let structure_id = match structure_id {
+            Some(id) => id,
+            None => return,
+        };
+
+        let inv_id = match self.db.structures.get(&structure_id) {
+            Some(s) => s.inventory_id,
+            None => return,
+        };
+
+        // Try to consume one edible item.
+        let consumed = self.inv_consume_one_edible(inv_id);
+        if consumed {
+            // Restore food.
+            let creature = match self.db.creatures.get(&creature_id) {
+                Some(c) => c,
+                None => return,
+            };
+            let species_data = match self.species_table.get(&creature.species) {
+                Some(s) => s.clone(),
+                None => return,
+            };
+            let restore = species_data.food_max * species_data.food_restore_pct / 100;
+            if let Some(mut c) = self.db.creatures.get(&creature_id) {
+                c.food = (c.food + restore).min(species_data.food_max);
+                let _ = self.db.update_creature(c);
+            }
+            // Award dining thought.
+            self.add_creature_thought(creature_id, crate::types::ThoughtKind::AteDining);
+        }
+    }
+
+    /// Dinner party: make a social impression check on a random tablemate.
+    fn dinner_party_social_check(&mut self, creature_id: CreatureId, activity_id: ActivityId) {
+        // Gather other Arrived participants.
+        let participants = self
+            .db
+            .activity_participants
+            .by_activity_id(&activity_id, tabulosity::QueryOpts::ASC);
+        let others: Vec<CreatureId> = participants
+            .iter()
+            .filter(|p| p.creature_id != creature_id && p.status == ParticipantStatus::Arrived)
+            .map(|p| p.creature_id)
+            .collect();
+        if others.is_empty() {
+            return;
+        }
+
+        // Pick a random tablemate.
+        let idx = self.rng.next_u32() as usize % others.len();
+        let target_id = others[idx];
+
+        // Make impression check (same as casual social).
+        let delta = self.social_impression(target_id, super::social::SkillPicker::BestSocial);
+        self.upsert_opinion(
+            creature_id,
+            crate::types::OpinionKind::Friendliness,
+            target_id,
+            delta,
+        );
+
+        // Skill advancement on best social skill (Culture vs Influence).
+        let skill_prob = self.config.social.skill_advance_probability_permille;
+        let influence = self.trait_int(creature_id, crate::types::TraitKind::Influence, 0);
+        let culture = self.trait_int(creature_id, crate::types::TraitKind::Culture, 0);
+        let skill = if influence >= culture {
+            crate::types::TraitKind::Influence
+        } else {
+            crate::types::TraitKind::Culture
+        };
+        self.try_advance_skill(creature_id, skill, skill_prob);
+
+        // Generate dinner-specific thought.
+        let name = self
+            .db
+            .creatures
+            .get(&target_id)
+            .map(|c| c.name.clone())
+            .unwrap_or_default();
+        if delta > 0 {
+            self.add_creature_thought(
+                creature_id,
+                crate::types::ThoughtKind::EnjoyedDinnerWith(name),
+            );
+        } else if delta < 0 {
+            self.add_creature_thought(
+                creature_id,
+                crate::types::ThoughtKind::AwkwardDinnerWith(name),
+            );
+        }
+    }
+
     /// Check whether a dance hall structure currently has an active (non-complete,
     /// non-cancelled) dance activity linked to it. Used for venue exclusivity —
     /// no two dances may run on the same hall simultaneously.
@@ -1458,6 +1735,241 @@ impl SimState {
         }
         true
     }
+
+    // -----------------------------------------------------------------------
+    // Dinner party (F-dinner-party)
+    // -----------------------------------------------------------------------
+
+    /// Attempt to spontaneously organize a dinner party at a nearby dining hall.
+    /// Called from the idle creature activation path (same pattern as dance).
+    /// Gates: alive, idle, elf, civ, food below organize threshold, per-elf
+    /// cooldown, no existing activity participation, nearby dining hall with
+    /// enough food and seats, hall cooldown / first-dinner-party nudge / venue
+    /// exclusivity, PPM roll.
+    pub(crate) fn try_organize_spontaneous_dinner_party(
+        &mut self,
+        creature_id: CreatureId,
+        events: &mut Vec<SimEvent>,
+    ) -> bool {
+        let creature = match self.db.creatures.get(&creature_id) {
+            Some(c) => c.clone(),
+            None => return false,
+        };
+
+        // Must be alive, idle, and an elf with a civ.
+        if creature.vital_status != VitalStatus::Alive {
+            return false;
+        }
+        if creature.current_task.is_some() || creature.current_activity.is_some() {
+            return false;
+        }
+        if creature.species != Species::Elf {
+            return false;
+        }
+        if creature.civ_id.is_none() {
+            return false;
+        }
+
+        // Hunger gate: food must be below organize threshold.
+        let species_data = match self.species_table.get(&creature.species) {
+            Some(s) => s,
+            None => return false,
+        };
+        let organize_threshold =
+            species_data.food_max * species_data.food_dinner_party_organize_threshold_pct / 100;
+        if creature.food >= organize_threshold {
+            return false;
+        }
+
+        // Per-elf cooldown.
+        if creature.last_dinner_party_tick > 0
+            && self.tick.saturating_sub(creature.last_dinner_party_tick)
+                < self.config.activity.dinner_party_elf_cooldown_ticks
+        {
+            return false;
+        }
+
+        // Already a participant/volunteer in any activity — skip.
+        let existing = self
+            .db
+            .activity_participants
+            .by_creature_id(&creature_id, tabulosity::QueryOpts::ASC);
+        if !existing.is_empty() {
+            return false;
+        }
+
+        // Find nearby dining halls with enough food and seats.
+        let search_radius = self.config.activity.volunteer_search_radius.max(0) as u32;
+        let min_count = self.config.activity.dinner_party_min_count.max(1) as usize;
+        let pos = creature.position;
+
+        let mut candidate_hall: Option<(crate::types::StructureId, u32)> = None;
+
+        for structure in self.db.structures.iter_all() {
+            if structure.furnishing != Some(crate::types::FurnishingType::DiningHall) {
+                continue;
+            }
+
+            // Distance check.
+            let dist = pos.manhattan_distance(structure.anchor);
+            if dist > search_radius {
+                continue;
+            }
+
+            // Venue exclusivity.
+            if self.hall_has_active_dinner_party(structure.id) {
+                continue;
+            }
+
+            // Hall cooldown (skipped for first-dinner-party nudge).
+            if structure.last_dinner_party_completed_tick > 0 {
+                let elapsed = self
+                    .tick
+                    .saturating_sub(structure.last_dinner_party_completed_tick);
+                if elapsed < self.config.activity.dinner_party_hall_cooldown_ticks {
+                    continue;
+                }
+            }
+
+            // Check food availability: need at least min_count unreserved edible items.
+            let food_count: u32 = crate::inventory::ItemKind::EDIBLE_KINDS
+                .iter()
+                .map(|kind| {
+                    self.inv_unreserved_item_count(
+                        structure.inventory_id,
+                        *kind,
+                        crate::inventory::MaterialFilter::Any,
+                    )
+                })
+                .sum();
+            if (food_count as usize) < min_count {
+                continue;
+            }
+
+            // Check free seats: need at least min_count.
+            let free_seats = self.count_free_dining_seats(structure.id);
+            if free_seats < min_count {
+                continue;
+            }
+
+            // Pick closest hall.
+            if candidate_hall.is_none() || dist < candidate_hall.unwrap().1 {
+                candidate_hall = Some((structure.id, dist));
+            }
+        }
+
+        let (hall_id, _) = match candidate_hall {
+            Some(h) => h,
+            None => return false,
+        };
+
+        // Probability roll.
+        if self.rng.next_u32() % 1_000_000 >= self.config.activity.dinner_party_organize_chance_ppm
+        {
+            return false;
+        }
+
+        // Organize the dinner party.
+        let structure = self.db.structures.get(&hall_id).unwrap().clone();
+        let interior = structure.floor_interior_positions();
+        let location = interior.first().copied().unwrap_or(structure.anchor);
+
+        let activity_id = self.handle_create_activity(
+            ActivityKind::DinnerParty,
+            location,
+            Some(self.config.activity.dinner_party_min_count as u16),
+            Some(self.config.activity.dinner_party_desired_count as u16),
+            crate::task::TaskOrigin::Autonomous,
+            events,
+        );
+
+        // Link activity to the dining hall.
+        let seq = self.db.activity_structure_refs.next_seq();
+        let _ = self
+            .db
+            .insert_activity_structure_ref(crate::db::ActivityStructureRef {
+                activity_id,
+                seq,
+                structure_id: hall_id,
+                role: crate::db::ActivityStructureRole::DinnerPartyVenue,
+            });
+
+        // The organizer becomes the first participant.
+        let participant = crate::db::ActivityParticipant {
+            activity_id,
+            creature_id,
+            role: ParticipantRole::Organizer,
+            status: ParticipantStatus::Volunteered,
+            assigned_position: location,
+            travel_task: None,
+            dance_slot: None,
+            waypoint_cursor: 0,
+        };
+        self.db.insert_activity_participant(participant).unwrap();
+
+        true
+    }
+
+    /// Count free dining seats in a dining hall. Each placed furniture item is
+    /// a table with `dining_seats_per_table` seats, minus seats occupied by
+    /// active DiningSeat voxel refs.
+    fn count_free_dining_seats(&self, structure_id: crate::types::StructureId) -> usize {
+        let seats_per_table = self.config.dining_seats_per_table;
+
+        // Count occupied seats per table coord.
+        let mut occupied: std::collections::BTreeMap<crate::types::VoxelCoord, u32> =
+            std::collections::BTreeMap::new();
+        for r in self.db.task_voxel_refs.iter_all() {
+            if r.role == crate::db::TaskVoxelRole::DiningSeat
+                && self
+                    .db
+                    .tasks
+                    .get(&r.task_id)
+                    .is_some_and(|t| t.state != crate::task::TaskState::Complete)
+            {
+                *occupied.entry(r.coord).or_insert(0) += 1;
+            }
+        }
+
+        let mut total_free = 0usize;
+        for furn in self
+            .db
+            .furniture
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC)
+        {
+            if !furn.placed {
+                continue;
+            }
+            let occ = occupied.get(&furn.coord).copied().unwrap_or(0);
+            total_free += (seats_per_table.saturating_sub(occ)) as usize;
+        }
+        total_free
+    }
+
+    /// Check whether a dining hall currently has an active dinner party.
+    pub(crate) fn hall_has_active_dinner_party(
+        &self,
+        structure_id: crate::types::StructureId,
+    ) -> bool {
+        let refs = self
+            .db
+            .activity_structure_refs
+            .by_structure_id(&structure_id, tabulosity::QueryOpts::ASC);
+        for r in &refs {
+            if r.role != crate::db::ActivityStructureRole::DinnerPartyVenue {
+                continue;
+            }
+            if let Some(activity) = self.db.activities.get(&r.activity_id)
+                && !matches!(
+                    activity.phase,
+                    ActivityPhase::Complete | ActivityPhase::Cancelled
+                )
+            {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1469,7 +1981,7 @@ fn default_departure_policy(
     config: &crate::config::ActivityConfig,
 ) -> DeparturePolicy {
     match kind {
-        ActivityKind::Dance => DeparturePolicy::Continue,
+        ActivityKind::Dance | ActivityKind::DinnerParty => DeparturePolicy::Continue,
         ActivityKind::ConstructionChoir => DeparturePolicy::PauseAndWait {
             timeout_ticks: config.pause_timeout_ticks,
         },
@@ -1480,7 +1992,7 @@ fn default_departure_policy(
 
 fn default_allows_late_join(kind: ActivityKind) -> bool {
     match kind {
-        ActivityKind::Dance => true,
+        ActivityKind::Dance | ActivityKind::DinnerParty => true,
         ActivityKind::ConstructionChoir => false,
         ActivityKind::Ceremony => false,
         ActivityKind::CombatSinging => true,
@@ -1490,7 +2002,7 @@ fn default_allows_late_join(kind: ActivityKind) -> bool {
 
 fn default_recruitment_mode(kind: ActivityKind) -> RecruitmentMode {
     match kind {
-        ActivityKind::Dance => RecruitmentMode::Open,
+        ActivityKind::Dance | ActivityKind::DinnerParty => RecruitmentMode::Open,
         ActivityKind::ConstructionChoir => RecruitmentMode::Directed,
         ActivityKind::Ceremony => RecruitmentMode::Directed,
         ActivityKind::CombatSinging => RecruitmentMode::Directed,

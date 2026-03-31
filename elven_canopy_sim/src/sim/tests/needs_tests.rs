@@ -35,6 +35,7 @@ fn create_dining_hall_with_id(
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
             last_dance_completed_tick: 0,
+            last_dinner_party_completed_tick: 0,
         })
         .unwrap();
     // Place one table.
@@ -303,6 +304,7 @@ fn find_nearest_bed_excludes_occupied() {
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
             last_dance_completed_tick: 0,
+            last_dinner_party_completed_tick: 0,
         })
         .unwrap();
     sim.db
@@ -424,6 +426,7 @@ fn tired_elf_sleeps_and_rest_increases() {
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
             last_dance_completed_tick: 0,
+            last_dinner_party_completed_tick: 0,
         })
         .unwrap();
     sim.db
@@ -1862,10 +1865,10 @@ fn elf_seeks_dining_hall_at_dining_threshold() {
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     create_dining_hall(&mut sim, table_pos, 5);
 
-    // Set food to 50% — below dining threshold (60%) but above emergency (40%).
+    // Set food to 35% — below solo dining threshold (40%) but above emergency (30%).
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
-        c.food = food_max * 50 / 100;
+        c.food = food_max * 35 / 100;
         sim.db.update_creature(c).unwrap();
     }
 
@@ -1896,7 +1899,7 @@ fn elf_eats_emergency_food_below_hunger_threshold() {
 
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
-    // Give bread and set food to 10% — well below emergency threshold (40%).
+    // Give bread and set food to 10% — well below emergency threshold (30%).
     sim.inv_add_simple_item(
         sim.creature_inv(elf_id),
         ItemKind::Bread,
@@ -1933,10 +1936,10 @@ fn elf_stays_idle_at_dining_threshold_without_hall() {
 
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
-    // Set food to 50% — below dining threshold but above emergency. No dining hall.
+    // Set food to 35% — below dining threshold but above emergency. No dining hall.
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
-        c.food = food_max * 50 / 100;
+        c.food = food_max * 35 / 100;
         sim.db.update_creature(c).unwrap();
     }
 
@@ -1973,10 +1976,10 @@ fn dine_at_hall_reserves_seat_and_food() {
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     let structure_id = create_dining_hall(&mut sim, table_pos, 2);
 
-    // Set food to 50%.
+    // Set food to 35%.
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
-        c.food = food_max * 50 / 100;
+        c.food = food_max * 35 / 100;
         sim.db.update_creature(c).unwrap();
     }
 
@@ -2037,8 +2040,8 @@ fn dine_at_hall_completion_restores_food_and_generates_thought() {
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     create_dining_hall(&mut sim, table_pos, 3);
 
-    // Set food to 50% — below dining threshold (60%) but above emergency (40%).
-    let initial_food = food_max * 50 / 100;
+    // Set food to 35% — below solo dining threshold (40%) but above emergency (30%).
+    let initial_food = food_max * 35 / 100;
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.food = initial_food;
@@ -2097,10 +2100,10 @@ fn dine_at_hall_cleanup_releases_reservations() {
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     let structure_id = create_dining_hall(&mut sim, table_pos, 2);
 
-    // Set food to 50%.
+    // Set food to 35%.
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
-        c.food = food_max * 50 / 100;
+        c.food = food_max * 35 / 100;
         sim.db.update_creature(c).unwrap();
     }
 
@@ -2239,6 +2242,7 @@ fn dining_hall_with_fruit_only() {
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
             last_dance_completed_tick: 0,
+            last_dinner_party_completed_tick: 0,
         })
         .unwrap();
     sim.db
@@ -2271,10 +2275,10 @@ fn dine_at_hall_instant_on_arrival() {
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     create_dining_hall(&mut sim, table_pos, 3);
 
-    // Place elf at table and set food to 50%.
+    // Place elf at table and set food to 35%.
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
-        c.food = food_max * 50 / 100;
+        c.food = food_max * 35 / 100;
         c.position = table_pos;
         sim.db.update_creature(c).unwrap();
     }
@@ -2344,6 +2348,7 @@ fn furnish_dining_hall_enables_logistics() {
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
             last_dance_completed_tick: 0,
+            last_dinner_party_completed_tick: 0,
         })
         .unwrap();
 
@@ -2405,10 +2410,10 @@ fn dining_preempts_autonomous_task() {
         required_civ_id: None,
     };
     sim.insert_task(haul_task);
-    // Set food into the dining band.
+    // Set food into the solo dining band (30–40%).
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
-        c.food = food_max * 50 / 100;
+        c.food = food_max * 35 / 100;
         sim.db.update_creature(c).unwrap();
     }
     // Assign the task (indexed field — must use full update).
@@ -2539,11 +2544,11 @@ fn end_to_end_dining_hall() {
     let inv_id = sim.db.structures.get(&structure_id).unwrap().inventory_id;
     sim.inv_add_simple_item(inv_id, ItemKind::Bread, 10, None, None);
 
-    // Spawn an elf and set food to 50% (in the dining band).
+    // Spawn an elf and set food to 35% (in the solo dining band: 30–40%).
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
-        c.food = food_max * 50 / 100;
+        c.food = food_max * 35 / 100;
         sim.db.update_creature(c).unwrap();
     }
 
@@ -2660,10 +2665,10 @@ fn elf_resumes_activation_after_dining() {
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     create_dining_hall(&mut sim, table_pos, 5);
 
-    // Set food to 50% (dining band) and place elf near table.
+    // Set food to 35% (solo dining band: 30–40%) and place elf near table.
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
-        c.food = food_max * 50 / 100;
+        c.food = food_max * 35 / 100;
         sim.db.update_creature(c).unwrap();
     }
 
@@ -2728,10 +2733,10 @@ fn dine_at_hall_no_task_when_food_unavailable() {
 
     let tasks_before = sim.db.tasks.iter_all().count();
 
-    // Set food to 50% — below dining threshold (60%) but above emergency (40%).
+    // Set food to 35% — below solo dining threshold (40%) but above emergency (30%).
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
-        c.food = food_max * 50 / 100;
+        c.food = food_max * 35 / 100;
         sim.db.update_creature(c).unwrap();
     }
 
@@ -2793,10 +2798,10 @@ fn two_elves_one_food_only_one_gets_dine_task() {
     // Create a dining hall with exactly 1 bread.
     create_dining_hall(&mut sim, table_pos, 1);
 
-    // Set both elves to 50% food — below dining threshold.
+    // Set both elves to 35% food — in solo dining band (30–40%).
     for eid in [elf_a, elf_b] {
         let mut c = sim.db.creatures.get(&eid).unwrap();
-        c.food = food_max * 50 / 100;
+        c.food = food_max * 35 / 100;
         sim.db.update_creature(c).unwrap();
     }
 
@@ -3516,6 +3521,7 @@ fn find_nearest_dining_hall_unplaced_table_ignored() {
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
             last_dance_completed_tick: 0,
+            last_dinner_party_completed_tick: 0,
         })
         .unwrap();
     // Insert one table with placed=false.
@@ -3553,10 +3559,10 @@ fn wild_creature_does_not_seek_dining_hall() {
     let squirrel_id = spawn_creature(&mut sim, Species::Squirrel);
     create_dining_hall(&mut sim, table_pos, 10);
 
-    // Set squirrel food to 50% — in the dining band for elves.
+    // Set squirrel food to 35% — in the dining band for elves.
     {
         let mut c = sim.db.creatures.get(&squirrel_id).unwrap();
-        c.food = food_max * 50 / 100;
+        c.food = food_max * 35 / 100;
         sim.db.update_creature(c).unwrap();
     }
 

@@ -31,6 +31,7 @@ mod commands_tests;
 mod construction_tests;
 mod crafting_tests;
 mod creature_tests;
+mod dinner_party_tests;
 mod diplomacy_tests;
 mod equipment_tests;
 mod flee_tests;

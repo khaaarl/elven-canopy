@@ -1107,4 +1107,32 @@ impl SimState {
             .map(|w| w.target_quantity)
             .sum()
     }
+
+    /// Remove one unreserved, unowned edible item from an inventory.
+    /// Returns `true` if an item was consumed.
+    pub(crate) fn inv_consume_one_edible(&mut self, inv_id: InventoryId) -> bool {
+        for kind in inventory::ItemKind::EDIBLE_KINDS {
+            let stacks = self
+                .db
+                .item_stacks
+                .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC);
+            for stack in &stacks {
+                if stack.kind == *kind
+                    && stack.owner.is_none()
+                    && stack.reserved_by.is_none()
+                    && stack.quantity > 0
+                {
+                    if stack.quantity == 1 {
+                        let _ = self.db.remove_item_stack(&stack.id);
+                    } else {
+                        let mut s = stack.clone();
+                        s.quantity -= 1;
+                        let _ = self.db.update_item_stack(s);
+                    }
+                    return true;
+                }
+            }
+        }
+        false
+    }
 }

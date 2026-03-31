@@ -544,6 +544,7 @@ pub(super) fn insert_completed_building(sim: &mut SimState, anchor: VoxelCoord) 
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
             last_dance_completed_tick: 0,
+            last_dinner_party_completed_tick: 0,
         })
         .unwrap();
 
@@ -908,6 +909,7 @@ pub(super) fn insert_building(
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
             last_dance_completed_tick: 0,
+            last_dinner_party_completed_tick: 0,
         })
         .unwrap();
     sim.set_inv_wants(inv_id, &wants);

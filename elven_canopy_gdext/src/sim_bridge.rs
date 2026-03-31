@@ -1597,6 +1597,7 @@ impl SimBridge {
                 elven_canopy_sim::types::ActivityKind::CombatSinging => "Combat Singing",
                 elven_canopy_sim::types::ActivityKind::GroupHaul => "Group Haul",
                 elven_canopy_sim::types::ActivityKind::Ceremony => "Ceremony",
+                elven_canopy_sim::types::ActivityKind::DinnerParty => "Dinner Party",
             };
             dict.set("kind", GString::from(kind_str));
 

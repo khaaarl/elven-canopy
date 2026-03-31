@@ -1078,6 +1078,12 @@ pub enum ThoughtKind {
     HadPleasantChat(String),
     /// Had an awkward casual exchange with another creature (F-casual-social).
     HadAwkwardChat(String),
+    /// Moderate mood boost on completing a dinner party (F-dinner-party).
+    EnjoyedDinnerParty,
+    /// Enjoyed dinner with a specific creature (positive impression, F-dinner-party).
+    EnjoyedDinnerWith(String),
+    /// Awkward dinner with a specific creature (negative impression, F-dinner-party).
+    AwkwardDinnerWith(String),
 }
 
 impl ThoughtKind {
@@ -1097,6 +1103,13 @@ impl ThoughtKind {
             }
             ThoughtKind::HadAwkwardChat(name) => {
                 format!("Had an awkward exchange with {name}")
+            }
+            ThoughtKind::EnjoyedDinnerParty => "Enjoyed a dinner party".into(),
+            ThoughtKind::EnjoyedDinnerWith(name) => {
+                format!("Enjoyed dinner with {name}")
+            }
+            ThoughtKind::AwkwardDinnerWith(name) => {
+                format!("Awkward dinner with {name}")
             }
         }
     }
@@ -1151,6 +1164,8 @@ pub enum ActivityKind {
     GroupHaul,
     /// Ceremony/ritual — seasonal or milestone event.
     Ceremony,
+    /// Organized group dining — elves eat together and socialize.
+    DinnerParty,
 }
 
 /// Lifecycle phase of a group activity. See `sim/activity.rs` for transition

@@ -306,6 +306,12 @@ pub struct ThoughtConfig {
     /// this window. Default: 30,000 (~30 sim-seconds).
     #[serde(default = "default_dedup_casual_chat")]
     pub dedup_casual_chat_ticks: u64,
+    /// Dedup for EnjoyedDinnerParty (F-dinner-party).
+    #[serde(default = "default_dedup_dinner_party")]
+    pub dedup_dinner_party_ticks: u64,
+    /// Dedup for EnjoyedDinnerWith/AwkwardDinnerWith (F-dinner-party).
+    #[serde(default = "default_dedup_dinner_chat")]
+    pub dedup_dinner_chat_ticks: u64,
 
     // --- Expiry durations (ticks after which a thought is removed) ---
     pub expiry_slept_home_ticks: u64,
@@ -324,6 +330,13 @@ pub struct ThoughtConfig {
     /// Default: 150,000 (~2.5 min real time).
     #[serde(default = "default_expiry_casual_chat")]
     pub expiry_casual_chat_ticks: u64,
+    /// Expiry for EnjoyedDinnerParty (F-dinner-party). Longer than dance
+    /// completion since dinner parties are rarer.
+    #[serde(default = "default_expiry_dinner_party")]
+    pub expiry_dinner_party_ticks: u64,
+    /// Expiry for EnjoyedDinnerWith/AwkwardDinnerWith (F-dinner-party).
+    #[serde(default = "default_expiry_dinner_chat")]
+    pub expiry_dinner_chat_ticks: u64,
 }
 
 fn default_dedup_enjoying_dance() -> u64 {
@@ -356,6 +369,27 @@ fn default_weight_enjoying_dance() -> i32 {
 fn default_weight_danced_in_group() -> i32 {
     60
 }
+fn default_dedup_dinner_party() -> u64 {
+    150_000 // same as danced-in-group — one per day cycle
+}
+fn default_dedup_dinner_chat() -> u64 {
+    30_000 // same as casual chat — same creature pair cooldown
+}
+fn default_expiry_dinner_party() -> u64 {
+    300_000 // ~5 min real time, same as danced-in-group
+}
+fn default_expiry_dinner_chat() -> u64 {
+    150_000 // ~2.5 min, same as casual chat
+}
+fn default_weight_enjoyed_dinner_party() -> i32 {
+    60 // same as danced-in-group
+}
+fn default_weight_enjoyed_dinner_with() -> i32 {
+    10 // same as pleasant chat
+}
+fn default_weight_awkward_dinner_with() -> i32 {
+    -10 // same as awkward chat
+}
 
 impl ThoughtConfig {
     /// Return the dedup cooldown ticks for a given thought kind.
@@ -371,6 +405,10 @@ impl ThoughtConfig {
             ThoughtKind::DancedInGroup => self.dedup_danced_in_group_ticks,
             ThoughtKind::HadPleasantChat(_) | ThoughtKind::HadAwkwardChat(_) => {
                 self.dedup_casual_chat_ticks
+            }
+            ThoughtKind::EnjoyedDinnerParty => self.dedup_dinner_party_ticks,
+            ThoughtKind::EnjoyedDinnerWith(_) | ThoughtKind::AwkwardDinnerWith(_) => {
+                self.dedup_dinner_chat_ticks
             }
         }
     }
@@ -388,6 +426,10 @@ impl ThoughtConfig {
             ThoughtKind::DancedInGroup => self.expiry_danced_in_group_ticks,
             ThoughtKind::HadPleasantChat(_) | ThoughtKind::HadAwkwardChat(_) => {
                 self.expiry_casual_chat_ticks
+            }
+            ThoughtKind::EnjoyedDinnerParty => self.expiry_dinner_party_ticks,
+            ThoughtKind::EnjoyedDinnerWith(_) | ThoughtKind::AwkwardDinnerWith(_) => {
+                self.expiry_dinner_chat_ticks
             }
         }
     }
@@ -411,6 +453,10 @@ impl Default for ThoughtConfig {
             dedup_danced_in_group_ticks: 150_000,
             // Casual chat: same creature pair can re-trigger after ~30 sim-seconds.
             dedup_casual_chat_ticks: default_dedup_casual_chat(),
+            // Dinner party: one completion thought per day cycle.
+            dedup_dinner_party_ticks: default_dedup_dinner_party(),
+            // Dinner chat: same creature pair cooldown.
+            dedup_dinner_chat_ticks: default_dedup_dinner_chat(),
             // Medium expiry (~10 min real time).
             expiry_slept_home_ticks: 600_000,
             expiry_slept_dormitory_ticks: 600_000,
@@ -424,6 +470,10 @@ impl Default for ThoughtConfig {
             expiry_danced_in_group_ticks: 300_000,
             // Casual chat: same expiry as food thoughts (~2.5 min real time).
             expiry_casual_chat_ticks: default_expiry_casual_chat(),
+            // Dinner party: same as danced-in-group (~5 min real time).
+            expiry_dinner_party_ticks: default_expiry_dinner_party(),
+            // Dinner chat: same expiry as casual chat (~2.5 min real time).
+            expiry_dinner_chat_ticks: default_expiry_dinner_chat(),
         }
     }
 }
@@ -463,6 +513,15 @@ pub struct MoodConfig {
     /// Weight for HadAwkwardChat thoughts (small negative, F-casual-social).
     #[serde(default = "default_weight_awkward_chat")]
     pub weight_awkward_chat: i32,
+    /// Weight for EnjoyedDinnerParty thoughts (moderate positive, F-dinner-party).
+    #[serde(default = "default_weight_enjoyed_dinner_party")]
+    pub weight_enjoyed_dinner_party: i32,
+    /// Weight for EnjoyedDinnerWith thoughts (small positive, F-dinner-party).
+    #[serde(default = "default_weight_enjoyed_dinner_with")]
+    pub weight_enjoyed_dinner_with: i32,
+    /// Weight for AwkwardDinnerWith thoughts (small negative, F-dinner-party).
+    #[serde(default = "default_weight_awkward_dinner_with")]
+    pub weight_awkward_dinner_with: i32,
 
     /// Scores at or below this are Devastated.
     pub tier_devastated_below: i32,
@@ -492,6 +551,9 @@ impl MoodConfig {
             ThoughtKind::DancedInGroup => self.weight_danced_in_group,
             ThoughtKind::HadPleasantChat(_) => self.weight_pleasant_chat,
             ThoughtKind::HadAwkwardChat(_) => self.weight_awkward_chat,
+            ThoughtKind::EnjoyedDinnerParty => self.weight_enjoyed_dinner_party,
+            ThoughtKind::EnjoyedDinnerWith(_) => self.weight_enjoyed_dinner_with,
+            ThoughtKind::AwkwardDinnerWith(_) => self.weight_awkward_dinner_with,
         }
     }
 
@@ -528,6 +590,9 @@ impl Default for MoodConfig {
             weight_danced_in_group: 60,
             weight_pleasant_chat: default_weight_pleasant_chat(),
             weight_awkward_chat: default_weight_awkward_chat(),
+            weight_enjoyed_dinner_party: default_weight_enjoyed_dinner_party(),
+            weight_enjoyed_dinner_with: default_weight_enjoyed_dinner_with(),
+            weight_awkward_dinner_with: default_weight_awkward_dinner_with(),
             tier_devastated_below: -300,
             tier_miserable_below: -150,
             tier_unhappy_below: -30,
@@ -634,6 +699,42 @@ pub struct ActivityConfig {
     /// consistent with the sim's integer-only probability convention.
     #[serde(default = "default_dance_organize_chance_ppm")]
     pub dance_organize_chance_ppm: u32,
+
+    // --- Dinner party (F-dinner-party) ---
+    /// Target duration for a dinner party in seconds.
+    #[serde(default = "default_dinner_party_duration_secs")]
+    pub dinner_party_duration_secs: f32,
+
+    /// Minimum ticks between dinner parties at the same dining hall.
+    /// A newly-furnished hall (one that has never hosted a completed dinner
+    /// party) bypasses this cooldown so the player sees a dinner party soon
+    /// after building the hall.
+    #[serde(default = "default_dinner_party_hall_cooldown_ticks")]
+    pub dinner_party_hall_cooldown_ticks: u64,
+
+    /// Minimum ticks before a creature can organize or join another
+    /// spontaneous dinner party. Spreads participation across the population.
+    #[serde(default = "default_dinner_party_elf_cooldown_ticks")]
+    pub dinner_party_elf_cooldown_ticks: u64,
+
+    /// Probability per idle activation (parts per million, 0–1_000_000) that
+    /// an eligible creature near a dining hall spontaneously organizes a
+    /// dinner party.
+    #[serde(default = "default_dinner_party_organize_chance_ppm")]
+    pub dinner_party_organize_chance_ppm: u32,
+
+    /// Minimum participants for a dinner party to proceed.
+    #[serde(default = "default_dinner_party_min_count")]
+    pub dinner_party_min_count: u32,
+
+    /// Desired (maximum) participants for a dinner party.
+    #[serde(default = "default_dinner_party_desired_count")]
+    pub dinner_party_desired_count: u32,
+
+    /// Number of social impression checks each participant makes on randomly
+    /// selected other participants during a dinner party.
+    #[serde(default = "default_dinner_party_impressions_per_elf")]
+    pub dinner_party_impressions_per_elf: u32,
 }
 
 fn default_dance_duration_secs() -> f32 {
@@ -650,6 +751,34 @@ fn default_dance_elf_cooldown_ticks() -> u64 {
 
 fn default_dance_organize_chance_ppm() -> u32 {
     20_000 // 2% = 20_000 / 1_000_000
+}
+
+fn default_dinner_party_duration_secs() -> f32 {
+    20.0
+}
+
+fn default_dinner_party_hall_cooldown_ticks() -> u64 {
+    300_000 // ~5 min real time
+}
+
+fn default_dinner_party_elf_cooldown_ticks() -> u64 {
+    180_000 // ~3 min real time
+}
+
+fn default_dinner_party_organize_chance_ppm() -> u32 {
+    20_000 // 2% = 20_000 / 1_000_000
+}
+
+fn default_dinner_party_min_count() -> u32 {
+    2
+}
+
+fn default_dinner_party_desired_count() -> u32 {
+    4
+}
+
+fn default_dinner_party_impressions_per_elf() -> u32 {
+    2
 }
 
 impl Default for ActivityConfig {
@@ -669,6 +798,14 @@ impl Default for ActivityConfig {
             dance_elf_cooldown_ticks: default_dance_elf_cooldown_ticks(),
             // 2% chance per idle activation (20_000 PPM).
             dance_organize_chance_ppm: default_dance_organize_chance_ppm(),
+            // Dinner party defaults (F-dinner-party).
+            dinner_party_duration_secs: default_dinner_party_duration_secs(),
+            dinner_party_hall_cooldown_ticks: default_dinner_party_hall_cooldown_ticks(),
+            dinner_party_elf_cooldown_ticks: default_dinner_party_elf_cooldown_ticks(),
+            dinner_party_organize_chance_ppm: default_dinner_party_organize_chance_ppm(),
+            dinner_party_min_count: default_dinner_party_min_count(),
+            dinner_party_desired_count: default_dinner_party_desired_count(),
+            dinner_party_impressions_per_elf: default_dinner_party_impressions_per_elf(),
         }
     }
 }
@@ -3023,8 +3160,10 @@ impl Default for GameConfig {
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 333_333_333,
-                food_dining_threshold_pct: 60,
-                food_hunger_threshold_pct: 40,
+                food_dinner_party_join_threshold_pct: 70,
+                food_dinner_party_organize_threshold_pct: 60,
+                food_dining_threshold_pct: 40,
+                food_hunger_threshold_pct: 30,
                 food_restore_pct: 40,
                 bread_restore_pct: 30,
                 footprint: [1, 1, 1],
@@ -3076,8 +3215,10 @@ impl Default for GameConfig {
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 333_333_333,
-                food_dining_threshold_pct: 60,
-                food_hunger_threshold_pct: 40,
+                food_dinner_party_join_threshold_pct: 70,
+                food_dinner_party_organize_threshold_pct: 60,
+                food_dining_threshold_pct: 40,
+                food_hunger_threshold_pct: 30,
                 food_restore_pct: 40,
                 bread_restore_pct: 30,
                 footprint: [1, 1, 1],
@@ -3124,8 +3265,10 @@ impl Default for GameConfig {
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 333_333_333,
-                food_dining_threshold_pct: 60,
-                food_hunger_threshold_pct: 40,
+                food_dinner_party_join_threshold_pct: 70,
+                food_dinner_party_organize_threshold_pct: 60,
+                food_dining_threshold_pct: 40,
+                food_hunger_threshold_pct: 30,
                 food_restore_pct: 40,
                 bread_restore_pct: 30,
                 footprint: [1, 1, 1],
@@ -3172,8 +3315,10 @@ impl Default for GameConfig {
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 333_333_333,
-                food_dining_threshold_pct: 60,
-                food_hunger_threshold_pct: 40,
+                food_dinner_party_join_threshold_pct: 70,
+                food_dinner_party_organize_threshold_pct: 60,
+                food_dining_threshold_pct: 40,
+                food_hunger_threshold_pct: 30,
                 food_restore_pct: 40,
                 bread_restore_pct: 30,
                 footprint: [1, 1, 1],
@@ -3220,8 +3365,10 @@ impl Default for GameConfig {
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 333_333_333,
-                food_dining_threshold_pct: 60,
-                food_hunger_threshold_pct: 40,
+                food_dinner_party_join_threshold_pct: 70,
+                food_dinner_party_organize_threshold_pct: 60,
+                food_dining_threshold_pct: 40,
+                food_hunger_threshold_pct: 30,
                 food_restore_pct: 40,
                 bread_restore_pct: 30,
                 footprint: [2, 2, 2],
@@ -3268,8 +3415,10 @@ impl Default for GameConfig {
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 0,
-                food_dining_threshold_pct: 60,
-                food_hunger_threshold_pct: 40,
+                food_dinner_party_join_threshold_pct: 70,
+                food_dinner_party_organize_threshold_pct: 60,
+                food_dining_threshold_pct: 40,
+                food_hunger_threshold_pct: 30,
                 food_restore_pct: 40,
                 bread_restore_pct: 30,
                 footprint: [1, 1, 1],
@@ -3321,8 +3470,10 @@ impl Default for GameConfig {
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 333_333_333,
-                food_dining_threshold_pct: 60,
-                food_hunger_threshold_pct: 40,
+                food_dinner_party_join_threshold_pct: 70,
+                food_dinner_party_organize_threshold_pct: 60,
+                food_dining_threshold_pct: 40,
+                food_hunger_threshold_pct: 30,
                 food_restore_pct: 40,
                 bread_restore_pct: 30,
                 footprint: [1, 1, 1],
@@ -3369,8 +3520,10 @@ impl Default for GameConfig {
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 0,
-                food_dining_threshold_pct: 60,
-                food_hunger_threshold_pct: 40,
+                food_dinner_party_join_threshold_pct: 70,
+                food_dinner_party_organize_threshold_pct: 60,
+                food_dining_threshold_pct: 40,
+                food_hunger_threshold_pct: 30,
                 food_restore_pct: 40,
                 bread_restore_pct: 30,
                 footprint: [1, 1, 1],
@@ -3422,8 +3575,10 @@ impl Default for GameConfig {
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 333_333_333,
-                food_dining_threshold_pct: 60,
-                food_hunger_threshold_pct: 40,
+                food_dinner_party_join_threshold_pct: 70,
+                food_dinner_party_organize_threshold_pct: 60,
+                food_dining_threshold_pct: 40,
+                food_hunger_threshold_pct: 30,
                 food_restore_pct: 40,
                 bread_restore_pct: 30,
                 footprint: [1, 1, 1],
@@ -3470,8 +3625,10 @@ impl Default for GameConfig {
                 ticks_per_hp_regen: 500, // 2 HP/sec at 1000 ticks/sec
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 0,
-                food_dining_threshold_pct: 60,
-                food_hunger_threshold_pct: 40,
+                food_dinner_party_join_threshold_pct: 70,
+                food_dinner_party_organize_threshold_pct: 60,
+                food_dining_threshold_pct: 40,
+                food_hunger_threshold_pct: 30,
                 food_restore_pct: 0, // don't eat fruit
                 bread_restore_pct: 0,
                 footprint: [2, 2, 2],
@@ -3523,8 +3680,10 @@ impl Default for GameConfig {
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 0,
-                food_dining_threshold_pct: 60,
-                food_hunger_threshold_pct: 40,
+                food_dinner_party_join_threshold_pct: 70,
+                food_dinner_party_organize_threshold_pct: 60,
+                food_dining_threshold_pct: 40,
+                food_hunger_threshold_pct: 30,
                 food_restore_pct: 0,
                 bread_restore_pct: 0,
                 footprint: [1, 1, 1],
@@ -3576,8 +3735,10 @@ impl Default for GameConfig {
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
                 food_decay_per_tick: 0,
-                food_dining_threshold_pct: 60,
-                food_hunger_threshold_pct: 40,
+                food_dinner_party_join_threshold_pct: 70,
+                food_dinner_party_organize_threshold_pct: 60,
+                food_dining_threshold_pct: 40,
+                food_hunger_threshold_pct: 30,
                 food_restore_pct: 0,
                 bread_restore_pct: 0,
                 footprint: [2, 2, 2],
@@ -4105,8 +4266,10 @@ mod tests {
             "food_decay_per_tick": 3333333333
         }"#;
         let data: SpeciesData = serde_json::from_str(json).unwrap();
-        assert_eq!(data.food_dining_threshold_pct, 60);
-        assert_eq!(data.food_hunger_threshold_pct, 40);
+        assert_eq!(data.food_dinner_party_join_threshold_pct, 70);
+        assert_eq!(data.food_dinner_party_organize_threshold_pct, 60);
+        assert_eq!(data.food_dining_threshold_pct, 40);
+        assert_eq!(data.food_hunger_threshold_pct, 30);
         assert_eq!(data.food_restore_pct, 40);
     }
 

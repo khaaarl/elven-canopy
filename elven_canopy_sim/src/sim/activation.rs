@@ -550,6 +550,9 @@ impl SimState {
                 // Elf organized a new dance — schedule reactivation so they
                 // can volunteer for it on the next cycle.
                 self.schedule_reactivation(creature_id);
+            } else if self.try_organize_spontaneous_dinner_party(creature_id, events) {
+                // Elf organized a dinner party — schedule reactivation.
+                self.schedule_reactivation(creature_id);
             } else if let Some(activity_id) = self.find_open_activity_for_creature(creature_id) {
                 // Idle creature discovers an Open-recruitment activity and volunteers.
                 self.volunteer_for_activity(activity_id, creature_id, events);

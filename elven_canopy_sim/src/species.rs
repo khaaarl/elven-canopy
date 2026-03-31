@@ -28,11 +28,14 @@
 //   floating-point determinism issues.
 // - `food_decay_per_tick` — food subtracted per sim tick, batch-applied at
 //   heartbeat time as `decay_per_tick * heartbeat_interval_ticks`.
+// - `food_dinner_party_join_threshold_pct` — percentage of `food_max` below
+//   which a creature is willing to join an existing dinner party (default 70).
+// - `food_dinner_party_organize_threshold_pct` — percentage of `food_max`
+//   below which a creature is willing to organize a dinner party (default 60).
 // - `food_dining_threshold_pct` — percentage of `food_max` below which an
-//   idle creature will seek a dining hall (default 60). Falls through to
-//   emergency eating if no dining hall is available.
+//   idle creature will seek solo dining at a dining hall (default 40).
 // - `food_hunger_threshold_pct` — percentage of `food_max` below which an
-//   idle creature will eat carried food or forage (default 40).
+//   idle creature will eat carried food or forage (default 30).
 // - `food_restore_pct` — percentage of `food_max` restored when eating
 //   fruit (default 40).
 // - `bread_restore_pct` — percentage of `food_max` restored when eating
@@ -192,16 +195,27 @@ pub struct SpeciesData {
     #[serde(default = "default_food_decay_per_tick")]
     pub food_decay_per_tick: i64,
 
-    /// Food percentage below which an idle creature will seek a dining hall.
-    /// E.g. 60 means the creature prefers communal dining at 60% food.
-    /// If no dining hall is available, the creature waits until hitting the
-    /// lower `food_hunger_threshold_pct` to eat carried food or forage.
+    /// Food percentage below which a creature is willing to join an existing
+    /// dinner party (F-dinner-party). Default 70 — hungry enough to eat
+    /// socially but not urgently hungry.
+    #[serde(default = "default_food_dinner_party_join_threshold_pct")]
+    pub food_dinner_party_join_threshold_pct: i64,
+
+    /// Food percentage below which a creature is willing to organize a new
+    /// dinner party (F-dinner-party). Default 60 — hungrier than join
+    /// threshold, since organizing takes more initiative.
+    #[serde(default = "default_food_dinner_party_organize_threshold_pct")]
+    pub food_dinner_party_organize_threshold_pct: i64,
+
+    /// Food percentage below which an idle creature will seek a dining hall
+    /// for solo dining. Default 40 — below the dinner party zone, so elves
+    /// prefer group dining when possible.
     #[serde(default = "default_food_dining_threshold_pct")]
     pub food_dining_threshold_pct: i64,
 
     /// Food percentage below which an idle creature will eat carried food or
     /// forage for fruit (emergency eating). Lower than dining threshold.
-    /// E.g. 40 means the creature resorts to non-dining eating at 40% food.
+    /// Default 30 — last resort before starvation.
     #[serde(default = "default_food_hunger_threshold_pct")]
     pub food_hunger_threshold_pct: i64,
 
@@ -359,12 +373,20 @@ fn default_footprint() -> [u8; 3] {
     [1, 1, 1]
 }
 
-fn default_food_dining_threshold_pct() -> i64 {
+fn default_food_dinner_party_join_threshold_pct() -> i64 {
+    70
+}
+
+fn default_food_dinner_party_organize_threshold_pct() -> i64 {
     60
 }
 
-fn default_food_hunger_threshold_pct() -> i64 {
+fn default_food_dining_threshold_pct() -> i64 {
     40
+}
+
+fn default_food_hunger_threshold_pct() -> i64 {
+    30
 }
 
 fn default_food_restore_pct() -> i64 {

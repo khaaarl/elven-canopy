@@ -231,6 +231,7 @@ pub enum TaskStructureRole {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum ActivityStructureRole {
     DanceVenue,
+    DinnerPartyVenue,
 }
 
 /// Role of a task-to-voxel reference. Determines why a task references
@@ -412,6 +413,11 @@ pub struct Creature {
     /// 0 = never danced.
     #[serde(default)]
     pub last_dance_tick: u64,
+    /// Tick at which this creature last participated in a completed dinner
+    /// party. Used for per-creature cooldown in spontaneous dinner party
+    /// organization. 0 = never attended a dinner party.
+    #[serde(default)]
+    pub last_dinner_party_tick: u64,
     /// Biological sex. Rolled at spawn from per-species probability weights.
     /// Old saves without this field deserialize as `CreatureSex::None`.
     #[serde(default)]
@@ -800,6 +806,12 @@ pub struct CompletedStructure {
     /// 0 = no dance has ever completed here (triggers first-dance nudge).
     #[serde(default)]
     pub last_dance_completed_tick: u64,
+    /// Tick at which the last dinner party completed at this structure (dining
+    /// halls only). Used for hall cooldown in spontaneous dinner party
+    /// organization. 0 = no dinner party has ever completed here (triggers
+    /// first-dinner-party nudge).
+    #[serde(default)]
+    pub last_dinner_party_completed_tick: u64,
 }
 
 impl CompletedStructure {
@@ -829,6 +841,7 @@ impl CompletedStructure {
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
             last_dance_completed_tick: 0,
+            last_dinner_party_completed_tick: 0,
         }
     }
 
@@ -1243,8 +1256,11 @@ pub struct ActivityParticipant {
     #[serde(default)]
     pub dance_slot: Option<u16>,
 
-    /// For dance activities: cursor into `DancePlan.slot_waypoints[slot]`.
-    /// Points to the next waypoint to execute. Advances monotonically.
+    /// Per-activity-kind progress cursor.
+    /// - **Dance:** index into `DancePlan.slot_waypoints[slot]`. Points to the
+    ///   next waypoint to execute. Advances monotonically.
+    /// - **DinnerParty:** bit-packed state. Bit 0 = has eaten (1 = yes).
+    ///   Bits 1+ = number of social impression checks completed.
     #[serde(default)]
     pub waypoint_cursor: u32,
 }

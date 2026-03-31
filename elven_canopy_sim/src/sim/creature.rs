@@ -130,6 +130,7 @@ impl SimState {
             mp_max,
             wasted_action_count: 0,
             last_dance_tick: 0,
+            last_dinner_party_tick: 0,
             sex,
         };
 

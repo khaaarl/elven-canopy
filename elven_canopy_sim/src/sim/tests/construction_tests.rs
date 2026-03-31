@@ -3341,6 +3341,7 @@ fn compute_furniture_positions_3x3_dormitory() {
         greenhouse_enabled: false,
         greenhouse_last_production_tick: 0,
         last_dance_completed_tick: 0,
+        last_dinner_party_completed_tick: 0,
     };
 
     let items = structure.compute_furniture_positions(FurnishingType::Dormitory, &mut rng);
@@ -3378,6 +3379,7 @@ fn compute_furniture_positions_5x5_dormitory() {
         greenhouse_enabled: false,
         greenhouse_last_production_tick: 0,
         last_dance_completed_tick: 0,
+        last_dinner_party_completed_tick: 0,
     };
 
     let items = structure.compute_furniture_positions(FurnishingType::Dormitory, &mut rng);
@@ -3416,6 +3418,7 @@ fn display_name_dormitory_when_furnished() {
         greenhouse_enabled: false,
         greenhouse_last_production_tick: 0,
         last_dance_completed_tick: 0,
+        last_dinner_party_completed_tick: 0,
     };
 
     assert_eq!(structure.display_name(), "Dormitory #7");
@@ -3442,6 +3445,7 @@ fn display_name_custom_overrides_dormitory() {
         greenhouse_enabled: false,
         greenhouse_last_production_tick: 0,
         last_dance_completed_tick: 0,
+        last_dinner_party_completed_tick: 0,
     };
 
     assert_eq!(structure.display_name(), "Starlight Hall");
@@ -3602,6 +3606,7 @@ fn furnish_rejects_non_building() {
         greenhouse_enabled: false,
         greenhouse_last_production_tick: 0,
         last_dance_completed_tick: 0,
+        last_dinner_party_completed_tick: 0,
     };
     sim.db.insert_structure(structure).unwrap();
 
@@ -3879,6 +3884,7 @@ fn compute_furniture_positions_home_single_item() {
         greenhouse_enabled: false,
         greenhouse_last_production_tick: 0,
         last_dance_completed_tick: 0,
+        last_dinner_party_completed_tick: 0,
     };
 
     let items = structure.compute_furniture_positions(FurnishingType::Home, &mut rng);
@@ -3909,6 +3915,7 @@ fn compute_furniture_positions_dining_hall_density() {
         greenhouse_enabled: false,
         greenhouse_last_production_tick: 0,
         last_dance_completed_tick: 0,
+        last_dinner_party_completed_tick: 0,
     };
 
     let items = structure.compute_furniture_positions(FurnishingType::DiningHall, &mut rng);
@@ -3958,6 +3965,7 @@ fn display_name_all_furnishing_types() {
             greenhouse_enabled: false,
             greenhouse_last_production_tick: 0,
             last_dance_completed_tick: 0,
+            last_dinner_party_completed_tick: 0,
         };
         assert_eq!(
             structure.display_name(),
@@ -4350,6 +4358,7 @@ fn completed_structure_serde_backward_compat_crafting() {
         greenhouse_enabled: false,
         greenhouse_last_production_tick: 0,
         last_dance_completed_tick: 0,
+        last_dinner_party_completed_tick: 0,
     };
     let json = serde_json::to_string(&structure).unwrap();
     // Remove crafting_enabled to simulate old save.
