@@ -6279,7 +6279,24 @@ kinds of work. Replaces ad-hoc per-creature task restrictions.
 #### F-leaf-sway — Foliage vertex sway shader (wind simulation)
 **Status:** Todo
 
-Vertex displacement in the leaf shader — offset leaf vertices by a sine wave keyed on world position and time. Zero CPU cost, no mesh regeneration. Amplitude modulated by height (higher = more sway) to simulate wind gradient. Makes the canopy feel alive.
+Vertex displacement in the leaf shader — offset leaf vertices by a sine wave keyed on world position and time. Zero CPU cost once meshes are built. Makes the canopy feel alive.
+
+**Sway weight via vertex color:**
+Leaf vertices get a per-vertex sway weight in the R color channel, computed during smooth mesh generation as `min(voxel_distance_from_wood / cap, 1.0)`. Vertices touching wood get 0.0 (anchored, no tearing at wood-leaf seams); vertices deep in the canopy get 1.0 (full sway). BFS from wood-adjacent leaf vertices outward through the voxel grid. The weight is mesh-resolution-independent since it's based on source voxel distance, not vertex topology.
+
+**Vertex color repurposing (leaf surface only):**
+Leaf surface vertex colors stop carrying RGB base color. Instead, all four channels become metadata:
+- R: sway weight (distance-from-wood, 0–1)
+- G, B, A: reserved for future use (e.g., species ID, seasonal tint), set to 0.0 for now
+Bark and ground surfaces are unchanged — they continue using vertex color for base color.
+
+**Shader changes (`leaf_noise.gdshader`):**
+- Vertex function reads `COLOR.r` as sway weight and applies time-based sine displacement scaled by that weight. Uses Godot's built-in `TIME`.
+- Fragment function stops reading `COLOR.rgb` for base color — the shader already derives color procedurally from noise.
+- New uniforms for tuning: `wind_strength`, `wind_speed`, `wind_direction`.
+- Amplitude also modulated by world-space Y (higher = more sway) to simulate wind gradient.
+
+**Scope:** Shader + Rust mesh pipeline change. No GDScript changes beyond optionally exposing wind uniforms in `tree_renderer.gd`. No determinism concerns (purely visual, GPU-side).
 
 #### F-leaf-tuning — Leaf visual fine-tuning and interior decisions
 **Status:** Todo
