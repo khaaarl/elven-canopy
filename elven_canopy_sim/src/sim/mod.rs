@@ -667,7 +667,7 @@ impl SimState {
         let position = creature.position;
 
         if let Some(flight_tpv) = species_data.flight_ticks_per_voxel {
-            // Flying creature: run A* to each candidate, pick cheapest.
+            // Flying creature: interleaved A* across candidates.
             let footprint = species_data.footprint;
             let nearest_coord = crate::pathfinding::nearest_fly(
                 &self.world,
@@ -679,7 +679,7 @@ impl SimState {
             )?;
             candidates.iter().position(|&c| c == nearest_coord)
         } else {
-            // Ground creature: Dijkstra on nav graph.
+            // Ground creature: interleaved A* on nav graph.
             let graph = self.graph_for_species(species);
             let start_node = graph.node_at(position)?;
 
@@ -708,7 +708,7 @@ impl SimState {
                 species_data.allowed_edge_types.as_deref(),
             );
 
-            let nearest_node = crate::pathfinding::nearest_dijkstra_navgraph(
+            let nearest_node = crate::pathfinding::nearest_navgraph(
                 graph,
                 start_node,
                 &target_nodes,

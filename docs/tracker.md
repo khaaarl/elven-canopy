@@ -64,7 +64,6 @@ This reduces merge conflicts when parallel work streams add items.
 ### Todo
 
 ```
-[ ] B-dijkstra-perf        Unbounded Dijkstra in nearest-X searches scales poorly on large graphs
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
@@ -88,6 +87,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-bldg-storehouse      Storehouse (item storage)
 [ ] F-blueprint-mode       Layer-based blueprint selection UI
 [ ] F-boundary-decim       Mesh decimation at chunk boundaries
+[ ] F-bounded-pathlen      Bounded max_path_len for all pathfinding call sites
 [ ] F-branch-growth        Grow branches for photosynthesis/fruit
 [ ] F-bridges              Bridge construction between tree parts
 [ ] F-buff-system          Generic timed stat modifier buffs on creatures
@@ -136,6 +136,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fire-basic           Fire spread and voxel destruction
 [ ] F-fire-ecology         Fire as ecological force, firefighting
 [ ] F-fire-structure       Fire x structural integrity cascades
+[ ] F-flying-grazing       Flight-grid grass search for flying herbivores
 [ ] F-fog-of-war           Visibility via tree and root network
 [ ] F-follow-multi         Camera zoom-to and follow for multi-selections
 [ ] F-food-chain           Food production/distribution pipeline
@@ -158,7 +159,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-infra-decay          Infrastructure decay with automated maintenance
 [ ] F-insect-husbandry     Beekeeping and insect husbandry
 [ ] F-instinctual-flee     Instinctual flee thresholds (species-level fear overrides)
-[ ] F-interleaved-astar    Interleaved A* for efficient nearest-among-N-candidates pathfinding
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-labor-panel          DF/Rimworld-style labor assignment UI
 [ ] F-leaf-sway            Foliage vertex sway shader (wind simulation)
@@ -296,6 +296,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-dead-max-gen         Remove vestigial max_gen_per_frame field and ~40 test calls
 [x] B-dead-node-panic      Panic on dead nav node in pathfinding
 [x] B-dead-owner-items     Dead creature items retain ownership, becoming invisible to all systems
+[x] B-dijkstra-perf        Unbounded Dijkstra in nearest-X searches scales poorly on large graphs
 [x] B-dine-orphan-task     DineAtHall speculative task leaves orphaned Complete rows
 [x] B-dining-perf          Dining hall search causes intermittent multi-second pauses
 [x] B-dirt-not-pinned      Dirt unpinned in fast structural validator
@@ -415,6 +416,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-hp-ui                HP bars in creature UI
 [x] F-immediate-commands   Immediate command application (zero-tick updates)
 [x] F-incapacitation       Incapacitation at 0 HP instead of instant death
+[x] F-interleaved-astar    Interleaved A* for efficient nearest-among-N-candidates pathfinding
 [x] F-item-color           Item color system (material-derived and dye override)
 [x] F-item-durability      Item durability system (current/max HP on items)
 [x] F-item-quality         Item and output quality system
@@ -1378,7 +1380,7 @@ data passing to Godot), `tree_renderer.gd` (per-chunk material creation).
 ### Navigation & Pathfinding
 
 #### B-dijkstra-perf — Unbounded Dijkstra in nearest-X searches scales poorly on large graphs
-**Status:** Todo · **Refs:** §4
+**Status:** Done · **Refs:** §4
 
 Several nearest-X search functions use `dijkstra_nearest()` with the creature
 as source and target locations as multi-target sinks. Dijkstra explores outward
@@ -1407,7 +1409,7 @@ worst case applies.
 **Verification:** F-sim-perf-timing instrumentation will surface these if they
 become a bottleneck.
 
-**Related:** B-dining-perf, F-interleaved-astar, F-unified-pathing
+**Related:** B-dining-perf, F-bounded-pathlen, F-interleaved-astar, F-unified-pathing
 
 #### B-dining-perf — Dining hall search causes intermittent multi-second pauses
 **Status:** Done · **Refs:** §4
@@ -1466,6 +1468,100 @@ would also confirm the fix.
 **Status:** Done
 
 After issuing move commands (select creatures, right-click a destination), creature movement becomes erratic and possibly faster than intended. Repro: select one or more creatures, right-click to move them, observe movement behavior.
+
+#### F-bounded-pathlen — Bounded max_path_len for all pathfinding call sites
+**Status:** Todo
+
+Audit all pathfinding call sites and replace `u32::MAX` max_path_len
+values with reasonable bounded defaults. Unbounded pathfinding can cause
+absurd CPU spikes when a creature tries to reach a distant or
+unreachable-but-technically-connected target, expanding the entire nav
+graph or a huge volume of voxel space.
+
+**Why this matters:** On large maps, a single unbounded A* search can
+freeze the sim for hundreds of milliseconds. This is especially bad for
+nearest-candidate searches where multiple A* searches are interleaved —
+each one individually capped would bound total work, but `u32::MAX`
+means "search the whole world."
+
+**What needs to happen:**
+
+1. **Structured error returns.** Replace `Option<PathResult>` /
+   `Option<NavNodeId>` / `Option<VoxelCoord>` return types with a
+   `Result<T, PathError>` (or similar) where `PathError` is an enum
+   distinguishing failure modes:
+   - `ExceededMaxPathLen` — a path may exist but exceeds the path
+     length budget.
+   - `ExceededWorkBudget` — search was terminated because it expanded
+     too many nodes (CPU protection), regardless of whether a path
+     exists within the length limit.
+   - `Unreachable` — no path exists (disconnected graph region, fully
+     walled off, etc.).
+   - `StartNotOnGraph` — the creature's position doesn't map to a nav
+     node (ground creatures) or is in a non-flyable voxel (flyers).
+   - `NoTargets` — candidate list was empty after filtering.
+   - `StartBlockedByFootprint` — start position fails footprint
+     clearance check (flyers).
+   This lets callers make informed decisions: e.g., `ExceededWorkBudget`
+   or `ExceededMaxPathLen` might trigger a cooldown before retrying,
+   while `Unreachable` could cause the creature to give up entirely.
+   Currently everything is `None` and callers can't distinguish "too
+   far" from "impossible" from "too expensive to compute."
+
+2. **Path options struct.** Replace the growing parameter lists on
+   pathfinding functions with an options struct that bundles search
+   constraints. Should include at minimum:
+   - A **path length limit** (max edges/hops in the result — what
+     `max_path_len` does today).
+   - A **work budget** (max nodes expanded / heap pops — caps actual
+     CPU time regardless of graph topology). This is critical because
+     path length alone doesn't bound work: a maze with 1000 dead ends
+     and a 10-step solution explores all dead ends within
+     `max_path_len=10`.
+   - Sensible defaults so most callers can just use `Default::default()`
+     or a named preset without thinking about it.
+   **This struct requires significant design discussion with Carl.**
+   The exact fields, types, naming, and default behavior are not
+   obvious and need collaborative iteration. In particular, defaults
+   may not be literal constants — they might be computed from other
+   parameters (e.g., work budget derived from heuristic distance to
+   the target, or path length limit scaled from map size, or budget
+   proportional to candidate count for nearest-searches). The design
+   space is wide and the wrong defaults could be worse than no defaults.
+   Start with profiling and analysis, then bring a proposal to discuss
+   before implementing.
+
+3. **Audit every call site** that passes `max_path_len` (grep for
+   `find_path`, `find_nearest`, `astar_navgraph`, `astar_fly`,
+   `nearest_astar_navgraph`, `nearest_astar_fly`, `nearest_navgraph`,
+   `nearest_fly`). Identify which ones pass `u32::MAX` and what
+   reasonable bounds would be for each.
+
+4. **Determine sensible defaults per use case.** Examples to
+   investigate:
+   - Creature walking to a task/bed/dining hall.
+   - Combat pursuit.
+   - Flight pathfinding (voxel steps are finer-grained than nav edges,
+     so limits need to be proportionally higher).
+   - Nearest-candidate searches (interleaved A* multiplies work by
+     number of active candidates).
+   Profile actual gameplay to find realistic path lengths and expansion
+   counts before picking numbers.
+
+5. **Propagate options through wrappers.** `nearest_navgraph()` and
+   `nearest_fly()` currently hardcode `u32::MAX` internally. They
+   should accept the options struct so callers can bound the search.
+   `SimState::find_nearest()` already accepts `max_path_len` but most
+   callers pass `u32::MAX`.
+
+6. **Graceful failure when budget is exceeded.** With structured errors,
+   callers can distinguish "too far" from "too expensive" from
+   "impossible" and react accordingly. The main concern is ensuring
+   that creatures don't get stuck in infinite "try to path, fail,
+   retry next tick" loops. May need cooldown or fallback behavior for
+   repeated budget-exceeded failures.
+
+**Related:** B-dijkstra-perf, F-interleaved-astar, F-unified-pathing
 
 #### F-dynamic-pursuit — Dynamic repathfinding for moving-target tasks
 **Status:** Done
@@ -1547,7 +1643,7 @@ F-flying-nav with multi-voxel clearance checks.
 **Unblocked:** F-wyvern
 
 #### F-interleaved-astar — Interleaved A* for efficient nearest-among-N-candidates pathfinding
-**Status:** Todo · **Refs:** §4
+**Status:** Done · **Refs:** §4
 
 A general-purpose "find nearest among N candidates" pathfinding algorithm that
 interleaves multiple A* searches to terminate early when a close candidate is
@@ -1610,7 +1706,7 @@ Both return the same result type.
 searches for both ground and flying creatures.
 
 **Unblocked by:** F-unified-pathing
-**Related:** B-dijkstra-perf, B-dining-perf
+**Related:** B-dijkstra-perf, B-dining-perf, F-bounded-pathlen
 
 #### F-large-nav-tolerance — 1-voxel height tolerance for large nav
 **Status:** Done · **Phase:** 8+
@@ -1733,7 +1829,7 @@ should be implemented once using the sibling functions, not duplicated for each
 travel mode.
 
 **Unblocked:** F-interleaved-astar
-**Related:** B-dijkstra-perf, B-dining-perf
+**Related:** B-dijkstra-perf, B-dining-perf, F-bounded-pathlen
 
 ### Creatures & Needs
 
@@ -1994,6 +2090,30 @@ are both shown in the creature info panel.
 
 Billboard chibi elf sprites using pool pattern. Procedurally generated from
 seed via `sprite_factory.gd`. Offset +0.48 Y for visual centering.
+
+#### F-flying-grazing — Flight-grid grass search for flying herbivores
+**Status:** Todo
+
+Flight-grid analog of `find_nearest_grass()` for flying herbivores. The
+current grass search is a bespoke Dijkstra on the nav graph that tests
+each visited node's surface for grassiness (see `grazing.rs`). A flying
+creature would need the same approach but expanding through flyable
+voxels and checking the ground surface below each position.
+
+**Why this is low priority:** Flying herbivores are biologically unlikely
+— flight demands high metabolic rates that cellulose fermentation can't
+easily sustain. Realistic flying creatures are almost always carnivorous,
+insectivorous, or frugivorous. No current species in the species table
+is both a flyer and an herbivore, so this is speculative infrastructure
+for an unlikely future species.
+
+**What would be needed:**
+- A flight-grid Dijkstra in `grazing.rs` that expands through flyable
+  voxels (with footprint clearance) and tests the ground surface below
+  each position for grassiness.
+- Integration with the graze task pipeline (activation, resolve).
+- Species data support: a species with both `flight_ticks_per_voxel`
+  and `is_herbivore` / `graze_food_restore_pct`.
 
 #### F-food-gauge — Creature food gauge with decay
 **Status:** Done · **Refs:** §13

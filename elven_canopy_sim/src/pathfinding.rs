@@ -5,11 +5,15 @@
 // the 3D voxel grid (`astar_fly`) with footprint clearance checks. Both return
 // the same `PathResult` type.
 //
-// Multi-target "nearest" searches: `nearest_dijkstra_navgraph` expands outward
-// from a source via Dijkstra (no heuristic) and returns the first target reached.
-// `nearest_fly` runs point-to-point `astar_fly` to each candidate and returns
-// the cheapest. `nearest_navgraph` is a thin wrapper that delegates to Dijkstra
-// for now (F-interleaved-astar will add an A*-based strategy later).
+// Multi-target "nearest" searches use interleaved A* (`nearest_astar_navgraph`,
+// `nearest_astar_fly`): per-candidate open sets with candidate-specific
+// heuristics share a single g_score/closed set. The search expands the
+// globally smallest f-value across all candidates, and prunes candidates whose
+// minimum f exceeds the best completed path cost. This focuses work toward
+// likely-nearest candidates rather than expanding uniformly like Dijkstra.
+// The `nearest_navgraph` and `nearest_fly` wrappers delegate to interleaved A*.
+// For the special case of extremely numerous nearby candidates (e.g., grass),
+// callers use bespoke inline Dijkstra instead (see `grazing.rs`).
 //
 // All path-finding functions take a `max_path_len` parameter — the maximum
 // number of edges (hops) the resulting path may have. The search discards any
@@ -271,17 +275,18 @@ pub fn astar_navgraph(
 
 /// Find the nearest reachable target from `start` using Dijkstra's algorithm.
 ///
-/// **Prefer `SimState::find_nearest()`** unless you are working at the
-/// nav-graph level and need direct control over start/target nodes and speed
-/// parameters. `find_nearest` handles species dispatch, stat-modified speeds,
-/// VoxelCoord-to-NavNodeId conversion, and index mapping automatically.
+/// Multi-target Dijkstra: expands outward from `start` by travel cost and
+/// returns the first target node reached. No heuristic guidance, so it
+/// explores uniformly in all directions — O(V log V + E) regardless of
+/// target distance.
 ///
-/// Expands outward from `start` by travel cost and returns the first target
-/// node reached. This is a multi-target search: it stops as soon as *any*
-/// target in `targets` is popped from the priority queue.
-///
-/// Returns `None` if no target is reachable.
-pub fn nearest_dijkstra_navgraph(
+/// This is retained as a test-only reference implementation for cross-checking
+/// `nearest_astar_navgraph`. Production code uses interleaved A* via the
+/// `nearest_navgraph` wrapper. The one production case where Dijkstra would
+/// be preferable (extremely numerous nearby candidates like grass) uses its
+/// own inline Dijkstra in `grazing.rs` rather than this function.
+#[cfg(test)]
+fn nearest_dijkstra_navgraph(
     graph: &NavGraph,
     start: NavNodeId,
     targets: &[NavNodeId],
@@ -387,15 +392,452 @@ pub fn nearest_dijkstra_navgraph(
 /// nav-graph level and need direct control over start/target nodes and speed
 /// parameters.
 ///
-/// Currently delegates to `nearest_dijkstra_navgraph`. F-interleaved-astar
-/// will later add an A*-based strategy that this wrapper can switch between.
+/// Delegates to `nearest_astar_navgraph` (interleaved A*), which uses
+/// heuristic guidance to focus the search toward candidates rather than
+/// expanding uniformly like Dijkstra.
 pub fn nearest_navgraph(
     graph: &NavGraph,
     start: NavNodeId,
     targets: &[NavNodeId],
     speeds: &NavGraphSpeeds,
 ) -> Option<NavNodeId> {
-    nearest_dijkstra_navgraph(graph, start, targets, speeds)
+    nearest_astar_navgraph(graph, start, targets, speeds, u32::MAX)
+}
+
+// ---------------------------------------------------------------------------
+// Interleaved A* — nearest among N candidates
+// ---------------------------------------------------------------------------
+//
+// Both `nearest_astar_navgraph` and `nearest_astar_fly` implement the same
+// interleaved multi-target A* algorithm, parameterized over the graph
+// representation:
+//
+// 1. **Pre-filter by heuristic:** Compute h(start, candidate) for each
+//    candidate and sort ascending. Skip candidates whose heuristic lower
+//    bound already exceeds a known solution cost.
+//
+// 2. **Shared expansion:** All candidate searches share a single g_score
+//    and closed set (since they all start from the same node). Each
+//    candidate maintains its own open set ordered by f = g + h(node, goal).
+//    On each step, pop the globally smallest f across all open sets. If the
+//    popped node is already closed, skip it. Otherwise close it, and for
+//    each neighbor push an entry into every active candidate's open set.
+//
+// 3. **Pruning:** When any candidate is reached with cost x, remove all
+//    candidates whose open-set minimum f >= x. If a candidate's open set
+//    is empty, it is unreachable — remove it.
+//
+// 4. **Early out:** One candidate remaining = single-target A* (no
+//    interleaving overhead). Zero candidates = no path found.
+//
+// The shared g_score ensures work done toward one candidate benefits all
+// others. The per-candidate open sets focus expansion via heuristic
+// guidance, unlike Dijkstra which expands uniformly in all directions.
+
+/// Find the nearest reachable target from `start` using interleaved A*.
+///
+/// Maintains per-target open sets with target-specific heuristics, sharing
+/// a single g_score/closed set across all targets. Returns the first target
+/// reached by travel cost.
+///
+/// `max_path_len` is per-candidate: each target is independently reachable
+/// only if a path of at most `max_path_len` edges exists.
+///
+/// Returns `None` if no target is reachable.
+pub fn nearest_astar_navgraph(
+    graph: &NavGraph,
+    start: NavNodeId,
+    targets: &[NavNodeId],
+    speeds: &NavGraphSpeeds,
+    max_path_len: u32,
+) -> Option<NavNodeId> {
+    let n = graph.node_slot_count();
+    if n == 0 || targets.is_empty() {
+        return None;
+    }
+
+    // Quick check: is start already a target?
+    if targets.contains(&start) {
+        return Some(start);
+    }
+
+    let walk_tpv_i = speeds.walk_tpv as i64;
+
+    // Pre-filter: compute heuristic for each target, sort ascending.
+    // Keep only targets that are alive in the graph.
+    let mut candidate_indices: Vec<usize> = (0..targets.len())
+        .filter(|&i| {
+            let t = targets[i];
+            (t.0 as usize) < n && graph.is_node_alive(t)
+        })
+        .collect();
+    if candidate_indices.is_empty() {
+        return None;
+    }
+    candidate_indices.sort_by_key(|&i| navgraph_heuristic(graph, start, targets[i], walk_tpv_i));
+
+    // Shared state across all candidate searches.
+    let mut g_score = vec![i64::MAX; n];
+    let mut closed = vec![false; n];
+    let mut depth = vec![u32::MAX; n];
+
+    g_score[start.0 as usize] = 0;
+    depth[start.0 as usize] = 0;
+
+    // Per-candidate open sets.
+    let mut open_sets: Vec<BinaryHeap<OpenEntry>> = candidate_indices
+        .iter()
+        .map(|&i| {
+            let mut heap = BinaryHeap::new();
+            let h = navgraph_heuristic(graph, start, targets[i], walk_tpv_i);
+            heap.push(OpenEntry {
+                node: start,
+                f_score: h,
+                position: graph.node(start).position,
+            });
+            heap
+        })
+        .collect();
+
+    // Track which candidates are still active (not pruned/exhausted).
+    let mut active: Vec<bool> = vec![true; candidate_indices.len()];
+    let mut best_cost: Option<(NavNodeId, i64)> = None;
+
+    loop {
+        // Find the active candidate with the globally smallest top-of-heap f.
+        let mut best_ci: Option<usize> = None;
+        let mut best_f = i64::MAX;
+        for (ci, heap) in open_sets.iter().enumerate() {
+            if !active[ci] {
+                continue;
+            }
+            if let Some(top) = heap.peek() {
+                if top.f_score < best_f
+                    || (top.f_score == best_f
+                        && best_ci.is_none_or(|prev| {
+                            top.position < open_sets[prev].peek().unwrap().position
+                        }))
+                {
+                    best_f = top.f_score;
+                    best_ci = Some(ci);
+                }
+            } else {
+                // Open set exhausted — this candidate is unreachable.
+                active[ci] = false;
+            }
+        }
+
+        let ci = match best_ci {
+            Some(ci) => ci,
+            None => break, // All candidates exhausted.
+        };
+
+        // If the best open-set f >= best known cost, no remaining candidate
+        // can beat it — we're done.
+        if let Some((_, cost)) = best_cost
+            && best_f >= cost
+        {
+            break;
+        }
+
+        let entry = open_sets[ci].pop().unwrap();
+        let current_id = entry.node;
+        let idx = current_id.0 as usize;
+
+        // Check if this node is a target.
+        if !closed[idx] {
+            let target_idx = targets[candidate_indices[ci]];
+            if current_id == target_idx {
+                let cost = g_score[idx];
+                match best_cost {
+                    None => best_cost = Some((current_id, cost)),
+                    Some((_, prev)) if cost < prev => best_cost = Some((current_id, cost)),
+                    _ => {}
+                }
+                active[ci] = false;
+
+                // Prune other candidates whose min-f >= best cost.
+                let best_c = best_cost.unwrap().1;
+                for (oci, heap) in open_sets.iter().enumerate() {
+                    if active[oci] {
+                        if let Some(top) = heap.peek() {
+                            if top.f_score >= best_c {
+                                active[oci] = false;
+                            }
+                        } else {
+                            active[oci] = false;
+                        }
+                    }
+                }
+                continue;
+            }
+        }
+
+        if closed[idx] {
+            continue;
+        }
+        closed[idx] = true;
+
+        let current_g = g_score[idx];
+        let current_depth = depth[idx];
+
+        if current_depth >= max_path_len {
+            continue;
+        }
+
+        // Expand neighbors — shared expansion benefits all candidates.
+        for &edge_idx in graph.neighbors(current_id) {
+            let edge = graph.edge(edge_idx);
+
+            if let Some(allowed) = speeds.allowed_edges
+                && !allowed.contains(&edge.edge_type)
+            {
+                continue;
+            }
+
+            let neighbor = edge.to;
+            let ni = neighbor.0 as usize;
+
+            if closed[ni] || !graph.is_node_alive(neighbor) {
+                continue;
+            }
+
+            let tpv: i64 = match edge.edge_type {
+                EdgeType::TrunkClimb | EdgeType::GroundToTrunk => match speeds.climb_tpv {
+                    Some(c) => c as i64,
+                    None => continue,
+                },
+                EdgeType::WoodLadderClimb => match speeds.wood_ladder_tpv {
+                    Some(c) => c as i64,
+                    None => continue,
+                },
+                EdgeType::RopeLadderClimb => match speeds.rope_ladder_tpv {
+                    Some(c) => c as i64,
+                    None => continue,
+                },
+                _ => walk_tpv_i,
+            };
+            let tentative_g = current_g + edge.distance as i64 * tpv;
+
+            if tentative_g < g_score[ni] {
+                g_score[ni] = tentative_g;
+                depth[ni] = current_depth + 1;
+                let neighbor_pos = graph.node(neighbor).position;
+
+                // Push into all active candidates' open sets.
+                for (oci, heap) in open_sets.iter_mut().enumerate() {
+                    if !active[oci] {
+                        continue;
+                    }
+                    let h = navgraph_heuristic(
+                        graph,
+                        neighbor,
+                        targets[candidate_indices[oci]],
+                        walk_tpv_i,
+                    );
+                    let f = tentative_g + h;
+                    // Skip if this can't possibly beat the best known cost.
+                    if let Some((_, best_c)) = best_cost
+                        && f >= best_c
+                    {
+                        continue;
+                    }
+                    heap.push(OpenEntry {
+                        node: neighbor,
+                        f_score: f,
+                        position: neighbor_pos,
+                    });
+                }
+            }
+        }
+    }
+
+    best_cost.map(|(node, _)| node)
+}
+
+/// Find the nearest reachable candidate from `start` using interleaved
+/// flight A*.
+///
+/// Same algorithm as `nearest_astar_navgraph` but on the 3D voxel grid
+/// with footprint clearance checks. Per-candidate open sets share a
+/// single g_score/closed map.
+///
+/// `max_path_len` is per-candidate.
+///
+/// Returns `None` if no candidate is reachable.
+pub fn nearest_astar_fly(
+    world: &VoxelWorld,
+    start: VoxelCoord,
+    candidates: &[VoxelCoord],
+    flight_tpv: u64,
+    max_path_len: u32,
+    footprint: [u8; 3],
+) -> Option<VoxelCoord> {
+    if candidates.is_empty() {
+        return None;
+    }
+
+    // Quick check: is start already a candidate?
+    if candidates.contains(&start) {
+        return Some(start);
+    }
+
+    if !footprint_flyable(world, start, footprint) {
+        return None;
+    }
+
+    // Pre-filter: only candidates with flyable start positions.
+    let mut candidate_indices: Vec<usize> = (0..candidates.len())
+        .filter(|&i| footprint_flyable(world, candidates[i], footprint))
+        .collect();
+    if candidate_indices.is_empty() {
+        return None;
+    }
+    candidate_indices.sort_by_key(|&i| octile_heuristic_3d(start, candidates[i], flight_tpv));
+
+    // Shared state: BTreeMap keyed by VoxelCoord for determinism.
+    let mut g_score: BTreeMap<VoxelCoord, i64> = BTreeMap::new();
+    let mut depth: BTreeMap<VoxelCoord, u32> = BTreeMap::new();
+    // closed set: using a BTreeSet for determinism.
+    let mut closed: std::collections::BTreeSet<VoxelCoord> = std::collections::BTreeSet::new();
+
+    g_score.insert(start, 0);
+    depth.insert(start, 0);
+
+    // Per-candidate open sets.
+    let mut open_sets: Vec<BinaryHeap<FlightOpenEntry>> = candidate_indices
+        .iter()
+        .map(|&i| {
+            let mut heap = BinaryHeap::new();
+            let h = octile_heuristic_3d(start, candidates[i], flight_tpv);
+            heap.push(FlightOpenEntry {
+                pos: start,
+                f_score: h,
+            });
+            heap
+        })
+        .collect();
+
+    let mut active: Vec<bool> = vec![true; candidate_indices.len()];
+    let mut best_cost: Option<(VoxelCoord, i64)> = None;
+
+    loop {
+        // Find active candidate with globally smallest top-of-heap f.
+        let mut best_ci: Option<usize> = None;
+        let mut best_f = i64::MAX;
+        for (ci, heap) in open_sets.iter().enumerate() {
+            if !active[ci] {
+                continue;
+            }
+            if let Some(top) = heap.peek() {
+                if top.f_score < best_f
+                    || (top.f_score == best_f
+                        && best_ci.is_none_or(|prev| top.pos < open_sets[prev].peek().unwrap().pos))
+                {
+                    best_f = top.f_score;
+                    best_ci = Some(ci);
+                }
+            } else {
+                active[ci] = false;
+            }
+        }
+
+        let ci = match best_ci {
+            Some(ci) => ci,
+            None => break,
+        };
+
+        if let Some((_, cost)) = best_cost
+            && best_f >= cost
+        {
+            break;
+        }
+
+        let entry = open_sets[ci].pop().unwrap();
+        let pos = entry.pos;
+
+        // Check if this node is the candidate for this open set.
+        if !closed.contains(&pos) {
+            let target = candidates[candidate_indices[ci]];
+            if pos == target {
+                let cost = g_score[&pos];
+                match best_cost {
+                    None => best_cost = Some((pos, cost)),
+                    Some((_, prev)) if cost < prev => best_cost = Some((pos, cost)),
+                    _ => {}
+                }
+                active[ci] = false;
+
+                let best_c = best_cost.unwrap().1;
+                for (oci, heap) in open_sets.iter().enumerate() {
+                    if active[oci] {
+                        if let Some(top) = heap.peek() {
+                            if top.f_score >= best_c {
+                                active[oci] = false;
+                            }
+                        } else {
+                            active[oci] = false;
+                        }
+                    }
+                }
+                continue;
+            }
+        }
+
+        if !closed.insert(pos) {
+            // Already closed.
+            continue;
+        }
+
+        let current_g = match g_score.get(&pos) {
+            Some(&g) => g,
+            None => continue,
+        };
+
+        let current_depth = depth.get(&pos).copied().unwrap_or(0);
+        if current_depth >= max_path_len {
+            continue;
+        }
+
+        for &(dx, dy, dz, dist_scaled) in &NEIGHBOR_OFFSETS {
+            let neighbor = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
+
+            if closed.contains(&neighbor) || !footprint_flyable(world, neighbor, footprint) {
+                continue;
+            }
+
+            let move_cost = (dist_scaled * flight_tpv) as i64;
+            let tentative_g = current_g + move_cost;
+
+            if tentative_g < g_score.get(&neighbor).copied().unwrap_or(i64::MAX) {
+                g_score.insert(neighbor, tentative_g);
+                depth.insert(neighbor, current_depth + 1);
+
+                for (oci, heap) in open_sets.iter_mut().enumerate() {
+                    if !active[oci] {
+                        continue;
+                    }
+                    let h = octile_heuristic_3d(
+                        neighbor,
+                        candidates[candidate_indices[oci]],
+                        flight_tpv,
+                    );
+                    let f = tentative_g + h;
+                    if let Some((_, best_c)) = best_cost
+                        && f >= best_c
+                    {
+                        continue;
+                    }
+                    heap.push(FlightOpenEntry {
+                        pos: neighbor,
+                        f_score: f,
+                    });
+                }
+            }
+        }
+    }
+
+    best_cost.map(|(coord, _)| coord)
 }
 
 /// Admissible heuristic: Manhattan distance × walk_tpv × HEURISTIC_SCALE.
@@ -692,8 +1134,8 @@ pub fn astar_fly(
 /// flight parameters. `find_nearest` handles species dispatch, speed lookup,
 /// footprint lookup, and index mapping automatically.
 ///
-/// Runs point-to-point `astar_fly` to each candidate and returns the one with
-/// the lowest total cost. Candidates with no reachable path are skipped.
+/// Delegates to `nearest_astar_fly` (interleaved A*), which uses heuristic
+/// guidance to focus the search toward candidates and prune distant ones early.
 ///
 /// Returns `None` if no candidate is reachable.
 pub fn nearest_fly(
@@ -704,32 +1146,14 @@ pub fn nearest_fly(
     max_path_len: u32,
     footprint: [u8; 3],
 ) -> Option<VoxelCoord> {
-    if candidates.is_empty() {
-        return None;
-    }
-
-    // Quick check: is start already a candidate?
-    if candidates.contains(&start) {
-        return Some(start);
-    }
-
-    let mut best: Option<(VoxelCoord, i64)> = None;
-
-    for &candidate in candidates {
-        if let Some(result) =
-            astar_fly(world, start, candidate, flight_tpv, max_path_len, footprint)
-        {
-            match best {
-                None => best = Some((candidate, result.total_cost)),
-                Some((_, best_cost)) if result.total_cost < best_cost => {
-                    best = Some((candidate, result.total_cost));
-                }
-                _ => {}
-            }
-        }
-    }
-
-    best.map(|(coord, _)| coord)
+    nearest_astar_fly(
+        world,
+        start,
+        candidates,
+        flight_tpv,
+        max_path_len,
+        footprint,
+    )
 }
 
 #[cfg(test)]
@@ -1346,7 +1770,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn nearest_navgraph_delegates_to_dijkstra() {
+    fn nearest_navgraph_finds_closest_target() {
         let mut graph = NavGraph::new();
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
         let b = graph.add_node(VoxelCoord::new(3, 0, 0), S);
@@ -1357,6 +1781,425 @@ mod tests {
         // nearest_navgraph should find closest target (b).
         let result = nearest_navgraph(&graph, a, &[b, c], &test_speeds());
         assert_eq!(result, Some(b));
+    }
+
+    // -----------------------------------------------------------------------
+    // nearest_astar_navgraph tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn nearest_astar_navgraph_finds_closest_by_travel_cost() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let b = graph.add_node(VoxelCoord::new(3, 0, 0), S);
+        let c = graph.add_node(VoxelCoord::new(10, 0, 0), S);
+        graph.add_edge(a, b, EdgeType::Ground, dist(3));
+        graph.add_edge(b, c, EdgeType::Ground, dist(7));
+
+        let result = nearest_astar_navgraph(&graph, a, &[b, c], &test_speeds(), u32::MAX);
+        assert_eq!(result, Some(b));
+    }
+
+    #[test]
+    fn nearest_astar_navgraph_start_is_target() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let result = nearest_astar_navgraph(&graph, a, &[a], &test_speeds(), u32::MAX);
+        assert_eq!(result, Some(a));
+    }
+
+    #[test]
+    fn nearest_astar_navgraph_no_targets() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let result = nearest_astar_navgraph(&graph, a, &[], &test_speeds(), u32::MAX);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn nearest_astar_navgraph_unreachable_target() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let b = graph.add_node(VoxelCoord::new(10, 0, 0), S);
+        // No edges — b is unreachable.
+        let result = nearest_astar_navgraph(&graph, a, &[b], &test_speeds(), u32::MAX);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn nearest_astar_navgraph_respects_edge_filter() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let b = graph.add_node(VoxelCoord::new(3, 0, 0), S);
+        let c = graph.add_node(VoxelCoord::new(6, 0, 0), S);
+        graph.add_edge(a, b, EdgeType::Ground, dist(3));
+        graph.add_edge(b, c, EdgeType::TrunkClimb, dist(3));
+
+        // Only Ground allowed — c unreachable.
+        let result = nearest_astar_navgraph(
+            &graph,
+            a,
+            &[c],
+            &test_speeds_filtered(&[EdgeType::Ground]),
+            u32::MAX,
+        );
+        assert_eq!(result, None);
+
+        // b is reachable via Ground.
+        let result = nearest_astar_navgraph(
+            &graph,
+            a,
+            &[b],
+            &test_speeds_filtered(&[EdgeType::Ground]),
+            u32::MAX,
+        );
+        assert_eq!(result, Some(b));
+    }
+
+    #[test]
+    fn nearest_astar_navgraph_prefers_fast_route() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let b = graph.add_node(VoxelCoord::new(5, 0, 0), S);
+        let c = graph.add_node(VoxelCoord::new(0, 5, 0), S);
+        graph.add_edge(a, b, EdgeType::Ground, dist(5));
+        graph.add_edge(a, c, EdgeType::TrunkClimb, dist(5));
+
+        let speeds = NavGraphSpeeds {
+            walk_tpv: 500,
+            climb_tpv: Some(1250),
+            wood_ladder_tpv: None,
+            rope_ladder_tpv: None,
+            allowed_edges: None,
+        };
+        // b is cheaper (walk) than c (climb) despite same distance.
+        let result = nearest_astar_navgraph(&graph, a, &[b, c], &speeds, u32::MAX);
+        assert_eq!(result, Some(b));
+    }
+
+    #[test]
+    fn nearest_astar_navgraph_max_path_len_cutoff() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let b = graph.add_node(VoxelCoord::new(1, 0, 0), S);
+        let c = graph.add_node(VoxelCoord::new(2, 0, 0), S);
+        let d = graph.add_node(VoxelCoord::new(3, 0, 0), S);
+        graph.add_edge(a, b, EdgeType::Ground, dist(1));
+        graph.add_edge(b, c, EdgeType::Ground, dist(1));
+        graph.add_edge(c, d, EdgeType::Ground, dist(1));
+
+        // d is 3 hops away. max_path_len=3 should find it.
+        let result = nearest_astar_navgraph(&graph, a, &[d], &test_speeds(), 3);
+        assert_eq!(result, Some(d));
+
+        // max_path_len=2 should not reach d.
+        let result = nearest_astar_navgraph(&graph, a, &[d], &test_speeds(), 2);
+        assert_eq!(result, None);
+
+        // But b (1 hop) is still reachable with max_path_len=2.
+        let result = nearest_astar_navgraph(&graph, a, &[b, d], &test_speeds(), 2);
+        assert_eq!(result, Some(b));
+    }
+
+    #[test]
+    fn nearest_astar_navgraph_falls_back_when_close_unreachable() {
+        // Close candidate is unreachable (disconnected), far candidate is
+        // reachable. The algorithm must not give up after pruning the close one.
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let close = graph.add_node(VoxelCoord::new(1, 0, 0), S);
+        let mid = graph.add_node(VoxelCoord::new(5, 0, 0), S);
+        let far = graph.add_node(VoxelCoord::new(10, 0, 0), S);
+        // close is disconnected — no edge from a.
+        graph.add_edge(a, mid, EdgeType::Ground, dist(5));
+        graph.add_edge(mid, far, EdgeType::Ground, dist(5));
+
+        let result = nearest_astar_navgraph(&graph, a, &[close, far], &test_speeds(), u32::MAX);
+        assert_eq!(result, Some(far));
+    }
+
+    #[test]
+    fn nearest_astar_navgraph_agrees_with_dijkstra() {
+        // Larger graph where both algorithms should return the same answer.
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let b = graph.add_node(VoxelCoord::new(3, 0, 0), S);
+        let c = graph.add_node(VoxelCoord::new(6, 0, 0), S);
+        let d = graph.add_node(VoxelCoord::new(3, 3, 0), S);
+        let e = graph.add_node(VoxelCoord::new(6, 3, 0), S);
+        let f = graph.add_node(VoxelCoord::new(9, 0, 0), S);
+        graph.add_edge(a, b, EdgeType::Ground, dist(3));
+        graph.add_edge(b, c, EdgeType::Ground, dist(3));
+        graph.add_edge(a, d, EdgeType::Ground, dist(4));
+        graph.add_edge(d, e, EdgeType::Ground, dist(4));
+        graph.add_edge(c, f, EdgeType::Ground, dist(3));
+        graph.add_edge(e, f, EdgeType::Ground, dist(4));
+
+        let targets = &[c, e, f];
+        let dijkstra = nearest_dijkstra_navgraph(&graph, a, targets, &test_speeds());
+        let astar = nearest_astar_navgraph(&graph, a, targets, &test_speeds(), u32::MAX);
+        assert_eq!(dijkstra, astar);
+    }
+
+    #[test]
+    fn nearest_astar_navgraph_single_candidate() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let b = graph.add_node(VoxelCoord::new(5, 0, 0), S);
+        graph.add_edge(a, b, EdgeType::Ground, dist(5));
+
+        // Single reachable candidate — degenerate case (no interleaving).
+        let result = nearest_astar_navgraph(&graph, a, &[b], &test_speeds(), u32::MAX);
+        assert_eq!(result, Some(b));
+    }
+
+    #[test]
+    fn nearest_astar_navgraph_duplicate_targets() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let b = graph.add_node(VoxelCoord::new(5, 0, 0), S);
+        graph.add_edge(a, b, EdgeType::Ground, dist(5));
+
+        // Same target twice — should still return it without issue.
+        let result = nearest_astar_navgraph(&graph, a, &[b, b], &test_speeds(), u32::MAX);
+        assert_eq!(result, Some(b));
+    }
+
+    #[test]
+    fn nearest_astar_navgraph_dead_target_node() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let b = graph.add_node(VoxelCoord::new(5, 0, 0), S);
+        let c = graph.add_node(VoxelCoord::new(10, 0, 0), S);
+        graph.add_edge(a, b, EdgeType::Ground, dist(5));
+        graph.add_edge(b, c, EdgeType::Ground, dist(5));
+        graph.kill_node(b);
+
+        // b is dead — should be filtered out. c is unreachable (only path
+        // was through b). Should return None.
+        let result = nearest_astar_navgraph(&graph, a, &[b, c], &test_speeds(), u32::MAX);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn nearest_astar_navgraph_all_targets_dead() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let b = graph.add_node(VoxelCoord::new(5, 0, 0), S);
+        graph.kill_node(b);
+
+        let result = nearest_astar_navgraph(&graph, a, &[b], &test_speeds(), u32::MAX);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn nearest_astar_navgraph_target_id_out_of_bounds() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let bogus = NavNodeId(9999);
+
+        // Out-of-bounds target — should be filtered out, not panic.
+        let result = nearest_astar_navgraph(&graph, a, &[bogus], &test_speeds(), u32::MAX);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn nearest_astar_navgraph_empty_graph() {
+        let graph = NavGraph::new();
+        let result = nearest_astar_navgraph(
+            &graph,
+            NavNodeId(0),
+            &[NavNodeId(0)],
+            &test_speeds(),
+            u32::MAX,
+        );
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn nearest_astar_navgraph_max_path_len_zero() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let b = graph.add_node(VoxelCoord::new(1, 0, 0), S);
+        graph.add_edge(a, b, EdgeType::Ground, dist(1));
+
+        // max_path_len=0: start can't expand, b unreachable.
+        let result = nearest_astar_navgraph(&graph, a, &[b], &test_speeds(), 0);
+        assert_eq!(result, None);
+
+        // But start-is-target still works with max_path_len=0.
+        let result = nearest_astar_navgraph(&graph, a, &[a], &test_speeds(), 0);
+        assert_eq!(result, Some(a));
+    }
+
+    // -----------------------------------------------------------------------
+    // nearest_astar_fly tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn nearest_astar_fly_finds_closest() {
+        let world = empty_world(16, 16, 16);
+        let start = VoxelCoord::new(5, 5, 5);
+        let near = VoxelCoord::new(7, 5, 5); // 2 steps
+        let far = VoxelCoord::new(12, 5, 5); // 7 steps
+
+        let result = nearest_astar_fly(&world, start, &[near, far], 250, u32::MAX, FP1);
+        assert_eq!(result, Some(near));
+    }
+
+    #[test]
+    fn nearest_astar_fly_start_is_candidate() {
+        let world = empty_world(8, 8, 8);
+        let start = VoxelCoord::new(3, 3, 3);
+        let result = nearest_astar_fly(&world, start, &[start], 250, u32::MAX, FP1);
+        assert_eq!(result, Some(start));
+    }
+
+    #[test]
+    fn nearest_astar_fly_no_candidates() {
+        let world = empty_world(8, 8, 8);
+        let start = VoxelCoord::new(3, 3, 3);
+        let result = nearest_astar_fly(&world, start, &[], 250, u32::MAX, FP1);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn nearest_astar_fly_unreachable_candidate() {
+        let mut world = empty_world(8, 8, 8);
+        for y in 0..8 {
+            for z in 0..8 {
+                world.set(VoxelCoord::new(4, y, z), VoxelType::Trunk);
+            }
+        }
+        let start = VoxelCoord::new(2, 4, 4);
+        let goal = VoxelCoord::new(6, 4, 4);
+        let result = nearest_astar_fly(&world, start, &[goal], 250, u32::MAX, FP1);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn nearest_astar_fly_skips_unreachable_picks_reachable() {
+        let mut world = empty_world(16, 16, 16);
+        for y in 0..16 {
+            for z in 0..16 {
+                world.set(VoxelCoord::new(10, y, z), VoxelType::Trunk);
+            }
+        }
+        let start = VoxelCoord::new(5, 5, 5);
+        let blocked = VoxelCoord::new(12, 5, 5);
+        let reachable = VoxelCoord::new(7, 5, 5);
+
+        let result = nearest_astar_fly(&world, start, &[blocked, reachable], 250, u32::MAX, FP1);
+        assert_eq!(result, Some(reachable));
+    }
+
+    #[test]
+    fn nearest_astar_fly_max_path_len_cutoff() {
+        let world = empty_world(16, 16, 16);
+        let start = VoxelCoord::new(2, 5, 5);
+        let near = VoxelCoord::new(4, 5, 5); // 2 steps
+        let far = VoxelCoord::new(7, 5, 5); // 5 steps
+
+        // max_path_len=3 reaches near (2 steps) but not far (5 steps).
+        let result = nearest_astar_fly(&world, start, &[near, far], 250, 3, FP1);
+        assert_eq!(result, Some(near));
+
+        // max_path_len=1 reaches neither (near is 2 steps).
+        let result = nearest_astar_fly(&world, start, &[near, far], 250, 1, FP1);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn nearest_astar_fly_agrees_with_sequential() {
+        let world = empty_world(16, 16, 16);
+        let start = VoxelCoord::new(5, 5, 5);
+        // Candidates at different distances so there's a unique winner.
+        let c1 = VoxelCoord::new(8, 5, 5); // 3 steps
+        let c2 = VoxelCoord::new(5, 10, 5); // 5 steps
+        let c3 = VoxelCoord::new(5, 5, 12); // 7 steps
+
+        let candidates = &[c1, c2, c3];
+
+        // Independent sequential reference: run point-to-point A* to each
+        // candidate and pick the cheapest. This is the old nearest_fly logic
+        // before it was changed to delegate to interleaved A*.
+        let sequential = {
+            let mut best: Option<(VoxelCoord, i64)> = None;
+            for &c in candidates {
+                if let Some(r) = astar_fly(&world, start, c, 250, u32::MAX, FP1) {
+                    match best {
+                        None => best = Some((c, r.total_cost)),
+                        Some((_, prev)) if r.total_cost < prev => {
+                            best = Some((c, r.total_cost));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            best.map(|(coord, _)| coord)
+        };
+
+        let interleaved = nearest_astar_fly(&world, start, candidates, 250, u32::MAX, FP1);
+        assert_eq!(sequential, interleaved);
+    }
+
+    #[test]
+    fn nearest_astar_fly_start_not_flyable() {
+        let mut world = empty_world(8, 8, 8);
+        let start = VoxelCoord::new(3, 3, 3);
+        world.set(start, VoxelType::Trunk);
+        let goal = VoxelCoord::new(5, 5, 5);
+
+        let result = nearest_astar_fly(&world, start, &[goal], 250, u32::MAX, FP1);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn nearest_astar_fly_candidate_not_flyable_filtered() {
+        let mut world = empty_world(16, 16, 16);
+        let start = VoxelCoord::new(5, 5, 5);
+        let blocked = VoxelCoord::new(8, 5, 5);
+        let reachable = VoxelCoord::new(5, 8, 5);
+        world.set(blocked, VoxelType::Trunk);
+
+        // blocked candidate is filtered out in pre-filter, reachable wins.
+        let result = nearest_astar_fly(&world, start, &[blocked, reachable], 250, u32::MAX, FP1);
+        assert_eq!(result, Some(reachable));
+    }
+
+    #[test]
+    fn nearest_astar_fly_all_candidates_unflyable() {
+        let mut world = empty_world(8, 8, 8);
+        let start = VoxelCoord::new(3, 3, 3);
+        let c1 = VoxelCoord::new(5, 5, 5);
+        let c2 = VoxelCoord::new(6, 6, 6);
+        world.set(c1, VoxelType::Trunk);
+        world.set(c2, VoxelType::Trunk);
+
+        let result = nearest_astar_fly(&world, start, &[c1, c2], 250, u32::MAX, FP1);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn nearest_astar_fly_large_footprint() {
+        let mut world = empty_world(16, 16, 16);
+        let start = VoxelCoord::new(2, 5, 5);
+        let near = VoxelCoord::new(7, 5, 5);
+        let far = VoxelCoord::new(12, 5, 5);
+
+        // Both reachable for 2x2x2 in open world.
+        let result = nearest_astar_fly(&world, start, &[near, far], 250, u32::MAX, FP2);
+        assert_eq!(result, Some(near));
+
+        // Block the path with a wall that 2x2x2 can't pass through.
+        for y in 0..16 {
+            for z in 0..16 {
+                world.set(VoxelCoord::new(5, y, z), VoxelType::Trunk);
+            }
+        }
+        // Near is now on the other side of the wall.
+        let result = nearest_astar_fly(&world, start, &[near, far], 250, u32::MAX, FP2);
+        assert_eq!(result, None);
     }
 
     // -----------------------------------------------------------------------

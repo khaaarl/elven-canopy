@@ -45,6 +45,20 @@ impl SimState {
     /// surface below (the voxel the nav node sits on) for grassiness.
     /// Returns the grass voxel coordinate and nav node, or `None` if no
     /// grass is reachable.
+    ///
+    /// This uses a bespoke inline Dijkstra rather than the standard
+    /// `nearest_navgraph` / interleaved-A* API because grass is so
+    /// astronomically numerous (nearly every exposed dirt voxel on the
+    /// ground floor) that enumerating all grass positions into a candidate
+    /// list would itself be prohibitive. Instead, we expand outward from
+    /// the creature and test each visited node on the fly. Since grass is
+    /// almost everywhere, Dijkstra terminates in very few expansions —
+    /// typically the first or second ground-level node is grassy.
+    ///
+    /// TODO: Flying herbivores (F-flying-grazing) would need a flight-grid
+    /// analog of this search — expand through flyable voxels and test the
+    /// ground surface below each position. Not yet implemented because
+    /// flying herbivores don't currently exist in the species table.
     pub(crate) fn find_nearest_grass(
         &self,
         creature_id: CreatureId,
