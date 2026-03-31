@@ -19,22 +19,30 @@ use crate::drawing::PixelBuffer;
 use elven_canopy_sim::inventory::{EquipSlot, ItemKind, WearCategory};
 use elven_canopy_sim::types::TraitKind;
 
+/// Base hue palette for elf hair. Arranged in hue-wheel order so that
+/// adjacent categories can blend to produce intermediate colors (future
+/// hue blending feature). The VSH pigmentation axes (Value/Saturation)
+/// shift these base hues — e.g., low saturation + high value = silver/ash,
+/// low saturation + medium value = brown, very low value = near-black.
 const HAIR_COLORS: [Color; 7] = [
-    Color::rgb(0.95, 0.85, 0.40), // blonde
-    Color::rgb(0.85, 0.30, 0.20), // red
-    Color::rgb(0.20, 0.65, 0.30), // forest green
-    Color::rgb(0.35, 0.50, 0.90), // blue
-    Color::rgb(0.82, 0.82, 0.88), // silver
-    Color::rgb(0.50, 0.30, 0.15), // brown
-    Color::rgb(0.90, 0.50, 0.70), // pink
+    Color::rgb(0.95, 0.80, 0.25), // gold — warm golden blonde
+    Color::rgb(0.85, 0.40, 0.20), // copper — auburn/orange-red
+    Color::rgb(0.90, 0.45, 0.55), // rose — vivid pink
+    Color::rgb(0.65, 0.35, 0.85), // violet — rich purple
+    Color::rgb(0.30, 0.50, 0.90), // blue — cool blue
+    Color::rgb(0.25, 0.70, 0.65), // teal — blue-green
+    Color::rgb(0.30, 0.70, 0.30), // green — emerald/forest
 ];
 
-const EYE_COLORS: [Color; 5] = [
-    Color::rgb(0.30, 0.50, 0.90), // blue
-    Color::rgb(0.25, 0.70, 0.35), // green
-    Color::rgb(0.85, 0.65, 0.20), // amber
-    Color::rgb(0.60, 0.30, 0.80), // violet
-    Color::rgb(0.45, 0.30, 0.20), // brown
+/// Base hue palette for elf eyes. Hue-wheel order (warm→cool arc) for
+/// adjacent-category blending. Grey/dark eyes emerge from VSH axes.
+const EYE_COLORS: [Color; 6] = [
+    Color::rgb(0.85, 0.65, 0.20), // amber — warm golden
+    Color::rgb(0.25, 0.72, 0.35), // green — vivid emerald
+    Color::rgb(0.20, 0.65, 0.70), // teal — blue-green
+    Color::rgb(0.30, 0.45, 0.90), // blue — cool blue
+    Color::rgb(0.60, 0.30, 0.80), // violet — purple
+    Color::rgb(0.80, 0.40, 0.55), // rose — pinkish fantasy
 ];
 
 const SKIN_TONES: [Color; 4] = [
@@ -88,6 +96,26 @@ pub struct CreatureDrawInfo {
     pub eye_color_idx: u8,
     pub skin_tone_idx: u8,
     pub hair_style_idx: u8,
+    /// VSH pigmentation: hair value (dark↔light), 0 = no adjustment.
+    pub hair_value: i64,
+    /// VSH pigmentation: hair saturation (muted↔vivid), 0 = no adjustment.
+    pub hair_saturation: i64,
+    /// VSH pigmentation: eye value (dark↔light), 0 = no adjustment.
+    pub eye_value: i64,
+    /// VSH pigmentation: eye saturation (muted↔vivid), 0 = no adjustment.
+    pub eye_saturation: i64,
+    /// VSH pigmentation: skin melanin, 0 = no adjustment.
+    pub skin_melanin: i64,
+    /// VSH pigmentation: skin ruddiness, 0 = no adjustment.
+    pub skin_ruddiness: i64,
+    /// Hue blend: secondary hair hue index (-1 = no blend).
+    pub hair_blend_target: i64,
+    /// Hue blend: weight toward secondary (0–255, 0 = fully primary).
+    pub hair_blend_weight: i64,
+    /// Hue blend: secondary eye hue index (-1 = no blend).
+    pub eye_blend_target: i64,
+    /// Hue blend: weight toward secondary (0–255, 0 = fully primary).
+    pub eye_blend_weight: i64,
     pub equipment: [Option<EquipSlotDrawInfo>; EquipSlot::COUNT],
 }
 
@@ -95,7 +123,7 @@ pub fn params_from_seed(seed: i64) -> ElfParams {
     let h = knuth_hash(seed);
     ElfParams {
         hair_color: HAIR_COLORS[(h % 7) as usize],
-        eye_color: EYE_COLORS[((h / 7) % 5) as usize],
+        eye_color: EYE_COLORS[((h / 7) % 6) as usize],
         skin_tone: SKIN_TONES[((h / 31) % 4) as usize],
         hair_style: HAIR_STYLES[((h / 131) % 3) as usize],
     }
@@ -103,26 +131,86 @@ pub fn params_from_seed(seed: i64) -> ElfParams {
 
 /// Build `ElfParams` from trait indices (as stored in the `creature_traits` table).
 /// Out-of-range indices wrap via modulo to guarantee valid palette access.
+/// VSH pigmentation axes modify the base palette color when present.
+/// Adjacent hue blending is applied when blend target/weight traits are set.
 pub fn params_from_traits(traits: &super::TraitMap) -> ElfParams {
     let hair_idx = super::trait_idx(traits, TraitKind::HairColor, 0) % HAIR_COLORS.len();
     let eye_idx = super::trait_idx(traits, TraitKind::EyeColor, 0) % EYE_COLORS.len();
     let skin_idx = super::trait_idx(traits, TraitKind::SkinTone, 0) % SKIN_TONES.len();
     let style_idx = super::trait_idx(traits, TraitKind::HairStyle, 0) % HAIR_STYLES.len();
+
+    let hair_value = super::trait_i64(traits, TraitKind::HairValue, 0);
+    let hair_sat = super::trait_i64(traits, TraitKind::HairSaturation, 0);
+    let hair_blend_target = super::trait_i64(traits, TraitKind::HairBlendTarget, -1);
+    let hair_blend_weight = super::trait_i64(traits, TraitKind::HairBlendWeight, 0);
+    let eye_value = super::trait_i64(traits, TraitKind::EyeValue, 0);
+    let eye_sat = super::trait_i64(traits, TraitKind::EyeSaturation, 0);
+    let eye_blend_target = super::trait_i64(traits, TraitKind::EyeBlendTarget, -1);
+    let eye_blend_weight = super::trait_i64(traits, TraitKind::EyeBlendWeight, 0);
+    let melanin = super::trait_i64(traits, TraitKind::SkinMelanin, 0);
+    let ruddiness = super::trait_i64(traits, TraitKind::SkinRuddiness, 0);
+
     ElfParams {
-        hair_color: HAIR_COLORS[hair_idx],
-        eye_color: EYE_COLORS[eye_idx],
-        skin_tone: SKIN_TONES[skin_idx],
+        hair_color: super::resolve_hue(
+            &HAIR_COLORS,
+            hair_idx,
+            hair_blend_target,
+            hair_blend_weight,
+        )
+        .apply_value(hair_value)
+        .apply_saturation(hair_sat),
+        eye_color: super::resolve_hue(&EYE_COLORS, eye_idx, eye_blend_target, eye_blend_weight)
+            .apply_value(eye_value)
+            .apply_saturation(eye_sat),
+        skin_tone: apply_skin_vsh(SKIN_TONES[skin_idx], melanin, ruddiness),
         hair_style: HAIR_STYLES[style_idx],
     }
 }
 
-/// Build `ElfParams` directly from the `CreatureDrawInfo` trait indices.
+/// Build `ElfParams` directly from the `CreatureDrawInfo` trait indices and
+/// VSH pigmentation values, including hue blending.
 fn params_from_draw_info(info: &CreatureDrawInfo) -> ElfParams {
+    let hair_hue = super::resolve_hue(
+        &HAIR_COLORS,
+        info.hair_color_idx as usize,
+        info.hair_blend_target,
+        info.hair_blend_weight,
+    );
+    let eye_hue = super::resolve_hue(
+        &EYE_COLORS,
+        info.eye_color_idx as usize,
+        info.eye_blend_target,
+        info.eye_blend_weight,
+    );
+    let base_skin = SKIN_TONES[info.skin_tone_idx as usize % SKIN_TONES.len()];
+
     ElfParams {
-        hair_color: HAIR_COLORS[info.hair_color_idx as usize % HAIR_COLORS.len()],
-        eye_color: EYE_COLORS[info.eye_color_idx as usize % EYE_COLORS.len()],
-        skin_tone: SKIN_TONES[info.skin_tone_idx as usize % SKIN_TONES.len()],
+        hair_color: hair_hue
+            .apply_value(info.hair_value)
+            .apply_saturation(info.hair_saturation),
+        eye_color: eye_hue
+            .apply_value(info.eye_value)
+            .apply_saturation(info.eye_saturation),
+        skin_tone: apply_skin_vsh(base_skin, info.skin_melanin, info.skin_ruddiness),
         hair_style: HAIR_STYLES[info.hair_style_idx as usize % HAIR_STYLES.len()],
+    }
+}
+
+/// Apply melanin (darker/lighter) and ruddiness (more/less rosy) to a base
+/// skin tone. Melanin maps to value (negative=lighter, positive=darker with
+/// inverted sign since higher melanin = darker skin). Ruddiness adds a warm
+/// reddish tint by boosting the red channel.
+fn apply_skin_vsh(base: Color, melanin: i64, ruddiness: i64) -> Color {
+    // Melanin: positive trait value = darker skin.
+    let with_melanin = base.apply_value(-melanin);
+    // Ruddiness: boost red channel proportionally.
+    let ruddiness_shift = (ruddiness as f32 * 0.0008).clamp(-0.15, 0.15);
+    Color {
+        r: {
+            let v = with_melanin.r as f32 / 255.0 + ruddiness_shift;
+            (v.clamp(0.0, 1.0) * 255.0) as u8
+        },
+        ..with_melanin
     }
 }
 
@@ -341,6 +429,16 @@ mod tests {
             eye_color_idx: 1,
             skin_tone_idx: 0,
             hair_style_idx: 1,
+            hair_value: 0,
+            hair_saturation: 0,
+            eye_value: 0,
+            eye_saturation: 0,
+            skin_melanin: 0,
+            skin_ruddiness: 0,
+            hair_blend_target: -1,
+            hair_blend_weight: 0,
+            eye_blend_target: -1,
+            eye_blend_weight: 0,
             equipment: [None; EquipSlot::COUNT],
         }
     }
@@ -466,6 +564,16 @@ mod tests {
             eye_color_idx: 0,
             skin_tone_idx: 0,
             hair_style_idx: 0,
+            hair_value: 0,
+            hair_saturation: 0,
+            eye_value: 0,
+            eye_saturation: 0,
+            skin_melanin: 0,
+            skin_ruddiness: 0,
+            hair_blend_target: -1,
+            hair_blend_weight: 0,
+            eye_blend_target: -1,
+            eye_blend_weight: 0,
             equipment: [
                 Some(EquipSlotDrawInfo {
                     kind: ItemKind::Helmet,

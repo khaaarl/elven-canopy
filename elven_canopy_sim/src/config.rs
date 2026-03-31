@@ -32,8 +32,8 @@
 use crate::inventory::{ItemColor, ItemKind, Material, MaterialFilter};
 use crate::nav::EdgeType;
 use crate::species::{
-    AmmoExhaustedBehavior, EngagementInitiative, EngagementStyle, SpeciesData, StatDistribution,
-    WeaponPreference,
+    AmmoExhaustedBehavior, EngagementInitiative, EngagementStyle, PersonalityAxis, SnpKind,
+    SnpRegion, SpeciesData, SpeciesGenomeConfig, StatDistribution, WeaponPreference,
 };
 use crate::types::{
     CivSpecies, FaceType, MoodTier, PathCategory, PathId, Species, ThoughtKind, TraitKind,
@@ -3211,6 +3211,174 @@ fn stat_dists(entries: &[(TraitKind, i32, i32)]) -> BTreeMap<TraitKind, StatDist
         .map(|&(kind, mean, stdev)| (kind, StatDistribution { mean, stdev }))
         .collect()
 }
+
+/// Build a personality distribution map from (PersonalityAxis, mean, stdev) triples.
+/// Axes not listed default to (0, 50) at query time in `roll_creature_traits`.
+fn personality_dists(
+    entries: &[(PersonalityAxis, i32, i32)],
+) -> BTreeMap<PersonalityAxis, StatDistribution> {
+    entries
+        .iter()
+        .map(|&(axis, mean, stdev)| (axis, StatDistribution { mean, stdev }))
+        .collect()
+}
+
+/// Build a species genome config with VSH pigmentation SNP regions.
+///
+/// `hue_names` is the list of hue category names for the primary color trait.
+/// `hue_bits` is the bit-width per hue category (default 4).
+/// `vs_bits` is the bit-width for value and saturation axes (default 6).
+///
+/// For most species, this creates: hue (categorical), value (continuous),
+/// saturation (continuous). Species with special layouts (e.g., elf with
+/// separate hair/eye/skin) build their config directly.
+fn simple_color_genome(
+    color_name: &str,
+    hue_names: &[&str],
+    hue_bits: u32,
+    vs_bits: u32,
+) -> Vec<SnpRegion> {
+    let mut snps = Vec::new();
+    // Hue categories.
+    for name in hue_names {
+        snps.push(SnpRegion {
+            name: format!("{color_name}_hue_{name}"),
+            bits: hue_bits,
+            kind: SnpKind::Categorical {
+                group: format!("{color_name}_hue"),
+            },
+        });
+    }
+    // Value (dark ↔ light).
+    snps.push(SnpRegion {
+        name: format!("{color_name}_value"),
+        bits: vs_bits,
+        kind: SnpKind::Continuous,
+    });
+    // Saturation (muted ↔ vivid).
+    snps.push(SnpRegion {
+        name: format!("{color_name}_saturation"),
+        bits: vs_bits,
+        kind: SnpKind::Continuous,
+    });
+    snps
+}
+
+/// Build categorical SNP regions for a morphological trait (e.g., antler_style).
+/// `num_categories` options × `bits_per` bits each.
+fn categorical_snps(name: &str, num_categories: u32, bits_per: u32) -> Vec<SnpRegion> {
+    (0..num_categories)
+        .map(|i| SnpRegion {
+            name: format!("{name}_{i}"),
+            bits: bits_per,
+            kind: SnpKind::Categorical {
+                group: name.to_string(),
+            },
+        })
+        .collect()
+}
+
+/// Simple species genome config with a single VSH color trait and optional
+/// morphological categorical traits.
+fn simple_species_genome_with_morphology(
+    color_name: &str,
+    hue_names: &[&str],
+    morphology: &[(&str, u32)], // (trait_name, num_categories)
+) -> SpeciesGenomeConfig {
+    let mut snps = simple_color_genome(color_name, hue_names, 4, 6);
+    for &(name, cats) in morphology {
+        snps.extend(categorical_snps(name, cats, 4));
+    }
+    SpeciesGenomeConfig {
+        species_snps: snps,
+        ..Default::default()
+    }
+}
+
+/// Elf species genome: hair (7 hues × 6 bits + V + S), eye (6 hues × 4 bits + V + S),
+/// skin (melanin + ruddiness + warmth reserved).
+fn elf_genome_config() -> SpeciesGenomeConfig {
+    let mut snps = Vec::new();
+
+    // Hair hue (7 categories × 6 bits = 42 bits).
+    // Arranged in hue-wheel order for adjacent-category blending.
+    let hair_hues = ["gold", "copper", "rose", "violet", "blue", "teal", "green"];
+    for hue in &hair_hues {
+        snps.push(SnpRegion {
+            name: format!("hair_hue_{hue}"),
+            bits: 6,
+            kind: SnpKind::Categorical {
+                group: "hair_hue".into(),
+            },
+        });
+    }
+    // Hair value + saturation (6 bits each).
+    snps.push(SnpRegion {
+        name: "hair_value".into(),
+        bits: 6,
+        kind: SnpKind::Continuous,
+    });
+    snps.push(SnpRegion {
+        name: "hair_saturation".into(),
+        bits: 6,
+        kind: SnpKind::Continuous,
+    });
+
+    // Eye hue (6 categories × 4 bits = 24 bits).
+    // Hue-wheel order: warm → cool arc.
+    let eye_hues = ["amber", "green", "teal", "blue", "violet", "rose"];
+    for hue in &eye_hues {
+        snps.push(SnpRegion {
+            name: format!("eye_hue_{hue}"),
+            bits: 4,
+            kind: SnpKind::Categorical {
+                group: "eye_hue".into(),
+            },
+        });
+    }
+    // Eye value + saturation (4 bits each).
+    snps.push(SnpRegion {
+        name: "eye_value".into(),
+        bits: 4,
+        kind: SnpKind::Continuous,
+    });
+    snps.push(SnpRegion {
+        name: "eye_saturation".into(),
+        bits: 4,
+        kind: SnpKind::Continuous,
+    });
+
+    // Skin: melanin, ruddiness, warmth (6 bits each).
+    snps.push(SnpRegion {
+        name: "skin_melanin".into(),
+        bits: 6,
+        kind: SnpKind::Continuous,
+    });
+    snps.push(SnpRegion {
+        name: "skin_ruddiness".into(),
+        bits: 6,
+        kind: SnpKind::Continuous,
+    });
+    snps.push(SnpRegion {
+        name: "skin_warmth".into(),
+        bits: 6,
+        kind: SnpKind::Continuous,
+    });
+
+    // Skin tone hue (4 categories × 4 bits). Selects the base skin palette
+    // entry; melanin/ruddiness then modify it via VSH.
+    snps.extend(categorical_snps("skin_tone", 4, 4));
+
+    // Morphology: hair style (3 categories × 4 bits).
+    snps.extend(categorical_snps("hair_style", 3, 4));
+
+    SpeciesGenomeConfig {
+        stat_bits: 32,
+        personality_bits: 8,
+        species_snps: snps,
+    }
+}
+
 impl Default for GameConfig {
     fn default() -> Self {
         let mut species = BTreeMap::new();
@@ -3267,6 +3435,15 @@ impl Default for GameConfig {
                 is_herbivore: false,
                 graze_food_restore_pct: 15,
                 sex_weights: [0, 1, 1],
+                // Elves: artistic, disciplined, emotionally intense.
+                personality_distributions: personality_dists(&[
+                    (PersonalityAxis::Openness, 0, 60),
+                    (PersonalityAxis::Conscientiousness, 30, 60),
+                    (PersonalityAxis::Extraversion, 0, 60),
+                    (PersonalityAxis::Agreeableness, 0, 60),
+                    (PersonalityAxis::Neuroticism, 30, 60),
+                ]),
+                genome_config: elf_genome_config(),
             },
         );
         species.insert(
@@ -3317,6 +3494,12 @@ impl Default for GameConfig {
                 is_herbivore: true,
                 graze_food_restore_pct: 15,
                 sex_weights: [0, 1, 1],
+                personality_distributions: Default::default(),
+                genome_config: simple_species_genome_with_morphology(
+                    "body",
+                    &["sandy", "golden", "russet", "chocolate"],
+                    &[("accessory", 4)],
+                ),
             },
         );
         species.insert(
@@ -3367,6 +3550,12 @@ impl Default for GameConfig {
                 is_herbivore: true,
                 graze_food_restore_pct: 15,
                 sex_weights: [0, 1, 1],
+                personality_distributions: Default::default(),
+                genome_config: simple_species_genome_with_morphology(
+                    "body",
+                    &["muddy", "reddish", "dark", "grey"],
+                    &[("tusk_size", 3)],
+                ),
             },
         );
         species.insert(
@@ -3417,6 +3606,12 @@ impl Default for GameConfig {
                 is_herbivore: true,
                 graze_food_restore_pct: 15,
                 sex_weights: [0, 1, 1],
+                personality_distributions: Default::default(),
+                genome_config: simple_species_genome_with_morphology(
+                    "body",
+                    &["fawn", "golden", "russet", "dark"],
+                    &[("antler_style", 3), ("spot_pattern", 2)],
+                ),
             },
         );
         species.insert(
@@ -3467,6 +3662,12 @@ impl Default for GameConfig {
                 is_herbivore: true,
                 graze_food_restore_pct: 10,
                 sex_weights: [0, 1, 1],
+                personality_distributions: Default::default(),
+                genome_config: simple_species_genome_with_morphology(
+                    "body",
+                    &["light", "dark", "brownish", "blue"],
+                    &[("tusk_type", 3)],
+                ),
             },
         );
         species.insert(
@@ -3522,6 +3723,19 @@ impl Default for GameConfig {
                 is_herbivore: false,
                 graze_food_restore_pct: 15,
                 sex_weights: [0, 1, 1],
+                // Goblins: curious, undisciplined, competitive.
+                personality_distributions: personality_dists(&[
+                    (PersonalityAxis::Openness, 40, 50),
+                    (PersonalityAxis::Conscientiousness, -40, 50),
+                    (PersonalityAxis::Extraversion, 10, 50),
+                    (PersonalityAxis::Agreeableness, -40, 50),
+                    (PersonalityAxis::Neuroticism, 10, 50),
+                ]),
+                genome_config: simple_species_genome_with_morphology(
+                    "skin",
+                    &["green", "yellow", "grey", "chartreuse"],
+                    &[("ear_style", 3)],
+                ),
             },
         );
         species.insert(
@@ -3572,6 +3786,12 @@ impl Default for GameConfig {
                 is_herbivore: true,
                 graze_food_restore_pct: 15,
                 sex_weights: [0, 1, 1],
+                personality_distributions: Default::default(),
+                genome_config: simple_species_genome_with_morphology(
+                    "fur",
+                    &["golden", "reddish", "dark", "sandy"],
+                    &[("face_marking", 3)],
+                ),
             },
         );
         species.insert(
@@ -3627,6 +3847,19 @@ impl Default for GameConfig {
                 is_herbivore: false,
                 graze_food_restore_pct: 15,
                 sex_weights: [0, 1, 1],
+                // Orcs: stoic, disciplined warriors, low openness.
+                personality_distributions: personality_dists(&[
+                    (PersonalityAxis::Openness, -30, 50),
+                    (PersonalityAxis::Conscientiousness, 20, 50),
+                    (PersonalityAxis::Extraversion, 10, 50),
+                    (PersonalityAxis::Agreeableness, -20, 50),
+                    (PersonalityAxis::Neuroticism, -20, 50),
+                ]),
+                genome_config: simple_species_genome_with_morphology(
+                    "skin",
+                    &["green", "olive", "bronze", "ashen"],
+                    &[("war_paint", 3)],
+                ),
             },
         );
         species.insert(
@@ -3677,6 +3910,12 @@ impl Default for GameConfig {
                 is_herbivore: true,
                 graze_food_restore_pct: 20,
                 sex_weights: [0, 1, 1],
+                personality_distributions: Default::default(),
+                genome_config: simple_species_genome_with_morphology(
+                    "fur",
+                    &["red", "golden", "brown", "grey"],
+                    &[("tail_type", 3)],
+                ),
             },
         );
         species.insert(
@@ -3732,6 +3971,12 @@ impl Default for GameConfig {
                 is_herbivore: false,
                 graze_food_restore_pct: 15,
                 sex_weights: [0, 1, 1],
+                personality_distributions: Default::default(),
+                genome_config: simple_species_genome_with_morphology(
+                    "skin",
+                    &["stone", "moss", "brown", "blue"],
+                    &[("horn_style", 3)],
+                ),
             },
         );
         species.insert(
@@ -3787,6 +4032,12 @@ impl Default for GameConfig {
                 is_herbivore: false,
                 graze_food_restore_pct: 15,
                 sex_weights: [0, 1, 1],
+                personality_distributions: Default::default(),
+                genome_config: simple_species_genome_with_morphology(
+                    "body",
+                    &["yellow", "amber", "orange", "golden"],
+                    &[("stripe_pattern", 3), ("wing_style", 3)],
+                ),
             },
         );
         species.insert(
@@ -3842,6 +4093,12 @@ impl Default for GameConfig {
                 is_herbivore: false,
                 graze_food_restore_pct: 15,
                 sex_weights: [0, 1, 1],
+                personality_distributions: Default::default(),
+                genome_config: simple_species_genome_with_morphology(
+                    "body",
+                    &["emerald", "crimson", "indigo", "bronze"],
+                    &[("scale_pattern", 3), ("horn_style", 3)],
+                ),
             },
         );
 

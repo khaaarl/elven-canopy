@@ -253,194 +253,35 @@ impl SimState {
     // -----------------------------------------------------------------
 
     /// Roll biological traits and creature stats for a newly spawned creature.
-    /// Visual traits (hair color, body color, etc.) use one PRNG call for a
-    /// bio seed, then Knuth hashing for palette indices. Creature stats
-    /// (Strength through Charisma) use 12 PRNG calls each for a normal-ish
-    /// distribution from the species config. Total: 1 + 96 PRNG calls.
+    /// Visual traits (hair color, body color, etc.) are genome-derived via
+    /// species-specific SNP expression. Creature stats (Strength through
+    /// Charisma) are derived from a randomly generated genome via weighted-sum
+    /// SNP expression (see `genome.rs`). The genome is stored in the
+    /// `creature_genomes` table for future inheritance.
     fn roll_creature_traits(&mut self, creature_id: CreatureId, species: Species) {
-        let bio_seed = self.rng.next_u64() as i64;
-        self.insert_trait(creature_id, TraitKind::BioSeed, TraitValue::Int(bio_seed));
+        // Generate genome and derive ability scores from it.
+        //
+        // The generic genome encodes ability scores (8 × 32-bit weighted-sum
+        // SNP regions) and Big Five personality (5 × 8-bit regions). For
+        // non-offspring creatures (wild spawns, starting elves), genome bits
+        // are drawn independently at random from the sim PRNG.
+        let generic_genome =
+            crate::genome::Genome::random(&mut self.rng, crate::genome::GENERIC_GENOME_BITS);
 
-        // Knuth multiplicative hash to spread bits for palette indexing.
-        let h = (bio_seed.wrapping_mul(2_654_435_761)).unsigned_abs();
+        // Species-specific genome (pigmentation VSH axes, future morphology).
+        let species_genome_bits = self.species_table[&species]
+            .genome_config
+            .species_snps
+            .iter()
+            .map(|snp| snp.bits)
+            .sum::<u32>();
+        let species_genome = if species_genome_bits > 0 {
+            crate::genome::Genome::random(&mut self.rng, species_genome_bits)
+        } else {
+            crate::genome::Genome::new(0)
+        };
 
-        match species {
-            Species::Elf => {
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::HairColor,
-                    TraitValue::Int((h % 7) as i64),
-                );
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::EyeColor,
-                    TraitValue::Int(((h / 7) % 5) as i64),
-                );
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::SkinTone,
-                    TraitValue::Int(((h / 31) % 4) as i64),
-                );
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::HairStyle,
-                    TraitValue::Int(((h / 131) % 3) as i64),
-                );
-            }
-            Species::Capybara => {
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::BodyColor,
-                    TraitValue::Int((h % 4) as i64),
-                );
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::Accessory,
-                    TraitValue::Int(((h / 13) % 4) as i64),
-                );
-            }
-            Species::Boar => {
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::BodyColor,
-                    TraitValue::Int((h % 4) as i64),
-                );
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::TuskSize,
-                    TraitValue::Int(((h / 11) % 3) as i64),
-                );
-            }
-            Species::Deer => {
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::BodyColor,
-                    TraitValue::Int((h % 4) as i64),
-                );
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::AntlerStyle,
-                    TraitValue::Int(((h / 11) % 3) as i64),
-                );
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::SpotPattern,
-                    TraitValue::Int(((h / 41) % 2) as i64),
-                );
-            }
-            Species::Elephant => {
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::BodyColor,
-                    TraitValue::Int((h % 4) as i64),
-                );
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::TuskType,
-                    TraitValue::Int(((h / 11) % 3) as i64),
-                );
-            }
-            Species::Goblin => {
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::SkinColor,
-                    TraitValue::Int((h % 4) as i64),
-                );
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::EarStyle,
-                    TraitValue::Int(((h / 11) % 3) as i64),
-                );
-            }
-            Species::Monkey => {
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::FurColor,
-                    TraitValue::Int((h % 4) as i64),
-                );
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::FaceMarking,
-                    TraitValue::Int(((h / 11) % 3) as i64),
-                );
-            }
-            Species::Orc => {
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::SkinColor,
-                    TraitValue::Int((h % 4) as i64),
-                );
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::WarPaint,
-                    TraitValue::Int(((h / 11) % 3) as i64),
-                );
-            }
-            Species::Squirrel => {
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::FurColor,
-                    TraitValue::Int((h % 4) as i64),
-                );
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::TailType,
-                    TraitValue::Int(((h / 11) % 3) as i64),
-                );
-            }
-            Species::Troll => {
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::SkinColor,
-                    TraitValue::Int((h % 4) as i64),
-                );
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::HornStyle,
-                    TraitValue::Int(((h / 11) % 3) as i64),
-                );
-            }
-            Species::Hornet => {
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::BodyColor,
-                    TraitValue::Int((h % 4) as i64),
-                );
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::StripePattern,
-                    TraitValue::Int(((h / 11) % 3) as i64),
-                );
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::WingStyle,
-                    TraitValue::Int(((h / 41) % 3) as i64),
-                );
-            }
-            Species::Wyvern => {
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::BodyColor,
-                    TraitValue::Int((h % 4) as i64),
-                );
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::ScalePattern,
-                    TraitValue::Int(((h / 11) % 3) as i64),
-                );
-                self.insert_trait(
-                    creature_id,
-                    TraitKind::HornStyle,
-                    TraitValue::Int(((h / 41) % 3) as i64),
-                );
-            }
-        }
-
-        // Roll creature stats from species-specific distributions.
-        // Roll stats from a quasi-normal distribution centered on the species
-        // mean with the species stdev. Stats are rolled in STAT_TRAIT_KINDS
-        // order after visual traits.
-        // Extract distribution params up front to avoid borrow conflicts.
+        // Derive ability scores from the generic genome.
         let stat_params: Vec<(TraitKind, i64, i64)> = crate::stats::STAT_TRAIT_KINDS
             .iter()
             .map(|&kind| {
@@ -452,10 +293,136 @@ impl SimState {
                 (kind, mean, stdev)
             })
             .collect();
-        for (stat_kind, mean, stdev) in stat_params {
-            let stat_value = mean + elven_canopy_prng::quasi_normal(&mut self.rng, stdev);
+        for (stat_idx, (stat_kind, mean, stdev)) in stat_params.into_iter().enumerate() {
+            let stat_value =
+                crate::genome::express_stat(&generic_genome, stat_idx as u32, mean, stdev);
             self.insert_trait(creature_id, stat_kind, TraitValue::Int(stat_value));
         }
+
+        // Derive Big Five personality values from the generic genome.
+        for (axis_idx, &trait_kind) in crate::genome::PERSONALITY_TRAIT_KINDS.iter().enumerate() {
+            let axis = crate::species::PERSONALITY_AXES[axis_idx];
+            let (mean, stdev) = self.species_table[&species]
+                .personality_distributions
+                .get(&axis)
+                .map(|d| (d.mean as i64, d.stdev as i64))
+                .unwrap_or((0, 50));
+            let value =
+                crate::genome::express_personality(&generic_genome, axis_idx as u32, mean, stdev);
+            self.insert_trait(creature_id, trait_kind, TraitValue::Int(value));
+        }
+
+        // Express species-specific pigmentation traits from the species genome.
+        if species_genome.bit_len() > 0 {
+            let genome_config = self.species_table[&species].genome_config.clone();
+            // XOR-fold creature ID to u64 for categorical tiebreak seed.
+            let id_bytes = creature_id.0.as_bytes();
+            let tiebreak_seed = u64::from_le_bytes(id_bytes[..8].try_into().unwrap())
+                ^ u64::from_le_bytes(id_bytes[8..].try_into().unwrap());
+
+            let expressed = crate::genome::express_species_genome(
+                &species_genome,
+                &genome_config,
+                tiebreak_seed,
+            );
+            // Blendable hue groups (hair_hue, eye_hue) are re-expressed below
+            // with weighted-sum scoring and blend info. Skip them here to
+            // avoid redundant double-expression that would be immediately
+            // overwritten.
+            const BLENDED_HUE_GROUPS: &[&str] =
+                &["hair_hue", "eye_hue", "body_hue", "fur_hue", "skin_hue"];
+            for (name, value) in &expressed {
+                if BLENDED_HUE_GROUPS.contains(&name.as_str()) {
+                    continue;
+                }
+                if let Some(trait_kind) = snp_name_to_trait_kind(name, species) {
+                    self.insert_trait(creature_id, trait_kind, TraitValue::Int(*value));
+                }
+            }
+
+            // Hue blending for adjacent categories on the hue wheel.
+            // Hair and eye hue groups get blended expression; the blend
+            // target and weight are stored as separate traits.
+            let blendable_hue_groups: &[(&str, TraitKind, TraitKind, TraitKind)] = &[
+                (
+                    "hair_hue",
+                    TraitKind::HairColor,
+                    TraitKind::HairBlendTarget,
+                    TraitKind::HairBlendWeight,
+                ),
+                (
+                    "eye_hue",
+                    TraitKind::EyeColor,
+                    TraitKind::EyeBlendTarget,
+                    TraitKind::EyeBlendWeight,
+                ),
+                (
+                    "body_hue",
+                    TraitKind::BodyColor,
+                    TraitKind::BodyBlendTarget,
+                    TraitKind::BodyBlendWeight,
+                ),
+                (
+                    "fur_hue",
+                    TraitKind::FurColor,
+                    TraitKind::FurBlendTarget,
+                    TraitKind::FurBlendWeight,
+                ),
+                (
+                    "skin_hue",
+                    TraitKind::SkinColor,
+                    TraitKind::SkinColorBlendTarget,
+                    TraitKind::SkinColorBlendWeight,
+                ),
+            ];
+            for &(group_name, hue_kind, target_kind, weight_kind) in blendable_hue_groups {
+                if let Some(result) = express_blended_hue_group(
+                    &species_genome,
+                    &genome_config,
+                    group_name,
+                    tiebreak_seed,
+                ) {
+                    match result {
+                        crate::genome::CategoricalResult::Single(idx) => {
+                            // Overwrite the hue trait with the blended result
+                            // (should match express_species_genome, but
+                            // re-expressed with weighted sums).
+                            self.insert_trait(creature_id, hue_kind, TraitValue::Int(idx as i64));
+                            self.insert_trait(creature_id, target_kind, TraitValue::Int(-1));
+                            self.insert_trait(creature_id, weight_kind, TraitValue::Int(0));
+                        }
+                        crate::genome::CategoricalResult::Blend {
+                            primary,
+                            secondary,
+                            weight,
+                        } => {
+                            self.insert_trait(
+                                creature_id,
+                                hue_kind,
+                                TraitValue::Int(primary as i64),
+                            );
+                            self.insert_trait(
+                                creature_id,
+                                target_kind,
+                                TraitValue::Int(secondary as i64),
+                            );
+                            self.insert_trait(
+                                creature_id,
+                                weight_kind,
+                                TraitValue::Int(weight as i64),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Store the genome in the creature_genomes table.
+        let _ = self.db.insert_creature_genome(crate::db::CreatureGenome {
+            creature_id,
+            generic_genome,
+            species_genome,
+        });
     }
 
     /// Insert a single trait row for a creature.
@@ -1022,4 +989,110 @@ impl SimState {
             }
         }
     }
+}
+
+/// Map a species genome SNP region or group name to the corresponding TraitKind.
+///
+/// Returns `None` for names that don't correspond to traits (e.g., reserved
+/// SNP regions like `skin_warmth`). The mapping depends on species because
+/// different species use different TraitKind variants for their color traits
+/// (BodyColor vs FurColor vs SkinColor).
+pub(crate) fn snp_name_to_trait_kind(name: &str, species: Species) -> Option<TraitKind> {
+    // suppress unused-variable warning — species is needed for future
+    // species-polymorphic mappings but all current non-elf species use
+    // the same generic names.
+    let _ = species;
+    match name {
+        // Elf-specific pigmentation.
+        "hair_hue" => Some(TraitKind::HairColor),
+        "hair_value" => Some(TraitKind::HairValue),
+        "hair_saturation" => Some(TraitKind::HairSaturation),
+        "eye_hue" => Some(TraitKind::EyeColor),
+        "eye_value" => Some(TraitKind::EyeValue),
+        "eye_saturation" => Some(TraitKind::EyeSaturation),
+        "skin_melanin" => Some(TraitKind::SkinMelanin),
+        "skin_ruddiness" => Some(TraitKind::SkinRuddiness),
+        "skin_tone" => Some(TraitKind::SkinTone),
+        "skin_warmth" => None, // Reserved for future use.
+
+        // Body color (capybara, boar, deer, elephant, hornet, wyvern).
+        "body_hue" => Some(TraitKind::BodyColor),
+        "body_value" => Some(TraitKind::BodyValue),
+        "body_saturation" => Some(TraitKind::BodySaturation),
+
+        // Fur color (monkey, squirrel).
+        "fur_hue" => Some(TraitKind::FurColor),
+        "fur_value" => Some(TraitKind::FurValue),
+        "fur_saturation" => Some(TraitKind::FurSaturation),
+
+        // Skin color (goblin, orc, troll).
+        "skin_hue" => Some(TraitKind::SkinColor),
+        "skin_value" => Some(TraitKind::SkinValue),
+        "skin_saturation" => Some(TraitKind::SkinSaturation),
+
+        // Morphological traits (Phase F) — categorical.
+        "hair_style" => Some(TraitKind::HairStyle),
+        "accessory" => Some(TraitKind::Accessory),
+        "tusk_size" => Some(TraitKind::TuskSize),
+        "antler_style" => Some(TraitKind::AntlerStyle),
+        "spot_pattern" => Some(TraitKind::SpotPattern),
+        "tusk_type" => Some(TraitKind::TuskType),
+        "ear_style" => Some(TraitKind::EarStyle),
+        "face_marking" => Some(TraitKind::FaceMarking),
+        "war_paint" => Some(TraitKind::WarPaint),
+        "tail_type" => Some(TraitKind::TailType),
+        "horn_style" => Some(TraitKind::HornStyle),
+        "stripe_pattern" => Some(TraitKind::StripePattern),
+        "wing_style" => Some(TraitKind::WingStyle),
+        "scale_pattern" => Some(TraitKind::ScalePattern),
+
+        _ => None,
+    }
+}
+
+/// Find a categorical group in the species genome config and express it
+/// with hue-wheel blending. Returns `None` if the group isn't found.
+fn express_blended_hue_group(
+    genome: &crate::genome::Genome,
+    config: &crate::species::SpeciesGenomeConfig,
+    group_name: &str,
+    tiebreak_seed: u64,
+) -> Option<crate::genome::CategoricalResult> {
+    // Find all SNP regions in this categorical group and compute the start offset.
+    let mut group_start = None;
+    let mut bits_per = 0u32;
+    let mut num_categories = 0u32;
+    let mut offset = 0u32;
+
+    for snp in &config.species_snps {
+        if let crate::species::SnpKind::Categorical { group } = &snp.kind
+            && group == group_name
+        {
+            if group_start.is_none() {
+                group_start = Some(offset);
+                bits_per = snp.bits;
+            }
+            num_categories += 1;
+        }
+        offset += snp.bits;
+    }
+
+    let start = group_start?;
+    if num_categories < 2 {
+        return None;
+    }
+
+    // Mix tiebreak seed with group name.
+    let group_hash = group_name
+        .bytes()
+        .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+    let seed = tiebreak_seed ^ group_hash;
+
+    Some(crate::genome::express_categorical_blended(
+        genome,
+        start,
+        bits_per,
+        num_categories,
+        seed,
+    ))
 }

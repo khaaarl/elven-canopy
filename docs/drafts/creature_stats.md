@@ -144,9 +144,8 @@ variance `12 * stdev^2 / 3 = 4 * stdev^2`, so standard deviation `2 * stdev`.
 Dividing by 2 normalizes to the target stdev. All integer arithmetic.
 
 Each stat requires 12 PRNG calls (96 per creature for 8 stats). Stat rolls
-happen **after** the existing BioSeed + visual trait rolling in
-`roll_creature_traits` (F-creature-biology), in `TraitKind` enum order, to
-preserve determinism for existing creatures.
+happen in `roll_creature_traits` (F-creature-biology), in `TraitKind` enum
+order, to preserve determinism for existing creatures.
 
 ## Mechanical Hooks (Initial)
 

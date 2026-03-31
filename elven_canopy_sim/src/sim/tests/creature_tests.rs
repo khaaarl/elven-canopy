@@ -138,13 +138,12 @@ fn spawned_elf_has_biology_traits() {
     let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
-    // Elf should have all elf-specific traits plus BioSeed.
-    assert_ne!(sim.trait_int(elf_id, TraitKind::BioSeed, 0), 0);
+    // Elf should have all elf-specific traits.
     // Hair color index should be in range 0–6.
     let hair = sim.trait_int(elf_id, TraitKind::HairColor, -1);
     assert!((0..7).contains(&hair), "hair_color {hair} out of range");
     let eye = sim.trait_int(elf_id, TraitKind::EyeColor, -1);
-    assert!((0..5).contains(&eye), "eye_color {eye} out of range");
+    assert!((0..6).contains(&eye), "eye_color {eye} should be 0–5");
     let skin = sim.trait_int(elf_id, TraitKind::SkinTone, -1);
     assert!((0..4).contains(&skin), "skin_tone {skin} out of range");
     let style = sim.trait_int(elf_id, TraitKind::HairStyle, -1);
@@ -160,7 +159,6 @@ fn spawned_capybara_has_biology_traits() {
     let mut sim = test_sim(legacy_test_seed());
     let capy_id = spawn_creature(&mut sim, Species::Capybara);
 
-    assert_ne!(sim.trait_int(capy_id, TraitKind::BioSeed, 0), 0);
     let body = sim.trait_int(capy_id, TraitKind::BodyColor, -1);
     assert!((0..4).contains(&body), "body_color {body} out of range");
     let acc = sim.trait_int(capy_id, TraitKind::Accessory, -1);
@@ -175,7 +173,6 @@ fn spawned_deer_has_biology_traits() {
     let mut sim = test_sim(legacy_test_seed());
     let deer_id = spawn_creature(&mut sim, Species::Deer);
 
-    assert_ne!(sim.trait_int(deer_id, TraitKind::BioSeed, 0), 0);
     let body = sim.trait_int(deer_id, TraitKind::BodyColor, -1);
     assert!((0..4).contains(&body), "body_color {body} out of range");
     let antler = sim.trait_int(deer_id, TraitKind::AntlerStyle, -1);
@@ -204,8 +201,8 @@ fn biology_traits_deterministic() {
         sim2.trait_int(elf2, TraitKind::EyeColor, -1),
     );
     assert_eq!(
-        sim1.trait_int(elf1, TraitKind::BioSeed, 0),
-        sim2.trait_int(elf2, TraitKind::BioSeed, 0),
+        sim1.trait_int(elf1, TraitKind::SkinTone, -1),
+        sim2.trait_int(elf2, TraitKind::SkinTone, -1),
     );
 }
 
@@ -215,7 +212,7 @@ fn biology_traits_cascade_on_creature_removal() {
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
     // Traits should exist.
-    assert_ne!(sim.trait_int(elf_id, TraitKind::BioSeed, 0), 0);
+    assert_ne!(sim.trait_int(elf_id, TraitKind::HairColor, -1), -1);
     let trait_count_before = sim
         .db
         .creature_traits
@@ -260,7 +257,6 @@ fn biology_traits_cascade_on_creature_removal() {
     sim.db
         .remove_creature(&elf_id)
         .expect("creature removal should succeed");
-    assert_eq!(sim.trait_int(elf_id, TraitKind::BioSeed, 0), 0);
     assert_eq!(
         sim.db
             .creature_traits
@@ -313,40 +309,13 @@ fn compound_unique_prevents_duplicate_traits() {
 }
 
 #[test]
-fn all_species_get_bio_seed_on_spawn() {
-    // Ground species only — Hornet (flying) can't spawn at tree_pos (Trunk).
-    // Hornet BioSeed is verified by `hornet_spawn_has_traits`.
-    let all_species = [
-        Species::Elf,
-        Species::Capybara,
-        Species::Boar,
-        Species::Deer,
-        Species::Elephant,
-        Species::Goblin,
-        Species::Monkey,
-        Species::Orc,
-        Species::Squirrel,
-        Species::Troll,
-    ];
-    for species in all_species {
-        let mut sim = test_sim(legacy_test_seed());
-        let id = spawn_creature(&mut sim, species);
-        assert_ne!(
-            sim.trait_int(id, TraitKind::BioSeed, 0),
-            0,
-            "{species:?} should have a BioSeed"
-        );
-    }
-}
-
-#[test]
 fn biology_traits_serde_roundtrip() {
     let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
     let hair_before = sim.trait_int(elf_id, TraitKind::HairColor, -1);
     let eye_before = sim.trait_int(elf_id, TraitKind::EyeColor, -1);
-    let seed_before = sim.trait_int(elf_id, TraitKind::BioSeed, 0);
+    let skin_before = sim.trait_int(elf_id, TraitKind::SkinTone, -1);
 
     let json = serde_json::to_string(&sim).unwrap();
     let restored: SimState = serde_json::from_str(&json).unwrap();
@@ -360,15 +329,14 @@ fn biology_traits_serde_roundtrip() {
         eye_before
     );
     assert_eq!(
-        restored.trait_int(elf_id, TraitKind::BioSeed, 0),
-        seed_before
+        restored.trait_int(elf_id, TraitKind::SkinTone, -1),
+        skin_before
     );
 }
 
 #[test]
 fn trait_kind_serde_roundtrip() {
     let all_kinds = [
-        TraitKind::BioSeed,
         TraitKind::HairColor,
         TraitKind::EyeColor,
         TraitKind::SkinTone,
@@ -414,6 +382,33 @@ fn trait_kind_serde_roundtrip() {
         TraitKind::Intelligence,
         TraitKind::Perception,
         TraitKind::Charisma,
+        TraitKind::Openness,
+        TraitKind::Conscientiousness,
+        TraitKind::Extraversion,
+        TraitKind::Agreeableness,
+        TraitKind::Neuroticism,
+        TraitKind::HairValue,
+        TraitKind::HairSaturation,
+        TraitKind::EyeValue,
+        TraitKind::EyeSaturation,
+        TraitKind::HairBlendTarget,
+        TraitKind::HairBlendWeight,
+        TraitKind::EyeBlendTarget,
+        TraitKind::EyeBlendWeight,
+        TraitKind::BodyBlendTarget,
+        TraitKind::BodyBlendWeight,
+        TraitKind::FurBlendTarget,
+        TraitKind::FurBlendWeight,
+        TraitKind::SkinColorBlendTarget,
+        TraitKind::SkinColorBlendWeight,
+        TraitKind::SkinMelanin,
+        TraitKind::SkinRuddiness,
+        TraitKind::BodyValue,
+        TraitKind::BodySaturation,
+        TraitKind::FurValue,
+        TraitKind::FurSaturation,
+        TraitKind::SkinValue,
+        TraitKind::SkinSaturation,
     ];
     for kind in all_kinds {
         let json = serde_json::to_string(&kind).unwrap();
@@ -549,7 +544,6 @@ fn old_save_without_creature_traits_deserializes() {
     // Creatures should exist but have no traits — defaults returned.
     assert!(restored.db.creatures.get(&elf_id).is_some());
     assert_eq!(restored.trait_int(elf_id, TraitKind::HairColor, -1), -1);
-    assert_eq!(restored.trait_int(elf_id, TraitKind::BioSeed, 0), 0);
 }
 
 /// Verify that old-format saves (auto-PK tables serialized as
@@ -2029,4 +2023,365 @@ fn sex_weights_in_default_config() {
             sum,
         );
     }
+}
+
+// -----------------------------------------------------------------------
+// Genome tests (F-genetics Phase A+B)
+// -----------------------------------------------------------------------
+
+/// Spawning a creature should create a genome entry in the creature_genomes table.
+#[test]
+fn spawned_creature_has_genome() {
+    let mut sim = flat_world_sim(fresh_test_seed());
+    let elf = spawn_elf(&mut sim);
+
+    let genome = sim.db.creature_genomes.get(&elf);
+    assert!(
+        genome.is_some(),
+        "spawned creature should have a genome in creature_genomes table"
+    );
+    let genome = genome.unwrap();
+    assert_eq!(
+        genome.generic_genome.bit_len(),
+        crate::genome::GENERIC_GENOME_BITS,
+        "generic genome should have the correct bit length"
+    );
+}
+
+/// Spawning a creature should produce stats derived from its genome, not from
+/// quasi_normal. We verify by re-deriving the stat from the stored genome and
+/// comparing to the stored trait value.
+#[test]
+fn spawned_creature_stats_match_genome() {
+    let mut sim = flat_world_sim(fresh_test_seed());
+    let elf = spawn_elf(&mut sim);
+
+    let genome_row = sim.db.creature_genomes.get(&elf).unwrap();
+    let species = sim.db.creatures.get(&elf).unwrap().species;
+    let species_data = &sim.species_table[&species];
+
+    for (stat_idx, &trait_kind) in crate::stats::STAT_TRAIT_KINDS.iter().enumerate() {
+        let (mean, stdev) = species_data
+            .stat_distributions
+            .get(&trait_kind)
+            .map(|d| (d.mean as i64, d.stdev as i64))
+            .unwrap_or((0, 50));
+        let genome_derived =
+            crate::genome::express_stat(&genome_row.generic_genome, stat_idx as u32, mean, stdev);
+        let stored = sim.trait_int(elf, trait_kind, 0);
+        assert_eq!(
+            stored, genome_derived,
+            "stat {trait_kind:?} should match genome derivation: stored={stored}, derived={genome_derived}"
+        );
+    }
+}
+
+/// Genome data survives SimDb serde roundtrip (save/load).
+#[test]
+fn genome_survives_serde_roundtrip() {
+    let mut sim = flat_world_sim(fresh_test_seed());
+    let elf = spawn_elf(&mut sim);
+
+    let genome_before = sim.db.creature_genomes.get(&elf).unwrap().clone();
+
+    // SimDb::clone() does JSON roundtrip internally.
+    let db_clone = sim.db.clone();
+    let genome_after = db_clone.creature_genomes.get(&elf).unwrap();
+
+    assert_eq!(genome_before.generic_genome, genome_after.generic_genome);
+    assert_eq!(genome_before.species_genome, genome_after.species_genome);
+}
+
+/// Genome backfill: a shorter genome is extended deterministically when
+/// backfilled with a new layout that has more bits.
+#[test]
+fn genome_backfill_preserves_original_bits() {
+    use crate::genome::Genome;
+
+    // Simulate an "old save" genome with 256 bits (stats only, no personality).
+    let mut rng = elven_canopy_prng::GameRng::new(fresh_test_seed());
+    let short_genome = Genome::random(&mut rng, 256);
+
+    // Backfill to 296 bits (adding personality) — deterministic with same seed.
+    let mut g1 = short_genome.clone();
+    g1.backfill_to(crate::genome::GENERIC_GENOME_BITS, 12345);
+
+    let mut g2 = short_genome.clone();
+    g2.backfill_to(crate::genome::GENERIC_GENOME_BITS, 12345);
+
+    assert_eq!(g1, g2, "backfill should be deterministic");
+    assert_eq!(g1.bit_len(), crate::genome::GENERIC_GENOME_BITS);
+
+    // Original bits preserved.
+    for i in 0..256 {
+        assert_eq!(
+            short_genome.get_bit(i),
+            g1.get_bit(i),
+            "original bit {i} should be preserved"
+        );
+    }
+}
+
+/// Deleting a genome directly works via the tabulosity table API.
+#[test]
+fn genome_can_be_removed_directly() {
+    let mut sim = flat_world_sim(fresh_test_seed());
+    let elf = spawn_elf(&mut sim);
+    assert!(sim.db.creature_genomes.get(&elf).is_some());
+
+    sim.db
+        .remove_creature_genome(&elf)
+        .expect("should be able to remove genome");
+    assert!(
+        sim.db.creature_genomes.get(&elf).is_none(),
+        "genome should be gone after removal"
+    );
+}
+
+/// Spawning creatures of different species should all produce genomes.
+#[test]
+fn all_species_produce_genomes() {
+    let mut sim = flat_world_sim(fresh_test_seed());
+    let species_list = [
+        Species::Elf,
+        Species::Capybara,
+        Species::Boar,
+        Species::Deer,
+        Species::Goblin,
+        Species::Troll,
+    ];
+    for species in species_list {
+        let id = spawn_creature(&mut sim, species);
+        assert!(
+            sim.db.creature_genomes.get(&id).is_some(),
+            "{species:?} should have a genome after spawning"
+        );
+    }
+}
+
+/// Spawned creatures should have personality trait values derived from their genome.
+#[test]
+fn spawned_creature_has_personality_traits() {
+    let mut sim = flat_world_sim(fresh_test_seed());
+    let elf = spawn_elf(&mut sim);
+
+    // All 5 personality axes should be stored as traits.
+    for &trait_kind in &crate::genome::PERSONALITY_TRAIT_KINDS {
+        let val = sim.trait_int(elf, trait_kind, i64::MIN);
+        assert_ne!(
+            val,
+            i64::MIN,
+            "{trait_kind:?} personality trait should be stored"
+        );
+    }
+}
+
+/// Personality trait values should match genome derivation, same as stats.
+#[test]
+fn spawned_creature_personality_matches_genome() {
+    let mut sim = flat_world_sim(fresh_test_seed());
+    let elf = spawn_elf(&mut sim);
+
+    let genome_row = sim.db.creature_genomes.get(&elf).unwrap();
+    let species = sim.db.creatures.get(&elf).unwrap().species;
+    let species_data = &sim.species_table[&species];
+
+    for (axis_idx, &trait_kind) in crate::genome::PERSONALITY_TRAIT_KINDS.iter().enumerate() {
+        let axis = crate::species::PERSONALITY_AXES[axis_idx];
+        let (mean, stdev) = species_data
+            .personality_distributions
+            .get(&axis)
+            .map(|d| (d.mean as i64, d.stdev as i64))
+            .unwrap_or((0, 50));
+        let genome_derived = crate::genome::express_personality(
+            &genome_row.generic_genome,
+            axis_idx as u32,
+            mean,
+            stdev,
+        );
+        let stored = sim.trait_int(elf, trait_kind, 0);
+        assert_eq!(
+            stored, genome_derived,
+            "{trait_kind:?} should match genome derivation: stored={stored}, derived={genome_derived}"
+        );
+    }
+}
+
+/// Spawned elves should have VSH pigmentation traits from their species genome.
+#[test]
+fn spawned_elf_has_vsh_pigmentation_traits() {
+    let mut sim = flat_world_sim(fresh_test_seed());
+    let elf = spawn_elf(&mut sim);
+
+    // Elf should have hue indices + value/saturation axes.
+    let hair_hue = sim.trait_int(elf, TraitKind::HairColor, -1);
+    assert!(
+        (0..7).contains(&hair_hue),
+        "elf hair hue should be 0–6, got {hair_hue}"
+    );
+    // Value and saturation are continuous, centered on 0.
+    let hair_val = sim.trait_int(elf, TraitKind::HairValue, i64::MIN);
+    assert_ne!(hair_val, i64::MIN, "elf should have HairValue trait");
+
+    let hair_sat = sim.trait_int(elf, TraitKind::HairSaturation, i64::MIN);
+    assert_ne!(hair_sat, i64::MIN, "elf should have HairSaturation trait");
+
+    let eye_hue = sim.trait_int(elf, TraitKind::EyeColor, -1);
+    assert!(
+        (0..6).contains(&eye_hue),
+        "elf eye hue should be 0–5, got {eye_hue}"
+    );
+    let eye_val = sim.trait_int(elf, TraitKind::EyeValue, i64::MIN);
+    assert_ne!(eye_val, i64::MIN, "elf should have EyeValue trait");
+
+    let eye_sat = sim.trait_int(elf, TraitKind::EyeSaturation, i64::MIN);
+    assert_ne!(eye_sat, i64::MIN, "elf should have EyeSaturation trait");
+
+    let melanin = sim.trait_int(elf, TraitKind::SkinMelanin, i64::MIN);
+    assert_ne!(melanin, i64::MIN, "elf should have SkinMelanin trait");
+
+    let ruddiness = sim.trait_int(elf, TraitKind::SkinRuddiness, i64::MIN);
+    assert_ne!(ruddiness, i64::MIN, "elf should have SkinRuddiness trait");
+}
+
+/// Spawned elves should have blend traits for hair and eye hue groups.
+#[test]
+fn spawned_elf_has_blend_traits() {
+    let mut sim = flat_world_sim(fresh_test_seed());
+    let elf = spawn_elf(&mut sim);
+
+    // Hair blend traits should be present.
+    let hair_target = sim.trait_int(elf, TraitKind::HairBlendTarget, i64::MIN);
+    assert_ne!(
+        hair_target,
+        i64::MIN,
+        "elf should have HairBlendTarget trait"
+    );
+    let hair_weight = sim.trait_int(elf, TraitKind::HairBlendWeight, i64::MIN);
+    assert_ne!(
+        hair_weight,
+        i64::MIN,
+        "elf should have HairBlendWeight trait"
+    );
+
+    // Eye blend traits should be present.
+    let eye_target = sim.trait_int(elf, TraitKind::EyeBlendTarget, i64::MIN);
+    assert_ne!(eye_target, i64::MIN, "elf should have EyeBlendTarget trait");
+    let eye_weight = sim.trait_int(elf, TraitKind::EyeBlendWeight, i64::MIN);
+    assert_ne!(eye_weight, i64::MIN, "elf should have EyeBlendWeight trait");
+}
+
+/// Spawned non-elf species should have VSH pigmentation traits.
+#[test]
+fn spawned_capybara_has_vsh_traits() {
+    let mut sim = flat_world_sim(fresh_test_seed());
+    let capy = spawn_creature(&mut sim, Species::Capybara);
+
+    let body_hue = sim.trait_int(capy, TraitKind::BodyColor, -1);
+    assert!(
+        (0..4).contains(&body_hue),
+        "capybara body hue should be 0–3, got {body_hue}"
+    );
+    let body_val = sim.trait_int(capy, TraitKind::BodyValue, i64::MIN);
+    assert_ne!(body_val, i64::MIN, "capybara should have BodyValue trait");
+
+    let body_sat = sim.trait_int(capy, TraitKind::BodySaturation, i64::MIN);
+    assert_ne!(
+        body_sat,
+        i64::MIN,
+        "capybara should have BodySaturation trait"
+    );
+}
+
+// -- PersonalityAxis / SnpKind serde roundtrips --
+
+#[test]
+fn test_personality_axis_serde_roundtrip() {
+    use crate::species::PersonalityAxis;
+
+    let axes = [
+        PersonalityAxis::Openness,
+        PersonalityAxis::Conscientiousness,
+        PersonalityAxis::Extraversion,
+        PersonalityAxis::Agreeableness,
+        PersonalityAxis::Neuroticism,
+    ];
+    for axis in &axes {
+        let json = serde_json::to_string(axis).unwrap();
+        let restored: PersonalityAxis = serde_json::from_str(&json).unwrap();
+        assert_eq!(*axis, restored, "roundtrip failed for {axis:?}");
+    }
+}
+
+#[test]
+fn test_snp_kind_serde_roundtrip() {
+    use crate::species::SnpKind;
+
+    let continuous = SnpKind::Continuous;
+    let json = serde_json::to_string(&continuous).unwrap();
+    let restored: SnpKind = serde_json::from_str(&json).unwrap();
+    assert!(
+        matches!(restored, SnpKind::Continuous),
+        "Continuous roundtrip failed"
+    );
+
+    let categorical = SnpKind::Categorical {
+        group: "test".into(),
+    };
+    let json = serde_json::to_string(&categorical).unwrap();
+    let restored: SnpKind = serde_json::from_str(&json).unwrap();
+    match restored {
+        SnpKind::Categorical { group } => assert_eq!(group, "test"),
+        _ => panic!("Categorical roundtrip failed"),
+    }
+}
+
+#[test]
+fn test_snp_name_to_trait_kind_covers_all_species_snps() {
+    use crate::sim::creature::snp_name_to_trait_kind;
+    use crate::species::SnpKind;
+
+    let config = GameConfig::default();
+    for (&species, data) in &config.species {
+        for snp in &data.genome_config.species_snps {
+            let lookup_name = match &snp.kind {
+                SnpKind::Categorical { group } => group.as_str(),
+                SnpKind::Continuous => snp.name.as_str(),
+            };
+            if lookup_name == "skin_warmth" {
+                // Reserved — expected to return None.
+                assert!(
+                    snp_name_to_trait_kind(lookup_name, species).is_none(),
+                    "skin_warmth should return None for {species:?}"
+                );
+            } else {
+                assert!(
+                    snp_name_to_trait_kind(lookup_name, species).is_some(),
+                    "snp_name_to_trait_kind returned None for '{lookup_name}' on {species:?}"
+                );
+            }
+        }
+    }
+}
+
+/// Spawned capybaras should have BodyBlendTarget and BodyBlendWeight traits
+/// so that sprite renderers can use hue blending.
+#[test]
+fn spawned_capybara_has_blend_traits() {
+    let mut sim = flat_world_sim(fresh_test_seed());
+    let capy = spawn_creature(&mut sim, Species::Capybara);
+
+    let blend_target = sim.trait_int(capy, TraitKind::BodyBlendTarget, i64::MIN);
+    assert_ne!(
+        blend_target,
+        i64::MIN,
+        "capybara should have BodyBlendTarget trait"
+    );
+
+    let blend_weight = sim.trait_int(capy, TraitKind::BodyBlendWeight, i64::MIN);
+    assert_ne!(
+        blend_weight,
+        i64::MIN,
+        "capybara should have BodyBlendWeight trait"
+    );
 }

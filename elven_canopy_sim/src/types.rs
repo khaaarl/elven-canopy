@@ -390,12 +390,10 @@ SelectionGroupId);
 /// the `creature_traits` table alongside a `TraitValue`.
 ///
 /// Visual traits are palette indices (`TraitValue::Int`) into the color/style
-/// arrays in `elven_canopy_sprites`. `BioSeed` is a raw PRNG output stored
-/// for future trait derivation without advancing the sim PRNG.
+/// arrays in `elven_canopy_sprites`. Continuous modifiers (value, saturation,
+/// blend) are genome-derived via bit-count expression.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum TraitKind {
-    /// Per-creature random seed for future trait derivation.
-    BioSeed,
     // -- Elf traits --
     /// Index into `HAIR_COLORS` palette (0–6).
     HairColor,
@@ -450,6 +448,56 @@ pub enum TraitKind {
     // -- Wyvern traits --
     /// Index into `SCALE_PATTERNS` array (0–2).
     ScalePattern,
+    // -- VSH pigmentation axes (F-genetics Phase D) --
+    // Continuous value/saturation modifiers for color traits. Genome-derived
+    // via bit-count expression. Absent on old-save creatures (sprite system
+    // falls back to legacy palette behavior when missing).
+    /// Hair lightness (elf). Centered on 0; positive = lighter, negative = darker.
+    HairValue,
+    /// Hair color intensity (elf). Centered on 0; positive = vivid, negative = muted.
+    HairSaturation,
+    /// Eye lightness (elf). Same scale as HairValue.
+    EyeValue,
+    /// Eye color intensity (elf). Centered on 0; positive = vivid, negative = muted.
+    EyeSaturation,
+    /// Hair blend target: secondary hue index for adjacent-hue blending.
+    /// -1 if no blending (single hue winner).
+    HairBlendTarget,
+    /// Hair blend weight toward secondary hue (0–255, 0 = fully primary).
+    HairBlendWeight,
+    /// Eye blend target: secondary hue index for adjacent-hue blending.
+    /// -1 if no blending.
+    EyeBlendTarget,
+    /// Eye blend weight toward secondary hue (0–255, 0 = fully primary).
+    EyeBlendWeight,
+    /// Body color blend target: secondary hue index (-1 = no blend).
+    BodyBlendTarget,
+    /// Body color blend weight toward secondary (0–255, 0 = fully primary).
+    BodyBlendWeight,
+    /// Fur color blend target: secondary hue index (-1 = no blend).
+    FurBlendTarget,
+    /// Fur color blend weight toward secondary (0–255, 0 = fully primary).
+    FurBlendWeight,
+    /// Skin color blend target: secondary hue index (-1 = no blend).
+    SkinColorBlendTarget,
+    /// Skin color blend weight toward secondary (0–255, 0 = fully primary).
+    SkinColorBlendWeight,
+    /// Skin melanin level (elf). Higher = darker skin.
+    SkinMelanin,
+    /// Skin ruddiness (elf). Higher = rosier complexion.
+    SkinRuddiness,
+    /// Body color lightness (capybara, boar, deer, elephant, hornet, wyvern).
+    BodyValue,
+    /// Body color intensity (capybara, boar, deer, elephant, hornet, wyvern).
+    BodySaturation,
+    /// Fur color lightness (monkey, squirrel).
+    FurValue,
+    /// Fur color intensity (monkey, squirrel).
+    FurSaturation,
+    /// Skin color lightness (goblin, orc, troll).
+    SkinValue,
+    /// Skin color intensity (goblin, orc, troll).
+    SkinSaturation,
     // -- Creature skills (F-creature-skills) --
     // Integer scale starting at 0. Every +100 doubles mechanical intensity
     // via the same exponential stat multiplier table used by creature stats.
@@ -490,6 +538,20 @@ pub enum TraitKind {
     Culture,
     /// Teaching, mentoring, guidance.
     Counsel,
+    // -- Big Five personality axes (F-genetics Phase C) --
+    // Integer scale centered on 0, same as creature stats. Derived from the
+    // generic genome's 8-bit personality SNP regions via bit-count expression.
+    // No behavioral hooks yet — stored for display and future gameplay.
+    /// Curiosity and openness to experience.
+    Openness,
+    /// Focus, discipline, and reliability.
+    Conscientiousness,
+    /// Sociability and energy from social interaction.
+    Extraversion,
+    /// Cooperativeness and empathy.
+    Agreeableness,
+    /// Emotional volatility and anxiety.
+    Neuroticism,
     // -- Creature stats (F-creature-stats) --
     // Integer scale centered on 0 (human baseline). Every +100 doubles
     // mechanical intensity via the exponential stat multiplier table.

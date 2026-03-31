@@ -413,6 +413,24 @@ fn build_creature_info_dict(
         };
         dict.set(key, val);
     }
+    // Big Five personality axes (F-genetics Phase C).
+    for tk in elven_canopy_sim::genome::PERSONALITY_TRAIT_KINDS {
+        let val = sim
+            .db
+            .creature_traits
+            .get(&(c.id, tk))
+            .map(|t| t.value.as_int(0))
+            .unwrap_or(0);
+        let key = match tk {
+            TraitKind::Openness => "personality_o",
+            TraitKind::Conscientiousness => "personality_c",
+            TraitKind::Extraversion => "personality_e",
+            TraitKind::Agreeableness => "personality_a",
+            TraitKind::Neuroticism => "personality_n",
+            _ => continue,
+        };
+        dict.set(key, val);
+    }
     // Creature skills (F-creature-skills).
     for tk in elven_canopy_sim::stats::SKILL_TRAIT_KINDS {
         let val = sim
@@ -3059,6 +3077,16 @@ impl SimBridge {
                 eye_color_idx: sim.trait_int(cid, TraitKind::EyeColor, 0) as u8,
                 skin_tone_idx: sim.trait_int(cid, TraitKind::SkinTone, 0) as u8,
                 hair_style_idx: sim.trait_int(cid, TraitKind::HairStyle, 0) as u8,
+                hair_value: sim.trait_int(cid, TraitKind::HairValue, 0),
+                hair_saturation: sim.trait_int(cid, TraitKind::HairSaturation, 0),
+                eye_value: sim.trait_int(cid, TraitKind::EyeValue, 0),
+                eye_saturation: sim.trait_int(cid, TraitKind::EyeSaturation, 0),
+                skin_melanin: sim.trait_int(cid, TraitKind::SkinMelanin, 0),
+                skin_ruddiness: sim.trait_int(cid, TraitKind::SkinRuddiness, 0),
+                hair_blend_target: sim.trait_int(cid, TraitKind::HairBlendTarget, -1),
+                hair_blend_weight: sim.trait_int(cid, TraitKind::HairBlendWeight, 0),
+                eye_blend_target: sim.trait_int(cid, TraitKind::EyeBlendTarget, -1),
+                eye_blend_weight: sim.trait_int(cid, TraitKind::EyeBlendWeight, 0),
                 equipment,
             };
 

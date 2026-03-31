@@ -76,6 +76,60 @@ impl Color {
             a: self.a,
         }
     }
+
+    /// Linearly interpolate between `self` and `other`.
+    /// `weight` is 0–255: 0 = fully self, 255 = fully other.
+    pub fn blend(self, other: Color, weight: u8) -> Self {
+        let w = weight as u16;
+        let inv = 255 - w;
+        Self {
+            r: ((self.r as u16 * inv + other.r as u16 * w + 127) / 255) as u8,
+            g: ((self.g as u16 * inv + other.g as u16 * w + 127) / 255) as u8,
+            b: ((self.b as u16 * inv + other.b as u16 * w + 127) / 255) as u8,
+            a: self.a,
+        }
+    }
+
+    /// Apply a genome-derived value axis (dark ↔ light) to this color.
+    ///
+    /// `trait_value` is centered on 0 with typical range ~[-150, +150].
+    /// Positive = lighter, negative = darker. The effect is scaled so that
+    /// ±100 corresponds to ~±0.15 in RGB space (noticeable but not extreme).
+    pub fn apply_value(self, trait_value: i64) -> Self {
+        // Scale: 100 trait units → 0.15 RGB shift.
+        let amount = trait_value as f32 * 0.0015;
+        if amount >= 0.0 {
+            self.lighten(amount)
+        } else {
+            self.darken(-amount)
+        }
+    }
+
+    /// Apply a genome-derived saturation axis (muted ↔ vivid) to this color.
+    ///
+    /// `trait_value` is centered on 0 with typical range ~[-150, +150].
+    /// Positive = more vivid (push channels away from grey), negative = more
+    /// muted (push channels toward grey). ±100 → ~±20% saturation shift.
+    pub fn apply_saturation(self, trait_value: i64) -> Self {
+        // Compute grey (average luminance).
+        let grey = (self.r as u16 + self.g as u16 + self.b as u16) / 3;
+        // Scale: 100 trait units → 0.20 interpolation toward/away from grey.
+        let factor = (trait_value as f32 * 0.002).clamp(-0.8, 0.8);
+        // Positive factor: push away from grey (more saturated).
+        // Negative factor: push toward grey (more muted).
+        // new = channel + (channel - grey) * factor
+        let apply = |ch: u8| -> u8 {
+            let diff = ch as f32 - grey as f32;
+            let new = ch as f32 + diff * factor;
+            new.clamp(0.0, 255.0) as u8
+        };
+        Self {
+            r: apply(self.r),
+            g: apply(self.g),
+            b: apply(self.b),
+            a: self.a,
+        }
+    }
 }
 
 impl From<elven_canopy_sim::inventory::ItemColor> for Color {
@@ -156,6 +210,112 @@ mod tests {
         let c = Color::from_f32(0.5, 0.5, 0.5, 0.4);
         let l = c.lighten(0.2);
         assert_eq!(l.a, c.a);
+    }
+
+    #[test]
+    fn apply_value_positive_lightens() {
+        let c = Color::rgb(0.5, 0.3, 0.2);
+        let lighter = c.apply_value(100);
+        assert!(
+            lighter.r > c.r,
+            "positive value should lighten: r {} > {}",
+            lighter.r,
+            c.r
+        );
+        assert!(
+            lighter.g > c.g,
+            "positive value should lighten: g {} > {}",
+            lighter.g,
+            c.g
+        );
+    }
+
+    #[test]
+    fn apply_value_negative_darkens() {
+        let c = Color::rgb(0.5, 0.3, 0.2);
+        let darker = c.apply_value(-100);
+        assert!(
+            darker.r < c.r,
+            "negative value should darken: r {} < {}",
+            darker.r,
+            c.r
+        );
+    }
+
+    #[test]
+    fn apply_value_zero_unchanged() {
+        let c = Color::rgb(0.5, 0.3, 0.7);
+        let same = c.apply_value(0);
+        assert_eq!(c, same);
+    }
+
+    #[test]
+    fn apply_saturation_positive_vivifies() {
+        // A color with unequal channels should become more vivid.
+        let c = Color::from_u8(200, 100, 50, 255);
+        let vivid = c.apply_saturation(100);
+        // Higher channel should go higher, lower should go lower.
+        assert!(vivid.r >= c.r, "vivid r should increase or stay");
+        assert!(
+            vivid.b <= c.b,
+            "vivid b (below grey) should decrease or stay"
+        );
+    }
+
+    #[test]
+    fn apply_saturation_negative_mutes() {
+        let c = Color::from_u8(200, 100, 50, 255);
+        let muted = c.apply_saturation(-100);
+        // Channels should move toward grey.
+        let grey = (200 + 100 + 50) / 3; // ~116
+        assert!(muted.r < c.r, "muted r should decrease toward grey");
+        assert!(muted.b > c.b, "muted b should increase toward grey {grey}");
+    }
+
+    #[test]
+    fn apply_saturation_preserves_alpha() {
+        let c = Color::from_f32(0.5, 0.3, 0.7, 0.4);
+        let s = c.apply_saturation(50);
+        assert_eq!(s.a, c.a);
+    }
+
+    #[test]
+    fn blend_weight_zero_returns_self() {
+        let a = Color::rgb(0.8, 0.2, 0.4);
+        let b = Color::rgb(0.2, 0.8, 0.6);
+        let blended = a.blend(b, 0);
+        assert_eq!(blended, a);
+    }
+
+    #[test]
+    fn blend_weight_255_returns_other() {
+        let a = Color::rgb(0.8, 0.2, 0.4);
+        let b = Color::rgb(0.2, 0.8, 0.6);
+        let blended = a.blend(b, 255);
+        assert_eq!(blended.r, b.r);
+        assert_eq!(blended.g, b.g);
+        assert_eq!(blended.b, b.b);
+    }
+
+    #[test]
+    fn blend_weight_128_midpoint() {
+        let a = Color::from_u8(0, 0, 0, 255);
+        let b = Color::from_u8(254, 254, 254, 255);
+        let blended = a.blend(b, 128);
+        // Midpoint of 0 and 254 should be approximately 127.
+        assert!(
+            (125..=129).contains(&blended.r),
+            "midpoint blend r={}",
+            blended.r
+        );
+    }
+
+    #[test]
+    fn blend_preserves_alpha_of_self() {
+        let a = Color::from_u8(100, 100, 100, 200);
+        let b = Color::from_u8(200, 200, 200, 50);
+        let blended = a.blend(b, 128);
+        assert_eq!(blended.a, 200, "blend should preserve self's alpha");
     }
 
     #[test]

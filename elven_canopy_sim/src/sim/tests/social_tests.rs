@@ -482,10 +482,11 @@ fn bootstrap_creates_opinions_between_starting_elves() {
             bread_counts: vec![],
             initial_equipment: vec![],
         });
-    // Use a high, fixed interaction count so opinion sums are reliably
-    // nonzero regardless of PRNG-rolled CHA/skills.
-    config.social.bootstrap_interactions_min = 50;
-    config.social.bootstrap_interactions_max = 50;
+    // Use a very high, fixed interaction count so opinion sums are reliably
+    // nonzero regardless of PRNG-rolled CHA/skills (genome-derived stats can
+    // produce extreme CHA values that make individual rolls unlikely).
+    config.social.bootstrap_interactions_min = 200;
+    config.social.bootstrap_interactions_max = 200;
     let mut sim = SimState::with_config(legacy_test_seed(), config);
     let mut events = vec![];
     sim.spawn_initial_creatures(&mut events);
@@ -1001,6 +1002,8 @@ fn casual_social_fires_via_heartbeat() {
     let mut sim = setup_casual_social_sim(42);
     // Disable opinion decay so it doesn't interfere.
     sim.config.social.opinion_decay_chance_ppm = 0;
+    // Use a very large radius so elves stay in range regardless of wandering.
+    sim.config.social.casual_social_radius = 100;
     let elf_a = spawn_creature(&mut sim, Species::Elf);
     let elf_b = spawn_creature(&mut sim, Species::Elf);
 

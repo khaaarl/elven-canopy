@@ -10,10 +10,10 @@ use crate::color::Color;
 use crate::drawing::PixelBuffer;
 
 const BODY_COLORS: [Color; 4] = [
-    Color::rgb(0.72, 0.55, 0.35),
-    Color::rgb(0.65, 0.48, 0.30),
-    Color::rgb(0.80, 0.62, 0.40),
-    Color::rgb(0.58, 0.42, 0.28),
+    Color::rgb(0.72, 0.58, 0.42), // fawn
+    Color::rgb(0.68, 0.52, 0.32), // golden
+    Color::rgb(0.58, 0.38, 0.25), // russet
+    Color::rgb(0.45, 0.32, 0.22), // dark
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,21 +57,24 @@ pub fn params_from_seed(seed: i64) -> DeerParams {
 
 pub fn params_from_traits(traits: &super::TraitMap) -> DeerParams {
     use elven_canopy_sim::types::TraitKind;
-    let bio_seed = traits
-        .get(&TraitKind::BioSeed)
-        .and_then(|v| match v {
-            elven_canopy_sim::types::TraitValue::Int(i) => Some(*i),
-            _ => None,
-        })
-        .unwrap_or(0);
+    let base_idx = super::trait_idx(traits, TraitKind::BodyColor, 0) % BODY_COLORS.len();
+    let blend_target = super::trait_i64(traits, TraitKind::BodyBlendTarget, -1);
+    let blend_weight = super::trait_i64(traits, TraitKind::BodyBlendWeight, 0);
+    let value = super::trait_i64(traits, TraitKind::BodyValue, 0);
+    let saturation = super::trait_i64(traits, TraitKind::BodySaturation, 0);
     DeerParams {
-        body_color: BODY_COLORS
-            [super::trait_idx(traits, TraitKind::BodyColor, 0) % BODY_COLORS.len()],
+        body_color: super::resolve_hue(&BODY_COLORS, base_idx, blend_target, blend_weight)
+            .apply_value(value)
+            .apply_saturation(saturation),
         antler_style: ANTLER_STYLES
             [super::trait_idx(traits, TraitKind::AntlerStyle, 0) % ANTLER_STYLES.len()],
         spot_pattern: SPOT_PATTERNS
             [super::trait_idx(traits, TraitKind::SpotPattern, 0) % SPOT_PATTERNS.len()],
-        seed: bio_seed,
+        seed: super::trait_i64(traits, TraitKind::BodyColor, 0)
+            .wrapping_mul(2_654_435_761)
+            .wrapping_add(super::trait_i64(traits, TraitKind::BodyValue, 0))
+            .wrapping_mul(1_597)
+            .wrapping_add(super::trait_i64(traits, TraitKind::BodySaturation, 0)),
     }
 }
 

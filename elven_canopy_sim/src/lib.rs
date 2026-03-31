@@ -58,6 +58,7 @@ pub mod dance;
 pub mod db;
 pub mod event;
 pub mod fruit;
+pub mod genome;
 pub mod inventory;
 pub mod local_relay;
 pub mod lookup_map;

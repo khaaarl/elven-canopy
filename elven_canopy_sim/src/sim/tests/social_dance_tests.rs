@@ -69,6 +69,12 @@ fn dance_social_check_upserts_friendliness() {
     let elves = spawn_test_elves(&mut sim, 3);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position;
 
+    // Explicitly set CHA so impression checks reliably produce opinions,
+    // regardless of randomised stats from spawn.
+    for &eid in &elves {
+        set_trait(&mut sim, eid, TraitKind::Charisma, 10);
+    }
+
     let activity_id = setup_executing_dance(&mut sim, &elves, location);
 
     sim.config.activity.dance_impressions_per_elf = 4;

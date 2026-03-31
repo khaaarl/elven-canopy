@@ -450,9 +450,9 @@ pub struct Thought {
 /// value. The compound PK `(creature_id, trait_kind)` ensures at most one
 /// value per trait per creature.
 ///
-/// Visual traits store palette indices as `TraitValue::Int`. `BioSeed` stores
-/// a raw PRNG output for future trait derivation. Cascade-on-delete removes
-/// all traits when the creature is deleted.
+/// Visual traits store palette indices as `TraitValue::Int`. Continuous
+/// modifiers (value, saturation, blend) are genome-derived. Cascade-on-delete
+/// removes all traits when the creature is deleted.
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
 #[primary_key("creature_id", "trait_kind")]
 pub struct CreatureTrait {
@@ -465,6 +465,28 @@ pub struct CreatureTrait {
 
 fn default_trait_value() -> TraitValue {
     TraitValue::Int(0)
+}
+
+/// Immutable genome data for a creature (F-genetics). 1:1 with `creatures`.
+///
+/// Contains the generic genome (ability scores + personality) and the
+/// species-specific genome (pigmentation, morphology). Both are immutable
+/// after creation; expressed traits in `creature_traits` can diverge.
+///
+/// See `genome.rs` for the `Genome` type and `docs/drafts/genetics.md`
+/// for the full design.
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct CreatureGenome {
+    #[primary_key]
+    pub creature_id: CreatureId,
+
+    /// Generic genome: ability scores (8 × 32 bits) + Big Five personality
+    /// (5 × 8 bits) = 296 bits. Shared by all species.
+    pub generic_genome: crate::genome::Genome,
+
+    /// Species-specific genome: pigmentation, morphology, etc. Layout varies
+    /// per species (defined in `SpeciesGenomeConfig.species_snps`).
+    pub species_genome: crate::genome::Genome,
 }
 
 /// A creature's current path assignment (F-path-core). Each creature has at
@@ -1665,6 +1687,10 @@ pub struct SimDb {
     #[table(singular = "creature_trait",
             fks(creature_id = "creatures" on_delete cascade))]
     pub creature_traits: CreatureTraitTable,
+
+    #[table(singular = "creature_genome",
+            fks(creature_id = "creatures" pk on_delete cascade))]
+    pub creature_genomes: CreatureGenomeTable,
 
     #[table(singular = "path_assignment",
             fks(creature_id = "creatures" pk on_delete cascade))]

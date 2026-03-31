@@ -10,10 +10,10 @@ use crate::color::Color;
 use crate::drawing::PixelBuffer;
 
 const BODY_COLORS: [Color; 4] = [
-    Color::rgb(0.40, 0.35, 0.30),
-    Color::rgb(0.50, 0.40, 0.32),
-    Color::rgb(0.35, 0.30, 0.25),
-    Color::rgb(0.55, 0.45, 0.35),
+    Color::rgb(0.50, 0.38, 0.25), // muddy-brown
+    Color::rgb(0.55, 0.35, 0.25), // reddish-brown
+    Color::rgb(0.35, 0.28, 0.20), // dark-brown
+    Color::rgb(0.48, 0.42, 0.38), // grey-brown
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,9 +41,15 @@ pub fn params_from_seed(seed: i64) -> BoarParams {
 
 pub fn params_from_traits(traits: &super::TraitMap) -> BoarParams {
     use elven_canopy_sim::types::TraitKind;
+    let base_idx = super::trait_idx(traits, TraitKind::BodyColor, 0) % BODY_COLORS.len();
+    let blend_target = super::trait_i64(traits, TraitKind::BodyBlendTarget, -1);
+    let blend_weight = super::trait_i64(traits, TraitKind::BodyBlendWeight, 0);
+    let value = super::trait_i64(traits, TraitKind::BodyValue, 0);
+    let saturation = super::trait_i64(traits, TraitKind::BodySaturation, 0);
     BoarParams {
-        body_color: BODY_COLORS
-            [super::trait_idx(traits, TraitKind::BodyColor, 0) % BODY_COLORS.len()],
+        body_color: super::resolve_hue(&BODY_COLORS, base_idx, blend_target, blend_weight)
+            .apply_value(value)
+            .apply_saturation(saturation),
         tusk_size: TUSK_SIZES[super::trait_idx(traits, TraitKind::TuskSize, 0) % TUSK_SIZES.len()],
     }
 }

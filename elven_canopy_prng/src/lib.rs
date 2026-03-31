@@ -273,11 +273,12 @@ pub fn quasi_normal(rng: &mut GameRng, target_stdev: i64) -> i64 {
     }
 }
 
-/// SplitMix64 — used only for seeding xoshiro256++ from a single `u64`.
+/// SplitMix64 — used for seeding xoshiro256++ and for deterministic
+/// genome backfill (filling new SNP regions on old saves).
 ///
 /// This is the standard recommendation from the xoshiro authors for
 /// expanding a small seed into a larger state.
-fn splitmix64(state: &mut u64) -> u64 {
+pub fn splitmix64(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
     let mut z = *state;
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);

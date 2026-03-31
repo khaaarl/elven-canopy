@@ -11,10 +11,10 @@ use crate::color::Color;
 use crate::drawing::PixelBuffer;
 
 const BODY_COLORS: [Color; 4] = [
-    Color::rgb(0.58, 0.42, 0.28), // classic brown
-    Color::rgb(0.65, 0.48, 0.32), // golden brown
-    Color::rgb(0.50, 0.36, 0.22), // dark brown
     Color::rgb(0.68, 0.55, 0.40), // sandy
+    Color::rgb(0.65, 0.48, 0.32), // golden-brown
+    Color::rgb(0.55, 0.35, 0.22), // russet
+    Color::rgb(0.42, 0.28, 0.18), // chocolate
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,9 +48,15 @@ pub fn params_from_seed(seed: i64) -> CapybaraParams {
 
 pub fn params_from_traits(traits: &super::TraitMap) -> CapybaraParams {
     use elven_canopy_sim::types::TraitKind;
+    let base_idx = super::trait_idx(traits, TraitKind::BodyColor, 0) % BODY_COLORS.len();
+    let blend_target = super::trait_i64(traits, TraitKind::BodyBlendTarget, -1);
+    let blend_weight = super::trait_i64(traits, TraitKind::BodyBlendWeight, 0);
+    let value = super::trait_i64(traits, TraitKind::BodyValue, 0);
+    let saturation = super::trait_i64(traits, TraitKind::BodySaturation, 0);
     CapybaraParams {
-        body_color: BODY_COLORS
-            [super::trait_idx(traits, TraitKind::BodyColor, 0) % BODY_COLORS.len()],
+        body_color: super::resolve_hue(&BODY_COLORS, base_idx, blend_target, blend_weight)
+            .apply_value(value)
+            .apply_saturation(saturation),
         accessory: ACCESSORIES
             [super::trait_idx(traits, TraitKind::Accessory, 0) % ACCESSORIES.len()],
     }

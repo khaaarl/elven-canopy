@@ -176,6 +176,8 @@ When the user asks to merge a feature branch to main, use the `/merge-to-main` s
 
 **Never silently deviate from the user's design.** If you believe a component the user specified (data structure, pattern, architectural choice) can be simplified or skipped, raise it explicitly before implementing. Do not optimize away the user's decisions — they may have context you lack.
 
+**Finish what you start.** When working from a design doc or tracker spec, implement all of it. Do not suggest stopping short or frame specified features as optional. Only defer items the spec itself marks as deferred.
+
 **Never assume your own code is correct.** When the user requests verification (once-over, review, additional testing), run it without pushback, even if you just ran a similar check. Multiple rounds of review catch different issues. Do not say "we just did that" or "the branch is clean" as a reason to skip requested verification. The user's judgment about how much checking is needed overrides your confidence in the code.
 
 ## Planning

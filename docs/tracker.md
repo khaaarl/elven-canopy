@@ -54,6 +54,7 @@ This reduces merge conflicts when parallel work streams add items.
 [~] F-enemy-ai             Hostile creature AI (goblin/orc/troll behavior)
 [~] F-face-tint            Directional face tinting by normal (top warm, bottom cool)
 [~] F-fruit-variety        Procedural fruit variety and processing
+[~] F-genetics             Creature genetics (additive SNP bitfield genomes with inheritance)
 [~] F-multiplayer          Relay-coordinator multiplayer networking
 [~] F-notifications        Player-visible event notifications
 [~] F-parallel-dedup       Radix-partitioned parallel dedup (elven_canopy_utils)
@@ -66,6 +67,7 @@ This reduces merge conflicts when parallel work streams add items.
 ```
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
+[ ] B-tame-already         Taming task doesn't detect already-tamed target
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-aggro-fauna          Neutral fauna with aggro triggers
@@ -148,7 +150,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-fruit-prod           Basic fruit production and harvesting
 [ ] F-fruit-sprite-ui      Fruit sprites in inventory/logistics/selection UI
 [ ] F-funeral-rites        Funeral rites and mourning
-[ ] F-genetics             Creature genetics (additive SNP bitfield genomes with inheritance)
 [ ] F-grass-rendering      Advanced grass and terrain surface rendering
 [ ] F-greenhouse-revamp    Greenhouse planter growth cycle and pluck tasks
 [ ] F-group-chat           Group chat social activity
@@ -1849,6 +1850,25 @@ task-driven system (player commands, construction, hauling, etc.).
 **Unblocked:** B-flying-arrow-chase, F-winged-elf
 **Related:** F-arrow-chase
 
+#### B-tame-already — Taming task doesn't detect already-tamed target
+**Status:** Todo
+
+The taming task does not check whether the target creature is already tamed
+during taming attempts. If another player (or external mechanism) tames the
+creature while a scout has an active tame task, the task remains InProgress
+indefinitely — it can only complete via a successful taming roll, never by
+detecting the target's civ_id is already set.
+
+The test `taming_target_already_tamed_completes_task` exposes this: it sets
+tame_difficulty=10000 (impossible to succeed), manually assigns the capybara
+to the player's civ, then expects the tame task to auto-complete. It never
+does. The test only passed on main due to a specific PRNG sequence that
+happened to work around the bug.
+
+Fix: in the taming activation code, check if the target creature already has
+a civ_id before rolling. If already tamed, complete the task and remove the
+designation.
+
 #### F-aggro-fauna — Neutral fauna with aggro triggers
 **Status:** Todo
 
@@ -2124,7 +2144,7 @@ panel and as overhead bar.
 **Related:** F-bread, F-creature-death, F-elf-needs, F-fruit-prod
 
 #### F-genetics — Creature genetics (additive SNP bitfield genomes with inheritance)
-**Status:** Todo · **Refs:** §4
+**Status:** In Progress · **Refs:** §4
 
 Creature genetics system using additive SNP-based bitfield genomes. Each
 creature carries two immutable bitfields: a generic genome (ability scores
@@ -2147,8 +2167,8 @@ personality_distributions field on SpeciesData (sibling of
 stat_distributions). New SpeciesGenomeConfig on SpeciesData for bit widths
 and species-specific SNP layout.
 
-Replaces current quasi_normal stat rolling and BioSeed visual trait
-derivation.
+Replaces current quasi_normal stat rolling with genome-derived ability
+scores and pigmentation.
 
 Phases: (A) genome infrastructure + bitfield types + serde, (B) wire up
 ability scores replacing quasi_normal, (C) Big Five personality axes,

@@ -48,11 +48,42 @@ pub(crate) fn trait_idx(traits: &TraitMap, kind: TraitKind, default: usize) -> u
         .unwrap_or(default)
 }
 
+/// Extract a signed integer trait, returning `default` if absent.
+/// Used for VSH pigmentation axes (value, saturation, melanin, etc.)
+/// which are centered on 0.
+pub(crate) fn trait_i64(traits: &TraitMap, kind: TraitKind, default: i64) -> i64 {
+    traits
+        .get(&kind)
+        .and_then(|v| match v {
+            TraitValue::Int(i) => Some(*i),
+            TraitValue::Text(_) => None,
+        })
+        .unwrap_or(default)
+}
+
 /// Knuth multiplicative hash constant (2654435761), used to spread bits
 /// from integer seeds before modular indexing into palette arrays.
 /// Matches the GDScript `absi(seed * 2654435761)` pattern.
 pub(crate) fn knuth_hash(seed: i64) -> u64 {
     (seed.wrapping_mul(2_654_435_761)).unsigned_abs()
+}
+
+/// Resolve a hue color from a palette with optional blending. If `blend_target`
+/// is a valid palette index and `blend_weight > 0`, blends between primary
+/// and secondary hue colors before applying VSH adjustments.
+pub(crate) fn resolve_hue(
+    palette: &[crate::color::Color],
+    primary_idx: usize,
+    blend_target: i64,
+    blend_weight: i64,
+) -> crate::color::Color {
+    let base = palette[primary_idx % palette.len()];
+    if blend_target >= 0 && blend_weight > 0 {
+        let secondary = palette[blend_target as usize % palette.len()];
+        base.blend(secondary, blend_weight.clamp(0, 255) as u8)
+    } else {
+        base
+    }
 }
 
 /// Per-species sprite parameters, produced by `species_params_from_seed`.
@@ -137,6 +168,40 @@ pub fn create_creature_sprite(info: &elf::CreatureDrawInfo) -> PixelBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::color::Color;
+
+    #[test]
+    fn resolve_hue_no_blend() {
+        let palette = [Color::rgb(1.0, 0.0, 0.0), Color::rgb(0.0, 1.0, 0.0)];
+        let result = resolve_hue(&palette, 0, -1, 0);
+        assert_eq!(result, palette[0]);
+    }
+
+    #[test]
+    fn resolve_hue_with_blend() {
+        let palette = [
+            Color::from_u8(200, 0, 0, 255),
+            Color::from_u8(0, 200, 0, 255),
+        ];
+        let result = resolve_hue(&palette, 0, 1, 128);
+        // Should be roughly midpoint between red and green.
+        assert!(result.r > 80 && result.r < 120, "blended r={}", result.r);
+        assert!(result.g > 80 && result.g < 120, "blended g={}", result.g);
+    }
+
+    #[test]
+    fn resolve_hue_zero_weight_no_blend() {
+        let palette = [Color::rgb(1.0, 0.0, 0.0), Color::rgb(0.0, 1.0, 0.0)];
+        let result = resolve_hue(&palette, 0, 1, 0);
+        assert_eq!(result, palette[0], "weight 0 should not blend");
+    }
+
+    #[test]
+    fn resolve_hue_wraps_index() {
+        let palette = [Color::rgb(1.0, 0.0, 0.0), Color::rgb(0.0, 1.0, 0.0)];
+        let result = resolve_hue(&palette, 5, -1, 0); // 5 % 2 = 1
+        assert_eq!(result, palette[1]);
+    }
 
     #[test]
     fn knuth_hash_deterministic() {
@@ -208,7 +273,6 @@ mod tests {
 
         for species in ALL_SPECIES {
             let mut traits = TraitMap::new();
-            traits.insert(TraitKind::BioSeed, TraitValue::Int(12345));
             // Insert a few generic traits — species will ignore irrelevant ones.
             traits.insert(TraitKind::HairColor, TraitValue::Int(2));
             traits.insert(TraitKind::EyeColor, TraitValue::Int(1));

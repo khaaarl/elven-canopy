@@ -191,40 +191,39 @@ Division uses symmetric round-to-nearest.
 ### Categorical Traits (Hue, Antler Style, etc.)
 
 Each candidate category gets its own small bit section (4–8 bits).
-Expression rule: pick the category with the highest bit-count (number of
-1-bits). Ties broken by PRNG (seeded deterministically from creature ID + trait
-ID).
+Each bit within a category has a distinct prime weight (from a
+per-bit-width weight table, same principle as ability score weights but
+smaller primes suited to 4–8 bit regions). The category's score is the
+sum of weights of its 1-bits — this gives far more distinct scores than
+simple bit-counting, making ties rare and blend weights smooth. The
+category with the highest weighted sum wins. Ties (exact equal sums)
+are broken by PRNG (seeded deterministically from creature ID + trait ID).
 
-Example: elf hair hue with 6 categories × 6 bits each = 36 bits total.
+Example: elf hair hue with 7 categories × 6 bits each = 42 bits total.
 
 ```
-[warm:6][cool:6][green:6][gold:6][pink:6][neutral:6]
-bit-counts: 3, 4, 2, 4, 1, 3
-tie between cool(4) and gold(4) → PRNG picks gold
-result: gold hair hue
+[gold:6][copper:6][rose:6][violet:6][blue:6][teal:6][green:6]
+weighted sums: 1823, 2941, 1205, 2938, 502, 1647, 2103
+winner: copper (2941)
 ```
-
-**Tie frequency:** With small bit-widths, ties are common — e.g., with
-6 bits per category and 6 categories, most creatures will have at least
-one tie among the top candidates. This is expected and desirable: the PRNG
-tiebreak adds variety, and over a population the tiebreak distributes
-evenly (the seed is derived from creature ID + trait ID, which varies
-per creature). The categorical system intentionally trades
-deterministic-from-bits precision for richer population-level variety.
 
 ### Hue Blending for Adjacent Categories
 
-Species may define a hue wheel ordering for their color categories. When
-the top two candidates are adjacent on the hue wheel AND their bit-counts
-are within 1, the expressed hue is a blend of the two rather than a
-winner-take-all pick. This produces emergent intermediate colors through
-inheritance — e.g., blue parent × magenta parent → sometimes violet child.
+Species define a hue wheel ordering for their color categories. When the
+top two candidates are adjacent on the hue wheel, the expressed hue is a
+blend of the two rather than a winner-take-all pick. The blend position
+is determined by the ratio of their weighted sums — if copper scores 2941
+and rose scores 2938, the result is almost exactly halfway between them;
+if copper scores 2941 and gold scores 1823, the result leans strongly
+toward copper. This produces a continuous spectrum of intermediate colors
+through inheritance — e.g., blue parent × teal parent → aqua child, with
+the exact shade varying smoothly based on the genome.
+
+When the top two candidates are NOT adjacent on the hue wheel, the
+highest-scoring category wins outright (no blending across distant hues).
 
 The blend logic is species-specific and lives in the sprite/color mapping
-layer, not in the genome code itself. Note that a single mutation
-bit-flip can toggle blend eligibility, causing a visual discontinuity —
-this is expected and analogous to real genetics where small changes
-sometimes produce noticeable phenotypic shifts.
+layer, not in the genome code itself.
 
 ## Pigmentation Model
 
@@ -335,8 +334,9 @@ produces interesting results:
 - Different-hue parents: offspring is roughly a coin flip between the
   two hues, with occasional third-option surprises when the bit mix
   boosts an unexpected category.
-- Adjacent-hue parents with blending: can produce intermediate children
-  (blue × magenta → violet).
+- Adjacent-hue parents with blending: offspring whose top two categories
+  are adjacent get a blended intermediate color (blue × teal → aqua),
+  with the exact shade depending on the inherited weighted sums.
 
 ## Integration with Existing Systems
 
@@ -354,14 +354,11 @@ creatures) generate their genome bits independently at random (each bit
 offspring produced through reproduction use the crossover + mutation
 path.
 
-### Replacing Current BioSeed Visual Traits
+### Genome-Derived Visual Traits
 
-Currently: visual traits (HairColor, EyeColor, SkinTone, etc.) are rolled
-from a BioSeed (random u64) that drives sprite generation. After genetics:
-pigmentation SNPs drive the initial color values stored in the trait table,
-and the sprite system reads from trait values rather than deriving from
-BioSeed. BioSeed may be retained for non-genetic visual variation
-(freckle pattern, exact curl shape — things that aren't heritable).
+Pigmentation SNPs drive the color values stored in the trait table,
+and the sprite system reads from trait values directly. BioSeed has been
+removed — all visual traits are now genome-derived.
 
 ### DNA vs Current State
 
@@ -416,7 +413,10 @@ pub enum SnpKind {
     /// context: ability scores in the generic genome use weighted-sum;
     /// all other continuous SNP regions use bit-count.
     Continuous,
-    /// Competes with other entries in the same group via max-bit-count.
+    /// Competes with other entries in the same group via max weighted sum.
+    /// For hue categories with a defined wheel ordering, the top two
+    /// adjacent candidates blend by their score ratio instead of
+    /// winner-take-all.
     Categorical { group: String },
 }
 ```
@@ -447,7 +447,7 @@ pub enum SnpKind {
 - Species-specific genome layouts for pigmentation (VSH model)
 - Elf hair/eye color with full hue palette + blending
 - Elf/human skin melanin + ruddiness (warmth bits reserved)
-- Wire into sprite generation (replace BioSeed-derived colors)
+- Wire into sprite generation (genome-derived colors)
 - Non-humanoid species pigmentation (goblins, trolls, etc.)
 - All 12 species need genome backing for their visual traits: elves
   (HairColor, EyeColor, SkinTone, HairStyle), capybara (BodyColor,

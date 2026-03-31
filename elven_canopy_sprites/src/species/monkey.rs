@@ -11,10 +11,10 @@ use crate::color::Color;
 use crate::drawing::PixelBuffer;
 
 const FUR_COLORS: [Color; 4] = [
-    Color::rgb(0.55, 0.38, 0.22),
-    Color::rgb(0.70, 0.52, 0.30),
-    Color::rgb(0.42, 0.30, 0.18),
-    Color::rgb(0.62, 0.45, 0.25),
+    Color::rgb(0.65, 0.50, 0.30), // golden
+    Color::rgb(0.58, 0.35, 0.22), // reddish
+    Color::rgb(0.35, 0.25, 0.18), // dark
+    Color::rgb(0.70, 0.58, 0.42), // sandy
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,8 +46,15 @@ pub fn params_from_seed(seed: i64) -> MonkeyParams {
 
 pub fn params_from_traits(traits: &super::TraitMap) -> MonkeyParams {
     use elven_canopy_sim::types::TraitKind;
+    let base_idx = super::trait_idx(traits, TraitKind::FurColor, 0) % FUR_COLORS.len();
+    let blend_target = super::trait_i64(traits, TraitKind::FurBlendTarget, -1);
+    let blend_weight = super::trait_i64(traits, TraitKind::FurBlendWeight, 0);
+    let value = super::trait_i64(traits, TraitKind::FurValue, 0);
+    let saturation = super::trait_i64(traits, TraitKind::FurSaturation, 0);
     MonkeyParams {
-        fur_color: FUR_COLORS[super::trait_idx(traits, TraitKind::FurColor, 0) % FUR_COLORS.len()],
+        fur_color: super::resolve_hue(&FUR_COLORS, base_idx, blend_target, blend_weight)
+            .apply_value(value)
+            .apply_saturation(saturation),
         face_marking: FACE_MARKINGS
             [super::trait_idx(traits, TraitKind::FaceMarking, 0) % FACE_MARKINGS.len()],
     }

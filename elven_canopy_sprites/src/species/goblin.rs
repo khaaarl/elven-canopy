@@ -10,10 +10,10 @@ use crate::color::Color;
 use crate::drawing::PixelBuffer;
 
 const SKIN_COLORS: [Color; 4] = [
-    Color::rgb(0.35, 0.55, 0.25),
-    Color::rgb(0.40, 0.60, 0.30),
-    Color::rgb(0.30, 0.48, 0.22),
-    Color::rgb(0.45, 0.55, 0.20),
+    Color::rgb(0.45, 0.58, 0.30), // sickly-green
+    Color::rgb(0.65, 0.60, 0.30), // jaundice-yellow
+    Color::rgb(0.50, 0.45, 0.38), // grey-brown
+    Color::rgb(0.55, 0.65, 0.35), // pale-chartreuse
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,9 +41,15 @@ pub fn params_from_seed(seed: i64) -> GoblinParams {
 
 pub fn params_from_traits(traits: &super::TraitMap) -> GoblinParams {
     use elven_canopy_sim::types::TraitKind;
+    let base_idx = super::trait_idx(traits, TraitKind::SkinColor, 0) % SKIN_COLORS.len();
+    let blend_target = super::trait_i64(traits, TraitKind::SkinColorBlendTarget, -1);
+    let blend_weight = super::trait_i64(traits, TraitKind::SkinColorBlendWeight, 0);
+    let value = super::trait_i64(traits, TraitKind::SkinValue, 0);
+    let saturation = super::trait_i64(traits, TraitKind::SkinSaturation, 0);
     GoblinParams {
-        skin_color: SKIN_COLORS
-            [super::trait_idx(traits, TraitKind::SkinColor, 0) % SKIN_COLORS.len()],
+        skin_color: super::resolve_hue(&SKIN_COLORS, base_idx, blend_target, blend_weight)
+            .apply_value(value)
+            .apply_saturation(saturation),
         ear_style: EAR_STYLES[super::trait_idx(traits, TraitKind::EarStyle, 0) % EAR_STYLES.len()],
     }
 }

@@ -361,6 +361,15 @@ pub struct SpeciesData {
     /// as the sum is >= 1. Default `[0, 1, 1]` (equal male/female).
     #[serde(default = "default_sex_weights")]
     pub sex_weights: [u32; 3],
+
+    /// Per-personality-axis distribution (mean, stdev), same pattern as
+    /// `stat_distributions`. Axes not present default to `(0, 50)`.
+    #[serde(default)]
+    pub personality_distributions: PersonalityDistributions,
+
+    /// Genome-structural config: bit widths and species-specific SNP layout.
+    #[serde(default)]
+    pub genome_config: SpeciesGenomeConfig,
 }
 
 /// Species-specific distribution parameters for a single creature stat.
@@ -369,6 +378,99 @@ pub struct SpeciesData {
 pub struct StatDistribution {
     pub mean: i32,
     pub stdev: i32,
+}
+
+/// Per-personality-axis distribution (mean, stdev), same pattern as
+/// `stat_distributions`. Axes not present default to `(0, 50)`.
+pub type PersonalityDistributions = std::collections::BTreeMap<PersonalityAxis, StatDistribution>;
+
+/// The Big Five personality axes. Used as keys in personality distribution
+/// config and for trait expression from the generic genome.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum PersonalityAxis {
+    Openness,
+    Conscientiousness,
+    Extraversion,
+    Agreeableness,
+    Neuroticism,
+}
+
+/// All personality axes in genome-layout order.
+pub const PERSONALITY_AXES: [PersonalityAxis; 5] = [
+    PersonalityAxis::Openness,
+    PersonalityAxis::Conscientiousness,
+    PersonalityAxis::Extraversion,
+    PersonalityAxis::Agreeableness,
+    PersonalityAxis::Neuroticism,
+];
+
+/// Genome-structural config for a species. Defines bit widths and the
+/// species-specific SNP layout. Stored on `SpeciesData`.
+///
+/// The species-specific genome layout is an ordered list of `SnpRegion`s.
+/// **IMPORTANT:** ordering defines the physical bit layout. Never reorder
+/// entries; only append new ones at the end.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SpeciesGenomeConfig {
+    /// Bit-width for each ability score SNP region (default 32).
+    #[serde(default = "default_stat_bits")]
+    pub stat_bits: u32,
+
+    /// Bit-width for each personality axis (default 8).
+    #[serde(default = "default_personality_bits")]
+    pub personality_bits: u32,
+
+    /// Species-specific genome layout definition.
+    /// IMPORTANT: ordering defines physical bit layout. Never reorder entries;
+    /// only append new ones at the end.
+    #[serde(default)]
+    pub species_snps: Vec<SnpRegion>,
+}
+
+impl Default for SpeciesGenomeConfig {
+    fn default() -> Self {
+        Self {
+            stat_bits: 32,
+            personality_bits: 8,
+            species_snps: Vec::new(),
+        }
+    }
+}
+
+fn default_stat_bits() -> u32 {
+    32
+}
+
+fn default_personality_bits() -> u32 {
+    8
+}
+
+/// A single SNP region in the species-specific genome.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SnpRegion {
+    /// Human-readable name, e.g. "hair_value", "hair_hue_warm".
+    pub name: String,
+
+    /// Bit-width of this region.
+    pub bits: u32,
+
+    /// How this region's bits are interpreted for trait expression.
+    pub kind: SnpKind,
+}
+
+/// How a SNP region's bits are interpreted.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum SnpKind {
+    /// Weighted-sum (ability scores) or bit-count (personality, pigmentation)
+    /// scaled to species mean/stdev. The scaling model is determined by
+    /// context: ability scores in the generic genome use weighted-sum;
+    /// all other continuous SNP regions use bit-count.
+    Continuous,
+
+    /// Competes with other entries in the same group via max weighted sum.
+    /// Categories sharing a `group` string are compared; the one with the
+    /// highest weighted sum wins, with PRNG tiebreak.
+    Categorical { group: String },
 }
 
 fn default_footprint() -> [u8; 3] {

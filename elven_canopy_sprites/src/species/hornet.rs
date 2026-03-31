@@ -12,10 +12,10 @@ use crate::color::Color;
 use crate::drawing::PixelBuffer;
 
 const BODY_COLORS: [Color; 4] = [
-    Color::rgb(0.85, 0.65, 0.10), // classic yellow
-    Color::rgb(0.90, 0.55, 0.05), // orange-yellow
-    Color::rgb(0.80, 0.70, 0.20), // golden
-    Color::rgb(0.95, 0.60, 0.10), // bright amber
+    Color::rgb(0.90, 0.80, 0.20), // bright-yellow
+    Color::rgb(0.65, 0.45, 0.15), // dark-amber
+    Color::rgb(0.85, 0.55, 0.15), // orange
+    Color::rgb(0.75, 0.65, 0.25), // golden
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,9 +64,15 @@ pub fn params_from_seed(seed: i64) -> HornetParams {
 
 pub fn params_from_traits(traits: &super::TraitMap) -> HornetParams {
     use elven_canopy_sim::types::TraitKind;
+    let base_idx = super::trait_idx(traits, TraitKind::BodyColor, 0) % BODY_COLORS.len();
+    let blend_target = super::trait_i64(traits, TraitKind::BodyBlendTarget, -1);
+    let blend_weight = super::trait_i64(traits, TraitKind::BodyBlendWeight, 0);
+    let value = super::trait_i64(traits, TraitKind::BodyValue, 0);
+    let saturation = super::trait_i64(traits, TraitKind::BodySaturation, 0);
     HornetParams {
-        body_color: BODY_COLORS
-            [super::trait_idx(traits, TraitKind::BodyColor, 0) % BODY_COLORS.len()],
+        body_color: super::resolve_hue(&BODY_COLORS, base_idx, blend_target, blend_weight)
+            .apply_value(value)
+            .apply_saturation(saturation),
         stripe_pattern: STRIPE_PATTERNS
             [super::trait_idx(traits, TraitKind::StripePattern, 0) % STRIPE_PATTERNS.len()],
         wing_style: WING_STYLES

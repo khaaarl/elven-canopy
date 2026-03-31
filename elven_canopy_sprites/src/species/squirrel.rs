@@ -11,10 +11,10 @@ use crate::color::Color;
 use crate::drawing::PixelBuffer;
 
 const FUR_COLORS: [Color; 4] = [
-    Color::rgb(0.62, 0.38, 0.18),
-    Color::rgb(0.45, 0.35, 0.25),
-    Color::rgb(0.70, 0.48, 0.22),
-    Color::rgb(0.52, 0.40, 0.30),
+    Color::rgb(0.65, 0.30, 0.18), // red
+    Color::rgb(0.68, 0.52, 0.28), // golden
+    Color::rgb(0.45, 0.32, 0.20), // brown
+    Color::rgb(0.55, 0.52, 0.48), // grey
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,8 +42,15 @@ pub fn params_from_seed(seed: i64) -> SquirrelParams {
 
 pub fn params_from_traits(traits: &super::TraitMap) -> SquirrelParams {
     use elven_canopy_sim::types::TraitKind;
+    let base_idx = super::trait_idx(traits, TraitKind::FurColor, 0) % FUR_COLORS.len();
+    let blend_target = super::trait_i64(traits, TraitKind::FurBlendTarget, -1);
+    let blend_weight = super::trait_i64(traits, TraitKind::FurBlendWeight, 0);
+    let value = super::trait_i64(traits, TraitKind::FurValue, 0);
+    let saturation = super::trait_i64(traits, TraitKind::FurSaturation, 0);
     SquirrelParams {
-        fur_color: FUR_COLORS[super::trait_idx(traits, TraitKind::FurColor, 0) % FUR_COLORS.len()],
+        fur_color: super::resolve_hue(&FUR_COLORS, base_idx, blend_target, blend_weight)
+            .apply_value(value)
+            .apply_saturation(saturation),
         tail_type: TAIL_TYPES[super::trait_idx(traits, TraitKind::TailType, 0) % TAIL_TYPES.len()],
     }
 }

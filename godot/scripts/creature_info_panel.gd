@@ -64,6 +64,7 @@ var _mood_label: Label
 var _tame_button: Button
 var _tame_designated: bool = false
 var _stat_labels: Dictionary = {}
+var _personality_labels: Dictionary = {}
 var _skill_labels: Dictionary = {}
 var _thoughts_container: VBoxContainer
 var _inventory_container: VBoxContainer
@@ -330,6 +331,10 @@ func _build_status_tab(parent: VBoxContainer) -> ScrollContainer:
 	vbox.add_child(HSeparator.new())
 	_build_stats_grid(vbox)
 
+	# Personality axes grid.
+	vbox.add_child(HSeparator.new())
+	_build_personality_grid(vbox)
+
 	return scroll
 
 
@@ -380,6 +385,54 @@ func _build_stats_grid(parent: VBoxContainer) -> void:
 		grid.add_child(val_lbl)
 
 		_stat_labels[key] = val_lbl
+
+
+## Build the Big Five personality grid: 3+2 layout matching the stats grid style.
+func _build_personality_grid(parent: VBoxContainer) -> void:
+	var header := Label.new()
+	header.text = "Personality"
+	header.add_theme_font_size_override("font_size", 13)
+	header.add_theme_color_override("font_color", Color(0.6, 0.75, 0.6))
+	parent.add_child(header)
+
+	var grid := GridContainer.new()
+	grid.columns = 4
+	grid.add_theme_constant_override("h_separation", 4)
+	grid.add_theme_constant_override("v_separation", 2)
+	parent.add_child(grid)
+
+	var personality_order: Array[String] = [
+		"personality_o",
+		"personality_c",
+		"personality_e",
+		"personality_a",
+		"personality_n",
+	]
+	var abbrevs: Dictionary = {
+		"personality_o": "OPN",
+		"personality_c": "CSC",
+		"personality_e": "EXT",
+		"personality_a": "AGR",
+		"personality_n": "NEU",
+	}
+
+	for key in personality_order:
+		var abbr_lbl := Label.new()
+		abbr_lbl.text = abbrevs[key]
+		abbr_lbl.add_theme_font_size_override("font_size", 13)
+		abbr_lbl.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+		abbr_lbl.custom_minimum_size.x = 36
+		grid.add_child(abbr_lbl)
+
+		var val_lbl := Label.new()
+		val_lbl.text = "0"
+		val_lbl.add_theme_font_size_override("font_size", 13)
+		val_lbl.custom_minimum_size.x = 40
+		val_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		val_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		grid.add_child(val_lbl)
+
+		_personality_labels[key] = val_lbl
 
 
 ## Build the Skills tab: scrollable grid of 17 skills.
@@ -586,6 +639,7 @@ func show_creature(creature_id: String, info: Dictionary) -> void:
 	_update_mood(info)
 	_update_tame(info)
 	_update_stats(info)
+	_update_personality(info)
 	_update_skills(info)
 	_update_thoughts(info)
 	_update_inventory(info)
@@ -610,6 +664,7 @@ func update_info(info: Dictionary) -> void:
 	_update_mood(info)
 	_update_tame(info)
 	_update_stats(info)
+	_update_personality(info)
 	_update_skills(info)
 	_update_thoughts(info)
 	_update_inventory(info)
@@ -725,6 +780,12 @@ func _update_stats(info: Dictionary) -> void:
 	for key in _stat_labels:
 		var val: int = info.get(key, 0)
 		_stat_labels[key].text = "%d" % val
+
+
+func _update_personality(info: Dictionary) -> void:
+	for key in _personality_labels:
+		var val: int = info.get(key, 0)
+		_personality_labels[key].text = "%d" % val
 
 
 func _update_skills(info: Dictionary) -> void:
