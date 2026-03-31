@@ -263,7 +263,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-two-click-build      Two-click construction designation (click start, click end)
 [ ] F-undo-designate       Undo last construction designation
 [ ] F-unfurnish            Unfurnish/refurnish a building
-[ ] F-unified-pursuit      Unify pursue_closest_target ground/flight paths via find_nearest
 [ ] F-uplift-tree          Uplift lesser tree into bonded great tree
 [ ] F-vaelith-expand       Expand Vaelith language for runtime use
 [ ] F-vertical-garden      Vertical gardens on the tree
@@ -532,6 +531,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-troll-regen          Troll health regeneration over time
 [x] F-unified-craft-ui     Unified data-driven building crafting UI
 [x] F-unified-pathing      Unified pathfinding API for ground (nav graph) and flying (voxel grid) creatures
+[x] F-unified-pursuit      Unify pursue_closest_target ground/flight paths via find_nearest
 [x] F-visual-smooth        Smooth voxel surface rendering
 [x] F-voice-subsets        Variable voice count (SATB subsets)
 [x] F-voxel-exclusion      Creatures cannot enter voxels occupied by hostile creatures
@@ -4920,7 +4920,7 @@ user: Thornbriar spell. Future: ice walls, fire zones, magical barriers.
 **Blocks:** F-spell-thornbriar
 
 #### F-unified-pursuit — Unify pursue_closest_target ground/flight paths via find_nearest
-**Status:** Todo
+**Status:** Done
 
 `pursue_closest_target` in `combat.rs` has separate code paths for ground and
 flying creatures that should be unified using `find_nearest()`.

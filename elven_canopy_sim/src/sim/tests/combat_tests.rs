@@ -7289,3 +7289,117 @@ fn attack_move_traversal_delay_uses_creature_stats() {
          because the elf has high agility (200)"
     );
 }
+
+// -----------------------------------------------------------------------
+// Unified pursuit (F-unified-pursuit)
+// -----------------------------------------------------------------------
+
+#[test]
+fn ground_creature_gives_up_on_high_flying_target() {
+    // A goblin on the ground should not spend CPU pathfinding toward a hornet
+    // that is way up in the sky — no nav nodes exist within melee range of the
+    // target, so pursue_closest_target should bail immediately.
+    let mut sim = flat_world_sim(fresh_test_seed());
+
+    let goblin_id = spawn_species(&mut sim, Species::Goblin);
+    let hornet_id = spawn_hornet_at(&mut sim, VoxelCoord::new(34, 20, 32));
+
+    // Place goblin on the ground near the hornet's x,z but far below.
+    force_position(&mut sim, goblin_id, VoxelCoord::new(32, 1, 32));
+    force_idle(&mut sim, goblin_id);
+
+    // Run a short period — the goblin should detect the hornet (within
+    // detection range) but fail to pursue (no ground node in melee range of
+    // y=20 target). It should wander instead of freeze.
+    sim.step(&[], sim.tick + 5000);
+
+    let goblin_pos_after = sim.db.creatures.get(&goblin_id).unwrap().position;
+
+    // The goblin should NOT have moved closer to the hornet's y position.
+    // (It may have wandered on the ground plane, which is fine.)
+    assert_eq!(
+        goblin_pos_after.y, 1,
+        "Goblin should stay on the ground, not levitate toward the hornet"
+    );
+    // It should not have dealt any damage to the hornet (still at full HP).
+    let hornet = sim.db.creatures.get(&hornet_id).unwrap();
+    assert_eq!(
+        hornet.hp, hornet.hp_max,
+        "Goblin should not have damaged the high-altitude hornet"
+    );
+}
+
+#[test]
+fn ground_creature_pursues_target_at_different_elevation() {
+    // A goblin should pursue an elf that is slightly elevated (y=2 instead
+    // of y=1). The elf at y=2 has no nav node on the goblin's graph, so
+    // pursue_closest_target must find ground-level strike positions within
+    // melee range. With melee_range_sq=2, positions at y=1 directly under
+    // the elf are within melee range (vertical gap=0 for adjacent voxels).
+    let mut sim = flat_world_sim(fresh_test_seed());
+
+    let goblin = spawn_species(&mut sim, Species::Goblin);
+    let elf = spawn_elf(&mut sim);
+
+    // Force elf to y=2 (off the nav graph in a flat world).
+    force_position(&mut sim, elf, VoxelCoord::new(37, 2, 32));
+    force_position(&mut sim, goblin, VoxelCoord::new(34, 1, 32));
+    force_guaranteed_hits(&mut sim, goblin);
+    // Freeze elf so it doesn't flee.
+    force_idle_and_cancel_activations(&mut sim, elf);
+
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+    let goblin_start = VoxelCoord::new(34, 1, 32);
+    let elf_pos_start = VoxelCoord::new(37, 2, 32);
+    let initial_dist = goblin_start.manhattan_distance(elf_pos_start);
+
+    sim.step(&[], sim.tick + 10_000);
+
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let new_dist = goblin_pos.manhattan_distance(elf_pos);
+    let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+
+    let moved_closer = new_dist < initial_dist;
+    let dealt_damage = elf_hp_after < elf_hp_before;
+    assert!(
+        moved_closer || dealt_damage,
+        "Goblin should pursue elevated elf: initial dist={initial_dist}, \
+         new dist={new_dist}, elf hp {elf_hp_before} -> {elf_hp_after}"
+    );
+}
+
+#[test]
+fn flying_creature_pursues_ground_target() {
+    // A hornet should pursue an elf on the ground, closing distance and/or
+    // dealing damage. Under the unified pursuit path, the hornet enumerates
+    // strike positions within melee range and uses find_nearest + find_path
+    // rather than a Euclidean distance approximation.
+    let mut sim = flat_world_sim(fresh_test_seed());
+
+    let elf = spawn_elf(&mut sim);
+    let hornet = spawn_hornet_at(&mut sim, VoxelCoord::new(37, 3, 32));
+
+    force_position(&mut sim, elf, VoxelCoord::new(32, 1, 32));
+    force_guaranteed_hits(&mut sim, hornet);
+    // Freeze elf so it doesn't flee.
+    force_idle_and_cancel_activations(&mut sim, elf);
+
+    let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
+    let initial_dist = VoxelCoord::new(37, 3, 32).manhattan_distance(VoxelCoord::new(32, 1, 32));
+
+    sim.step(&[], sim.tick + 10_000);
+
+    let hornet_pos = sim.db.creatures.get(&hornet).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let new_dist = hornet_pos.manhattan_distance(elf_pos);
+    let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
+
+    let moved_closer = new_dist < initial_dist;
+    let dealt_damage = elf_hp_after < elf_hp_before;
+    assert!(
+        moved_closer || dealt_damage,
+        "Hornet should pursue elf via pathfinding: initial dist={initial_dist}, \
+         new dist={new_dist}, elf hp {elf_hp_before} -> {elf_hp_after}"
+    );
+}

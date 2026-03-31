@@ -88,9 +88,9 @@ impl SimState {
         }
 
         // Flying attackers don't need a nav node at the target position.
-        // Ground attackers need a reachable position to walk toward. For flying
-        // targets with no nearby nav node, use `find_melee_reachable_node` to
-        // find a ground position the attacker can reach.
+        // Ground attackers need a reachable position to walk toward; for flying
+        // targets, pursue_closest_target enumerates strike positions within
+        // melee range and lets find_nearest filter to nav-node positions.
         let attacker_is_flying = self.species_table[&attacker.species]
             .flight_ticks_per_voxel
             .is_some();
@@ -3014,7 +3014,7 @@ impl SimState {
     pub(crate) fn hostile_pursue(
         &mut self,
         creature_id: CreatureId,
-        current_node: Option<NavNodeId>,
+        _current_node: Option<NavNodeId>,
         species: Species,
         events: &mut Vec<SimEvent>,
     ) -> bool {
@@ -3146,24 +3146,12 @@ impl SimState {
                 if pursuit_targets.is_empty() {
                     return false;
                 }
-                self.pursue_closest_target(
-                    creature_id,
-                    current_node,
-                    species,
-                    &pursuit_targets,
-                    events,
-                )
+                self.pursue_closest_target(creature_id, species, &pursuit_targets, events)
             }
             WeaponPreference::PreferMelee => {
                 // Try to close distance first (pursuit range only).
                 if !pursuit_targets.is_empty()
-                    && self.pursue_closest_target(
-                        creature_id,
-                        current_node,
-                        species,
-                        &pursuit_targets,
-                        events,
-                    )
+                    && self.pursue_closest_target(creature_id, species, &pursuit_targets, events)
                 {
                     return true;
                 }
@@ -3180,178 +3168,99 @@ impl SimState {
         }
     }
 
-    /// Pathfind toward the nearest detected target and take one step.
-    /// Returns `true` if a step was taken.
+    /// Pathfind toward the nearest position from which the attacker could
+    /// melee any target, then take one step along that path.
     ///
-    /// Ground creatures use `find_nearest` + `find_path` on nav-node positions
-    /// derived from target creatures. Flying creatures use Euclidean distance
-    /// to pick the nearest target and `fly_toward_target` to close distance.
+    /// For each target, enumerates all voxel positions within melee range
+    /// (a small 3D bounding box — typically 5×5×5 for default melee range).
+    /// Then calls `find_nearest()` which handles filtering (ground creatures:
+    /// only positions that map to nav nodes; flyers: only positions with
+    /// footprint clearance) and finds the closest reachable one via
+    /// interleaved A*.
     ///
-    /// TODO: Unify the flying and non-flying logic paths by using
-    /// `find_nearest()` with a set of VoxelCoords that are locations in melee
-    /// range of the various target creatures. The result would be that if there
-    /// is any path to a location from which you could make a melee attack at a
-    /// target, you'd go towards the closest such location. This would also
-    /// eliminate the intermediate nav-node conversion step for ground creatures.
+    /// This means a ground creature pursuing a flying target high in the sky
+    /// bails out almost instantly — the bounding box produces candidates at
+    /// high y, none of which map to nav nodes, so find_nearest gets an empty
+    /// list and returns None.
     fn pursue_closest_target(
         &mut self,
         creature_id: CreatureId,
-        current_node: Option<NavNodeId>,
         species: Species,
         targets: &[(CreatureId, NavNodeId)],
         events: &mut Vec<SimEvent>,
     ) -> bool {
-        // Flying creatures: pick nearest target by Euclidean distance, fly toward it.
-        if self.species_table[&species]
-            .flight_ticks_per_voxel
-            .is_some()
-        {
-            let attacker_pos = match self.db.creatures.get(&creature_id) {
-                Some(c) => c.position,
-                None => return false,
-            };
-            // Find nearest target by squared Euclidean distance.
-            let nearest = targets
-                .iter()
-                .filter_map(|&(tid, _)| {
-                    let target = self.db.creatures.get(&tid)?;
-                    let dx = attacker_pos.x as i64 - target.position.x as i64;
-                    let dy = attacker_pos.y as i64 - target.position.y as i64;
-                    let dz = attacker_pos.z as i64 - target.position.z as i64;
-                    Some((tid, target.position, dx * dx + dy * dy + dz * dz))
-                })
-                .min_by_key(|&(tid, _, dist)| (dist, tid));
-            let (_, target_pos, _) = match nearest {
-                Some(n) => n,
-                None => return false,
-            };
-            return self.fly_toward_target(creature_id, target_pos, events);
-        }
-
-        // Ground creatures: find nearest target, then path to it.
-        if current_node.is_none() {
-            return false;
-        }
-        let species_data = &self.species_table[&species];
-        let graph = self.graph_for_species(species);
-
-        // Resolve target positions on the attacker's nav graph. Targets may
-        // be on a different graph (e.g., 1x1 elf on standard graph vs 2x2
-        // troll on large graph), or in the air (flying creatures). We first
-        // try find_nearest_node at the target's position; if that fails
-        // (e.g., target is a hornet flying above ground), we look for a
-        // nav node beneath the target that would put the attacker within
-        // melee range.
-        let melee_range = self.max_melee_range_sq(creature_id);
-        let attacker_footprint = species_data.footprint;
-        let target_nodes: Vec<NavNodeId> = targets
-            .iter()
-            .filter_map(|&(tid, _)| {
-                let target = self.db.creatures.get(&tid)?;
-                let pos = target.position;
-                let target_fp = self.species_table[&target.species].footprint;
-
-                let is_flyer = self.species_table[&target.species]
-                    .flight_ticks_per_voxel
-                    .is_some();
-
-                // Ground targets: snap to nearest nav node (fast).
-                // Flying targets: skip find_nearest_node (O(y²) for high-
-                // altitude creatures) and go straight to the bounded
-                // melee-reachable search.
-                if !is_flyer && let Some(node) = graph.find_nearest_node(pos, 5) {
-                    return Some(node);
-                }
-
-                // Target has no nearby nav node (flying creature in the
-                // air, or ground creature displaced by construction).
-                // Search for a nav node where the attacker could stand
-                // and be within melee range of the target.
-                self.find_melee_reachable_node(
-                    graph,
-                    pos,
-                    target_fp,
-                    attacker_footprint,
-                    melee_range,
-                )
-            })
-            .collect();
-        if target_nodes.is_empty() {
-            return false;
-        }
-
-        let target_positions: Vec<VoxelCoord> = target_nodes
-            .iter()
-            .map(|&nid| graph.node(nid).position)
-            .collect();
-        let nearest_idx = match self.find_nearest(creature_id, &target_positions, u32::MAX) {
-            Some(idx) => idx,
-            None => return false,
-        };
-        let target_pos = target_positions[nearest_idx];
-
-        // Skip if creature is already at the target.
-        let creature_pos = self.db.creatures.get(&creature_id).unwrap().position;
-        if creature_pos == target_pos {
-            return false;
-        }
-
-        let path = match self.find_path(creature_id, target_pos, u32::MAX) {
-            Some(p) if p.nav_edges.is_empty() => return false,
-            Some(p) => p,
-            None => return false,
-        };
-
-        let first_edge_idx = path.nav_edges[0];
-        self.ground_move_one_step(creature_id, species, first_edge_idx);
-        true
-    }
-
-    /// Find a nav node on `graph` where an attacker standing there would be
-    /// within `melee_range_sq` of a target at `target_pos` with `target_fp`
-    /// footprint. Used when the target is a flying creature in the air with
-    /// no nearby nav node — we search for ground positions beneath/around
-    /// the target that let a ground creature reach up and melee.
-    ///
-    /// Returns `None` if no such node exists (target is too high for any
-    /// reachable position to be in melee range).
-    fn find_melee_reachable_node(
-        &self,
-        graph: &crate::nav::NavGraph,
-        target_pos: VoxelCoord,
-        target_fp: [u8; 3],
-        attacker_fp: [u8; 3],
-        melee_range_sq: i64,
-    ) -> Option<NavNodeId> {
-        // Search an expanding box around the target's x,z position.
-        // The melee range limits how far horizontally/vertically we need to
-        // search: max axis gap ≤ isqrt(melee_range_sq).
+        let attacker_fp = self.species_table[&species].footprint;
+        let melee_range_sq = self.max_melee_range_sq(creature_id);
         let max_gap = (melee_range_sq as u64).isqrt() as i32 + 1;
-        let mut best: Option<(i64, NavNodeId)> = None; // (manhattan_to_target, node_id)
 
-        for dx in -max_gap..=max_gap {
-            for dz in -max_gap..=max_gap {
-                let col_x = target_pos.x + dx;
-                let col_z = target_pos.z + dz;
-                // Check all nav nodes in this column.
-                for node in graph.nodes_in_column(col_x, col_z) {
-                    let node_pos = node.position;
-                    let dist = melee_distance_sq(node_pos, attacker_fp, target_pos, target_fp);
-                    if dist <= melee_range_sq {
-                        // Pick the closest to the target (Manhattan) for
-                        // optimal pathfinding.
-                        let manhattan = (node_pos.x - target_pos.x).unsigned_abs() as i64
-                            + (node_pos.y - target_pos.y).unsigned_abs() as i64
-                            + (node_pos.z - target_pos.z).unsigned_abs() as i64;
-                        if best.is_none() || manhattan < best.unwrap().0 {
-                            best = Some((manhattan, node.id));
+        // Phase 1: Build candidate strike positions — all voxel positions
+        // within melee range of any target. Pure geometry, no nav lookups.
+        let mut candidates: Vec<VoxelCoord> = Vec::new();
+        for &(tid, _) in targets {
+            let target = match self.db.creatures.get(&tid) {
+                Some(c) => c,
+                None => continue,
+            };
+            let target_pos = target.position;
+            let target_fp = self.species_table[&target.species].footprint;
+            for dx in -max_gap..=max_gap {
+                for dy in -max_gap..=max_gap {
+                    for dz in -max_gap..=max_gap {
+                        let pos = VoxelCoord::new(
+                            target_pos.x + dx,
+                            target_pos.y + dy,
+                            target_pos.z + dz,
+                        );
+                        if melee_distance_sq(pos, attacker_fp, target_pos, target_fp)
+                            <= melee_range_sq
+                        {
+                            candidates.push(pos);
                         }
                     }
                 }
             }
         }
+        if candidates.is_empty() {
+            return false;
+        }
 
-        best.map(|(_, id)| id)
+        // Phase 2: Find nearest reachable strike position. find_nearest
+        // handles ground vs flying internally — for ground creatures, only
+        // positions that map to nav nodes survive; for flyers, only positions
+        // with footprint clearance.
+        let nearest_idx = match self.find_nearest(creature_id, &candidates, u32::MAX) {
+            Some(idx) => idx,
+            None => return false,
+        };
+        let strike_pos = candidates[nearest_idx];
+
+        let creature_pos = self.db.creatures.get(&creature_id).unwrap().position;
+        if creature_pos == strike_pos {
+            return false;
+        }
+
+        // Phase 3: Path to the strike position and take one step.
+        let path = match self.find_path(creature_id, strike_pos, u32::MAX) {
+            Some(p) => p,
+            None => return false,
+        };
+
+        let is_flyer = self.species_table[&species]
+            .flight_ticks_per_voxel
+            .is_some();
+        if is_flyer {
+            if path.positions.len() < 2 {
+                return false;
+            }
+            let flight_tpv = self.species_table[&species].flight_ticks_per_voxel.unwrap();
+            self.fly_one_step(creature_id, species, path.positions[1], flight_tpv, events)
+        } else {
+            if path.nav_edges.is_empty() {
+                return false;
+            }
+            self.ground_move_one_step(creature_id, species, path.nav_edges[0]);
+            true
+        }
     }
 
     /// Detect hostile targets within detection range. Returns a list of
