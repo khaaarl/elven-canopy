@@ -650,7 +650,13 @@ impl SimState {
         }
 
         let coords: Vec<VoxelCoord> = candidates.iter().map(|&(_, loc)| loc).collect();
-        let idx = self.find_nearest(creature_id, &coords, u32::MAX)?;
+        let idx = self
+            .find_nearest(
+                creature_id,
+                &coords,
+                &crate::pathfinding::PathOpts::default(),
+            )
+            .ok()?;
         Some(candidates[idx].0)
     }
 

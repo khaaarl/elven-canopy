@@ -590,8 +590,13 @@ impl SimState {
     ///
     /// Dispatches to nav-graph A* (ground creatures) or flight A* (flying
     /// creatures) based on species. Uses stat-modified movement speeds.
-    /// Returns `None` if the creature doesn't exist, the goal is unreachable,
-    /// or all paths exceed `max_path_len`.
+    /// Search is bounded by `opts` (path length limit and work budget).
+    ///
+    /// Returns `Err(PathError)` with a structured error on failure:
+    /// `StartNotOnGraph` if the creature doesn't exist or its position isn't
+    /// on the nav graph, `TargetNotOnGraph` if the goal isn't on the graph,
+    /// `Unreachable` / `ExceededPathLen` / `ExceededWorkBudget` for search
+    /// failures.
     ///
     /// For ground creatures, the returned `PathResult` has `nav_nodes` and
     /// `nav_edges` populated. For flyers, those fields are empty.
@@ -602,9 +607,14 @@ impl SimState {
         &self,
         creature_id: CreatureId,
         goal: VoxelCoord,
-        max_path_len: u32,
-    ) -> Option<crate::pathfinding::PathResult> {
-        let creature = self.db.creatures.get(&creature_id)?;
+        opts: &crate::pathfinding::PathOpts,
+    ) -> Result<crate::pathfinding::PathResult, crate::pathfinding::PathError> {
+        use crate::pathfinding::PathError;
+
+        let creature = match self.db.creatures.get(&creature_id) {
+            Some(c) => c,
+            None => return Err(PathError::StartNotOnGraph),
+        };
         let species = creature.species;
         let species_data = &self.species_table[&species];
         let position = creature.position;
@@ -612,19 +622,18 @@ impl SimState {
         if let Some(flight_tpv) = species_data.flight_ticks_per_voxel {
             // Flying creature: A* on voxel grid.
             let footprint = species_data.footprint;
-            crate::pathfinding::astar_fly(
-                &self.world,
-                position,
-                goal,
-                flight_tpv,
-                max_path_len,
-                footprint,
-            )
+            crate::pathfinding::astar_fly(&self.world, position, goal, flight_tpv, opts, footprint)
         } else {
             // Ground creature: A* on nav graph with stat-modified speeds.
             let graph = self.graph_for_species(species);
-            let start_node = graph.node_at(position)?;
-            let goal_node = graph.node_at(goal)?;
+            let start_node = match graph.node_at(position) {
+                Some(n) => n,
+                None => return Err(PathError::StartNotOnGraph),
+            };
+            let goal_node = match graph.node_at(goal) {
+                Some(n) => n,
+                None => return Err(PathError::TargetNotOnGraph),
+            };
             let agility = self.trait_int(creature_id, TraitKind::Agility, 0);
             let strength = self.trait_int(creature_id, TraitKind::Strength, 0);
             let move_speeds =
@@ -633,35 +642,36 @@ impl SimState {
                 &move_speeds,
                 species_data.allowed_edge_types.as_deref(),
             );
-            crate::pathfinding::astar_navgraph(
-                graph,
-                start_node,
-                goal_node,
-                &nav_speeds,
-                max_path_len,
-            )
+            crate::pathfinding::astar_navgraph(graph, start_node, goal_node, &nav_speeds, opts)
         }
     }
 
     /// Find the nearest reachable candidate from a creature's current position.
     ///
-    /// Dispatches to nav-graph Dijkstra (ground creatures) or sequential
-    /// flight A* (flying creatures) based on species. Uses stat-modified
-    /// movement speeds and the species' edge-type filter.
+    /// Dispatches to interleaved A* on the nav graph (ground creatures) or
+    /// voxel grid (flying creatures) based on species. Uses stat-modified
+    /// movement speeds and the species' edge-type filter. Search is bounded
+    /// by `opts` (path length limit and work budget).
     ///
     /// Returns the *index* into `candidates` of the nearest reachable one,
-    /// or `None` if the creature doesn't exist or no candidate is reachable.
+    /// or `Err(PathError)` on failure (`NoTargets`, `StartNotOnGraph`,
+    /// `Unreachable`, `ExceededPathLen`, `ExceededWorkBudget`).
     pub fn find_nearest(
         &self,
         creature_id: CreatureId,
         candidates: &[VoxelCoord],
-        max_path_len: u32,
-    ) -> Option<usize> {
+        opts: &crate::pathfinding::PathOpts,
+    ) -> Result<usize, crate::pathfinding::PathError> {
+        use crate::pathfinding::PathError;
+
         if candidates.is_empty() {
-            return None;
+            return Err(PathError::NoTargets);
         }
 
-        let creature = self.db.creatures.get(&creature_id)?;
+        let creature = match self.db.creatures.get(&creature_id) {
+            Some(c) => c,
+            None => return Err(PathError::StartNotOnGraph),
+        };
         let species = creature.species;
         let species_data = &self.species_table[&species];
         let position = creature.position;
@@ -674,19 +684,22 @@ impl SimState {
                 position,
                 candidates,
                 flight_tpv,
-                max_path_len,
+                opts,
                 footprint,
             )?;
-            candidates.iter().position(|&c| c == nearest_coord)
+            candidates
+                .iter()
+                .position(|&c| c == nearest_coord)
+                .ok_or(PathError::Unreachable)
         } else {
             // Ground creature: interleaved A* on nav graph.
             let graph = self.graph_for_species(species);
-            let start_node = graph.node_at(position)?;
+            let start_node = match graph.node_at(position) {
+                Some(n) => n,
+                None => return Err(PathError::StartNotOnGraph),
+            };
 
             // Convert candidate VoxelCoords to NavNodeIds, tracking the mapping.
-            // Candidates must be at nav node positions (use node_at). Callers
-            // whose candidates aren't on nav nodes (e.g., fruit positions)
-            // should resolve to nav nodes before calling this function.
             let mut target_nodes = Vec::with_capacity(candidates.len());
             let mut index_map = Vec::with_capacity(candidates.len());
             for (i, &coord) in candidates.iter().enumerate() {
@@ -696,7 +709,7 @@ impl SimState {
                 }
             }
             if target_nodes.is_empty() {
-                return None;
+                return Err(PathError::NoTargets);
             }
 
             let agility = self.trait_int(creature_id, TraitKind::Agility, 0);
@@ -713,11 +726,15 @@ impl SimState {
                 start_node,
                 &target_nodes,
                 &nav_speeds,
+                opts,
             )?;
 
             // Map the NavNodeId back to the original candidate index.
-            let target_idx = target_nodes.iter().position(|&n| n == nearest_node)?;
-            Some(index_map[target_idx])
+            let target_idx = target_nodes
+                .iter()
+                .position(|&n| n == nearest_node)
+                .ok_or(PathError::Unreachable)?;
+            Ok(index_map[target_idx])
         }
     }
 

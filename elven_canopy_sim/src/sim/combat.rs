@@ -748,10 +748,14 @@ impl SimState {
             step
         } else {
             // Compute a new path.
-            let path_result = self.find_path(creature_id, task_location_coord, u32::MAX);
+            let path_result = self.find_path(
+                creature_id,
+                task_location_coord,
+                &crate::pathfinding::PathOpts::default(),
+            );
 
             let path_result = match path_result {
-                Some(r) if r.nav_nodes.len() >= 2 => r,
+                Ok(r) if r.nav_nodes.len() >= 2 => r,
                 _ => {
                     // Path failure during engagement — immediately disengage.
                     self.disengage_attack_move(task_id, destination, creature_id, dest_nav_node);
@@ -1115,12 +1119,26 @@ impl SimState {
             step
         } else {
             // Compute a new path.
-            let path_result = self.find_path(creature_id, task_location_coord, u32::MAX);
+            let path_result = self.find_path(
+                creature_id,
+                task_location_coord,
+                &crate::pathfinding::PathOpts::default(),
+            );
 
             let path_result = match path_result {
-                Some(r) if r.nav_nodes.len() >= 2 => r,
+                Ok(r) if r.nav_nodes.len() >= 2 => r,
+                Err(crate::pathfinding::PathError::Unreachable)
+                | Err(crate::pathfinding::PathError::StartNotOnGraph)
+                | Err(crate::pathfinding::PathError::TargetNotOnGraph)
+                | Err(crate::pathfinding::PathError::StartBlockedByFootprint)
+                | Err(crate::pathfinding::PathError::NoTargets) => {
+                    // Truly unreachable — give up immediately.
+                    self.interrupt_task(creature_id, task_id);
+                    self.ground_wander(creature_id, current_node, events);
+                    return;
+                }
                 _ => {
-                    // Pathfinding failed — increment counter, check limit.
+                    // Budget exceeded or path too short — retry with cooldown.
                     if let Some(data) = self.task_attack_target_data(task_id) {
                         let new_failures = data.path_failures + 1;
                         if new_failures >= self.config.attack_path_retry_limit {
@@ -3228,9 +3246,13 @@ impl SimState {
         // handles ground vs flying internally — for ground creatures, only
         // positions that map to nav nodes survive; for flyers, only positions
         // with footprint clearance.
-        let nearest_idx = match self.find_nearest(creature_id, &candidates, u32::MAX) {
-            Some(idx) => idx,
-            None => return false,
+        let nearest_idx = match self.find_nearest(
+            creature_id,
+            &candidates,
+            &crate::pathfinding::PathOpts::default(),
+        ) {
+            Ok(idx) => idx,
+            Err(_) => return false,
         };
         let strike_pos = candidates[nearest_idx];
 
@@ -3240,9 +3262,13 @@ impl SimState {
         }
 
         // Phase 3: Path to the strike position and take one step.
-        let path = match self.find_path(creature_id, strike_pos, u32::MAX) {
-            Some(p) => p,
-            None => return false,
+        let path = match self.find_path(
+            creature_id,
+            strike_pos,
+            &crate::pathfinding::PathOpts::default(),
+        ) {
+            Ok(p) => p,
+            Err(_) => return false,
         };
 
         let is_flyer = self.species_table[&species]

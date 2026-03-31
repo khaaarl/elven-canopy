@@ -47,7 +47,13 @@ impl SimState {
 
         let nav_positions: Vec<VoxelCoord> =
             fruit_candidates.iter().map(|&(_, _, np)| np).collect();
-        let idx = self.find_nearest(creature_id, &nav_positions, u32::MAX)?;
+        let idx = self
+            .find_nearest(
+                creature_id,
+                &nav_positions,
+                &crate::pathfinding::PathOpts::default(),
+            )
+            .ok()?;
         let (fruit_pos, nav_node, _) = fruit_candidates[idx];
 
         Some((fruit_pos, nav_node))
@@ -572,7 +578,13 @@ impl SimState {
         }
 
         let coords: Vec<VoxelCoord> = bed_candidates.iter().map(|&(c, _)| c).collect();
-        let idx = self.find_nearest(creature_id, &coords, u32::MAX)?;
+        let idx = self
+            .find_nearest(
+                creature_id,
+                &coords,
+                &crate::pathfinding::PathOpts::default(),
+            )
+            .ok()?;
         let (bed_pos, structure_id) = bed_candidates[idx];
         // Beds are placed on nav nodes, so node_at is correct here.
         let nav_node = graph.node_at(bed_pos)?;
@@ -651,7 +663,13 @@ impl SimState {
         }
 
         let coords: Vec<VoxelCoord> = table_candidates.iter().map(|&(c, _)| c).collect();
-        let idx = self.find_nearest(creature_id, &coords, u32::MAX)?;
+        let idx = self
+            .find_nearest(
+                creature_id,
+                &coords,
+                &crate::pathfinding::PathOpts::default(),
+            )
+            .ok()?;
         let (table_coord, structure_id) = table_candidates[idx];
         // Tables are placed on nav nodes, so node_at is correct here.
         let nav_node = graph.node_at(table_coord)?;

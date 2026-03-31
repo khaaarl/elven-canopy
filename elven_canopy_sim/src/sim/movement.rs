@@ -368,10 +368,14 @@ impl SimState {
             step
         } else {
             // Compute path to task location.
-            let path_result = self.find_path(creature_id, target_coord, u32::MAX);
+            let path_result = self.find_path(
+                creature_id,
+                target_coord,
+                &crate::pathfinding::PathOpts::default(),
+            );
 
             let path_result = match path_result {
-                Some(r) if r.nav_nodes.len() >= 2 => r,
+                Ok(r) if r.nav_nodes.len() >= 2 => r,
                 _ => {
                     // Can't reach task — unassign and wander.
                     self.unassign_creature_from_task(creature_id);
@@ -675,9 +679,13 @@ impl SimState {
             p
         } else {
             // Compute a new flight path.
-            let path_result = self.find_path(creature_id, target_pos, u32::MAX);
+            let path_result = self.find_path(
+                creature_id,
+                target_pos,
+                &crate::pathfinding::PathOpts::default(),
+            );
             let path_result = match path_result {
-                Some(r) if r.positions.len() >= 2 => r,
+                Ok(r) if r.positions.len() >= 2 => r,
                 _ => return false, // no path
             };
 

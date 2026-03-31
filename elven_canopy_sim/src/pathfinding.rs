@@ -15,10 +15,13 @@
 // For the special case of extremely numerous nearby candidates (e.g., grass),
 // callers use bespoke inline Dijkstra instead (see `grazing.rs`).
 //
-// All path-finding functions take a `max_path_len` parameter — the maximum
-// number of edges (hops) the resulting path may have. The search discards any
-// node whose hop count from the start exceeds this limit. This is a path-length
-// cutoff, not a work budget. Pass `u32::MAX` when no limit is desired.
+// All path-finding functions take a `&PathOpts` parameter that bundles two
+// independent limits: a **path length limit** (max edges/hops in the result)
+// and a **work budget** (max heap pops / node expansions, bounding CPU time).
+// Both can be `Auto` (callee picks a reasonable default based on heuristic
+// distance) or `Exact(n)`. Functions return `Result<T, PathError>` with
+// structured error variants so callers can distinguish "too far" from "too
+// expensive" from "truly unreachable."
 //
 // See also: `nav.rs` for the `NavGraph` being searched, `world.rs` for the
 // `VoxelWorld` used by flight pathfinding, `sim/movement.rs` which consumes
@@ -39,12 +42,187 @@ use std::collections::BinaryHeap;
 
 use crate::nav::DIST_SCALE;
 
+// ---------------------------------------------------------------------------
+// Path options and error types
+// ---------------------------------------------------------------------------
+
+/// Structured error returned by all pathfinding functions.
+///
+/// Replaces the old `Option`-based returns so callers can distinguish
+/// "too far" from "too expensive to compute" from "truly unreachable."
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PathError {
+    /// A path may exist but exceeds the hop-count budget.
+    ExceededPathLen { limit: u32 },
+    /// Search terminated after expanding too many nodes (CPU protection).
+    ExceededWorkBudget { limit: u32, expanded: u32 },
+    /// No path exists (disconnected graph region, fully walled off, etc.).
+    Unreachable,
+    /// Creature's position doesn't map to a nav node (ground creatures) or
+    /// is in a non-flyable voxel (flyers).
+    StartNotOnGraph,
+    /// Start position fails footprint clearance check (flyers).
+    StartBlockedByFootprint,
+    /// Goal position doesn't map to a nav node or is non-flyable.
+    TargetNotOnGraph,
+    /// Candidate list was empty after filtering (`find_nearest` only).
+    NoTargets,
+}
+
+impl std::fmt::Display for PathError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ExceededPathLen { limit } => {
+                write!(f, "path length exceeds limit ({limit} hops)")
+            }
+            Self::ExceededWorkBudget { limit, expanded } => {
+                write!(
+                    f,
+                    "work budget exhausted ({expanded}/{limit} nodes expanded)"
+                )
+            }
+            Self::Unreachable => write!(f, "target unreachable"),
+            Self::StartNotOnGraph => write!(f, "start position not on nav graph"),
+            Self::StartBlockedByFootprint => {
+                write!(f, "start position blocked by footprint")
+            }
+            Self::TargetNotOnGraph => write!(f, "target position not on nav graph"),
+            Self::NoTargets => write!(f, "no valid targets"),
+        }
+    }
+}
+
+/// How to cap the number of edges (hops) in a path result.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PathLenLimit {
+    /// Callee picks a reasonable limit based on heuristic distance to the
+    /// target(s): `manhattan(start, furthest_goal) * 3 + 100`.
+    Auto,
+    /// Exact hop-count cap.
+    Exact(u32),
+}
+
+/// How to cap the total number of node expansions (heap pops) in a search.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WorkBudget {
+    /// Callee picks a reasonable budget derived from the resolved path
+    /// length limit and graph type. Nav graph: `path_len * 30`. Flight:
+    /// `path_len * 100`. Nearest-among-N: multiply by `1 + isqrt(N)`.
+    Auto,
+    /// Exact node-expansion cap.
+    Exact(u32),
+}
+
+/// Bundled search constraints for all pathfinding functions.
+///
+/// Both fields default to `Auto`, which lets the callee pick reasonable
+/// bounds based on heuristic distance and graph type. Use the builder
+/// methods `with_path_len()` / `with_work()` to override individual limits.
+///
+/// ```ignore
+/// PathOpts::default()                    // both auto
+/// PathOpts::default().with_path_len(500) // exact path len, auto work
+/// PathOpts::default().with_work(10000)   // auto path len, exact work
+/// ```
+#[derive(Clone, Debug)]
+pub struct PathOpts {
+    pub path_len: PathLenLimit,
+    pub work: WorkBudget,
+}
+
+impl Default for PathOpts {
+    fn default() -> Self {
+        Self {
+            path_len: PathLenLimit::Auto,
+            work: WorkBudget::Auto,
+        }
+    }
+}
+
+impl PathOpts {
+    /// Set an exact path-length limit (max hops in the result).
+    pub fn with_path_len(mut self, limit: u32) -> Self {
+        self.path_len = PathLenLimit::Exact(limit);
+        self
+    }
+
+    /// Set an exact work budget (max node expansions / heap pops).
+    pub fn with_work(mut self, budget: u32) -> Self {
+        self.work = WorkBudget::Exact(budget);
+        self
+    }
+}
+
+/// Resolved concrete limits for a single-target search.
+struct ResolvedLimits {
+    path_len: u32,
+    work: u32,
+}
+
+/// Integer square root (floor). Used for work budget scaling with candidate
+/// count in nearest-among-N searches.
+///
+/// Pure integer implementation (no floating-point) to comply with the sim
+/// crate's determinism constraint. Uses bit-shifting to find the initial
+/// estimate, then refines with integer Newton's method.
+fn isqrt(n: u32) -> u32 {
+    if n == 0 {
+        return 0;
+    }
+    // Initial estimate via bit-shifting: 2^(ceil(bits/2)).
+    let shift = (32 - n.leading_zeros()).div_ceil(2);
+    let mut x = 1u32 << shift;
+    // Integer Newton's method: x = (x + n/x) / 2.
+    loop {
+        let next = (x + n / x) / 2;
+        if next >= x {
+            break;
+        }
+        x = next;
+    }
+    // x is now the floor of sqrt(n). Verify using u64 to avoid overflow.
+    debug_assert!((x as u64) * (x as u64) <= n as u64);
+    debug_assert!(((x + 1) as u64) * ((x + 1) as u64) > n as u64);
+    x
+}
+
+/// Resolve `PathOpts` into concrete limits for a single-target search.
+///
+/// - `manhattan_to_target`: Manhattan distance from start to goal (or
+///   furthest candidate for nearest-among-N).
+/// - `is_flight`: true for voxel-grid flight A*, false for nav-graph A*.
+/// - `n_candidates`: number of candidates (1 for single-target searches).
+fn resolve_limits(
+    opts: &PathOpts,
+    manhattan_to_target: u32,
+    is_flight: bool,
+    n_candidates: u32,
+) -> ResolvedLimits {
+    let path_len = match opts.path_len {
+        PathLenLimit::Exact(n) => n,
+        PathLenLimit::Auto => manhattan_to_target.saturating_mul(3).saturating_add(100),
+    };
+    let base_work = match opts.work {
+        WorkBudget::Exact(n) => n,
+        WorkBudget::Auto => {
+            let multiplier: u32 = if is_flight { 100 } else { 30 };
+            path_len.saturating_mul(multiplier)
+        }
+    };
+    let work = if n_candidates > 1 && matches!(opts.work, WorkBudget::Auto) {
+        base_work.saturating_mul(1 + isqrt(n_candidates))
+    } else {
+        base_work
+    };
+    ResolvedLimits { path_len, work }
+}
+
 /// The result of a successful pathfinding search (ground or flight).
 ///
 /// `positions` is always populated with the voxel coordinates from start to
 /// goal. For nav-graph paths, `nav_nodes` and `nav_edges` are also populated.
 /// For flight paths, those fields are empty.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PathResult {
     /// Voxel positions from start to goal (inclusive).
     pub positions: Vec<VoxelCoord>,
@@ -148,32 +326,36 @@ impl Ord for OpenEntry {
 /// Edge filtering is controlled by `speeds.allowed_edges` (None = all edges
 /// allowed).
 ///
-/// `max_path_len` caps the number of edges (hops) in the result path. Any
-/// node whose hop count from `start` exceeds this limit is skipped. Pass
-/// `u32::MAX` for no limit.
+/// Search is bounded by `opts`: path length (max hops) and work budget (max
+/// node expansions). Both default to `Auto` which picks reasonable limits
+/// based on heuristic distance.
 ///
-/// Returns `None` if no path exists, the graph is empty, or all paths exceed
-/// `max_path_len`.
+/// Returns `Err(PathError)` with a structured error if the search fails.
 pub fn astar_navgraph(
     graph: &NavGraph,
     start: NavNodeId,
     goal: NavNodeId,
     speeds: &NavGraphSpeeds,
-    max_path_len: u32,
-) -> Option<PathResult> {
+    opts: &PathOpts,
+) -> Result<PathResult, PathError> {
     let n = graph.node_slot_count();
     if n == 0 {
-        return None;
+        return Err(PathError::Unreachable);
     }
     if start == goal {
         let pos = graph.node(start).position;
-        return Some(PathResult {
+        return Ok(PathResult {
             positions: vec![pos],
             nav_nodes: vec![start],
             nav_edges: Vec::new(),
             total_cost: 0,
         });
     }
+
+    let start_pos = graph.node(start).position;
+    let goal_pos = graph.node(goal).position;
+    let manhattan = start_pos.manhattan_distance(goal_pos);
+    let limits = resolve_limits(opts, manhattan, false, 1);
 
     let walk_tpv_i = speeds.walk_tpv as i64;
 
@@ -196,12 +378,17 @@ pub fn astar_navgraph(
         position: graph.node(start).position,
     });
 
+    let mut expanded: u32 = 0;
+    // Track whether we hit the path length limit (to distinguish from
+    // unreachable when the open set empties after depth-capped nodes).
+    let mut hit_path_len_limit = false;
+
     while let Some(current) = open.pop() {
         let current_id = current.node;
         let ci = current_id.0 as usize;
 
         if current_id == goal {
-            return Some(reconstruct_navgraph_path(
+            return Ok(reconstruct_navgraph_path(
                 graph,
                 &came_from,
                 start,
@@ -215,11 +402,20 @@ pub fn astar_navgraph(
         }
         closed[ci] = true;
 
+        expanded += 1;
+        if expanded > limits.work {
+            return Err(PathError::ExceededWorkBudget {
+                limit: limits.work,
+                expanded,
+            });
+        }
+
         let current_g = g_score[ci];
         let current_depth = depth[ci];
 
         // If we're already at max depth, don't expand further.
-        if current_depth >= max_path_len {
+        if current_depth >= limits.path_len {
+            hit_path_len_limit = true;
             continue;
         }
 
@@ -270,7 +466,13 @@ pub fn astar_navgraph(
         }
     }
 
-    None // No path found.
+    if hit_path_len_limit {
+        Err(PathError::ExceededPathLen {
+            limit: limits.path_len,
+        })
+    } else {
+        Err(PathError::Unreachable)
+    }
 }
 
 /// Find the nearest reachable target from `start` using Dijkstra's algorithm.
@@ -400,8 +602,9 @@ pub fn nearest_navgraph(
     start: NavNodeId,
     targets: &[NavNodeId],
     speeds: &NavGraphSpeeds,
-) -> Option<NavNodeId> {
-    nearest_astar_navgraph(graph, start, targets, speeds, u32::MAX)
+    opts: &PathOpts,
+) -> Result<NavNodeId, PathError> {
+    nearest_astar_navgraph(graph, start, targets, speeds, opts)
 }
 
 // ---------------------------------------------------------------------------
@@ -449,16 +652,19 @@ pub fn nearest_astar_navgraph(
     start: NavNodeId,
     targets: &[NavNodeId],
     speeds: &NavGraphSpeeds,
-    max_path_len: u32,
-) -> Option<NavNodeId> {
+    opts: &PathOpts,
+) -> Result<NavNodeId, PathError> {
     let n = graph.node_slot_count();
-    if n == 0 || targets.is_empty() {
-        return None;
+    if n == 0 {
+        return Err(PathError::Unreachable);
+    }
+    if targets.is_empty() {
+        return Err(PathError::NoTargets);
     }
 
     // Quick check: is start already a target?
     if targets.contains(&start) {
-        return Some(start);
+        return Ok(start);
     }
 
     let walk_tpv_i = speeds.walk_tpv as i64;
@@ -472,9 +678,18 @@ pub fn nearest_astar_navgraph(
         })
         .collect();
     if candidate_indices.is_empty() {
-        return None;
+        return Err(PathError::NoTargets);
     }
     candidate_indices.sort_by_key(|&i| navgraph_heuristic(graph, start, targets[i], walk_tpv_i));
+
+    // Resolve limits using manhattan distance to the furthest candidate.
+    let start_pos = graph.node(start).position;
+    let max_manhattan = candidate_indices
+        .iter()
+        .map(|&i| start_pos.manhattan_distance(graph.node(targets[i]).position))
+        .max()
+        .unwrap_or(0);
+    let limits = resolve_limits(opts, max_manhattan, false, candidate_indices.len() as u32);
 
     // Shared state across all candidate searches.
     let mut g_score = vec![i64::MAX; n];
@@ -502,6 +717,8 @@ pub fn nearest_astar_navgraph(
     // Track which candidates are still active (not pruned/exhausted).
     let mut active: Vec<bool> = vec![true; candidate_indices.len()];
     let mut best_cost: Option<(NavNodeId, i64)> = None;
+    let mut expanded: u32 = 0;
+    let mut hit_path_len_limit = false;
 
     loop {
         // Find the active candidate with the globally smallest top-of-heap f.
@@ -578,10 +795,19 @@ pub fn nearest_astar_navgraph(
         }
         closed[idx] = true;
 
+        expanded += 1;
+        if expanded > limits.work {
+            return Err(PathError::ExceededWorkBudget {
+                limit: limits.work,
+                expanded,
+            });
+        }
+
         let current_g = g_score[idx];
         let current_depth = depth[idx];
 
-        if current_depth >= max_path_len {
+        if current_depth >= limits.path_len {
+            hit_path_len_limit = true;
             continue;
         }
 
@@ -652,7 +878,13 @@ pub fn nearest_astar_navgraph(
         }
     }
 
-    best_cost.map(|(node, _)| node)
+    match best_cost {
+        Some((node, _)) => Ok(node),
+        None if hit_path_len_limit => Err(PathError::ExceededPathLen {
+            limit: limits.path_len,
+        }),
+        None => Err(PathError::Unreachable),
+    }
 }
 
 /// Find the nearest reachable candidate from `start` using interleaved
@@ -662,28 +894,28 @@ pub fn nearest_astar_navgraph(
 /// with footprint clearance checks. Per-candidate open sets share a
 /// single g_score/closed map.
 ///
-/// `max_path_len` is per-candidate.
+/// Search bounded by `opts` (path length and work budget).
 ///
-/// Returns `None` if no candidate is reachable.
+/// Returns `Err(PathError)` if no candidate is reachable.
 pub fn nearest_astar_fly(
     world: &VoxelWorld,
     start: VoxelCoord,
     candidates: &[VoxelCoord],
     flight_tpv: u64,
-    max_path_len: u32,
+    opts: &PathOpts,
     footprint: [u8; 3],
-) -> Option<VoxelCoord> {
+) -> Result<VoxelCoord, PathError> {
     if candidates.is_empty() {
-        return None;
+        return Err(PathError::NoTargets);
     }
 
     // Quick check: is start already a candidate?
     if candidates.contains(&start) {
-        return Some(start);
+        return Ok(start);
     }
 
     if !footprint_flyable(world, start, footprint) {
-        return None;
+        return Err(PathError::StartBlockedByFootprint);
     }
 
     // Pre-filter: only candidates with flyable start positions.
@@ -691,9 +923,17 @@ pub fn nearest_astar_fly(
         .filter(|&i| footprint_flyable(world, candidates[i], footprint))
         .collect();
     if candidate_indices.is_empty() {
-        return None;
+        return Err(PathError::NoTargets);
     }
     candidate_indices.sort_by_key(|&i| octile_heuristic_3d(start, candidates[i], flight_tpv));
+
+    // Resolve limits using manhattan distance to the furthest candidate.
+    let max_manhattan = candidate_indices
+        .iter()
+        .map(|&i| start.manhattan_distance(candidates[i]))
+        .max()
+        .unwrap_or(0);
+    let limits = resolve_limits(opts, max_manhattan, true, candidate_indices.len() as u32);
 
     // Shared state: BTreeMap keyed by VoxelCoord for determinism.
     let mut g_score: BTreeMap<VoxelCoord, i64> = BTreeMap::new();
@@ -720,6 +960,8 @@ pub fn nearest_astar_fly(
 
     let mut active: Vec<bool> = vec![true; candidate_indices.len()];
     let mut best_cost: Option<(VoxelCoord, i64)> = None;
+    let mut expanded: u32 = 0;
+    let mut hit_path_len_limit = false;
 
     loop {
         // Find active candidate with globally smallest top-of-heap f.
@@ -789,13 +1031,22 @@ pub fn nearest_astar_fly(
             continue;
         }
 
+        expanded += 1;
+        if expanded > limits.work {
+            return Err(PathError::ExceededWorkBudget {
+                limit: limits.work,
+                expanded,
+            });
+        }
+
         let current_g = match g_score.get(&pos) {
             Some(&g) => g,
             None => continue,
         };
 
         let current_depth = depth.get(&pos).copied().unwrap_or(0);
-        if current_depth >= max_path_len {
+        if current_depth >= limits.path_len {
+            hit_path_len_limit = true;
             continue;
         }
 
@@ -837,7 +1088,13 @@ pub fn nearest_astar_fly(
         }
     }
 
-    best_cost.map(|(coord, _)| coord)
+    match best_cost {
+        Some((coord, _)) => Ok(coord),
+        None if hit_path_len_limit => Err(PathError::ExceededPathLen {
+            limit: limits.path_len,
+        }),
+        None => Err(PathError::Unreachable),
+    }
 }
 
 /// Admissible heuristic: Manhattan distance × walk_tpv × HEURISTIC_SCALE.
@@ -1021,31 +1278,34 @@ pub fn footprint_flyable(world: &VoxelWorld, anchor: VoxelCoord, footprint: [u8;
 /// bounding box. For 1×1×1 creatures this is `[1,1,1]`; for 2×2×2 it's
 /// `[2,2,2]`. All voxels in the footprint must be flyable at every position.
 ///
-/// `max_path_len` caps the number of voxel steps in the result path. Any
-/// node whose hop count from `start` exceeds this limit is skipped. Pass
-/// `u32::MAX` for no limit.
+/// Search bounded by `opts` (path length and work budget).
 ///
-/// Returns `None` if no path exists (start/goal blocked, walled off, or all
-/// paths exceed `max_path_len`).
+/// Returns `Err(PathError)` with a structured error if the search fails.
 pub fn astar_fly(
     world: &VoxelWorld,
     start: VoxelCoord,
     goal: VoxelCoord,
     flight_tpv: u64,
-    max_path_len: u32,
+    opts: &PathOpts,
     footprint: [u8; 3],
-) -> Option<PathResult> {
-    if !footprint_flyable(world, start, footprint) || !footprint_flyable(world, goal, footprint) {
-        return None;
+) -> Result<PathResult, PathError> {
+    if !footprint_flyable(world, start, footprint) {
+        return Err(PathError::StartBlockedByFootprint);
+    }
+    if !footprint_flyable(world, goal, footprint) {
+        return Err(PathError::TargetNotOnGraph);
     }
     if start == goal {
-        return Some(PathResult {
+        return Ok(PathResult {
             positions: vec![start],
             nav_nodes: Vec::new(),
             nav_edges: Vec::new(),
             total_cost: 0,
         });
     }
+
+    let manhattan = start.manhattan_distance(goal);
+    let limits = resolve_limits(opts, manhattan, true, 1);
 
     // g_score and came_from stored in a BTreeMap keyed by VoxelCoord
     // (deterministic iteration order, no hash-order dependence).
@@ -1061,6 +1321,9 @@ pub fn astar_fly(
         f_score: octile_heuristic_3d(start, goal, flight_tpv),
     });
 
+    let mut expanded: u32 = 0;
+    let mut hit_path_len_limit = false;
+
     while let Some(FlightOpenEntry { pos, f_score }) = open.pop() {
         if pos == goal {
             // Reconstruct path.
@@ -1072,7 +1335,7 @@ pub fn astar_fly(
             }
             path.reverse();
             let total_cost = g_score[&goal];
-            return Some(PathResult {
+            return Ok(PathResult {
                 positions: path,
                 nav_nodes: Vec::new(),
                 nav_edges: Vec::new(),
@@ -1092,10 +1355,19 @@ pub fn astar_fly(
             continue;
         }
 
+        expanded += 1;
+        if expanded > limits.work {
+            return Err(PathError::ExceededWorkBudget {
+                limit: limits.work,
+                expanded,
+            });
+        }
+
         let current_depth = depth.get(&pos).copied().unwrap_or(0);
 
         // If we're already at max depth, don't expand further.
-        if current_depth >= max_path_len {
+        if current_depth >= limits.path_len {
+            hit_path_len_limit = true;
             continue;
         }
 
@@ -1125,7 +1397,13 @@ pub fn astar_fly(
         }
     }
 
-    None // no path found
+    if hit_path_len_limit {
+        Err(PathError::ExceededPathLen {
+            limit: limits.path_len,
+        })
+    } else {
+        Err(PathError::Unreachable)
+    }
 }
 
 /// Find the nearest reachable candidate from `start` by flight cost.
@@ -1143,17 +1421,10 @@ pub fn nearest_fly(
     start: VoxelCoord,
     candidates: &[VoxelCoord],
     flight_tpv: u64,
-    max_path_len: u32,
+    opts: &PathOpts,
     footprint: [u8; 3],
-) -> Option<VoxelCoord> {
-    nearest_astar_fly(
-        world,
-        start,
-        candidates,
-        flight_tpv,
-        max_path_len,
-        footprint,
-    )
+) -> Result<VoxelCoord, PathError> {
+    nearest_astar_fly(world, start, candidates, flight_tpv, opts, footprint)
 }
 
 #[cfg(test)]
@@ -1194,6 +1465,88 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // PathOpts / resolve_limits tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn path_opts_default_is_auto() {
+        let opts = PathOpts::default();
+        assert_eq!(opts.path_len, PathLenLimit::Auto);
+        assert_eq!(opts.work, WorkBudget::Auto);
+    }
+
+    #[test]
+    fn path_opts_builder_sets_exact() {
+        let opts = PathOpts::default().with_path_len(500).with_work(10000);
+        assert_eq!(opts.path_len, PathLenLimit::Exact(500));
+        assert_eq!(opts.work, WorkBudget::Exact(10000));
+    }
+
+    #[test]
+    fn resolve_limits_exact_passthrough() {
+        let opts = PathOpts::default().with_path_len(42).with_work(999);
+        let r = resolve_limits(&opts, 1000, false, 1);
+        assert_eq!(r.path_len, 42);
+        assert_eq!(r.work, 999);
+    }
+
+    #[test]
+    fn resolve_limits_auto_single_target_navgraph() {
+        let opts = PathOpts::default();
+        // manhattan=10 → path_len = 10*3 + 100 = 130, work = 130*30 = 3900
+        let r = resolve_limits(&opts, 10, false, 1);
+        assert_eq!(r.path_len, 130);
+        assert_eq!(r.work, 3900);
+    }
+
+    #[test]
+    fn resolve_limits_auto_single_target_flight() {
+        let opts = PathOpts::default();
+        // manhattan=10 → path_len = 130, work = 130*100 = 13000
+        let r = resolve_limits(&opts, 10, true, 1);
+        assert_eq!(r.path_len, 130);
+        assert_eq!(r.work, 13000);
+    }
+
+    #[test]
+    fn resolve_limits_auto_nearest_scales_with_candidates() {
+        let opts = PathOpts::default();
+        // manhattan=10, n=4 → path_len=130, base_work=3900, isqrt(4)=2 → work=3900*3=11700
+        let r = resolve_limits(&opts, 10, false, 4);
+        assert_eq!(r.path_len, 130);
+        assert_eq!(r.work, 11700);
+
+        // n=16 → isqrt(16)=4 → work=3900*5=19500
+        let r2 = resolve_limits(&opts, 10, false, 16);
+        assert_eq!(r2.work, 19500);
+
+        // n=1 → no scaling (single target)
+        let r3 = resolve_limits(&opts, 10, false, 1);
+        assert_eq!(r3.work, 3900);
+    }
+
+    #[test]
+    fn resolve_limits_exact_work_not_scaled_by_candidates() {
+        // When work is Exact, candidate count should NOT scale it.
+        let opts = PathOpts::default().with_work(1000);
+        let r = resolve_limits(&opts, 10, false, 100);
+        assert_eq!(r.work, 1000);
+    }
+
+    #[test]
+    fn isqrt_correctness() {
+        assert_eq!(isqrt(0), 0);
+        assert_eq!(isqrt(1), 1);
+        assert_eq!(isqrt(4), 2);
+        assert_eq!(isqrt(8), 2);
+        assert_eq!(isqrt(9), 3);
+        assert_eq!(isqrt(15), 3);
+        assert_eq!(isqrt(16), 4);
+        assert_eq!(isqrt(100), 10);
+        assert_eq!(isqrt(u32::MAX), 65535);
+    }
+
+    // -----------------------------------------------------------------------
     // astar_navgraph tests
     // -----------------------------------------------------------------------
 
@@ -1201,8 +1554,8 @@ mod tests {
     fn astar_navgraph_trivial_path() {
         let mut graph = NavGraph::new();
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
-        let result = astar_navgraph(&graph, a, a, &test_speeds(), u32::MAX);
-        assert!(result.is_some());
+        let result = astar_navgraph(&graph, a, a, &test_speeds(), &PathOpts::default());
+        assert!(result.is_ok());
         let path = result.unwrap();
         assert_eq!(path.nav_nodes, vec![a]);
         assert_eq!(path.positions, vec![VoxelCoord::new(0, 0, 0)]);
@@ -1219,8 +1572,8 @@ mod tests {
         graph.add_edge(a, b, EdgeType::Ground, dist(5));
         graph.add_edge(b, c, EdgeType::Ground, dist(5));
 
-        let result = astar_navgraph(&graph, a, c, &test_speeds(), u32::MAX);
-        assert!(result.is_some());
+        let result = astar_navgraph(&graph, a, c, &test_speeds(), &PathOpts::default());
+        assert!(result.is_ok());
         let path = result.unwrap();
         assert_eq!(path.nav_nodes, vec![a, b, c]);
         assert_eq!(path.nav_edges.len(), 2);
@@ -1246,7 +1599,7 @@ mod tests {
         graph.add_edge(a, b, EdgeType::Ground, dist(3));
         graph.add_edge(b, c, EdgeType::Ground, dist(3));
 
-        let result = astar_navgraph(&graph, a, c, &test_speeds(), u32::MAX).unwrap();
+        let result = astar_navgraph(&graph, a, c, &test_speeds(), &PathOpts::default()).unwrap();
         assert_eq!(result.nav_nodes, vec![a, b, c]);
         assert_eq!(result.total_cost, dist(6) as i64);
     }
@@ -1256,8 +1609,8 @@ mod tests {
         let mut graph = NavGraph::new();
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
         let b = graph.add_node(VoxelCoord::new(10, 0, 0), S);
-        let result = astar_navgraph(&graph, a, b, &test_speeds(), u32::MAX);
-        assert!(result.is_none());
+        let result = astar_navgraph(&graph, a, b, &test_speeds(), &PathOpts::default());
+        assert_eq!(result, Err(PathError::Unreachable));
     }
 
     #[test]
@@ -1275,9 +1628,9 @@ mod tests {
             a,
             c,
             &test_speeds_filtered(&[EdgeType::Ground]),
-            u32::MAX,
+            &PathOpts::default(),
         );
-        assert!(result.is_none());
+        assert!(result.is_err());
 
         // Allow both — should succeed.
         let result = astar_navgraph(
@@ -1285,9 +1638,9 @@ mod tests {
             a,
             c,
             &test_speeds_filtered(&[EdgeType::Ground, EdgeType::TrunkClimb]),
-            u32::MAX,
+            &PathOpts::default(),
         );
-        assert!(result.is_some());
+        assert!(result.is_ok());
         assert_eq!(result.unwrap().nav_nodes, vec![a, b, c]);
     }
 
@@ -1300,9 +1653,9 @@ mod tests {
             a,
             a,
             &test_speeds_filtered(&[EdgeType::Ground]),
-            u32::MAX,
+            &PathOpts::default(),
         );
-        assert!(result.is_some());
+        assert!(result.is_ok());
         assert_eq!(result.unwrap().total_cost, 0);
     }
 
@@ -1325,8 +1678,8 @@ mod tests {
             rope_ladder_tpv: None,
             allowed_edges: None,
         };
-        let r1 = astar_navgraph(&graph, a, c, &speeds, u32::MAX).unwrap();
-        let r2 = astar_navgraph(&graph, a, c, &speeds, u32::MAX).unwrap();
+        let r1 = astar_navgraph(&graph, a, c, &speeds, &PathOpts::default()).unwrap();
+        let r2 = astar_navgraph(&graph, a, c, &speeds, &PathOpts::default()).unwrap();
         assert_eq!(r1.nav_nodes, r2.nav_nodes);
         assert_eq!(r1.total_cost, r2.total_cost);
     }
@@ -1371,8 +1724,8 @@ mod tests {
 
         assert_ne!(g1_a, g2_a, "IDs should differ between graphs");
 
-        let r1 = astar_navgraph(&g1, g1_a, g1_d, &test_speeds(), u32::MAX).unwrap();
-        let r2 = astar_navgraph(&g2, g2_a, g2_d, &test_speeds(), u32::MAX).unwrap();
+        let r1 = astar_navgraph(&g1, g1_a, g1_d, &test_speeds(), &PathOpts::default()).unwrap();
+        let r2 = astar_navgraph(&g2, g2_a, g2_d, &test_speeds(), &PathOpts::default()).unwrap();
 
         assert_eq!(
             r1.positions, r2.positions,
@@ -1391,22 +1744,46 @@ mod tests {
         graph.add_edge(b, c, EdgeType::Ground, dist(1));
         graph.add_edge(c, d, EdgeType::Ground, dist(1));
 
+        let opts = |pl| PathOpts::default().with_path_len(pl).with_work(u32::MAX);
+
         // Path a→d is 3 edges. max_path_len=3 should succeed.
-        let result = astar_navgraph(&graph, a, d, &test_speeds(), 3);
-        assert!(result.is_some());
+        let result = astar_navgraph(&graph, a, d, &test_speeds(), &opts(3));
+        assert!(result.is_ok());
         assert_eq!(result.unwrap().nav_nodes, vec![a, b, c, d]);
 
         // max_path_len=2 should fail (path requires 3 edges).
-        let result = astar_navgraph(&graph, a, d, &test_speeds(), 2);
-        assert!(result.is_none());
+        let result = astar_navgraph(&graph, a, d, &test_speeds(), &opts(2));
+        assert_eq!(result, Err(PathError::ExceededPathLen { limit: 2 }));
 
         // max_path_len=0 should fail (can't take any edges).
-        let result = astar_navgraph(&graph, a, b, &test_speeds(), 0);
-        assert!(result.is_none());
+        let result = astar_navgraph(&graph, a, b, &test_speeds(), &opts(0));
+        assert_eq!(result, Err(PathError::ExceededPathLen { limit: 0 }));
 
         // max_path_len=0 for same start/goal should succeed (0 edges needed).
-        let result = astar_navgraph(&graph, a, a, &test_speeds(), 0);
-        assert!(result.is_some());
+        let result = astar_navgraph(&graph, a, a, &test_speeds(), &opts(0));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn astar_navgraph_work_budget_exceeded() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let b = graph.add_node(VoxelCoord::new(1, 0, 0), S);
+        let c = graph.add_node(VoxelCoord::new(2, 0, 0), S);
+        let d = graph.add_node(VoxelCoord::new(3, 0, 0), S);
+        graph.add_edge(a, b, EdgeType::Ground, dist(1));
+        graph.add_edge(b, c, EdgeType::Ground, dist(1));
+        graph.add_edge(c, d, EdgeType::Ground, dist(1));
+
+        // Work budget of 1 — can only expand start node, won't reach d.
+        let opts = PathOpts::default().with_path_len(u32::MAX).with_work(1);
+        let result = astar_navgraph(&graph, a, d, &test_speeds(), &opts);
+        assert!(matches!(result, Err(PathError::ExceededWorkBudget { .. })));
+
+        // Work budget of 100 — plenty for a 4-node graph.
+        let opts = PathOpts::default().with_path_len(u32::MAX).with_work(100);
+        let result = astar_navgraph(&graph, a, d, &test_speeds(), &opts);
+        assert!(result.is_ok());
     }
 
     // -----------------------------------------------------------------------
@@ -1505,7 +1882,7 @@ mod tests {
     fn fly_same_start_and_goal() {
         let world = empty_world(16, 16, 16);
         let pos = VoxelCoord::new(5, 5, 5);
-        let result = astar_fly(&world, pos, pos, 250, u32::MAX, FP1).unwrap();
+        let result = astar_fly(&world, pos, pos, 250, &PathOpts::default(), FP1).unwrap();
         assert_eq!(result.positions, vec![pos]);
         assert!(result.nav_nodes.is_empty());
         assert!(result.nav_edges.is_empty());
@@ -1517,7 +1894,7 @@ mod tests {
         let world = empty_world(16, 16, 16);
         let start = VoxelCoord::new(2, 5, 5);
         let goal = VoxelCoord::new(7, 5, 5);
-        let result = astar_fly(&world, start, goal, 250, u32::MAX, FP1).unwrap();
+        let result = astar_fly(&world, start, goal, 250, &PathOpts::default(), FP1).unwrap();
         assert_eq!(result.positions.len(), 6);
         assert_eq!(result.positions[0], start);
         assert_eq!(result.positions[5], goal);
@@ -1529,7 +1906,7 @@ mod tests {
         let world = empty_world(16, 16, 16);
         let start = VoxelCoord::new(2, 2, 2);
         let goal = VoxelCoord::new(5, 5, 5);
-        let result = astar_fly(&world, start, goal, 250, u32::MAX, FP1).unwrap();
+        let result = astar_fly(&world, start, goal, 250, &PathOpts::default(), FP1).unwrap();
         assert_eq!(result.positions.len(), 4);
         assert_eq!(result.total_cost, 3 * 1773 * 250);
     }
@@ -1544,7 +1921,7 @@ mod tests {
         }
         let start = VoxelCoord::new(2, 4, 4);
         let goal = VoxelCoord::new(6, 4, 4);
-        assert!(astar_fly(&world, start, goal, 250, u32::MAX, FP1).is_none());
+        assert!(astar_fly(&world, start, goal, 250, &PathOpts::default(), FP1).is_err());
     }
 
     #[test]
@@ -1557,7 +1934,7 @@ mod tests {
         }
         let start = VoxelCoord::new(3, 5, 5);
         let goal = VoxelCoord::new(7, 5, 5);
-        let result = astar_fly(&world, start, goal, 250, u32::MAX, FP1).unwrap();
+        let result = astar_fly(&world, start, goal, 250, &PathOpts::default(), FP1).unwrap();
         assert_eq!(*result.positions.first().unwrap(), start);
         assert_eq!(*result.positions.last().unwrap(), goal);
         assert!(result.total_cost > 0);
@@ -1569,7 +1946,7 @@ mod tests {
         let start = VoxelCoord::new(3, 3, 3);
         world.set(start, VoxelType::Trunk);
         let goal = VoxelCoord::new(5, 5, 5);
-        assert!(astar_fly(&world, start, goal, 250, u32::MAX, FP1).is_none());
+        assert!(astar_fly(&world, start, goal, 250, &PathOpts::default(), FP1).is_err());
     }
 
     #[test]
@@ -1578,7 +1955,7 @@ mod tests {
         let goal = VoxelCoord::new(3, 3, 3);
         world.set(goal, VoxelType::Trunk);
         let start = VoxelCoord::new(5, 5, 5);
-        assert!(astar_fly(&world, start, goal, 250, u32::MAX, FP1).is_none());
+        assert!(astar_fly(&world, start, goal, 250, &PathOpts::default(), FP1).is_err());
     }
 
     #[test]
@@ -1586,7 +1963,7 @@ mod tests {
         let world = empty_world(8, 8, 8);
         let start = VoxelCoord::new(5, 5, 5);
         let goal = VoxelCoord::new(100, 5, 5);
-        assert!(astar_fly(&world, start, goal, 250, u32::MAX, FP1).is_none());
+        assert!(astar_fly(&world, start, goal, 250, &PathOpts::default(), FP1).is_err());
     }
 
     #[test]
@@ -1595,18 +1972,20 @@ mod tests {
         let start = VoxelCoord::new(2, 5, 5);
         let goal = VoxelCoord::new(7, 5, 5);
 
+        let opts = |pl| PathOpts::default().with_path_len(pl).with_work(u32::MAX);
+
         // Path is 5 steps. max_path_len=5 should succeed.
-        let result = astar_fly(&world, start, goal, 250, 5, FP1);
-        assert!(result.is_some());
+        let result = astar_fly(&world, start, goal, 250, &opts(5), FP1);
+        assert!(result.is_ok());
         assert_eq!(result.unwrap().positions.len(), 6);
 
         // max_path_len=4 should fail (path requires 5 steps).
-        let result = astar_fly(&world, start, goal, 250, 4, FP1);
-        assert!(result.is_none());
+        let result = astar_fly(&world, start, goal, 250, &opts(4), FP1);
+        assert!(result.is_err());
 
         // max_path_len=0 for same position should succeed.
-        let result = astar_fly(&world, start, start, 250, 0, FP1);
-        assert!(result.is_some());
+        let result = astar_fly(&world, start, start, 250, &opts(0), FP1);
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -1615,13 +1994,13 @@ mod tests {
         world.set(VoxelCoord::new(4, 4, 4), VoxelType::Leaf);
         let start = VoxelCoord::new(3, 4, 4);
         let goal = VoxelCoord::new(5, 4, 4);
-        let result = astar_fly(&world, start, goal, 250, u32::MAX, FP1).unwrap();
+        let result = astar_fly(&world, start, goal, 250, &PathOpts::default(), FP1).unwrap();
         assert_eq!(result.positions.len(), 3);
         assert_eq!(result.positions[1], VoxelCoord::new(4, 4, 4));
         assert_eq!(result.total_cost, 2 * 1024 * 250);
 
         world.set(VoxelCoord::new(4, 4, 4), VoxelType::Fruit);
-        let result = astar_fly(&world, start, goal, 250, u32::MAX, FP1).unwrap();
+        let result = astar_fly(&world, start, goal, 250, &PathOpts::default(), FP1).unwrap();
         assert_eq!(result.positions.len(), 3);
         assert_eq!(result.positions[1], VoxelCoord::new(4, 4, 4));
     }
@@ -1632,7 +2011,7 @@ mod tests {
         world.set(VoxelCoord::new(4, 4, 4), VoxelType::WoodLadder);
         let start = VoxelCoord::new(3, 4, 4);
         let goal = VoxelCoord::new(5, 4, 4);
-        let result = astar_fly(&world, start, goal, 250, u32::MAX, FP1).unwrap();
+        let result = astar_fly(&world, start, goal, 250, &PathOpts::default(), FP1).unwrap();
         assert_eq!(result.positions.len(), 3);
     }
 
@@ -1641,7 +2020,7 @@ mod tests {
         let world = empty_world(16, 16, 16);
         let start = VoxelCoord::new(2, 5, 5);
         let goal = VoxelCoord::new(7, 5, 5);
-        let result = astar_fly(&world, start, goal, 250, u32::MAX, FP2).unwrap();
+        let result = astar_fly(&world, start, goal, 250, &PathOpts::default(), FP2).unwrap();
         assert_eq!(result.positions.len(), 6);
         assert_eq!(result.total_cost, 5 * 1024 * 250);
     }
@@ -1658,11 +2037,11 @@ mod tests {
         let start = VoxelCoord::new(2, 5, 5);
         let goal = VoxelCoord::new(8, 5, 5);
 
-        let result_1x1 = astar_fly(&world, start, goal, 250, u32::MAX, FP1);
-        assert!(result_1x1.is_some(), "1x1x1 should find path through gap");
+        let result_1x1 = astar_fly(&world, start, goal, 250, &PathOpts::default(), FP1);
+        assert!(result_1x1.is_ok(), "1x1x1 should find path through gap");
 
         assert!(
-            astar_fly(&world, start, goal, 250, u32::MAX, FP2).is_none(),
+            astar_fly(&world, start, goal, 250, &PathOpts::default(), FP2).is_err(),
             "2x2x2 should not fit through 1-voxel gap"
         );
     }
@@ -1673,7 +2052,7 @@ mod tests {
         world.set(VoxelCoord::new(3, 4, 3), VoxelType::Trunk);
         let start = VoxelCoord::new(2, 3, 2);
         let goal = VoxelCoord::new(5, 3, 5);
-        assert!(astar_fly(&world, start, goal, 250, u32::MAX, FP2).is_none());
+        assert!(astar_fly(&world, start, goal, 250, &PathOpts::default(), FP2).is_err());
     }
 
     #[test]
@@ -1682,13 +2061,13 @@ mod tests {
         let start = VoxelCoord::new(7, 3, 3);
         let goal = VoxelCoord::new(5, 3, 3);
         assert!(
-            astar_fly(&world, start, goal, 250, u32::MAX, FP2).is_none(),
+            astar_fly(&world, start, goal, 250, &PathOpts::default(), FP2).is_err(),
             "2x2x2 at world boundary should not start (footprint out of bounds)"
         );
         let start2 = VoxelCoord::new(3, 3, 3);
         let goal2 = VoxelCoord::new(7, 3, 3);
         assert!(
-            astar_fly(&world, start2, goal2, 250, u32::MAX, FP2).is_none(),
+            astar_fly(&world, start2, goal2, 250, &PathOpts::default(), FP2).is_err(),
             "2x2x2 at world boundary should not reach goal (footprint out of bounds)"
         );
         let result = astar_fly(
@@ -1696,10 +2075,10 @@ mod tests {
             VoxelCoord::new(3, 3, 3),
             VoxelCoord::new(7, 3, 3),
             250,
-            u32::MAX,
+            &PathOpts::default(),
             FP1,
         );
-        assert!(result.is_some(), "1x1x1 should reach world boundary");
+        assert!(result.is_ok(), "1x1x1 should reach world boundary");
     }
 
     // -----------------------------------------------------------------------
@@ -1713,24 +2092,24 @@ mod tests {
         let near = VoxelCoord::new(7, 5, 5); // 2 steps
         let far = VoxelCoord::new(12, 5, 5); // 7 steps
 
-        let result = nearest_fly(&world, start, &[near, far], 250, u32::MAX, FP1);
-        assert_eq!(result, Some(near));
+        let result = nearest_fly(&world, start, &[near, far], 250, &PathOpts::default(), FP1);
+        assert_eq!(result, Ok(near));
     }
 
     #[test]
     fn nearest_fly_start_is_candidate() {
         let world = empty_world(8, 8, 8);
         let start = VoxelCoord::new(3, 3, 3);
-        let result = nearest_fly(&world, start, &[start], 250, u32::MAX, FP1);
-        assert_eq!(result, Some(start));
+        let result = nearest_fly(&world, start, &[start], 250, &PathOpts::default(), FP1);
+        assert_eq!(result, Ok(start));
     }
 
     #[test]
     fn nearest_fly_no_candidates() {
         let world = empty_world(8, 8, 8);
         let start = VoxelCoord::new(3, 3, 3);
-        let result = nearest_fly(&world, start, &[], 250, u32::MAX, FP1);
-        assert_eq!(result, None);
+        let result = nearest_fly(&world, start, &[], 250, &PathOpts::default(), FP1);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1744,8 +2123,8 @@ mod tests {
         }
         let start = VoxelCoord::new(2, 4, 4);
         let goal = VoxelCoord::new(6, 4, 4);
-        let result = nearest_fly(&world, start, &[goal], 250, u32::MAX, FP1);
-        assert_eq!(result, None);
+        let result = nearest_fly(&world, start, &[goal], 250, &PathOpts::default(), FP1);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1761,8 +2140,15 @@ mod tests {
         let blocked = VoxelCoord::new(12, 5, 5);
         let reachable = VoxelCoord::new(7, 5, 5);
 
-        let result = nearest_fly(&world, start, &[blocked, reachable], 250, u32::MAX, FP1);
-        assert_eq!(result, Some(reachable));
+        let result = nearest_fly(
+            &world,
+            start,
+            &[blocked, reachable],
+            250,
+            &PathOpts::default(),
+            FP1,
+        );
+        assert_eq!(result, Ok(reachable));
     }
 
     // -----------------------------------------------------------------------
@@ -1779,8 +2165,8 @@ mod tests {
         graph.add_edge(b, c, EdgeType::Ground, dist(7));
 
         // nearest_navgraph should find closest target (b).
-        let result = nearest_navgraph(&graph, a, &[b, c], &test_speeds());
-        assert_eq!(result, Some(b));
+        let result = nearest_navgraph(&graph, a, &[b, c], &test_speeds(), &PathOpts::default());
+        assert_eq!(result, Ok(b));
     }
 
     // -----------------------------------------------------------------------
@@ -1796,24 +2182,25 @@ mod tests {
         graph.add_edge(a, b, EdgeType::Ground, dist(3));
         graph.add_edge(b, c, EdgeType::Ground, dist(7));
 
-        let result = nearest_astar_navgraph(&graph, a, &[b, c], &test_speeds(), u32::MAX);
-        assert_eq!(result, Some(b));
+        let result =
+            nearest_astar_navgraph(&graph, a, &[b, c], &test_speeds(), &PathOpts::default());
+        assert_eq!(result, Ok(b));
     }
 
     #[test]
     fn nearest_astar_navgraph_start_is_target() {
         let mut graph = NavGraph::new();
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
-        let result = nearest_astar_navgraph(&graph, a, &[a], &test_speeds(), u32::MAX);
-        assert_eq!(result, Some(a));
+        let result = nearest_astar_navgraph(&graph, a, &[a], &test_speeds(), &PathOpts::default());
+        assert_eq!(result, Ok(a));
     }
 
     #[test]
     fn nearest_astar_navgraph_no_targets() {
         let mut graph = NavGraph::new();
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
-        let result = nearest_astar_navgraph(&graph, a, &[], &test_speeds(), u32::MAX);
-        assert_eq!(result, None);
+        let result = nearest_astar_navgraph(&graph, a, &[], &test_speeds(), &PathOpts::default());
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1822,8 +2209,8 @@ mod tests {
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
         let b = graph.add_node(VoxelCoord::new(10, 0, 0), S);
         // No edges — b is unreachable.
-        let result = nearest_astar_navgraph(&graph, a, &[b], &test_speeds(), u32::MAX);
-        assert_eq!(result, None);
+        let result = nearest_astar_navgraph(&graph, a, &[b], &test_speeds(), &PathOpts::default());
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1841,9 +2228,9 @@ mod tests {
             a,
             &[c],
             &test_speeds_filtered(&[EdgeType::Ground]),
-            u32::MAX,
+            &PathOpts::default(),
         );
-        assert_eq!(result, None);
+        assert!(result.is_err());
 
         // b is reachable via Ground.
         let result = nearest_astar_navgraph(
@@ -1851,9 +2238,9 @@ mod tests {
             a,
             &[b],
             &test_speeds_filtered(&[EdgeType::Ground]),
-            u32::MAX,
+            &PathOpts::default(),
         );
-        assert_eq!(result, Some(b));
+        assert_eq!(result, Ok(b));
     }
 
     #[test]
@@ -1873,8 +2260,8 @@ mod tests {
             allowed_edges: None,
         };
         // b is cheaper (walk) than c (climb) despite same distance.
-        let result = nearest_astar_navgraph(&graph, a, &[b, c], &speeds, u32::MAX);
-        assert_eq!(result, Some(b));
+        let result = nearest_astar_navgraph(&graph, a, &[b, c], &speeds, &PathOpts::default());
+        assert_eq!(result, Ok(b));
     }
 
     #[test]
@@ -1888,23 +2275,23 @@ mod tests {
         graph.add_edge(b, c, EdgeType::Ground, dist(1));
         graph.add_edge(c, d, EdgeType::Ground, dist(1));
 
+        let opts = |pl| PathOpts::default().with_path_len(pl).with_work(u32::MAX);
+
         // d is 3 hops away. max_path_len=3 should find it.
-        let result = nearest_astar_navgraph(&graph, a, &[d], &test_speeds(), 3);
-        assert_eq!(result, Some(d));
+        let result = nearest_astar_navgraph(&graph, a, &[d], &test_speeds(), &opts(3));
+        assert_eq!(result, Ok(d));
 
         // max_path_len=2 should not reach d.
-        let result = nearest_astar_navgraph(&graph, a, &[d], &test_speeds(), 2);
-        assert_eq!(result, None);
+        let result = nearest_astar_navgraph(&graph, a, &[d], &test_speeds(), &opts(2));
+        assert!(result.is_err());
 
         // But b (1 hop) is still reachable with max_path_len=2.
-        let result = nearest_astar_navgraph(&graph, a, &[b, d], &test_speeds(), 2);
-        assert_eq!(result, Some(b));
+        let result = nearest_astar_navgraph(&graph, a, &[b, d], &test_speeds(), &opts(2));
+        assert_eq!(result, Ok(b));
     }
 
     #[test]
     fn nearest_astar_navgraph_falls_back_when_close_unreachable() {
-        // Close candidate is unreachable (disconnected), far candidate is
-        // reachable. The algorithm must not give up after pruning the close one.
         let mut graph = NavGraph::new();
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
         let close = graph.add_node(VoxelCoord::new(1, 0, 0), S);
@@ -1914,13 +2301,18 @@ mod tests {
         graph.add_edge(a, mid, EdgeType::Ground, dist(5));
         graph.add_edge(mid, far, EdgeType::Ground, dist(5));
 
-        let result = nearest_astar_navgraph(&graph, a, &[close, far], &test_speeds(), u32::MAX);
-        assert_eq!(result, Some(far));
+        let result = nearest_astar_navgraph(
+            &graph,
+            a,
+            &[close, far],
+            &test_speeds(),
+            &PathOpts::default(),
+        );
+        assert_eq!(result, Ok(far));
     }
 
     #[test]
     fn nearest_astar_navgraph_agrees_with_dijkstra() {
-        // Larger graph where both algorithms should return the same answer.
         let mut graph = NavGraph::new();
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
         let b = graph.add_node(VoxelCoord::new(3, 0, 0), S);
@@ -1937,8 +2329,9 @@ mod tests {
 
         let targets = &[c, e, f];
         let dijkstra = nearest_dijkstra_navgraph(&graph, a, targets, &test_speeds());
-        let astar = nearest_astar_navgraph(&graph, a, targets, &test_speeds(), u32::MAX);
-        assert_eq!(dijkstra, astar);
+        let astar =
+            nearest_astar_navgraph(&graph, a, targets, &test_speeds(), &PathOpts::default());
+        assert_eq!(dijkstra, astar.ok());
     }
 
     #[test]
@@ -1948,9 +2341,8 @@ mod tests {
         let b = graph.add_node(VoxelCoord::new(5, 0, 0), S);
         graph.add_edge(a, b, EdgeType::Ground, dist(5));
 
-        // Single reachable candidate — degenerate case (no interleaving).
-        let result = nearest_astar_navgraph(&graph, a, &[b], &test_speeds(), u32::MAX);
-        assert_eq!(result, Some(b));
+        let result = nearest_astar_navgraph(&graph, a, &[b], &test_speeds(), &PathOpts::default());
+        assert_eq!(result, Ok(b));
     }
 
     #[test]
@@ -1960,9 +2352,9 @@ mod tests {
         let b = graph.add_node(VoxelCoord::new(5, 0, 0), S);
         graph.add_edge(a, b, EdgeType::Ground, dist(5));
 
-        // Same target twice — should still return it without issue.
-        let result = nearest_astar_navgraph(&graph, a, &[b, b], &test_speeds(), u32::MAX);
-        assert_eq!(result, Some(b));
+        let result =
+            nearest_astar_navgraph(&graph, a, &[b, b], &test_speeds(), &PathOpts::default());
+        assert_eq!(result, Ok(b));
     }
 
     #[test]
@@ -1975,10 +2367,9 @@ mod tests {
         graph.add_edge(b, c, EdgeType::Ground, dist(5));
         graph.kill_node(b);
 
-        // b is dead — should be filtered out. c is unreachable (only path
-        // was through b). Should return None.
-        let result = nearest_astar_navgraph(&graph, a, &[b, c], &test_speeds(), u32::MAX);
-        assert_eq!(result, None);
+        let result =
+            nearest_astar_navgraph(&graph, a, &[b, c], &test_speeds(), &PathOpts::default());
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1988,8 +2379,8 @@ mod tests {
         let b = graph.add_node(VoxelCoord::new(5, 0, 0), S);
         graph.kill_node(b);
 
-        let result = nearest_astar_navgraph(&graph, a, &[b], &test_speeds(), u32::MAX);
-        assert_eq!(result, None);
+        let result = nearest_astar_navgraph(&graph, a, &[b], &test_speeds(), &PathOpts::default());
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1998,9 +2389,9 @@ mod tests {
         let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
         let bogus = NavNodeId(9999);
 
-        // Out-of-bounds target — should be filtered out, not panic.
-        let result = nearest_astar_navgraph(&graph, a, &[bogus], &test_speeds(), u32::MAX);
-        assert_eq!(result, None);
+        let result =
+            nearest_astar_navgraph(&graph, a, &[bogus], &test_speeds(), &PathOpts::default());
+        assert!(result.is_err());
     }
 
     #[test]
@@ -2011,9 +2402,9 @@ mod tests {
             NavNodeId(0),
             &[NavNodeId(0)],
             &test_speeds(),
-            u32::MAX,
+            &PathOpts::default(),
         );
-        assert_eq!(result, None);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -2023,13 +2414,15 @@ mod tests {
         let b = graph.add_node(VoxelCoord::new(1, 0, 0), S);
         graph.add_edge(a, b, EdgeType::Ground, dist(1));
 
+        let opts = |pl| PathOpts::default().with_path_len(pl).with_work(u32::MAX);
+
         // max_path_len=0: start can't expand, b unreachable.
-        let result = nearest_astar_navgraph(&graph, a, &[b], &test_speeds(), 0);
-        assert_eq!(result, None);
+        let result = nearest_astar_navgraph(&graph, a, &[b], &test_speeds(), &opts(0));
+        assert!(result.is_err());
 
         // But start-is-target still works with max_path_len=0.
-        let result = nearest_astar_navgraph(&graph, a, &[a], &test_speeds(), 0);
-        assert_eq!(result, Some(a));
+        let result = nearest_astar_navgraph(&graph, a, &[a], &test_speeds(), &opts(0));
+        assert_eq!(result, Ok(a));
     }
 
     // -----------------------------------------------------------------------
@@ -2043,24 +2436,24 @@ mod tests {
         let near = VoxelCoord::new(7, 5, 5); // 2 steps
         let far = VoxelCoord::new(12, 5, 5); // 7 steps
 
-        let result = nearest_astar_fly(&world, start, &[near, far], 250, u32::MAX, FP1);
-        assert_eq!(result, Some(near));
+        let result = nearest_astar_fly(&world, start, &[near, far], 250, &PathOpts::default(), FP1);
+        assert_eq!(result, Ok(near));
     }
 
     #[test]
     fn nearest_astar_fly_start_is_candidate() {
         let world = empty_world(8, 8, 8);
         let start = VoxelCoord::new(3, 3, 3);
-        let result = nearest_astar_fly(&world, start, &[start], 250, u32::MAX, FP1);
-        assert_eq!(result, Some(start));
+        let result = nearest_astar_fly(&world, start, &[start], 250, &PathOpts::default(), FP1);
+        assert_eq!(result, Ok(start));
     }
 
     #[test]
     fn nearest_astar_fly_no_candidates() {
         let world = empty_world(8, 8, 8);
         let start = VoxelCoord::new(3, 3, 3);
-        let result = nearest_astar_fly(&world, start, &[], 250, u32::MAX, FP1);
-        assert_eq!(result, None);
+        let result = nearest_astar_fly(&world, start, &[], 250, &PathOpts::default(), FP1);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -2073,8 +2466,8 @@ mod tests {
         }
         let start = VoxelCoord::new(2, 4, 4);
         let goal = VoxelCoord::new(6, 4, 4);
-        let result = nearest_astar_fly(&world, start, &[goal], 250, u32::MAX, FP1);
-        assert_eq!(result, None);
+        let result = nearest_astar_fly(&world, start, &[goal], 250, &PathOpts::default(), FP1);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -2089,8 +2482,15 @@ mod tests {
         let blocked = VoxelCoord::new(12, 5, 5);
         let reachable = VoxelCoord::new(7, 5, 5);
 
-        let result = nearest_astar_fly(&world, start, &[blocked, reachable], 250, u32::MAX, FP1);
-        assert_eq!(result, Some(reachable));
+        let result = nearest_astar_fly(
+            &world,
+            start,
+            &[blocked, reachable],
+            250,
+            &PathOpts::default(),
+            FP1,
+        );
+        assert_eq!(result, Ok(reachable));
     }
 
     #[test]
@@ -2100,13 +2500,15 @@ mod tests {
         let near = VoxelCoord::new(4, 5, 5); // 2 steps
         let far = VoxelCoord::new(7, 5, 5); // 5 steps
 
+        let opts = |pl| PathOpts::default().with_path_len(pl).with_work(u32::MAX);
+
         // max_path_len=3 reaches near (2 steps) but not far (5 steps).
-        let result = nearest_astar_fly(&world, start, &[near, far], 250, 3, FP1);
-        assert_eq!(result, Some(near));
+        let result = nearest_astar_fly(&world, start, &[near, far], 250, &opts(3), FP1);
+        assert_eq!(result, Ok(near));
 
         // max_path_len=1 reaches neither (near is 2 steps).
-        let result = nearest_astar_fly(&world, start, &[near, far], 250, 1, FP1);
-        assert_eq!(result, None);
+        let result = nearest_astar_fly(&world, start, &[near, far], 250, &opts(1), FP1);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -2126,7 +2528,7 @@ mod tests {
         let sequential = {
             let mut best: Option<(VoxelCoord, i64)> = None;
             for &c in candidates {
-                if let Some(r) = astar_fly(&world, start, c, 250, u32::MAX, FP1) {
+                if let Ok(r) = astar_fly(&world, start, c, 250, &PathOpts::default(), FP1) {
                     match best {
                         None => best = Some((c, r.total_cost)),
                         Some((_, prev)) if r.total_cost < prev => {
@@ -2139,8 +2541,9 @@ mod tests {
             best.map(|(coord, _)| coord)
         };
 
-        let interleaved = nearest_astar_fly(&world, start, candidates, 250, u32::MAX, FP1);
-        assert_eq!(sequential, interleaved);
+        let interleaved =
+            nearest_astar_fly(&world, start, candidates, 250, &PathOpts::default(), FP1);
+        assert_eq!(sequential, interleaved.ok());
     }
 
     #[test]
@@ -2150,8 +2553,8 @@ mod tests {
         world.set(start, VoxelType::Trunk);
         let goal = VoxelCoord::new(5, 5, 5);
 
-        let result = nearest_astar_fly(&world, start, &[goal], 250, u32::MAX, FP1);
-        assert_eq!(result, None);
+        let result = nearest_astar_fly(&world, start, &[goal], 250, &PathOpts::default(), FP1);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -2163,8 +2566,15 @@ mod tests {
         world.set(blocked, VoxelType::Trunk);
 
         // blocked candidate is filtered out in pre-filter, reachable wins.
-        let result = nearest_astar_fly(&world, start, &[blocked, reachable], 250, u32::MAX, FP1);
-        assert_eq!(result, Some(reachable));
+        let result = nearest_astar_fly(
+            &world,
+            start,
+            &[blocked, reachable],
+            250,
+            &PathOpts::default(),
+            FP1,
+        );
+        assert_eq!(result, Ok(reachable));
     }
 
     #[test]
@@ -2176,8 +2586,8 @@ mod tests {
         world.set(c1, VoxelType::Trunk);
         world.set(c2, VoxelType::Trunk);
 
-        let result = nearest_astar_fly(&world, start, &[c1, c2], 250, u32::MAX, FP1);
-        assert_eq!(result, None);
+        let result = nearest_astar_fly(&world, start, &[c1, c2], 250, &PathOpts::default(), FP1);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -2188,8 +2598,8 @@ mod tests {
         let far = VoxelCoord::new(12, 5, 5);
 
         // Both reachable for 2x2x2 in open world.
-        let result = nearest_astar_fly(&world, start, &[near, far], 250, u32::MAX, FP2);
-        assert_eq!(result, Some(near));
+        let result = nearest_astar_fly(&world, start, &[near, far], 250, &PathOpts::default(), FP2);
+        assert_eq!(result, Ok(near));
 
         // Block the path with a wall that 2x2x2 can't pass through.
         for y in 0..16 {
@@ -2198,8 +2608,8 @@ mod tests {
             }
         }
         // Near is now on the other side of the wall.
-        let result = nearest_astar_fly(&world, start, &[near, far], 250, u32::MAX, FP2);
-        assert_eq!(result, None);
+        let result = nearest_astar_fly(&world, start, &[near, far], 250, &PathOpts::default(), FP2);
+        assert!(result.is_err());
     }
 
     // -----------------------------------------------------------------------
@@ -2221,7 +2631,7 @@ mod tests {
             rope_ladder_tpv: None,
             allowed_edges: None,
         };
-        assert!(astar_navgraph(&graph, a, b, &no_climb, u32::MAX).is_none());
+        assert!(astar_navgraph(&graph, a, b, &no_climb, &PathOpts::default()).is_err());
 
         // climb_tpv = Some → should find path.
         let with_climb = NavGraphSpeeds {
@@ -2231,7 +2641,7 @@ mod tests {
             rope_ladder_tpv: None,
             allowed_edges: None,
         };
-        assert!(astar_navgraph(&graph, a, b, &with_climb, u32::MAX).is_some());
+        assert!(astar_navgraph(&graph, a, b, &with_climb, &PathOpts::default()).is_ok());
     }
 
     #[test]
@@ -2248,7 +2658,7 @@ mod tests {
             rope_ladder_tpv: None,
             allowed_edges: None,
         };
-        assert!(astar_navgraph(&graph, a, b, &no_climb, u32::MAX).is_none());
+        assert!(astar_navgraph(&graph, a, b, &no_climb, &PathOpts::default()).is_err());
     }
 
     #[test]
@@ -2266,7 +2676,7 @@ mod tests {
             rope_ladder_tpv: None,
             allowed_edges: None,
         };
-        assert!(astar_navgraph(&graph, a, b, &no_ladder, u32::MAX).is_none());
+        assert!(astar_navgraph(&graph, a, b, &no_ladder, &PathOpts::default()).is_err());
 
         // wood_ladder_tpv = Some(3) → should find path with cost 5 * 3 * DIST_SCALE.
         let with_ladder = NavGraphSpeeds {
@@ -2276,7 +2686,7 @@ mod tests {
             rope_ladder_tpv: None,
             allowed_edges: None,
         };
-        let result = astar_navgraph(&graph, a, b, &with_ladder, u32::MAX).unwrap();
+        let result = astar_navgraph(&graph, a, b, &with_ladder, &PathOpts::default()).unwrap();
         assert_eq!(result.total_cost, dist(5) as i64 * 3);
     }
 
@@ -2295,7 +2705,7 @@ mod tests {
             rope_ladder_tpv: None,
             allowed_edges: None,
         };
-        assert!(astar_navgraph(&graph, a, b, &no_ladder, u32::MAX).is_none());
+        assert!(astar_navgraph(&graph, a, b, &no_ladder, &PathOpts::default()).is_err());
 
         // rope_ladder_tpv = Some(4) → should find path.
         let with_ladder = NavGraphSpeeds {
@@ -2305,7 +2715,249 @@ mod tests {
             rope_ladder_tpv: Some(4),
             allowed_edges: None,
         };
-        let result = astar_navgraph(&graph, a, b, &with_ladder, u32::MAX).unwrap();
+        let result = astar_navgraph(&graph, a, b, &with_ladder, &PathOpts::default()).unwrap();
         assert_eq!(result.total_cost, dist(5) as i64 * 4);
+    }
+
+    // -----------------------------------------------------------------------
+    // Work budget and specific error variant tests (once-over additions)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn astar_fly_work_budget_exceeded() {
+        let world = empty_world(16, 16, 16);
+        let start = VoxelCoord::new(2, 5, 5);
+        let goal = VoxelCoord::new(12, 5, 5);
+
+        // Work budget of 1 — can only expand start node, won't reach goal.
+        let opts = PathOpts::default().with_path_len(u32::MAX).with_work(1);
+        let result = astar_fly(&world, start, goal, 250, &opts, FP1);
+        assert!(matches!(result, Err(PathError::ExceededWorkBudget { .. })));
+
+        // Generous budget — should find path.
+        let opts = PathOpts::default()
+            .with_path_len(u32::MAX)
+            .with_work(100_000);
+        let result = astar_fly(&world, start, goal, 250, &opts, FP1);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn astar_fly_start_blocked_returns_specific_error() {
+        let mut world = empty_world(8, 8, 8);
+        let start = VoxelCoord::new(3, 3, 3);
+        world.set(start, VoxelType::Trunk);
+        let goal = VoxelCoord::new(5, 5, 5);
+        assert_eq!(
+            astar_fly(&world, start, goal, 250, &PathOpts::default(), FP1),
+            Err(PathError::StartBlockedByFootprint)
+        );
+    }
+
+    #[test]
+    fn astar_fly_goal_blocked_returns_specific_error() {
+        let mut world = empty_world(8, 8, 8);
+        let goal = VoxelCoord::new(3, 3, 3);
+        world.set(goal, VoxelType::Trunk);
+        let start = VoxelCoord::new(5, 5, 5);
+        assert_eq!(
+            astar_fly(&world, start, goal, 250, &PathOpts::default(), FP1),
+            Err(PathError::TargetNotOnGraph)
+        );
+    }
+
+    #[test]
+    fn astar_fly_path_len_exceeded_returns_specific_error() {
+        let world = empty_world(16, 16, 16);
+        let start = VoxelCoord::new(2, 5, 5);
+        let goal = VoxelCoord::new(7, 5, 5);
+        // Path is 5 steps. max_path_len=4 should give ExceededPathLen.
+        let opts = PathOpts::default().with_path_len(4).with_work(u32::MAX);
+        assert_eq!(
+            astar_fly(&world, start, goal, 250, &opts, FP1),
+            Err(PathError::ExceededPathLen { limit: 4 })
+        );
+    }
+
+    #[test]
+    fn nearest_fly_no_candidates_returns_no_targets() {
+        let world = empty_world(8, 8, 8);
+        let start = VoxelCoord::new(3, 3, 3);
+        assert_eq!(
+            nearest_fly(&world, start, &[], 250, &PathOpts::default(), FP1),
+            Err(PathError::NoTargets)
+        );
+    }
+
+    #[test]
+    fn nearest_astar_navgraph_no_targets_returns_no_targets() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        assert_eq!(
+            nearest_astar_navgraph(&graph, a, &[], &test_speeds(), &PathOpts::default()),
+            Err(PathError::NoTargets)
+        );
+    }
+
+    #[test]
+    fn nearest_astar_navgraph_unreachable_returns_unreachable() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let b = graph.add_node(VoxelCoord::new(10, 0, 0), S);
+        assert_eq!(
+            nearest_astar_navgraph(&graph, a, &[b], &test_speeds(), &PathOpts::default()),
+            Err(PathError::Unreachable)
+        );
+    }
+
+    #[test]
+    fn nearest_astar_navgraph_work_budget_exceeded() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let b = graph.add_node(VoxelCoord::new(1, 0, 0), S);
+        let c = graph.add_node(VoxelCoord::new(2, 0, 0), S);
+        let d = graph.add_node(VoxelCoord::new(3, 0, 0), S);
+        graph.add_edge(a, b, EdgeType::Ground, dist(1));
+        graph.add_edge(b, c, EdgeType::Ground, dist(1));
+        graph.add_edge(c, d, EdgeType::Ground, dist(1));
+
+        // Work budget of 1 — won't reach d (3 hops away).
+        let opts = PathOpts::default().with_path_len(u32::MAX).with_work(1);
+        let result = nearest_astar_navgraph(&graph, a, &[d], &test_speeds(), &opts);
+        assert!(matches!(result, Err(PathError::ExceededWorkBudget { .. })));
+
+        // Generous budget — should find d.
+        let opts = PathOpts::default().with_path_len(u32::MAX).with_work(100);
+        let result = nearest_astar_navgraph(&graph, a, &[d], &test_speeds(), &opts);
+        assert_eq!(result, Ok(d));
+    }
+
+    #[test]
+    fn nearest_astar_fly_work_budget_exceeded() {
+        let world = empty_world(16, 16, 16);
+        let start = VoxelCoord::new(2, 5, 5);
+        let far = VoxelCoord::new(12, 5, 5);
+
+        // Work budget of 1 — won't reach far candidate.
+        let opts = PathOpts::default().with_path_len(u32::MAX).with_work(1);
+        let result = nearest_astar_fly(&world, start, &[far], 250, &opts, FP1);
+        assert!(matches!(result, Err(PathError::ExceededWorkBudget { .. })));
+
+        // Generous budget — should find it.
+        let opts = PathOpts::default()
+            .with_path_len(u32::MAX)
+            .with_work(100_000);
+        let result = nearest_astar_fly(&world, start, &[far], 250, &opts, FP1);
+        assert_eq!(result, Ok(far));
+    }
+
+    #[test]
+    fn nearest_astar_fly_start_blocked_returns_specific_error() {
+        let mut world = empty_world(8, 8, 8);
+        let start = VoxelCoord::new(3, 3, 3);
+        world.set(start, VoxelType::Trunk);
+        let goal = VoxelCoord::new(5, 5, 5);
+        assert_eq!(
+            nearest_astar_fly(&world, start, &[goal], 250, &PathOpts::default(), FP1),
+            Err(PathError::StartBlockedByFootprint)
+        );
+    }
+
+    #[test]
+    fn nearest_astar_fly_all_candidates_unflyable_returns_no_targets() {
+        let mut world = empty_world(8, 8, 8);
+        let start = VoxelCoord::new(3, 3, 3);
+        let c1 = VoxelCoord::new(5, 5, 5);
+        let c2 = VoxelCoord::new(6, 6, 6);
+        world.set(c1, VoxelType::Trunk);
+        world.set(c2, VoxelType::Trunk);
+        assert_eq!(
+            nearest_astar_fly(&world, start, &[c1, c2], 250, &PathOpts::default(), FP1),
+            Err(PathError::NoTargets)
+        );
+    }
+
+    #[test]
+    fn resolve_limits_saturation() {
+        // Verify Auto with extreme manhattan doesn't overflow.
+        let opts = PathOpts::default();
+        let r = resolve_limits(&opts, u32::MAX, false, 1);
+        assert_eq!(r.path_len, u32::MAX); // saturating_mul(3) + 100 saturates
+        assert_eq!(r.work, u32::MAX); // u32::MAX * 30 saturates
+
+        let r = resolve_limits(&opts, u32::MAX, true, 1);
+        assert_eq!(r.work, u32::MAX); // u32::MAX * 100 saturates
+
+        // With many candidates — still saturates.
+        let r = resolve_limits(&opts, u32::MAX, false, 100);
+        assert_eq!(r.work, u32::MAX);
+    }
+
+    #[test]
+    fn resolve_limits_auto_with_zero_manhattan() {
+        // When manhattan=0, the +100 additive constant prevents zero budgets.
+        let opts = PathOpts::default();
+        let r = resolve_limits(&opts, 0, false, 1);
+        assert_eq!(r.path_len, 100);
+        assert_eq!(r.work, 3000); // 100 * 30
+
+        let r = resolve_limits(&opts, 0, true, 1);
+        assert_eq!(r.work, 10000); // 100 * 100
+    }
+
+    #[test]
+    fn resolve_limits_exact_path_len_with_auto_work() {
+        // Auto work should derive from the exact path_len, not manhattan.
+        let opts = PathOpts::default().with_path_len(50);
+        let r = resolve_limits(&opts, 1000, false, 1);
+        assert_eq!(r.path_len, 50);
+        assert_eq!(r.work, 1500); // 50 * 30, not 1000*3+100 * 30
+    }
+
+    #[test]
+    fn astar_navgraph_work_budget_zero() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let b = graph.add_node(VoxelCoord::new(1, 0, 0), S);
+        graph.add_edge(a, b, EdgeType::Ground, dist(1));
+
+        let opts = PathOpts::default().with_path_len(u32::MAX).with_work(0);
+        let result = astar_navgraph(&graph, a, b, &test_speeds(), &opts);
+        assert_eq!(
+            result,
+            Err(PathError::ExceededWorkBudget {
+                limit: 0,
+                expanded: 1
+            })
+        );
+    }
+
+    #[test]
+    fn nearest_astar_navgraph_max_path_len_exceeded_returns_specific_error() {
+        let mut graph = NavGraph::new();
+        let a = graph.add_node(VoxelCoord::new(0, 0, 0), S);
+        let b = graph.add_node(VoxelCoord::new(1, 0, 0), S);
+        let c = graph.add_node(VoxelCoord::new(2, 0, 0), S);
+        let d = graph.add_node(VoxelCoord::new(3, 0, 0), S);
+        graph.add_edge(a, b, EdgeType::Ground, dist(1));
+        graph.add_edge(b, c, EdgeType::Ground, dist(1));
+        graph.add_edge(c, d, EdgeType::Ground, dist(1));
+
+        // d is 3 hops away, path_len=2 is too short.
+        let opts = PathOpts::default().with_path_len(2).with_work(u32::MAX);
+        let result = nearest_astar_navgraph(&graph, a, &[d], &test_speeds(), &opts);
+        assert_eq!(result, Err(PathError::ExceededPathLen { limit: 2 }));
+    }
+
+    #[test]
+    fn nearest_astar_fly_max_path_len_exceeded_returns_specific_error() {
+        let world = empty_world(16, 16, 16);
+        let start = VoxelCoord::new(2, 5, 5);
+        let far = VoxelCoord::new(7, 5, 5); // 5 steps away
+
+        // path_len=3 is too short to reach far.
+        let opts = PathOpts::default().with_path_len(3).with_work(u32::MAX);
+        let result = nearest_astar_fly(&world, start, &[far], 250, &opts, FP1);
+        assert_eq!(result, Err(PathError::ExceededPathLen { limit: 3 }));
     }
 }

@@ -87,7 +87,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-bldg-storehouse      Storehouse (item storage)
 [ ] F-blueprint-mode       Layer-based blueprint selection UI
 [ ] F-boundary-decim       Mesh decimation at chunk boundaries
-[ ] F-bounded-pathlen      Bounded max_path_len for all pathfinding call sites
 [ ] F-branch-growth        Grow branches for photosynthesis/fruit
 [ ] F-bridges              Bridge construction between tree parts
 [ ] F-buff-system          Generic timed stat modifier buffs on creatures
@@ -334,6 +333,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-bldg-kitchen         Kitchen (cooking from ingredients)
 [x] F-bldg-transparency    Toggle building roof visibility (hide/show)
 [x] F-bldg-workshop        Craftself's workshop
+[x] F-bounded-pathlen      Bounded max_path_len for all pathfinding call sites
 [x] F-bread                Bread items and elf food management
 [x] F-bridge-integ-tests   Integration tests for gdext bridge functions
 [x] F-building             Building construction (paper-thin walls)
@@ -1470,7 +1470,7 @@ would also confirm the fix.
 After issuing move commands (select creatures, right-click a destination), creature movement becomes erratic and possibly faster than intended. Repro: select one or more creatures, right-click to move them, observe movement behavior.
 
 #### F-bounded-pathlen — Bounded max_path_len for all pathfinding call sites
-**Status:** Todo
+**Status:** Done
 
 Audit all pathfinding call sites and replace `u32::MAX` max_path_len
 values with reasonable bounded defaults. Unbounded pathfinding can cause
