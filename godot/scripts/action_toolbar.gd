@@ -268,7 +268,7 @@ func _ready() -> void:
 	_debug_row.add_child(smooth_button)
 
 	var decimate_button := Button.new()
-	decimate_button.text = "Decimation: ON"
+	decimate_button.text = "Decimation: OFF"
 	decimate_button.pressed.connect(_toggle_decimation.bind(decimate_button))
 	_debug_row.add_child(decimate_button)
 

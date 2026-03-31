@@ -91,7 +91,7 @@ impl Default for MeshPipelineConfig {
         Self {
             smoothing_enabled: false,
             smooth_normals_enabled: false,
-            decimation_enabled: true,
+            decimation_enabled: false,
             qem_only: false,
             decimation_max_error: 1e-6,
         }
@@ -1441,7 +1441,7 @@ mod tests {
         let cfg = MeshPipelineConfig::default();
         assert!(!cfg.smoothing_enabled);
         assert!(!cfg.smooth_normals_enabled);
-        assert!(cfg.decimation_enabled);
+        assert!(!cfg.decimation_enabled);
         assert!(!cfg.qem_only);
         assert!((cfg.decimation_max_error - 1e-6).abs() < f32::EPSILON);
     }
