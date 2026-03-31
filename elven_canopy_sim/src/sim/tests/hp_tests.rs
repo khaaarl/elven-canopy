@@ -422,9 +422,10 @@ fn hp_regen_integer_division_truncates() {
 }
 
 #[test]
-fn hp_regen_slower_than_heartbeat_yields_zero() {
+fn hp_regen_slower_than_heartbeat_accumulates_via_remainder() {
     let mut sim = test_sim(legacy_test_seed());
-    // ticks_per_hp_regen > heartbeat → 5000 / 10000 = 0.
+    // ticks_per_hp_regen=10000 > heartbeat=5000 → 0 HP per single heartbeat,
+    // but remainder accumulates: after 2 heartbeats, 10000 ticks → 1 HP.
     let troll_data = sim.species_table.get_mut(&Species::Troll).unwrap();
     troll_data.ticks_per_hp_regen = 10000;
     let heartbeat = troll_data.heartbeat_interval_ticks;
@@ -445,9 +446,13 @@ fn hp_regen_slower_than_heartbeat_yields_zero() {
         tick + 1,
     );
 
-    // Multiple heartbeats — still no regen.
-    sim.step(&[], sim.tick + heartbeat * 3 + 1);
+    // 1 heartbeat: 5000 / 10000 = 0 HP, remainder 5000.
+    sim.step(&[], sim.tick + heartbeat + 1);
     assert_eq!(sim.db.creatures.get(&troll_id).unwrap().hp, hp_max - 50);
+
+    // 2nd heartbeat: (5000 + 5000) / 10000 = 1 HP, remainder 0.
+    sim.step(&[], sim.tick + heartbeat + 1);
+    assert_eq!(sim.db.creatures.get(&troll_id).unwrap().hp, hp_max - 49);
 }
 
 #[test]
@@ -1818,4 +1823,73 @@ fn zero_and_negative_heal_is_noop() {
         tick3 + 1,
     );
     assert_eq!(sim.db.creatures.get(&elf_id).unwrap().hp, hp_after_damage);
+}
+
+// ---------------------------------------------------------------------------
+// HP regen remainder accumulation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn hp_regen_remainder_accumulates_across_heartbeats() {
+    // ticks_per_hp_regen=3000, heartbeat=5000 (troll default).
+    // HB1: 0+5000 / 3000 = 1 HP, remainder 2000
+    // HB2: 2000+5000 / 3000 = 2 HP, remainder 1000
+    // HB3: 1000+5000 / 3000 = 2 HP, remainder 0
+    // Total over 3 heartbeats: 5 HP (vs 3 HP without remainder).
+    let mut sim = test_sim(legacy_test_seed());
+    let troll_data = sim.species_table.get_mut(&Species::Troll).unwrap();
+    troll_data.ticks_per_hp_regen = 3000;
+    let heartbeat = troll_data.heartbeat_interval_ticks;
+
+    let troll_id = spawn_creature(&mut sim, Species::Troll);
+    let hp_max = sim.db.creatures.get(&troll_id).unwrap().hp_max;
+
+    // Damage so we can observe regen.
+    let tick = sim.tick;
+    sim.step(
+        &[SimCommand {
+            player_name: String::new(),
+            tick: tick + 1,
+            action: SimAction::DamageCreature {
+                creature_id: troll_id,
+                amount: 100,
+            },
+        }],
+        tick + 1,
+    );
+
+    // Advance 3 heartbeats.
+    sim.step(&[], sim.tick + heartbeat * 3 + 1);
+    let hp = sim.db.creatures.get(&troll_id).unwrap().hp;
+    // 15000 ticks / 3000 = exactly 5 HP regen (no remainder lost).
+    assert_eq!(hp, hp_max - 100 + 5);
+}
+
+#[test]
+fn hp_regen_remainder_serde_roundtrip() {
+    let mut sim = test_sim(fresh_test_seed());
+    let troll_id = spawn_creature(&mut sim, Species::Troll);
+    let mut c = sim.db.creatures.get(&troll_id).unwrap();
+    c.hp_regen_remainder = 1234;
+    sim.db.update_creature(c).unwrap();
+
+    let json = serde_json::to_string(&sim.db).unwrap();
+    let restored: crate::db::SimDb = serde_json::from_str(&json).unwrap();
+    let troll = restored.creatures.get(&troll_id).unwrap();
+    assert_eq!(troll.hp_regen_remainder, 1234);
+}
+
+#[test]
+fn hp_regen_remainder_defaults_on_old_save() {
+    let mut sim = test_sim(fresh_test_seed());
+    let troll_id = spawn_creature(&mut sim, Species::Troll);
+    let troll = sim.db.creatures.get(&troll_id).unwrap();
+    let json = serde_json::to_string(&troll).unwrap();
+
+    let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    value.as_object_mut().unwrap().remove("hp_regen_remainder");
+    let stripped = serde_json::to_string(&value).unwrap();
+
+    let restored: crate::db::Creature = serde_json::from_str(&stripped).unwrap();
+    assert_eq!(restored.hp_regen_remainder, 0);
 }

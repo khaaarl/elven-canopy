@@ -1018,30 +1018,18 @@ impl SimState {
         false
     }
 
-    /// Compute the creature-scale (i64) mana cost for one work action of the
-    /// given build type. Platform uses its specific config cost; all others
-    /// (Furnish, Carve, Wall, etc.) use `default_mana_cost_per_mille`.
-    ///
-    /// Config costs are in per-mille of creature mp_max (20 = 2%).
-    /// Conversion: `mp_max / 1000 × cost` — pure integer math, no floats.
-    ///
-    /// NOTE: currently hardcodes Elf's mp_max. If a future magical species
-    /// has a different mp_max, this will need a creature_id parameter.
+    /// Flat mana cost for one work action of the given build type. Platform
+    /// uses `platform_mana_cost`; all others use `default_mana_cost`.
     pub(crate) fn mana_cost_per_action(&self, build_type: Option<BuildType>) -> i64 {
-        let cost_per_mille = match build_type {
-            Some(BuildType::Platform) => self.config.platform_mana_cost_per_mille,
-            _ => self.config.default_mana_cost_per_mille,
-        };
-        let elf_mp_max = self.species_table[&Species::Elf].mp_max;
-        elf_mp_max / 1000 * cost_per_mille as i64
+        match build_type {
+            Some(BuildType::Platform) => self.config.platform_mana_cost,
+            _ => self.config.default_mana_cost,
+        }
     }
 
-    /// Creature-scale mana cost for one Grow-verb crafting action.
-    /// Same per-mille conversion as `mana_cost_per_action`.
+    /// Flat mana cost for one Grow-verb crafting action.
     pub(crate) fn mana_cost_for_grow_action(&self) -> i64 {
-        let cost_per_mille = self.config.grow_mana_cost_per_mille;
-        let elf_mp_max = self.species_table[&Species::Elf].mp_max;
-        elf_mp_max / 1000 * cost_per_mille as i64
+        self.config.grow_mana_cost
     }
 
     /// Try to drain mana from a creature for a work action. Returns true if
@@ -1574,7 +1562,7 @@ impl SimState {
             None => return false,
         };
 
-        // Drain mana (furnishing uses default_mana_cost_per_mille).
+        // Drain mana (furnishing uses default_mana_cost).
         let cost = self.mana_cost_per_action(None);
         if cost > 0 && !self.try_drain_mana(creature_id, cost) {
             return self

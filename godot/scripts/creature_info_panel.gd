@@ -666,7 +666,7 @@ func _update_mp(info: Dictionary) -> void:
 	var mp: int = info.get("mp", 0)
 	var pct: float = 100.0 * float(mp) / float(mp_max)
 	_mp_bar.value = pct
-	_mp_label.text = "%d%%" % int(pct)
+	_mp_label.text = "%d / %d" % [mp, mp_max]
 
 
 func _update_food(info: Dictionary) -> void:

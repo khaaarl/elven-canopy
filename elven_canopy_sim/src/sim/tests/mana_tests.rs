@@ -85,10 +85,10 @@ fn mana_fields_default_on_old_save() {
 #[test]
 fn game_config_has_mana_cost_defaults() {
     let config = GameConfig::default();
-    assert!(config.default_mana_cost_per_mille > 0);
+    assert!(config.default_mana_cost > 0);
     assert!(config.mana_abandon_threshold > 0);
-    assert!(config.platform_mana_cost_per_mille > 0);
-    assert!(config.grow_mana_cost_per_mille > 0);
+    assert!(config.platform_mana_cost > 0);
+    assert!(config.grow_mana_cost > 0);
 }
 
 #[test]
@@ -97,12 +97,97 @@ fn species_mana_config_only_elves_magical() {
     for (species, data) in &config.species {
         if *species == Species::Elf {
             assert!(data.mp_max > 0, "elves should have mana");
-            assert!(data.mana_per_tick > 0, "elves should generate mana");
+            assert!(data.ticks_per_mp_regen > 0, "elves should regen mana");
         } else {
             assert_eq!(data.mp_max, 0, "{species:?} should be nonmagical");
-            assert_eq!(data.mana_per_tick, 0, "{species:?} should not gen mana");
+            assert_eq!(
+                data.ticks_per_mp_regen, 0,
+                "{species:?} should not regen mana"
+            );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Mana system — Remainder accumulation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mana_regen_remainder_accumulates_across_heartbeats() {
+    // When heartbeat_interval / effective_tpr has a remainder, the leftover
+    // ticks must accumulate across heartbeats to avoid losing fractional MP.
+    let mut config = test_config();
+    // Set ticks_per_mp_regen high so each heartbeat produces < 1 MP base,
+    // forcing remainder accumulation to matter.
+    config
+        .species
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .ticks_per_mp_regen = 5000;
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
+    let elf_id = spawn_elf(&mut sim);
+
+    // Zero stats to remove scaling (divisor = identity at stat 0).
+    zero_creature_stats(&mut sim, elf_id);
+
+    // Drain mana to 0.
+    let mut c = sim.db.creatures.get(&elf_id).unwrap();
+    c.mp = 0;
+    c.mp_regen_remainder = 0;
+    sim.db.update_creature(c).unwrap();
+
+    let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    // ticks_per_mp_regen=5000, heartbeat=3000, stat=0 (identity divisor).
+    // Each heartbeat: total_ticks = remainder + 3000.
+    // HB1: 0+3000 / 5000 = 0 MP, remainder 3000
+    // HB2: 3000+3000 / 5000 = 1 MP, remainder 1000
+    // HB3: 1000+3000 / 5000 = 0 MP, remainder 4000
+    // HB4: 4000+3000 / 5000 = 1 MP, remainder 2000
+    // After 4 heartbeats: 2 MP total.
+
+    // Advance 4 heartbeats.
+    sim.step(&[], sim.tick + heartbeat * 4 + 1);
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(
+        elf.mp, 2,
+        "should gain 2 MP over 4 heartbeats via remainder accumulation, got {}",
+        elf.mp,
+    );
+    assert_eq!(
+        elf.mp_regen_remainder, 2000,
+        "remainder should be 2000, got {}",
+        elf.mp_regen_remainder,
+    );
+}
+
+#[test]
+fn mp_regen_remainder_serde_roundtrip() {
+    let mut sim = test_sim(fresh_test_seed());
+    let elf_id = spawn_elf(&mut sim);
+    let mut c = sim.db.creatures.get(&elf_id).unwrap();
+    c.mp_regen_remainder = 1234;
+    sim.db.update_creature(c).unwrap();
+
+    let json = serde_json::to_string(&sim.db).unwrap();
+    let restored: crate::db::SimDb = serde_json::from_str(&json).unwrap();
+    let elf = restored.creatures.get(&elf_id).unwrap();
+    assert_eq!(elf.mp_regen_remainder, 1234);
+}
+
+#[test]
+fn mp_regen_remainder_defaults_on_old_save() {
+    // Old saves without mp_regen_remainder should default to 0.
+    let mut sim = test_sim(fresh_test_seed());
+    let elf_id = spawn_elf(&mut sim);
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    let json = serde_json::to_string(&elf).unwrap();
+
+    let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    value.as_object_mut().unwrap().remove("mp_regen_remainder");
+    let stripped = serde_json::to_string(&value).unwrap();
+
+    let restored: crate::db::Creature = serde_json::from_str(&stripped).unwrap();
+    assert_eq!(restored.mp_regen_remainder, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -152,34 +237,36 @@ fn elf_mana_does_not_exceed_max() {
 
 #[test]
 fn elf_mana_overflow_goes_to_tree() {
-    let mut sim = test_sim(legacy_test_seed());
-    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    // Overflow is 1:1: any regen MP beyond mp_max goes directly to the tree.
+    // Use zero stats so effective_tpr = base ticks_per_mp_regen (no scaling).
+    let mut sim = test_sim(fresh_test_seed());
+    let elf_id = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, elf_id);
     let tree_id = sim.player_tree_id;
     let elf_mp_max = sim.db.creatures.get(&elf_id).unwrap().mp_max;
 
     // Elf starts at full mana → all generation overflows to tree.
     assert_eq!(sim.db.creatures.get(&elf_id).unwrap().mp, elf_mp_max);
 
-    // Set tree mana to 0 so we can measure what gets added.
+    // Zero remainder and tree mana for a clean measurement.
+    let mut c = sim.db.creatures.get(&elf_id).unwrap();
+    c.mp_regen_remainder = 0;
+    sim.db.update_creature(c).unwrap();
     let mut info = sim.db.great_tree_infos.get(&tree_id).unwrap();
     info.mana_stored = 0;
     sim.db.update_great_tree_info(info).unwrap();
 
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    let tpr = sim.species_table[&Species::Elf].ticks_per_mp_regen;
     sim.step(&[], sim.tick + heartbeat + 1);
 
     let info = sim.db.great_tree_infos.get(&tree_id).unwrap();
-    assert!(
-        info.mana_stored > 0,
-        "tree should have gained mana from elf overflow: {}",
-        info.mana_stored
-    );
-    // Should gain exactly mana_base_generation_rate_mm (1000 millimana) per
-    // heartbeat when fully overflowing.
-    let expected = sim.config.mana_base_generation_rate_mm;
+    // With zero stats, effective_tpr = tpr (identity divisor).
+    // Regen = heartbeat / tpr. All of it overflows since elf is at max.
+    let expected_overflow = heartbeat as i64 / tpr as i64;
     assert_eq!(
-        info.mana_stored, expected,
-        "expected {expected} millimana, got {}",
+        info.mana_stored, expected_overflow,
+        "tree should gain exactly {expected_overflow} MP (1:1 overflow), got {}",
         info.mana_stored
     );
 }
@@ -236,28 +323,29 @@ fn wild_creature_mana_overflow_is_lost() {
 fn elf_mana_regen_scaled_by_wil_int_average() {
     let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
-    let species_mpt = sim.species_table[&Species::Elf].mana_per_tick;
+    let tpr = sim.species_table[&Species::Elf].ticks_per_mp_regen;
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
     let wil = sim.trait_int(elf_id, TraitKind::Willpower, 0);
     let int = sim.trait_int(elf_id, TraitKind::Intelligence, 0);
     let avg_stat = (wil + int) / 2;
 
-    // Drain the elf's mana to 0 so we can measure pure regen.
+    // Drain the elf's mana to 0 and zero remainder for clean measurement.
     let mp_max = sim.db.creatures.get(&elf_id).unwrap().mp_max;
     let mut c = sim.db.creatures.get(&elf_id).unwrap();
     c.mp = 0;
+    c.mp_regen_remainder = 0;
     sim.db.update_creature(c).unwrap();
 
     sim.step(&[], sim.tick + heartbeat + 1);
 
     let mp_after = sim.db.creatures.get(&elf_id).unwrap().mp;
-    let expected_regen =
-        crate::stats::apply_stat_multiplier(species_mpt, avg_stat) * heartbeat as i64;
+    let effective_tpr = crate::stats::apply_stat_divisor(tpr as i64, avg_stat).max(1);
+    let expected_regen = heartbeat as i64 / effective_tpr;
     // Regen should not exceed mp_max.
     let expected = expected_regen.min(mp_max);
     assert_eq!(
         mp_after, expected,
-        "mana regen should be species base ({species_mpt}) scaled by avg(WIL={wil}, INT={int})={avg_stat}: \
+        "mana regen should use ticks_per_mp_regen ({tpr}) scaled by avg(WIL={wil}, INT={int})={avg_stat}: \
          expected {expected}, got {mp_after}"
     );
 }
@@ -281,7 +369,11 @@ fn build_action_drains_elf_mana() {
     // Disable mana regen so we can observe net drain clearly.
     let mut config = test_config();
     config.build_work_ticks_per_voxel = 1;
-    config.species.get_mut(&Species::Elf).unwrap().mana_per_tick = 0;
+    config
+        .species
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .ticks_per_mp_regen = 0;
     let mut sim = SimState::with_config(legacy_test_seed(), config);
 
     let air_coord = find_air_adjacent_to_trunk(&sim);
@@ -317,7 +409,11 @@ fn build_action_drains_elf_mana() {
 fn build_wasted_action_no_progress() {
     let mut config = test_config();
     config.build_work_ticks_per_voxel = 1;
-    config.species.get_mut(&Species::Elf).unwrap().mana_per_tick = 0;
+    config
+        .species
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .ticks_per_mp_regen = 0;
     let mut sim = SimState::with_config(legacy_test_seed(), config);
     let air_coord = find_air_adjacent_to_trunk(&sim);
     let elf_id = spawn_elf(&mut sim);
@@ -477,7 +573,11 @@ fn nonmagical_creature_cannot_claim_build_task() {
 fn elf_with_no_mana_skips_build_task() {
     let mut config = test_config();
     config.build_work_ticks_per_voxel = 1;
-    config.species.get_mut(&Species::Elf).unwrap().mana_per_tick = 0;
+    config
+        .species
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .ticks_per_mp_regen = 0;
     let mut sim = SimState::with_config(legacy_test_seed(), config);
 
     let elf_id = spawn_elf(&mut sim);
@@ -594,10 +694,10 @@ fn mana_cost_per_action_carve_uses_default() {
 #[test]
 fn mana_cost_per_action_zero_cost_returns_zero() {
     let mut config = test_config();
-    config.platform_mana_cost_per_mille = 0;
+    config.platform_mana_cost = 0;
     let sim = SimState::with_config(legacy_test_seed(), config);
     let cost = sim.mana_cost_per_action(Some(BuildType::Platform));
-    assert_eq!(cost, 0, "zero per-mille cost should yield zero cost");
+    assert_eq!(cost, 0, "zero cost config should yield zero cost");
 }
 
 #[test]
@@ -677,28 +777,36 @@ fn nonmagical_creature_cannot_claim_furnish_task() {
 
 #[test]
 fn multiple_elves_overflow_to_same_tree() {
-    let mut sim = test_sim(legacy_test_seed());
-    let _elf1 = spawn_creature(&mut sim, Species::Elf);
-    let _elf2 = spawn_creature(&mut sim, Species::Elf);
+    let mut sim = test_sim(fresh_test_seed());
+    let elf1 = spawn_elf(&mut sim);
+    let elf2 = spawn_elf(&mut sim);
+    zero_creature_stats(&mut sim, elf1);
+    zero_creature_stats(&mut sim, elf2);
     let tree_id = sim.player_tree_id;
 
-    // Zero tree mana, then advance two full heartbeat intervals to ensure
-    // both elves get at least one heartbeat from this baseline.
+    // Zero remainder and tree mana for clean measurement.
+    for elf_id in [elf1, elf2] {
+        let mut c = sim.db.creatures.get(&elf_id).unwrap();
+        c.mp_regen_remainder = 0;
+        sim.db.update_creature(c).unwrap();
+    }
     let mut info = sim.db.great_tree_infos.get(&tree_id).unwrap();
     info.mana_stored = 0;
     sim.db.update_great_tree_info(info).unwrap();
 
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
-    sim.step(&[], sim.tick + heartbeat * 2 + 1);
+    let tpr = sim.species_table[&Species::Elf].ticks_per_mp_regen;
+    let single_elf_overflow = heartbeat as i64 / tpr as i64;
+    sim.step(&[], sim.tick + heartbeat + 1);
 
     let info = sim.db.great_tree_infos.get(&tree_id).unwrap();
-    // Two elves at full mp, each contributing base_generation_rate_mm per
-    // heartbeat. Over 2 intervals, each elf contributes ~2×, total ~4×.
-    // We just check that we got contributions from both (> 1×).
-    let single_heartbeat = sim.config.mana_base_generation_rate_mm;
-    assert!(
-        info.mana_stored > single_heartbeat,
-        "tree should receive overflow from multiple elves: got {}",
+    // Two elves at full mp (zero stats), each overflow = heartbeat / tpr.
+    // Total tree gain = 2 × single_elf_overflow.
+    assert_eq!(
+        info.mana_stored,
+        2 * single_elf_overflow,
+        "tree should receive overflow from both elves: expected {}, got {}",
+        2 * single_elf_overflow,
         info.mana_stored
     );
 }
@@ -711,34 +819,101 @@ fn config_backward_compat_mana_fields_from_old_json() {
     let json = serde_json::to_string(&config).unwrap();
     let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
     let obj = value.as_object_mut().unwrap();
-    obj.remove("platform_mana_cost_per_mille");
-    obj.remove("default_mana_cost_per_mille");
-    obj.remove("grow_mana_cost_per_mille");
+    obj.remove("platform_mana_cost");
+    obj.remove("default_mana_cost");
+    obj.remove("grow_mana_cost");
     obj.remove("mana_abandon_threshold");
     let stripped = serde_json::to_string(&value).unwrap();
 
     let restored: GameConfig = serde_json::from_str(&stripped).unwrap();
-    assert_eq!(restored.platform_mana_cost_per_mille, 20);
-    assert_eq!(restored.default_mana_cost_per_mille, 20);
-    assert_eq!(restored.grow_mana_cost_per_mille, 20);
+    assert_eq!(restored.platform_mana_cost, 2);
+    assert_eq!(restored.default_mana_cost, 2);
+    assert_eq!(restored.grow_mana_cost, 2);
     assert_eq!(restored.mana_abandon_threshold, 3);
 }
 
 #[test]
 fn species_config_backward_compat_mana_fields() {
-    // Serialize elf SpeciesData, strip mp_max and mana_per_tick, verify defaults.
+    // Serialize elf SpeciesData, strip mp_max and ticks_per_mp_regen, verify defaults.
     let config = GameConfig::default();
     let elf_data = &config.species[&Species::Elf];
     let json = serde_json::to_string(elf_data).unwrap();
     let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
     let obj = value.as_object_mut().unwrap();
     obj.remove("mp_max");
-    obj.remove("mana_per_tick");
+    obj.remove("ticks_per_mp_regen");
     let stripped = serde_json::to_string(&value).unwrap();
 
     let restored: crate::species::SpeciesData = serde_json::from_str(&stripped).unwrap();
     assert_eq!(restored.mp_max, 0);
-    assert_eq!(restored.mana_per_tick, 0);
+    assert_eq!(restored.ticks_per_mp_regen, 0);
+}
+
+#[test]
+fn config_ignores_removed_mana_base_generation_rate_mm() {
+    // Old configs with the removed field should still deserialize cleanly.
+    let config = GameConfig::default();
+    let json = serde_json::to_string(&config).unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    // Add the old field that was removed in F-mana-scale.
+    value
+        .as_object_mut()
+        .unwrap()
+        .insert("mana_base_generation_rate_mm".to_string(), 1000.into());
+    let modified = serde_json::to_string(&value).unwrap();
+
+    let restored: GameConfig = serde_json::from_str(&modified).unwrap();
+    // Should parse fine — unknown fields are silently ignored.
+    assert!(restored.platform_mana_cost > 0);
+}
+
+#[test]
+fn zero_regen_elf_does_not_overflow_to_tree() {
+    // An elf with ticks_per_mp_regen=0 should generate no mana and send
+    // nothing to the tree, even if at full MP.
+    let mut config = test_config();
+    config
+        .species
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .ticks_per_mp_regen = 0;
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
+    let _elf_id = spawn_elf(&mut sim);
+    let tree_id = sim.player_tree_id;
+
+    let mut info = sim.db.great_tree_infos.get(&tree_id).unwrap();
+    info.mana_stored = 0;
+    sim.db.update_great_tree_info(info).unwrap();
+
+    let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+    sim.step(&[], sim.tick + heartbeat + 1);
+
+    let info = sim.db.great_tree_infos.get(&tree_id).unwrap();
+    assert_eq!(
+        info.mana_stored, 0,
+        "zero-regen elf should not overflow to tree"
+    );
+}
+
+#[test]
+fn grow_cost_uses_grow_config_not_default() {
+    let mut config = test_config();
+    config.grow_mana_cost = 5;
+    config.default_mana_cost = 2;
+    let sim = SimState::with_config(fresh_test_seed(), config);
+    assert_eq!(sim.mana_cost_for_grow_action(), 5);
+    assert_eq!(sim.mana_cost_per_action(None), 2);
+}
+
+#[test]
+fn starting_mana_less_than_capacity() {
+    let config = GameConfig::default();
+    assert!(
+        config.starting_mana < config.starting_mana_capacity,
+        "starting_mana ({}) should be less than starting_mana_capacity ({})",
+        config.starting_mana,
+        config.starting_mana_capacity
+    );
 }
 
 #[test]
@@ -811,7 +986,11 @@ fn requires_mana_correct_for_all_task_kinds() {
 #[test]
 fn drained_elf_can_still_claim_non_mana_tasks() {
     let mut config = test_config();
-    config.species.get_mut(&Species::Elf).unwrap().mana_per_tick = 0;
+    config
+        .species
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .ticks_per_mp_regen = 0;
     let mut sim = SimState::with_config(legacy_test_seed(), config);
     let elf_id = spawn_elf(&mut sim);
 
@@ -934,7 +1113,7 @@ fn successful_drain_does_not_record_position() {
 fn grow_mana_cost_config_defaults() {
     let config = GameConfig::default();
     assert!(
-        config.grow_mana_cost_per_mille > 0,
+        config.grow_mana_cost > 0,
         "grow mana cost should have a positive default"
     );
     assert!(
@@ -993,7 +1172,11 @@ fn grow_craft_task_has_action_count_total_cost() {
 fn grow_arrow_drains_elf_mana() {
     let mut config = test_config();
     // Disable mana regen so we can measure net drain.
-    config.species.get_mut(&Species::Elf).unwrap().mana_per_tick = 0;
+    config
+        .species
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .ticks_per_mp_regen = 0;
     let mut sim = SimState::with_config(legacy_test_seed(), config);
 
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
@@ -1042,7 +1225,11 @@ fn grow_arrow_drains_elf_mana() {
 #[test]
 fn grow_with_zero_mana_wastes_actions_and_abandons() {
     let mut config = test_config();
-    config.species.get_mut(&Species::Elf).unwrap().mana_per_tick = 0;
+    config
+        .species
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .ticks_per_mp_regen = 0;
     config.mana_abandon_threshold = 2;
     let mut sim = SimState::with_config(legacy_test_seed(), config);
 
@@ -1139,7 +1326,11 @@ fn nonmagical_creature_cannot_claim_grow_craft_task() {
 fn non_grow_craft_completes_with_zero_mana() {
     // Extract (non-Grow verb) should work even with 0 mana.
     let mut config = test_config();
-    config.species.get_mut(&Species::Elf).unwrap().mana_per_tick = 0;
+    config
+        .species
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .ticks_per_mp_regen = 0;
     let mut sim = SimState::with_config(legacy_test_seed(), config);
 
     let species_id = insert_full_chain_fruit_species(&mut sim);
@@ -1200,7 +1391,11 @@ fn non_grow_craft_completes_with_zero_mana() {
 #[test]
 fn drained_elf_can_still_claim_non_grow_craft_task() {
     let mut config = test_config();
-    config.species.get_mut(&Species::Elf).unwrap().mana_per_tick = 0;
+    config
+        .species
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .ticks_per_mp_regen = 0;
     let mut sim = SimState::with_config(legacy_test_seed(), config);
 
     let species_id = insert_full_chain_fruit_species(&mut sim);
@@ -1270,14 +1465,14 @@ fn grow_recipe_serde_backward_compat_new_config_fields() {
     let json = serde_json::to_string(&config).unwrap();
     let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
     let obj = value.as_object_mut().unwrap();
-    obj.remove("grow_mana_cost_per_mille");
+    obj.remove("grow_mana_cost");
     if let Some(grow_obj) = obj.get_mut("grow_recipes").and_then(|v| v.as_object_mut()) {
         grow_obj.remove("grow_work_ticks_per_action");
     }
     let stripped = serde_json::to_string(&value).unwrap();
 
     let restored: GameConfig = serde_json::from_str(&stripped).unwrap();
-    assert_eq!(restored.grow_mana_cost_per_mille, 20);
+    assert_eq!(restored.grow_mana_cost, 2);
     assert_eq!(restored.grow_recipes.grow_work_ticks_per_action, 1000);
 }
 
@@ -1285,7 +1480,11 @@ fn grow_recipe_serde_backward_compat_new_config_fields() {
 fn drained_elf_cannot_claim_grow_craft_task() {
     // An elf with mp > 0 but below the grow cost should not claim Grow tasks.
     let mut config = test_config();
-    config.species.get_mut(&Species::Elf).unwrap().mana_per_tick = 0;
+    config
+        .species
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .ticks_per_mp_regen = 0;
     let mut sim = SimState::with_config(legacy_test_seed(), config);
 
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);

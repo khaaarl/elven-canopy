@@ -23,7 +23,7 @@ Key stats for magic:
 | CHA  | Future: singing/buff effectiveness |
 
 WIL and INT are now wired (F-elf-mana-pool): WIL scales mp_max at spawn,
-avg(WIL, INT) scales mana_per_tick at each heartbeat.
+avg(WIL, INT) scales ticks_per_mp_regen at each heartbeat.
 
 ## Command Card (F-ability-hotkeys)
 

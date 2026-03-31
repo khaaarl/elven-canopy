@@ -54,13 +54,13 @@
 // - `rest_per_sleep_tick` — rest restored per sim tick of sleeping, applied
 //   at each sleep task activation.
 // - `mp_max` — maximum mana pool. 0 = nonmagical (cannot construct or perform
-//   mana-requiring tasks). Uses the same large-integer scale as `food_max`.
+//   mana-requiring tasks). Human-scale integer (e.g., 100). WIL scales at spawn.
 // - `ticks_per_hp_regen` — ticks between regenerating 1 HP. Batch-applied at
-//   heartbeat as `heartbeat_interval_ticks / ticks_per_hp_regen` HP (integer
-//   division), clamped to `hp_max`. 0 = no passive regen (default). Trolls use
-//   this for their signature regeneration.
-// - `mana_per_tick` — mana generated per sim tick. Batch-applied at heartbeat.
-//   Excess overflows to the bonded tree.
+//   heartbeat with remainder accumulation, clamped to `hp_max`. 0 = no passive
+//   regen (default). Trolls use this for their signature regeneration.
+// - `ticks_per_mp_regen` — ticks between regenerating 1 MP. Batch-applied at
+//   heartbeat with remainder accumulation and stat scaling via divisor.
+//   Excess overflows 1:1 to the bonded tree.
 // - `engagement_style` — `EngagementStyle` struct controlling combat behavior:
 //   weapon preference (melee/ranged), engagement initiative (aggressive/
 //   defensive/passive), ammo exhaustion behavior (switch to melee/flee), and
@@ -311,17 +311,19 @@ pub struct SpeciesData {
     pub rest_per_sleep_tick: i64,
 
     /// Maximum mana pool for this species. 0 = nonmagical (cannot construct or
-    /// perform other mana-requiring tasks). Uses the same large-integer scale
-    /// as `food_max` / `rest_max` to avoid floating-point determinism issues.
+    /// perform other mana-requiring tasks). Human-scale integer (e.g., 100).
+    /// WIL scales at spawn via `apply_stat_multiplier`.
     /// Current mana starts at `mp_max` on spawn.
     #[serde(default)]
     pub mp_max: i64,
 
-    /// Mana generated per sim tick. Batch-applied at heartbeat as
-    /// `mana_per_tick * heartbeat_interval_ticks`, then excess overflows to the
-    /// bonded tree. 0 = no natural mana generation.
+    /// Ticks between regenerating 1 MP. Batch-applied at heartbeat as
+    /// `heartbeat_interval / ticks_per_mp_regen` (integer division with
+    /// remainder accumulation), scaled by avg(WIL, INT) via `apply_stat_divisor`.
+    /// Excess beyond mp_max overflows 1:1 to the bonded tree.
+    /// 0 = no natural mana generation.
     #[serde(default)]
-    pub mana_per_tick: i64,
+    pub ticks_per_mp_regen: u64,
 
     /// Per-stat distribution parameters for rolling creature stats at spawn.
     /// Key: a stat `TraitKind` (Strength through Charisma). Value: mean and

@@ -1414,32 +1414,42 @@ impl SimState {
                     let rest_decay = species_data.rest_decay_per_tick * interval as i64;
                     creature.rest = (creature.rest - rest_decay).max(0);
 
-                    // HP regeneration: batch-apply over the heartbeat interval.
-                    // ticks_per_hp_regen=0 means no regen; otherwise regen
-                    // = interval / ticks_per_hp_regen HP (integer division).
+                    // HP regeneration: ticks_per_hp_regen with remainder
+                    // accumulation. 0 = no regen. Uses u64 arithmetic to
+                    // avoid sign issues with huge ticks_per_hp_regen values.
                     if species_data.ticks_per_hp_regen > 0 {
-                        let hp_regen = (interval / species_data.ticks_per_hp_regen) as i64;
+                        let total_ticks = creature.hp_regen_remainder as u64 + interval;
+                        let hp_regen = (total_ticks / species_data.ticks_per_hp_regen) as i64;
+                        let rem = total_ticks % species_data.ticks_per_hp_regen;
+                        debug_assert!(rem <= u16::MAX as u64);
+                        creature.hp_regen_remainder = rem as u16;
                         creature.hp = (creature.hp + hp_regen).min(creature.hp_max);
                     }
 
-                    // Mana generation: batch-apply mana_per_tick over the
-                    // heartbeat interval, scaled by avg(WIL, INT). Excess
-                    // beyond mp_max overflows to the bonded tree.
-                    let mana_gen = if species_data.mana_per_tick > 0 {
+                    // Mana regeneration: ticks_per_mp_regen with remainder
+                    // accumulation, scaled by avg(WIL, INT) via divisor.
+                    // Excess beyond mp_max overflows 1:1 to the bonded tree.
+                    let mana_regen = if species_data.ticks_per_mp_regen > 0 {
                         let wil = self.trait_int(creature_id, TraitKind::Willpower, 0);
                         let int = self.trait_int(creature_id, TraitKind::Intelligence, 0);
                         let avg_wil_int = (wil + int) / 2;
-                        let scaled_mpt = crate::stats::apply_stat_multiplier(
-                            species_data.mana_per_tick,
+                        let effective_tpr = crate::stats::apply_stat_divisor(
+                            species_data.ticks_per_mp_regen as i64,
                             avg_wil_int,
-                        );
-                        scaled_mpt * interval as i64
+                        )
+                        .max(1);
+                        let total_ticks = creature.mp_regen_remainder as i64 + interval as i64;
+                        let regen = total_ticks / effective_tpr;
+                        let rem = total_ticks % effective_tpr;
+                        debug_assert!(rem <= u16::MAX as i64);
+                        creature.mp_regen_remainder = rem as u16;
+                        regen
                     } else {
                         0
                     };
                     let mp_before = creature.mp;
-                    let mp_after = (mp_before + mana_gen).min(creature.mp_max);
-                    let mana_overflow = (mp_before + mana_gen) - mp_after;
+                    let mp_after = (mp_before + mana_regen).min(creature.mp_max);
+                    let mana_overflow = (mp_before + mana_regen) - mp_after;
                     creature.mp = mp_after;
                     let civ_for_overflow = creature.civ_id;
 
@@ -1466,36 +1476,23 @@ impl SimState {
                     // Write back mutated fields.
                     let _ = self.db.update_creature(creature);
 
-                    // Overflow mana to the bonded tree (the tree owned by
-                    // the creature's civilization). Wild creatures (no civ)
+                    // Overflow mana 1:1 to the bonded tree (the tree owned
+                    // by the creature's civilization). Wild creatures (no civ)
                     // lose their excess.
                     if mana_overflow > 0
-                        && mana_gen > 0
                         && let Some(civ_id) = civ_for_overflow
-                    {
-                        // Convert: overflow fraction × base_generation_rate
-                        // gives tree-scale mana (millimana). When fully
-                        // overflowing (overflow == mana_gen), the tree gains
-                        // exactly mana_base_generation_rate_mm per heartbeat.
-                        // Clamp overflow to mana_gen in case mp > mp_max.
-                        let clamped_overflow = mana_overflow.min(mana_gen);
-                        let tree_gain =
-                            clamped_overflow * self.config.mana_base_generation_rate_mm / mana_gen;
-                        // Find the tree owned by this civ and add mana to its
-                        // GreatTreeInfo row.
-                        if let Some(tree) = self
+                        && let Some(tree) = self
                             .db
                             .trees
                             .by_owner(&Some(civ_id), tabulosity::QueryOpts::ASC)
                             .into_iter()
                             .next()
-                        {
-                            let tree_id = tree.id;
-                            if let Some(mut info) = self.db.great_tree_infos.get(&tree_id) {
-                                info.mana_stored =
-                                    (info.mana_stored + tree_gain).min(info.mana_capacity);
-                                let _ = self.db.update_great_tree_info(info);
-                            }
+                    {
+                        let tree_id = tree.id;
+                        if let Some(mut info) = self.db.great_tree_infos.get(&tree_id) {
+                            info.mana_stored =
+                                (info.mana_stored + mana_overflow).min(info.mana_capacity);
+                            let _ = self.db.update_great_tree_info(info);
                         }
                     }
 

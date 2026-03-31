@@ -167,7 +167,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-los-tuning           Line-of-sight tuning (terrain tolerance, tall creature bonus)
 [ ] F-magic-items          Magic item personalities and crafting
 [ ] F-mana-mood            Mana generation tied to elf mood
-[ ] F-mana-scale           Rescale mana to human-readable values and ticks_per_mp_regen
 [ ] F-mana-transfer        Tree-to-elf mana transfer
 [ ] F-mass-conserve        Wood mass tracking and conservation
 [ ] F-megachunk            MegaChunk spatial hierarchy with draw distance and frustum culling
@@ -429,6 +428,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-main-menu            Main menu UI
 [x] F-mana-depleted-vfx    Visual feedback for mana-depleted work actions
 [x] F-mana-grow-recipes    Grow-verb crafting recipes cost mana
+[x] F-mana-scale           Rescale mana to human-readable values and ticks_per_mp_regen
 [x] F-mana-system          Mana generation, storage, and spending
 [x] F-manufacturing        Item schema expansion + workshop manufacturing
 [x] F-melee-action         Melee attack action
@@ -5477,7 +5477,7 @@ and the souls/emotions imbued in them.
 **Related:** F-cloak-slot, F-crafting, F-soul-mech
 
 #### F-mana-scale — Rescale mana to human-readable values and ticks_per_mp_regen
-**Status:** Todo
+**Status:** Done
 
 Rescale the mana system from the current 1e15 internal scale to
 human-comprehensible values (e.g. mp_max ~100–400, similar to HP).

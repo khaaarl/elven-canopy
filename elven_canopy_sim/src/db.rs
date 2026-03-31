@@ -321,9 +321,9 @@ pub struct Tree {
 pub struct GreatTreeInfo {
     #[primary_key]
     pub id: TreeId,
-    /// Tree-scale mana in millimana (1000 = 1.0 display mana).
+    /// Tree mana stored. Same unit as creature MP (whole integers).
     pub mana_stored: i64,
-    /// Maximum tree mana in millimana.
+    /// Maximum tree mana. Same unit as creature MP.
     pub mana_capacity: i64,
     /// Fruit spawn chance per heartbeat, in parts per million (500_000 = 50%).
     pub fruit_production_rate_ppm: u32,
@@ -388,6 +388,10 @@ pub struct Creature {
     /// Maximum hit points (set from `SpeciesData::hp_max` at spawn).
     #[serde(default)]
     pub hp_max: i64,
+    /// Accumulated leftover ticks from HP regeneration. Tracks fractional
+    /// HP across heartbeats to avoid precision loss with `ticks_per_hp_regen`.
+    #[serde(default)]
+    pub hp_regen_remainder: u16,
     /// Whether this creature is alive, incapacitated, dead, or in a future
     /// supernatural state. Dead creatures are excluded from all active
     /// simulation queries. Incapacitated creatures are rendered and targetable
@@ -402,6 +406,11 @@ pub struct Creature {
     /// 0 = nonmagical — cannot claim mana-requiring tasks.
     #[serde(default)]
     pub mp_max: i64,
+    /// Accumulated leftover ticks from mana regeneration. Tracks fractional
+    /// MP across heartbeats to avoid precision loss with small integer MP
+    /// values and `ticks_per_mp_regen`.
+    #[serde(default)]
+    pub mp_regen_remainder: u16,
     /// Consecutive wasted work actions due to insufficient mana. Reset to 0
     /// on any successful work action or task change (including mope interrupts).
     /// When this reaches `GameConfig::mana_abandon_threshold`, the creature

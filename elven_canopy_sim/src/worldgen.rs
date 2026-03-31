@@ -235,8 +235,8 @@ pub fn run_worldgen(seed: u64, config: &GameConfig, log: &WgLog) -> WorldgenResu
     // Home tree gets both a Tree row and a GreatTreeInfo row.
     let great_tree_info = GreatTreeInfo {
         id: home_tree.id,
-        mana_stored: config.starting_mana_mm,
-        mana_capacity: config.starting_mana_capacity_mm,
+        mana_stored: config.starting_mana,
+        mana_capacity: config.starting_mana_capacity,
         fruit_production_rate_ppm: config.fruit_production_rate_ppm,
         carrying_capacity: 20,
         current_load: 0,

@@ -712,13 +712,13 @@ impl SimBridge {
         self.session.current_tick() as i64
     }
 
-    /// Return the mana stored in the player's home tree (display units).
+    /// Return the mana stored in the player's home tree.
     #[func]
     fn home_tree_mana(&self) -> f64 {
         self.session.sim.as_ref().map_or(0.0, |s| {
             s.db.great_tree_infos
                 .get(&s.player_tree_id)
-                .map_or(0.0, |info| info.mana_stored as f64 / 1000.0)
+                .map_or(0.0, |info| info.mana_stored as f64)
         })
     }
 
@@ -939,13 +939,10 @@ impl SimBridge {
         let mut dict = VarDictionary::new();
         dict.set("health", tree.health as i32);
         dict.set("growth_level", tree.growth_level as i32);
-        dict.set(
-            "mana_stored",
-            info.map_or(0.0, |i| i.mana_stored as f64 / 1000.0),
-        );
+        dict.set("mana_stored", info.map_or(0.0, |i| i.mana_stored as f64));
         dict.set(
             "mana_capacity",
-            info.map_or(0.0, |i| i.mana_capacity as f64 / 1000.0),
+            info.map_or(0.0, |i| i.mana_capacity as f64),
         );
         dict.set("fruit_count", tree.fruit_positions.len() as i32);
         dict.set(

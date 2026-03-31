@@ -1924,7 +1924,7 @@ impl Default for ComponentRecipeConfig {
 pub struct GrowRecipeConfig {
     /// Duration of one work action for Grow recipes (ticks). The total recipe
     /// work_ticks is split into ceil(work_ticks / this) actions, each draining
-    /// mana via `GameConfig::grow_mana_cost_per_mille`.
+    /// mana via `GameConfig::grow_mana_cost`.
     #[serde(default = "default_grow_work_ticks_per_action")]
     pub grow_work_ticks_per_action: u64,
 
@@ -2439,30 +2439,24 @@ pub struct GameConfig {
     /// mana capacity updates).
     pub tree_heartbeat_interval_ticks: u64,
 
-    /// Base tree mana generated per elf per heartbeat, in millimana
-    /// (1000 = 1.0 display mana).
-    pub mana_base_generation_rate_mm: i64,
-
     /// Range of mood-based multipliers on mana generation, in per-mille
     /// (1000 = 1.0×). `(min_multiplier, max_multiplier)` — interpolated
     /// from worst to best mood.
     pub mana_mood_multiplier_range_permille: (i64, i64),
 
-    /// Mana cost to grow one voxel of platform, in per-mille of the
-    /// creature's mp_max (20 = 2%). Creature-scale cost = mp_max / 1000 × this.
-    #[serde(default = "default_platform_mana_cost_per_mille")]
-    pub platform_mana_cost_per_mille: u32,
+    /// Flat mana cost per work action when building a platform voxel.
+    #[serde(default = "default_platform_mana_cost")]
+    pub platform_mana_cost: i64,
 
-    /// Default mana cost per work action for build types that don't have a
-    /// specific config field (walls, struts, carving, ladders, furnishing),
-    /// in per-mille of mp_max.
-    #[serde(default = "default_mana_cost_per_mille")]
-    pub default_mana_cost_per_mille: u32,
+    /// Flat mana cost per work action for build types that don't have a
+    /// specific config field (walls, struts, carving, ladders, furnishing).
+    #[serde(default = "default_mana_cost")]
+    pub default_mana_cost: i64,
 
-    /// Mana cost per work action for Grow-verb crafting recipes (magical
-    /// shaping of wood at a workshop), in per-mille of mp_max.
-    #[serde(default = "default_grow_mana_cost_per_mille")]
-    pub grow_mana_cost_per_mille: u32,
+    /// Flat mana cost per work action for Grow-verb crafting recipes
+    /// (magical shaping of wood at a workshop).
+    #[serde(default = "default_grow_mana_cost")]
+    pub grow_mana_cost: i64,
 
     /// Number of consecutive wasted work actions (insufficient mana) before
     /// a creature abandons its current task. The task reverts to Available
@@ -2491,12 +2485,12 @@ pub struct GameConfig {
     #[serde(default = "default_floor_y")]
     pub floor_y: i32,
 
-    /// Initial mana stored in the player's home tree, in millimana
-    /// (1000 = 1.0 display mana).
-    pub starting_mana_mm: i64,
+    /// Initial mana stored in the player's home tree. Same unit as
+    /// creature MP — whole integers.
+    pub starting_mana: i64,
 
-    /// Maximum mana the starting tree can hold, in millimana.
-    pub starting_mana_capacity_mm: i64,
+    /// Maximum mana the starting tree can hold. Same unit as creature MP.
+    pub starting_mana_capacity: i64,
 
     /// Ticks of work per voxel during construction. An elf must accumulate
     /// this many activations-worth of work before one blueprint voxel
@@ -3024,16 +3018,16 @@ pub struct PathDef {
     pub extra_advancement_rolls: u32,
 }
 
-fn default_platform_mana_cost_per_mille() -> u32 {
-    20
+fn default_platform_mana_cost() -> i64 {
+    2
 }
 
-fn default_mana_cost_per_mille() -> u32 {
-    20
+fn default_mana_cost() -> i64 {
+    2
 }
 
-fn default_grow_mana_cost_per_mille() -> u32 {
-    20
+fn default_grow_mana_cost() -> i64 {
+    2
 }
 
 fn default_mana_abandon_threshold() -> u32 {
@@ -3256,8 +3250,8 @@ impl Default for GameConfig {
                     disengage_threshold_pct: 100,
                 },
                 hostile_detection_range_sq: 225, // 15-voxel detection radius
-                mp_max: 707_106_972_102_150, // base; WIL scales at spawn (median WIL=50 → ~1e15)
-                mana_per_tick: 2_526_194_874, // base; avg(WIL,INT) scales at heartbeat (median avg=40 → ~3.3e9)
+                mp_max: 100,                     // base; WIL scales at spawn (median WIL=50 → ~141)
+                ticks_per_mp_regen: 2000, // base ticks per 1 MP; avg(WIL,INT) reduces via divisor
                 stat_distributions: stat_dists(&[
                     (TraitKind::Strength, 0, 40),
                     (TraitKind::Agility, 20, 40),
@@ -3307,7 +3301,7 @@ impl Default for GameConfig {
                 engagement_style: EngagementStyle::default(),
                 hostile_detection_range_sq: 0,
                 mp_max: 0,
-                mana_per_tick: 0,
+                ticks_per_mp_regen: 0,
                 stat_distributions: stat_dists(&[
                     (TraitKind::Strength, -100, 40),
                     (TraitKind::Agility, -68, 40),
@@ -3357,7 +3351,7 @@ impl Default for GameConfig {
                 engagement_style: EngagementStyle::default(),
                 hostile_detection_range_sq: 0,
                 mp_max: 0,
-                mana_per_tick: 0,
+                ticks_per_mp_regen: 0,
                 stat_distributions: stat_dists(&[
                     (TraitKind::Strength, 50, 40),
                     (TraitKind::Agility, -26, 40),
@@ -3407,7 +3401,7 @@ impl Default for GameConfig {
                 engagement_style: EngagementStyle::default(),
                 hostile_detection_range_sq: 0,
                 mp_max: 0,
-                mana_per_tick: 0,
+                ticks_per_mp_regen: 0,
                 stat_distributions: stat_dists(&[
                     (TraitKind::Strength, -50, 40),
                     (TraitKind::Agility, 32, 40),
@@ -3457,7 +3451,7 @@ impl Default for GameConfig {
                 engagement_style: EngagementStyle::default(),
                 hostile_detection_range_sq: 0,
                 mp_max: 0,
-                mana_per_tick: 0,
+                ticks_per_mp_regen: 0,
                 stat_distributions: stat_dists(&[
                     (TraitKind::Strength, 250, 50),
                     (TraitKind::Agility, -49, 50),
@@ -3512,7 +3506,7 @@ impl Default for GameConfig {
                 },
                 hostile_detection_range_sq: 225, // 15-voxel detection radius
                 mp_max: 0,
-                mana_per_tick: 0,
+                ticks_per_mp_regen: 0,
                 stat_distributions: stat_dists(&[
                     (TraitKind::Strength, 58, 40),
                     (TraitKind::Agility, 15, 40),
@@ -3562,7 +3556,7 @@ impl Default for GameConfig {
                 engagement_style: EngagementStyle::default(),
                 hostile_detection_range_sq: 0,
                 mp_max: 0,
-                mana_per_tick: 0,
+                ticks_per_mp_regen: 0,
                 stat_distributions: stat_dists(&[
                     (TraitKind::Strength, -50, 40),
                     (TraitKind::Agility, -14, 40),
@@ -3617,7 +3611,7 @@ impl Default for GameConfig {
                 },
                 hostile_detection_range_sq: 225, // 15-voxel detection radius
                 mp_max: 0,
-                mana_per_tick: 0,
+                ticks_per_mp_regen: 0,
                 stat_distributions: stat_dists(&[
                     (TraitKind::Strength, 132, 40),
                     (TraitKind::Agility, -26, 40),
@@ -3667,7 +3661,7 @@ impl Default for GameConfig {
                 engagement_style: EngagementStyle::default(),
                 hostile_detection_range_sq: 0,
                 mp_max: 0,
-                mana_per_tick: 0,
+                ticks_per_mp_regen: 0,
                 stat_distributions: stat_dists(&[
                     (TraitKind::Strength, -150, 40),
                     (TraitKind::Agility, -49, 40),
@@ -3722,7 +3716,7 @@ impl Default for GameConfig {
                 },
                 hostile_detection_range_sq: 225, // 15-voxel detection radius
                 mp_max: 0,
-                mana_per_tick: 0,
+                ticks_per_mp_regen: 0,
                 stat_distributions: stat_dists(&[
                     (TraitKind::Strength, 232, 50),
                     (TraitKind::Agility, -26, 50),
@@ -3777,7 +3771,7 @@ impl Default for GameConfig {
                 },
                 hostile_detection_range_sq: 225, // 15-voxel detection radius
                 mp_max: 0,
-                mana_per_tick: 0,
+                ticks_per_mp_regen: 0,
                 stat_distributions: stat_dists(&[
                     (TraitKind::Strength, 100, 30),
                     (TraitKind::Agility, -26, 40),
@@ -3832,7 +3826,7 @@ impl Default for GameConfig {
                 },
                 hostile_detection_range_sq: 225, // 15-voxel detection radius
                 mp_max: 0,
-                mana_per_tick: 0,
+                ticks_per_mp_regen: 0,
                 stat_distributions: stat_dists(&[
                     (TraitKind::Strength, 200, 50),
                     (TraitKind::Agility, -68, 40),
@@ -3854,19 +3848,18 @@ impl Default for GameConfig {
         Self {
             tick_duration_ms: 1,
             tree_heartbeat_interval_ticks: 10000,
-            mana_base_generation_rate_mm: 1000,
             mana_mood_multiplier_range_permille: (200, 2000),
-            platform_mana_cost_per_mille: 20,
-            default_mana_cost_per_mille: 20,
-            grow_mana_cost_per_mille: 20,
+            platform_mana_cost: 2,
+            default_mana_cost: 2,
+            grow_mana_cost: 2,
             mana_abandon_threshold: 3,
             fruit_production_rate_ppm: 500_000,
             fruit_max_per_tree: 20,
             fruit_initial_attempts: 12,
             world_size: (1024, 255, 1024),
             floor_y: 50,
-            starting_mana_mm: 100_000,
-            starting_mana_capacity_mm: 500_000,
+            starting_mana: 100,
+            starting_mana_capacity: 10_000,
             build_work_ticks_per_voxel: 1000,
             carve_work_ticks_per_voxel: 1000,
             furnish_work_ticks_per_item: 2000,
@@ -4215,9 +4208,8 @@ mod tests {
         let json = r#"{
             "tick_duration_ms": 1,
             "tree_heartbeat_interval_ticks": 10000,
-            "mana_base_generation_rate_mm": 1000,
             "mana_mood_multiplier_range_permille": [200, 2000],
-            "platform_mana_cost_per_mille": 20,
+            "platform_mana_cost": 2,
 
             "fruit_production_rate_ppm": 500000,
             "fruit_max_per_tree": 20,
@@ -4225,8 +4217,8 @@ mod tests {
             "build_work_ticks_per_voxel": 1000,
             "world_size": [1024, 255, 1024],
                         "floor_y": 50,
-            "starting_mana_mm": 100000,
-            "starting_mana_capacity_mm": 500000,
+            "starting_mana": 100,
+            "starting_mana_capacity": 10000,
             "tree_profile": {
                 "growth": { "initial_energy": 200.0, "energy_to_radius": 0.07, "min_radius": 0.5, "growth_step_length": 1.0, "energy_per_step": 1.0 },
                 "split": { "split_chance_base": 0.15, "split_count": 2, "split_energy_ratio": 0.3, "split_angle": 0.5, "split_angle_variance": 0.3, "min_progress_for_split": 0.1 },
@@ -4249,17 +4241,16 @@ mod tests {
         let json = r#"{
             "tick_duration_ms": 1,
             "tree_heartbeat_interval_ticks": 10000,
-            "mana_base_generation_rate_mm": 2000,
             "mana_mood_multiplier_range_permille": [100, 3000],
-            "platform_mana_cost_per_mille": 16,
+            "platform_mana_cost": 3,
 
             "fruit_production_rate_ppm": 800000,
             "fruit_max_per_tree": 25,
             "fruit_initial_attempts": 15,
             "build_work_ticks_per_voxel": 2000,
             "world_size": [128, 64, 128],
-                        "starting_mana_mm": 200000,
-            "starting_mana_capacity_mm": 1000000,
+                        "starting_mana": 200,
+            "starting_mana_capacity": 20000,
             "tree_profile": {
                 "growth": {
                     "initial_energy": 300.0,
@@ -4368,17 +4359,16 @@ mod tests {
         let json = r#"{
             "tick_duration_ms": 1,
             "tree_heartbeat_interval_ticks": 10000,
-            "mana_base_generation_rate_mm": 1000,
             "mana_mood_multiplier_range_permille": [200, 2000],
-            "platform_mana_cost_per_mille": 20,
+            "platform_mana_cost": 2,
 
             "fruit_production_rate_ppm": 500000,
             "fruit_max_per_tree": 20,
             "fruit_initial_attempts": 12,
             "build_work_ticks_per_voxel": 1000,
             "world_size": [1024, 255, 1024],
-                        "starting_mana_mm": 100000,
-            "starting_mana_capacity_mm": 500000,
+                        "starting_mana": 100,
+            "starting_mana_capacity": 10000,
             "tree_profile": {
                 "growth": { "initial_energy": 200.0, "energy_to_radius": 0.07, "min_radius": 0.5, "growth_step_length": 1.0, "energy_per_step": 1.0 },
                 "split": { "split_chance_base": 0.15, "split_count": 2, "split_energy_ratio": 0.3, "split_angle": 0.5, "split_angle_variance": 0.3, "min_progress_for_split": 0.1 },

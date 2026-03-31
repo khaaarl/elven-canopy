@@ -191,8 +191,8 @@ pub(super) fn flat_world_sim(seed: u64) -> SimState {
     };
     let great_tree_info = GreatTreeInfo {
         id: player_tree_id,
-        mana_stored: config.starting_mana_mm,
-        mana_capacity: config.starting_mana_capacity_mm,
+        mana_stored: config.starting_mana,
+        mana_capacity: config.starting_mana_capacity,
         fruit_production_rate_ppm: config.fruit_production_rate_ppm,
         carrying_capacity: 20,
         current_load: 0,

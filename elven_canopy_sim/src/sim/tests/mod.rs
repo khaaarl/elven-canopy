@@ -62,7 +62,7 @@ fn new_sim_has_home_tree() {
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     assert_eq!(tree.owner, sim.player_civ_id);
     let great_info = sim.db.great_tree_infos.get(&sim.player_tree_id).unwrap();
-    assert_eq!(great_info.mana_stored, sim.config.starting_mana_mm);
+    assert_eq!(great_info.mana_stored, sim.config.starting_mana);
 }
 
 #[test]

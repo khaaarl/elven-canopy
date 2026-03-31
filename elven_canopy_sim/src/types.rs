@@ -502,9 +502,9 @@ pub enum TraitKind {
     /// Toughness. HP max multiplier.
     Constitution,
     /// Mental fortitude. Mana pool size (WIL scales mp_max at spawn),
-    /// mana regen rate (avg(WIL, INT) scales mana_per_tick at heartbeat).
+    /// mana regen rate (avg(WIL, INT) scales ticks_per_mp_regen at heartbeat).
     Willpower,
-    /// Cognitive ability. Mana regen rate (avg(WIL, INT) scales mana_per_tick
+    /// Cognitive ability. Mana regen rate (avg(WIL, INT) scales ticks_per_mp_regen
     /// at heartbeat), crafting quality (future).
     Intelligence,
     /// Awareness. Hostile detection range (F-per-detection), crafting (future).
