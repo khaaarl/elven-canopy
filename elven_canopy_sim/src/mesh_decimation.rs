@@ -624,6 +624,7 @@ impl SmoothMesh {
                 has_leaf_face: self.vertices[polygon[0] as usize].has_leaf_face,
                 initial_normal: ref_normal,
                 neighbors: Vec::new(), // Rebuilt during compact.
+                sway_weight: 1.0,      // Recomputed after decimation.
             });
 
             // Mark old triangles as dead.

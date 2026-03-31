@@ -57,7 +57,12 @@ func setup(camera: Camera3D, environment: Environment) -> void:
 	var shader := load("res://shaders/post_process.gdshader") as Shader
 	_material = ShaderMaterial.new()
 	_material.shader = shader
-	_material.render_priority = 1
+	# Must render BEFORE all other transparent objects so they draw on
+	# top of the composited result. SCREEN_TEXTURE only captures the
+	# opaque pass, so transparent objects are never in it regardless of
+	# ordering. Selection highlights use -1, sprites use 1+, so we use
+	# -10 to ensure we go first.
+	_material.render_priority = -10
 	_mesh_instance.material_override = _material
 
 	# Prevent frustum-culling the quad (its AABB is tiny at the camera

@@ -23,6 +23,17 @@
 // visible through semi-transparent leaves). Leaf uses a procedural noise
 // shader for alpha scissor (no UVs needed).
 //
+// Leaf vertex colors carry metadata instead of visual color:
+// - R: sway weight (distance-from-wood, normalized to 0–1). Computed
+//   per-vertex as the Euclidean distance from the vertex position to the
+//   nearest opaque voxel's bounding box surface, capped at SWAY_MAX_DISTANCE.
+//   Vertices on wood-leaf boundaries get 0 (anchored, no wind sway), leaf
+//   tips get 1 (full sway). The per-vertex approach gives a smooth continuous
+//   gradient across the mesh surface.
+// - G, B, A: reserved (0.0).
+// The shader reads R as the wind displacement multiplier, preventing
+// tearing at leaf-wood boundaries. See `leaf_noise.gdshader`.
+//
 // ## Decimation
 //
 // After the smooth mesh pipeline, an optional decimation pass in
@@ -642,6 +653,63 @@ pub fn flatten_to_chunk_mesh(mesh: &SmoothMesh, chunk: ChunkCoord) -> ChunkMesh 
     result
 }
 
+/// Maximum distance (in voxel units) for sway weight normalization.
+/// Leaf vertices at this distance or farther from wood get sway_weight = 1.0.
+const SWAY_MAX_DISTANCE: f32 = 4.0;
+
+/// Compute per-vertex sway weights for leaf vertices in the smooth mesh.
+///
+/// For each leaf vertex, finds the minimum Euclidean distance from the
+/// vertex position to the nearest opaque (wood) voxel's bounding box,
+/// then normalizes to [0.0, 1.0] using `SWAY_MAX_DISTANCE`. This gives
+/// a smooth, continuous gradient across the mesh surface — vertices on
+/// the wood-leaf boundary get 0.0, and leaf tips get 1.0.
+fn compute_vertex_sway_weights(mesh: &mut SmoothMesh, nh: &ChunkNeighborhood) {
+    let search_radius = SWAY_MAX_DISTANCE.ceil() as i32 + 1;
+    for v in &mut mesh.vertices {
+        if !v.has_leaf_face {
+            continue;
+        }
+        let px = v.position[0];
+        let py = v.position[1];
+        let pz = v.position[2];
+
+        // Search voxels in a box around the vertex position.
+        let vx_min = (px as i32) - search_radius;
+        let vx_max = (px as i32) + search_radius;
+        let vy_min = (py as i32) - search_radius;
+        let vy_max = (py as i32) + search_radius;
+        let vz_min = (pz as i32) - search_radius;
+        let vz_max = (pz as i32) + search_radius;
+
+        let mut min_dist_sq = f32::MAX;
+        for vz in vz_min..=vz_max {
+            for vx in vx_min..=vx_max {
+                for vy in vy_min..=vy_max {
+                    if !nh.get(VoxelCoord::new(vx, vy, vz)).is_opaque() {
+                        continue;
+                    }
+                    // Point-to-AABB distance: voxel at (vx,vy,vz) occupies
+                    // the box [vx, vx+1] × [vy, vy+1] × [vz, vz+1].
+                    let cx = px.clamp(vx as f32, (vx + 1) as f32);
+                    let cy = py.clamp(vy as f32, (vy + 1) as f32);
+                    let cz = pz.clamp(vz as f32, (vz + 1) as f32);
+                    let dx = px - cx;
+                    let dy = py - cy;
+                    let dz = pz - cz;
+                    let dist_sq = dx * dx + dy * dy + dz * dz;
+                    if dist_sq < min_dist_sq {
+                        min_dist_sq = dist_sq;
+                    }
+                }
+            }
+        }
+
+        let dist = min_dist_sq.sqrt();
+        v.sway_weight = (dist / SWAY_MAX_DISTANCE).min(1.0);
+    }
+}
+
 /// Generate a chunk mesh from a pre-extracted neighborhood snapshot.
 ///
 /// This is the core mesh generation entry point for the async pipeline:
@@ -669,6 +737,12 @@ pub fn generate_chunk_mesh(nh: &ChunkNeighborhood, config: &MeshPipelineConfig) 
     if config.decimation_enabled {
         run_decimation(&mut solid_smooth, nh.chunk);
     }
+
+    // Compute per-vertex sway weights for leaf vertices. This must happen
+    // after chamfer/smooth/decimate (which modify vertex positions) but
+    // before flattening (which reads sway_weight for leaf color output).
+    compute_vertex_sway_weights(&mut solid_smooth, nh);
+
     flatten_to_chunk_mesh(&solid_smooth, nh.chunk)
 }
 
@@ -1623,5 +1697,206 @@ mod tests {
             mesh1.bark.vertices, mesh2.bark.vertices,
             "concurrent meshes with different configs should produce different results"
         );
+    }
+
+    #[test]
+    fn leaf_vertex_colors_carry_sway_weight() {
+        // Leaf vertex colors should encode distance-from-wood as a sway weight
+        // in the R channel, not the old hardcoded leaf green.
+        //
+        // Layout (Y=8 row, X axis):
+        //   x=8: Trunk
+        //   x=9: Leaf (adjacent to trunk → sway_weight ~0.0)
+        //   x=10: Leaf (1 voxel from trunk)
+        //   x=11: Leaf (2 voxels from trunk)
+        //   x=12: Leaf (3 voxels from trunk)
+        //   x=13: Leaf (4+ voxels from trunk → sway_weight 1.0)
+        let mut world = one_chunk_world();
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
+        for x in 9..=14 {
+            world.set(VoxelCoord::new(x, 8, 8), VoxelType::Leaf);
+        }
+        let mesh = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &no_grassless(),
+            &no_decimate(),
+        );
+
+        // Leaf surface should have geometry.
+        assert!(!mesh.leaf.is_empty());
+
+        // Bark colors should be unchanged (still the trunk color).
+        let trunk_color = voxel_color(VoxelType::Trunk);
+        assert_eq!(mesh.bark.colors[0], trunk_color[0]);
+        assert_eq!(mesh.bark.colors[1], trunk_color[1]);
+        assert_eq!(mesh.bark.colors[2], trunk_color[2]);
+
+        // Leaf colors should NOT be the old hardcoded leaf green.
+        let old_leaf_color = voxel_color(VoxelType::Leaf);
+        // Collect unique R values from all leaf vertices to verify gradient.
+        let leaf_r_values: Vec<f32> = mesh.leaf.colors.chunks(4).map(|c| c[0]).collect();
+
+        // At least some leaf vertices should have sway_weight near 0 (adjacent
+        // to wood) and some near 1 (far from wood).
+        let min_r = leaf_r_values.iter().cloned().fold(f32::INFINITY, f32::min);
+        let max_r = leaf_r_values
+            .iter()
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            min_r < 0.1,
+            "leaf vertices adjacent to wood should have low sway weight, got min_r={min_r}"
+        );
+        assert!(
+            max_r > 0.9,
+            "leaf vertices far from wood should have high sway weight, got max_r={max_r}"
+        );
+
+        // G, B, A channels should all be 0.0 for leaf vertices (reserved).
+        for chunk in mesh.leaf.colors.chunks(4) {
+            assert_eq!(chunk[1], 0.0, "leaf G channel should be 0.0");
+            assert_eq!(chunk[2], 0.0, "leaf B channel should be 0.0");
+            assert_eq!(chunk[3], 0.0, "leaf A channel should be 0.0");
+        }
+
+        // Leaf colors should not match the old hardcoded green.
+        let any_old_green = mesh.leaf.colors.chunks(4).any(|c| {
+            (c[0] - old_leaf_color[0]).abs() < 0.01 && (c[1] - old_leaf_color[1]).abs() < 0.01
+        });
+        assert!(
+            !any_old_green,
+            "leaf colors should not use the old hardcoded green"
+        );
+    }
+
+    #[test]
+    fn sway_weight_with_decimation_enabled() {
+        // Verify that sway weight gradient survives the decimation pipeline.
+        // Decimation creates new centroid vertices with sway_weight=1.0, but
+        // compute_vertex_sway_weights runs after decimation and recomputes them.
+        let mut world = one_chunk_world();
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
+        for x in 9..=14 {
+            world.set(VoxelCoord::new(x, 8, 8), VoxelType::Leaf);
+        }
+        let config = MeshPipelineConfig {
+            decimation_enabled: true,
+            ..MeshPipelineConfig::default()
+        };
+        let mesh = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &no_grassless(),
+            &config,
+        );
+
+        assert!(!mesh.leaf.is_empty());
+
+        let leaf_r_values: Vec<f32> = mesh.leaf.colors.chunks(4).map(|c| c[0]).collect();
+        let min_r = leaf_r_values.iter().cloned().fold(f32::INFINITY, f32::min);
+        let max_r = leaf_r_values
+            .iter()
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            min_r < 0.1,
+            "decimated: leaf vertices near wood should have low sway weight, got min_r={min_r}"
+        );
+        assert!(
+            max_r > 0.9,
+            "decimated: leaf vertices far from wood should have high sway weight, got max_r={max_r}"
+        );
+
+        // G, B, A channels should still be 0.0 after decimation.
+        for chunk in mesh.leaf.colors.chunks(4) {
+            assert_eq!(chunk[1], 0.0, "decimated: leaf G channel should be 0.0");
+            assert_eq!(chunk[2], 0.0, "decimated: leaf B channel should be 0.0");
+            assert_eq!(chunk[3], 0.0, "decimated: leaf A channel should be 0.0");
+        }
+    }
+
+    #[test]
+    fn sway_weight_all_leaf_no_wood() {
+        // Isolated leaf voxels with no opaque voxels nearby should all get
+        // sway_weight = 1.0 (full sway).
+        let mut world = one_chunk_world();
+        for x in 6..=10 {
+            world.set(VoxelCoord::new(x, 8, 8), VoxelType::Leaf);
+        }
+        let mesh = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &no_grassless(),
+            &no_decimate(),
+        );
+
+        assert!(!mesh.leaf.is_empty());
+
+        // All leaf vertices should have sway_weight = 1.0 (no wood to anchor to).
+        for (i, chunk) in mesh.leaf.colors.chunks(4).enumerate() {
+            assert!(
+                (chunk[0] - 1.0).abs() < 0.001,
+                "vertex {i}: isolated leaf should have sway_weight=1.0, got {}",
+                chunk[0]
+            );
+            assert_eq!(chunk[1], 0.0);
+            assert_eq!(chunk[2], 0.0);
+            assert_eq!(chunk[3], 0.0);
+        }
+    }
+
+    #[test]
+    fn sway_weight_monotonic_with_distance() {
+        // Verify that the average sway weight per voxel column increases
+        // monotonically as distance from the trunk increases.
+        let mut world = one_chunk_world();
+        world.set(VoxelCoord::new(4, 8, 8), VoxelType::Trunk);
+        for x in 5..=12 {
+            world.set(VoxelCoord::new(x, 8, 8), VoxelType::Leaf);
+        }
+        let mesh = generate_chunk_mesh_from_world(
+            &world,
+            ChunkCoord::new(0, 0, 0),
+            None,
+            &no_grassless(),
+            &no_decimate(),
+        );
+
+        assert!(!mesh.leaf.is_empty());
+
+        // Group vertices by their X voxel column (floor of x position).
+        // Compute average sway weight per column.
+        let vertex_count = mesh.leaf.vertices.len() / 3;
+        let mut column_sums: std::collections::BTreeMap<i32, (f32, usize)> =
+            std::collections::BTreeMap::new();
+        for i in 0..vertex_count {
+            let x = mesh.leaf.vertices[i * 3];
+            let r = mesh.leaf.colors[i * 4];
+            let col = x.floor() as i32;
+            let entry = column_sums.entry(col).or_insert((0.0, 0));
+            entry.0 += r;
+            entry.1 += 1;
+        }
+
+        let averages: Vec<(i32, f32)> = column_sums
+            .iter()
+            .map(|(&col, &(sum, count))| (col, sum / count as f32))
+            .collect();
+
+        // Verify monotonicity: each column's average should be >= the previous.
+        for i in 1..averages.len() {
+            assert!(
+                averages[i].1 >= averages[i - 1].1 - 0.01,
+                "sway weight should increase with distance: col {} avg={:.3} < col {} avg={:.3}",
+                averages[i].0,
+                averages[i].1,
+                averages[i - 1].0,
+                averages[i - 1].1,
+            );
+        }
     }
 }

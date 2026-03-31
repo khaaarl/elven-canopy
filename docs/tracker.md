@@ -160,7 +160,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-instinctual-flee     Instinctual flee thresholds (species-level fear overrides)
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-labor-panel          DF/Rimworld-style labor assignment UI
-[ ] F-leaf-sway            Foliage vertex sway shader (wind simulation)
 [ ] F-leaf-tuning          Leaf visual fine-tuning and interior decisions
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-los-tuning           Line-of-sight tuning (terrain tolerance, tall creature bonus)
@@ -422,6 +421,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-lang-crate           Shared Vaelith language crate
 [x] F-large-nav-tolerance  1-voxel height tolerance for large nav
 [x] F-large-pathfind       2x2 footprint nav grid
+[x] F-leaf-sway            Foliage vertex sway shader (wind simulation)
 [x] F-lesser-trees         Lesser trees (non-sentient, resource/ecology)
 [x] F-logistics            Spatial resource flow (Kanban-style)
 [x] F-logistics-filter     Logistics material filter
@@ -6277,12 +6277,12 @@ kinds of work. Replaces ad-hoc per-creature task restrictions.
 **Related:** F-civ-pets, F-task-tags
 
 #### F-leaf-sway — Foliage vertex sway shader (wind simulation)
-**Status:** Todo
+**Status:** Done
 
 Vertex displacement in the leaf shader — offset leaf vertices by a sine wave keyed on world position and time. Zero CPU cost once meshes are built. Makes the canopy feel alive.
 
 **Sway weight via vertex color:**
-Leaf vertices get a per-vertex sway weight in the R color channel, computed during smooth mesh generation as `min(voxel_distance_from_wood / cap, 1.0)`. Vertices touching wood get 0.0 (anchored, no tearing at wood-leaf seams); vertices deep in the canopy get 1.0 (full sway). BFS from wood-adjacent leaf vertices outward through the voxel grid. The weight is mesh-resolution-independent since it's based on source voxel distance, not vertex topology.
+Leaf vertices get a per-vertex sway weight in the R color channel, computed during mesh generation as the Euclidean distance from the vertex position to the nearest opaque voxel's bounding box surface, normalized by a max distance cap (4 voxels) to [0, 1]. Vertices on the wood-leaf boundary get 0.0 (anchored, no tearing at seams); vertices deep in the canopy get 1.0 (full sway). The weight is per-vertex (not per-voxel), giving a smooth continuous gradient across the mesh surface.
 
 **Vertex color repurposing (leaf surface only):**
 Leaf surface vertex colors stop carrying RGB base color. Instead, all four channels become metadata:
@@ -6291,9 +6291,9 @@ Leaf surface vertex colors stop carrying RGB base color. Instead, all four chann
 Bark and ground surfaces are unchanged — they continue using vertex color for base color.
 
 **Shader changes (`leaf_noise.gdshader`):**
-- Vertex function reads `COLOR.r` as sway weight and applies time-based sine displacement scaled by that weight. Uses Godot's built-in `TIME`.
-- Fragment function stops reading `COLOR.rgb` for base color — the shader already derives color procedurally from noise.
-- New uniforms for tuning: `wind_strength`, `wind_speed`, `wind_direction`.
+- Vertex function reads `COLOR.r` as sway weight and applies time-based sine displacement scaled by that weight. Uses Godot's built-in `TIME`. Fragment shader receives undisplaced rest position for stable noise sampling.
+- Fragment function stops reading `COLOR.rgb` for base color — the shader hardcodes the leaf green and derives color procedurally from noise.
+- New uniforms for tuning: `wind_strength`, `wind_speed`, `wind_direction`, `wind_base_y`, `wind_height_scale`.
 - Amplitude also modulated by world-space Y (higher = more sway) to simulate wind gradient.
 
 **Scope:** Shader + Rust mesh pipeline change. No GDScript changes beyond optionally exposing wind uniforms in `tree_renderer.gd`. No determinism concerns (purely visual, GPU-side).

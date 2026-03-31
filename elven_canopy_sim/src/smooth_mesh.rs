@@ -77,6 +77,12 @@ pub struct SmoothVertex {
     pub initial_normal: [f32; 3],
     /// Edge-connected neighbor vertex indices (the 1-ring).
     pub neighbors: Vec<u32>,
+    /// Wind sway weight for leaf vertices (0.0 = anchored at wood, 1.0 = full
+    /// sway). Computed per-vertex as the Euclidean distance from the vertex
+    /// position to the nearest opaque voxel surface, normalized by a max
+    /// distance cap. Only meaningful for vertices with `has_leaf_face`.
+    /// Defaults to 1.0 (full sway).
+    pub sway_weight: f32,
 }
 
 /// A key for vertex deduplication. Uses doubled integer coordinates to avoid
@@ -222,6 +228,7 @@ impl SmoothMesh {
                 has_leaf_face: false,
                 initial_normal: face_normal,
                 neighbors: Vec::new(),
+                sway_weight: 1.0,
             });
             self.dedup.insert(key, idx);
             idx
@@ -1435,10 +1442,19 @@ impl SmoothMesh {
                     surface.normals.push(flat_n[2]);
                 }
 
-                surface.colors.push(color[0]);
-                surface.colors.push(color[1]);
-                surface.colors.push(color[2]);
-                surface.colors.push(color[3]);
+                // Leaf surfaces use per-vertex sway weight as color metadata;
+                // non-leaf surfaces use the per-triangle voxel color.
+                if tag_filter == Some(TAG_LEAF) {
+                    surface.colors.push(v.sway_weight);
+                    surface.colors.push(0.0);
+                    surface.colors.push(0.0);
+                    surface.colors.push(0.0);
+                } else {
+                    surface.colors.push(color[0]);
+                    surface.colors.push(color[1]);
+                    surface.colors.push(color[2]);
+                    surface.colors.push(color[3]);
+                }
             }
 
             surface.indices.push(base);
