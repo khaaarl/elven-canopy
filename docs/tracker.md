@@ -67,7 +67,6 @@ This reduces merge conflicts when parallel work streams add items.
 ```
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
-[ ] B-tame-already         Taming task doesn't detect already-tamed target
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-aggro-fauna          Neutral fauna with aggro triggers
@@ -313,6 +312,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-spawn-creature       spawn_creature test helper finds first creature of species, not newly spawned
 [x] B-start-paused-ui      start_paused_on_load UI desync and missing new-game support
 [x] B-tab-serde-tests      Fix tabulosity test compilation under feature unification
+[x] B-tame-already         Taming task doesn't detect already-tamed target
 [x] B-task-civ-filter      Tasks lack civilization-level eligibility filtering
 [x] B-unsafe-db-calls      Replace _no_fk and modify_unchecked calls with safe database-level methods
 [x] B-win-freeze           Periodic ~3s freezes on Windows (debug build)
@@ -1851,7 +1851,7 @@ task-driven system (player commands, construction, hauling, etc.).
 **Related:** F-arrow-chase
 
 #### B-tame-already — Taming task doesn't detect already-tamed target
-**Status:** Todo
+**Status:** Done
 
 The taming task does not check whether the target creature is already tamed
 during taming attempts. If another player (or external mechanism) tames the

@@ -692,24 +692,41 @@ impl SimState {
             })
             .unwrap_or(false);
 
-        let (mut task_location_coord, target_creature) = match self.db.tasks.get(&task_id) {
-            Some(t) => (t.location, t.target_creature),
-            None => {
-                // Task was removed — abort action, unassign, and wander.
-                self.abort_current_action(creature_id);
-                if let Some(mut c) = self.db.creatures.get(&creature_id) {
-                    c.current_task = None;
-                    c.path = None;
-                    let _ = self.db.update_creature(c);
+        let (mut task_location_coord, target_creature, task_kind_tag) =
+            match self.db.tasks.get(&task_id) {
+                Some(t) => (t.location, t.target_creature, t.kind_tag),
+                None => {
+                    // Task was removed — abort action, unassign, and wander.
+                    self.abort_current_action(creature_id);
+                    if let Some(mut c) = self.db.creatures.get(&creature_id) {
+                        c.current_task = None;
+                        c.path = None;
+                        let _ = self.db.update_creature(c);
+                    }
+                    self.wander_dispatch(creature_id, current_node, events);
+                    return;
                 }
-                self.wander_dispatch(creature_id, current_node, events);
-                return;
-            }
-        };
+            };
 
         // --- Dynamic pursuit: track moving target creature ---
         if let Some(target_id) = target_creature {
-            let target_pos = self.db.creatures.get(&target_id).map(|c| c.position);
+            let target = self.db.creatures.get(&target_id);
+
+            // Tame tasks: if the target is already tamed (or dead), complete
+            // immediately rather than chasing forever (B-tame-already).
+            if task_kind_tag == crate::db::TaskKindTag::Tame {
+                let should_complete = match &target {
+                    Some(c) => c.vital_status != VitalStatus::Alive || c.civ_id.is_some(),
+                    None => true,
+                };
+                if should_complete {
+                    let _ = self.db.remove_tame_designation(&target_id);
+                    self.complete_task(task_id);
+                    return;
+                }
+            }
+
+            let target_pos = target.map(|c| c.position);
             match target_pos {
                 None => {
                     // Target creature is gone — abandon.

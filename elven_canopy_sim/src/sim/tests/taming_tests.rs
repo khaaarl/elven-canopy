@@ -503,16 +503,12 @@ fn taming_task_resumable_after_preemption() {
     );
 }
 
-/// NOTE: This test exposes a pre-existing bug in the taming system — the
-/// taming task does not check whether the target is already tamed during
-/// taming attempts. It only completes via a successful taming roll. With
-/// difficulty=10000 the roll can never succeed, so the task never completes
-/// even though the target was manually tamed externally. The test passed on
-/// main only due to a specific PRNG sequence. See tracker bug B-tame-already.
+/// Taming task should detect when the target creature is already tamed
+/// (e.g., by another player in multiplayer) and complete immediately,
+/// rather than chasing the target forever. Regression test for B-tame-already.
 #[test]
-#[ignore]
 fn taming_target_already_tamed_completes_task() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let capy_id = spawn_creature(&mut sim, Species::Capybara);
     let scout_id = spawn_elf(&mut sim);
     assign_path(&mut sim, scout_id, PathId::Scout);
@@ -540,35 +536,19 @@ fn taming_target_already_tamed_completes_task() {
 
     designate_tame(&mut sim, capy_id);
 
-    // Run until scout claims the task (needs enough ticks to pick up and
-    // start moving toward target).
-    for _ in 0..200 {
-        sim.step(&[], sim.tick + 500);
-    }
-
-    // Run until scout claims the task, then manually tame the capybara.
-    // Use a polling loop so we tame as soon as the scout is actively working
-    // on the task (not still walking).
+    // Run until scout claims the tame task.
     let mut scout_claimed = false;
-    for _ in 0..400 {
+    for _ in 0..600 {
         sim.step(&[], sim.tick + 500);
-        if sim
-            .db
-            .creatures
-            .get(&scout_id)
-            .is_some_and(|c| c.current_task.is_some())
-        {
-            // Check if the scout's task is a tame task.
-            if let Some(Some(tid)) = sim.db.creatures.get(&scout_id).map(|c| c.current_task) {
-                if sim
-                    .db
-                    .tasks
-                    .get(&tid)
-                    .is_some_and(|t| t.kind_tag == TaskKindTag::Tame)
-                {
-                    scout_claimed = true;
-                    break;
-                }
+        if let Some(tid) = sim.db.creatures.get(&scout_id).and_then(|c| c.current_task) {
+            if sim
+                .db
+                .tasks
+                .get(&tid)
+                .is_some_and(|t| t.kind_tag == TaskKindTag::Tame)
+            {
+                scout_claimed = true;
+                break;
             }
         }
     }
@@ -580,10 +560,8 @@ fn taming_target_already_tamed_completes_task() {
         sim.db.update_creature(capy).unwrap();
     }
 
-    // Run many ticks — scout should detect target is tamed and complete.
-    // The scout needs to reach the capybara and attempt taming, at which
-    // point the already-tamed check fires.
-    for _ in 0..2000 {
+    // Run more ticks — scout should detect target is tamed and complete.
+    for _ in 0..200 {
         sim.step(&[], sim.tick + 500);
     }
 
