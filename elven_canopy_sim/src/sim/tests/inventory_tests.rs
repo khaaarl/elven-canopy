@@ -3738,23 +3738,22 @@ fn wild_fruit_regrows_on_lesser_trees() {
         .expect("Should have at least one fruit-bearing lesser tree")
         .id;
 
-    // Ensure the tree has at least one leaf with air below it for fruit placement.
+    // Ensure the tree has exactly one leaf voxel with air below it for fruit
+    // placement.  The fruit-spawn code picks a *random* leaf, so if worldgen
+    // produced many leaves (most without air below), the test becomes flaky.
+    // Replacing the leaf list with a single known-good leaf eliminates that.
+    // Use the tree's own x/z (always in-bounds) and fixed y values well above
+    // any tree geometry to avoid OOB when the tree is near a world edge.
     {
         let tree = sim.db.trees.get(&lesser_id).unwrap();
-        let leaf_pos = if tree.leaf_voxels.is_empty() {
-            // No leaves from generation — add one manually.
-            let pos = VoxelCoord::new(tree.position.x + 2, tree.position.y + 3, tree.position.z);
-            sim.set_voxel(pos, VoxelType::Leaf);
-            let mut t = sim.db.trees.get(&lesser_id).unwrap();
-            t.leaf_voxels.push(pos);
-            let _ = sim.db.update_tree(t);
-            pos
-        } else {
-            tree.leaf_voxels[0]
-        };
+        let leaf_pos = VoxelCoord::new(tree.position.x, 10, tree.position.z);
         sim.set_voxel(leaf_pos, VoxelType::Leaf);
-        let below = VoxelCoord::new(leaf_pos.x, leaf_pos.y - 1, leaf_pos.z);
+        let below = VoxelCoord::new(tree.position.x, 9, tree.position.z);
         sim.set_voxel(below, VoxelType::Air);
+
+        let mut t = sim.db.trees.get(&lesser_id).unwrap();
+        t.leaf_voxels = vec![leaf_pos];
+        let _ = sim.db.update_tree(t);
     }
 
     // No fruit initially.
