@@ -14,6 +14,8 @@
 ##
 ## Also sets the window title — appending branch and commit info for
 ## debug builds (read from .build_info, written by scripts/build.py).
+## Also applies the saved window mode (windowed/borderless/exclusive fullscreen)
+## from GameConfig on startup.
 ##
 ## Also creates a temporary SimBridge to trigger the global elfcyclopedia
 ## HTTP server (runs on localhost, persists for the lifetime of the process).
@@ -84,6 +86,12 @@ func _ready() -> void:
 	# title after autoload _ready() runs, which would overwrite our custom title.
 	_set_window_title.call_deferred()
 
+	# Apply saved window mode (windowed/maximized, borderless fullscreen, or
+	# exclusive fullscreen). Deferred so it runs after Godot's initial window
+	# setup. Duplicates the trivial mapping from settings_panel.gd to avoid
+	# coupling an autoload to a transient UI panel.
+	_apply_saved_window_mode.call_deferred()
+
 	# Create a temporary SimBridge to trigger the global elfcyclopedia server
 	# start. The server lives in a Rust static and persists after the bridge
 	# is freed. This runs as soon as the autoload initializes (before the
@@ -93,6 +101,17 @@ func _ready() -> void:
 	bridge.free()
 	if not elfcyclopedia_url.is_empty():
 		print("Elfcyclopedia server: %s" % elfcyclopedia_url)
+
+
+func _apply_saved_window_mode() -> void:
+	var mode_str: String = GameConfig.get_setting("window_mode")
+	match mode_str:
+		"borderless_fullscreen":
+			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+		"exclusive_fullscreen":
+			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN)
+		_:
+			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_MAXIMIZED)
 
 
 func _set_window_title() -> void:

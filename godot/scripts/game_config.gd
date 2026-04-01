@@ -14,6 +14,8 @@
 ##   audio_volume: int = 25           — master audio volume (0–100 percent)
 ##   edge_scroll_mode: String = "pan" — edge scrolling ("off", "pan", "rotate")
 ##   edge_outline: bool = true       — screen-space edge outline post-process
+##   window_mode: String = "windowed" — window mode
+##       ("windowed", "borderless_fullscreen", "exclusive_fullscreen")
 ##
 ## Unknown keys in the JSON file are preserved across load/save (forward
 ## compatibility — a newer version's settings won't be lost if an older
@@ -41,6 +43,7 @@ const DEFAULTS := {
 	"audio_volume": 25,
 	"edge_scroll_mode": "pan",
 	"edge_outline": true,
+	"window_mode": "windowed",
 }
 
 ## File path for the config JSON. Tests can override this to use a temp path.

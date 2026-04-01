@@ -13,6 +13,7 @@
 ##   - Fog enabled (toggle button)
 ##   - Fog begin (LineEdit, voxels)
 ##   - Fog end (LineEdit, voxels)
+##   - Window mode (dropdown: Windowed / Borderless Fullscreen / Exclusive Fullscreen)
 ##   - Edge outline (toggle button)
 ##
 ## On open, reads current values from the provided GameConfig instance.
@@ -34,6 +35,12 @@ signal closed
 
 const EDGE_SCROLL_MODES := ["off", "pan", "rotate"]
 const EDGE_SCROLL_LABELS := {"off": "OFF", "pan": "PAN", "rotate": "ROTATE"}
+const WINDOW_MODES := ["windowed", "borderless_fullscreen", "exclusive_fullscreen"]
+const WINDOW_MODE_LABELS := {
+	"windowed": "Windowed",
+	"borderless_fullscreen": "Borderless Fullscreen",
+	"exclusive_fullscreen": "Exclusive Fullscreen",
+}
 
 var _config: Node  ## GameConfig (or test stand-in)
 var _name_input: LineEdit
@@ -46,6 +53,7 @@ var _fog_begin_input: LineEdit
 var _fog_end_input: LineEdit
 var _edge_outline_toggle: Button
 var _edge_scroll_toggle: Button
+var _window_mode_dropdown: OptionButton
 var _save_btn: Button
 var _paused_value: bool = false
 var _fog_enabled_value: bool = true
@@ -199,6 +207,22 @@ func _ready() -> void:
 	var visual_vbox := VBoxContainer.new()
 	visual_vbox.add_theme_constant_override("separation", 10)
 	outer_vbox.add_child(visual_vbox)
+
+	# Window mode row.
+	var window_mode_row := HBoxContainer.new()
+	window_mode_row.add_theme_constant_override("separation", 10)
+	visual_vbox.add_child(window_mode_row)
+
+	var window_mode_label := Label.new()
+	window_mode_label.text = "Window Mode"
+	window_mode_label.custom_minimum_size = Vector2(160, 0)
+	window_mode_row.add_child(window_mode_label)
+
+	_window_mode_dropdown = OptionButton.new()
+	_window_mode_dropdown.custom_minimum_size = Vector2(200, 0)
+	for mode: String in WINDOW_MODES:
+		_window_mode_dropdown.add_item(WINDOW_MODE_LABELS[mode])
+	window_mode_row.add_child(_window_mode_dropdown)
 
 	# Fog enabled row.
 	var fog_row := HBoxContainer.new()
@@ -387,6 +411,9 @@ func open(config: Node) -> void:
 	if _edge_scroll_mode not in EDGE_SCROLL_MODES:
 		_edge_scroll_mode = "off"
 	_update_edge_scroll_label()
+	var wm: String = config.get_setting("window_mode")
+	var wm_idx := WINDOW_MODES.find(wm)
+	_window_mode_dropdown.selected = wm_idx if wm_idx >= 0 else 0
 	_save_btn.disabled = _name_input.text.strip_edges().is_empty()
 
 
@@ -403,6 +430,9 @@ func save_and_close() -> void:
 	_config.set_setting("fog_end", _parse_fog_end())
 	_config.set_setting("edge_outline", _edge_outline_value)
 	_config.set_setting("edge_scroll_mode", _edge_scroll_mode)
+	var wm_value: String = WINDOW_MODES[_window_mode_dropdown.selected]
+	_config.set_setting("window_mode", wm_value)
+	_apply_window_mode(wm_value)
 	closed.emit()
 	queue_free()
 
@@ -501,3 +531,23 @@ func get_edge_scroll_mode() -> String:
 func set_edge_scroll_mode(value: String) -> void:
 	_edge_scroll_mode = value
 	_update_edge_scroll_label()
+
+
+func get_window_mode() -> String:
+	return WINDOW_MODES[_window_mode_dropdown.selected]
+
+
+func set_window_mode(value: String) -> void:
+	var idx := WINDOW_MODES.find(value)
+	_window_mode_dropdown.selected = idx if idx >= 0 else 0
+
+
+## Apply a window mode string via DisplayServer.
+static func _apply_window_mode(mode_str: String) -> void:
+	match mode_str:
+		"borderless_fullscreen":
+			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+		"exclusive_fullscreen":
+			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN)
+		_:
+			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_MAXIMIZED)

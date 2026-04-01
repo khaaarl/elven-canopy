@@ -45,6 +45,7 @@ func test_defaults_when_no_file() -> void:
 	assert_eq(_config.get_setting("fog_end"), 80)
 	assert_eq(_config.get_setting("audio_volume"), 25)
 	assert_eq(_config.get_setting("edge_outline"), true)
+	assert_eq(_config.get_setting("window_mode"), "windowed")
 
 
 ## Settings can be changed and read back.
@@ -332,6 +333,24 @@ func test_start_paused_on_load_null_does_not_corrupt() -> void:
 	_config.load_config()
 	assert_eq(_config.get_setting("start_paused"), false)
 	assert_false(_config._data.has("start_paused_on_load"))
+
+
+## Window mode defaults to "windowed".
+func test_window_mode_default() -> void:
+	assert_eq(_config.get_setting("window_mode"), "windowed")
+
+
+## Window mode survives a save/load roundtrip.
+func test_window_mode_save_load_roundtrip() -> void:
+	_config.set_setting("window_mode", "exclusive_fullscreen")
+
+	var config2 := Node.new()
+	config2.set_script(GameConfigScript)
+	config2.config_path = TEST_CONFIG_PATH
+	config2.load_config()
+
+	assert_eq(config2.get_setting("window_mode"), "exclusive_fullscreen")
+	config2.free()
 
 
 ## After migration, saving produces a clean file without the old key.

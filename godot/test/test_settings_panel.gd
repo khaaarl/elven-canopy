@@ -409,6 +409,49 @@ func test_edge_outline_toggle_cycles() -> void:
 	assert_true(_panel.get_edge_outline_enabled())
 
 
+## Panel populates window mode from config on open.
+func test_open_populates_window_mode() -> void:
+	_config.set_setting("window_mode", "borderless_fullscreen")
+	_panel.open(_config)
+	assert_eq(_panel.get_window_mode(), "borderless_fullscreen")
+
+
+## Save writes window mode to config.
+func test_save_writes_window_mode() -> void:
+	_panel.set_window_mode("exclusive_fullscreen")
+	_panel.save_and_close()
+	assert_eq(_config.get_setting("window_mode"), "exclusive_fullscreen")
+
+
+## Cancel discards window mode changes.
+func test_cancel_discards_window_mode() -> void:
+	_config.set_setting("window_mode", "windowed")
+	_panel.open(_config)
+	_panel.set_window_mode("exclusive_fullscreen")
+	_panel.cancel_and_close()
+	assert_eq(_config.get_setting("window_mode"), "windowed")
+
+
+## Window mode defaults to "windowed".
+func test_window_mode_default() -> void:
+	assert_eq(_panel.get_window_mode(), "windowed")
+
+
+## Opening with an invalid window mode in config falls back to "windowed".
+func test_open_invalid_window_mode_falls_back_to_windowed() -> void:
+	_config.set_setting("window_mode", "garbage")
+	_panel.open(_config)
+	assert_eq(_panel.get_window_mode(), "windowed")
+
+
+## Window mode dropdown has exactly the expected items.
+func test_window_mode_dropdown_items() -> void:
+	assert_eq(_panel._window_mode_dropdown.item_count, 3)
+	assert_eq(_panel._window_mode_dropdown.get_item_text(0), "Windowed")
+	assert_eq(_panel._window_mode_dropdown.get_item_text(1), "Borderless Fullscreen")
+	assert_eq(_panel._window_mode_dropdown.get_item_text(2), "Exclusive Fullscreen")
+
+
 ## Panel runs with PROCESS_MODE_ALWAYS (required for escape menu paused tree).
 func test_process_mode_always() -> void:
 	assert_eq(
