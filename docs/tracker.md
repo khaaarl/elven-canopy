@@ -249,6 +249,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tab-indexmap-fork    Forked IndexMap with tombstone compaction (alternative to F-tab-ordered-idx)
 [ ] F-tab-joins            Join iterators across tables
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
+[ ] F-tab-spatial          Tabulosity spatial index (R*-tree)
 [ ] F-tame-aggro           Taming failure can aggro the target animal
 [ ] F-task-assign-opt      Event-driven bidirectional task assignment
 [ ] F-task-panel-sprites   Creature sprites in tasks panel and activity cards
@@ -7061,7 +7062,13 @@ SimState.spatial_index is a manual BTreeMap<VoxelCoord, Vec<CreatureId>> maintai
 
 Retiring this removes: (1) the manual maintenance burden and risk of index/table desync, (2) the rebuild-ordering dependency on species_table population, (3) a chunk of SimState that exists only because the index predates tabulosity. The tabulosity index would be automatically maintained on insert/update/delete like all other tabulosity indexes.
 
-This is blocked on deciding the right tabulosity index type for spatial queries — currently tabulosity has no spatial index kind, and the existing BTree compound index on (x, y, z) would only efficiently filter on the leading axis. A grid/bucket spatial index or similar is under design discussion.
+**Creature footprint complication:** The current spatial index has special logic for multi-voxel creatures (e.g., 2×2×2 trolls) — it registers the creature at every voxel in its footprint. A naive replacement with a point-indexed tabulosity field wouldn't cover this. The planned tabulosity spatial index (F-tab-spatial) uses VoxelBox entries (bounding boxes with min/max coordinates) instead of bare VoxelCoord points. A 2×2×2 troll is stored as a VoxelBox spanning its full footprint, and queries find it via box intersection — no per-voxel registration needed. Callers wanting "all creatures at voxel X" do a point-in-box query against the spatial index.
+
+**Schema migration:** The creature position field changes from `VoxelCoord` to `VoxelBox`. Old saves store only the anchor VoxelCoord; the deserializer must look up each creature's species footprint dimensions to reconstruct the full VoxelBox (same rebuild-ordering constraint as the current spatial index — species_table must be populated first).
+
+Blocked on F-tab-spatial providing a spatial index kind that supports volumetric VoxelBox entries.
+
+**Blocked by:** F-tab-spatial
 
 #### B-sim-floats — Remaining f32/f64 in sim logic threaten determinism
 **Status:** Done
@@ -7818,6 +7825,28 @@ schema changes (new tables, new columns with defaults) work without any migratio
 code.
 
 **Related:** F-save-load, F-sim-db-impl, F-tab-schema-evol
+
+#### F-tab-spatial — Tabulosity spatial index (R*-tree)
+**Status:** Todo
+
+**Status: speculative/design phase.** A general-purpose spatial index for tabulosity, enabling efficient spatial queries (box, KNN, radius) on any table with coordinate-typed fields. Intended as a first-class tabulosity index kind alongside BTree and Hash.
+
+**Data structure:** R*-tree (Beckmann et al., 1990). Height-balanced (all leaves at same depth, like a B-tree), self-balancing, adapts to density without tuning parameters. Chosen over the basic R-tree for its overlap-minimizing insertion heuristic and forced-reinsert-on-overflow, which produce tighter bounding boxes and better query performance. Forced reinsert is bounded (each tree level reinserts at most once per insert operation), keeping inserts O(log n). Sibling nodes can have overlapping bounding boxes (unlike k-d trees or octrees which partition space), so queries may descend multiple branches in overlap zones, but R*-tree minimization keeps this well-bounded for non-pathological data distributions.
+
+**Key design points (still speculative):**
+
+- **SpatialKey trait:** Generic over any cartesian coordinate type — integer or float, any dimensionality. The trait provides axis count, per-axis min/max value access. VoxelCoord is the primary initial consumer but the design should not be VoxelCoord-specific.
+- **VoxelBox type:** A new `VoxelBox { min: VoxelCoord, max: VoxelCoord }` (inclusive) replaces bare `VoxelCoord` for position fields on tables that need spatial indexing. Points are represented as zero-extent boxes (`VoxelBox::point(coord)` where min == max). `VoxelBox::center()` returns the integer center (biased downward for even dimensions via `min + (max - min) / 2`), serving as the canonical rendering coordinate. This is the natural indexed field type for the R*-tree since R-tree entries are already bounding boxes. The schema change from `VoxelCoord` to `VoxelBox` is independent of the R*-tree implementation and could land separately.
+- **Distance metric:** Caller-choosable (Chebyshev, Manhattan, squared Euclidean). Chebyshev is the recommended default because its cube iso-surfaces align with the R-tree's axis-aligned bounding boxes, giving tightest branch-and-bound pruning. Deterministic tie-breaking: results ordered by (distance, coordinate lexicographic order) for total ordering.
+- **Volumetric entries:** Entries can be points or volumes. A 2×2×2 creature is stored as a VoxelBox spanning its full footprint. Queries (box intersection, KNN, radius) work against the entry's bounding box, not just an anchor point. KNN distance is measured from the query point to the nearest face of the entry's box. Points are just zero-extent boxes — the R*-tree doesn't distinguish.
+- **Compound indexes:** A spatial field can appear in a compound index alongside non-spatial fields. Conceptually: BTreeMap<non_spatial_field, RStar<spatial_field, BTreeSet<PK>>>. Precedent exists with BTree+Hash compound indexes. Design details TBD.
+- **Query API:** Not yet designed. Likely includes box query, KNN, and radius query. Iteration order must be deterministic.
+- **Update path:** From tabulosity's perspective, updates are always delete + reinsert (consistent with how all tabulosity indexes work). O(log n) per update. If profiling later shows spatial index updates are a bottleneck, a check-and-skip optimization (detect that the moved entry still fits in its current leaf node, skip tree restructuring) could be added inside the R*-tree implementation below the tabulosity API, without changing the tabulosity interface. Not needed initially.
+- **Implementation plan:** Build the R*-tree as a standalone data structure in tabulosity with thorough test coverage first, then integrate with the derive macro.
+
+**Motivating use cases:** Creature position lookup (replacing SimState.spatial_index), tree fruit location queries ("find 10 nearest fruit"), hostile detection scanning, any future "find things near X" query. The creature case is notable because the current manual spatial index has special logic for multi-voxel creatures (2×2×2 trolls register at all occupied voxels) — with VoxelBox entries in the R*-tree, a troll is simply stored as a 2×2×2 box and queries find it via box intersection, no per-voxel registration needed.
+
+**Blocks:** B-retire-spatidx
 
 #### F-tab-unique-idx — Unique index enforcement
 **Status:** Done
