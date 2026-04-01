@@ -2841,7 +2841,7 @@ via Weave/Sew verbs).
 rendering/visual differentiation, deeper integration with food chain
 and cooking.
 
-**Blocks:** F-civ-knowledge, F-wild-fruit
+**Blocks:** F-civ-knowledge
 **Related:** F-bldg-kitchen, F-civ-knowledge, F-civilizations, F-component-recipes, F-dye-crafting, F-food-chain, F-fruit-extraction, F-fruit-naming, F-fruit-pigments, F-fruit-prod, F-fruit-sprite-ui, F-fruit-sprites, F-fruit-yields, F-greenhouse-revamp, F-logistics-filter, F-recipes, F-textile-crafting, F-wild-fruit
 
 #### F-greenhouse-revamp — Greenhouse planter growth cycle and pluck tasks
@@ -5328,7 +5328,7 @@ naturally during worldgen and regrows seasonally. Wild-only fruit
 species (from F-fruit-variety) appear here. Elves can forage wild
 fruit manually; animals forage it autonomously (see F-wild-foraging).
 
-**Blocked by:** F-fruit-variety, F-wild-bushes
+**Blocked by:** F-wild-bushes
 **Blocks:** F-wild-foraging
 **Related:** F-fruit-variety
 
