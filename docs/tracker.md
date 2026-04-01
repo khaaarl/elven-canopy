@@ -67,6 +67,7 @@ This reduces merge conflicts when parallel work streams add items.
 ```
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
+[ ] B-retire-spatidx       Retire SimState.spatial_index in favor of tabulosity Creature table index
 [ ] B-wg-fresh-seed        Worldgen tests use hardcoded seed 42 instead of fresh_test_seed
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-adventure-mode       Control individual elf (RPG-like)
@@ -6876,6 +6877,15 @@ When quitting the game, Godot may tear down while rayon worker threads are still
 4. Consider whether the global rayon pool needs similar treatment — it's used for synchronous data-parallel ops (nav building, tree gen, world gen) so it's less likely to be in-flight during quit, but worth auditing.
 
 **References:** rayon issues #544 (no cancel API), #688 (no sync shutdown), #776 (hang on drop).
+
+#### B-retire-spatidx — Retire SimState.spatial_index in favor of tabulosity Creature table index
+**Status:** Todo
+
+SimState.spatial_index is a manual BTreeMap<VoxelCoord, Vec<CreatureId>> maintained outside of tabulosity with hand-rolled insert/update/delete logic scattered across multiple call sites (wander, walk_toward_task, handle_creature_movement_complete, resnap_creatures, spawn, death). This should have been retired when the Creature table was migrated to tabulosity (SimDb). The creature position is already stored in the tabulosity Creature table, and tabulosity supports indexed fields — the spatial index should be a tabulosity index on the Creature table's position field, not a separate data structure on SimState.
+
+Retiring this removes: (1) the manual maintenance burden and risk of index/table desync, (2) the rebuild-ordering dependency on species_table population, (3) a chunk of SimState that exists only because the index predates tabulosity. The tabulosity index would be automatically maintained on insert/update/delete like all other tabulosity indexes.
+
+This is blocked on deciding the right tabulosity index type for spatial queries — currently tabulosity has no spatial index kind, and the existing BTree compound index on (x, y, z) would only efficiently filter on the leading axis. A grid/bucket spatial index or similar is under design discussion.
 
 #### B-sim-floats — Remaining f32/f64 in sim logic threaten determinism
 **Status:** Done
