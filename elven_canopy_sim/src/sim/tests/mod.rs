@@ -50,6 +50,7 @@ mod skills_tests;
 mod social_dance_tests;
 mod social_tests;
 mod taming_tests;
+mod worldgen_tests;
 
 // =========================================================================
 // Core tests: basic sim setup, determinism, serialization, tree, nav graph

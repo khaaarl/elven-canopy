@@ -68,7 +68,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-retire-spatidx       Retire SimState.spatial_index in favor of tabulosity Creature table index
-[ ] B-wg-fresh-seed        Worldgen tests use hardcoded seed 42 instead of fresh_test_seed
+[x] B-wg-fresh-seed        Worldgen tests use hardcoded seed 42 instead of fresh_test_seed
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-aggro-fauna          Neutral fauna with aggro triggers
@@ -7856,3 +7856,23 @@ pub struct MeshPipelineConfig {
     pub decimation_max_error: f32,
 }
 ```
+
+#### B-wg-fresh-seed — Worldgen tests use hardcoded seed 42 instead of fresh_test_seed
+**Status:** Done
+
+Worldgen tests lived in an inline `#[cfg(test)] mod tests` block at the bottom of
+`worldgen.rs`.  Those tests used hardcoded seed 42 throughout, and had no access to
+`fresh_test_seed()` from `test_helpers.rs` (which lives under `sim/tests/`).
+
+**Fix:** Extracted all 34 worldgen tests into a new file
+`elven_canopy_sim/src/sim/tests/worldgen_tests.rs`, registered as `mod worldgen_tests`
+in `sim/tests/mod.rs`.  The new file does `use super::*` (inheriting `fresh_test_seed()`,
+`GameConfig`, `GameRng`, and all sim types) plus an explicit import of
+`crate::worldgen::{run_worldgen, noop_log, WorldgenConfig, species_default_opinion}`.
+Made `species_default_opinion` `pub(crate)` so the external test file can call it.
+Renamed the local `test_config()` to `wg_test_config()` to avoid shadowing the
+`test_config()` already available via `super::*`.  Replaced all hardcoded seed-42 calls
+with `fresh_test_seed()`.  Hardened `wild_fruit_partial_fraction_assigns_some` by
+increasing tree count to 40 with `max_placement_attempts = 1000` and asserting that at
+least 5 trees were placed, making the "some but not all" assertion statistically robust
+across all seeds.  Removed the old inline test block from `worldgen.rs` (~700 lines).
