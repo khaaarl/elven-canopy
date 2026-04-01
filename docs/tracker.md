@@ -69,7 +69,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fog-billboards       Fog post-process does not obscure billboard sprites
 [ ] B-retire-spatidx       Retire SimState.spatial_index in favor of tabulosity Creature table index
-[x] B-wg-fresh-seed        Worldgen tests use hardcoded seed 42 instead of fresh_test_seed
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-aggro-fauna          Neutral fauna with aggro triggers
@@ -319,6 +318,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-tame-already         Taming task doesn't detect already-tamed target
 [x] B-task-civ-filter      Tasks lack civilization-level eligibility filtering
 [x] B-unsafe-db-calls      Replace _no_fk and modify_unchecked calls with safe database-level methods
+[x] B-wg-fresh-seed        Worldgen tests use hardcoded seed 42 instead of fresh_test_seed
 [x] B-win-freeze           Periodic ~3s freezes on Windows (debug build)
 [x] F-activation-revamp    Replace manual event scheduling with automatic reactivation
 [x] F-ai-test-harness      Remote game control for AI-driven testing (Puppet)
@@ -7062,6 +7062,8 @@ SimState.spatial_index is a manual BTreeMap<VoxelCoord, Vec<CreatureId>> maintai
 
 Retiring this removes: (1) the manual maintenance burden and risk of index/table desync, (2) the rebuild-ordering dependency on species_table population, (3) a chunk of SimState that exists only because the index predates tabulosity. The tabulosity index would be automatically maintained on insert/update/delete like all other tabulosity indexes.
 
+**Filtered index for alive creatures:** The current spatial index only tracks alive creatures. Tabulosity already supports filtered indexes (`#[index(filter = "is_alive")]`), which automatically add/remove entries when the filter condition changes. The spatial index on the Creature table should use a filter on vital status so dead creatures are excluded without manual maintenance. On death, the filter stops passing and the entry is automatically removed from the spatial index.
+
 **Creature footprint complication:** The current spatial index has special logic for multi-voxel creatures (e.g., 2×2×2 trolls) — it registers the creature at every voxel in its footprint. A naive replacement with a point-indexed tabulosity field wouldn't cover this. The planned tabulosity spatial index (F-tab-spatial) uses VoxelBox entries (bounding boxes with min/max coordinates) instead of bare VoxelCoord points. A 2×2×2 troll is stored as a VoxelBox spanning its full footprint, and queries find it via box intersection — no per-voxel registration needed. Callers wanting "all creatures at voxel X" do a point-in-box query against the spatial index.
 
 **Schema migration:** The creature position field changes from `VoxelCoord` to `VoxelBox`. Old saves store only the anchor VoxelCoord; the deserializer must look up each creature's species footprint dimensions to reconstruct the full VoxelBox (same rebuild-ordering constraint as the current spatial index — species_table must be populated first).
@@ -8061,23 +8063,3 @@ pub struct MeshPipelineConfig {
     pub decimation_max_error: f32,
 }
 ```
-
-#### B-wg-fresh-seed — Worldgen tests use hardcoded seed 42 instead of fresh_test_seed
-**Status:** Done
-
-Worldgen tests lived in an inline `#[cfg(test)] mod tests` block at the bottom of
-`worldgen.rs`.  Those tests used hardcoded seed 42 throughout, and had no access to
-`fresh_test_seed()` from `test_helpers.rs` (which lives under `sim/tests/`).
-
-**Fix:** Extracted all 34 worldgen tests into a new file
-`elven_canopy_sim/src/sim/tests/worldgen_tests.rs`, registered as `mod worldgen_tests`
-in `sim/tests/mod.rs`.  The new file does `use super::*` (inheriting `fresh_test_seed()`,
-`GameConfig`, `GameRng`, and all sim types) plus an explicit import of
-`crate::worldgen::{run_worldgen, noop_log, WorldgenConfig, species_default_opinion}`.
-Made `species_default_opinion` `pub(crate)` so the external test file can call it.
-Renamed the local `test_config()` to `wg_test_config()` to avoid shadowing the
-`test_config()` already available via `super::*`.  Replaced all hardcoded seed-42 calls
-with `fresh_test_seed()`.  Hardened `wild_fruit_partial_fraction_assigns_some` by
-increasing tree count to 40 with `max_placement_attempts = 1000` and asserting that at
-least 5 trees were placed, making the "some but not all" assertion statistically robust
-across all seeds.  Removed the old inline test block from `worldgen.rs` (~700 lines).
