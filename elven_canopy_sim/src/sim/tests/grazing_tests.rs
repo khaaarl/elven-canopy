@@ -45,18 +45,18 @@ fn is_grassy_dirt_returns_false_for_covered_dirt() {
 }
 
 #[test]
-fn capybara_is_herbivore() {
+fn capybara_is_grazer() {
     let sim = test_sim(legacy_test_seed());
     let species_data = &sim.species_table[&Species::Capybara];
-    assert!(species_data.is_herbivore);
+    assert!(species_data.is_grazer);
     assert!(species_data.graze_food_restore_pct > 0);
 }
 
 #[test]
-fn elf_is_not_herbivore() {
+fn elf_is_not_grazer() {
     let sim = test_sim(legacy_test_seed());
     let species_data = &sim.species_table[&Species::Elf];
-    assert!(!species_data.is_herbivore);
+    assert!(!species_data.is_grazer);
 }
 
 #[test]
@@ -467,28 +467,33 @@ fn two_herbivores_graze_same_tile() {
 }
 
 #[test]
-fn all_herbivore_species_flagged_correctly() {
+fn all_grazer_species_flagged_correctly() {
     let sim = test_sim(legacy_test_seed());
-    let herbivores = [
+    let grazers = [
         Species::Capybara,
         Species::Boar,
         Species::Deer,
         Species::Elephant,
-        Species::Monkey,
-        Species::Squirrel,
     ];
-    for species in &herbivores {
+    for species in &grazers {
         assert!(
-            sim.species_table[species].is_herbivore,
-            "{:?} should be herbivore",
+            sim.species_table[species].is_grazer,
+            "{:?} should be a grazer",
             species
         );
     }
-    let non_herbivores = [Species::Elf, Species::Goblin, Species::Orc, Species::Troll];
-    for species in &non_herbivores {
+    let non_grazers = [
+        Species::Elf,
+        Species::Goblin,
+        Species::Orc,
+        Species::Troll,
+        Species::Monkey,
+        Species::Squirrel,
+    ];
+    for species in &non_grazers {
         assert!(
-            !sim.species_table[species].is_herbivore,
-            "{:?} should NOT be herbivore",
+            !sim.species_table[species].is_grazer,
+            "{:?} should NOT be a grazer",
             species
         );
     }

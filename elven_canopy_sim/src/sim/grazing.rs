@@ -20,7 +20,7 @@
 //
 // See also: `needs.rs` (hunger-driven task creation), `activation.rs`
 // (task behavior dispatch), `mesh_gen.rs` (grassless dirt coloring),
-// `species.rs` (`is_herbivore`, `graze_food_restore_pct`).
+// `species.rs` (`is_grazer`, `graze_food_restore_pct`).
 
 use super::*;
 

@@ -67,6 +67,7 @@ This reduces merge conflicts when parallel work streams add items.
 ```
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
+[ ] B-fog-billboards       Fog post-process does not obscure billboard sprites
 [ ] B-retire-spatidx       Retire SimState.spatial_index in favor of tabulosity Creature table index
 [x] B-wg-fresh-seed        Worldgen tests use hardcoded seed 42 instead of fresh_test_seed
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
@@ -111,6 +112,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-controls-config-A    ControlsConfig autoload and handler migration
 [ ] F-controls-config-B    Controls persistence and sensitivity settings
 [ ] F-controls-config-C    Controls settings screen with rebinding UI
+[ ] F-corpses              Creature corpses and decay
 [ ] F-creature-control     Temporary allegiance change and AI override
 [ ] F-cultural-drift       Inter-tree cultural divergence
 [ ] F-dance-choreo         Refine dance figure choreography
@@ -143,6 +145,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-follow-multi         Camera zoom-to and follow for multi-selections
 [ ] F-food-chain           Food production/distribution pipeline
 [ ] F-food-quality-mood    Food quality affects dining mood boost
+[ ] F-food-satiety         Food satiety revamp: calorie-analog system
 [ ] F-forest-ecology       Forest floor ecology (flora, fauna, foraging)
 [ ] F-forest-radar         Forest awareness radar (world map detection)
 [ ] F-formal-bonds         Formal bonds (marriage, parent-child, fiance)
@@ -194,6 +197,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-phased-archery       Phased archery (nock/draw/loose) with skill-gated mobility
 [ ] F-poetry-reading       Social gatherings and poetry readings
 [ ] F-population           Natural population growth/immigration
+[ ] F-predators            Wild predator food cycle
 [ ] F-proc-poetry          Procedural poetry via simulated annealing
 [ ] F-quality-filters      Quality filters for logistics wants and active recipes
 [ ] F-raid-detection       Raid detection gating and stealth spawning
@@ -268,7 +272,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-war-animals          Train tamed creatures for combat
 [ ] F-war-magic            War magic (combat spells)
 [ ] F-weather              Weather within seasons
-[ ] F-wild-foraging        Wild animal foraging for fruit
 [ ] F-windows-compat       Windows compatibility for dev tooling
 [ ] F-winged-elf           Winged elf species variant with flight-only movement
 [ ] F-wireframe-ghost      Wireframe ghost for overlap preview
@@ -539,6 +542,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-voxel-fem            Voxel FEM structural analysis
 [x] F-voxel-textures       Per-face Perlin noise voxel textures
 [x] F-wild-bushes          Wild fruit bushes at ground level
+[x] F-wild-foraging        Wild animal foraging for fruit
 [x] F-wild-fruit           Wild fruit growing on bushes and ground-level plants
 [x] F-wild-grazing         Wild animal herbivorous food cycle
 [x] F-worldgen-framework   Worldgen generator framework
@@ -1880,7 +1884,7 @@ predators that attack when hungry. Prerequisite for taming having real
 risk. Distinct from F-enemy-ai (always-hostile species) — these start
 neutral and transition to hostile based on triggers.
 
-**Related:** F-enemy-ai, F-tame-aggro
+**Related:** F-enemy-ai, F-predators, F-tame-aggro
 
 #### F-animal-breeding — Breed tamed animals
 **Status:** Todo
@@ -2135,7 +2139,7 @@ for an unlikely future species.
   each position for grassiness.
 - Integration with the graze task pipeline (activation, resolve).
 - Species data support: a species with both `flight_ticks_per_voxel`
-  and `is_herbivore` / `graze_food_restore_pct`.
+  and `is_grazer` / `graze_food_restore_pct`.
 
 #### F-food-gauge — Creature food gauge with decay
 **Status:** Done · **Refs:** §13
@@ -2144,6 +2148,108 @@ Food level per creature, decaying over time. Displayed in creature info
 panel and as overhead bar.
 
 **Related:** F-bread, F-creature-death, F-elf-needs, F-fruit-prod
+
+#### F-food-satiety — Food satiety revamp: calorie-analog system
+**Status:** Todo
+
+Replace the current scatter of arbitrary percentage-based food restore
+values (food_restore_pct, bread_restore_pct, forage_food_restore_pct,
+graze_food_restore_pct) with a unified calorie-analog system that is
+biologically plausible at a coarse level.
+
+Bold: Current state (problems)
+
+food_restore_pct and its siblings are flat percentages of food_max,
+set per-species by hand with no principled basis. Bread restores 30%,
+fruit restores 40%, a graze restores 15–20%, a monkey forage restores
+25%. These numbers have no relationship to each other or to the actual
+nutritional content of the food. Adding new food types means inventing
+new percentages.
+
+Bold: Target model
+
+Track a calorie-like quantity per food item, and a per-species
+digestive efficiency profile that determines how many food-unit "calories"
+a species extracts from each macronutrient class.
+
+Bold: Macronutrient classes
+
+The existing fruit component system already defines the right categories:
+- **Starch** (PartProperty::Starchy) — dense energy; digested well by
+  most species (monogastric-friendly)
+- **Sugar** (PartProperty::Sweet) — fast energy; digested well by most
+- **Coarse fibre / cellulose** (PartProperty::FibrousCoarse) — structural
+  plant matter; ruminants (grazers) extract significant energy via
+  fermentation; monogastrics extract almost none
+- **Fine fibre** (PartProperty::FibrousFine) — intermediate; grazers
+  digest moderately well, others poorly
+
+Grass (the graze food source) is modelled as having a fixed
+macronutrient profile dominated by coarse fibre with some starch.
+
+Bold: New per-macronutrient config
+
+Add a `calories_per_component_unit` struct (or BTreeMap) that maps each
+macronutrient class to a base caloric value (in food_max units per
+component unit). This lives in GameConfig, not per-species.
+
+Bold: New per-species digestive efficiency
+
+Replace the per-food-source restore percentages with a single
+`DigestiveProfile` struct on SpeciesData:
+- `starch_efficiency_pct: i64`    — default ~95 for most species
+- `sugar_efficiency_pct: i64`     — default ~95 for most species
+- `coarse_fibre_efficiency_pct: i64` — default ~5 for monogastrics,
+  ~65–70 for grazers (ruminants)
+- `fine_fibre_efficiency_pct: i64`   — default ~15 for monogastrics,
+  ~45 for grazers
+
+Food restoration is then:
+  restore = sum over macronutrients of:
+    (quantity_in_item × base_calories_per_unit × species_efficiency_pct / 100)
+
+Bold: Grass
+
+The graze action does not consume a discrete item. Assign grass a
+virtual macronutrient profile in GameConfig (e.g. a GrassNutritionProfile
+with fixed component quantities). On graze resolution, compute restore
+from that profile using the grazer's digestive efficiencies. Grazers
+get high yield from coarse fibre; non-grazers would get very little
+(which is why non-grazers don't graze — gatekept by is_grazer, but
+the numbers now tell the right story too).
+
+Bold: Bread
+
+Bread is almost pure starch. Its caloric value is computed the same
+way: starch quantity × base_calories × efficiency. Since most species
+have high starch efficiency, bread is good for everyone — no special
+bread_restore_pct needed.
+
+Bold: Fruit
+
+Each fruit's caloric value is derived from its actual component
+quantities (starch, sweet, fibre) set during fruit generation. Richer
+fruits (more starch/sugar) are more filling. Foragers (monkeys,
+squirrels) now naturally get good value from sweet/starchy fruits
+and poor value from fibrous ones; this emerges from the model rather
+than being hard-coded.
+
+Bold: Migration
+
+Remove food_restore_pct, bread_restore_pct, forage_food_restore_pct,
+graze_food_restore_pct from SpeciesData. All food restoration goes
+through the new caloric computation. The food_max scale stays the same
+(large i64); only the restore amounts change — tune base caloric
+values to produce similar restore magnitudes to the current numbers.
+
+Bold: Scope
+
+This feature does NOT introduce protein, fat, vitamins, or other
+micronutrients. One axis (calories) is sufficient for the current
+simulation depth. Additional nutrient axes belong to F-herbalism or a
+future nutrition-complexity feature.
+
+**Related:** F-predators, F-wild-foraging, F-wild-grazing
 
 #### F-genetics — Creature genetics (additive SNP bitfield genomes with inheritance)
 **Status:** In Progress · **Refs:** §4
@@ -5060,6 +5166,24 @@ for non-elf civs, Vaelith names for elf civs.
 **Unblocked:** F-enemy-raids
 **Related:** F-civ-pets, F-dwarf-fort-gen, F-enemy-raids, F-fruit-variety, F-settlement-gen, F-traders
 
+#### F-corpses — Creature corpses and decay
+**Status:** Todo
+
+Creature corpses left behind when a creature dies. Currently creatures simply disappear on death (the DB row is removed). Corpses would be a persistent world object with a position, the dead creature's species, and a decay timer.
+
+Design:
+- A new Corpse table (or repurpose the existing creature row with a "dead" state). Likely a separate CorpseId row: position, species, death_tick, decay_after_ticks.
+- Corpses occupy a voxel or sit on the ground (ground-level object, not voxel-solid).
+- Decay: after some number of ticks (configurable), the corpse disappears. Periodic sweep or scheduled event.
+- Mesh/rendering: corpses need a visual representation — likely a simple flat sprite or reuse of creature sprite at reduced opacity.
+- Predators (F-predators) eat corpses via an EatCorpse task, restoring food.
+- Scavenger species (if added later) would also use corpses.
+- Player-visible: corpses appear in the world and can be clicked (creature info panel showing cause of death?).
+
+Blocking: F-predators.
+
+**Blocks:** F-predators
+
 #### F-cultural-drift — Inter-tree cultural divergence
 **Status:** Todo · **Phase:** 7 · **Refs:** §7, §18
 
@@ -5195,6 +5319,23 @@ fog of war rendering.
 **Unblocked by:** F-tree-db
 **Related:** F-bigger-world, F-multiplayer, F-settlement-gen, F-tree-capacity, F-tree-db, F-tree-species, F-uplift-tree, F-zone-world
 
+#### F-predators — Wild predator food cycle
+**Status:** Todo
+
+Wild predator creatures that autonomously hunt and kill other creatures for food. When hungry, a predator searches for suitable prey within a detection radius, pursues it, kills it, and then eats the resulting corpse (see F-corpses).
+
+Core design questions to resolve during implementation:
+- Which species are predators? Wyvern and hornet are obvious candidates (both currently have aggressive AI for player-targeting). Natural wildlife predators like a fox, wolf, or hawk would also fit. Need to decide if existing species get predator behavior or if new species are added.
+- Prey selection: what makes a creature valid prey? Likely based on relative size/strength, species relationships, and whether the predator is hungry. This needs a prey-species config: either a whitelist of huntable species per predator, or a generic "prey tier" system.
+- Priority: predator food-seeking fits into the existing hunger state machine (alongside EatFruit, Graze). Predators should have a distinct is_predator: bool flag and not fall through to the fruit/bread path.
+- Task pipeline: likely a multi-step task — find prey (search for nearest valid prey creature), pursue (GoTo with dynamic target), attack (use existing melee system), then eat corpse (EatCorpse task at corpse location).
+- Predators stop pursuing once full (or on prey death) and don't aggro the player faction by default.
+
+Blocks: nothing directly. Blocked by F-corpses.
+
+**Blocked by:** F-corpses
+**Related:** F-aggro-fauna, F-food-satiety
+
 #### F-rm-floor-extent — Remove floor_extent and ForestFloor layer
 **Status:** Done
 
@@ -5302,7 +5443,7 @@ fruit and animal foraging.
 **Related:** F-forest-ecology, F-wild-fruit
 
 #### F-wild-foraging — Wild animal foraging for fruit
-**Status:** Todo
+**Status:** Done
 
 Wild herbivorous animals autonomously seek out and consume wild fruit.
 Animals search within a species-specific foraging radius for available
@@ -5318,7 +5459,7 @@ feed on fruit rather than grass. Their grazer flag should be removed
 and replaced with forager behavior.
 
 **Unblocked by:** F-wild-fruit
-**Related:** F-wild-grazing
+**Related:** F-food-satiety, F-wild-grazing
 
 #### F-wild-fruit — Wild fruit growing on bushes and ground-level plants
 **Status:** Done
@@ -5408,7 +5549,7 @@ across grass/grassless faces. Simple but functional — more interesting
 visual treatments (shader grass, texture blending) deferred to later.
 
 **Unblocked:** F-animal-husbandry, F-herding
-**Related:** F-forest-ecology, F-grass-rendering, F-wild-foraging
+**Related:** F-food-satiety, F-forest-ecology, F-grass-rendering, F-wild-foraging
 
 #### F-worldgen-framework — Worldgen generator framework
 **Status:** Done
@@ -5579,6 +5720,41 @@ Two related fixes for the ESC menu:
 
 #### B-first-notification — First notification not displayed (ID 0 skipped by polling cursor)
 **Status:** Done
+
+#### B-fog-billboards — Fog post-process does not obscure billboard sprites
+**Status:** Todo
+
+The distance fog post-processing pass does not affect billboarded objects
+(fruit sprites, creature sprites, arrow sprites, etc.). These objects pop
+out of the fog as fully-saturated objects against a hazy background, which
+looks incorrect — a fruit cluster at draw-distance edge should fade into
+the fog just like the surrounding voxel mesh does.
+
+Root cause hypothesis: the fog is implemented as a post-process effect
+that reads scene depth from the depth buffer. Billboards rendered with
+a transparent/unshaded material may not write to the depth buffer, or
+may be rendered in a separate pass that runs after the fog compositor
+has already composed the final image. Either way, the fog lerp is never
+applied to billboard fragments.
+
+Likely fix approaches:
+- Split fog into two passes: one that composites on the opaque mesh
+  geometry, and one that runs after the billboard/transparent pass.
+  Godot's compositor allows multiple effects; ordering them correctly
+  relative to the transparent pass should solve it.
+- Alternatively, move the fog logic into the billboard shader itself
+  (sample depth or use VERTEX.z to compute fog factor and lerp the
+  output color). This is simpler but means maintaining fog parameters
+  in two places (mesh shader and billboard shader).
+- A third option: ensure billboards write to the depth buffer and are
+  included in the same compositor pass as opaque geometry. May require
+  changing the billboard material's depth-write settings.
+
+Affected objects: fruit sprites (VoxelType::Fruit rendered as billboard),
+creature sprites, arrow sprites, and any other billboard-rendered world
+objects.
+
+**Related:** F-distance-fog
 
 #### B-ghost-chunks — Ghost chunks in distance remain visible after they should be hidden
 **Status:** In Progress
@@ -6074,7 +6250,7 @@ The debug menu should be easy to hide entirely for non-dev builds later.
 
 Depth-based fog that fades distant geometry toward a sky/haze color. Can use Godot's built-in Environment fog or a simple shader-based depth fade. Hides LOD transitions (relevant for F-megachunk draw distance), gives depth cues, makes the forest feel large. Essentially free — per-fragment lerp based on depth.
 
-**Related:** F-day-night-color, F-megachunk, F-mesh-lod
+**Related:** B-fog-billboards, F-day-night-color, F-megachunk, F-mesh-lod
 
 #### F-edge-outline — Edge highlighting shader (depth/normal discontinuity)
 **Status:** Done

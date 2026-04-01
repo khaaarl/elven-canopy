@@ -1711,19 +1711,54 @@ impl SimState {
                     }
                 }
 
-                // Herbivores try grazing before fruit. If grass is depleted,
-                // herbivores do NOT fall back to fruit — they wander and starve.
-                // Fruit fallback is only for non-herbivore species.
-                let is_herbivore = self
+                let (is_grazer, is_forager) = self
                     .db
                     .creatures
                     .get(&creature_id)
-                    .map(|c| self.species_table[&c.species].is_herbivore)
-                    .unwrap_or(false);
+                    .map(|c| {
+                        let d = &self.species_table[&c.species];
+                        (d.is_grazer, d.is_forager)
+                    })
+                    .unwrap_or((false, false));
+
+                // Foragers (monkeys, squirrels) seek fruit as their primary
+                // food source — they do not graze grass.
+                let mut started_foraging = false;
+                if should_seek_food
+                    && !ate_bread
+                    && is_forager
+                    && let Some((fruit_pos, _nav_node)) = self.find_nearest_fruit(creature_id)
+                {
+                    let task_id = TaskId::new(&mut self.rng);
+                    let new_task = task::Task {
+                        id: task_id,
+                        kind: task::TaskKind::EatFruit { fruit_pos },
+                        state: task::TaskState::InProgress,
+                        location: fruit_pos,
+                        progress: 0,
+                        total_cost: 0,
+                        required_species: None,
+                        origin: task::TaskOrigin::Autonomous,
+                        target_creature: None,
+                        restrict_to_creature_id: None,
+                        prerequisite_task_id: None,
+                        required_civ_id: None,
+                    };
+                    self.insert_task(new_task);
+                    if let Some(mut creature) = self.db.creatures.get(&creature_id) {
+                        creature.current_task = Some(task_id);
+                        let _ = self.db.update_creature(creature);
+                    }
+                    started_foraging = true;
+                }
+
+                // Grazers seek grassy dirt surfaces. If grass is depleted,
+                // grazers do NOT fall back to fruit — they wander and starve.
                 let mut started_grazing = false;
                 if should_seek_food
                     && !ate_bread
-                    && is_herbivore
+                    && !started_foraging
+                    && is_grazer
                     && let Some((grass_pos, _nav_node)) = self.find_nearest_grass(creature_id)
                 {
                     let task_id = TaskId::new(&mut self.rng);
@@ -1749,13 +1784,14 @@ impl SimState {
                     started_grazing = true;
                 }
 
-                // Fall back to seeking fruit if no bread was available.
-                // Herbivores do NOT eat fruit — they only graze. Fruit
-                // foraging for herbivores belongs to F-wild-foraging.
+                // Non-grazer, non-forager species (elves, goblins, orcs, etc.)
+                // eat wild fruit as emergency fallback.
                 if should_seek_food
                     && !ate_bread
+                    && !started_foraging
                     && !started_grazing
-                    && !is_herbivore
+                    && !is_grazer
+                    && !is_forager
                     && let Some((fruit_pos, _nav_node)) = self.find_nearest_fruit(creature_id)
                 {
                     let task_id = TaskId::new(&mut self.rng);

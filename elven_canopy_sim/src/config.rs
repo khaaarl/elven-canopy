@@ -3632,8 +3632,10 @@ impl Default for GameConfig {
                 ]),
                 raid_size: 1,
                 tame_difficulty: None, // sapient — untameable
-                is_herbivore: false,
+                is_grazer: false,
                 graze_food_restore_pct: 15,
+                is_forager: false,
+                forage_food_restore_pct: 25,
                 sex_weights: [0, 1, 1],
                 // Elves: artistic, disciplined, emotionally intense.
                 personality_distributions: personality_dists(&[
@@ -3691,8 +3693,10 @@ impl Default for GameConfig {
                 ]),
                 raid_size: 1,
                 tame_difficulty: Some(100), // easy
-                is_herbivore: true,
+                is_grazer: true,
                 graze_food_restore_pct: 15,
+                is_forager: false,
+                forage_food_restore_pct: 25,
                 sex_weights: [0, 1, 1],
                 personality_distributions: Default::default(),
                 genome_config: simple_species_genome_with_morphology(
@@ -3747,8 +3751,10 @@ impl Default for GameConfig {
                 ]),
                 raid_size: 1,
                 tame_difficulty: Some(200), // hard — aggressive temperament
-                is_herbivore: true,
+                is_grazer: true,
                 graze_food_restore_pct: 15,
+                is_forager: false,
+                forage_food_restore_pct: 25,
                 sex_weights: [0, 1, 1],
                 personality_distributions: Default::default(),
                 genome_config: simple_species_genome_with_morphology(
@@ -3803,8 +3809,10 @@ impl Default for GameConfig {
                 ]),
                 raid_size: 1,
                 tame_difficulty: Some(150), // moderate — skittish
-                is_herbivore: true,
+                is_grazer: true,
                 graze_food_restore_pct: 15,
+                is_forager: false,
+                forage_food_restore_pct: 25,
                 sex_weights: [0, 1, 1],
                 personality_distributions: Default::default(),
                 genome_config: simple_species_genome_with_morphology(
@@ -3859,8 +3867,10 @@ impl Default for GameConfig {
                 ]),
                 raid_size: 1,
                 tame_difficulty: Some(250), // very hard — strong-willed
-                is_herbivore: true,
+                is_grazer: true,
                 graze_food_restore_pct: 10,
+                is_forager: false,
+                forage_food_restore_pct: 25,
                 sex_weights: [0, 1, 1],
                 personality_distributions: Default::default(),
                 genome_config: simple_species_genome_with_morphology(
@@ -3920,8 +3930,10 @@ impl Default for GameConfig {
                 ]),
                 raid_size: 6,
                 tame_difficulty: None, // sapient — untameable
-                is_herbivore: false,
+                is_grazer: false,
                 graze_food_restore_pct: 15,
+                is_forager: false,
+                forage_food_restore_pct: 25,
                 sex_weights: [0, 1, 1],
                 // Goblins: curious, undisciplined, competitive.
                 personality_distributions: personality_dists(&[
@@ -3983,8 +3995,10 @@ impl Default for GameConfig {
                 ]),
                 raid_size: 1,
                 tame_difficulty: Some(150), // moderate — clever, evasive
-                is_herbivore: true,
+                is_grazer: false,
                 graze_food_restore_pct: 15,
+                is_forager: true,
+                forage_food_restore_pct: 25,
                 sex_weights: [0, 1, 1],
                 personality_distributions: Default::default(),
                 genome_config: simple_species_genome_with_morphology(
@@ -4044,8 +4058,10 @@ impl Default for GameConfig {
                 ]),
                 raid_size: 3,
                 tame_difficulty: None, // sapient — untameable
-                is_herbivore: false,
+                is_grazer: false,
                 graze_food_restore_pct: 15,
+                is_forager: false,
+                forage_food_restore_pct: 25,
                 sex_weights: [0, 1, 1],
                 // Orcs: stoic, disciplined warriors, low openness.
                 personality_distributions: personality_dists(&[
@@ -4107,8 +4123,10 @@ impl Default for GameConfig {
                 ]),
                 raid_size: 1,
                 tame_difficulty: Some(100), // easy — small, docile
-                is_herbivore: true,
-                graze_food_restore_pct: 20,
+                is_grazer: false,
+                graze_food_restore_pct: 15,
+                is_forager: true,
+                forage_food_restore_pct: 30,
                 sex_weights: [0, 1, 1],
                 personality_distributions: Default::default(),
                 genome_config: simple_species_genome_with_morphology(
@@ -4168,8 +4186,10 @@ impl Default for GameConfig {
                 ]),
                 raid_size: 2,
                 tame_difficulty: None, // sapient — untameable
-                is_herbivore: false,
+                is_grazer: false,
                 graze_food_restore_pct: 15,
+                is_forager: false,
+                forage_food_restore_pct: 25,
                 sex_weights: [0, 1, 1],
                 personality_distributions: Default::default(),
                 genome_config: simple_species_genome_with_morphology(
@@ -4229,8 +4249,10 @@ impl Default for GameConfig {
                 ]),
                 raid_size: 1,
                 tame_difficulty: Some(350), // extreme — dangerous, alien mind
-                is_herbivore: false,
+                is_grazer: false,
                 graze_food_restore_pct: 15,
+                is_forager: false,
+                forage_food_restore_pct: 25,
                 sex_weights: [0, 1, 1],
                 personality_distributions: Default::default(),
                 genome_config: simple_species_genome_with_morphology(
@@ -4290,8 +4312,10 @@ impl Default for GameConfig {
                 ]),
                 raid_size: 1,
                 tame_difficulty: Some(350), // extreme — apex predator
-                is_herbivore: false,
+                is_grazer: false,
                 graze_food_restore_pct: 15,
+                is_forager: false,
+                forage_food_restore_pct: 25,
                 sex_weights: [0, 1, 1],
                 personality_distributions: Default::default(),
                 genome_config: simple_species_genome_with_morphology(

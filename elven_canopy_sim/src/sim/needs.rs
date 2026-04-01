@@ -65,10 +65,16 @@ impl SimState {
         task_id: TaskId,
         fruit_pos: VoxelCoord,
     ) -> bool {
-        // Restore food.
+        // Restore food. Foragers use forage_food_restore_pct; others use
+        // food_restore_pct.
         if let Some(mut creature) = self.db.creatures.get(&creature_id) {
             let species_data = &self.species_table[&creature.species];
-            let restore = species_data.food_max * species_data.food_restore_pct / 100;
+            let pct = if species_data.is_forager {
+                species_data.forage_food_restore_pct
+            } else {
+                species_data.food_restore_pct
+            };
+            let restore = species_data.food_max * pct / 100;
             let food_max = species_data.food_max;
             creature.food = (creature.food + restore).min(food_max);
             let _ = self.db.update_creature(creature);

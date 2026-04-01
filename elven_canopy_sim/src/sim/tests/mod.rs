@@ -35,6 +35,7 @@ mod dinner_party_tests;
 mod diplomacy_tests;
 mod equipment_tests;
 mod flee_tests;
+mod foraging_tests;
 mod grazing_tests;
 mod greenhouse_tests;
 mod hp_tests;

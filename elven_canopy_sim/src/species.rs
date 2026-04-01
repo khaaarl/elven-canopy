@@ -344,17 +344,28 @@ pub struct SpeciesData {
     #[serde(default)]
     pub tame_difficulty: Option<i64>,
 
-    /// Whether this species is a herbivore that grazes on grass. Herbivores
-    /// autonomously seek grassy dirt surfaces when hungry (before falling back
-    /// to fruit). Default false.
+    /// Whether this species grazes on grass. Grazers autonomously seek grassy
+    /// dirt surfaces when hungry. Default false.
     #[serde(default)]
-    pub is_herbivore: bool,
+    pub is_grazer: bool,
 
     /// Percentage of `food_max` restored per graze action. Grazing is frequent
     /// and low-yield — a single graze restores less than eating fruit.
     /// Default 15 (15% of food_max per graze).
     #[serde(default = "default_graze_food_restore_pct")]
     pub graze_food_restore_pct: i64,
+
+    /// Whether this species forages for wild fruit instead of grazing grass.
+    /// Foragers (monkeys, squirrels) autonomously seek TreeFruit when hungry.
+    /// Default false.
+    #[serde(default)]
+    pub is_forager: bool,
+
+    /// Percentage of `food_max` restored when a forager eats fruit.
+    /// Foraging is richer than grazing — fruit is more nutritious than grass.
+    /// Default 25 (25% of food_max per fruit eaten).
+    #[serde(default = "default_forage_food_restore_pct")]
+    pub forage_food_restore_pct: i64,
 
     /// Probability weights for `CreatureSex` assignment at spawn:
     /// `[None, Male, Female]`. Ratio-based — any nonneg integers work as long
@@ -548,6 +559,10 @@ fn default_raid_size() -> u32 {
 
 fn default_graze_food_restore_pct() -> i64 {
     15
+}
+
+fn default_forage_food_restore_pct() -> i64 {
+    25
 }
 
 fn default_sex_weights() -> [u32; 3] {
