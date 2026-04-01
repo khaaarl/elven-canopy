@@ -262,7 +262,7 @@ impl Default for StructuralConfig {
             building_interior_base_weight: 0.1,
             warn_stress_ratio: 0.5,
             block_stress_ratio: 1.0,
-            tree_gen_max_retries: 4,
+            tree_gen_max_retries: 20,
             strut_rod_stiffness: 150.0,
             strut_rod_strength: 150.0,
             strut_rod_spacing: 2,
