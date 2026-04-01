@@ -50,9 +50,9 @@ GDScript main loop (every frame)
 │     │     │   mesh (and not already in-flight), extracts a
 │     │     │   ChunkNeighborhood (quick copy of the chunk's voxels plus
 │     │     │   a 2-voxel border, along with any grassless dirt coords in
-│     │     │   the region) and spawns a rayon task. All pending chunks
-│     │     │   are submitted (no per-frame cap). Camera-nearest chunks
-│     │     │   submitted first.
+│     │     │   the region) and inserts it into the priority work queue.
+│     │     │   Workers pick the closest-to-camera chunk when ready. All
+│     │     │   pending chunks are submitted (no per-frame cap).
 │     │     │
 │     │     ├─ Delta lists: computes show/hide/shadow transitions by
 │     │     │   diffing old vs new visible/shadow sets.
@@ -78,24 +78,40 @@ All numbered steps above are **sequential on the main thread**. There is no
 overlap between sim advance (step 1) and mesh operations (step 2). This is
 true in both single-player and multiplayer modes.
 
-Background mesh generation runs on **rayon worker threads**. These workers
-operate on owned `ChunkNeighborhood` snapshots — they do not hold references
-to `VoxelWorld` or any other shared state. The snapshot is extracted on the
-main thread during steps 2a (dirty re-generation) and 2b (first-time
-generation of newly-visible chunks). Each extraction copies the chunk's
-16x16x16 voxels plus a 2-voxel border (~20x20x20 = 8000 voxels), then
-the copy is handed to the worker as owned data.
+Background mesh generation runs on **long-lived worker threads** that pull
+work from a shared priority queue (`MeshWorkQueue`). Each worker loops:
+lock the queue, find the pending chunk closest to the current camera
+position, remove it, unlock, generate the mesh, send the result back via
+an mpsc channel.
+
+Workers operate on owned `ChunkNeighborhood` snapshots — they do not hold
+references to `VoxelWorld` or any other shared state. The snapshot is
+extracted on the main thread during steps 2a (dirty re-generation) and 2b
+(first-time generation of newly-visible chunks). Each extraction copies
+the chunk's 16x16x16 voxels plus a 2-voxel border (~20x20x20 = 8000
+voxels), then the copy is inserted into the queue.
 
 This means:
-- **No locks are needed.** The main thread reads the world during extraction;
-  rayon workers read only their own copies. There is no concurrent access to
-  `VoxelWorld`.
-- **Staleness is self-correcting.** A worker's snapshot may be several frames
-  old if mesh generation takes longer than one frame (complex chunks with
-  heavy smoothing/decimation). If the world changes while a mesh is being
-  generated, the dirty-voxel mechanism marks the chunk for re-generation.
-  When the stale result arrives it is inserted normally, then the dirty flag
-  triggers a fresh submission on the next frame.
+- **Minimal locking.** The main thread holds the queue lock briefly to
+  insert work and update the camera position. Workers hold it briefly to
+  scan pending entries and pop the closest one. The expensive mesh
+  generation happens entirely outside the lock. There is no concurrent
+  access to `VoxelWorld`.
+- **Dynamic prioritization.** The camera position stored in the queue is
+  updated each frame. Workers always pick the chunk closest to the
+  *current* camera, not where it was when the chunk was submitted. This
+  ensures nearby chunks (e.g., grass turning to dirt from grazing) are
+  processed before distant ones.
+- **Superseding.** If a chunk is re-submitted while still in the queue
+  (not yet picked up by a worker), the new `ChunkNeighborhood` replaces
+  the old one. This avoids wasted mesh generation when a chunk changes
+  multiple times before any worker gets to it.
+- **Staleness is self-correcting.** A worker's snapshot may be several
+  frames old if mesh generation takes longer than one frame. If the world
+  changes while a mesh is being generated, the dirty-voxel mechanism marks
+  the chunk for re-generation. When the stale result arrives it is inserted
+  normally, then the dirty flag triggers a fresh submission on the next
+  frame.
 - **Freshness checks prevent stale overwrites.** Each `ChunkNeighborhood`
   carries the `sim_tick` at extraction time. When a result arrives, it is
   discarded if a newer version is already cached (two results for the same

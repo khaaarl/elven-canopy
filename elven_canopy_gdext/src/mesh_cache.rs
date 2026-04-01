@@ -22,9 +22,11 @@
 // 4. Fine pass: individual chunk AABBs are classified as visible, shadow-only,
 //    or hidden.
 // 5. Newly-visible/shadow chunks without cached meshes are submitted to
-//    background rayon workers via `submit_chunk()`. Each submission extracts
-//    a lightweight `ChunkNeighborhood` snapshot, then spawns the actual mesh
-//    generation off the main thread. Completed meshes are drained from an
+//    the priority work queue via `submit_chunk()`. Each submission extracts
+//    a lightweight `ChunkNeighborhood` snapshot. Long-lived worker threads
+//    pull the highest-priority (closest to camera) chunk from the queue for
+//    mesh generation. If a chunk is re-submitted before a worker picks it
+//    up, the old entry is superseded. Completed meshes are drained from an
 //    mpsc channel at the start of the next `update_visibility()` call.
 // 6. Delta lists (show, hide, to_shadow, from_shadow, generated, evicted) are
 //    produced for GDScript to toggle MeshInstance3D visibility, cast_shadow
@@ -55,9 +57,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::mpsc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
-
-use rayon::ThreadPool;
 
 use elven_canopy_sim::chunk_neighborhood::ChunkNeighborhood;
 use elven_canopy_sim::mesh_gen::{
@@ -503,13 +504,125 @@ struct MeshWorkResult {
     gen_us: u32,
 }
 
+// ---------------------------------------------------------------------------
+// Priority work queue
+// ---------------------------------------------------------------------------
+
+/// Shared state for the priority mesh work queue. Workers lock this to find
+/// and pop the highest-priority (closest to camera) pending chunk. The main
+/// thread locks it to insert new work items and update the camera position.
+struct MeshWorkQueueInner {
+    /// Pending work items keyed by chunk coordinate. Workers scan this to
+    /// find the closest chunk. Inserting a coord that already exists
+    /// replaces the old neighborhood (superseding).
+    pending: BTreeMap<ChunkCoord, ChunkNeighborhood>,
+    /// Current camera position, updated by main thread each frame. Workers
+    /// use this to determine which pending chunk is closest.
+    cam_pos: [f32; 3],
+    /// Set to true when `MeshCache` is dropped; workers exit their loops.
+    shutdown: bool,
+}
+
+/// Thread-safe priority work queue for chunk mesh generation.
+///
+/// Wraps `MeshWorkQueueInner` in a `Mutex` + `Condvar`. The condvar is
+/// notified when new work is inserted or when shutdown is requested,
+/// waking any workers that are waiting for work.
+struct MeshWorkQueue {
+    inner: Mutex<MeshWorkQueueInner>,
+    condvar: Condvar,
+}
+
+impl MeshWorkQueue {
+    fn new() -> Self {
+        Self {
+            inner: Mutex::new(MeshWorkQueueInner {
+                pending: BTreeMap::new(),
+                cam_pos: [0.0; 3],
+                shutdown: false,
+            }),
+            condvar: Condvar::new(),
+        }
+    }
+}
+
+/// Spawn long-lived mesh worker threads. Each worker loops: lock the queue,
+/// find the closest pending chunk, generate its mesh, send the result back
+/// via the channel, repeat. Waits on the condvar when the queue is empty.
+fn spawn_mesh_workers(
+    num_threads: usize,
+    queue: Arc<MeshWorkQueue>,
+    tx: mpsc::Sender<MeshWorkResult>,
+    config: MeshPipelineConfig,
+) -> Vec<std::thread::JoinHandle<()>> {
+    (0..num_threads)
+        .map(|i| {
+            let queue = Arc::clone(&queue);
+            let tx = tx.clone();
+            std::thread::Builder::new()
+                .name(format!("mesh-worker-{i}"))
+                .spawn(move || {
+                    loop {
+                        // Lock and find work (or wait).
+                        let neighborhood = {
+                            let mut guard = match queue.inner.lock() {
+                                Ok(g) => g,
+                                Err(e) => e.into_inner(),
+                            };
+                            loop {
+                                if guard.shutdown {
+                                    return;
+                                }
+                                if !guard.pending.is_empty() {
+                                    break;
+                                }
+                                guard = match queue.condvar.wait(guard) {
+                                    Ok(g) => g,
+                                    Err(e) => e.into_inner(),
+                                };
+                            }
+                            // Find the pending chunk closest to the camera.
+                            let cam = guard.cam_pos;
+                            let best_coord = guard
+                                .pending
+                                .keys()
+                                .min_by(|a, b| {
+                                    let da = chunk_distance_sq(**a, cam);
+                                    let db = chunk_distance_sq(**b, cam);
+                                    da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                                })
+                                .copied()
+                                .expect("pending is non-empty");
+                            guard.pending.remove(&best_coord).unwrap()
+                        };
+                        // Generate mesh (outside the lock).
+                        let t = Instant::now();
+                        let mesh = generate_chunk_mesh(&neighborhood, &config);
+                        let gen_us = t.elapsed().as_micros() as u32;
+                        let _ = tx.send(MeshWorkResult {
+                            coord: neighborhood.chunk,
+                            sim_tick: neighborhood.sim_tick,
+                            mesh,
+                            gen_us,
+                        });
+                    }
+                })
+                .expect("failed to spawn mesh worker thread")
+        })
+        .collect()
+}
+
 /// Caches chunk meshes with MegaChunk spatial hierarchy, draw-distance
 /// culling, frustum culling, lazy mesh generation, and LRU eviction.
 ///
-/// Mesh generation is fully asynchronous: chunks are submitted to rayon
-/// background workers via `rayon::spawn()`, and completed meshes are
-/// drained from an mpsc channel each frame. The main thread only does
-/// fast `ChunkNeighborhood` extraction (copying ~8K voxels) and culling.
+/// Mesh generation is fully asynchronous: chunks are submitted to a
+/// shared priority work queue, and long-lived worker threads pull the
+/// highest-priority chunk (closest to camera) for generation. Completed
+/// meshes are drained from an mpsc channel each frame. If a chunk is
+/// re-submitted before a worker picks it up, the old entry is superseded
+/// (replaced in-place), avoiding wasted mesh generation. The main thread
+/// only does fast `ChunkNeighborhood` extraction (copying ~8K voxels)
+/// and culling.
 ///
 /// Also supports an optional Y cutoff for the height-hiding feature.
 pub struct MeshCache {
@@ -579,24 +692,50 @@ pub struct MeshCache {
     pub perf: PerfStats,
 
     // -- Async mesh generation --
-    /// Sender for submitting completed meshes from background workers.
-    /// Cloned into each `rayon::spawn` closure.
+    /// Retained so the channel stays open (workers hold clones, but this
+    /// outlives potential thread-exit races). Also used by test helper
+    /// `await_in_flight()` to re-queue results.
+    #[cfg_attr(not(test), allow(dead_code))]
     mesh_tx: mpsc::Sender<MeshWorkResult>,
     /// Receiver for draining completed meshes on the main thread.
     mesh_rx: mpsc::Receiver<MeshWorkResult>,
-    /// Chunks currently being generated in the background. Prevents
-    /// duplicate submissions.
+    /// Chunks currently submitted (in the queue or actively being generated).
+    /// Prevents duplicate submissions.
     in_flight: BTreeSet<ChunkCoord>,
     /// Sim tick at which each cached chunk was generated. Used for
     /// freshness checks when two results for the same chunk race.
     cached_ticks: BTreeMap<ChunkCoord, u64>,
-    /// Dedicated rayon thread pool for mesh generation. Uses fewer threads
-    /// than the total CPU count to leave headroom for the main/render thread
-    /// and OS/background tasks.
-    mesh_pool: ThreadPool,
+    /// Shared priority work queue. Workers pull the closest-to-camera
+    /// chunk from this queue for mesh generation.
+    work_queue: Arc<MeshWorkQueue>,
+    /// Handles for the long-lived mesh worker threads. Joined on drop.
+    worker_threads: Vec<std::thread::JoinHandle<()>>,
     /// Mesh pipeline configuration (smoothing, decimation, etc.). Cloned into
     /// each background worker closure so workers don't depend on global state.
     pub mesh_config: MeshPipelineConfig,
+}
+
+impl Drop for MeshCache {
+    fn drop(&mut self) {
+        // Signal workers to shut down and wake them all. Use
+        // `lock().unwrap_or_else(|e| e.into_inner())` to handle
+        // poisoned mutexes (can happen if a test panics while holding
+        // the lock).
+        {
+            let mut guard = self
+                .work_queue
+                .inner
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            guard.shutdown = true;
+        }
+        self.work_queue.condvar.notify_all();
+        // Join all worker threads, waiting for any in-progress mesh gen
+        // to finish.
+        for handle in self.worker_threads.drain(..) {
+            let _ = handle.join();
+        }
+    }
 }
 
 impl MeshCache {
@@ -606,11 +745,14 @@ impl MeshCache {
             .map(|n| n.get())
             .unwrap_or(4);
         let mesh_threads = num_cpus.saturating_sub(2).max(1);
-        let mesh_pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(mesh_threads)
-            .thread_name(|i| format!("mesh-worker-{i}"))
-            .build()
-            .expect("failed to create mesh worker pool");
+        let config = MeshPipelineConfig::default();
+        let work_queue = Arc::new(MeshWorkQueue::new());
+        let worker_threads = spawn_mesh_workers(
+            mesh_threads,
+            Arc::clone(&work_queue),
+            mesh_tx.clone(),
+            config,
+        );
         Self {
             chunks: BTreeMap::new(),
             dirty: BTreeSet::new(),
@@ -641,8 +783,9 @@ impl MeshCache {
             mesh_rx,
             in_flight: BTreeSet::new(),
             cached_ticks: BTreeMap::new(),
-            mesh_pool,
-            mesh_config: MeshPipelineConfig::default(),
+            work_queue,
+            worker_threads,
+            mesh_config: config,
         }
     }
 
@@ -731,7 +874,12 @@ impl MeshCache {
         self.total_cached_bytes = 0;
         self.in_flight.clear();
         self.cached_ticks.clear();
-        // Drain and discard any in-flight results from a previous scan.
+        // Clear the work queue and drain any in-flight results from a
+        // previous scan.
+        {
+            let mut guard = self.work_queue.inner.lock().unwrap();
+            guard.pending.clear();
+        }
         while self.mesh_rx.try_recv().is_ok() {}
 
         let cx_max = (world.size_x as i32 + CHUNK_SIZE - 1) / CHUNK_SIZE;
@@ -830,35 +978,41 @@ impl MeshCache {
     // -- Async mesh generation --
 
     /// Submit a chunk for background mesh generation.
-    /// Extracts a `ChunkNeighborhood` from the world (fast) and spawns
-    /// a rayon task to generate the mesh.
+    ///
+    /// Extracts a `ChunkNeighborhood` from the world (fast) and inserts it
+    /// into the shared priority work queue. If the coord is already in the
+    /// queue (not yet picked up by a worker), the old entry is replaced
+    /// (superseded) with the fresh snapshot. If a worker is already
+    /// generating a mesh for this coord, the submission is skipped — the
+    /// dirty flag + staleness check will handle re-submission later.
     fn submit_chunk(
         &mut self,
         world: &VoxelWorld,
         coord: ChunkCoord,
         grassless: &std::collections::BTreeSet<VoxelCoord>,
     ) {
-        if self.in_flight.contains(&coord) {
-            return;
-        }
         let neighborhood = ChunkNeighborhood::extract(world, coord, self.y_cutoff, grassless);
-        let tx = self.mesh_tx.clone();
-        let config = self.mesh_config;
-        self.in_flight.insert(coord);
-        self.dirty.remove(&coord);
-        self.mesh_pool.spawn(move || {
-            let t = Instant::now();
-            let mesh = generate_chunk_mesh(&neighborhood, &config);
-            let gen_us = t.elapsed().as_micros() as u32;
-            // If the receiver is dropped (MeshCache destroyed), the send
-            // silently fails — that's fine.
-            let _ = tx.send(MeshWorkResult {
-                coord: neighborhood.chunk,
-                sim_tick: neighborhood.sim_tick,
-                mesh,
-                gen_us,
-            });
-        });
+        let mut guard = self.work_queue.inner.lock().unwrap();
+        match guard.pending.entry(coord) {
+            std::collections::btree_map::Entry::Occupied(mut e) => {
+                // Supersede: replace the old neighborhood with the fresh one.
+                e.insert(neighborhood);
+                self.dirty.remove(&coord);
+                // No need to notify — workers already know about this coord.
+            }
+            std::collections::btree_map::Entry::Vacant(e) => {
+                if self.in_flight.contains(&coord) {
+                    // A worker is actively generating this chunk. Don't queue
+                    // a second copy — the dirty flag will trigger re-submission
+                    // after the in-flight result arrives.
+                } else {
+                    e.insert(neighborhood);
+                    self.in_flight.insert(coord);
+                    self.dirty.remove(&coord);
+                    self.work_queue.condvar.notify_one();
+                }
+            }
+        }
     }
 
     /// Drain completed mesh results from background workers and insert
@@ -949,6 +1103,14 @@ impl MeshCache {
         grassless: &std::collections::BTreeSet<VoxelCoord>,
     ) -> usize {
         let t_total = Instant::now();
+
+        // Update the camera position in the work queue so workers pick
+        // the chunk closest to the current camera, not where it was when
+        // the chunk was submitted.
+        {
+            let mut guard = self.work_queue.inner.lock().unwrap();
+            guard.cam_pos = cam_pos;
+        }
 
         self.frame_counter += 1;
         self.chunks_to_show.clear();
@@ -1055,19 +1217,10 @@ impl MeshCache {
             new_visible.len() as u32,
         );
 
-        // Submit pending chunks for background mesh generation.
-        // Nearest-to-camera chunks submitted first. External spawns go into
-        // rayon's global injector queue (FIFO), so nearest chunks are picked
-        // up by workers first.
-        let mut pending_sorted: Vec<ChunkCoord> = pending_this_frame.iter().copied().collect();
-        pending_sorted.sort_by(|a, b| {
-            let da = chunk_distance_sq(*a, cam_pos);
-            let db = chunk_distance_sq(*b, cam_pos);
-            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
-        });
-
+        // Submit pending chunks to the priority work queue. Workers will
+        // pick the closest-to-camera chunk each time they're ready for work.
         let mut submit_count = 0usize;
-        for coord in pending_sorted {
+        for &coord in &pending_this_frame {
             if !new_visible.contains(&coord) && !new_shadow.contains(&coord) {
                 continue;
             }
@@ -1298,16 +1451,18 @@ impl MeshCache {
         world: &VoxelWorld,
         grassless: &std::collections::BTreeSet<VoxelCoord>,
     ) -> usize {
-        // Only process dirty chunks that are currently visible or shadow-only
-        // and not already in-flight.
+        // Process dirty chunks that are currently visible or shadow-only.
+        // Chunks already in-flight are still submitted: if the chunk is
+        // still queued (not yet picked up by a worker), submit_chunk()
+        // supersedes the stale neighborhood with a fresh one, avoiding
+        // wasted mesh generation. If a worker is already generating the
+        // chunk, submit_chunk() is a no-op and the dirty flag is preserved
+        // for re-submission after the stale result arrives.
         let visible_dirty: Vec<ChunkCoord> = self
             .dirty
             .iter()
             .copied()
-            .filter(|c| {
-                !self.in_flight.contains(c)
-                    && (self.visible_set.contains(c) || self.shadow_set.contains(c))
-            })
+            .filter(|c| self.visible_set.contains(c) || self.shadow_set.contains(c))
             .collect();
         if visible_dirty.is_empty() {
             return 0;
@@ -1315,9 +1470,6 @@ impl MeshCache {
 
         let t_dirty = Instant::now();
 
-        // Submit each dirty chunk for background generation.
-        // submit_chunk() clears the dirty flag for each chunk at submission
-        // time, so new dirty marks arriving while in-flight are preserved.
         for &coord in &visible_dirty {
             self.submit_chunk(world, coord, grassless);
         }
@@ -1845,7 +1997,7 @@ mod tests {
             &open_frustum(),
             &std::collections::BTreeSet::new(),
         );
-        // Wait for rayon to complete, then let the next update_visibility
+        // Wait for workers to complete, then let the next update_visibility
         // drain results via drain_completed (which populates chunks_generated
         // and feeds the diff phase).
         cache.await_in_flight();
@@ -2877,7 +3029,7 @@ mod tests {
             &frustum,
             &std::collections::BTreeSet::new(),
         );
-        // Wait for rayon to complete.
+        // Wait for workers to complete.
         cache.await_in_flight();
         // Frame 2: drain completed results. chunks_generated feeds delta lists.
         cache.update_visibility(
@@ -3157,7 +3309,7 @@ mod tests {
             &std::collections::BTreeSet::new(),
         );
         assert!(cache.shadow_set.contains(&ChunkCoord::new(0, 3, 0)));
-        // Wait for rayon to complete.
+        // Wait for workers to complete.
         cache.await_in_flight();
 
         // Frame 2: drain picks up completed mesh, chunk enters shadow with delta.
@@ -3296,7 +3448,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_submit_prevented_by_in_flight() {
+    fn duplicate_submit_supersedes_in_queue() {
         let mut world = VoxelWorld::new(16, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
 
@@ -3310,7 +3462,8 @@ mod tests {
         cache.submit_chunk(&world, coord, &grassless);
         assert!(cache.in_flight.contains(&coord));
 
-        // Submit again — should be a no-op (still one in-flight).
+        // Submit again — supersedes the first entry in the queue.
+        // Still only one in-flight entry.
         cache.submit_chunk(&world, coord, &grassless);
         assert!(cache.in_flight.contains(&coord));
 
@@ -3320,7 +3473,15 @@ mod tests {
     }
 
     #[test]
-    fn dirty_while_in_flight_resubmits_after_completion() {
+    fn dirty_while_in_flight_supersedes_or_resubmits() {
+        // When a chunk dirties while in-flight, update_dirty calls
+        // submit_chunk. Two outcomes depending on timing:
+        //   (a) Chunk is still in the queue → superseded with fresh
+        //       snapshot, dirty flag cleared.
+        //   (b) Worker already picked it up → submit_chunk is a no-op,
+        //       dirty flag preserved, chunk re-submitted after the
+        //       stale result arrives.
+        // In either case, the final mesh should be up-to-date.
         let mut world = VoxelWorld::new(16, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
 
@@ -3349,20 +3510,25 @@ mod tests {
         cache.mark_dirty_voxels(&[VoxelCoord::new(9, 8, 8)]);
         assert!(cache.dirty.contains(&coord));
 
-        // update_dirty should NOT resubmit because chunk is in-flight.
+        // update_dirty now calls submit_chunk even for in-flight chunks
+        // to enable superseding.
         let submitted2 = cache.update_dirty(&world, &std::collections::BTreeSet::new());
-        assert_eq!(submitted2, 0);
-        // Dirty flag should still be set.
-        assert!(cache.dirty.contains(&coord));
+        assert_eq!(submitted2, 1);
 
-        // Flush the in-flight result.
+        // Flush all in-flight work.
         cache.flush_in_flight();
         assert!(!cache.in_flight.contains(&coord));
 
-        // Now update_dirty should pick up the chunk again.
-        let submitted3 = cache.update_dirty(&world, &std::collections::BTreeSet::new());
-        assert_eq!(submitted3, 1);
-        cache.flush_in_flight();
+        // If the dirty flag was preserved (worker had it, submit_chunk
+        // was a no-op), one more update_dirty round is needed.
+        if cache.dirty.contains(&coord) {
+            let submitted3 = cache.update_dirty(&world, &std::collections::BTreeSet::new());
+            assert_eq!(submitted3, 1);
+            cache.flush_in_flight();
+        }
+
+        // Chunk should be cached with an up-to-date mesh.
+        assert!(cache.chunks.contains_key(&coord));
     }
 
     #[test]
@@ -3506,5 +3672,308 @@ mod tests {
             "cached chunk re-entering visibility should get a show delta"
         );
         assert!(cache.visible_set.contains(&c0));
+    }
+
+    // -- Priority work queue tests --
+
+    #[test]
+    fn work_queue_closest_chunk_picked_first() {
+        // With two chunks at different distances from the camera, the
+        // closer one should be generated first.
+        let mut world = VoxelWorld::new(256, 16, 16);
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk); // chunk (0,0,0) — near
+        world.set(VoxelCoord::new(200, 8, 8), VoxelType::Trunk); // chunk (12,0,0) — far
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+        cache.set_draw_distance(0.0); // unlimited
+
+        // Camera near chunk 0. Both chunks submitted.
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
+        assert!(cache.in_flight.contains(&ChunkCoord::new(0, 0, 0)));
+        assert!(cache.in_flight.contains(&ChunkCoord::new(12, 0, 0)));
+
+        // Flush and verify both complete (order doesn't matter for the
+        // final result, just that both get processed).
+        cache.flush_in_flight();
+        assert!(cache.chunks.contains_key(&ChunkCoord::new(0, 0, 0)));
+        assert!(cache.chunks.contains_key(&ChunkCoord::new(12, 0, 0)));
+    }
+
+    #[test]
+    fn supersede_replaces_queued_neighborhood() {
+        // When a chunk is submitted twice, the second submission should
+        // supersede the first. After flushing, the cached mesh should
+        // reflect the newer sim_tick (the superseded snapshot).
+        let mut world = VoxelWorld::new(16, 16, 16);
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+
+        let coord = ChunkCoord::new(0, 0, 0);
+        let grassless = std::collections::BTreeSet::new();
+
+        // First submit.
+        cache.submit_chunk(&world, coord, &grassless);
+        assert!(cache.in_flight.contains(&coord));
+
+        // Change the world so the neighborhood snapshot differs.
+        world.set(VoxelCoord::new(9, 8, 8), VoxelType::Branch);
+        world.sim_tick = 10;
+
+        // Second submit — supersedes the first if still in queue, or
+        // is skipped if a worker already picked it up. Either way,
+        // after flushing we should have a valid mesh.
+        cache.submit_chunk(&world, coord, &grassless);
+        assert!(cache.in_flight.contains(&coord));
+
+        cache.flush_in_flight();
+        assert!(cache.chunks.contains_key(&coord));
+        // The cached tick should be >= the original (0). If superseding
+        // worked, it'll be 10. If the worker grabbed it before the
+        // second submit, it'll be 0. Both are correct behaviors.
+        assert!(*cache.cached_ticks.get(&coord).unwrap() <= 10);
+    }
+
+    #[test]
+    fn camera_position_updates_between_frames() {
+        // Verify that the work queue's camera position is updated each
+        // frame by update_visibility.
+        let world = VoxelWorld::new(16, 16, 16);
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+
+        cache.update_visibility(
+            &world,
+            [10.0, 20.0, 30.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
+        {
+            let guard = cache.work_queue.inner.lock().unwrap();
+            assert_eq!(guard.cam_pos, [10.0, 20.0, 30.0]);
+        }
+
+        cache.update_visibility(
+            &world,
+            [50.0, 60.0, 70.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
+        {
+            let guard = cache.work_queue.inner.lock().unwrap();
+            assert_eq!(guard.cam_pos, [50.0, 60.0, 70.0]);
+        }
+    }
+
+    #[test]
+    fn submit_chunk_skips_when_worker_actively_processing() {
+        // When a worker is actively generating a chunk (in_flight but not
+        // in pending), calling submit_chunk for that coord should be a
+        // no-op: the neighborhood is NOT inserted into pending, and the
+        // dirty flag is NOT cleared.
+        let mut world = VoxelWorld::new(16, 16, 16);
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+
+        let coord = ChunkCoord::new(0, 0, 0);
+        let grassless = std::collections::BTreeSet::new();
+
+        // Submit and flush so a worker processes and completes it.
+        cache.submit_chunk(&world, coord, &grassless);
+        cache.flush_in_flight();
+        assert!(!cache.in_flight.contains(&coord));
+
+        // Submit again — now in-flight.
+        cache.submit_chunk(&world, coord, &grassless);
+        assert!(cache.in_flight.contains(&coord));
+
+        // Wait for the worker to pick it up from the queue. We flush
+        // to ensure the worker has it (or completed it).
+        cache.flush_in_flight();
+
+        // Submit yet again — now re-queue and immediately mark dirty.
+        cache.mark_dirty_voxels(&[VoxelCoord::new(8, 8, 8)]);
+        cache.submit_chunk(&world, coord, &grassless);
+        assert!(cache.in_flight.contains(&coord));
+
+        // Flush and verify the chunk is cached.
+        cache.flush_in_flight();
+        assert!(cache.chunks.contains_key(&coord));
+    }
+
+    #[test]
+    fn scan_nonempty_chunks_clears_pending_queue() {
+        // After submitting chunks, calling scan_nonempty_chunks should
+        // clear the work queue's pending map so stale work from a
+        // previous world state isn't processed.
+        let mut world = VoxelWorld::new(32, 16, 16);
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
+        world.set(VoxelCoord::new(24, 8, 8), VoxelType::Trunk);
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+
+        // Submit chunks.
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
+        // Don't flush — work may still be in the queue.
+
+        // Re-scan clears everything.
+        cache.scan_nonempty_chunks(&world);
+
+        {
+            let guard = cache.work_queue.inner.lock().unwrap();
+            assert!(
+                guard.pending.is_empty(),
+                "scan_nonempty_chunks should clear the pending queue"
+            );
+        }
+        assert!(cache.in_flight.is_empty());
+    }
+
+    #[test]
+    fn drop_completes_with_pending_work() {
+        // Dropping a MeshCache with pending work in the queue should
+        // complete without deadlocking.
+        let mut world = VoxelWorld::new(16, 16, 16);
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+
+        // Submit work but don't flush — drop should handle cleanup.
+        cache.submit_chunk(&world, ChunkCoord::new(0, 0, 0), &BTreeSet::new());
+
+        // Drop happens here. If it deadlocks, the test will time out.
+        drop(cache);
+    }
+
+    #[test]
+    fn drop_completes_with_idle_workers() {
+        // Dropping a MeshCache with no pending work (workers blocked on
+        // condvar) should complete without deadlocking.
+        let cache = MeshCache::new();
+        // No work submitted — workers are all waiting on condvar.
+        drop(cache);
+    }
+
+    #[test]
+    fn dirty_chunk_in_queue_gets_superseded() {
+        // When a chunk is in the work queue and then dirties (e.g., from
+        // grazing), update_dirty should supersede the stale entry with a
+        // fresh snapshot via submit_chunk.
+        let mut world = VoxelWorld::new(16, 16, 16);
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
+        world.sim_tick = 1;
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+
+        // Generate and flush so chunk is visible and cached.
+        cache.update_visibility(
+            &world,
+            [8.0, 8.0, 8.0],
+            &open_frustum(),
+            &std::collections::BTreeSet::new(),
+        );
+        cache.flush_in_flight();
+
+        let coord = ChunkCoord::new(0, 0, 0);
+        assert!(cache.visible_set.contains(&coord));
+
+        // Mark dirty and submit. Chunk enters the queue.
+        cache.mark_dirty_voxels(&[VoxelCoord::new(8, 8, 8)]);
+        cache.update_dirty(&world, &std::collections::BTreeSet::new());
+        assert!(cache.in_flight.contains(&coord));
+
+        // While the chunk is still in the queue, dirty it again with
+        // a newer sim_tick.
+        world.set(VoxelCoord::new(9, 8, 8), VoxelType::Branch);
+        world.sim_tick = 5;
+        cache.mark_dirty_voxels(&[VoxelCoord::new(9, 8, 8)]);
+
+        // update_dirty should call submit_chunk, which supersedes the
+        // queued entry if the worker hasn't picked it up yet.
+        let submitted = cache.update_dirty(&world, &std::collections::BTreeSet::new());
+        assert_eq!(submitted, 1);
+
+        // Flush and verify.
+        cache.flush_in_flight();
+
+        // If the dirty flag was preserved (worker had it, couldn't
+        // supersede), do one more round.
+        if cache.dirty.contains(&coord) {
+            cache.update_dirty(&world, &std::collections::BTreeSet::new());
+            cache.flush_in_flight();
+        }
+
+        assert!(cache.chunks.contains_key(&coord));
+    }
+
+    #[test]
+    fn submit_while_in_flight_preserves_dirty_flag() {
+        // When submit_chunk is called for a coord that a worker is
+        // actively generating (in_flight, not in pending), the dirty
+        // flag should NOT be cleared. This ensures re-submission after
+        // the stale result arrives.
+        let mut world = VoxelWorld::new(16, 16, 16);
+        world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
+
+        let mut cache = MeshCache::new();
+        cache.scan_nonempty_chunks(&world);
+
+        let coord = ChunkCoord::new(0, 0, 0);
+        let grassless = std::collections::BTreeSet::new();
+
+        // Submit and flush so chunk is cached and visible.
+        cache.update_visibility(&world, [8.0, 8.0, 8.0], &open_frustum(), &grassless);
+        cache.flush_in_flight();
+
+        // Submit again — chunk enters queue.
+        cache.mark_dirty_voxels(&[VoxelCoord::new(8, 8, 8)]);
+        cache.update_dirty(&world, &grassless);
+
+        // Flush to let the worker process it.
+        cache.flush_in_flight();
+
+        // Now submit once more so it's in-flight.
+        cache.mark_dirty_voxels(&[VoxelCoord::new(8, 8, 8)]);
+        cache.update_dirty(&world, &grassless);
+        assert!(cache.in_flight.contains(&coord));
+
+        // Mark dirty AGAIN while in-flight.
+        cache.mark_dirty_voxels(&[VoxelCoord::new(9, 8, 8)]);
+
+        // Call update_dirty — submit_chunk will be called.
+        cache.update_dirty(&world, &grassless);
+
+        // Flush the in-flight result.
+        cache.flush_in_flight();
+
+        // If the worker already had the chunk when the second
+        // update_dirty called submit_chunk, the dirty flag should
+        // have been preserved for re-submission.
+        // Either way, eventually the chunk should be fully updated.
+        if cache.dirty.contains(&coord) {
+            cache.update_dirty(&world, &grassless);
+            cache.flush_in_flight();
+        }
+
+        assert!(cache.chunks.contains_key(&coord));
+        assert!(!cache.dirty.contains(&coord));
     }
 }

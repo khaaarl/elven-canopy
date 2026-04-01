@@ -222,7 +222,6 @@ dependencies = [
  "elven_canopy_sim",
  "elven_canopy_sprites",
  "godot",
- "rayon",
  "serde",
  "serde_json",
  "tiny_http",
