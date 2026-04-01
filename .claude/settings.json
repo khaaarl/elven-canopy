@@ -119,14 +119,28 @@
     "CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR": "1"
   },
   "sandbox": {
-    "enabled": true,
+    "enabled": false,
     "failIfUnavailable": true,
     "autoAllowBashIfSandboxed": false,
     "allowUnsandboxedCommands": false,
     "excludedCommands": [],
     "filesystem": {
       "denyRead": ["/"],
-      "allowRead": ["."]
+      "allowRead": [
+        "/bin",
+        "/lib",
+        "/lib64",
+        "/usr",
+        "/snap",
+        "~/.cargo",
+        "~/.rustup",
+        "~/.local",
+        "~/.cache/pip",
+        "~/.pyenv",
+        "~/.gitconfig",
+        "~/.config/git",
+        "."
+      ]
     }
   }
 }
