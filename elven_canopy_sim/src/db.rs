@@ -70,7 +70,8 @@ use crate::types::{
     EnchantmentId, FruitSpeciesId, FurnishingType, FurnitureId, GroundPileId, InventoryId,
     ItemStackId, MilitaryGroupId, NotificationId, OpinionKind, ParticipantRole, ParticipantStatus,
     PathId, ProjectId, ProjectileId, RecruitmentMode, SelectionGroupId, Species, StructureId,
-    StrutId, TaskId, ThoughtKind, TraitKind, TraitValue, TreeId, VitalStatus, VoxelCoord,
+    StrutId, TaskId, ThoughtKind, TraitKind, TraitValue, TreeFruitId, TreeId, VitalStatus,
+    VoxelCoord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -279,8 +280,8 @@ pub enum InventoryOwnerKind {
 ///
 /// Stores both the player's great tree and lesser decorative trees. Great-tree-
 /// specific data (mana, carrying capacity) lives in the `GreatTreeInfo` child
-/// table, linked by a parent-PK FK (1:1). Fruit fields (`fruit_positions`,
-/// `fruit_species_id`) are on this table because any tree may bear fruit.
+/// table, linked by a parent-PK FK (1:1). Individual fruit instances are in the
+/// `TreeFruit` child table (indexed by tree_id and position).
 ///
 /// See also: `GreatTreeInfo` (child table), `worldgen.rs` (tree construction),
 /// `greenhouse.rs` (fruit spawning), `sim/mod.rs` (mana overflow).
@@ -300,13 +301,37 @@ pub struct Tree {
     pub leaf_voxels: Vec<VoxelCoord>,
     /// Root voxel positions (at or below ground level).
     pub root_voxels: Vec<VoxelCoord>,
-    /// Positions of fruit hanging below leaf voxels.
-    pub fruit_positions: Vec<VoxelCoord>,
     /// The fruit species this tree produces. `None` if the tree doesn't bear
     /// fruit (or for pre-fruit-variety saves).
     #[serde(default)]
     #[indexed]
     pub fruit_species_id: Option<FruitSpeciesId>,
+}
+
+/// A fruit instance hanging from a tree. Each fruit occupies one voxel
+/// (typically one below a leaf voxel) and belongs to a specific tree and
+/// fruit species.
+///
+/// Replaces the old `Tree.fruit_positions` vec and the
+/// `SimState.fruit_voxel_species` map with a single indexed table. Queries
+/// by `tree_id` give all fruit on a tree; queries by `position` give O(1)
+/// voxel→fruit lookup for eating/harvesting.
+///
+/// See also: `greenhouse.rs` (fruit spawning), `needs.rs` (eating/harvesting),
+/// `logistics.rs` (harvest task creation).
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct TreeFruit {
+    #[primary_key(auto_increment)]
+    pub id: TreeFruitId,
+    /// The tree this fruit hangs from.
+    #[indexed]
+    pub tree_id: TreeId,
+    /// Voxel position of this fruit (set to VoxelType::Fruit in the world grid).
+    #[indexed(unique)]
+    pub position: VoxelCoord,
+    /// The species of this fruit.
+    #[indexed]
+    pub species_id: FruitSpeciesId,
 }
 
 /// Great-tree-specific data — mana economy and carrying capacity.
@@ -1614,6 +1639,7 @@ impl std::fmt::Debug for SimDb {
             .field("selection_groups", &self.selection_groups.len())
             .field("fruit_species", &self.fruit_species.len())
             .field("trees", &self.trees.len())
+            .field("tree_fruits", &self.tree_fruits.len())
             .field("great_tree_infos", &self.great_tree_infos.len())
             .field("military_groups", &self.military_groups.len())
             .field("civ_relationships", &self.civ_relationships.len())
@@ -1652,6 +1678,12 @@ pub struct SimDb {
             fks(owner? = "civilizations" on_delete nullify,
                 fruit_species_id? = "fruit_species"))]
     pub trees: TreeTable,
+
+    #[table(singular = "tree_fruit",
+            auto,
+            fks(tree_id = "trees" on_delete cascade,
+                species_id = "fruit_species"))]
+    pub tree_fruits: TreeFruitTable,
 
     #[table(singular = "great_tree_info",
             fks(id = "trees" pk))]

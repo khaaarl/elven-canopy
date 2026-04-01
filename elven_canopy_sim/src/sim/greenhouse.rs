@@ -78,12 +78,16 @@ impl SimState {
     /// This is the single code path for all fruit spawning — both the initial
     /// fast-forward during `with_config()` and the periodic `TreeHeartbeat`.
     pub(crate) fn attempt_fruit_spawn(&mut self, tree_id: TreeId) -> bool {
-        let mut tree = match self.db.trees.get(&tree_id) {
+        let tree = match self.db.trees.get(&tree_id) {
             Some(t) => t,
             None => return false,
         };
 
-        if tree.fruit_positions.len() >= self.config.fruit_max_per_tree as usize {
+        let fruit_count = self
+            .db
+            .tree_fruits
+            .count_by_tree_id(&tree_id, tabulosity::QueryOpts::ASC);
+        if fruit_count >= self.config.fruit_max_per_tree as usize {
             return false;
         }
 
@@ -96,6 +100,11 @@ impl SimState {
         if tree.leaf_voxels.is_empty() {
             return false;
         }
+
+        let species_id = match tree.fruit_species_id {
+            Some(id) => id,
+            None => return false,
+        };
 
         // Pick a random leaf voxel; fruit hangs one voxel below it.
         // Skip leaves that have been carved away.
@@ -114,19 +123,26 @@ impl SimState {
         if self.world.get(fruit_pos) != VoxelType::Air {
             return false;
         }
-        if tree.fruit_positions.contains(&fruit_pos) {
+        if !self
+            .db
+            .tree_fruits
+            .by_position(&fruit_pos, tabulosity::QueryOpts::ASC)
+            .is_empty()
+        {
             return false;
         }
 
-        // Place the fruit and record its species.
+        // Place the fruit voxel and insert a TreeFruit row.
         self.set_voxel(fruit_pos, VoxelType::Fruit);
-        let species_id = tree.fruit_species_id;
-        tree.fruit_positions.push(fruit_pos);
-        let _ = self.db.update_tree(tree);
-        if let Some(species_id) = species_id {
-            self.fruit_voxel_species.insert(fruit_pos, species_id);
-            self.fruit_voxel_species_list.push((fruit_pos, species_id));
-        }
+        let fruit = crate::db::TreeFruit {
+            id: crate::types::TreeFruitId(0), // auto-increment
+            tree_id,
+            position: fruit_pos,
+            species_id,
+        };
+        let _ = self
+            .db
+            .insert_tree_fruit_auto(|id| crate::db::TreeFruit { id, ..fruit });
         true
     }
 }

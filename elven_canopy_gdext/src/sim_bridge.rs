@@ -847,25 +847,16 @@ impl SimBridge {
         let Some(sim) = &self.session.sim else {
             return PackedInt32Array::new();
         };
-        let tree = match sim.db.trees.get(&sim.player_tree_id) {
-            Some(t) => t,
-            None => return PackedInt32Array::new(),
-        };
         let mut arr = PackedInt32Array::new();
-        for v in &tree.fruit_positions {
+        for tf in sim.db.tree_fruits.iter_all() {
             // Skip voxels carved to Air so the renderer doesn't draw them.
-            if sim.world.get(*v) == VoxelType::Air {
+            if sim.world.get(tf.position) == VoxelType::Air {
                 continue;
             }
-            let species_id = sim
-                .fruit_voxel_species
-                .get(v)
-                .map(|id| id.0 as i32)
-                .unwrap_or(-1);
-            arr.push(v.x);
-            arr.push(v.y);
-            arr.push(v.z);
-            arr.push(species_id);
+            arr.push(tf.position.x);
+            arr.push(tf.position.y);
+            arr.push(tf.position.z);
+            arr.push(tf.species_id.0 as i32);
         }
         arr
     }
@@ -962,7 +953,13 @@ impl SimBridge {
             "mana_capacity",
             info.map_or(0.0, |i| i.mana_capacity as f64),
         );
-        dict.set("fruit_count", tree.fruit_positions.len() as i32);
+        dict.set(
+            "fruit_count",
+            sim.db
+                .tree_fruits
+                .count_by_tree_id(&tree.id, elven_canopy_sim::tabulosity::QueryOpts::ASC)
+                as i32,
+        );
         dict.set(
             "fruit_production_rate",
             info.map_or(0.0, |i| i.fruit_production_rate_ppm as f64 / 1_000_000.0),
@@ -1030,9 +1027,10 @@ impl SimBridge {
     #[func]
     fn fruit_count(&self) -> i32 {
         self.session.sim.as_ref().map_or(0, |s| {
-            s.db.trees
-                .get(&s.player_tree_id)
-                .map_or(0, |t| t.fruit_positions.len() as i32)
+            s.db.tree_fruits.count_by_tree_id(
+                &s.player_tree_id,
+                elven_canopy_sim::tabulosity::QueryOpts::ASC,
+            ) as i32
         })
     }
 

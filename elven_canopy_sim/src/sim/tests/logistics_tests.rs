@@ -480,11 +480,13 @@ fn harvest_task_creates_ground_pile() {
         "Fruit voxel should be removed"
     );
 
-    // Assert: fruit removed from tree's fruit_positions.
-    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
+    // Assert: fruit removed from TreeFruit table.
     assert!(
-        !tree.fruit_positions.contains(&fruit_pos),
-        "Fruit should be removed from tree"
+        sim.db
+            .tree_fruits
+            .by_position(&fruit_pos, tabulosity::QueryOpts::ASC)
+            .is_empty(),
+        "Fruit should be removed from TreeFruit table"
     );
 
     // Assert: ground pile created with 1 Fruit. The pile may have been
@@ -518,8 +520,10 @@ fn logistics_heartbeat_creates_harvest_tasks() {
     let mut sim = test_sim(legacy_test_seed());
     ensure_tree_has_fruit(&mut sim);
 
-    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
-    let fruit_count = tree.fruit_positions.len();
+    let fruit_count = sim
+        .db
+        .tree_fruits
+        .count_by_tree_id(&sim.player_tree_id, tabulosity::QueryOpts::ASC);
     assert!(fruit_count > 0);
 
     // Ensure no ground piles with fruit exist.

@@ -414,18 +414,6 @@ pub struct SimState {
     #[serde(skip)]
     pub spatial_index: BTreeMap<VoxelCoord, Vec<CreatureId>>,
 
-    /// Persisted list of (coord, species_id) pairs for fruit voxels. On load,
-    /// `rebuild_transient_state()` rebuilds `fruit_voxel_species` from this.
-    #[serde(default)]
-    pub fruit_voxel_species_list: Vec<(VoxelCoord, crate::fruit::FruitSpeciesId)>,
-
-    /// Maps each fruit voxel to the species of the fruit occupying it.
-    /// Transient — rebuilt from `fruit_voxel_species_list` after deserialization.
-    /// Maintained by `attempt_fruit_spawn` (insert) and fruit removal in
-    /// `do_eat_fruit` / `do_harvest` (remove).
-    #[serde(skip)]
-    pub fruit_voxel_species: BTreeMap<VoxelCoord, crate::fruit::FruitSpeciesId>,
-
     /// Positions where mana-wasted work actions occurred during the current
     /// step. Cleared at the start of each `step()` call. Read by the GDScript
     /// VFX layer via `sim_bridge.rs::get_mana_wasted_positions()` to spawn
@@ -738,20 +726,16 @@ impl SimState {
         }
     }
 
-    /// Remove a fruit position from whichever tree owns it.
-    pub(crate) fn remove_fruit_from_trees(&mut self, fruit_pos: VoxelCoord) {
-        // Find the tree containing this fruit position and remove it.
-        let tree_id = self
+    /// Remove the TreeFruit row at the given position, if any.
+    pub(crate) fn remove_tree_fruit_at(&mut self, fruit_pos: VoxelCoord) {
+        if let Some(tf) = self
             .db
-            .trees
-            .iter_all()
-            .find(|t| t.fruit_positions.contains(&fruit_pos))
-            .map(|t| t.id);
-        if let Some(tree_id) = tree_id
-            && let Some(mut t) = self.db.trees.get(&tree_id)
+            .tree_fruits
+            .by_position(&fruit_pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()
         {
-            t.fruit_positions.retain(|&p| p != fruit_pos);
-            let _ = self.db.update_tree(t);
+            let _ = self.db.remove_tree_fruit(&tf.id);
         }
     }
 
@@ -805,8 +789,6 @@ impl SimState {
             last_build_message: None,
             structure_voxels: BTreeMap::new(),
             spatial_index: BTreeMap::new(),
-            fruit_voxel_species_list: Vec::new(),
-            fruit_voxel_species: BTreeMap::new(),
             mana_wasted_positions: Vec::new(),
             grassless: BTreeSet::new(),
         };
@@ -818,11 +800,20 @@ impl SimState {
         // Compact RLE column groups after bulk worldgen writes.
         state.world.repack_all();
 
-        // Fast-forward fruit spawning: run the same attempt_fruit_spawn code
-        // path N times, as if N heartbeats had already passed for fruit.
+        // Fast-forward fruit spawning for all fruit-bearing trees: run
+        // attempt_fruit_spawn N times per tree, as if N heartbeats had passed.
         let initial_attempts = state.config.fruit_initial_attempts;
-        for _ in 0..initial_attempts {
-            state.attempt_fruit_spawn(player_tree_id);
+        let fruit_bearing_tree_ids: Vec<TreeId> = state
+            .db
+            .trees
+            .iter_all()
+            .filter(|t| t.fruit_species_id.is_some())
+            .map(|t| t.id)
+            .collect();
+        for &tree_id in &fruit_bearing_tree_ids {
+            for _ in 0..initial_attempts {
+                state.attempt_fruit_spawn(tree_id);
+            }
         }
 
         // Schedule the home tree's first heartbeat.
@@ -1882,8 +1873,22 @@ impl SimState {
             }
             ScheduledEventKind::TreeHeartbeat { tree_id } => {
                 if self.db.trees.contains(&tree_id) {
-                    // Fruit production.
+                    // Fruit production for the home tree.
                     self.attempt_fruit_spawn(tree_id);
+
+                    // Also attempt fruit on all other fruit-bearing trees
+                    // (wild lesser trees). Piggybacking on the home tree's
+                    // heartbeat avoids scheduling hundreds of separate events.
+                    let other_fruit_trees: Vec<TreeId> = self
+                        .db
+                        .trees
+                        .iter_all()
+                        .filter(|t| t.id != tree_id && t.fruit_species_id.is_some())
+                        .map(|t| t.id)
+                        .collect();
+                    for other_id in other_fruit_trees {
+                        self.attempt_fruit_spawn(other_id);
+                    }
 
                     // Tree mana accumulates from elf overflow in
                     // CreatureHeartbeat; trees do not generate mana.
@@ -2100,11 +2105,16 @@ impl SimState {
 
     /// Look up the fruit species at a voxel position.
     ///
-    /// Returns the full `FruitSpecies` record, or `None` if the voxel has no
-    /// tracked species (pre-fruit-variety fruit or empty).
+    /// Returns the full `FruitSpecies` record, or `None` if no fruit exists
+    /// at this position.
     pub fn fruit_species_at(&self, pos: VoxelCoord) -> Option<crate::fruit::FruitSpecies> {
-        let species_id = self.fruit_voxel_species.get(&pos)?;
-        self.db.fruit_species.get(species_id)
+        let tf = self
+            .db
+            .tree_fruits
+            .by_position(&pos, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .next()?;
+        self.db.fruit_species.get(&tf.species_id)
     }
 
     /// Resolve the visual color for an item stack. Priority:
@@ -2330,9 +2340,6 @@ impl SimState {
         // Rebuild spatial_index from all living creatures. Must run after
         // species_table is populated (footprint data comes from SpeciesData).
         self.rebuild_spatial_index();
-
-        // Rebuild fruit_voxel_species from persisted list.
-        self.fruit_voxel_species = self.fruit_voxel_species_list.iter().cloned().collect();
 
         // Rebuild structure_voxels from completed blueprints.
         self.structure_voxels.clear();

@@ -518,13 +518,13 @@ fn find_nearest_fruit_returns_reachable() {
     );
     let (fruit_pos, nav_node) = result.unwrap();
 
-    // The fruit_pos should actually be in a tree's fruit list.
-    let in_tree = sim
+    // The fruit_pos should have a TreeFruit row.
+    let has_row = !sim
         .db
-        .trees
-        .iter_all()
-        .any(|t| t.fruit_positions.contains(&fruit_pos));
-    assert!(in_tree, "Returned fruit should be in a tree's fruit list");
+        .tree_fruits
+        .by_position(&fruit_pos, tabulosity::QueryOpts::ASC)
+        .is_empty();
+    assert!(has_row, "Returned fruit should have a TreeFruit row");
 
     // The nav node should be valid.
     let _node = sim.nav_graph.node(nav_node);
@@ -816,11 +816,25 @@ fn hungry_elf_eats_fruit_and_food_increases() {
     let fruit_pos = elf_pos;
     sim.world.set(fruit_pos, VoxelType::Fruit);
     let tree_id = sim.player_tree_id;
-    {
-        let mut t = sim.db.trees.get(&tree_id).unwrap();
-        t.fruit_positions.push(fruit_pos);
-        sim.db.update_tree(t).unwrap();
-    }
+    let species_id = sim
+        .db
+        .trees
+        .get(&tree_id)
+        .unwrap()
+        .fruit_species_id
+        .unwrap_or_else(|| {
+            let id = insert_test_fruit_species(&mut sim);
+            let mut t = sim.db.trees.get(&tree_id).unwrap();
+            t.fruit_species_id = Some(id);
+            sim.db.update_tree(t).unwrap();
+            id
+        });
+    let _ = sim.db.insert_tree_fruit_auto(|id| crate::db::TreeFruit {
+        id,
+        tree_id,
+        position: fruit_pos,
+        species_id,
+    });
 
     // Set food to 20% — well below the 50% hunger threshold.
     {

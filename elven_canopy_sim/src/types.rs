@@ -380,6 +380,8 @@ auto_pk_id!(/// Auto-increment ID for military groups within a civilization.
 MilitaryGroupId);
 auto_pk_id!(/// Auto-increment ID for player selection groups (Ctrl+1–9).
 SelectionGroupId);
+auto_pk_id!(/// Auto-increment ID for fruit instances hanging from trees.
+TreeFruitId);
 
 // ---------------------------------------------------------------------------
 // Creature biology traits

@@ -151,8 +151,17 @@ fn serialization_roundtrip_preserves_tree_and_great_tree_info() {
     assert_eq!(rt.branch_voxels.len(), orig_tree.branch_voxels.len());
     assert_eq!(rt.leaf_voxels.len(), orig_tree.leaf_voxels.len());
     assert_eq!(rt.root_voxels.len(), orig_tree.root_voxels.len());
-    assert_eq!(rt.fruit_positions, orig_tree.fruit_positions);
     assert_eq!(rt.fruit_species_id, orig_tree.fruit_species_id);
+    // TreeFruit rows survive roundtrip — count by tree_id.
+    let orig_fruit_count = sim
+        .db
+        .tree_fruits
+        .count_by_tree_id(&tree_id, tabulosity::QueryOpts::ASC);
+    let rt_fruit_count = restored
+        .db
+        .tree_fruits
+        .count_by_tree_id(&tree_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(orig_fruit_count, rt_fruit_count);
 
     // GreatTreeInfo row fields survive roundtrip.
     let ri = restored.db.great_tree_infos.get(&tree_id).unwrap();
@@ -187,50 +196,62 @@ fn tree_owner_index_lesser_trees_have_no_owner() {
 }
 
 #[test]
-fn remove_fruit_from_trees_no_op_when_not_found() {
+fn remove_tree_fruit_at_no_op_when_not_found() {
     let mut sim = test_sim(legacy_test_seed());
     let bogus_pos = VoxelCoord::new(0, 0, 0);
-    // Capture fruit count before the call.
-    let before: usize = sim
-        .db
-        .trees
-        .iter_all()
-        .map(|t| t.fruit_positions.len())
-        .sum();
-    // Should not panic on a position no tree owns.
-    sim.remove_fruit_from_trees(bogus_pos);
-    let after: usize = sim
-        .db
-        .trees
-        .iter_all()
-        .map(|t| t.fruit_positions.len())
-        .sum();
-    assert_eq!(before, after, "No fruit should have been removed");
+    let before = sim.db.tree_fruits.len();
+    // Should not panic on a position with no fruit.
+    sim.remove_tree_fruit_at(bogus_pos);
+    assert_eq!(
+        before,
+        sim.db.tree_fruits.len(),
+        "No fruit should have been removed"
+    );
 }
 
 #[test]
-fn remove_fruit_from_trees_removes_correct_fruit() {
+fn remove_tree_fruit_at_removes_correct_fruit() {
     let mut sim = test_sim(legacy_test_seed());
     let tree_id = sim.player_tree_id;
+    let species_id = {
+        let id = insert_test_fruit_species(&mut sim);
+        let mut t = sim.db.trees.get(&tree_id).unwrap();
+        t.fruit_species_id = Some(id);
+        sim.db.update_tree(t).unwrap();
+        id
+    };
 
-    // Manually add two fruit positions to the home tree.
+    // Manually insert two TreeFruit rows.
     let fruit_a = VoxelCoord::new(10, 60, 10);
     let fruit_b = VoxelCoord::new(11, 60, 11);
-    let mut tree = sim.db.trees.get(&tree_id).unwrap().clone();
-    tree.fruit_positions.push(fruit_a);
-    tree.fruit_positions.push(fruit_b);
-    sim.db.update_tree(tree).unwrap();
+    let _ = sim.db.insert_tree_fruit_auto(|id| crate::db::TreeFruit {
+        id,
+        tree_id,
+        position: fruit_a,
+        species_id,
+    });
+    let _ = sim.db.insert_tree_fruit_auto(|id| crate::db::TreeFruit {
+        id,
+        tree_id,
+        position: fruit_b,
+        species_id,
+    });
 
     // Remove fruit_a — fruit_b should remain.
-    sim.remove_fruit_from_trees(fruit_a);
+    sim.remove_tree_fruit_at(fruit_a);
 
-    let tree = sim.db.trees.get(&tree_id).unwrap();
     assert!(
-        !tree.fruit_positions.contains(&fruit_a),
+        sim.db
+            .tree_fruits
+            .by_position(&fruit_a, tabulosity::QueryOpts::ASC)
+            .is_empty(),
         "fruit_a should be removed"
     );
     assert!(
-        tree.fruit_positions.contains(&fruit_b),
+        !sim.db
+            .tree_fruits
+            .by_position(&fruit_b, tabulosity::QueryOpts::ASC)
+            .is_empty(),
         "fruit_b should still be present"
     );
 }

@@ -245,7 +245,19 @@ pub fn run_worldgen(seed: u64, config: &GameConfig, log: &WgLog) -> WorldgenResu
     let _ = db.insert_great_tree_info(great_tree_info);
 
     // Lesser trees get only a Tree row (no GreatTreeInfo).
-    for lesser in lesser_trees {
+    // A configurable fraction of them are assigned a random fruit species.
+    let fruit_fraction = config.lesser_trees.fruit_bearing_fraction;
+    for mut lesser in lesser_trees {
+        if !fruit_species.is_empty() && fruit_fraction > 0.0 {
+            // Roll to decide if this tree bears fruit (integer comparison
+            // against PPM threshold for determinism — no floats in the hot path).
+            let threshold = (fruit_fraction * 1_000_000.0) as u64;
+            let roll = wg_rng.next_u64() % 1_000_000;
+            if roll < threshold {
+                let idx = wg_rng.next_u64() as usize % fruit_species.len();
+                lesser.fruit_species_id = Some(fruit_species[idx].id);
+            }
+        }
         let _ = db.insert_tree(lesser);
     }
 
@@ -343,7 +355,6 @@ fn generate_trees(
         branch_voxels: tree_result.branch_voxels,
         leaf_voxels: tree_result.leaf_voxels,
         root_voxels: tree_result.root_voxels,
-        fruit_positions: Vec::new(),
         fruit_species_id: None,
     };
 
@@ -455,7 +466,6 @@ fn generate_lesser_trees(
             branch_voxels: result.branch_voxels,
             leaf_voxels: result.leaf_voxels,
             root_voxels: result.root_voxels,
-            fruit_positions: Vec::new(),
             fruit_species_id: None,
         };
 
@@ -1526,5 +1536,111 @@ mod tests {
             restored.lesser_trees.profiles.len(),
             config.lesser_trees.profiles.len(),
         );
+        assert!(
+            (restored.lesser_trees.fruit_bearing_fraction
+                - config.lesser_trees.fruit_bearing_fraction)
+                .abs()
+                < f64::EPSILON,
+        );
+    }
+
+    // --- Wild fruit tests ---
+
+    #[test]
+    fn wild_fruit_all_lesser_trees_bear_fruit_when_fraction_1() {
+        let mut config = test_config();
+        config.lesser_trees.count = 5;
+        config.lesser_trees.min_distance_from_main = 5;
+        config.lesser_trees.min_distance_between = 3;
+        config.lesser_trees.fruit_bearing_fraction = 1.0;
+
+        let result = run_worldgen(42, &config, &noop_log());
+        let lesser_trees: Vec<_> = result
+            .db
+            .trees
+            .iter_all()
+            .filter(|t| t.id != result.player_tree_id)
+            .collect();
+        assert!(!lesser_trees.is_empty());
+        for tree in &lesser_trees {
+            assert!(
+                tree.fruit_species_id.is_some(),
+                "All lesser trees should have fruit species when fraction = 1.0"
+            );
+        }
+    }
+
+    #[test]
+    fn wild_fruit_no_lesser_trees_bear_fruit_when_fraction_0() {
+        let mut config = test_config();
+        config.lesser_trees.count = 5;
+        config.lesser_trees.min_distance_from_main = 5;
+        config.lesser_trees.min_distance_between = 3;
+        config.lesser_trees.fruit_bearing_fraction = 0.0;
+
+        let result = run_worldgen(42, &config, &noop_log());
+        let lesser_trees: Vec<_> = result
+            .db
+            .trees
+            .iter_all()
+            .filter(|t| t.id != result.player_tree_id)
+            .collect();
+        assert!(!lesser_trees.is_empty());
+        for tree in &lesser_trees {
+            assert!(
+                tree.fruit_species_id.is_none(),
+                "No lesser trees should have fruit species when fraction = 0.0"
+            );
+        }
+    }
+
+    #[test]
+    fn wild_fruit_partial_fraction_assigns_some() {
+        let mut config = test_config();
+        config.lesser_trees.count = 20;
+        config.lesser_trees.min_distance_from_main = 5;
+        config.lesser_trees.min_distance_between = 3;
+        config.lesser_trees.fruit_bearing_fraction = 0.5;
+
+        let result = run_worldgen(42, &config, &noop_log());
+        let lesser_trees: Vec<_> = result
+            .db
+            .trees
+            .iter_all()
+            .filter(|t| t.id != result.player_tree_id)
+            .collect();
+        let fruit_count = lesser_trees
+            .iter()
+            .filter(|t| t.fruit_species_id.is_some())
+            .count();
+        // With 50% fraction and enough trees, we should get some but not all.
+        assert!(
+            fruit_count > 0,
+            "Some lesser trees should have fruit species"
+        );
+        assert!(
+            fruit_count < lesser_trees.len(),
+            "Not all lesser trees should have fruit species at 50%"
+        );
+    }
+
+    #[test]
+    fn wild_fruit_species_exist_in_db() {
+        let mut config = test_config();
+        config.lesser_trees.count = 5;
+        config.lesser_trees.min_distance_from_main = 5;
+        config.lesser_trees.min_distance_between = 3;
+        config.lesser_trees.fruit_bearing_fraction = 1.0;
+
+        let result = run_worldgen(42, &config, &noop_log());
+        for tree in result.db.trees.iter_all() {
+            if let Some(species_id) = tree.fruit_species_id {
+                assert!(
+                    result.db.fruit_species.contains(&species_id),
+                    "Assigned fruit species {:?} should exist in DB",
+                    species_id
+                );
+            }
+        }
     }
 }

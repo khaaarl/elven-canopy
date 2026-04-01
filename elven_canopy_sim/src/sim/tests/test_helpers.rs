@@ -186,7 +186,6 @@ pub(super) fn flat_world_sim(seed: u64) -> SimState {
         branch_voxels: Vec::new(),
         leaf_voxels: Vec::new(),
         root_voxels: Vec::new(),
-        fruit_positions: Vec::new(),
         fruit_species_id: None,
     };
     let great_tree_info = GreatTreeInfo {
@@ -226,8 +225,6 @@ pub(super) fn flat_world_sim(seed: u64) -> SimState {
         last_build_message: None,
         structure_voxels: BTreeMap::new(),
         spatial_index: BTreeMap::new(),
-        fruit_voxel_species_list: Vec::new(),
-        fruit_voxel_species: BTreeMap::new(),
         mana_wasted_positions: Vec::new(),
         grassless: BTreeSet::new(),
     };
@@ -1133,17 +1130,24 @@ pub(super) fn insert_test_fruit_species(sim: &mut SimState) -> crate::fruit::Fru
 
 /// Ensure the home tree has at least one fruit. If the tree already has
 /// fruit, does nothing. Otherwise, finds a leaf voxel and places a Fruit
-/// one voxel below it, registers it in the tree's fruit_positions and the
-/// fruit_voxel_species map. Panics if the tree has no leaves (which would
-/// indicate a broken worldgen for any test_sim seed).
+/// one voxel below it as a `TreeFruit` row. Panics if the tree has no
+/// leaves (which would indicate a broken worldgen for any test_sim seed).
 ///
 /// This guarantees fruit-dependent tests always have fruit to work with,
 /// regardless of PRNG-dependent fruit spawning during worldgen.
 pub(super) fn ensure_tree_has_fruit(sim: &mut SimState) -> VoxelCoord {
-    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
-    if let Some(&pos) = tree.fruit_positions.first() {
-        return pos;
+    let tree_id = sim.player_tree_id;
+
+    // If the tree already has fruit, return the first one.
+    let existing: Vec<_> = sim
+        .db
+        .tree_fruits
+        .by_tree_id(&tree_id, tabulosity::QueryOpts::ASC);
+    if let Some(tf) = existing.first() {
+        return tf.position;
     }
+
+    let tree = sim.db.trees.get(&tree_id).unwrap();
 
     // Tree has no fruit — place one manually.
     assert!(
@@ -1162,19 +1166,20 @@ pub(super) fn ensure_tree_has_fruit(sim: &mut SimState) -> VoxelCoord {
     // Ensure the tree has a fruit species. If not, insert a test one.
     let species_id = tree.fruit_species_id.unwrap_or_else(|| {
         let id = insert_test_fruit_species(sim);
-        let mut t = sim.db.trees.get(&sim.player_tree_id).unwrap();
+        let mut t = sim.db.trees.get(&tree_id).unwrap();
         t.fruit_species_id = Some(id);
         let _ = sim.db.update_tree(t);
         id
     });
 
-    // Place the fruit voxel and register it.
+    // Place the fruit voxel and insert a TreeFruit row.
     sim.set_voxel(fruit_pos, VoxelType::Fruit);
-    let mut tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
-    tree.fruit_positions.push(fruit_pos);
-    let _ = sim.db.update_tree(tree);
-    sim.fruit_voxel_species.insert(fruit_pos, species_id);
-    sim.fruit_voxel_species_list.push((fruit_pos, species_id));
+    let _ = sim.db.insert_tree_fruit_auto(|id| crate::db::TreeFruit {
+        id,
+        tree_id,
+        position: fruit_pos,
+        species_id,
+    });
     fruit_pos
 }
 

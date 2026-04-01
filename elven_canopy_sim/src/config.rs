@@ -1337,23 +1337,45 @@ pub struct LesserTreeConfig {
     /// Tree profiles to randomly select from when generating each lesser
     /// tree. If empty, lesser tree generation is skipped.
     pub profiles: Vec<TreeProfile>,
+
+    /// Fraction of lesser trees that bear fruit (0.0–1.0). Each fruit-bearing
+    /// tree gets a randomly chosen fruit species from the world's roster.
+    /// Set to 0.0 to disable wild fruit entirely.
+    #[serde(default = "default_fruit_bearing_fraction")]
+    pub fruit_bearing_fraction: f64,
+}
+
+fn default_fruit_bearing_fraction() -> f64 {
+    0.3
 }
 
 impl Default for LesserTreeConfig {
     fn default() -> Self {
         Self {
-            count: 500,
+            count: 800,
             min_distance_from_main: 25,
-            min_distance_between: 12,
-            max_placement_attempts: 7000,
+            min_distance_between: 8,
+            max_placement_attempts: 10000,
             profiles: vec![
+                // Trees (1× each)
                 TreeProfile::lesser_deciduous(),
                 TreeProfile::lesser_conifer(),
                 TreeProfile::lesser_tall_straight(),
                 TreeProfile::lesser_thick_oak(),
-                TreeProfile::lesser_bushy(),
                 TreeProfile::lesser_sapling(),
+                // Bushes (2× each for higher weight)
+                TreeProfile::lesser_bushy(),
+                TreeProfile::lesser_bushy(),
+                TreeProfile::lesser_hedge(),
+                TreeProfile::lesser_hedge(),
+                TreeProfile::lesser_berry_bush(),
+                TreeProfile::lesser_berry_bush(),
+                TreeProfile::lesser_scrub(),
+                TreeProfile::lesser_scrub(),
+                TreeProfile::lesser_thicket(),
+                TreeProfile::lesser_thicket(),
             ],
+            fruit_bearing_fraction: default_fruit_bearing_fraction(),
         }
     }
 }
@@ -1572,6 +1594,184 @@ impl TreeProfile {
                 leaf_shape: LeafShape::Sphere,
                 leaf_density: 1.0,
                 leaf_size: 4,
+                canopy_density: 1.2,
+            },
+            trunk: TrunkParams {
+                base_flare: 0.0,
+                initial_direction: [0.0, 1.0, 0.0],
+            },
+        }
+    }
+
+    /// Low hedge — very short and wide (~2-4 voxels tall), dense foliage.
+    /// Aggressive branching with wide split angles creates a flat, spreading
+    /// shape. Common ground-level undergrowth.
+    pub fn lesser_hedge() -> Self {
+        Self {
+            growth: GrowthParams {
+                initial_energy: 6.0,
+                energy_to_radius: 0.01,
+                min_radius: 0.3,
+                growth_step_length: 1.0,
+                energy_per_step: 1.0,
+            },
+            split: SplitParams {
+                split_chance_base: 0.40,
+                split_count: 2,
+                split_energy_ratio: 0.35,
+                split_angle: 1.2,
+                split_angle_variance: 0.4,
+                min_progress_for_split: 0.05,
+            },
+            curvature: CurvatureParams {
+                gravitropism: 0.01,
+                random_deflection: 0.25,
+                deflection_coherence: 0.3,
+            },
+            roots: RootParams {
+                root_energy_fraction: 0.0,
+                root_initial_count: 0,
+                root_gravitropism: 0.0,
+                root_initial_angle: 0.0,
+                root_surface_tendency: 0.0,
+            },
+            leaves: LeafParams {
+                leaf_shape: LeafShape::Cloud,
+                leaf_density: 1.0,
+                leaf_size: 3,
+                canopy_density: 1.3,
+            },
+            trunk: TrunkParams {
+                base_flare: 0.0,
+                initial_direction: [0.0, 1.0, 0.0],
+            },
+        }
+    }
+
+    /// Berry bush — medium compact bush (~4-6 voxels tall) with a round,
+    /// full canopy. Named for its shape; fruit assignment is separate.
+    pub fn lesser_berry_bush() -> Self {
+        Self {
+            growth: GrowthParams {
+                initial_energy: 10.0,
+                energy_to_radius: 0.01,
+                min_radius: 0.3,
+                growth_step_length: 1.0,
+                energy_per_step: 1.0,
+            },
+            split: SplitParams {
+                split_chance_base: 0.30,
+                split_count: 2,
+                split_energy_ratio: 0.30,
+                split_angle: 0.9,
+                split_angle_variance: 0.3,
+                min_progress_for_split: 0.15,
+            },
+            curvature: CurvatureParams {
+                gravitropism: 0.03,
+                random_deflection: 0.15,
+                deflection_coherence: 0.5,
+            },
+            roots: RootParams {
+                root_energy_fraction: 0.0,
+                root_initial_count: 0,
+                root_gravitropism: 0.0,
+                root_initial_angle: 0.0,
+                root_surface_tendency: 0.0,
+            },
+            leaves: LeafParams {
+                leaf_shape: LeafShape::Sphere,
+                leaf_density: 1.0,
+                leaf_size: 4,
+                canopy_density: 1.1,
+            },
+            trunk: TrunkParams {
+                base_flare: 0.0,
+                initial_direction: [0.0, 1.0, 0.0],
+            },
+        }
+    }
+
+    /// Scrub — sparse, scraggly bush (~2-4 voxels tall). Thin irregular
+    /// branches with low leaf density. Dry-looking undergrowth filler.
+    pub fn lesser_scrub() -> Self {
+        Self {
+            growth: GrowthParams {
+                initial_energy: 5.0,
+                energy_to_radius: 0.01,
+                min_radius: 0.3,
+                growth_step_length: 1.0,
+                energy_per_step: 1.0,
+            },
+            split: SplitParams {
+                split_chance_base: 0.25,
+                split_count: 1,
+                split_energy_ratio: 0.30,
+                split_angle: 0.7,
+                split_angle_variance: 0.5,
+                min_progress_for_split: 0.10,
+            },
+            curvature: CurvatureParams {
+                gravitropism: 0.03,
+                random_deflection: 0.20,
+                deflection_coherence: 0.4,
+            },
+            roots: RootParams {
+                root_energy_fraction: 0.0,
+                root_initial_count: 0,
+                root_gravitropism: 0.0,
+                root_initial_angle: 0.0,
+                root_surface_tendency: 0.0,
+            },
+            leaves: LeafParams {
+                leaf_shape: LeafShape::Cloud,
+                leaf_density: 0.6,
+                leaf_size: 2,
+                canopy_density: 0.8,
+            },
+            trunk: TrunkParams {
+                base_flare: 0.0,
+                initial_direction: [0.0, 1.0, 0.0],
+            },
+        }
+    }
+
+    /// Dense thicket — tangled mass of branches (~3-5 voxels tall). Very
+    /// high split chance with tight angles creates an impenetrable-looking
+    /// clump of vegetation.
+    pub fn lesser_thicket() -> Self {
+        Self {
+            growth: GrowthParams {
+                initial_energy: 8.0,
+                energy_to_radius: 0.01,
+                min_radius: 0.3,
+                growth_step_length: 1.0,
+                energy_per_step: 1.0,
+            },
+            split: SplitParams {
+                split_chance_base: 0.45,
+                split_count: 2,
+                split_energy_ratio: 0.25,
+                split_angle: 0.6,
+                split_angle_variance: 0.3,
+                min_progress_for_split: 0.05,
+            },
+            curvature: CurvatureParams {
+                gravitropism: 0.02,
+                random_deflection: 0.22,
+                deflection_coherence: 0.3,
+            },
+            roots: RootParams {
+                root_energy_fraction: 0.0,
+                root_initial_count: 0,
+                root_gravitropism: 0.0,
+                root_initial_angle: 0.0,
+                root_surface_tendency: 0.0,
+            },
+            leaves: LeafParams {
+                leaf_shape: LeafShape::Sphere,
+                leaf_density: 1.0,
+                leaf_size: 3,
                 canopy_density: 1.2,
             },
             trunk: TrunkParams {

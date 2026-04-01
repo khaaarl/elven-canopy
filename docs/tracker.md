@@ -67,6 +67,7 @@ This reduces merge conflicts when parallel work streams add items.
 ```
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
+[ ] B-wg-fresh-seed        Worldgen tests use hardcoded seed 42 instead of fresh_test_seed
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-aggro-fauna          Neutral fauna with aggro triggers
@@ -266,9 +267,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-war-animals          Train tamed creatures for combat
 [ ] F-war-magic            War magic (combat spells)
 [ ] F-weather              Weather within seasons
-[ ] F-wild-bushes          Wild fruit bushes at ground level
 [ ] F-wild-foraging        Wild animal foraging for fruit
-[ ] F-wild-fruit           Wild fruit growing on bushes and ground-level plants
 [ ] F-windows-compat       Windows compatibility for dev tooling
 [ ] F-winged-elf           Winged elf species variant with flight-only movement
 [ ] F-wireframe-ghost      Wireframe ghost for overlap preview
@@ -538,6 +537,8 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-voxel-exclusion      Creatures cannot enter voxels occupied by hostile creatures
 [x] F-voxel-fem            Voxel FEM structural analysis
 [x] F-voxel-textures       Per-face Perlin noise voxel textures
+[x] F-wild-bushes          Wild fruit bushes at ground level
+[x] F-wild-fruit           Wild fruit growing on bushes and ground-level plants
 [x] F-wild-grazing         Wild animal herbivorous food cycle
 [x] F-worldgen-framework   Worldgen generator framework
 [x] F-wyvern               Wyvern hostile flying creature (2×2×2)
@@ -5288,7 +5289,7 @@ construction difficulty. Open design question (§27).
 **Related:** F-cloak-slot, F-fire-ecology, F-infra-decay, F-seasons
 
 #### F-wild-bushes — Wild fruit bushes at ground level
-**Status:** Todo
+**Status:** Done
 
 Ground-level fruit-bearing bushes and shrubs placed during worldgen.
 Provides a food source accessible to non-climbing herbivores. Bush
@@ -5297,8 +5298,7 @@ produces a specific fruit species. Bushes occupy voxel space, may
 affect pathfinding, and regrow fruit over time. Foundation for wild
 fruit and animal foraging.
 
-**Blocks:** F-wild-fruit
-**Related:** F-forest-ecology
+**Related:** F-forest-ecology, F-wild-fruit
 
 #### F-wild-foraging — Wild animal foraging for fruit
 **Status:** Todo
@@ -5316,11 +5316,11 @@ their primary food source. They are arboreal species that naturally
 feed on fruit rather than grass. Their grazer flag should be removed
 and replaced with forager behavior.
 
-**Blocked by:** F-wild-fruit
+**Unblocked by:** F-wild-fruit
 **Related:** F-wild-grazing
 
 #### F-wild-fruit — Wild fruit growing on bushes and ground-level plants
-**Status:** Todo
+**Status:** Done
 
 Wild fruit that grows on ground-level bushes and can be found on the
 forest floor. Unlike greenhouse-cultivated fruit, wild fruit spawns
@@ -5328,9 +5328,8 @@ naturally during worldgen and regrows seasonally. Wild-only fruit
 species (from F-fruit-variety) appear here. Elves can forage wild
 fruit manually; animals forage it autonomously (see F-wild-foraging).
 
-**Blocked by:** F-wild-bushes
-**Blocks:** F-wild-foraging
-**Related:** F-fruit-variety
+**Unblocked:** F-wild-foraging
+**Related:** F-fruit-variety, F-wild-bushes
 
 #### F-wild-grazing — Wild animal herbivorous food cycle
 **Status:** Done

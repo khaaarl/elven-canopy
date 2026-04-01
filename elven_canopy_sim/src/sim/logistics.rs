@@ -337,13 +337,11 @@ impl SimState {
             .collect();
 
         let mut unclaimed_fruit: Vec<(VoxelCoord, NavNodeId)> = Vec::new();
-        for tree in self.db.trees.iter_all() {
-            for &fruit_pos in &tree.fruit_positions {
-                if !claimed_positions.contains(&fruit_pos)
-                    && let Some(nav_node) = self.nav_graph.find_nearest_node(fruit_pos, 5)
-                {
-                    unclaimed_fruit.push((fruit_pos, nav_node));
-                }
+        for tf in self.db.tree_fruits.iter_all() {
+            if !claimed_positions.contains(&tf.position)
+                && let Some(nav_node) = self.nav_graph.find_nearest_node(tf.position, 5)
+            {
+                unclaimed_fruit.push((tf.position, nav_node));
             }
         }
 

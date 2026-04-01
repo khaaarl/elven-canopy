@@ -32,12 +32,10 @@ impl SimState {
         // exactly on a nav node, so use find_nearest_node here (before
         // passing to find_nearest which expects nav-node-exact coords).
         let mut fruit_candidates: Vec<(VoxelCoord, NavNodeId, VoxelCoord)> = Vec::new();
-        for tree in self.db.trees.iter_all() {
-            for &fruit_pos in &tree.fruit_positions {
-                if let Some(nav_node) = graph.find_nearest_node(fruit_pos, 5) {
-                    let nav_pos = graph.node(nav_node).position;
-                    fruit_candidates.push((fruit_pos, nav_node, nav_pos));
-                }
+        for tf in self.db.tree_fruits.iter_all() {
+            if let Some(nav_node) = graph.find_nearest_node(tf.position, 5) {
+                let nav_pos = graph.node(nav_node).position;
+                fruit_candidates.push((tf.position, nav_node, nav_pos));
             }
         }
 
@@ -76,14 +74,11 @@ impl SimState {
             let _ = self.db.update_creature(creature);
         }
 
-        // Remove fruit from world, tree's fruit_positions, and species map.
+        // Remove fruit from world and the TreeFruit table.
         if self.world.get(fruit_pos) == VoxelType::Fruit {
             self.set_voxel(fruit_pos, VoxelType::Air);
         }
-        self.fruit_voxel_species.remove(&fruit_pos);
-        self.fruit_voxel_species_list
-            .retain(|(pos, _)| *pos != fruit_pos);
-        self.remove_fruit_from_trees(fruit_pos);
+        self.remove_tree_fruit_at(fruit_pos);
 
         // Generate AteAlone thought (eating outside a dining hall).
         self.add_creature_thought(creature_id, ThoughtKind::AteAlone);
@@ -104,15 +99,20 @@ impl SimState {
         let fruit_exists = self.world.get(fruit_pos) == VoxelType::Fruit;
 
         if fruit_exists {
-            // Look up species before removing from the map.
-            let species_id = self.fruit_voxel_species.remove(&fruit_pos);
-            self.fruit_voxel_species_list
-                .retain(|(pos, _)| *pos != fruit_pos);
-            let material = species_id.map(inventory::Material::FruitSpecies);
+            // Look up species before removing the row.
+            let tree_fruit = self
+                .db
+                .tree_fruits
+                .by_position(&fruit_pos, tabulosity::QueryOpts::ASC)
+                .into_iter()
+                .next();
+            let material = tree_fruit
+                .as_ref()
+                .map(|tf| inventory::Material::FruitSpecies(tf.species_id));
 
-            // Remove fruit from world and tree's fruit_positions list.
+            // Remove fruit from world and the TreeFruit table.
             self.set_voxel(fruit_pos, VoxelType::Air);
-            self.remove_fruit_from_trees(fruit_pos);
+            self.remove_tree_fruit_at(fruit_pos);
 
             // Create ground pile at creature's position with species material.
             if let Some(creature) = self.db.creatures.get(&creature_id) {

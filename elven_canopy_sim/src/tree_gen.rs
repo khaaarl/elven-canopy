@@ -2279,6 +2279,10 @@ mod tests {
             ("thick_oak", TreeProfile::lesser_thick_oak()),
             ("bushy", TreeProfile::lesser_bushy()),
             ("sapling", TreeProfile::lesser_sapling()),
+            ("hedge", TreeProfile::lesser_hedge()),
+            ("berry_bush", TreeProfile::lesser_berry_bush()),
+            ("scrub", TreeProfile::lesser_scrub()),
+            ("thicket", TreeProfile::lesser_thicket()),
         ];
         for (name, profile) in &profiles {
             let mut world = VoxelWorld::new(64, 64, 64);

@@ -3221,9 +3221,12 @@ fn new_sim_has_initial_fruit() {
     // either from worldgen or via ensure_tree_has_fruit.
     let mut sim = test_sim(legacy_test_seed());
     let fruit_pos = ensure_tree_has_fruit(&mut sim);
-    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
+    let fruits = sim
+        .db
+        .tree_fruits
+        .by_position(&fruit_pos, tabulosity::QueryOpts::ASC);
     assert!(
-        tree.fruit_positions.contains(&fruit_pos),
+        !fruits.is_empty(),
         "Tree should have fruit after ensure_tree_has_fruit"
     );
 }
@@ -3231,14 +3234,19 @@ fn new_sim_has_initial_fruit() {
 #[test]
 fn fruit_hangs_below_leaf_voxels() {
     let sim = test_sim(legacy_test_seed());
-    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
-    for fruit_pos in &tree.fruit_positions {
+    let tree_id = sim.player_tree_id;
+    let tree = sim.db.trees.get(&tree_id).unwrap();
+    let fruits = sim
+        .db
+        .tree_fruits
+        .by_tree_id(&tree_id, tabulosity::QueryOpts::ASC);
+    for tf in &fruits {
         // The leaf above the fruit should be in the tree's leaf_voxels.
-        let leaf_above = VoxelCoord::new(fruit_pos.x, fruit_pos.y + 1, fruit_pos.z);
+        let leaf_above = VoxelCoord::new(tf.position.x, tf.position.y + 1, tf.position.z);
         assert!(
             tree.leaf_voxels.contains(&leaf_above),
             "Fruit at {} should hang below a leaf voxel, but no leaf at {}",
-            fruit_pos,
+            tf.position,
             leaf_above
         );
     }
@@ -3247,13 +3255,17 @@ fn fruit_hangs_below_leaf_voxels() {
 #[test]
 fn fruit_set_in_world_grid() {
     let sim = test_sim(legacy_test_seed());
-    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
-    for fruit_pos in &tree.fruit_positions {
+    let tree_id = sim.player_tree_id;
+    let fruits = sim
+        .db
+        .tree_fruits
+        .by_tree_id(&tree_id, tabulosity::QueryOpts::ASC);
+    for tf in &fruits {
         assert_eq!(
-            sim.world.get(*fruit_pos),
+            sim.world.get(tf.position),
             VoxelType::Fruit,
             "World should have Fruit voxel at {}",
-            fruit_pos
+            tf.position
         );
     }
 }
@@ -3292,13 +3304,11 @@ fn fruit_grows_during_heartbeat() {
         }
     }
 
-    assert!(
+    assert_eq!(
         sim.db
-            .trees
-            .get(&tree_id)
-            .unwrap()
-            .fruit_positions
-            .is_empty(),
+            .tree_fruits
+            .count_by_tree_id(&tree_id, tabulosity::QueryOpts::ASC),
+        0,
         "Should start with no fruit when initial_attempts = 0"
     );
 
@@ -3306,12 +3316,10 @@ fn fruit_grows_during_heartbeat() {
     sim.step(&[], 50000);
 
     assert!(
-        !sim.db
-            .trees
-            .get(&tree_id)
-            .unwrap()
-            .fruit_positions
-            .is_empty(),
+        sim.db
+            .tree_fruits
+            .count_by_tree_id(&tree_id, tabulosity::QueryOpts::ASC)
+            > 0,
         "Fruit should grow during tree heartbeats"
     );
 }
@@ -3323,12 +3331,15 @@ fn fruit_respects_max_count() {
     config.fruit_initial_attempts = 100; // Many attempts, but max is 3.
     config.fruit_production_rate_ppm = 1_000_000;
     let sim = SimState::with_config(legacy_test_seed(), config);
-    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
+    let fruit_count = sim
+        .db
+        .tree_fruits
+        .count_by_tree_id(&sim.player_tree_id, tabulosity::QueryOpts::ASC);
 
     assert!(
-        tree.fruit_positions.len() <= 3,
+        fruit_count <= 3,
         "Fruit count {} should not exceed max 3",
-        tree.fruit_positions.len()
+        fruit_count
     );
 }
 
@@ -3337,9 +3348,21 @@ fn fruit_deterministic() {
     let seed = legacy_test_seed();
     let sim_a = test_sim(seed);
     let sim_b = test_sim(seed);
-    let tree_a = sim_a.db.trees.get(&sim_a.player_tree_id).unwrap();
-    let tree_b = sim_b.db.trees.get(&sim_b.player_tree_id).unwrap();
-    assert_eq!(tree_a.fruit_positions, tree_b.fruit_positions);
+    let fruits_a: Vec<_> = sim_a
+        .db
+        .tree_fruits
+        .by_tree_id(&sim_a.player_tree_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .map(|tf| tf.position)
+        .collect();
+    let fruits_b: Vec<_> = sim_b
+        .db
+        .tree_fruits
+        .by_tree_id(&sim_b.player_tree_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .map(|tf| tf.position)
+        .collect();
+    assert_eq!(fruits_a, fruits_b);
 }
 
 #[test]
@@ -3362,33 +3385,34 @@ fn tree_has_fruit_species_assigned() {
 #[test]
 fn fruit_voxels_have_species_tracked() {
     let sim = test_sim(legacy_test_seed());
-    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
-    // Every fruit voxel should have a species entry in the map.
-    for &fruit_pos in &tree.fruit_positions {
-        assert!(
-            sim.fruit_voxel_species.contains_key(&fruit_pos),
-            "Fruit at {} should have a species tracked in fruit_voxel_species",
-            fruit_pos
+    let tree_id = sim.player_tree_id;
+    let tree = sim.db.trees.get(&tree_id).unwrap();
+    let fruits = sim
+        .db
+        .tree_fruits
+        .by_tree_id(&tree_id, tabulosity::QueryOpts::ASC);
+    // Every TreeFruit row should have a species that matches the tree's.
+    let tree_species = tree
+        .fruit_species_id
+        .expect("Home tree should always have a fruit species assigned");
+    for tf in &fruits {
+        assert_eq!(
+            tf.species_id, tree_species,
+            "Fruit species should match tree species"
         );
-    }
-    // The tracked species should match the tree's assigned species.
-    if let Some(tree_species) = tree.fruit_species_id {
-        for &fruit_pos in &tree.fruit_positions {
-            let voxel_species = sim.fruit_voxel_species[&fruit_pos];
-            assert_eq!(
-                voxel_species, tree_species,
-                "Fruit voxel species should match tree species"
-            );
-        }
     }
 }
 
 #[test]
 fn fruit_species_at_returns_species() {
     let sim = test_sim(legacy_test_seed());
-    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
-    if let Some(first_fruit) = tree.fruit_positions.first() {
-        let species = sim.fruit_species_at(*first_fruit);
+    let tree_id = sim.player_tree_id;
+    let fruits = sim
+        .db
+        .tree_fruits
+        .by_tree_id(&tree_id, tabulosity::QueryOpts::ASC);
+    if let Some(first_fruit) = fruits.first() {
+        let species = sim.fruit_species_at(first_fruit.position);
         assert!(
             species.is_some(),
             "fruit_species_at should return a species"
@@ -3406,30 +3430,37 @@ fn fruit_species_at_returns_species() {
 }
 
 #[test]
-fn fruit_voxel_species_roundtrip() {
+fn tree_fruit_roundtrip() {
     let mut sim = test_sim(legacy_test_seed());
     ensure_tree_has_fruit(&mut sim);
-    let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
+    let tree_id = sim.player_tree_id;
 
     let json = sim.to_json().unwrap();
     let loaded = SimState::from_json(&json).unwrap();
-    let loaded_tree = loaded.db.trees.get(&loaded.player_tree_id).unwrap();
 
-    // Fruit voxel species map should survive roundtrip.
+    // TreeFruit rows should survive roundtrip.
+    let orig_fruits: Vec<_> = sim
+        .db
+        .tree_fruits
+        .by_tree_id(&tree_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .map(|tf| (tf.position, tf.species_id))
+        .collect();
+    let loaded_fruits: Vec<_> = loaded
+        .db
+        .tree_fruits
+        .by_tree_id(&tree_id, tabulosity::QueryOpts::ASC)
+        .into_iter()
+        .map(|tf| (tf.position, tf.species_id))
+        .collect();
     assert_eq!(
-        sim.fruit_voxel_species.len(),
-        loaded.fruit_voxel_species.len(),
-        "fruit_voxel_species count should survive roundtrip"
+        orig_fruits, loaded_fruits,
+        "TreeFruit rows should survive roundtrip"
     );
-    for (&pos, &species_id) in &sim.fruit_voxel_species {
-        assert_eq!(
-            loaded.fruit_voxel_species.get(&pos),
-            Some(&species_id),
-            "fruit_voxel_species entry at {} should survive roundtrip",
-            pos
-        );
-    }
+
     // Tree's fruit species should survive too.
+    let tree = sim.db.trees.get(&tree_id).unwrap();
+    let loaded_tree = loaded.db.trees.get(&tree_id).unwrap();
     assert_eq!(
         loaded_tree.fruit_species_id, tree.fruit_species_id,
         "Tree fruit_species_id should survive roundtrip"
@@ -3471,9 +3502,14 @@ fn harvest_fruit_carries_species_material() {
     sim.insert_task(task);
     sim.resolve_harvest_action(elf_id, task_id, fruit_pos);
 
-    // The fruit should be gone from world and species map.
+    // The fruit should be gone from world and TreeFruit table.
     assert_eq!(sim.world.get(fruit_pos), VoxelType::Air);
-    assert!(!sim.fruit_voxel_species.contains_key(&fruit_pos));
+    assert!(
+        sim.db
+            .tree_fruits
+            .by_position(&fruit_pos, tabulosity::QueryOpts::ASC)
+            .is_empty()
+    );
 
     // Find the ground pile and check the item has fruit species material.
     let pile_stacks: Vec<_> = sim
@@ -3525,27 +3561,220 @@ fn fruit_heartbeat_tracks_species() {
         }
     }
 
-    assert!(
-        sim.fruit_voxel_species.is_empty(),
-        "Should start with no species entries"
+    assert_eq!(
+        sim.db
+            .tree_fruits
+            .count_by_tree_id(&sim.player_tree_id, tabulosity::QueryOpts::ASC),
+        0,
+        "Should start with no fruit"
     );
 
     // Step past heartbeats to grow fruit.
     sim.step(&[], 50000);
 
+    let fruits = sim
+        .db
+        .tree_fruits
+        .by_tree_id(&sim.player_tree_id, tabulosity::QueryOpts::ASC);
+    assert!(!fruits.is_empty(), "Should have grown some fruit");
+    // Every fruit should have a valid species.
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
-    assert!(
-        !tree.fruit_positions.is_empty(),
-        "Should have grown some fruit"
-    );
-    // Every fruit should have species tracked.
-    for &pos in &tree.fruit_positions {
-        assert!(
-            sim.fruit_voxel_species.contains_key(&pos),
-            "Heartbeat-grown fruit at {} should have species tracked",
-            pos
+    let tree_species = tree.fruit_species_id.unwrap();
+    for tf in &fruits {
+        assert_eq!(
+            tf.species_id, tree_species,
+            "Heartbeat-grown fruit at {} should have correct species",
+            tf.position
         );
     }
+}
+
+#[test]
+fn attempt_fruit_spawn_no_op_when_species_none() {
+    let mut sim = test_sim(legacy_test_seed());
+    let tree_id = sim.player_tree_id;
+    // Clear the tree's fruit species.
+    let mut tree = sim.db.trees.get(&tree_id).unwrap();
+    tree.fruit_species_id = None;
+    sim.db.update_tree(tree).unwrap();
+
+    let before = sim.db.tree_fruits.len();
+    let spawned = sim.attempt_fruit_spawn(tree_id);
+    assert!(!spawned, "Should not spawn fruit when species is None");
+    assert_eq!(sim.db.tree_fruits.len(), before);
+}
+
+#[test]
+fn tree_fruit_cascade_delete_on_tree_removal() {
+    let mut sim = test_sim(legacy_test_seed());
+    let tree_id = sim.player_tree_id;
+    ensure_tree_has_fruit(&mut sim);
+
+    let fruit_count = sim
+        .db
+        .tree_fruits
+        .count_by_tree_id(&tree_id, tabulosity::QueryOpts::ASC);
+    assert!(fruit_count > 0, "Tree should have fruit before removal");
+
+    // Remove the great_tree_info first (FK child of tree).
+    let _ = sim.db.remove_great_tree_info(&tree_id);
+    // Remove the tree — should cascade to TreeFruit rows.
+    let _ = sim.db.remove_tree(&tree_id);
+
+    assert_eq!(
+        sim.db
+            .tree_fruits
+            .count_by_tree_id(&tree_id, tabulosity::QueryOpts::ASC),
+        0,
+        "TreeFruit rows should be cascade-deleted when tree is removed"
+    );
+}
+
+#[test]
+fn tree_fruit_position_unique_index_prevents_duplicates() {
+    let mut sim = test_sim(legacy_test_seed());
+    let tree_id = sim.player_tree_id;
+    let species_id = sim
+        .db
+        .trees
+        .get(&tree_id)
+        .unwrap()
+        .fruit_species_id
+        .unwrap();
+
+    let pos = VoxelCoord::new(10, 60, 10);
+    let result1 = sim.db.insert_tree_fruit_auto(|id| crate::db::TreeFruit {
+        id,
+        tree_id,
+        position: pos,
+        species_id,
+    });
+    assert!(result1.is_ok(), "First insert should succeed");
+
+    let result2 = sim.db.insert_tree_fruit_auto(|id| crate::db::TreeFruit {
+        id,
+        tree_id,
+        position: pos,
+        species_id,
+    });
+    assert!(
+        result2.is_err(),
+        "Duplicate position should be rejected by unique index"
+    );
+}
+
+#[test]
+fn fruit_species_at_returns_none_for_empty_position() {
+    let sim = test_sim(legacy_test_seed());
+    let bogus = VoxelCoord::new(0, 0, 0);
+    assert!(
+        sim.fruit_species_at(bogus).is_none(),
+        "Should return None for a position with no fruit"
+    );
+}
+
+#[test]
+fn wild_fruit_initial_spawn_on_lesser_trees() {
+    // A full sim with fruit-bearing lesser trees should have TreeFruit rows
+    // on lesser trees after the initial fruit spawn fast-forward.
+    let mut config = test_config();
+    config.lesser_trees.count = 10;
+    config.lesser_trees.min_distance_from_main = 5;
+    config.lesser_trees.min_distance_between = 3;
+    config.lesser_trees.fruit_bearing_fraction = 1.0;
+    config.fruit_initial_attempts = 12;
+    config.fruit_production_rate_ppm = 1_000_000; // Always spawn
+    config.fruit_max_per_tree = 20;
+    let sim = SimState::with_config(fresh_test_seed(), config);
+
+    // Find fruit-bearing lesser trees.
+    let lesser_with_fruit: Vec<_> = sim
+        .db
+        .trees
+        .iter_all()
+        .filter(|t| t.id != sim.player_tree_id && t.fruit_species_id.is_some())
+        .collect();
+    assert!(
+        !lesser_with_fruit.is_empty(),
+        "Should have fruit-bearing lesser trees"
+    );
+
+    // At least some lesser trees should have spawned fruit.
+    let mut any_has_fruit = false;
+    for tree in &lesser_with_fruit {
+        let count = sim
+            .db
+            .tree_fruits
+            .count_by_tree_id(&tree.id, tabulosity::QueryOpts::ASC);
+        if count > 0 {
+            any_has_fruit = true;
+        }
+    }
+    assert!(
+        any_has_fruit,
+        "At least one lesser tree should have initial fruit"
+    );
+}
+
+#[test]
+fn wild_fruit_regrows_on_lesser_trees() {
+    // Fruit should regrow on lesser trees during tree heartbeats.
+    let mut config = test_config();
+    config.lesser_trees.count = 3;
+    config.lesser_trees.min_distance_from_main = 5;
+    config.lesser_trees.min_distance_between = 3;
+    config.lesser_trees.fruit_bearing_fraction = 1.0;
+    config.fruit_initial_attempts = 0; // No initial fruit
+    config.fruit_production_rate_ppm = 1_000_000; // Always spawn
+    config.fruit_max_per_tree = 20;
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
+
+    // Find a fruit-bearing lesser tree (must exist with count=3 and fraction=1.0).
+    let lesser_id = sim
+        .db
+        .trees
+        .iter_all()
+        .find(|t| t.id != sim.player_tree_id && t.fruit_species_id.is_some())
+        .expect("Should have at least one fruit-bearing lesser tree")
+        .id;
+
+    // Ensure the tree has at least one leaf with air below it for fruit placement.
+    {
+        let tree = sim.db.trees.get(&lesser_id).unwrap();
+        let leaf_pos = if tree.leaf_voxels.is_empty() {
+            // No leaves from generation — add one manually.
+            let pos = VoxelCoord::new(tree.position.x + 2, tree.position.y + 3, tree.position.z);
+            sim.set_voxel(pos, VoxelType::Leaf);
+            let mut t = sim.db.trees.get(&lesser_id).unwrap();
+            t.leaf_voxels.push(pos);
+            let _ = sim.db.update_tree(t);
+            pos
+        } else {
+            tree.leaf_voxels[0]
+        };
+        sim.set_voxel(leaf_pos, VoxelType::Leaf);
+        let below = VoxelCoord::new(leaf_pos.x, leaf_pos.y - 1, leaf_pos.z);
+        sim.set_voxel(below, VoxelType::Air);
+    }
+
+    // No fruit initially.
+    assert_eq!(
+        sim.db
+            .tree_fruits
+            .count_by_tree_id(&lesser_id, tabulosity::QueryOpts::ASC),
+        0,
+    );
+
+    // Step past heartbeats.
+    sim.step(&[], 50000);
+
+    assert!(
+        sim.db
+            .tree_fruits
+            .count_by_tree_id(&lesser_id, tabulosity::QueryOpts::ASC)
+            > 0,
+        "Lesser tree should have grown fruit during heartbeats"
+    );
 }
 
 #[test]
