@@ -595,6 +595,10 @@ impl SimBridge {
         self.local_relay = None;
         self.mesh_cache = None;
         self.pending_compositions.clear();
+        // Drop Godot-object references (Gd<ImageTexture>) while the engine is
+        // still intact. Without this, they survive until Godot frees the
+        // SimBridge node during engine shutdown, which can crash on Windows.
+        self.elf_sprite_cache.clear();
 
         godot_print!("SimBridge: shutdown complete");
     }
