@@ -31,13 +31,16 @@ pub(super) fn legacy_test_seed() -> u64 {
 /// Return the fresh seed for this test run. The seed is generated once
 /// per process (via `FRESH_SEED`) and reused by all tests, so
 /// `test_sim(fresh_test_seed())` and `flat_world_sim(fresh_test_seed())`
-/// hit their respective caches. Printed to stderr on first use (always
-/// visible, even for passing runs) so any failure can be reproduced.
+/// hit their respective caches. Printed to stderr on every call so the
+/// seed appears in each failing test's captured output, making flake
+/// reproduction easy without scrolling back to the initial print.
 ///
 /// Use this for NEW tests. Existing tests use `legacy_test_seed()`.
 #[allow(dead_code)] // Will be used as new tests are added.
 pub(super) fn fresh_test_seed() -> u64 {
-    *FRESH_SEED
+    let seed = *FRESH_SEED;
+    eprintln!("fresh_test_seed: {seed}");
+    seed
 }
 
 /// Cached seed-42 SimState for test_sim(42) performance. Most legacy tests
