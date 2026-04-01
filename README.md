@@ -89,6 +89,44 @@ The first build compiles the Godot GDExtension bindings, which takes a few minut
 | `python3 scripts/build.py relay` | Optimized standalone relay server binary |
 | `python3 scripts/build.py coverage` | Generate HTML code coverage report |
 
+### Claude Code sandbox setup (Ubuntu)
+
+This repo's `.claude/settings.json` enables [Claude Code's sandbox mode](https://docs.anthropic.com/en/docs/claude-code/security#sandbox), which runs all shell commands inside a bubblewrap container with restricted filesystem access. To use it on Ubuntu:
+
+1. **Install bubblewrap and socat:**
+
+   ```bash
+   sudo apt install bubblewrap socat
+   ```
+
+2. **Install the sandbox runtime:**
+
+   ```bash
+   sudo npm install -g @anthropic-ai/sandbox-runtime
+   ```
+
+3. **Configure AppArmor** (Ubuntu 23.10+):
+
+   Ubuntu restricts unprivileged user namespaces by default, which bubblewrap needs. Create an AppArmor profile to allow them:
+
+   ```bash
+   sudo tee /etc/apparmor.d/bwrap << 'EOF'
+   abi <abi/4.0>,
+   include <tunables/global>
+
+   profile bwrap /usr/bin/bwrap flags=(unconfined) {
+     userns,
+     include if exists <local/bwrap>
+   }
+   EOF
+
+   sudo systemctl reload apparmor
+   ```
+
+   > **Note:** This step may not be required on future Ubuntu versions if the default AppArmor policy changes.
+
+The sandbox configuration lives in `.claude/settings.json` under the `"sandbox"` key. The checked-in config restricts filesystem writes to the repo and temp directories, and allows network access to all hosts (for GitHub operations and web research). See the [Claude Code sandbox docs](https://docs.anthropic.com/en/docs/claude-code/security#sandbox) for all available options.
+
 ### Opening in the Godot editor
 
 After building at least once (so the GDExtension library exists), open the Godot editor and import the `godot/` directory as a project. The build script creates a `godot/target` symlink pointing to the Cargo output directory — this is how Godot finds the compiled library.

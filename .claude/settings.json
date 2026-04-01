@@ -110,6 +110,7 @@
       "Bash(xargs dirname:*)",
       "Bash(xxd:*)",
       "WebFetch",
+      "WebFetch(domain:github.com)",
       "WebSearch"
     ],
     "deny": [
@@ -119,13 +120,13 @@
     "CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR": "1"
   },
   "sandbox": {
-    "enabled": false,
+    "enabled": true,
     "failIfUnavailable": true,
     "autoAllowBashIfSandboxed": false,
     "allowUnsandboxedCommands": false,
     "excludedCommands": [],
     "filesystem": {
-      "denyRead": ["/"],
+      "denyRead": [],
       "allowRead": [
         "/bin",
         "/lib",
@@ -141,6 +142,9 @@
         "~/.config/git",
         "."
       ]
+    },
+    "network": {
+      "allowedHosts": ["*"]
     }
   }
 }
