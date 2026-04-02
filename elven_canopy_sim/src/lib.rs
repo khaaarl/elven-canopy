@@ -11,10 +11,6 @@
 //                     greenhouse, inventory_mgmt, logistics, movement, needs, task_helpers).
 // - `world.rs`:       RLE column-based voxel grid (the world's spatial truth, Y-up).
 // - `tree_gen.rs`:    Energy-based recursive tree generation (trunk, branches, roots, leaves).
-// - `mesh_gen.rs`:    Chunk-based voxel mesh generation with smooth surface rendering.
-// - `smooth_mesh.rs`: Smooth mesh pipeline: subdivision, anchoring, chamfer, smoothing.
-// - `mesh_decimation.rs`: QEM edge-collapse decimation + coplanar retri + collinear collapse.
-// - `texture_gen.rs`: Procedural face texture generation (kept for reference, not active).
 // - `nav.rs`:         Navigation graph structures + construction from tree geometry.
 // - `pathfinding.rs`: Unified pathfinding for ground (nav graph) and flying (voxel grid) creatures.
 // - `preemption.rs`:  Task priority levels and preemption rules (Mood vs Survival, PlayerDirected override, etc.).
@@ -51,7 +47,6 @@
 pub mod blueprint;
 pub mod building;
 pub mod checksum;
-pub mod chunk_neighborhood;
 pub mod command;
 pub mod config;
 pub mod dance;
@@ -62,8 +57,6 @@ pub mod genome;
 pub mod inventory;
 pub mod local_relay;
 pub mod lookup_map;
-pub mod mesh_decimation;
-pub mod mesh_gen;
 pub mod nav;
 pub mod pathfinding;
 pub mod preemption;
@@ -73,12 +66,10 @@ pub use tabulosity;
 pub mod recipe;
 pub mod session;
 pub mod sim;
-pub mod smooth_mesh;
 pub mod species;
 pub mod stats;
 pub mod structural;
 pub mod task;
-pub mod texture_gen;
 pub mod tree_gen;
 pub mod types;
 pub mod world;

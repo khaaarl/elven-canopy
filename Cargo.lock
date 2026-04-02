@@ -216,6 +216,7 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 name = "elven_canopy_gdext"
 version = "0.1.0"
 dependencies = [
+ "elven_canopy_graphics",
  "elven_canopy_music",
  "elven_canopy_protocol",
  "elven_canopy_relay",
@@ -225,6 +226,18 @@ dependencies = [
  "serde",
  "serde_json",
  "tiny_http",
+]
+
+[[package]]
+name = "elven_canopy_graphics"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "criterion",
+ "elven_canopy_sim",
+ "rustc-hash",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

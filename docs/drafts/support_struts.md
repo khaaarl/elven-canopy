@@ -581,7 +581,7 @@ different height.
 
 ### 10. Rendering
 
-**File:** `elven_canopy_sim/src/mesh_gen.rs` (chunk mesh system)
+**File:** `elven_canopy_graphics/src/mesh_gen.rs` (chunk mesh system)
 
 Strut voxels are solid and participate in the existing chunk-based mesh
 generation. They render as wood-colored cubes, identical to GrownPlatform

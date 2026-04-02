@@ -5205,7 +5205,7 @@ impl SimBridge {
         cy: i32,
         cz: i32,
     ) -> Gd<godot::classes::ArrayMesh> {
-        use elven_canopy_sim::mesh_gen::ChunkCoord;
+        use elven_canopy_graphics::mesh_gen::ChunkCoord;
         use std::time::Instant;
 
         let t = Instant::now();
@@ -5239,7 +5239,7 @@ impl SimBridge {
     /// stays stable.
     fn add_surface_or_placeholder(
         mesh: &mut Gd<godot::classes::ArrayMesh>,
-        surface: &elven_canopy_sim::mesh_gen::SurfaceMesh,
+        surface: &elven_canopy_graphics::mesh_gen::SurfaceMesh,
     ) {
         if surface.is_empty() {
             Self::add_placeholder_surface(mesh);
@@ -5283,7 +5283,7 @@ impl SimBridge {
     /// the tiling shader derives texture coordinates from world position).
     fn add_surface_to_array_mesh(
         mesh: &mut Gd<godot::classes::ArrayMesh>,
-        surface: &elven_canopy_sim::mesh_gen::SurfaceMesh,
+        surface: &elven_canopy_graphics::mesh_gen::SurfaceMesh,
     ) {
         use godot::classes::mesh::PrimitiveType;
 
@@ -5365,7 +5365,7 @@ impl SimBridge {
     /// bytes, suitable for building a Texture2DArray on the GDScript side.
     #[func]
     fn get_tiling_texture_data(&self, material: i32, cache_idx: i32) -> PackedByteArray {
-        use elven_canopy_sim::texture_gen::MaterialKind;
+        use elven_canopy_graphics::texture_gen::MaterialKind;
 
         let Some(cache) = &self.mesh_cache else {
             return PackedByteArray::new();
@@ -5376,7 +5376,7 @@ impl SimBridge {
             _ => return PackedByteArray::new(),
         };
         let idx = cache_idx as usize;
-        if idx >= elven_canopy_sim::texture_gen::CACHE_COUNT {
+        if idx >= elven_canopy_graphics::texture_gen::CACHE_COUNT {
             return PackedByteArray::new();
         }
         let data = cache.tiling_cache().texture_data(mat, idx);
@@ -5390,13 +5390,13 @@ impl SimBridge {
     /// Layers are the same for bark and ground (same period structure).
     #[func]
     fn get_tiling_layer_count(&self, cache_idx: i32) -> i32 {
-        use elven_canopy_sim::texture_gen::MaterialKind;
+        use elven_canopy_graphics::texture_gen::MaterialKind;
 
         let Some(cache) = &self.mesh_cache else {
             return 0;
         };
         let idx = cache_idx as usize;
-        if idx >= elven_canopy_sim::texture_gen::CACHE_COUNT {
+        if idx >= elven_canopy_graphics::texture_gen::CACHE_COUNT {
             return 0;
         }
         cache.tiling_cache().layer_count(MaterialKind::Bark, idx) as i32
@@ -5409,7 +5409,7 @@ impl SimBridge {
             return Vector3i::ZERO;
         };
         let idx = cache_idx as usize;
-        if idx >= elven_canopy_sim::texture_gen::CACHE_COUNT {
+        if idx >= elven_canopy_graphics::texture_gen::CACHE_COUNT {
             return Vector3i::ZERO;
         }
         let p = cache.tiling_cache().periods(idx);
@@ -5423,7 +5423,7 @@ impl SimBridge {
             return 0;
         };
         let idx = cache_idx as usize;
-        if idx >= elven_canopy_sim::texture_gen::CACHE_COUNT {
+        if idx >= elven_canopy_graphics::texture_gen::CACHE_COUNT {
             return 0;
         }
         cache.tiling_cache().tiles_per_axis_pair(idx) as i32
@@ -5521,7 +5521,7 @@ impl SimBridge {
         world_z: f32,
         with_decimation: bool,
     ) -> GString {
-        use elven_canopy_sim::mesh_gen::{
+        use elven_canopy_graphics::mesh_gen::{
             CHUNK_SIZE, ChunkCoord, chunk_mesh_to_obj, generate_chunk_mesh_with_decimation,
         };
 

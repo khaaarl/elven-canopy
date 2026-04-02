@@ -18,11 +18,11 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use elven_canopy_sim::chunk_neighborhood::ChunkNeighborhood;
-use elven_canopy_sim::config::GameConfig;
-use elven_canopy_sim::mesh_gen::{
+use elven_canopy_graphics::chunk_neighborhood::ChunkNeighborhood;
+use elven_canopy_graphics::mesh_gen::{
     CHUNK_SIZE, ChunkCoord, ChunkMesh, MeshPipelineConfig, SurfaceMesh, generate_chunk_mesh,
 };
+use elven_canopy_sim::config::GameConfig;
 use elven_canopy_sim::types::{VoxelCoord, VoxelType};
 use elven_canopy_sim::world::VoxelWorld;
 use elven_canopy_sim::worldgen;
@@ -32,7 +32,7 @@ use elven_canopy_sim::worldgen;
 // ---------------------------------------------------------------------------
 
 /// Fixture directory path. Integration tests run with CWD set to the crate
-/// root (`elven_canopy_sim/`), so we use `../` to reach the repo-root `.tmp/`.
+/// root (`elven_canopy_graphics/`), so we use `../` to reach the repo-root `.tmp/`.
 const FIXTURES_DIR: &str = "../.tmp/mesh_fixtures";
 const POSITION_EPSILON: f32 = 1e-5;
 const NORMAL_EPSILON: f32 = 1e-5;

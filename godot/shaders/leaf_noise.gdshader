@@ -22,7 +22,7 @@
 // Base color is derived procedurally by the fragment shader.
 //
 // See also: smooth_solid.gdshader (solid surface noise),
-// tree_renderer.gd (material setup), mesh_gen.rs (sway weight computation).
+// tree_renderer.gd (material setup), mesh_gen.rs (graphics crate, sway weight computation).
 
 shader_type spatial;
 render_mode cull_disabled;

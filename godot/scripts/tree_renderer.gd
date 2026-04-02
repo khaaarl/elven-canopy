@@ -45,7 +45,7 @@
 ## Fruit is rendered as billboarded Sprite3D nodes, one per fruit voxel,
 ## using procedural 16x16 pixel art textures from elven_canopy_sprites.
 ##
-## See also: mesh_gen.rs and smooth_mesh.rs (sim crate) for the smooth mesh
+## See also: mesh_gen.rs and smooth_mesh.rs (graphics crate) for the smooth mesh
 ## pipeline, mesh_cache.rs (gdext crate) for the MegaChunk hierarchy and LRU
 ## cache, sim_bridge.rs for the bridge API, smooth_solid.gdshader and
 ## leaf_noise.gdshader for the procedural noise shaders, main.gd which

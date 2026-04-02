@@ -18,16 +18,16 @@
 // - `stage_flatten`: flatten SmoothMesh to ChunkMesh
 //
 // Fixtures are bincode-serialized ChunkNeighborhood files in .tmp/mesh_fixtures/.
-// If missing, run: cargo test -p elven_canopy_sim --test mesh_snapshots
+// If missing, run: cargo test -p elven_canopy_graphics --test mesh_snapshots
 //
-// Run with: cargo bench -p elven_canopy_sim
+// Run with: cargo bench -p elven_canopy_graphics
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use elven_canopy_sim::chunk_neighborhood::ChunkNeighborhood;
-use elven_canopy_sim::mesh_gen::{
+use elven_canopy_graphics::chunk_neighborhood::ChunkNeighborhood;
+use elven_canopy_graphics::mesh_gen::{
     MeshPipelineConfig, build_smooth_mesh, flatten_to_chunk_mesh, generate_chunk_mesh,
     run_chamfer_smooth, run_decimation,
 };
@@ -49,7 +49,7 @@ fn load_all_fixtures() -> Vec<NamedFixture> {
     if !dir.exists() {
         panic!(
             "Fixture directory {FIXTURES_DIR} not found. \
-             Run `cargo test -p elven_canopy_sim --test mesh_snapshots` first."
+             Run `cargo test -p elven_canopy_graphics --test mesh_snapshots` first."
         );
     }
     let mut fixtures = Vec::new();
@@ -88,7 +88,7 @@ fn load_all_fixtures() -> Vec<NamedFixture> {
     if fixtures.is_empty() {
         panic!(
             "No fixtures found in {FIXTURES_DIR}. \
-             Run `cargo test -p elven_canopy_sim --test mesh_snapshots` first."
+             Run `cargo test -p elven_canopy_graphics --test mesh_snapshots` first."
         );
     }
     fixtures

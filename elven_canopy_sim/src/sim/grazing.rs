@@ -19,7 +19,7 @@
 //   grassless set.
 //
 // See also: `needs.rs` (hunger-driven task creation), `activation.rs`
-// (task behavior dispatch), `mesh_gen.rs` (grassless dirt coloring),
+// (task behavior dispatch), `elven_canopy_graphics::mesh_gen` (grassless dirt coloring),
 // `species.rs` (`is_grazer`, `graze_food_restore_pct`).
 
 use super::*;

@@ -18,8 +18,8 @@
 use std::collections::BTreeSet;
 
 use crate::mesh_gen::{CHUNK_SIZE, ChunkCoord, SMOOTH_BORDER};
-use crate::types::{VoxelCoord, VoxelType};
-use crate::world::VoxelWorld;
+use elven_canopy_sim::types::{VoxelCoord, VoxelType};
+use elven_canopy_sim::world::VoxelWorld;
 
 /// Border size around the chunk needed for smooth mesh cross-boundary
 /// consistency. Re-exported from `mesh_gen::SMOOTH_BORDER` so both modules

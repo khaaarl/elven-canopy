@@ -15,7 +15,7 @@
 // surfaces are shifted warm (yellow-ish) and downward-facing surfaces cool
 // (blue-ish), controlled by the `face_tint_strength` uniform.
 //
-// See also: smooth_mesh.rs (geometry pipeline), tree_renderer.gd (material
+// See also: smooth_mesh.rs (graphics crate, geometry pipeline), tree_renderer.gd (material
 // setup), bark_ground.gdshader (old texture-based approach, kept for
 // reference).
 

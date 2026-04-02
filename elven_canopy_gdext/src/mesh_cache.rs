@@ -1,6 +1,6 @@
 // Chunk mesh cache with MegaChunk spatial hierarchy for the gdext bridge.
 //
-// Sits between the sim's pure `mesh_gen` module and the Godot-facing
+// Sits between the graphics crate's pure `mesh_gen` module and the Godot-facing
 // `sim_bridge.rs`. Organises chunks into MegaChunks (16×16 horizontal groups)
 // for fast draw-distance, frustum culling, and shadow-only culling. Meshes are
 // generated lazily — only when a chunk first enters the visible or shadow set —
@@ -49,8 +49,8 @@
 // is built once and shared across all chunks — it doesn't depend on world
 // state, only on the noise parameters baked into `texture_gen.rs`.
 //
-// See also: `mesh_gen.rs` (sim crate) for the core mesh generation algorithm,
-// `texture_gen.rs` (sim crate) for the tiling texture system,
+// See also: `mesh_gen.rs` (graphics crate) for the core mesh generation algorithm,
+// `texture_gen.rs` (graphics crate) for the tiling texture system,
 // `sim_bridge.rs` for the Godot-facing methods that convert `ChunkMesh` into
 // `ArrayMesh` objects and upload tiling textures, `tree_renderer.gd` for the
 // GDScript rendering side.
@@ -60,12 +60,12 @@ use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
-use elven_canopy_sim::chunk_neighborhood::ChunkNeighborhood;
-use elven_canopy_sim::mesh_gen::{
+use elven_canopy_graphics::chunk_neighborhood::ChunkNeighborhood;
+use elven_canopy_graphics::mesh_gen::{
     CHUNK_SIZE, ChunkCoord, ChunkMesh, MeshPipelineConfig, generate_chunk_mesh, produces_geometry,
     voxel_to_chunk,
 };
-use elven_canopy_sim::texture_gen::TilingCache;
+use elven_canopy_graphics::texture_gen::TilingCache;
 use elven_canopy_sim::types::VoxelCoord;
 use elven_canopy_sim::world::VoxelWorld;
 
@@ -957,7 +957,7 @@ impl MeshCache {
             .flat_map(|mc| mc.chunks.iter().copied())
             .collect();
         for coord in all_chunks {
-            let mesh = elven_canopy_sim::mesh_gen::generate_chunk_mesh_from_world(
+            let mesh = elven_canopy_graphics::mesh_gen::generate_chunk_mesh_from_world(
                 world,
                 coord,
                 self.y_cutoff,

@@ -243,7 +243,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-spell-summon         Conjure temporary allied creature
 [ ] F-spell-system         Core spell casting infrastructure (SpellId, commands, mana costs)
 [ ] F-spell-thornbriar     Thornbriar zone spell (slow + damage area)
-[ ] F-split-graphics       Extract graphics/mesh code from sim into elven_canopy_graphics crate
 [ ] F-stairs               Stairs and ramps for vertical movement
 [ ] F-starvation-rework    Starvation rework: incapacitation interaction and bleed-out
 [ ] F-status-effects       Generic creature status effect system
@@ -511,6 +510,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-social-opinions      Interpersonal opinion table and social skill checks
 [x] F-spatial-index        Creature spatial index for voxel-level position queries
 [x] F-spawn-toolbar        Spawn toolbar and placement UI
+[x] F-split-graphics       Extract graphics/mesh code from sim into elven_canopy_graphics crate
 [x] F-split-sim            Split monolithic sim.rs into domain sub-modules
 [x] F-split-sim-tests      Split sim tests.rs into per-module test files
 [x] F-status-bar           Persistent status bar (population, idle count, active tasks)
@@ -7381,11 +7381,11 @@ user-configurable settings.
 
 Continuation of F-mesh-pipeline-perf. The initial round achieved ~1.8x speedup on the heaviest fixtures (worldgen_trunk: ~58ms to ~33ms at release profile) through six optimization attempts. This item continues the iterative agent-driven optimization process.
 
-**Prior work:** See `docs/iterative_optimization.md` for the full guide on the optimization process, agent invocation patterns, and lessons learned. The round-1 diary is at `docs/optimization-diaries/mesh-pipeline-perf.md`. Start a new diary at `.tmp/mesh-perf-diary.md` for round 2 (copy the round-1 diary as a starting point, or start fresh with new baselines). Snapshot regression test at `elven_canopy_sim/tests/mesh_snapshots.rs`, criterion benchmarks at `elven_canopy_sim/benches/mesh_pipeline.rs`.
+**Prior work:** See `docs/iterative_optimization.md` for the full guide on the optimization process, agent invocation patterns, and lessons learned. The round-1 diary is at `docs/optimization-diaries/mesh-pipeline-perf.md`. Start a new diary at `.tmp/mesh-perf-diary.md` for round 2 (copy the round-1 diary as a starting point, or start fresh with new baselines). Snapshot regression test at `elven_canopy_graphics/tests/mesh_snapshots.rs`, criterion benchmarks at `elven_canopy_graphics/benches/mesh_pipeline.rs`.
 
 **Branch:** Start from `feature/F-mesh-pipeline-perf` (or main after merge). The harness infrastructure (snapshot tests, criterion benchmarks, exposed sub-stage functions) is already in place.
 
-**Setup:** Run `cargo test -p elven_canopy_sim --test mesh_snapshots` once to generate fixtures in `.tmp/mesh_fixtures/`. Then `cargo bench -p elven_canopy_sim -- "default/chunk/(worldgen_trunk|worldgen_surface|fully_solid|flat_slab)"` for baseline numbers. Record baselines in `.tmp/mesh-perf-diary.md` before starting optimization agents.
+**Setup:** Run `cargo test -p elven_canopy_graphics --test mesh_snapshots` once to generate fixtures in `.tmp/mesh_fixtures/`. Then `cargo bench -p elven_canopy_graphics -- "default/chunk/(worldgen_trunk|worldgen_surface|fully_solid|flat_slab)"` for baseline numbers. Record baselines in `.tmp/mesh-perf-diary.md` before starting optimization agents.
 
 **Required: new fixture scenarios.** Add two new world-generated fixtures to the snapshot test and benchmarks:
 - **Sky chunk**: A chunk coordinate high above the canopy (e.g., cy=3 in a 64-tall world). The chunk itself should be mostly/entirely air, but the `ChunkNeighborhood` extraction should capture a full border region that may include treetop leaves. Tests the early-exit and sparse-chunk paths.
@@ -7567,7 +7567,7 @@ as `SimDb` (16 tables) — see F-sim-tab-migrate.
 **Status:** Done
 
 #### F-split-graphics — Extract graphics/mesh code from sim into elven_canopy_graphics crate
-**Status:** Todo
+**Status:** Done
 
 Split graphics/mesh-related code out of elven_canopy_sim into a new elven_canopy_graphics crate. The sim crate has grown very large and mesh generation, chunk rendering, decimation, smooth surfaces, and related code are conceptually separate from simulation logic. The sim crate should remain pure simulation; graphics code has no business there.
 

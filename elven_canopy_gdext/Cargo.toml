@@ -13,6 +13,7 @@ crate-type = ["cdylib"]
 elven_canopy_music = { path = "../elven_canopy_music" }
 elven_canopy_protocol = { path = "../elven_canopy_protocol" }
 elven_canopy_relay = { path = "../elven_canopy_relay" }
+elven_canopy_graphics = { path = "../elven_canopy_graphics" }
 elven_canopy_sim = { path = "../elven_canopy_sim" }
 elven_canopy_sprites = { path = "../elven_canopy_sprites" }
 godot = { version = "0.4.5", features = ["api-4-5"] }

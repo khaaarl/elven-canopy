@@ -25,6 +25,3 @@ rustc-hash = "2"
 criterion = { version = "0.5", features = ["html_reports"] }
 bincode = "1"
 
-[[bench]]
-name = "mesh_pipeline"
-harness = false

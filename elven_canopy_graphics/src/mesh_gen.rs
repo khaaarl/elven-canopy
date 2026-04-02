@@ -108,8 +108,8 @@ impl Default for MeshPipelineConfig {
         }
     }
 }
-use crate::types::{VoxelCoord, VoxelType};
-use crate::world::VoxelWorld;
+use elven_canopy_sim::types::{VoxelCoord, VoxelType};
+use elven_canopy_sim::world::VoxelWorld;
 
 /// Side length of a chunk in voxels.
 pub const CHUNK_SIZE: i32 = 16;
@@ -1898,5 +1898,14 @@ mod tests {
                 averages[i - 1].1,
             );
         }
+    }
+
+    #[test]
+    fn grassless_dirt_color_differs_from_grassy() {
+        let grassy = voxel_color(VoxelType::Dirt);
+        assert_ne!(
+            grassy, GRASSLESS_DIRT_COLOR,
+            "Grassless dirt should have a different color than grassy dirt"
+        );
     }
 }

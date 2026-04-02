@@ -193,11 +193,11 @@ Cumulative effect on the heaviest real-world fixture (worldgen_trunk): baseline 
 
 ### Files involved
 
-- `elven_canopy_sim/src/mesh_gen.rs` — face generation, pipeline orchestration
-- `elven_canopy_sim/src/smooth_mesh.rs` — SmoothMesh data structure, chamfer, smoothing
-- `elven_canopy_sim/src/mesh_decimation.rs` — QEM decimation, coplanar retri, collinear collapse
-- `elven_canopy_sim/tests/mesh_snapshots.rs` — fixture generation and snapshot regression
-- `elven_canopy_sim/benches/mesh_pipeline.rs` — criterion benchmarks
+- `elven_canopy_graphics/src/mesh_gen.rs` — face generation, pipeline orchestration
+- `elven_canopy_graphics/src/smooth_mesh.rs` — SmoothMesh data structure, chamfer, smoothing
+- `elven_canopy_graphics/src/mesh_decimation.rs` — QEM decimation, coplanar retri, collinear collapse
+- `elven_canopy_graphics/tests/mesh_snapshots.rs` — fixture generation and snapshot regression
+- `elven_canopy_graphics/benches/mesh_pipeline.rs` — criterion benchmarks
 - `docs/optimization-diaries/mesh-pipeline-perf.md` — optimization diary (committed)
 - `.tmp/mesh-perf-diary.md` — working copy of diary during active optimization (not committed)
 - `.tmp/mesh_fixtures/` — serialized fixture files (not committed)

@@ -125,7 +125,7 @@ This means:
 | `godot/scripts/tree_renderer.gd` | GDScript rendering: frustum extraction, delta list processing, MeshInstance3D management |
 | `elven_canopy_gdext/src/sim_bridge.rs` | GDExtension bridge: thin wrappers exposing sim and mesh cache to GDScript |
 | `elven_canopy_gdext/src/mesh_cache.rs` | MegaChunk hierarchy, async submission, channel drain, visibility culling, LRU eviction |
-| `elven_canopy_sim/src/chunk_neighborhood.rs` | `ChunkNeighborhood`: lightweight voxel snapshot for off-thread mesh generation |
-| `elven_canopy_sim/src/mesh_gen.rs` | Pure mesh generation: `ChunkNeighborhood` → `ChunkMesh` |
+| `elven_canopy_graphics/src/chunk_neighborhood.rs` | `ChunkNeighborhood`: lightweight voxel snapshot for off-thread mesh generation |
+| `elven_canopy_graphics/src/mesh_gen.rs` | Pure mesh generation: `ChunkNeighborhood` → `ChunkMesh` |
 | `elven_canopy_sim/src/world.rs` | `VoxelWorld`: RLE voxel grid, dirty tracking, `sim_tick` |
 | `elven_canopy_sim/src/sim/mod.rs` | `SimState`: owns `VoxelWorld` and `grassless: BTreeSet<VoxelCoord>` (grazed dirt coords, also captured into neighborhoods) |

@@ -8,7 +8,7 @@
 //
 // No per-vertex UVs are needed — everything is derived from world position.
 //
-// See also: texture_gen.rs (tile generation), tree_renderer.gd (material setup).
+// See also: texture_gen.rs (graphics crate, tile generation), tree_renderer.gd (material setup).
 
 shader_type spatial;
 render_mode vertex_lighting;

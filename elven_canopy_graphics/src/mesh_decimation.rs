@@ -1751,7 +1751,7 @@ mod tests {
     use super::*;
     use crate::mesh_gen::{FACE_NORMALS, FACE_VERTICES, voxel_color};
     use crate::smooth_mesh::{TAG_BARK, TAG_GROUND};
-    use crate::types::VoxelType;
+    use elven_canopy_sim::types::VoxelType;
 
     /// Build a chamfered mesh from a set of voxel positions (same as
     /// smooth_mesh::tests::build_chamfered_voxel_mesh but accessible here).

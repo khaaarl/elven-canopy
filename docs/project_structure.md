@@ -40,17 +40,20 @@ elven-canopy/
 │       │   ├── task_helpers.rs #   Task extension table accessors, insert_task
 │       │   └── tests/           #   Per-domain test modules (split from monolithic tests.rs)
 │       ├── db.rs               # SimDb — tabulosity relational store (45 tables, all entities)
-│       ├── chunk_neighborhood.rs # ChunkNeighborhood: lightweight voxel snapshot for off-thread mesh gen
-│       ├── mesh_gen.rs         # Chunk-based voxel mesh generation with smooth surface rendering
-│       ├── smooth_mesh.rs      # Smooth mesh pipeline: subdivision, non-manifold resolution, anchoring, chamfer, smoothing
-│       ├── mesh_decimation.rs  # QEM edge-collapse decimation + coplanar retri + collinear collapse
-│       ├── texture_gen.rs      # Prime-period tiling textures (kept for reference, not active)
 │       ├── nav.rs              # NavGraph, NavNode, NavEdge, graph construction
 │       ├── pathfinding.rs      # Unified pathfinding for ground (nav graph) and flying (voxel grid) creatures
 │       ├── projectile.rs       # Integer-only ballistic trajectories, aim solver
 │       ├── tree_gen.rs         # Procedural tree generation (trunk + branches)
 │       ├── world.rs            # RLE column-based voxel grid
 │       └── worldgen.rs         # Worldgen framework — generator sequencing, worldgen PRNG
+├── elven_canopy_graphics/      # Chunk mesh generation, smoothing, decimation, textures
+│   ├── src/
+│   │   ├── lib.rs              # Crate root, module declarations
+│   │   ├── mesh_gen.rs         # Chunk-based voxel mesh generation with smooth surface rendering
+│   │   ├── smooth_mesh.rs      # Smooth mesh pipeline: subdivision, anchoring, chamfer, smoothing
+│   │   ├── mesh_decimation.rs  # QEM edge-collapse decimation + coplanar retri + collinear collapse
+│   │   ├── chunk_neighborhood.rs # ChunkNeighborhood: voxel snapshot for off-thread mesh gen
+│   │   └── texture_gen.rs      # Prime-period tiling textures (kept for reference, not active)
 │   ├── tests/
 │   │   └── mesh_snapshots.rs   # Snapshot regression test for mesh pipeline (15 fixtures × 4 configs)
 │   └── benches/

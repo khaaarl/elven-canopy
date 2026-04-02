@@ -295,16 +295,6 @@ fn grassless_set_serde_roundtrip() {
 }
 
 #[test]
-fn grassless_mesh_color_differs_from_grassy() {
-    use crate::mesh_gen::{GRASSLESS_DIRT_COLOR, voxel_color};
-    let grassy_color = voxel_color(VoxelType::Dirt);
-    assert_ne!(
-        grassy_color, GRASSLESS_DIRT_COLOR,
-        "Grassless dirt should have a different color than grassy dirt"
-    );
-}
-
-#[test]
 fn graze_preemption_level_is_survival() {
     let level = preemption::preemption_level(TaskKindTag::Graze, TaskOrigin::Autonomous);
     let eat_level = preemption::preemption_level(TaskKindTag::EatFruit, TaskOrigin::Autonomous);

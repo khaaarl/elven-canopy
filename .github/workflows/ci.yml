@@ -100,7 +100,7 @@ jobs:
         run: cargo test -p tabulosity --features serde --test serde -- --test-threads=16
 
       - name: Run all other crate tests
-        run: cargo test -p elven_canopy_prng -p elven_canopy_lang -p elven_canopy_sim -p elven_canopy_protocol -p elven_canopy_relay -p elven_canopy_music -p multiplayer_tests -- --test-threads=16
+        run: cargo test -p elven_canopy_prng -p elven_canopy_lang -p elven_canopy_sim -p elven_canopy_graphics -p elven_canopy_protocol -p elven_canopy_relay -p elven_canopy_music -p multiplayer_tests -- --test-threads=16
 
   coverage:
     runs-on: ubuntu-latest
