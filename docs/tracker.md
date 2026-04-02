@@ -3747,15 +3747,23 @@ This is the "life decisions" layer: not moment-to-moment task execution, but hig
 #### F-llm-creatures — LLM creature infrastructure: model download, llama.cpp, relay inference pipeline
 **Status:** Todo
 
-Foundation for all LLM-driven creature features. Covers: optional model download with user prompt ("Enable AI creature personalities?"), llama.cpp integration via Rust bindings behind a feature flag, Vulkan/CUDA/ROCm/CPU backend selection, and the sim → relay → LLM → relay → sim inference pipeline.
+Foundation for all LLM-driven creature features. Concrete decisions made (see draft for full details):
 
-**THE RELAY IS THE ONLY PATH. This is the single most important constraint in this feature.** All LLM inference — singleplayer AND multiplayer — goes through the relay. There is NO singleplayer shortcut, NO local-only fast path, NO special case. In singleplayer the LocalRelay dispatches to the local machine through the exact same pipeline as multiplayer. The code that submits an LLM request and the code that consumes the result MUST be identical regardless of player count. A singleplayer-only code path WILL introduce bugs that only surface in multiplayer, which is the hardest place to debug them. This constraint is non-negotiable and must be enforced at the architectural level, not by convention.
+**Library:** `llama-cpp-2` (only actively maintained Rust llama.cpp binding). **Model:** Qwen 3 1.7B Q5_K_M (Apache 2.0, best structured output at this size). **GPU:** All backends via feature flags (`cuda`, `vulkan`, `rocm`); runtime choice is GPU vs CPU with auto-detection based on available VRAM.
 
-Multiplayer capability signaling: players signal on join whether they have the model downloaded. The relay dispatches inference to LLM-capable players and can load-balance across multiple. If the only capable player disconnects, inference gracefully fails (standard fallback — creatures keep current inclinations). A multiplayer game gets LLM features as long as any one player has the model.
+**Sim outbox:** The sim emits `OutboundRequest`s into a `Vec` drained after each `step()`. Each request carries preamble sections (well-known string key or literal text), an ephemeral prompt, a JSON schema for grammar-constrained generation, and a deadline tick. Pending requests tracked in a `BTreeMap<u64, PendingLlmRequest>` (serialized for save/load). The sim has NO conditional compilation for LLM — it always emits requests; they expire silently when LLM is unavailable.
 
-When LLM is unavailable (opted out, no capable player, inference failure), the game treats it as if inference always fails. Existing task and social systems handle everything. No separate code path.
+**Relay routing (Option C — hybrid):** Dedicated protocol messages for dispatch (`ClientMessage::LlmRequest`, `ServerMessage::LlmDispatch`), but results delivered inside Turn messages (`Turn.llm_results`) for simple canonicalization. The relay selects LLM-capable peers (signaled via `llm_capable` field in `Hello`), load-balances, and buffers results until the next turn flush. Payloads are opaque `Vec<u8>` — the relay never inspects prompts or results.
 
-Observability: toggleable logging of prompts, raw responses, latency, cache hits/misses, per-creature decision history.
+**THE RELAY IS THE ONLY PATH.** All LLM inference — singleplayer AND multiplayer — goes through the relay. The relay is the sole mechanism for dispatch and canonicalization. The code that submits a request and the code that consumes the result are identical regardless of player count. This is enforced at the architectural level (B-local-relay ensures singleplayer uses the real relay on localhost).
+
+**Response processing:** LLM results enter the sim as `SimAction::LlmResult` via a new `SessionMessage::LlmResult` variant. The sim matches by `request_id`, validates the deadline, deserializes the JSON, and applies mechanical effects. Grammar-constrained generation (GBNF via JSON schema) guarantees valid output format.
+
+**Model download:** User-initiated opt-in (~1.5 GB), background download, checksum verification, platform-conventional storage. Not bundled with the game.
+
+**Observability:** Toggleable logging of prompts, raw responses, latency, cache hits/misses, per-creature decision history.
+
+**Draft:** docs/drafts/llm-creatures.md
 
 **Draft:** docs/drafts/llm-creatures.md
 
@@ -3790,13 +3798,17 @@ Deferred — the social chat and activity systems work without this.
 #### F-llm-social-chat — LLM-generated creature dialogue in social interactions
 **Status:** Todo
 
-When the existing social system schedules a casual interaction (e.g. two elves passing each other), delegate to the LLM to generate actual dialogue. The LLM produces greeting text, the sim runs a mechanical skill check, and the result (text + check outcome) goes into the other creature's inbox for their next LLM cycle. Multi-turn exchanges happen over several LLM cycles (~5-10 seconds), mapping naturally to creatures stopping and chatting.
+When the existing casual social heartbeat PPM roll triggers an interaction between two elves, delegate to the LLM for dialogue generation instead of resolving purely mechanically. Both creatures must be idle or Autonomous-level to qualify; otherwise the interaction resolves mechanically as today.
 
-Messages stored in the sim database, garbage collected over time (last N per creature or last in-game week). Unprocessed messages sit in the creature's inbox until consumed by their next LLM cycle.
+**Conversation anchoring:** Both creatures enter a new `TaskKind::Conversing` task immediately in the heartbeat handler (cross-creature assignment following the `try_assign_to_activity()` pattern). Conversing is `PreemptionLevel::Autonomous` — survival, mood, and combat tasks preempt normally, but idle wandering won't pull creatures away mid-conversation. Each Conversing activation checks that the partner is alive and still conversing; if not, the task completes immediately.
 
-LLM output includes both text (displayed to player) and structured decisions (e.g. "invite to tonight's dance" which creates a pending activity mechanically). The existing social opinion system applies skill check results as it does today — the LLM adds flavor and nuance, not different mechanics.
+**Output schema:** Minimal enum (Option 3). The LLM picks from a curated `SocialChatChoice` list (`greet_warmly`, `greet_coldly`, `ignore`, `invite_to_dance`, `share_gossip`, `compliment`, `insult`, `ask_favor`) and generates one sentence of dialogue. Grammar-constrained generation guarantees valid JSON. Each choice maps to a concrete sim operation (opinion bonus, deferred dance flag, thought insertion, etc.).
 
-When LLM is unavailable, the interaction resolves purely mechanically as it does today (skill check, opinion change, no text).
+**Inbox:** Messages stored in a `creature_messages` tabulosity table (`message_id`, `creature_id`, `from_creature_id`, `content`, `tick`, `processed`). Unprocessed messages trigger an LLM request on the creature's next idle activation (bypasses PPM roll). Messages GC'd after configurable TTL. Multi-turn exchanges take ~5-10 seconds, mapping naturally to creatures stopping, chatting, and moving on.
+
+**Mechanical effects:** Skill check and opinion change apply immediately (same tick as the heartbeat). The LLM adds dialogue text and bonus effects (activity invitations, gossip thoughts) asynchronously when the response arrives. When LLM is unavailable, the interaction resolves purely mechanically as today — skill check, opinion change, no text.
+
+**Draft:** docs/drafts/llm-creatures.md
 
 **Draft:** docs/drafts/llm-creatures.md
 
