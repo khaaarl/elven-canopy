@@ -165,6 +165,12 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-jobs                 Elf job/role specialization
 [ ] F-labor-panel          DF/Rimworld-style labor assignment UI
 [ ] F-leaf-tuning          Leaf visual fine-tuning and interior decisions
+[ ] F-llm-activities       LLM-driven activity scheduling and task inclination nudging
+[ ] F-llm-convo-ui         Creature conversation text bubbles and detail panel log
+[ ] F-llm-creatures        LLM creature infrastructure: model download, llama.cpp, relay inference pipeline
+[ ] F-llm-diplomacy        LLM-driven foreign civilization diplomatic decisions
+[ ] F-llm-monologue        LLM inner monologue with emergent personality drift
+[ ] F-llm-social-chat      LLM-generated creature dialogue in social interactions
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-los-tuning           Line-of-sight tuning (terrain tolerance, tall creature bonus)
 [ ] F-magic-items          Magic item personalities and crafting
@@ -236,6 +242,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-spell-summon         Conjure temporary allied creature
 [ ] F-spell-system         Core spell casting infrastructure (SpellId, commands, mana costs)
 [ ] F-spell-thornbriar     Thornbriar zone spell (slow + damage area)
+[ ] F-split-graphics       Extract graphics/mesh code from sim into elven_canopy_graphics crate
 [ ] F-stairs               Stairs and ramps for vertical movement
 [ ] F-starvation-rework    Starvation rework: incapacitation interaction and bleed-out
 [ ] F-status-effects       Generic creature status effect system
@@ -3723,6 +3730,77 @@ never stops being miserable.
 
 **Blocked by:** F-emotions
 
+#### F-llm-activities — LLM-driven activity scheduling and task inclination nudging
+**Status:** Todo
+
+LLM-driven scheduling of group activities (dances, meals, gatherings) and adjustment of task preference weights. The LLM nudges creature inclinations ("I feel like crafting" vs "I'd rather be social") which the existing task acceptance logic consumes as soft preference weights. The task system remains the final authority on what's actually possible — the LLM can never put a creature in an invalid state.
+
+This is the "life decisions" layer: not moment-to-moment task execution, but higher-level choices about how to spend one's time. Scope boundary enforced by construction — the LLM adjusts weights, it doesn't issue commands.
+
+**Draft:** docs/drafts/llm-creatures.md
+
+**Blocked by:** F-llm-creatures
+**Related:** F-llm-monologue, F-llm-social-chat
+
+#### F-llm-creatures — LLM creature infrastructure: model download, llama.cpp, relay inference pipeline
+**Status:** Todo
+
+Foundation for all LLM-driven creature features. Covers: optional model download with user prompt ("Enable AI creature personalities?"), llama.cpp integration via Rust bindings behind a feature flag, Vulkan/CUDA/ROCm/CPU backend selection, and the sim → relay → LLM → relay → sim inference pipeline.
+
+**THE RELAY IS THE ONLY PATH. This is the single most important constraint in this feature.** All LLM inference — singleplayer AND multiplayer — goes through the relay. There is NO singleplayer shortcut, NO local-only fast path, NO special case. In singleplayer the LocalRelay dispatches to the local machine through the exact same pipeline as multiplayer. The code that submits an LLM request and the code that consumes the result MUST be identical regardless of player count. A singleplayer-only code path WILL introduce bugs that only surface in multiplayer, which is the hardest place to debug them. This constraint is non-negotiable and must be enforced at the architectural level, not by convention.
+
+Multiplayer capability signaling: players signal on join whether they have the model downloaded. The relay dispatches inference to LLM-capable players and can load-balance across multiple. If the only capable player disconnects, inference gracefully fails (standard fallback — creatures keep current inclinations). A multiplayer game gets LLM features as long as any one player has the model.
+
+When LLM is unavailable (opted out, no capable player, inference failure), the game treats it as if inference always fails. Existing task and social systems handle everything. No separate code path.
+
+Observability: toggleable logging of prompts, raw responses, latency, cache hits/misses, per-creature decision history.
+
+**Draft:** docs/drafts/llm-creatures.md
+
+**Blocks:** F-llm-activities, F-llm-diplomacy, F-llm-social-chat
+
+#### F-llm-diplomacy — LLM-driven foreign civilization diplomatic decisions
+**Status:** Todo
+
+Foreign civilization leaders use LLMs for diplomatic decisions — trade offers, alliance proposals, war declarations, posture shifts. Different prompt templates from social chat but same inference infrastructure (relay pipeline, model, caching). Very different cadence: a civ leader might make one diplomatic decision every few in-game days rather than once per minute.
+
+Deferred until other-civilization systems are more developed. Same infrastructure as F-llm-creatures, different prompts and output schema.
+
+**Draft:** docs/drafts/llm-creatures.md
+
+**Blocked by:** F-llm-creatures
+
+#### F-llm-monologue — LLM inner monologue with emergent personality drift
+**Status:** Todo
+
+Creatures produce inner monologue text as an optional LLM output alongside decisions. Past monologue summaries feed back into future prompts, creating a loop where creatures develop emergent personalities. Big Five traits (from genetics) set the interpretive lens in the system prompt — high neuroticism means the LLM actually reads negative intent into ambiguous situations, potentially producing grudges, anxieties, or obsessions that no designer explicitly coded.
+
+Could integrate with the existing thoughts system (same table, same UI) rather than being a separate data model. Context budget constraint: ~100 tokens for monologue history in the prompt, so needs compression — rolling window of last ~3 entries, relevance-based selection, or periodic LLM summarization.
+
+Deferred — the social chat and activity systems work without this.
+
+**Draft:** docs/drafts/llm-creatures.md
+
+**Blocked by:** F-llm-social-chat
+**Related:** F-llm-activities, F-llm-social-chat
+
+#### F-llm-social-chat — LLM-generated creature dialogue in social interactions
+**Status:** Todo
+
+When the existing social system schedules a casual interaction (e.g. two elves passing each other), delegate to the LLM to generate actual dialogue. The LLM produces greeting text, the sim runs a mechanical skill check, and the result (text + check outcome) goes into the other creature's inbox for their next LLM cycle. Multi-turn exchanges happen over several LLM cycles (~5-10 seconds), mapping naturally to creatures stopping and chatting.
+
+Messages stored in the sim database, garbage collected over time (last N per creature or last in-game week). Unprocessed messages sit in the creature's inbox until consumed by their next LLM cycle.
+
+LLM output includes both text (displayed to player) and structured decisions (e.g. "invite to tonight's dance" which creates a pending activity mechanically). The existing social opinion system applies skill check results as it does today — the LLM adds flavor and nuance, not different mechanics.
+
+When LLM is unavailable, the interaction resolves purely mechanically as it does today (skill check, opinion change, no text).
+
+**Draft:** docs/drafts/llm-creatures.md
+
+**Blocked by:** F-llm-creatures
+**Blocks:** F-llm-convo-ui, F-llm-monologue
+**Related:** F-llm-activities, F-llm-monologue
+
 #### F-mana-mood — Mana generation tied to elf mood
 **Status:** Todo · **Phase:** 4 · **Refs:** §11, §18
 
@@ -6506,6 +6584,15 @@ Fine-tune leaf visual quality and decide on leaf interior rendering.
 
 **Related:** F-tiling-tex, F-visual-smooth
 
+#### F-llm-convo-ui — Creature conversation text bubbles and detail panel log
+**Status:** Todo
+
+Player-facing UI for LLM-generated creature conversations. Text bubbles in the world view when creatures speak. Conversation log in the creature detail panel showing recent exchanges. This is a UI task somewhat independent of the LLM plumbing — messages need display regardless of how they were generated.
+
+**Draft:** docs/drafts/llm-creatures.md
+
+**Blocked by:** F-llm-social-chat
+
 #### F-lod-sprites — LOD sprites (chibi / detailed)
 **Status:** Todo · **Phase:** 8+ · **Refs:** §24
 
@@ -7476,6 +7563,11 @@ as `SimDb` (16 tables) — see F-sim-tab-migrate.
 
 #### F-sim-tab-migrate — Migrate sim entity storage to tabulosity SimDb
 **Status:** Done
+
+#### F-split-graphics — Extract graphics/mesh code from sim into elven_canopy_graphics crate
+**Status:** Todo
+
+Split graphics/mesh-related code out of elven_canopy_sim into a new elven_canopy_graphics crate. The sim crate has grown very large and mesh generation, chunk rendering, decimation, smooth surfaces, and related code are conceptually separate from simulation logic. The sim crate should remain pure simulation; graphics code has no business there.
 
 #### F-split-sim — Split monolithic sim.rs into domain sub-modules
 **Status:** Done
