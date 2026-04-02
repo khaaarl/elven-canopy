@@ -9,7 +9,7 @@ Things that are non-obvious or surprising about the Elven Canopy codebase. Read 
 ## Tick Rate and Sim Decoupling
 
 - The sim runs at **1000 ticks per simulated second** (`tick_duration_ms = 1`). All tick-denominated config values (heartbeat intervals, food decay rates, species speed params) are calibrated for this rate.
-- The sim is decoupled from the frame rate. `main.gd` calls `bridge.frame_update(delta)` each frame. In single-player, a `LocalRelay` on the Rust side handles tick pacing with a time-based accumulator, capped at 5000 ticks per frame to prevent spiral-of-death.
+- The sim is decoupled from the frame rate. `main.gd` calls `bridge.frame_update(delta)` each frame. Both singleplayer and multiplayer use a real relay on localhost — the relay flushes `Turn` messages at a fixed cadence (50ms by default), and `poll_network()` processes them to advance the sim. Speed control changes `ticks_per_turn` (Normal=50, Fast=100, VeryFast=250) while the flush cadence stays fixed.
 - Movement speed is per-species: `walk_ticks_per_voxel` (ticks per 1.0 units of euclidean distance on flat ground) and `climb_ticks_per_voxel` (ticks per 1.0 units on TrunkClimb/GroundToTrunk edges). Nav graph edges store euclidean distance, not time-cost — speed config is not needed for graph construction.
 
 ## Voxel Coordinate System

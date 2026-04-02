@@ -16,7 +16,7 @@
 ##    menu button, and escape menu.
 ##
 ## Per-frame (_process): calls bridge.frame_update(delta) which handles
-## tick pacing (via LocalRelay in SP, network polling in MP) and returns a
+## tick pacing (polls the relay for Turn messages) and returns a
 ## fractional render_tick for smooth creature interpolation between nav
 ## nodes. GDScript distributes this render_tick to renderers and the
 ## selection controller.
@@ -203,6 +203,11 @@ func _ready() -> void:
 			push_error("main: failed to load save, returning to main menu")
 			get_tree().change_scene_to_file("res://scenes/main_menu.tscn")
 			return
+		# Start a relay for the loaded game — singleplayer uses the same
+		# relay-driven tick pacing as multiplayer. Skipped in test mode
+		# so step_to_tick / step_exactly work for deterministic tests.
+		if not GameSession.test_mode:
+			bridge.start_singleplayer_relay()
 
 	if not is_loaded_game:
 		# Normal new-game flow.

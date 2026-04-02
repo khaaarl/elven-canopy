@@ -218,6 +218,7 @@ fn embedded_full_session_lifecycle() {
         &ClientMessage::StartGame {
             seed: 42,
             config_json: "{}".into(),
+            starting_tick: None,
         },
     );
 
@@ -421,6 +422,7 @@ fn dedicated_two_independent_sessions() {
         &ClientMessage::StartGame {
             seed: 1,
             config_json: "{}".into(),
+            starting_tick: None,
         },
     );
     send(
@@ -428,6 +430,7 @@ fn dedicated_two_independent_sessions() {
         &ClientMessage::StartGame {
             seed: 2,
             config_json: "{}".into(),
+            starting_tick: None,
         },
     );
 
@@ -928,6 +931,7 @@ fn dedicated_session_game_started_visible_in_list() {
         &ClientMessage::StartGame {
             seed: 1,
             config_json: "{}".into(),
+            starting_tick: None,
         },
     );
     std::thread::sleep(Duration::from_millis(100));
@@ -989,6 +993,7 @@ fn dedicated_abrupt_disconnect_during_game_doesnt_crash_relay() {
         &ClientMessage::StartGame {
             seed: 1,
             config_json: "{}".into(),
+            starting_tick: None,
         },
     );
     std::thread::sleep(Duration::from_millis(100));
@@ -1440,6 +1445,7 @@ fn dedicated_desync_three_players() {
         &ClientMessage::StartGame {
             seed: 1,
             config_json: "{}".into(),
+            starting_tick: None,
         },
     );
     std::thread::sleep(Duration::from_millis(100));
@@ -1500,6 +1506,7 @@ fn dedicated_pause_stops_turns_resume_resumes() {
         &ClientMessage::StartGame {
             seed: 1,
             config_json: "{}".into(),
+            starting_tick: None,
         },
     );
     std::thread::sleep(Duration::from_millis(100));
@@ -1570,6 +1577,7 @@ fn dedicated_snapshot_from_non_host_ignored() {
         &ClientMessage::StartGame {
             seed: 1,
             config_json: "{}".into(),
+            starting_tick: None,
         },
     );
     std::thread::sleep(Duration::from_millis(100));
@@ -1646,6 +1654,7 @@ fn dedicated_set_speed_zero_ignored() {
         &ClientMessage::StartGame {
             seed: 1,
             config_json: "{}".into(),
+            starting_tick: None,
         },
     );
     std::thread::sleep(Duration::from_millis(100));
@@ -1784,6 +1793,7 @@ fn dedicated_double_pause_idempotent() {
         &ClientMessage::StartGame {
             seed: 1,
             config_json: "{}".into(),
+            starting_tick: None,
         },
     );
     let _game_start = recv(&mut reader); // GameStart
@@ -1835,6 +1845,7 @@ fn dedicated_resume_while_not_paused_noop() {
         &ClientMessage::StartGame {
             seed: 1,
             config_json: "{}".into(),
+            starting_tick: None,
         },
     );
     let _game_start = recv(&mut reader); // GameStart
@@ -1886,6 +1897,7 @@ fn dedicated_non_host_set_speed_ignored() {
         &ClientMessage::StartGame {
             seed: 1,
             config_json: "{}".into(),
+            starting_tick: None,
         },
     );
     let _gs1 = recv(&mut r1); // GameStart
@@ -2002,6 +2014,7 @@ fn dedicated_host_leaves_guest_cannot_set_speed() {
         &ClientMessage::StartGame {
             seed: 42,
             config_json: "{}".into(),
+            starting_tick: None,
         },
     );
     send(&mut w1, &ClientMessage::RequestPause);
@@ -2072,6 +2085,7 @@ fn dedicated_unsolicited_snapshot_response_ignored() {
         &ClientMessage::StartGame {
             seed: 1,
             config_json: "{}".into(),
+            starting_tick: None,
         },
     );
     let _gs1 = recv(&mut r1);
@@ -2108,6 +2122,96 @@ fn dedicated_unsolicited_snapshot_response_ignored() {
         got_turn,
         "relay should continue serving turns after unsolicited snapshot"
     );
+
+    handle.stop();
+}
+
+// ---------------------------------------------------------------------------
+// ResumeSession through TCP pipeline
+// ---------------------------------------------------------------------------
+
+/// Verify that `ResumeSession` sent through a real TCP relay starts turn
+/// flushing from the specified tick.
+#[test]
+fn embedded_resume_session_starts_turns_from_tick() {
+    let (handle, addr) = start_embedded_relay();
+    let mut conn = TestConn::connect(addr);
+    conn.create_session("test", None, 50, 1);
+
+    let conn2 = TestConn::connect(addr);
+    let (mut reader, mut writer, _pid) = conn2.join_session(SessionId(0), "Alice", None);
+
+    // Send ResumeSession at tick 10000.
+    send(
+        &mut writer,
+        &ClientMessage::ResumeSession {
+            starting_tick: 10000,
+        },
+    );
+
+    // Should receive SessionResumed.
+    let msg = recv(&mut reader);
+    match msg {
+        ServerMessage::SessionResumed { starting_tick } => {
+            assert_eq!(starting_tick, 10000);
+        }
+        other => panic!("expected SessionResumed, got {other:?}"),
+    }
+
+    // Should receive a Turn with sim_tick_target = 10000 + 50.
+    let msg = recv(&mut reader);
+    match msg {
+        ServerMessage::Turn {
+            sim_tick_target, ..
+        } => {
+            assert_eq!(sim_tick_target, 10050);
+        }
+        other => panic!("expected Turn, got {other:?}"),
+    }
+
+    handle.stop();
+}
+
+/// Verify that `StartGame` with `starting_tick` sent through TCP results
+/// in turns that advance from that tick, not from 0.
+#[test]
+fn embedded_start_game_with_starting_tick() {
+    let (handle, addr) = start_embedded_relay();
+    let mut conn = TestConn::connect(addr);
+    conn.create_session("test", None, 50, 1);
+
+    let conn2 = TestConn::connect(addr);
+    let (mut reader, mut writer, _pid) = conn2.join_session(SessionId(0), "Alice", None);
+
+    // Start game at tick 5000.
+    send(
+        &mut writer,
+        &ClientMessage::StartGame {
+            seed: 42,
+            config_json: "{}".into(),
+            starting_tick: Some(5000),
+        },
+    );
+
+    // Should receive GameStart with starting_tick.
+    let msg = recv(&mut reader);
+    match msg {
+        ServerMessage::GameStart { starting_tick, .. } => {
+            assert_eq!(starting_tick, Some(5000));
+        }
+        other => panic!("expected GameStart, got {other:?}"),
+    }
+
+    // First Turn should advance from 5000.
+    let msg = recv(&mut reader);
+    match msg {
+        ServerMessage::Turn {
+            sim_tick_target, ..
+        } => {
+            assert_eq!(sim_tick_target, 5050);
+        }
+        other => panic!("expected Turn, got {other:?}"),
+    }
 
     handle.stop();
 }

@@ -76,6 +76,7 @@ func after_each() -> void:
 	# Reset the load path in case _load_game_scene failed before main.gd
 	# cleared it.  Prevents stale paths from leaking to the next test.
 	GameSession.load_save_path = ""
+	GameSession.test_mode = false
 	# Clean up temp save files written by _load_game_scene.
 	var dir := DirAccess.open("user://saves")
 	if dir:
@@ -123,6 +124,9 @@ func _load_game_scene(save_json: String) -> void:
 	file.close()
 	# Tell GameSession to load this save on next scene init.
 	GameSession.load_save_path = path
+	# Tests use step_to_tick / step_exactly for deterministic control —
+	# skip relay startup so commands go directly to the session.
+	GameSession.test_mode = true
 	# Instantiate the real game scene as a child of this test node.
 	var packed := load("res://scenes/main.tscn") as PackedScene
 	_main_scene = packed.instantiate()

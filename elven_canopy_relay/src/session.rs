@@ -387,12 +387,38 @@ impl Session {
 
     /// Handle a StartGame request. Only the host can start the game.
     /// Broadcasts `GameStart` to all clients and enables turn flushing.
-    pub fn handle_start_game(&mut self, player_id: RelayPlayerId, seed: i64, config_json: String) {
+    /// If `starting_tick` is provided, the relay starts its tick counter there
+    /// instead of 0 (used when resuming a loaded save).
+    pub fn handle_start_game(
+        &mut self,
+        player_id: RelayPlayerId,
+        seed: i64,
+        config_json: String,
+        starting_tick: Option<u64>,
+    ) {
         if player_id != self.host_id || self.game_started {
             return;
         }
         self.game_started = true;
-        let msg = ServerMessage::GameStart { seed, config_json };
+        self.current_tick = starting_tick.unwrap_or(0);
+        let msg = ServerMessage::GameStart {
+            seed,
+            config_json,
+            starting_tick,
+        };
+        self.broadcast(&msg);
+    }
+
+    /// Resume turn flushing for a loaded game without broadcasting GameStart.
+    /// Only the host can resume. Sets `game_started = true` and starts flushing
+    /// turns from `starting_tick`.
+    pub fn handle_resume_session(&mut self, player_id: RelayPlayerId, starting_tick: u64) {
+        if player_id != self.host_id || self.game_started {
+            return;
+        }
+        self.game_started = true;
+        self.current_tick = starting_tick;
+        let msg = ServerMessage::SessionResumed { starting_tick };
         self.broadcast(&msg);
     }
 
@@ -686,7 +712,7 @@ mod tests {
             .unwrap();
 
         // Start the game so turns flush.
-        session.handle_start_game(RelayPlayerId(0), 42, "{}".into());
+        session.handle_start_game(RelayPlayerId(0), 42, "{}".into(), None);
 
         // Enqueue a command from Alice.
         session.enqueue_command(TurnCommand {
@@ -746,7 +772,7 @@ mod tests {
             .unwrap();
 
         // Start the game so turns flush.
-        session.handle_start_game(RelayPlayerId(0), 42, "{}".into());
+        session.handle_start_game(RelayPlayerId(0), 42, "{}".into(), None);
 
         // Enqueue commands out of canonical order.
         session.enqueue_command(TurnCommand {
@@ -980,7 +1006,7 @@ mod tests {
             .add_player("Bob".into(), 100, 200, None, server2)
             .unwrap();
 
-        session.handle_start_game(RelayPlayerId(0), 42, r#"{"key":"val"}"#.into());
+        session.handle_start_game(RelayPlayerId(0), 42, r#"{"key":"val"}"#.into(), None);
         assert!(session.is_game_started());
 
         // Alice should receive Welcome + PlayerJoined + GameStart.
@@ -989,7 +1015,9 @@ mod tests {
         let _joined = recv_server_msg(&mut reader1);
         let msg = recv_server_msg(&mut reader1);
         match msg {
-            ServerMessage::GameStart { seed, config_json } => {
+            ServerMessage::GameStart {
+                seed, config_json, ..
+            } => {
                 assert_eq!(seed, 42);
                 assert_eq!(config_json, r#"{"key":"val"}"#);
             }
@@ -1017,11 +1045,11 @@ mod tests {
             .unwrap();
 
         // Bob (not host) tries to start — ignored.
-        session.handle_start_game(RelayPlayerId(1), 42, "{}".into());
+        session.handle_start_game(RelayPlayerId(1), 42, "{}".into(), None);
         assert!(!session.is_game_started());
 
         // Alice (host) starts — accepted.
-        session.handle_start_game(RelayPlayerId(0), 42, "{}".into());
+        session.handle_start_game(RelayPlayerId(0), 42, "{}".into(), None);
         assert!(session.is_game_started());
     }
 
@@ -1034,11 +1062,11 @@ mod tests {
             .add_player("Alice".into(), 100, 200, None, server1)
             .unwrap();
 
-        session.handle_start_game(RelayPlayerId(0), 42, "{}".into());
+        session.handle_start_game(RelayPlayerId(0), 42, "{}".into(), None);
         assert!(session.is_game_started());
 
         // Second start call is ignored.
-        session.handle_start_game(RelayPlayerId(0), 99, "{}".into());
+        session.handle_start_game(RelayPlayerId(0), 99, "{}".into(), None);
 
         // Alice should have Welcome + one GameStart (not two).
         let mut reader1 = BufReader::new(client1);
@@ -1076,7 +1104,7 @@ mod tests {
         session
             .add_player("Bob".into(), 100, 200, None, server2)
             .unwrap();
-        session.handle_start_game(RelayPlayerId(0), 42, "{}".into());
+        session.handle_start_game(RelayPlayerId(0), 42, "{}".into(), None);
 
         let mut reader1 = BufReader::new(client1.try_clone().unwrap());
         // Drain Alice's Welcome + PlayerJoined + GameStart.
@@ -1432,5 +1460,179 @@ mod tests {
         let _joined2 = recv_server_msg(&mut reader1);
         let _left = recv_server_msg(&mut reader1);
         // No more messages — no DesyncDetected.
+    }
+
+    // -----------------------------------------------------------------------
+    // starting_tick and ResumeSession tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn start_game_with_starting_tick() {
+        let (_client1, server1) = tcp_pair();
+        let mut session = Session::new("test".into(), None, 50, 4);
+        session
+            .add_player("Alice".into(), 100, 200, None, server1)
+            .unwrap();
+
+        session.handle_start_game(RelayPlayerId(0), 42, "{}".into(), Some(5000));
+        assert!(session.is_game_started());
+        assert_eq!(session.current_tick(), 5000);
+
+        // First turn should advance from 5000 to 5050.
+        session.flush_turn();
+        assert_eq!(session.current_tick(), 5050);
+    }
+
+    #[test]
+    fn start_game_without_starting_tick_starts_at_zero() {
+        let (_client1, server1) = tcp_pair();
+        let mut session = Session::new("test".into(), None, 50, 4);
+        session
+            .add_player("Alice".into(), 100, 200, None, server1)
+            .unwrap();
+
+        session.handle_start_game(RelayPlayerId(0), 42, "{}".into(), None);
+        assert_eq!(session.current_tick(), 0);
+
+        session.flush_turn();
+        assert_eq!(session.current_tick(), 50);
+    }
+
+    #[test]
+    fn resume_session_enables_turn_flushing() {
+        let (client1, server1) = tcp_pair();
+        let mut session = Session::new("test".into(), None, 50, 4);
+        session
+            .add_player("Alice".into(), 100, 200, None, server1)
+            .unwrap();
+
+        // Resume at tick 10000.
+        session.handle_resume_session(RelayPlayerId(0), 10000);
+        assert!(session.is_game_started());
+        assert_eq!(session.current_tick(), 10000);
+
+        // Should flush turns from 10000.
+        session.flush_turn();
+        assert_eq!(session.current_tick(), 10050);
+
+        // Alice should have received Welcome + SessionResumed + Turn.
+        let mut reader1 = BufReader::new(client1);
+        let _welcome = recv_server_msg(&mut reader1);
+        let msg = recv_server_msg(&mut reader1);
+        match msg {
+            ServerMessage::SessionResumed { starting_tick } => {
+                assert_eq!(starting_tick, 10000);
+            }
+            other => panic!("expected SessionResumed, got {other:?}"),
+        }
+        let msg = recv_server_msg(&mut reader1);
+        match msg {
+            ServerMessage::Turn {
+                sim_tick_target, ..
+            } => {
+                assert_eq!(sim_tick_target, 10050);
+            }
+            other => panic!("expected Turn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resume_session_only_host() {
+        let (_client1, server1) = tcp_pair();
+        let (_client2, server2) = tcp_pair();
+        let mut session = Session::new("test".into(), None, 50, 4);
+        session
+            .add_player("Alice".into(), 100, 200, None, server1)
+            .unwrap();
+        session
+            .add_player("Bob".into(), 100, 200, None, server2)
+            .unwrap();
+
+        // Bob (not host) tries to resume — ignored.
+        session.handle_resume_session(RelayPlayerId(1), 5000);
+        assert!(!session.is_game_started());
+
+        // Alice (host) resumes — accepted.
+        session.handle_resume_session(RelayPlayerId(0), 5000);
+        assert!(session.is_game_started());
+        assert_eq!(session.current_tick(), 5000);
+    }
+
+    #[test]
+    fn resume_session_only_once() {
+        let (_client1, server1) = tcp_pair();
+        let mut session = Session::new("test".into(), None, 50, 4);
+        session
+            .add_player("Alice".into(), 100, 200, None, server1)
+            .unwrap();
+
+        session.handle_resume_session(RelayPlayerId(0), 5000);
+        assert!(session.is_game_started());
+
+        // Second resume is ignored.
+        session.handle_resume_session(RelayPlayerId(0), 9999);
+        assert_eq!(session.current_tick(), 5000);
+    }
+
+    #[test]
+    fn start_game_starting_tick_broadcasts_to_clients() {
+        let (client1, server1) = tcp_pair();
+        let mut session = Session::new("test".into(), None, 50, 4);
+        session
+            .add_player("Alice".into(), 100, 200, None, server1)
+            .unwrap();
+
+        session.handle_start_game(RelayPlayerId(0), 42, "{}".into(), Some(3000));
+
+        let mut reader1 = BufReader::new(client1);
+        let _welcome = recv_server_msg(&mut reader1);
+        let msg = recv_server_msg(&mut reader1);
+        match msg {
+            ServerMessage::GameStart {
+                seed,
+                starting_tick,
+                ..
+            } => {
+                assert_eq!(seed, 42);
+                assert_eq!(starting_tick, Some(3000));
+            }
+            other => panic!("expected GameStart, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resume_session_rejected_after_start_game() {
+        let (_client1, server1) = tcp_pair();
+        let mut session = Session::new("test".into(), None, 50, 4);
+        session
+            .add_player("Alice".into(), 100, 200, None, server1)
+            .unwrap();
+
+        // Start game normally at tick 0.
+        session.handle_start_game(RelayPlayerId(0), 42, "{}".into(), None);
+        assert!(session.is_game_started());
+        assert_eq!(session.current_tick(), 0);
+
+        // ResumeSession should be rejected — game already started.
+        session.handle_resume_session(RelayPlayerId(0), 9999);
+        assert_eq!(session.current_tick(), 0);
+    }
+
+    #[test]
+    fn start_game_rejected_after_resume_session() {
+        let (_client1, server1) = tcp_pair();
+        let mut session = Session::new("test".into(), None, 50, 4);
+        session
+            .add_player("Alice".into(), 100, 200, None, server1)
+            .unwrap();
+
+        // Resume at tick 5000.
+        session.handle_resume_session(RelayPlayerId(0), 5000);
+        assert!(session.is_game_started());
+        assert_eq!(session.current_tick(), 5000);
+
+        // StartGame should be rejected — game already started via resume.
+        session.handle_start_game(RelayPlayerId(0), 99, "{}".into(), None);
+        assert_eq!(session.current_tick(), 5000);
     }
 }

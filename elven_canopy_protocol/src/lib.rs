@@ -159,6 +159,23 @@ mod tests {
         client_roundtrip(&ClientMessage::StartGame {
             seed: 12345,
             config_json: r#"{"tick_duration_ms":1}"#.into(),
+            starting_tick: None,
+        });
+    }
+
+    #[test]
+    fn roundtrip_start_game_with_starting_tick() {
+        client_roundtrip(&ClientMessage::StartGame {
+            seed: 12345,
+            config_json: "{}".into(),
+            starting_tick: Some(5000),
+        });
+    }
+
+    #[test]
+    fn roundtrip_resume_session() {
+        client_roundtrip(&ClientMessage::ResumeSession {
+            starting_tick: 10000,
         });
     }
 
@@ -329,6 +346,23 @@ mod tests {
         server_roundtrip(&ServerMessage::GameStart {
             seed: 98765,
             config_json: r#"{"tick_duration_ms":1}"#.into(),
+            starting_tick: None,
+        });
+    }
+
+    #[test]
+    fn roundtrip_game_start_with_starting_tick() {
+        server_roundtrip(&ServerMessage::GameStart {
+            seed: 98765,
+            config_json: "{}".into(),
+            starting_tick: Some(3000),
+        });
+    }
+
+    #[test]
+    fn roundtrip_session_resumed() {
+        server_roundtrip(&ServerMessage::SessionResumed {
+            starting_tick: 10000,
         });
     }
 }

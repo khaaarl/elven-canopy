@@ -270,6 +270,7 @@ fn run_relay(listener: TcpListener, config: RelayConfig, keep_running: Arc<Atomi
         while keep_running_listener.load(Ordering::SeqCst) {
             match listener.accept() {
                 Ok((stream, _addr)) => {
+                    stream.set_nodelay(true).ok();
                     stream.set_nonblocking(false).ok();
                     let tx_handshake = tx_listener.clone();
                     let kr = keep_running_listener.clone();
@@ -509,10 +510,12 @@ fn handle_event(
                 Ok(player_id) => {
                     let _ = reply_tx.send(Ok(player_id));
 
-                    // Clear read timeout and spawn reader thread.
-                    if let Ok(inner) = reader.get_ref().try_clone() {
-                        inner.set_read_timeout(None).ok();
-                    }
+                    // Clear the 30-second handshake read timeout before
+                    // entering the long-lived reader loop. Set directly on
+                    // the reader's inner stream (not a clone) to ensure the
+                    // change takes effect on Windows where socket options
+                    // may be per-handle.
+                    reader.get_ref().set_read_timeout(None).ok();
                     let tx_reader = tx.clone();
                     let keep_running_reader = keep_running.clone();
                     thread::spawn(move || {
@@ -634,8 +637,15 @@ fn handle_message(session: &mut Session, player_id: RelayPlayerId, message: Clie
         ClientMessage::Chat { text } => {
             session.chat(player_id, text);
         }
-        ClientMessage::StartGame { seed, config_json } => {
-            session.handle_start_game(player_id, seed, config_json);
+        ClientMessage::StartGame {
+            seed,
+            config_json,
+            starting_tick,
+        } => {
+            session.handle_start_game(player_id, seed, config_json, starting_tick);
+        }
+        ClientMessage::ResumeSession { starting_tick } => {
+            session.handle_resume_session(player_id, starting_tick);
         }
         ClientMessage::SnapshotResponse { data } => {
             session.handle_snapshot_response(player_id, data);

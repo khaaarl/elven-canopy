@@ -28,7 +28,6 @@
 // - `inventory.rs`:   Item type enum (`ItemKind`). Storage is in `db.rs` tabulosity tables.
 // - `lookup_map.rs`:  LookupMap — non-iterable HashMap wrapper for deterministic point-query access.
 // - `session.rs`:     GameSession — message-driven session management (players, commands, pause/resume).
-// - `local_relay.rs`: LocalRelay — accumulator-based tick pacer for single-player mode.
 // - `checksum.rs`:    FNV-1a hashing + interval constant for multiplayer desync detection.
 // - `prng`:           Re-exported from `elven_canopy_prng` — xoshiro256++ PRNG with SplitMix64 seeding.
 // - `types.rs`:       VoxelCoord, entity IDs, voxel types, Species enum.
@@ -55,7 +54,6 @@ pub mod event;
 pub mod fruit;
 pub mod genome;
 pub mod inventory;
-pub mod local_relay;
 pub mod lookup_map;
 pub mod nav;
 pub mod pathfinding;

@@ -81,7 +81,7 @@ impl TestGameClient {
     /// Host only: send StartGame to begin the multiplayer session.
     pub fn send_start_game(&mut self, seed: i64, config_json: &str) {
         self.client
-            .send_start_game(seed, config_json)
+            .send_start_game(seed, config_json, None)
             .expect("send_start_game failed");
     }
 
@@ -104,7 +104,10 @@ impl TestGameClient {
                 "timed out waiting for GameStart"
             );
             for msg in self.client.poll() {
-                if let ServerMessage::GameStart { seed, config_json } = msg {
+                if let ServerMessage::GameStart {
+                    seed, config_json, ..
+                } = msg
+                {
                     let mut config = GameConfig {
                         world_size,
                         ..GameConfig::default()

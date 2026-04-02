@@ -6,8 +6,9 @@
 //
 // All sim access goes through a `GameSession` (`session.rs`). The session
 // owns the `Option<SimState>` and processes all mutations via typed
-// `SessionMessage`s. A `LocalRelay` (`local_relay.rs`) converts wall-clock
-// deltas into `AdvanceTo` messages for single-player tick pacing.
+// `SessionMessage`s. Both singleplayer and multiplayer use a real relay on
+// localhost — the relay flushes `Turn` messages at a fixed cadence, and
+// `poll_network()` processes them to advance the sim.
 //
 // ## What it exposes
 //
@@ -16,8 +17,8 @@
 //   `current_tick()`, `is_initialized()`, `tick_duration_ms()`,
 //   `step_exactly(n)` (pause-safe deterministic tick stepping for tests).
 // - **Frame update:** `frame_update(delta)` — unified per-frame entry point.
-//   Handles tick pacing (`LocalRelay` in SP, network polling in MP) and
-//   returns a fractional render_tick for smooth creature interpolation.
+//   Polls the relay for Turn messages and returns a fractional render_tick
+//   for smooth creature interpolation.
 // - **Speed control:** `get_sim_speed()` returns the current speed as a string,
 //   `sim_speed_multiplier()` returns the time multiplier for tick pacing,
 //   `set_sim_speed(speed_name)` applies pause/resume/speed to the session.
@@ -74,9 +75,9 @@
 // - **Commands:** `spawn_creature(species_name, x,y,z)` — generic creature
 //   spawner replacing `spawn_elf()` / `spawn_capybara()` (which remain as
 //   thin wrappers). Also `create_goto_task(x,y,z)`, `designate_build(x,y,z)`,
-//   `designate_build_rect(x,y,z,width,depth)`, etc. In single-player,
-//   commands are applied immediately to the sim at the current tick. In
-//   multiplayer, they are sent to the relay and applied on receipt.
+//   `designate_build_rect(x,y,z,width,depth)`, etc. Commands are sent to
+//   the relay via `apply_or_send()` and applied when the Turn comes back.
+//   In test mode (no relay), they are applied directly to the session.
 //   Build/carve validation is done upfront by the
 //   `validate_*_preview()` query methods — the designation commands
 //   themselves are fire-and-forget.
@@ -173,14 +174,9 @@ use std::sync::{Arc, Mutex};
 use elven_canopy_protocol::message::ServerMessage;
 use elven_canopy_relay::server::{RelayConfig, RelayHandle, start_relay};
 use elven_canopy_sim::blueprint::BlueprintState;
-use elven_canopy_sim::checksum::CHECKSUM_INTERVAL_TICKS;
 use elven_canopy_sim::command::SimAction;
 use elven_canopy_sim::config::{GameConfig, TreeProfile};
-use elven_canopy_sim::local_relay::LocalRelay;
-use elven_canopy_sim::session::{
-    GameSession, SessionMessage, SessionPlayerId, SessionSpeed, speed_to_ticks_per_turn,
-    ticks_per_turn_to_speed,
-};
+use elven_canopy_sim::session::{GameSession, SessionMessage, SessionPlayerId, SessionSpeed};
 use elven_canopy_sim::structural::{self, ValidationTier};
 use elven_canopy_sim::task::{TaskOrigin, TaskState};
 use elven_canopy_sim::types::{
@@ -501,21 +497,46 @@ fn build_creature_info_dict(
     dict
 }
 
+/// Parameters for `start_local_relay_and_connect()`. Bundles session config
+/// to stay under the clippy argument limit.
+struct LocalRelayOpts<'a> {
+    port: u16,
+    session_name: &'a str,
+    player_name: &'a str,
+    password: Option<String>,
+    max_players: u32,
+    ticks_per_turn: u32,
+    turn_cadence_ms: u64,
+}
+
+/// Base ticks-per-turn for singleplayer relay sessions at Normal (1x) speed.
+/// Smaller than MP's 50 to reduce per-turn batch size and smooth out frame
+/// workload. Speed changes multiply this: Fast=20, VeryFast=50.
+const SP_BASE_TICKS_PER_TURN: u32 = 10;
+
+/// Speed multiplier as an integer: Normal=1, Fast=2, VeryFast=5.
+/// Used to compute `ticks_per_turn = base_ticks_per_turn * multiplier`.
+fn speed_multiplier_int(speed: SessionSpeed) -> u32 {
+    match speed {
+        SessionSpeed::Normal => 1,
+        SessionSpeed::Fast => 2,
+        SessionSpeed::VeryFast => 5,
+    }
+}
+
 /// Godot node that owns and drives the simulation.
 ///
 /// Add this as a child node in your main scene. Call `init_sim()` from
 /// GDScript to create the simulation, then `frame_update(delta)` each
-/// frame — it handles tick pacing (via `LocalRelay` in SP, network polling
-/// in MP) and returns a fractional render_tick for smooth interpolation.
-/// In multiplayer, `poll_network()` automatically sends a state checksum
-/// to the relay every `CHECKSUM_INTERVAL_TICKS` (1000 ticks) for desync
-/// detection (see `checksum.rs` in the sim crate).
+/// frame — it polls the relay for Turn messages and returns a fractional
+/// render_tick for smooth interpolation.
+/// Note: desync-detection checksums are currently disabled (too slow —
+/// see B-fast-checksum tracker item).
 #[derive(GodotClass)]
 #[class(base=Node)]
 pub struct SimBridge {
     base: Base<Node>,
     session: GameSession,
-    local_relay: Option<LocalRelay>,
     local_player_id: SessionPlayerId,
     // Chunk mesh cache — not part of SimState, lives here for rendering.
     mesh_cache: Option<MeshCache>,
@@ -524,7 +545,11 @@ pub struct SimBridge {
     relay_handle: Option<RelayHandle>,
     is_multiplayer_mode: bool,
     mp_events: Vec<String>,
+    /// Current ticks_per_turn from the relay (updated on SpeedChanged).
     mp_ticks_per_turn: u32,
+    /// Base ticks_per_turn at 1x speed, set at session creation. Speed
+    /// changes multiply this: Normal=1x, Fast=2x, VeryFast=5x.
+    base_ticks_per_turn: u32,
     mp_time_since_turn: f64,
     /// Background music composition results, keyed by CompositionId.
     /// Each entry is None while generating, Some(pcm_data) when ready.
@@ -546,7 +571,6 @@ impl INode for SimBridge {
         Self {
             base,
             session,
-            local_relay: None,
             local_player_id: SessionPlayerId::LOCAL,
             mesh_cache: None,
             net_client: None,
@@ -554,6 +578,7 @@ impl INode for SimBridge {
             is_multiplayer_mode: false,
             mp_events: Vec::new(),
             mp_ticks_per_turn: 50,
+            base_ticks_per_turn: 50,
             mp_time_since_turn: 0.0,
             pending_compositions: BTreeMap::new(),
             elf_sprite_cache: Vec::new(),
@@ -579,9 +604,8 @@ impl SimBridge {
         }
         drop(guard);
 
-        // Take and drop multiplayer state (RelayHandle::drop signals its thread).
-        drop(self.relay_handle.take());
-        drop(self.net_client.take());
+        // Gracefully disconnect and shut down the relay.
+        self.shutdown_relay();
 
         // Print accumulated perf stats before tearing down.
         if let Some(cache) = &self.mesh_cache {
@@ -592,7 +616,6 @@ impl SimBridge {
         let mut session = GameSession::new_singleplayer();
         session.set_wg_log(Box::new(|msg| godot_print!("{msg}")));
         self.session = session;
-        self.local_relay = None;
         self.mesh_cache = None;
         self.pending_compositions.clear();
         // Drop Godot-object references (Gd<ImageTexture>) while the engine is
@@ -616,17 +639,11 @@ impl SimBridge {
     }
 
     /// Initialize the simulation with the given seed and default config.
+    /// Starts a real relay on localhost and connects via TCP — singleplayer
+    /// uses the same code path as multiplayer hosting.
     #[func]
     fn init_sim(&mut self, seed: i64) {
-        let config = GameConfig::default();
-        let seconds_per_tick = config.tick_duration_ms as f64 / 1000.0;
-        self.session.process(SessionMessage::StartGame {
-            seed: seed as u64,
-            config: Box::new(config),
-        });
-        self.local_relay = Some(LocalRelay::new(seconds_per_tick));
-        self.rebuild_mesh_cache();
-        godot_print!("SimBridge: simulation initialized with seed {seed}");
+        self.init_sim_via_relay(seed, "{}");
     }
 
     /// Initialize the simulation with the given seed and a custom tree profile.
@@ -636,23 +653,76 @@ impl SimBridge {
     /// back to the default Fantasy Mega profile.
     #[func]
     fn init_sim_with_tree_profile_json(&mut self, seed: i64, tree_profile_json: GString) {
-        let profile: TreeProfile = serde_json::from_str(&tree_profile_json.to_string())
-            .unwrap_or_else(|e| {
-                godot_warn!("Failed to parse tree profile JSON: {e}, using default");
-                TreeProfile::fantasy_mega()
-            });
-        let config = GameConfig {
-            tree_profile: profile,
-            ..Default::default()
-        };
-        let seconds_per_tick = config.tick_duration_ms as f64 / 1000.0;
-        self.session.process(SessionMessage::StartGame {
-            seed: seed as u64,
-            config: Box::new(config),
-        });
-        self.local_relay = Some(LocalRelay::new(seconds_per_tick));
-        self.rebuild_mesh_cache();
-        godot_print!("SimBridge: simulation initialized with seed {seed} and custom tree profile");
+        self.init_sim_via_relay(seed, &tree_profile_json.to_string());
+    }
+
+    /// Shared implementation for `init_sim` and `init_sim_with_tree_profile_json`.
+    /// Starts an embedded relay on localhost, sends `StartGame`, and spin-polls
+    /// until the sim is created.
+    fn init_sim_via_relay(&mut self, seed: i64, config_json: &str) {
+        // Clean up any existing relay (defensive — handles double-init).
+        self.shutdown_relay();
+
+        let ticks_per_turn = SP_BASE_TICKS_PER_TURN;
+        let tick_duration_ms = GameConfig::default().tick_duration_ms as u64;
+        let turn_cadence_ms = u64::from(ticks_per_turn) * tick_duration_ms;
+
+        // Get player name from existing session (set by set_player_name before
+        // init_sim is called).
+        let player_name = self
+            .session
+            .players
+            .get(&self.local_player_id)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| "Player".to_string());
+
+        if let Err(e) = self.start_local_relay_and_connect(LocalRelayOpts {
+            port: 0, // OS-assigned
+            session_name: "singleplayer",
+            player_name: &player_name,
+            password: None,
+            max_players: 1,
+            ticks_per_turn,
+            turn_cadence_ms,
+        }) {
+            godot_error!("SimBridge: {e}");
+            return;
+        }
+
+        // Restore player name on the new multiplayer session.
+        if let Some(slot) = self.session.players.get_mut(&self.local_player_id) {
+            slot.name = player_name;
+        }
+
+        // Send StartGame through the relay.
+        if let Some(client) = &mut self.net_client
+            && let Err(e) = client.send_start_game(seed, config_json, None)
+        {
+            godot_error!("SimBridge: send_start_game failed: {e}");
+            return;
+        }
+
+        // Spin-poll until the GameStart message comes back and creates the sim.
+        self.wait_for_sim_ready();
+        if self.session.has_sim() {
+            self.rebuild_mesh_cache();
+            godot_print!("SimBridge: simulation initialized with seed {seed}");
+        }
+    }
+
+    /// Spin-poll the relay until the sim is created (GameStart processed).
+    /// Blocks for up to 5 seconds; logs an error and cleans up on timeout.
+    fn wait_for_sim_ready(&mut self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !self.session.has_sim() {
+            if std::time::Instant::now() >= deadline {
+                godot_error!("SimBridge: timed out waiting for sim to be created");
+                self.shutdown_relay();
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            self.poll_network();
+        }
     }
 
     /// Initialize the simulation with a small, fast-validating config for tests.
@@ -678,12 +748,10 @@ impl SimBridge {
         for pile in &mut config.initial_ground_piles {
             pile.position = VoxelCoord::new(32, 1, 42);
         }
-        let seconds_per_tick = config.tick_duration_ms as f64 / 1000.0;
         self.session.process(SessionMessage::StartGame {
             seed: seed as u64,
             config: Box::new(config),
         });
-        self.local_relay = Some(LocalRelay::new(seconds_per_tick));
         self.rebuild_mesh_cache();
         godot_print!("SimBridge: test sim initialized with seed {seed} (small world)");
     }
@@ -704,7 +772,7 @@ impl SimBridge {
     /// Works even when the session is paused: temporarily resumes, steps,
     /// then re-pauses. This is the intended API for test time control — the
     /// sim should be paused (speed set to "Paused") to prevent `frame_update`
-    /// from also advancing ticks via `LocalRelay`.
+    /// from also advancing ticks via the relay.
     #[func]
     fn step_exactly(&mut self, n: i64) {
         if n <= 0 {
@@ -782,12 +850,10 @@ impl SimBridge {
         self.session.speed_multiplier()
     }
 
-    /// Set the simulation speed by name. In single-player, applies directly
-    /// to the session. In multiplayer, sends to the relay first — the session
-    /// is updated as an optimistic local prediction only after the send
-    /// succeeds (the relay broadcast will arrive later, but session ops are
-    /// idempotent so the duplicate is harmless). If the relay send fails,
-    /// the session is left unchanged to prevent desync.
+    /// Set the simulation speed by name. When connected to a relay (normal
+    /// mode), sends pause/resume/set_speed to the relay first, then applies
+    /// locally as an optimistic prediction. When no relay is connected (test
+    /// mode), applies directly to the session.
     #[func]
     fn set_sim_speed(&mut self, speed_name: GString) {
         let speed_str = speed_name.to_string();
@@ -803,10 +869,8 @@ impl SimBridge {
 
         let was_paused = self.session.is_paused();
 
-        // In MP, send to relay first. Only apply locally if send succeeds.
-        if self.is_multiplayer_mode
-            && let Some(client) = &mut self.net_client
-        {
+        // Send to relay first if connected. Only apply locally if send succeeds.
+        if let Some(client) = &mut self.net_client {
             if is_pause {
                 if let Err(e) = client.send_pause() {
                     godot_error!("SimBridge: send_pause failed: {e}");
@@ -818,7 +882,8 @@ impl SimBridge {
                     return;
                 }
                 if let Some(speed) = session_speed {
-                    let tpt = speed_to_ticks_per_turn(speed);
+                    let multiplier = speed_multiplier_int(speed);
+                    let tpt = self.base_ticks_per_turn * multiplier;
                     if let Err(e) = client.send_set_speed(tpt) {
                         godot_error!("SimBridge: send_set_speed failed: {e}");
                         return;
@@ -827,8 +892,8 @@ impl SimBridge {
             }
         }
 
-        // Apply to session (SP: sole authority; MP: optimistic update after
-        // successful relay send).
+        // Apply to session (optimistic update after successful relay send,
+        // or sole authority in test mode with no relay).
         let pid = self.local_player_id;
         if is_pause {
             self.session.process(SessionMessage::Pause { by: pid });
@@ -1050,8 +1115,8 @@ impl SimBridge {
         self.creature_count_by_name(GString::from("Elf"))
     }
 
-    /// Route a build/carve action through the session (SP) or relay (MP).
-    /// In single-player, the command is applied immediately to the sim.
+    /// Route a build/carve action through the relay (normal mode) or directly
+    /// to the session (test mode with no relay).
     /// Returns empty — validation feedback comes from the
     /// `validate_*_preview()` methods that GDScript calls before confirming
     /// placement.
@@ -1060,19 +1125,19 @@ impl SimBridge {
         GString::new()
     }
 
-    /// Apply a SimAction locally (single-player) or send it to the relay
-    /// (multiplayer). In single-player, the command is applied immediately
-    /// to the sim at the current tick. In multiplayer, the action is sent
-    /// over the network and applied when it comes back in a Turn.
+    /// Send a SimAction to the relay (normal mode) or apply directly to the
+    /// session (test mode with no relay). In relay mode, the command is
+    /// serialized and sent over TCP; the relay batches it into a Turn and
+    /// sends it back, where `poll_network()` applies it to the session.
     fn apply_or_send(&mut self, action: SimAction) {
-        if self.is_multiplayer_mode {
-            if let Some(client) = &mut self.net_client
-                && let Ok(json) = serde_json::to_vec(&action)
+        if let Some(client) = &mut self.net_client {
+            if let Ok(json) = serde_json::to_vec(&action)
                 && let Err(e) = client.send_command(&json)
             {
                 godot_error!("SimBridge: send_command failed: {e}");
             }
         } else {
+            // Test mode (init_sim_test_config + step_to_tick) — no relay.
             self.session.process(SessionMessage::SimCommand {
                 from: self.local_player_id,
                 action,
@@ -3389,9 +3454,15 @@ impl SimBridge {
     /// Replace the current simulation state with one deserialized from JSON.
     ///
     /// Returns `true` on success. On failure, the previous sim state is
-    /// preserved (or cleared if there was none).
+    /// preserved (or cleared if there was none). Does NOT start a relay —
+    /// call `start_singleplayer_relay()` afterward for the real game path.
+    /// Test paths that use `step_to_tick` / `step_exactly` should NOT call
+    /// `start_singleplayer_relay`.
     #[func]
     fn load_game_json(&mut self, json: GString) -> bool {
+        // Tear down any existing relay before loading.
+        self.shutdown_relay();
+
         let json_str = json.to_string();
         let events = self
             .session
@@ -3406,8 +3477,6 @@ impl SimBridge {
                     sim.tick,
                     sim.db.creatures.len()
                 );
-                let seconds_per_tick = sim.config.tick_duration_ms as f64 / 1000.0;
-                self.local_relay = Some(LocalRelay::new(seconds_per_tick));
             }
             self.rebuild_mesh_cache();
             true
@@ -3418,6 +3487,102 @@ impl SimBridge {
                 }
             }
             false
+        }
+    }
+
+    /// Start a localhost relay for the currently loaded sim. Call this after
+    /// `load_game_json()` in the real game path. The relay begins flushing
+    /// turns from the loaded sim's current tick.
+    ///
+    /// Do NOT call this in test paths that use `step_to_tick()` /
+    /// `step_exactly()` — those require direct session access without a relay.
+    #[func]
+    fn start_singleplayer_relay(&mut self) {
+        let Some(sim) = &self.session.sim else {
+            godot_error!("SimBridge: cannot start relay — no sim loaded");
+            return;
+        };
+        let loaded_tick = sim.tick;
+        let ticks_per_turn = SP_BASE_TICKS_PER_TURN;
+        let tick_duration_ms = sim.config.tick_duration_ms as u64;
+        let turn_cadence_ms = u64::from(ticks_per_turn) * tick_duration_ms;
+        let loaded_speed = self.session.current_speed();
+        let was_paused = self.session.is_paused();
+
+        let player_name = self
+            .session
+            .players
+            .get(&self.local_player_id)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| "Player".to_string());
+
+        // Stash the sim so we can move it to the new multiplayer session.
+        let loaded_sim = self.session.sim.take();
+
+        if let Err(e) = self.start_local_relay_and_connect(LocalRelayOpts {
+            port: 0,
+            session_name: "singleplayer",
+            player_name: &player_name,
+            password: None,
+            max_players: 1,
+            ticks_per_turn,
+            turn_cadence_ms,
+        }) {
+            godot_error!("SimBridge: {e}");
+            self.session.sim = loaded_sim;
+            return;
+        }
+
+        // Restore player name and sim state on the new session.
+        if let Some(slot) = self.session.players.get_mut(&self.local_player_id) {
+            slot.name = player_name;
+        }
+        self.session.sim = loaded_sim;
+        self.session.process(SessionMessage::SetSpeed {
+            speed: loaded_speed,
+        });
+        if was_paused {
+            self.session.process(SessionMessage::Pause {
+                by: self.local_player_id,
+            });
+        }
+
+        // Tell the relay about the loaded speed (the session was created at
+        // base ticks_per_turn; if the save was at Fast/VeryFast, the relay
+        // needs to know).
+        if loaded_speed != SessionSpeed::Normal {
+            let tpt = self.base_ticks_per_turn * speed_multiplier_int(loaded_speed);
+            if let Some(client) = &mut self.net_client {
+                let _ = client.send_set_speed(tpt);
+            }
+        }
+
+        // Tell the relay to start flushing turns from the loaded tick.
+        if let Some(client) = &mut self.net_client {
+            if let Err(e) = client.send_resume_session(loaded_tick) {
+                godot_error!("SimBridge: send_resume_session failed: {e}");
+                // Relay won't flush turns — shut it down to avoid a frozen
+                // game with no feedback.
+                self.shutdown_relay();
+                // Mesh cache is still valid from the loaded sim.
+                self.rebuild_mesh_cache();
+                return;
+            }
+            if was_paused {
+                let _ = client.send_pause();
+            }
+        }
+
+        self.rebuild_mesh_cache();
+    }
+
+    /// Shut down the current relay (if any) and clear network state.
+    fn shutdown_relay(&mut self) {
+        if let Some(mut client) = self.net_client.take() {
+            client.disconnect();
+        }
+        if let Some(handle) = self.relay_handle.take() {
+            handle.stop();
         }
     }
 
@@ -5044,14 +5209,15 @@ impl SimBridge {
     // Frame update
     // ========================================================================
 
-    /// Unified per-frame entry point. Polls the network if in multiplayer,
-    /// then advances the sim via the local relay in single-player. Returns
-    /// the fractional render tick for smooth interpolation.
+    /// Unified per-frame entry point. Polls the relay for Turn messages
+    /// and returns a fractional render tick for smooth interpolation.
     ///
-    /// In multiplayer mode, polls the network for turns, then interpolates
-    /// `render_tick` up to `mp_ticks_per_turn` ahead of the last confirmed
-    /// tick for smooth movement between turns. In single-player mode,
-    /// delegates tick pacing to the `LocalRelay`.
+    /// When connected to a relay (both SP and MP), polls for turns and
+    /// interpolates `render_tick` up to `mp_ticks_per_turn` ahead of the last
+    /// tick for smooth movement between turns. Both singleplayer and
+    /// multiplayer use the same relay-driven tick pacing — turns arrive
+    /// via `poll_network()` and the render tick is interpolated from
+    /// wall-clock time since the last turn.
     #[func]
     fn frame_update(&mut self, delta: f64) -> f64 {
         self.update_elfcyclopedia();
@@ -5073,14 +5239,7 @@ impl SimBridge {
             let capped = ticks_ahead.min(max_ticks);
             return self.session.current_tick() as f64 + capped as f64;
         }
-        if let Some(relay) = &mut self.local_relay {
-            let mult = self.session.speed_multiplier();
-            let tick = self.session.current_tick();
-            if let Some(msg) = relay.update(delta, mult, tick) {
-                self.session.process(msg);
-            }
-            return relay.render_tick(self.session.current_tick());
-        }
+        // Test mode (init_sim_test_config + step_to_tick) — no relay.
         self.session.current_tick() as f64
     }
 
@@ -5952,6 +6111,83 @@ impl SimBridge {
     // Multiplayer methods
     // ========================================================================
 
+    /// Start an embedded relay on localhost, create a session, and connect as
+    /// the sole client. Used by both singleplayer (`init_sim`) and multiplayer
+    /// (`host_game`). Populates `net_client`, `relay_handle`, `mp_ticks_per_turn`,
+    /// `local_player_id`, and sets up a multiplayer-style `GameSession`.
+    ///
+    /// On failure the relay handle is stopped and an error string is returned.
+    fn start_local_relay_and_connect(&mut self, opts: LocalRelayOpts<'_>) -> Result<(), String> {
+        let LocalRelayOpts {
+            port,
+            session_name,
+            player_name,
+            password,
+            max_players,
+            ticks_per_turn,
+            turn_cadence_ms,
+        } = opts;
+        let config = RelayConfig {
+            port,
+            bind_address: "127.0.0.1".into(),
+            embedded: true,
+            turn_cadence_ms,
+        };
+
+        let (handle, addr) =
+            start_relay(config).map_err(|e| format!("failed to start relay: {e}"))?;
+
+        // Small delay to let the listener thread start.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let addr_str = format!("{addr}");
+        let config_hash = fnv1a_hash("{}");
+
+        // Connect, create the embedded session, and join it.
+        let mut conn = match RelayConnection::connect(&addr_str) {
+            Ok(c) => c,
+            Err(e) => {
+                handle.stop();
+                return Err(format!("failed to connect to own relay: {e}"));
+            }
+        };
+        if let Err(e) =
+            conn.create_session(session_name, password.clone(), ticks_per_turn, max_players)
+        {
+            handle.stop();
+            return Err(format!("failed to create session: {e}"));
+        }
+        match conn.join_session(
+            SessionId(0),
+            player_name,
+            SIM_VERSION_HASH,
+            config_hash,
+            password,
+        ) {
+            Ok((client, info)) => {
+                let pid = SessionPlayerId(info.player_id.0);
+                self.local_player_id = pid;
+                self.session = GameSession::new_multiplayer(pid, pid);
+                self.mp_ticks_per_turn = info.ticks_per_turn;
+                self.base_ticks_per_turn = info.ticks_per_turn;
+                self.net_client = Some(client);
+                self.relay_handle = Some(handle);
+                self.mp_time_since_turn = 0.0;
+                // Note: caller sets is_multiplayer_mode as needed. SP relay
+                // leaves it false; MP host_game sets it true.
+                godot_print!(
+                    "SimBridge: relay started on {addr_str} as player {}",
+                    info.player_id.0
+                );
+                Ok(())
+            }
+            Err(e) => {
+                handle.stop();
+                Err(format!("failed to join own relay: {e}"))
+            }
+        }
+    }
+
     /// Host a multiplayer game: start an embedded relay server, create a
     /// session with `SessionId(0)`, and connect as the first client.
     /// Returns true on success.
@@ -5970,66 +6206,22 @@ impl SimBridge {
         } else {
             Some(password.to_string())
         };
-        let config = RelayConfig {
+        match self.start_local_relay_and_connect(LocalRelayOpts {
             port: port as u16,
-            bind_address: "127.0.0.1".into(),
-            embedded: true,
-            turn_cadence_ms: u64::from(ticks_per_turn as u32),
-        };
-
-        let (handle, addr) = match start_relay(config) {
-            Ok(result) => result,
-            Err(e) => {
-                godot_error!("SimBridge: failed to start relay: {e}");
-                return false;
-            }
-        };
-
-        // Small delay to let the listener thread start.
-        std::thread::sleep(std::time::Duration::from_millis(50));
-
-        let addr_str = format!("{addr}");
-        let config_hash = fnv1a_hash("{}");
-
-        // Connect, create the embedded session, and join it.
-        let mut conn = match RelayConnection::connect(&addr_str) {
-            Ok(c) => c,
-            Err(e) => {
-                godot_error!("SimBridge: failed to connect to own relay: {e}");
-                handle.stop();
-                return false;
-            }
-        };
-        if let Err(e) = conn.create_session(
-            &session_name.to_string(),
-            pw.clone(),
-            ticks_per_turn as u32,
-            max_players as u32,
-        ) {
-            godot_error!("SimBridge: failed to create session: {e}");
-            handle.stop();
-            return false;
-        }
-        let pname = player_name.to_string();
-        match conn.join_session(SessionId(0), &pname, SIM_VERSION_HASH, config_hash, pw) {
-            Ok((client, info)) => {
-                let pid = SessionPlayerId(info.player_id.0);
-                self.local_player_id = pid;
-                self.session = GameSession::new_multiplayer(pid, pid);
-                self.mp_ticks_per_turn = info.ticks_per_turn;
-                self.net_client = Some(client);
-                self.relay_handle = Some(handle);
+            session_name: &session_name.to_string(),
+            player_name: &player_name.to_string(),
+            password: pw,
+            max_players: max_players as u32,
+            ticks_per_turn: ticks_per_turn as u32,
+            turn_cadence_ms: u64::from(ticks_per_turn as u32)
+                * GameConfig::default().tick_duration_ms as u64,
+        }) {
+            Ok(()) => {
                 self.is_multiplayer_mode = true;
-                self.local_relay = None;
-                godot_print!(
-                    "SimBridge: hosting on {addr_str} as player {}",
-                    info.player_id.0
-                );
                 true
             }
             Err(e) => {
-                godot_error!("SimBridge: failed to join own relay: {e}");
-                handle.stop();
+                godot_error!("SimBridge: {e}");
                 false
             }
         }
@@ -6080,9 +6272,9 @@ impl SimBridge {
                 // set to 0 (relay assigns host).
                 self.session = GameSession::new_multiplayer(pid, SessionPlayerId(0));
                 self.mp_ticks_per_turn = info.ticks_per_turn;
+                self.base_ticks_per_turn = info.ticks_per_turn;
                 self.net_client = Some(client);
                 self.is_multiplayer_mode = true;
-                self.local_relay = None;
                 godot_print!(
                     "SimBridge: joined '{}' (session {}) as player {}",
                     info.session_name,
@@ -6101,17 +6293,10 @@ impl SimBridge {
     /// Disconnect from multiplayer. Stops the relay if hosting.
     #[func]
     fn disconnect_multiplayer(&mut self) {
-        if let Some(client) = &mut self.net_client {
-            client.disconnect();
-        }
-        self.net_client = None;
-        if let Some(handle) = self.relay_handle.take() {
-            handle.stop();
-        }
+        self.shutdown_relay();
         self.is_multiplayer_mode = false;
         self.local_player_id = SessionPlayerId::LOCAL;
         self.session = GameSession::new_singleplayer();
-        self.local_relay = None;
         self.mp_events.clear();
         godot_print!("SimBridge: disconnected from multiplayer");
     }
@@ -6149,7 +6334,7 @@ impl SimBridge {
             return;
         }
         if let Some(client) = &mut self.net_client
-            && let Err(e) = client.send_start_game(seed, &config_json.to_string())
+            && let Err(e) = client.send_start_game(seed, &config_json.to_string(), None)
         {
             godot_error!("SimBridge: send_start_game failed: {e}");
         }
@@ -6184,7 +6369,9 @@ impl SimBridge {
 
         for msg in messages {
             match msg {
-                ServerMessage::GameStart { seed, config_json } => {
+                ServerMessage::GameStart {
+                    seed, config_json, ..
+                } => {
                     let profile: TreeProfile = serde_json::from_str(&config_json)
                         .unwrap_or_else(|_| TreeProfile::fantasy_mega());
                     let config = GameConfig {
@@ -6317,28 +6504,31 @@ impl SimBridge {
                         );
                     }
                 }
+                ServerMessage::SessionResumed { starting_tick } => {
+                    // No-op: the sim was already loaded locally before we
+                    // sent ResumeSession. The relay is now flushing turns
+                    // from this tick.
+                    godot_print!("SimBridge: relay resumed session at tick {starting_tick}");
+                }
                 ServerMessage::SpeedChanged { ticks_per_turn } => {
                     self.mp_ticks_per_turn = ticks_per_turn;
-                    self.session.process(SessionMessage::SetSpeed {
-                        speed: ticks_per_turn_to_speed(ticks_per_turn),
-                    });
+                    let multiplier = if self.base_ticks_per_turn > 0 {
+                        ticks_per_turn / self.base_ticks_per_turn
+                    } else {
+                        1
+                    };
+                    let speed = match multiplier {
+                        0..=1 => SessionSpeed::Normal,
+                        2..=4 => SessionSpeed::Fast,
+                        _ => SessionSpeed::VeryFast,
+                    };
+                    self.session.process(SessionMessage::SetSpeed { speed });
                 }
                 _ => {}
             }
         }
 
-        // After applying turns, check if the sim tick is on a checksum boundary.
-        if turns_applied > 0
-            && let Some(sim) = &self.session.sim
-        {
-            let tick = sim.tick;
-            if tick > 0 && tick % CHECKSUM_INTERVAL_TICKS == 0 {
-                let hash = sim.state_checksum();
-                if let Some(client) = &mut self.net_client {
-                    let _ = client.send_checksum(tick, hash);
-                }
-            }
-        }
+        // Desync-detection checksums disabled — see B-fast-checksum.
 
         turns_applied
     }

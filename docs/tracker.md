@@ -66,10 +66,12 @@ This reduces merge conflicts when parallel work streams add items.
 
 ```
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
+[ ] B-fast-checksum        Incremental state checksum for desync detection (replace full-state JSON serialization)
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fog-billboards       Fog post-process does not obscure billboard sprites
-[ ] B-local-relay          Singleplayer must launch the real relay (on localhost), not use a fake tick-pacing LocalRelay
+[ ] B-relay-stability      Windows TCP connection drops during singleplayer gameplay
 [ ] B-retire-spatidx       Retire SimState.spatial_index in favor of tabulosity Creature table index
+[ ] B-shared-inventory     Buildings completing around the same time show identical inventory contents
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-aggro-fauna          Neutral fauna with aggro triggers
@@ -173,6 +175,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-llm-monologue        LLM inner monologue with emergent personality drift
 [ ] F-llm-social-chat      LLM-generated creature dialogue in social interactions
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
+[ ] F-logging              Unified file-persisted logging system across all crates
 [ ] F-los-tuning           Line-of-sight tuning (terrain tolerance, tall creature bonus)
 [ ] F-magic-items          Magic item personalities and crafting
 [ ] F-mana-mood            Mana generation tied to elf mood
@@ -268,6 +271,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tree-disease         Tree diseases and parasites
 [ ] F-tree-memory          Ancient tree knowledge/vision system
 [ ] F-tree-species         Multiple tree species with properties
+[ ] F-turn-pacing          Adaptive turn pacing with client time budgets and relay backpressure
 [ ] F-two-click-build      Two-click construction designation (click start, click end)
 [ ] F-undo-designate       Undo last construction designation
 [ ] F-unfurnish            Unfurnish/refurnish a building
@@ -312,6 +316,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-flying-tasks         Flying creatures skip task system entirely
 [x] B-hostile-detect-nav   detect_hostile_targets panics on flying targets (NavNodeId u32::MAX hack)
 [x] B-leaf-diagonal        Leaf blobs sometimes only diagonally connected, looks bad
+[x] B-local-relay          Singleplayer must launch the real relay (on localhost), not use a fake tick-pacing LocalRelay
 [x] B-mesh-global-cfg      Mesh pipeline global atomics cause test flakiness risk
 [x] B-modifier-hotkeys     Hotkeys should not fire when modifier keys (Ctrl/Shift/Alt) are held
 [x] B-music-floats         Excise f32/f64 from music composition for determinism
@@ -2553,6 +2558,20 @@ Requires F-flying-nav-big.
 
 The DineAtHall code path speculatively inserts a task before checking if food can be reserved (needed for FK validation on item_stacks.reserved_by). If no food is available, the task is cleaned up via `complete_task()`, which sets it to Complete state rather than removing it. This leaves orphaned Complete DineAtHall tasks in the DB. While not a correctness bug, it creates unnecessary DB clutter. Consider either removing the task on the failure path, or adding a periodic GC for completed tasks with zero progress.
 
+#### B-shared-inventory — Buildings completing around the same time show identical inventory contents
+**Status:** Todo
+
+When multiple buildings finish construction around the same time (e.g. building several structures in parallel), their inventory panels appear to show the same inventory contents. Clicking on different completed buildings shows identical item lists, as if they share one inventory or the UI is displaying the wrong structure's data.
+
+This may be a UI-only bug (the item detail panel or structure info panel showing stale/wrong structure ID) or a sim-level bug (inventories actually being shared or mis-assigned). Needs investigation to determine which layer is at fault.
+
+**Repro scenario:** Build 2+ buildings in parallel. When they finish around the same time, open each one's inventory — they show the same items.
+
+**Likely suspects:**
+- Structure info panel caching a stale structure ID and not updating when the user clicks a different building
+- Item detail panel's inventory query using the wrong structure ID
+- A sim-level bug where `StructureId` assignment or inventory table association goes wrong when multiple buildings complete in the same tick window
+
 #### F-batch-craft — Workstation-driven batch crafting with time discount
 **Status:** Todo
 
@@ -3767,8 +3786,8 @@ Foundation for all LLM-driven creature features. Concrete decisions made (see dr
 
 **Draft:** docs/drafts/llm-creatures.md
 
-**Blocked by:** B-local-relay
 **Blocks:** F-llm-activities, F-llm-diplomacy, F-llm-social-chat
+**Unblocked by:** B-local-relay
 
 #### F-llm-diplomacy — LLM-driven foreign civilization diplomatic decisions
 **Status:** Todo
@@ -7353,6 +7372,44 @@ state. The sim crate itself should need no changes.
 
 **Related:** F-multiplayer, F-multiplayer (relay ordering)., F-session-sm, F-session-sm (session architecture)
 
+#### F-logging — Unified file-persisted logging system across all crates
+**Status:** Todo
+
+The project has no unified logging system. Different components use different ad-hoc approaches, none of which are reliable across all contexts:
+
+- **gdext crate (`sim_bridge.rs`):** Uses `godot_print!` / `godot_error!` — works in-game but output is ephemeral (Godot console only, not persisted). Not available from non-Godot crates.
+- **Relay crate (`elven_canopy_relay`):** Has **zero logging**. Player disconnects, relay shutdown, errors — all silent. This made debugging the B-local-relay Windows TCP timeout issue needlessly difficult.
+- **Sim crate:** Uses a `WgLog` callback (boxed closure) for worldgen timing, but nothing else is logged.
+- **Standalone relay binary (`main.rs`):** Could use `eprintln!` but doesn't.
+- **Music crate CLI:** Uses `eprintln!` directly.
+
+**Requirements for a proper logging system:**
+
+1. **Not swallowed by Godot.** `godot_print!` goes to Godot's output console which is ephemeral and hard to search. The logger must write to a file that persists across sessions. When running inside Godot, both Godot console output AND file output should happen.
+
+2. **File-persisted.** All log output must be written to a log file (e.g., `user://logs/elven_canopy.log` or a platform-appropriate location). The file should be rotated or truncated on startup to avoid unbounded growth. Timestamps on every line.
+
+3. **Works outside Godot.** The standalone relay binary, music CLI, and any future non-Godot tools must be able to use the same logging API. When running outside Godot, output goes to stderr + file (no Godot dependency).
+
+4. **Leveled.** At minimum: error, warn, info, debug. The relay needs info-level logging for player connect/disconnect/join and error-level for I/O failures. The sim bridge needs info for session lifecycle events.
+
+5. **Zero external dependencies.** The project avoids external crate dependencies where possible. A hand-rolled logger (global static with a `Mutex<File>` + optional Godot callback) is preferred over pulling in `log`/`tracing`/`env_logger`. Keep it simple — this is game logging, not enterprise observability.
+
+6. **Thread-safe.** The relay runs multiple threads (main loop, listener, reader threads per client). The logger must be safe to call from any thread.
+
+**Scope:**
+
+- Create a new `elven_canopy_log` crate (or add to `elven_canopy_utils`) with macros like `ec_info!`, `ec_warn!`, `ec_error!`, `ec_debug!`.
+- Initialize the logger at startup: `ec_log::init(file_path, godot_callback)`. The Godot callback is optional — when provided, messages are also routed to `godot_print!` / `godot_error!`.
+- Migrate all `godot_print!` / `godot_error!` in `sim_bridge.rs` to the new macros.
+- Add logging throughout the relay: player connect/disconnect, session create/destroy, turn flush errors, reader thread exit reasons.
+- Add logging to the sim session lifecycle: game start, player join/leave, save/load.
+- Ensure the standalone relay binary initializes the logger with stderr + file output.
+
+**What this unblocks:** Diagnosable relay issues on Windows and other platforms, post-mortem debugging from log files, and any future multiplayer debugging.
+
+**Blocks:** B-relay-stability
+
 #### F-megachunk — MegaChunk spatial hierarchy with draw distance and frustum culling
 **Status:** Todo
 
@@ -7992,8 +8049,29 @@ infrastructure.
 
 ### Multiplayer
 
-#### B-local-relay — Singleplayer must launch the real relay (on localhost), not use a fake tick-pacing LocalRelay
+#### B-fast-checksum — Incremental state checksum for desync detection (replace full-state JSON serialization)
 **Status:** Todo
+
+The current `state_checksum()` implementation serializes the entire `SimState` to JSON via `serde_json::to_vec(self)` and hashes the result. This is prohibitively slow for any non-trivial game state — hundreds of milliseconds for a mid-game sim with thousands of creatures, structures, items, and a large voxel world. It was causing visible ~400ms periodic hangs when enabled during gameplay (every 1000 sim ticks = every real second at Normal speed).
+
+The checksum is currently disabled entirely (see `poll_network()` in `sim_bridge.rs`). It needs to be replaced with an incremental hashing approach before it can be re-enabled for multiplayer desync detection.
+
+**Recommended approach: hierarchical incremental hashing.**
+
+The key insight is that most of the sim state doesn't change between checksum intervals. Only the parts that were mutated need to be re-hashed.
+
+- **Voxel world:** Hash per-chunk. Each chunk maintains a dirty flag; when any voxel in the chunk changes, mark it dirty. At checksum time, only re-hash dirty chunks and combine with cached hashes for clean chunks. The voxel world is the single largest data structure and benefits most from this.
+
+- **Database tables (tabulosity):** Each table could maintain a running hash that's updated incrementally on insert/update/delete. Alternatively, hash per-table at checksum time but only re-hash tables with a dirty flag. Many tables (species config, nav graph structure) rarely change during gameplay.
+
+- **Other state:** Tick counter, PRNG state, event queue — these are small and cheap to hash directly.
+
+The total state is too large to ever want to iterate over during ordinary gameplay. Full-state serialization should only happen on save/load, not during tick processing.
+
+**What this unblocks:** Re-enabling multiplayer desync detection. Currently disabled by B-local-relay.
+
+#### B-local-relay — Singleplayer must launch the real relay (on localhost), not use a fake tick-pacing LocalRelay
+**Status:** Done
 
 The current LocalRelay (`elven_canopy_sim/src/local_relay.rs`) is a tick-pacing timer — it accumulates delta time and emits `SessionMessage::AdvanceTo` when enough time has passed. It does NOT route messages. It does NOT use networking. It is NOT a relay in any meaningful sense. It shares no code with the multiplayer relay (`elven_canopy_relay`). The name "LocalRelay" is actively misleading.
 
@@ -8036,7 +8114,31 @@ The sim_bridge should have ONE code path for command dispatch: serialize the Sim
 
 **What this unblocks:** F-llm-creatures (LLM inference dispatch through relay requires a real relay in singleplayer), and any future relay-level feature (spectator mode, replay recording, command logging, anti-cheat).
 
-**Blocks:** F-llm-creatures
+**Unblocked:** F-llm-creatures
+
+#### B-relay-stability — Windows TCP connection drops during singleplayer gameplay
+**Status:** Todo
+
+The localhost relay used for singleplayer (and multiplayer hosting) drops TCP connections on Windows during normal gameplay. Symptoms:
+
+- `send_command failed: An established connection was aborted by the software in your host machine. (os error 10053)` — commands silently fail, e.g. construction blueprints disappear without effect
+- `send_pause failed` with the same error — speed controls stop working
+- Errors observed both during gameplay and at shutdown
+
+The relay thread has **zero logging** (see F-logging), so when the connection dies there's no information about why — whether the relay thread panicked, the reader thread timed out, or something else. The relay silently removes the player and continues running with no clients.
+
+**Known attempted fixes (on B-local-relay branch):**
+- Set `TCP_NODELAY` on all relay sockets (unlikely to be the cause, but good hygiene)
+- Fixed read timeout clearing to use `get_ref().set_read_timeout(None)` directly instead of on a clone — the clone-based approach may not work on Windows where socket options could be per-handle. This was the best hypothesis: the handshake's 30-second read timeout leaking into the reader thread, causing it to disconnect ~30 seconds into gameplay.
+
+**Investigation approach (after F-logging):**
+1. Add info-level logging for every reader thread start/exit (with the exit reason)
+2. Add error-level logging for relay-side write failures in `send_to`/`broadcast`
+3. Add info-level logging for player connect/disconnect events
+4. Reproduce on Windows and read the log file to determine the actual failure mode
+5. If the timeout fix already resolved it, the logs will confirm clean operation
+
+**Blocked by:** F-logging
 
 #### F-mp-chat — Multiplayer in-game chat
 **Status:** Todo · **Phase:** 8+ · **Refs:** §4
@@ -8166,6 +8268,31 @@ tuning (LTO, codegen-units=1, strip=true) for minimal binary size and
 maximum performance.
 
 **Related:** F-multiplayer, F-relay-multi-game
+
+#### F-turn-pacing — Adaptive turn pacing with client time budgets and relay backpressure
+**Status:** Todo
+
+When a player's sim falls behind (expensive ticks, window drag, slow machine), `poll_network()` drains all buffered turns in one frame, causing a massive spike. The old `LocalRelay` had a 0.1s cap; the relay-based architecture has no equivalent. At VeryFast (5x) speed, a 500ms hang means 2500 ticks in one frame — enough to spiral on slower hardware.
+
+**The fix needs to handle both singleplayer and multiplayer smoothly:**
+
+**Client-side: soft time budget per frame.**
+Instead of draining all queued turns, `poll_network()` should process turns one at a time, checking the wall clock after each. If over budget (e.g., 16ms for 60fps), stop processing and leave remaining turns in the inbox for the next frame. This gives a natural "slow-motion catch-up" effect — the sim runs slower than real time until it catches up, rather than freezing on one giant frame. The per-frame budget should be configurable (default: frame time budget minus a margin for rendering).
+
+**Relay-side: backpressure / adaptive pacing.**
+The relay should track per-player acknowledgment. Each Turn message has a `turn_number`; the client can send periodic acks ("I've processed up to turn N"). If the relay sees a player falling behind (large gap between current turn and last ack), it can:
+1. Reduce `ticks_per_turn` for that session (fewer ticks per flush = less work per turn)
+2. Or skip flushing for that player until they catch up (pause their turn stream)
+3. Configurable policy: "slow down for stragglers" vs "majority rules" — a tiny minority shouldn't drag down everyone else, but a single player in SP should always trigger slowdown
+
+**Singleplayer should fall out naturally:**
+In SP there's one player. If that player is behind, the relay slows down. The client-side time budget also kicks in. No special SP code path needed — it's just a degenerate case of the MP policy with one player.
+
+**Design considerations:**
+- The ack mechanism doubles as a liveness check (complements the existing checksum system)
+- The client-side budget means the game always feels responsive (rendering continues, sim just runs slower)
+- Speed display should reflect actual sim rate, not requested rate — if you asked for 5x but the sim can only do 2x, the UI should show that
+- The relay's adaptive pacing should be gradual, not binary — ramp down smoothly as a player falls behind, ramp back up when they catch up
 
 ### Testing Infrastructure
 

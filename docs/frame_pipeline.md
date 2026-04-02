@@ -15,13 +15,11 @@ GDScript main loop (every frame)
 │
 ├─ 1. frame_update(delta)
 │     │
-│     ├─ Single-player: LocalRelay.update() → session.process(AdvanceTo)
-│     │   → SimState::step() advances tick, processes events, mutates world
-│     │
-│     └─ Multiplayer: poll_network() → try_recv() inbox (non-blocking)
+│     └─ poll_network() → try_recv() inbox (non-blocking)
 │         → session.process(SimCommand) for each received command
 │         → session.process(AdvanceTo) to advance to the turn's target tick
 │         → SimState::step() advances tick, processes events, mutates world
+│         (Both SP and MP use a real relay — SP runs it on localhost)
 │
 ├─ 2. tree_renderer.refresh()
 │     │

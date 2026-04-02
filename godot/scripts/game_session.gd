@@ -73,6 +73,11 @@ var mp_session_id: int = 0
 ## Elfcyclopedia server URL (set at startup, persists across scenes).
 var elfcyclopedia_url: String = ""
 
+## Test mode: when true, main.gd skips relay startup after loading a save.
+## Set by GDScript integration tests that need step_to_tick / step_exactly
+## for deterministic time control.
+var test_mode: bool = false
+
 
 func _ready() -> void:
 	# Disable auto-quit so we can run Rust cleanup before exiting.

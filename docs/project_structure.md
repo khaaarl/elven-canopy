@@ -16,7 +16,6 @@ elven-canopy/
 │       ├── event.rs            # EventQueue (priority queue), SimEvent
 │       ├── fruit.rs            # Procedural fruit species: types, generation, coverage, Vaelith naming
 │       ├── session.rs          # GameSession — message-driven session management
-│       ├── local_relay.rs      # LocalRelay — accumulator-based tick pacer (SP)
 │       ├── lookup_map.rs      # LookupMap — non-iterable HashMap wrapper (deterministic)
 │       ├── sim/                # SimState and all simulation logic (directory module)
 │       │   ├── mod.rs          #   Struct definition, constructors, tick loop, event dispatch, serialization

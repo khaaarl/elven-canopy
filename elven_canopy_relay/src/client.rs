@@ -55,6 +55,7 @@ impl RelayConnection {
     /// Establish a TCP connection to the relay. Does not send any messages.
     pub fn connect(addr: &str) -> Result<Self, String> {
         let stream = TcpStream::connect(addr).map_err(|e| format!("connect failed: {e}"))?;
+        stream.set_nodelay(true).ok();
         stream
             .set_read_timeout(Some(std::time::Duration::from_secs(5)))
             .ok();
@@ -143,10 +144,11 @@ impl RelayConnection {
             }
         };
 
-        // Clear read timeout for the long-lived reader loop.
-        if let Ok(inner) = self.reader.get_ref().try_clone() {
-            inner.set_read_timeout(None).ok();
-        }
+        // Clear the 5-second handshake read timeout before entering the
+        // long-lived reader loop. Set directly on the reader's inner stream
+        // (not a clone) to ensure the change takes effect on Windows where
+        // socket options may be per-handle.
+        self.reader.get_ref().set_read_timeout(None).ok();
 
         let writer = BufWriter::new(self.stream);
 
@@ -211,13 +213,28 @@ impl NetClient {
         send_msg(&mut self.writer, &msg).map_err(|e| format!("send Command failed: {e}"))
     }
 
-    /// Send StartGame (host only).
-    pub fn send_start_game(&mut self, seed: i64, config_json: &str) -> Result<(), String> {
+    /// Send StartGame (host only). `starting_tick` sets the relay's initial
+    /// tick counter (used when resuming a loaded save; pass `None` for fresh games).
+    pub fn send_start_game(
+        &mut self,
+        seed: i64,
+        config_json: &str,
+        starting_tick: Option<u64>,
+    ) -> Result<(), String> {
         let msg = ClientMessage::StartGame {
             seed,
             config_json: config_json.into(),
+            starting_tick,
         };
         send_msg(&mut self.writer, &msg).map_err(|e| format!("send StartGame failed: {e}"))
+    }
+
+    /// Send ResumeSession (host only). Tells the relay to start flushing turns
+    /// from `starting_tick` without broadcasting GameStart — used when the sim
+    /// is already loaded locally (save/load flow).
+    pub fn send_resume_session(&mut self, starting_tick: u64) -> Result<(), String> {
+        let msg = ClientMessage::ResumeSession { starting_tick };
+        send_msg(&mut self.writer, &msg).map_err(|e| format!("send ResumeSession failed: {e}"))
     }
 
     /// Send a state checksum for desync detection.

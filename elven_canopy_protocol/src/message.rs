@@ -67,7 +67,18 @@ pub enum ClientMessage {
     /// Response to a snapshot request (mid-game join).
     SnapshotResponse { data: Vec<u8> },
     /// Host triggers game start (lobby → playing transition).
-    StartGame { seed: i64, config_json: String },
+    /// `starting_tick` is used when resuming a loaded save — the relay starts
+    /// its tick counter there instead of 0.
+    StartGame {
+        seed: i64,
+        config_json: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        starting_tick: Option<u64>,
+    },
+    /// Resume turn flushing for a loaded game without broadcasting GameStart.
+    /// The relay sets `game_started = true` and `current_tick = starting_tick`,
+    /// then begins flushing turns. Used by singleplayer save/load.
+    ResumeSession { starting_tick: u64 },
     /// Player is leaving gracefully.
     Goodbye,
 }
@@ -120,7 +131,16 @@ pub enum ServerMessage {
     /// Speed changed.
     SpeedChanged { ticks_per_turn: u32 },
     /// Game is starting — all clients should init sim with this seed/config.
-    GameStart { seed: i64, config_json: String },
+    /// `starting_tick` is set when resuming a loaded save (non-zero start).
+    GameStart {
+        seed: i64,
+        config_json: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        starting_tick: Option<u64>,
+    },
+    /// Relay acknowledged ResumeSession — turn flushing has begun from the
+    /// given tick. Clients that already loaded the sim treat this as a no-op.
+    SessionResumed { starting_tick: u64 },
 }
 
 /// A single command within a turn, tagged with the originating player.
