@@ -68,6 +68,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fog-billboards       Fog post-process does not obscure billboard sprites
+[ ] B-local-relay          Singleplayer must launch the real relay (on localhost), not use a fake tick-pacing LocalRelay
 [ ] B-retire-spatidx       Retire SimState.spatial_index in favor of tabulosity Creature table index
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-adventure-mode       Control individual elf (RPG-like)
@@ -3757,6 +3758,7 @@ Observability: toggleable logging of prompts, raw responses, latency, cache hits
 
 **Draft:** docs/drafts/llm-creatures.md
 
+**Blocked by:** B-local-relay
 **Blocks:** F-llm-activities, F-llm-diplomacy, F-llm-social-chat
 
 #### F-llm-diplomacy — LLM-driven foreign civilization diplomatic decisions
@@ -7954,6 +7956,52 @@ infrastructure.
 **Related:** F-sim-db-impl
 
 ### Multiplayer
+
+#### B-local-relay — Singleplayer must launch the real relay (on localhost), not use a fake tick-pacing LocalRelay
+**Status:** Todo
+
+The current LocalRelay (`elven_canopy_sim/src/local_relay.rs`) is a tick-pacing timer — it accumulates delta time and emits `SessionMessage::AdvanceTo` when enough time has passed. It does NOT route messages. It does NOT use networking. It is NOT a relay in any meaningful sense. It shares no code with the multiplayer relay (`elven_canopy_relay`). The name "LocalRelay" is actively misleading.
+
+**This is a critical architectural defect.** The entire multiplayer design premise is that singleplayer and multiplayer use the same code paths. The current LocalRelay violates this completely — singleplayer commands bypass the relay entirely (applied directly to the session in `sim_bridge.rs`), meaning any relay-level feature (LLM inference dispatch, command canonicalization, future spectator mode, replay recording, etc.) must be separately implemented for singleplayer or singleplayer simply doesn't get it. This is exactly the class of bug the relay-as-only-path constraint was designed to prevent.
+
+**The fix is NOT to rewrite LocalRelay.** The fix is to delete it and launch the real relay (`elven_canopy_relay`) in singleplayer mode, with different options. There should not be two relay implementations. The existing `elven_canopy_relay` is the relay — singleplayer just launches it with options that make it:
+1. Listen only on localhost (not 0.0.0.0)
+2. Auto-create a session and auto-join the local player (skip the lobby/matchmaking flow)
+
+That's it. Same relay binary, same `Session` logic, same turn batching, same TCP framing, same everything. The singleplayer game client connects to it via `NetClient` over localhost TCP, exactly the same way the multiplayer client connects to a remote relay. The `sim_bridge.rs` code should have ONE code path — it always talks to a relay via `NetClient`, and whether that relay is on localhost or a remote server is a startup configuration detail.
+
+**Why networking even in singleplayer:** The goal is not performance — it's correctness. If singleplayer uses in-process function calls while multiplayer uses TCP, any bug in serialization, framing, message ordering, or relay logic only surfaces in multiplayer, which is the hardest environment to debug. By using real networking in singleplayer, every game session exercises the full relay pipeline. This is non-negotiable.
+
+**Current singleplayer flow (BROKEN):**
+1. GDScript UI calls `sim_bridge.spawn_creature()`
+2. sim_bridge calls `session.process(SimCommand)` directly — no relay, no networking
+3. `LocalRelay::update(delta)` emits `SessionMessage::AdvanceTo` for tick pacing only
+
+Commands skip the relay entirely. The relay never sees them. Serialization, framing, turn batching, command canonicalization — none of it is exercised. A bug in any of those systems will hide in singleplayer and only surface in multiplayer, which is the worst place to discover and debug it.
+
+**Target singleplayer flow (CORRECT):**
+1. GDScript UI calls `sim_bridge.spawn_creature()` (identical to MP)
+2. sim_bridge serializes a `SimAction` and sends it via `NetClient::send_command(payload)` (identical to MP)
+3. Payload goes over TCP to localhost, where the real relay receives it
+4. Relay calls `Session::enqueue_command()`, then `flush_turn()` on timer (same code as MP)
+5. Relay sends `ServerMessage::Turn` back over TCP to localhost
+6. `NetClient::poll()` receives the Turn; sim_bridge processes it via `session.process()` (identical to MP)
+
+The sim_bridge should have ONE code path for command dispatch: serialize the SimAction, send it via NetClient. Whether that NetClient is connected to localhost:PORT or remote-server:PORT is a configuration detail, not a code path difference.
+
+**Scope:**
+- Delete `local_relay.rs` entirely — it is not salvageable and the name is misleading
+- Add a singleplayer launch mode to the existing `elven_canopy_relay` that listens on localhost only, auto-creates a session, and auto-joins the local player
+- Launch the real relay in-process (or as a thread) when starting a singleplayer game, the same way multiplayer launches/connects to a relay
+- Unify `sim_bridge.rs` command dispatch — remove ALL singleplayer vs multiplayer branching; every command goes through NetClient
+- Speed control, pause/resume must work through the relay protocol (they already do in MP via `SetSpeed`/`RequestPause`/`RequestResume`)
+- Checksum self-validation in singleplayer (optional but cheap — the relay already has the logic)
+- All existing singleplayer functionality must continue to work identically from the player's perspective
+- The tick-pacing behavior is now handled by the relay's turn flush timer (same as MP), no separate accumulator
+
+**What this unblocks:** F-llm-creatures (LLM inference dispatch through relay requires a real relay in singleplayer), and any future relay-level feature (spectator mode, replay recording, command logging, anti-cheat).
+
+**Blocks:** F-llm-creatures
 
 #### F-mp-chat — Multiplayer in-game chat
 **Status:** Todo · **Phase:** 8+ · **Refs:** §4
