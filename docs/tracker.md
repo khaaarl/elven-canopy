@@ -255,7 +255,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tab-indexmap-fork    Forked IndexMap with tombstone compaction (alternative to F-tab-ordered-idx)
 [ ] F-tab-joins            Join iterators across tables
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
-[ ] F-tab-spatial          Tabulosity spatial index — simple R-tree, point queries
 [ ] F-tab-spatial-2        Tabulosity spatial index — compound indexes, range/KNN queries
 [ ] F-tame-aggro           Taming failure can aggro the target animal
 [ ] F-task-assign-opt      Event-driven bidirectional task assignment
@@ -530,6 +529,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-tab-parent-pk        Tabulosity: allow parent PK as child table PK for 1:1 relations
 [x] F-tab-query-opts       Query options struct for index queries
 [x] F-tab-schema-ver       Schema versioning fundamentals
+[x] F-tab-spatial          Tabulosity spatial index — simple R-tree, point queries
 [x] F-tab-unique-idx       Unique index enforcement
 [x] F-taming               Tame neutral creatures via Scout-path elves
 [x] F-task-interruption    Unified task interruption and cleanup
@@ -7163,7 +7163,7 @@ Retiring this removes: (1) the manual maintenance burden and risk of index/table
 
 Blocked on F-tab-spatial providing a spatial index kind that supports volumetric VoxelBox entries.
 
-**Blocked by:** F-tab-spatial
+**Unblocked by:** F-tab-spatial
 
 #### B-sim-floats — Remaining f32/f64 in sim logic threaten determinism
 **Status:** Done
@@ -7927,7 +7927,7 @@ code.
 **Related:** F-save-load, F-sim-db-impl, F-tab-schema-evol
 
 #### F-tab-spatial — Tabulosity spatial index — simple R-tree, point queries
-**Status:** Todo
+**Status:** Done
 
 Simple spatial index kind for tabulosity, backed by the `rstar` crate. Enough to replace the current manual `SimState.spatial_index` with a tabulosity-managed index on the Creature table.
 
@@ -7949,7 +7949,7 @@ Simple spatial index kind for tabulosity, backed by the `rstar` crate. Enough to
 
 **Motivating use case:** Creature position lookup. The Creature table would have an `Option<VoxelBox>` field indexed with `kind = "spatial"` and `filter = "Creature::is_alive"`. A 2×2×2 creature is stored as a single bounding box; point queries find it via box intersection. Replaces the current per-voxel registration approach. (The actual migration is B-retire-spatidx, not this item.)
 
-**Blocks:** B-retire-spatidx, F-tab-spatial-2
+**Unblocked:** B-retire-spatidx, F-tab-spatial-2
 
 #### F-tab-spatial-2 — Tabulosity spatial index — compound indexes, range/KNN queries
 **Status:** Todo
@@ -7966,8 +7966,8 @@ Advanced spatial index features for tabulosity, building on F-tab-spatial's simp
 
 **Motivating use cases:** The primary driver is F-zone-world: each zone has its own local coordinate system, so all spatial queries must be scoped by zone — requiring compound indexes keyed by `(zone_id, spatial_box)`. A query like "creatures near position X in zone Z" searches only that zone's R-tree partition, not the entire world. Beyond zones: hostile detection scanning (currently O(n) full scan of all creatures — a radius query would be O(log n + k)), tree fruit location queries ("find 10 nearest fruit"), social proximity scanning, any future "find things near X" query.
 
-**Blocked by:** F-tab-spatial
 **Blocks:** F-zone-world
+**Unblocked by:** F-tab-spatial
 
 #### F-tab-unique-idx — Unique index enforcement
 **Status:** Done

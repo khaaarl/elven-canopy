@@ -202,7 +202,7 @@ struct ResolvedIndex {
     fields: Vec<(Ident, Type)>,
     filter: Option<String>,
     is_unique: bool,
-    /// The index backing storage kind: BTree or Hash.
+    /// The index backing storage kind: BTree, Hash, or Spatial.
     kind: IndexKind,
 }
 
@@ -237,6 +237,23 @@ fn gen_one_or_many_iter(primary_storage: PrimaryStorageKind) -> Ident {
     match primary_storage {
         PrimaryStorageKind::BTree => format_ident!("iter_btree"),
         PrimaryStorageKind::Hash => format_ident!("iter_hash"),
+    }
+}
+
+/// Generate the insert expression for a spatial index's none-set.
+/// The `pk_expr` variable must be in scope as `pk` (from extract_key_from_row).
+fn gen_none_set_insert(primary_storage: PrimaryStorageKind) -> TokenStream {
+    match primary_storage {
+        PrimaryStorageKind::BTree => quote! { insert(pk.clone()) },
+        PrimaryStorageKind::Hash => quote! { insert(pk.clone(), ()) },
+    }
+}
+
+/// Generate the remove expression for a spatial index's none-set.
+fn gen_none_set_remove(primary_storage: PrimaryStorageKind) -> TokenStream {
+    match primary_storage {
+        PrimaryStorageKind::BTree => quote! { remove(&pk) },
+        PrimaryStorageKind::Hash => quote! { remove(&pk) },
     }
 }
 
@@ -383,7 +400,7 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
     // --- Companion struct fields ---
     let idx_field_decls = gen_idx_field_decls(&resolved_indexes, &pk_info, primary_storage);
     let bounds_field_decls = gen_bounds_field_decls(&unique_tracked);
-    let idx_field_inits = gen_idx_field_inits(&resolved_indexes);
+    let idx_field_inits = gen_idx_field_inits(&resolved_indexes, primary_storage);
     let bounds_field_inits = gen_bounds_field_inits(&unique_tracked);
 
     // --- Bounds widening (insert/upsert-insert) ---
@@ -764,9 +781,9 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
 
             #modify_unchecked_range_methods
 
-            /// Rebuilds BTree secondary indexes and tracked bounds from row data.
-            /// Hash indexes are NOT rebuilt — they are deserialized directly
-            /// to preserve insertion order.
+            /// Rebuilds BTree and spatial secondary indexes and tracked bounds
+            /// from row data. Hash indexes are NOT rebuilt — they are
+            /// deserialized directly to preserve insertion order.
             #[doc(hidden)]
             pub fn post_deser_rebuild_indexes(&mut self) {
                 #(#bounds_reset)*
@@ -822,9 +839,22 @@ fn resolve_indexes(
     let mut resolved = Vec::new();
     let mut used_names = std::collections::BTreeSet::new();
 
+    let pk_field_names: std::collections::BTreeSet<String> = pk_info
+        .fields
+        .iter()
+        .map(|(id, _)| id.to_string())
+        .collect();
+
     // Simple indexes from #[indexed].
     for f in fields {
         if f.is_indexed {
+            // Spatial index on a PK field is forbidden.
+            if f.index_kind == IndexKind::Spatial && pk_field_names.contains(&f.ident.to_string()) {
+                return Err(syn::Error::new_spanned(
+                    &f.ident,
+                    "spatial index cannot be placed on a primary key field",
+                ));
+            }
             let name = f.ident.to_string();
             if !used_names.insert(name.clone()) {
                 return Err(syn::Error::new_spanned(
@@ -913,6 +943,11 @@ fn validate_index_decl(
             _ => {}
         }
     }
+
+    // Note: spatial-on-PK is already caught by the general PK check above
+    // (line "is part of the primary key"). Field-level #[indexed(spatial)]
+    // on a PK field is caught separately in resolve_indexes().
+
     Ok(())
 }
 
@@ -952,8 +987,8 @@ fn collect_unique_tracked_types(indexes: &[ResolvedIndex], pk_info: &PkInfo) -> 
     let mut seen = std::collections::BTreeSet::new();
 
     for idx in indexes {
-        // Hash indexes don't need bounds tracking (no range queries).
-        if idx.kind == IndexKind::Hash {
+        // Hash and spatial indexes don't need bounds tracking.
+        if idx.kind == IndexKind::Hash || idx.kind == IndexKind::Spatial {
             continue;
         }
         for (_, ty) in &idx.fields {
@@ -992,47 +1027,71 @@ fn gen_idx_field_decls(
 ) -> Vec<TokenStream> {
     let pk_tys = pk_info.index_pk_types();
     let key_ty = pk_info.key_type();
-    indexes
-        .iter()
-        .map(|idx| {
-            let idx_name = format_ident!("idx_{}", idx.name);
-            let field_tys: Vec<&Type> = idx.fields.iter().map(|(_, ty)| ty).collect();
-            match idx.kind {
-                IndexKind::BTree => {
-                    quote! {
-                        #idx_name: ::std::collections::BTreeSet<(#(#field_tys,)* #(#pk_tys),*)>
-                    }
-                }
-                IndexKind::Hash => {
-                    // Hash key type: single field → field type, compound → tuple.
-                    let hash_key_ty = if field_tys.len() == 1 {
-                        let ty = field_tys[0];
-                        quote! { #ty }
-                    } else {
-                        quote! { (#(#field_tys),*) }
+    let mut result = Vec::new();
+    for idx in indexes {
+        let idx_name = format_ident!("idx_{}", idx.name);
+        let field_tys: Vec<&Type> = idx.fields.iter().map(|(_, ty)| ty).collect();
+        match idx.kind {
+            IndexKind::BTree => {
+                result.push(quote! {
+                    #idx_name: ::std::collections::BTreeSet<(#(#field_tys,)* #(#pk_tys),*)>
+                });
+            }
+            IndexKind::Hash => {
+                // Hash key type: single field → field type, compound → tuple.
+                let hash_key_ty = if field_tys.len() == 1 {
+                    let ty = field_tys[0];
+                    quote! { #ty }
+                } else {
+                    quote! { (#(#field_tys),*) }
+                };
+                if idx.is_unique {
+                    result.push(quote! {
+                        #idx_name: ::tabulosity::InsOrdHashMap<#hash_key_ty, #key_ty>
+                    });
+                } else {
+                    // Non-unique: inner collection depends on primary storage.
+                    let inner_ty = match primary_storage {
+                        PrimaryStorageKind::BTree => {
+                            quote! { ::std::collections::BTreeSet<#key_ty> }
+                        }
+                        PrimaryStorageKind::Hash => {
+                            quote! { ::tabulosity::InsOrdHashMap<#key_ty, ()> }
+                        }
                     };
-                    if idx.is_unique {
-                        quote! {
-                            #idx_name: ::tabulosity::InsOrdHashMap<#hash_key_ty, #key_ty>
-                        }
-                    } else {
-                        // Non-unique: inner collection depends on primary storage.
-                        let inner_ty = match primary_storage {
-                            PrimaryStorageKind::BTree => {
-                                quote! { ::std::collections::BTreeSet<#key_ty> }
-                            }
-                            PrimaryStorageKind::Hash => {
-                                quote! { ::tabulosity::InsOrdHashMap<#key_ty, ()> }
-                            }
-                        };
-                        quote! {
-                            #idx_name: ::tabulosity::InsOrdHashMap<#hash_key_ty, ::tabulosity::OneOrMany<#key_ty, #inner_ty>>
-                        }
-                    }
+                    result.push(quote! {
+                        #idx_name: ::tabulosity::InsOrdHashMap<#hash_key_ty, ::tabulosity::OneOrMany<#key_ty, #inner_ty>>
+                    });
                 }
             }
-        })
-        .collect()
+            IndexKind::Spatial => {
+                // Spatial index: the field type implements SpatialKey (or
+                // Option<T> where T: SpatialKey). We use MaybeSpatialKey to
+                // extract the inner key type for the SpatialIndex generic.
+                let field_ty = field_tys[0];
+                result.push(quote! {
+                    #idx_name: ::tabulosity::SpatialIndex<
+                        #key_ty,
+                        <<#field_ty as ::tabulosity::MaybeSpatialKey>::Key as ::tabulosity::SpatialKey>::Point,
+                    >
+                });
+                // None-set: stores PKs for rows where the spatial field is None.
+                let none_name = format_ident!("idx_{}_none", idx.name);
+                let none_ty = match primary_storage {
+                    PrimaryStorageKind::BTree => {
+                        quote! { ::std::collections::BTreeSet<#key_ty> }
+                    }
+                    PrimaryStorageKind::Hash => {
+                        quote! { ::tabulosity::InsOrdHashMap<#key_ty, ()> }
+                    }
+                };
+                result.push(quote! {
+                    #none_name: #none_ty
+                });
+            }
+        }
+    }
+    result
 }
 
 fn gen_bounds_field_decls(tracked: &[TrackedType]) -> Vec<TokenStream> {
@@ -1046,21 +1105,35 @@ fn gen_bounds_field_decls(tracked: &[TrackedType]) -> Vec<TokenStream> {
         .collect()
 }
 
-fn gen_idx_field_inits(indexes: &[ResolvedIndex]) -> Vec<TokenStream> {
-    indexes
-        .iter()
-        .map(|idx| {
-            let idx_name = format_ident!("idx_{}", idx.name);
-            match idx.kind {
-                IndexKind::BTree => {
-                    quote! { #idx_name: ::std::collections::BTreeSet::new() }
-                }
-                IndexKind::Hash => {
-                    quote! { #idx_name: ::tabulosity::InsOrdHashMap::new() }
+fn gen_idx_field_inits(
+    indexes: &[ResolvedIndex],
+    primary_storage: PrimaryStorageKind,
+) -> Vec<TokenStream> {
+    let mut result = Vec::new();
+    for idx in indexes {
+        let idx_name = format_ident!("idx_{}", idx.name);
+        match idx.kind {
+            IndexKind::BTree => {
+                result.push(quote! { #idx_name: ::std::collections::BTreeSet::new() });
+            }
+            IndexKind::Hash => {
+                result.push(quote! { #idx_name: ::tabulosity::InsOrdHashMap::new() });
+            }
+            IndexKind::Spatial => {
+                result.push(quote! { #idx_name: ::tabulosity::SpatialIndex::new() });
+                let none_name = format_ident!("idx_{}_none", idx.name);
+                match primary_storage {
+                    PrimaryStorageKind::BTree => {
+                        result.push(quote! { #none_name: ::std::collections::BTreeSet::new() });
+                    }
+                    PrimaryStorageKind::Hash => {
+                        result.push(quote! { #none_name: ::tabulosity::InsOrdHashMap::new() });
+                    }
                 }
             }
-        })
-        .collect()
+        }
+    }
+    result
 }
 
 fn gen_bounds_field_inits(tracked: &[TrackedType]) -> Vec<TokenStream> {
@@ -1089,8 +1162,8 @@ fn gen_bounds_widen(
     let mut seen_fields = std::collections::BTreeSet::new();
 
     for idx in indexes {
-        // Hash indexes don't need bounds tracking.
-        if idx.kind == IndexKind::Hash {
+        // Hash and spatial indexes don't need bounds tracking.
+        if idx.kind == IndexKind::Hash || idx.kind == IndexKind::Spatial {
             continue;
         }
         for (field_ident, _) in &idx.fields {
@@ -1225,6 +1298,8 @@ fn gen_unique_check_insert(
                 }
             }
         }
+        // Spatial indexes cannot be unique — rejected at parse time.
+        IndexKind::Spatial => unreachable!("spatial indexes cannot be unique"),
     };
 
     match &idx.filter {
@@ -1404,6 +1479,8 @@ fn gen_unique_check_update(
                 None => hash_check,
             }
         }
+        // Spatial indexes cannot be unique — rejected at parse time.
+        IndexKind::Spatial => unreachable!("spatial indexes cannot be unique"),
     }
 }
 
@@ -1480,6 +1557,22 @@ fn gen_idx_insert(
                         ::std::option::Option::None => {
                             self.#idx_name.insert(#hash_key, ::tabulosity::OneOrMany::One(#pk_expr));
                         }
+                    }
+                }
+            }
+        }
+        IndexKind::Spatial => {
+            let fi = &idx.fields[0].0;
+            let none_name = format_ident!("idx_{}_none", idx.name);
+            let none_insert = gen_none_set_insert(primary_storage);
+            // `pk` variable is in scope from the calling insert_no_fk method.
+            quote! {
+                match ::tabulosity::MaybeSpatialKey::as_spatial(&row.#fi) {
+                    ::std::option::Option::Some(__key) => {
+                        self.#idx_name.insert(__key, pk.clone());
+                    }
+                    ::std::option::Option::None => {
+                        self.#none_name.#none_insert;
                     }
                 }
             }
@@ -1571,6 +1664,36 @@ fn gen_idx_update(
                 gen_idx_update_with_stmts(idx, &field_changed_check, &remove_stmt, &insert_stmt)
             }
         }
+        IndexKind::Spatial => {
+            let fi = &idx.fields[0].0;
+            let none_name = format_ident!("idx_{}_none", idx.name);
+            let none_insert = gen_none_set_insert(primary_storage);
+            let none_remove = gen_none_set_remove(primary_storage);
+
+            // Remove from old location (R-tree or none-set).
+            let remove_stmt = quote! {
+                match ::tabulosity::MaybeSpatialKey::as_spatial(&old_row.#fi) {
+                    ::std::option::Option::Some(__key) => {
+                        self.#idx_name.remove(__key, &pk);
+                    }
+                    ::std::option::Option::None => {
+                        self.#none_name.#none_remove;
+                    }
+                }
+            };
+            // Insert at new location (R-tree or none-set).
+            let insert_stmt = quote! {
+                match ::tabulosity::MaybeSpatialKey::as_spatial(&row.#fi) {
+                    ::std::option::Option::Some(__key) => {
+                        self.#idx_name.insert(__key, pk.clone());
+                    }
+                    ::std::option::Option::None => {
+                        self.#none_name.#none_insert;
+                    }
+                }
+            };
+            gen_idx_update_with_stmts(idx, &field_changed_check, &remove_stmt, &insert_stmt)
+        }
     }
 }
 
@@ -1651,6 +1774,21 @@ fn gen_idx_remove(
                         if __result == ::tabulosity::RemoveResult::Empty {
                             self.#idx_name.remove(&#hash_key);
                         }
+                    }
+                }
+            }
+        }
+        IndexKind::Spatial => {
+            let fi = &idx.fields[0].0;
+            let none_name = format_ident!("idx_{}_none", idx.name);
+            let none_remove = gen_none_set_remove(primary_storage);
+            quote! {
+                match ::tabulosity::MaybeSpatialKey::as_spatial(&row.#fi) {
+                    ::std::option::Option::Some(__key) => {
+                        self.#idx_name.remove(__key, &pk);
+                    }
+                    ::std::option::Option::None => {
+                        self.#none_name.#none_remove;
                     }
                 }
             }
@@ -1899,7 +2037,7 @@ fn gen_modify_unchecked_range(
     }
 }
 
-/// Generate the rebuild body for `post_deser_rebuild_indexes` (BTree only)
+/// Generate the rebuild body for `post_deser_rebuild_indexes` (BTree + Spatial)
 /// and `manual_rebuild_all_indexes` (all indexes).
 fn gen_rebuild_body(
     indexes: &[ResolvedIndex],
@@ -1923,7 +2061,9 @@ fn gen_rebuild_body(
 
     indexes
         .iter()
-        .filter(|idx| include_hash || idx.kind == IndexKind::BTree)
+        // BTree and Spatial indexes are always rebuilt (they're transient).
+        // Hash indexes are only included in manual_rebuild_all_indexes.
+        .filter(|idx| idx.kind != IndexKind::Hash || include_hash)
         .map(|idx| {
             let idx_name = format_ident!("idx_{}", idx.name);
             let field_clones: Vec<TokenStream> = idx
@@ -1959,6 +2099,21 @@ fn gen_rebuild_body(
                         }
                     }
                 }
+                IndexKind::Spatial => {
+                    let fi = &idx.fields[0].0;
+                    let none_name = format_ident!("idx_{}_none", idx.name);
+                    let none_insert = gen_none_set_insert(primary_storage);
+                    quote! {
+                        match ::tabulosity::MaybeSpatialKey::as_spatial(&row.#fi) {
+                            ::std::option::Option::Some(__key) => {
+                                self.#idx_name.insert(__key, pk.clone());
+                            }
+                            ::std::option::Option::None => {
+                                self.#none_name.#none_insert;
+                            }
+                        }
+                    }
+                }
             };
 
             let body = match &idx.filter {
@@ -1986,6 +2141,13 @@ fn gen_rebuild_body(
                 IndexKind::Hash => {
                     quote! {
                         self.#idx_name = ::tabulosity::InsOrdHashMap::with_capacity(self.rows.len());
+                    }
+                }
+                IndexKind::Spatial => {
+                    let none_name = format_ident!("idx_{}_none", idx.name);
+                    quote! {
+                        self.#idx_name.clear();
+                        self.#none_name.clear();
                     }
                 }
             };
@@ -2022,6 +2184,11 @@ fn gen_query_methods(
     all_fields: &[ParsedField],
     primary_storage: PrimaryStorageKind,
 ) -> TokenStream {
+    // Spatial indexes get their own query method shape.
+    if idx.kind == IndexKind::Spatial {
+        return gen_spatial_query_methods(idx, pk_info, row_name);
+    }
+
     let n = idx.fields.len();
     let by_fn = format_ident!("by_{}", idx.name);
     let iter_by_fn = format_ident!("iter_by_{}", idx.name);
@@ -2088,6 +2255,8 @@ fn gen_query_methods(
             primary_storage,
             &idx.name,
         ),
+        // Spatial indexes use gen_spatial_query_methods — early return above.
+        IndexKind::Spatial => unreachable!("spatial handled by early return"),
     };
 
     // Forward calls from public methods to helper.
@@ -2115,6 +2284,55 @@ fn gen_query_methods(
         pub fn #count_by_fn(&self, #(#params_into_query,)* opts: ::tabulosity::QueryOpts) -> usize {
             #(#into_query_calls)*
             self.#helper_fn(#(#qb_forwards,)* opts).count()
+        }
+    }
+}
+
+/// Generate query methods for spatial indexes.
+///
+/// Produces `intersecting_{name}(&self, envelope: &FieldType) -> Vec<Row>`,
+/// `iter_intersecting_{name}`, and `count_intersecting_{name}`.
+/// The envelope parameter type is the field's inner spatial key type (i.e.,
+/// `T` for `T: SpatialKey` or `T` for `Option<T: SpatialKey>`).
+fn gen_spatial_query_methods(
+    idx: &ResolvedIndex,
+    pk_info: &PkInfo,
+    row_name: &Ident,
+) -> TokenStream {
+    let intersecting_fn = format_ident!("intersecting_{}", idx.name);
+    let iter_intersecting_fn = format_ident!("iter_intersecting_{}", idx.name);
+    let count_intersecting_fn = format_ident!("count_intersecting_{}", idx.name);
+    let idx_name = format_ident!("idx_{}", idx.name);
+    let key_ty = pk_info.key_type();
+    let field_ty = &idx.fields[0].1;
+
+    // The query parameter type is the inner SpatialKey type (sans Option).
+    // MaybeSpatialKey::Key gives us this.
+    let envelope_ty = quote! { <#field_ty as ::tabulosity::MaybeSpatialKey>::Key };
+
+    quote! {
+        /// Returns cloned rows whose spatial key intersects the given envelope,
+        /// sorted by primary key.
+        pub fn #intersecting_fn(&self, __envelope: &#envelope_ty) -> ::std::vec::Vec<#row_name> {
+            let __pks: ::std::vec::Vec<#key_ty> = self.#idx_name.intersecting(__envelope);
+            __pks.into_iter()
+                .filter_map(|__pk| self.rows.get(&__pk).cloned())
+                .collect()
+        }
+
+        /// Returns a boxed iterator over references to rows whose spatial key
+        /// intersects the given envelope, sorted by primary key.
+        pub fn #iter_intersecting_fn(&self, __envelope: &#envelope_ty) -> ::std::boxed::Box<dyn ::std::iter::Iterator<Item = &#row_name> + '_> {
+            let __pks: ::std::vec::Vec<#key_ty> = self.#idx_name.intersecting(__envelope);
+            ::std::boxed::Box::new(
+                __pks.into_iter()
+                    .filter_map(move |__pk| self.rows.get(&__pk))
+            )
+        }
+
+        /// Returns the count of rows whose spatial key intersects the given envelope.
+        pub fn #count_intersecting_fn(&self, __envelope: &#envelope_ty) -> usize {
+            self.#idx_name.count_intersecting(__envelope)
         }
     }
 }
@@ -2618,6 +2836,9 @@ fn gen_all_modify_each_methods(
 
     indexes
         .iter()
+        // Spatial indexes don't have IntoQuery-based _query_ helpers;
+        // skip modify_each generation for them.
+        .filter(|idx| idx.kind != IndexKind::Spatial)
         .map(|idx| gen_modify_each_method(idx, pk_info, row_name, &indexed_fields))
         .collect()
 }
@@ -2835,7 +3056,8 @@ fn gen_serde_impls(
     primary_storage: PrimaryStorageKind,
 ) -> TokenStream {
     // When hash indexes exist and are serialized directly,
-    // post_deser_rebuild_indexes() handles only BTree indexes (correct).
+    // post_deser_rebuild_indexes() handles BTree and Spatial indexes
+    // (not Hash — those are deserialized directly).
     // When no hash indexes, same method covers everything.
     let rebuild_call = quote! { table.post_deser_rebuild_indexes(); };
 

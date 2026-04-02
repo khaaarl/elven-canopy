@@ -109,6 +109,7 @@ let count = table.count_by_species(&Species::Elf, QueryOpts::ASC);
 | `#[indexed(unique)]`   | BTreeSet   | Range  | Sorted, unique    |
 | `#[indexed(hash)]`     | InsOrdHash | O(1)   | Insertion order   |
 | `#[indexed(hash, unique)]` | InsOrdHash | O(1) | Insertion order, unique |
+| `#[indexed(spatial)]`  | R-tree     | Intersection | Sorted by PK |
 
 Unique indexes reject duplicate values on insert/update with
 `Error::DuplicateIndex`.
@@ -156,6 +157,47 @@ struct Task {
 // Only returns tasks where is_active() returns true:
 let active = table.by_active_by_owner(&player_id, QueryOpts::ASC);
 ```
+
+### Spatial Indexes
+
+Fields implementing `SpatialKey` can use R-tree-backed spatial indexes for
+axis-aligned bounding box intersection queries. Results are always sorted
+by PK for determinism.
+
+```rust
+use tabulosity::SpatialKey;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BBox { min: [i32; 3], max: [i32; 3] }
+
+impl SpatialKey for BBox {
+    type Point = [i32; 3];  // or [i32; 2] for 2D
+    fn spatial_min(&self) -> [i32; 3] { self.min }
+    fn spatial_max(&self) -> [i32; 3] { self.max }
+}
+
+#[derive(Table, Clone, Debug)]
+struct Entity {
+    #[primary_key]
+    pub id: EntityId,
+    #[indexed(spatial)]
+    pub bounds: BBox,          // required field
+    // pub bounds: Option<BBox>,  // also works — None entries excluded from R-tree
+}
+
+// Intersection query — finds all entities whose bounds overlap the envelope:
+let nearby = table.intersecting_bounds(&BBox { min: [0,0,0], max: [10,10,10] });
+let count = table.count_intersecting_bounds(&envelope);
+```
+
+Spatial indexes can also use struct-level syntax with filters:
+`#[index(name = "pos", fields("bounds"), kind = "spatial", filter = "is_alive")]`
+
+**Constraints:** Spatial indexes cannot be `unique`, cannot index PK fields,
+and are limited to one field (compound spatial indexes are not yet supported).
+
+**Serde:** Spatial indexes are transient — not serialized. They are rebuilt
+automatically from row data on deserialization.
 
 ## Reading Data
 

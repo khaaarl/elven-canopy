@@ -80,6 +80,7 @@ elven-canopy/
 │   │   ├── error.rs            # Error enum (5 variants), DeserializeError
 │   │   ├── ins_ord_hash_map.rs # InsOrdHashMap: insertion-ordered hash map with tombstone-skip iteration
 │   │   ├── one_or_many.rs      # OneOrMany<V,Many>: single-entry optimization for non-unique hash index groups
+│   │   ├── spatial.rs          # SpatialKey trait, SpatialPoint marker, MaybeSpatialKey dispatch, SpatialIndex R-tree wrapper
 │   │   └── table.rs            # Bounded, FkCheck, TableMeta, AutoIncrementable, IntoQuery, QueryOpts
 │   ├── tests/
 │   │   ├── auto_increment.rs   # Auto-increment PK generation and serde roundtrip
@@ -100,6 +101,7 @@ elven-canopy/
 │   │   ├── parent_pk_serde.rs  # Parent-PK serde roundtrip (feature-gated)
 │   │   ├── query_opts.rs       # QueryOpts ordering/offset + modify_each_by_*
 │   │   ├── serde.rs            # Serde roundtrip (feature-gated)
+│   │   ├── spatial_index.rs    # Spatial indexes (#[indexed(spatial)]), R-tree queries, Option/filter/rebuild
 │   │   └── unique_index.rs     # Unique index enforcement on insert/update/upsert
 │   └── Cargo.toml
 ├── tabulosity_derive/          # Proc macros: derive(Bounded), derive(Table), derive(Database)

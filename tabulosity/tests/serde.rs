@@ -2970,3 +2970,155 @@ fn compound_hash_index_serde_roundtrip() {
     let all = restored.by_by_species_age(MatchAll, MatchAll, QueryOpts::ASC);
     assert_eq!(all.len(), 3);
 }
+
+// =============================================================================
+// Spatial index serde roundtrip
+// =============================================================================
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SBox {
+    min: [i32; 3],
+    max: [i32; 3],
+}
+
+impl SBox {
+    fn new(min: [i32; 3], max: [i32; 3]) -> Self {
+        Self { min, max }
+    }
+}
+
+impl tabulosity::SpatialKey for SBox {
+    type Point = [i32; 3];
+    fn spatial_min(&self) -> [i32; 3] {
+        self.min
+    }
+    fn spatial_max(&self) -> [i32; 3] {
+        self.max
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded, Serialize, Deserialize)]
+struct SpatialEntityId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct SpatialEntity {
+    #[primary_key]
+    pub id: SpatialEntityId,
+    #[indexed(spatial)]
+    pub bounds: SBox,
+}
+
+#[test]
+fn spatial_index_serde_roundtrip() {
+    let mut table = SpatialEntityTable::new();
+    table
+        .insert_no_fk(SpatialEntity {
+            id: SpatialEntityId(1),
+            bounds: SBox::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+    table
+        .insert_no_fk(SpatialEntity {
+            id: SpatialEntityId(2),
+            bounds: SBox::new([10, 10, 10], [15, 15, 15]),
+        })
+        .unwrap();
+
+    // Verify queries work before serialization.
+    assert_eq!(
+        table
+            .intersecting_bounds(&SBox::new([0, 0, 0], [5, 5, 5]))
+            .len(),
+        1
+    );
+
+    // Serialize and deserialize.
+    let json = serde_json::to_string(&table).unwrap();
+    let restored: SpatialEntityTable = serde_json::from_str(&json).unwrap();
+
+    // Verify spatial queries work after deserialization (R-tree was rebuilt).
+    let hits = restored.intersecting_bounds(&SBox::new([0, 0, 0], [5, 5, 5]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, SpatialEntityId(1));
+
+    let hits = restored.intersecting_bounds(&SBox::new([10, 10, 10], [15, 15, 15]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, SpatialEntityId(2));
+}
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct OptSpatialEntity {
+    #[primary_key]
+    pub id: SpatialEntityId,
+    #[indexed(spatial)]
+    pub bounds: Option<SBox>,
+}
+
+#[test]
+fn spatial_index_optional_serde_roundtrip() {
+    let mut table = OptSpatialEntityTable::new();
+    table
+        .insert_no_fk(OptSpatialEntity {
+            id: SpatialEntityId(1),
+            bounds: Some(SBox::new([0, 0, 0], [5, 5, 5])),
+        })
+        .unwrap();
+    table
+        .insert_no_fk(OptSpatialEntity {
+            id: SpatialEntityId(2),
+            bounds: None,
+        })
+        .unwrap();
+
+    let json = serde_json::to_string(&table).unwrap();
+    let restored: OptSpatialEntityTable = serde_json::from_str(&json).unwrap();
+
+    let hits = restored.intersecting_bounds(&SBox::new([0, 0, 0], [5, 5, 5]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, SpatialEntityId(1));
+}
+
+fn is_spatial_active(e: &FilteredSpatialEntity) -> bool {
+    e.active
+}
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[index(
+    name = "pos",
+    fields("bounds"),
+    kind = "spatial",
+    filter = "is_spatial_active"
+)]
+struct FilteredSpatialEntity {
+    #[primary_key]
+    pub id: SpatialEntityId,
+    pub bounds: SBox,
+    pub active: bool,
+}
+
+#[test]
+fn spatial_index_filtered_serde_roundtrip() {
+    let mut table = FilteredSpatialEntityTable::new();
+    table
+        .insert_no_fk(FilteredSpatialEntity {
+            id: SpatialEntityId(1),
+            bounds: SBox::new([0, 0, 0], [5, 5, 5]),
+            active: true,
+        })
+        .unwrap();
+    table
+        .insert_no_fk(FilteredSpatialEntity {
+            id: SpatialEntityId(2),
+            bounds: SBox::new([0, 0, 0], [5, 5, 5]),
+            active: false,
+        })
+        .unwrap();
+
+    let json = serde_json::to_string(&table).unwrap();
+    let restored: FilteredSpatialEntityTable = serde_json::from_str(&json).unwrap();
+
+    // Only active entity should appear after rebuild
+    let hits = restored.intersecting_pos(&SBox::new([0, 0, 0], [5, 5, 5]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, SpatialEntityId(1));
+}

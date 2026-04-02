@@ -1,12 +1,12 @@
 //! Tabulosity — a lightweight, typed, in-memory relational database library.
 //!
 //! Provides typed tables with primary keys, automatic secondary indexes
-//! (simple, compound, filtered, and unique), auto-increment primary keys,
-//! cross-table foreign key integrity, `modify_unchecked` closure-based
-//! in-place mutation (bypasses index maintenance, with debug-build safety),
-//! `QueryOpts` for ordering (asc/desc) and offset (skip N) on all query
-//! methods, and `modify_each_by_*` query-driven batch mutation with the same
-//! debug-build safety checks.
+//! (simple, compound, filtered, unique, and spatial via R-tree), auto-increment
+//! primary keys, cross-table foreign key integrity, `modify_unchecked`
+//! closure-based in-place mutation (bypasses index maintenance, with
+//! debug-build safety), `QueryOpts` for ordering (asc/desc) and offset
+//! (skip N) on all query methods, and `modify_each_by_*` query-driven batch
+//! mutation with the same debug-build safety checks.
 //! All internal data structures use ordered collections (`BTreeMap`/`BTreeSet`
 //! or `InsOrdHashMap`) for deterministic iteration order.
 //!
@@ -31,6 +31,9 @@
 //! - `one_or_many.rs` — `OneOrMany<V, Many>` enum for non-unique hash index
 //!   groups, optimizing the common single-entry case. `RemoveResult` for
 //!   signaling empty/removed/not-found.
+//! - `spatial.rs` — `SpatialKey` trait, `SpatialPoint` marker, `MaybeSpatialKey`
+//!   dispatch trait, and `SpatialIndex` R-tree wrapper (doc-hidden, used by
+//!   generated code). Backed by the `rstar` crate.
 //! - `table.rs` — `Bounded` trait, `FkCheck` trait, `IntoQuery`/`QueryBound`/
 //!   `MatchAll` query types, `QueryOrder`/`QueryOpts` for ordering and offset,
 //!   `in_bounds` helper, and range bound helpers used by generated code.
@@ -42,11 +45,13 @@
 mod error;
 mod ins_ord_hash_map;
 mod one_or_many;
+mod spatial;
 mod table;
 
 pub use error::{DeserializeError, Error};
 pub use ins_ord_hash_map::InsOrdHashMap;
 pub use one_or_many::{HasLen, OneOrMany, RemoveResult};
+pub use spatial::{MaybeSpatialKey, SpatialIndex, SpatialKey, SpatialPoint};
 pub use table::{
     AutoIncrementable, Bounded, FkCheck, IntoQuery, MatchAll, QueryBound, QueryOpts, QueryOrder,
     TableMeta, in_bounds,

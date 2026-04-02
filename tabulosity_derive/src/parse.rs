@@ -1,12 +1,13 @@
 //! Shared attribute parsing utilities for tabulosity derive macros.
 //!
 //! Extracts `#[primary_key]`, `#[primary_key(auto_increment)]`, `#[auto_increment]`,
-//! `#[indexed]` / `#[indexed(hash)]` / `#[indexed(unique)]` / `#[indexed(hash, unique)]`
-//! annotations from struct fields,
+//! `#[indexed]` / `#[indexed(hash)]` / `#[indexed(unique)]` / `#[indexed(spatial)]`
+//! / `#[indexed(hash, unique)]` annotations from struct fields,
 //! `#[primary_key("field1", "field2")]` from struct-level attributes (compound PKs),
-//! `#[index(name = "...", fields(...), kind = "hash", filter = "...", unique)]` from
-//! struct-level attributes, and `#[table(primary_storage = "hash")]` from the struct
-//! being derived. Used by `table.rs` during `#[derive(Table)]` expansion.
+//! `#[index(name = "...", fields(...), kind = "hash"|"btree"|"spatial", filter = "...",
+//! unique)]` from struct-level attributes, and `#[table(primary_storage = "hash")]`
+//! from the struct being derived. Used by `table.rs` during `#[derive(Table)]`
+//! expansion.
 
 use syn::parse::{Parse, ParseStream};
 use syn::{DeriveInput, Field, Ident, LitStr, Token, Type};
@@ -19,6 +20,10 @@ pub enum IndexKind {
     /// InsOrdHashMap-backed index. O(1) lookup, deterministic insertion-order
     /// iteration. Does not support range queries.
     Hash,
+    /// R-tree-backed spatial index. Supports intersection queries on axis-aligned
+    /// bounding boxes. Field type must implement `SpatialKey` (or `Option<T>`
+    /// where `T: SpatialKey`). Cannot be combined with `unique`.
+    Spatial,
 }
 
 /// The backing storage kind for a table's primary key storage (`rows` field).
@@ -152,6 +157,7 @@ impl Parse for IndexedArgs {
         let mut unique = false;
         let mut has_hash = false;
         let mut has_btree = false;
+        let mut has_spatial = false;
 
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
@@ -183,11 +189,20 @@ impl Parse for IndexedArgs {
                     }
                     has_btree = true;
                 }
+                "spatial" => {
+                    if has_spatial {
+                        return Err(syn::Error::new(
+                            ident.span(),
+                            "duplicate `spatial` in #[indexed(...)]",
+                        ));
+                    }
+                    has_spatial = true;
+                }
                 other => {
                     return Err(syn::Error::new(
                         ident.span(),
                         format!(
-                            "unknown #[indexed(...)] argument: `{other}`; expected `hash`, `btree`, or `unique`"
+                            "unknown #[indexed(...)] argument: `{other}`; expected `hash`, `btree`, `spatial`, or `unique`"
                         ),
                     ));
                 }
@@ -197,14 +212,23 @@ impl Parse for IndexedArgs {
             }
         }
 
-        if has_hash && has_btree {
-            return Err(
-                input.error("cannot combine `hash` and `btree` in #[indexed(...)]; pick one kind")
-            );
+        let kind_count = has_hash as u8 + has_btree as u8 + has_spatial as u8;
+        if kind_count > 1 {
+            return Err(input.error(
+                "cannot combine `hash`, `btree`, and `spatial` in #[indexed(...)]; pick one kind",
+            ));
+        }
+
+        if has_spatial && unique {
+            return Err(input.error(
+                "spatial indexes cannot be unique; spatial queries use intersection, not equality",
+            ));
         }
 
         let kind = if has_hash {
             IndexKind::Hash
+        } else if has_spatial {
+            IndexKind::Spatial
         } else {
             IndexKind::BTree
         };
@@ -330,11 +354,12 @@ impl Parse for IndexDeclParsed {
                     match lit.value().as_str() {
                         "hash" => kind = IndexKind::Hash,
                         "btree" => kind = IndexKind::BTree,
+                        "spatial" => kind = IndexKind::Spatial,
                         other => {
                             return Err(syn::Error::new_spanned(
                                 &lit,
                                 format!(
-                                    "unknown index kind: `{other}`; expected `\"hash\"` or `\"btree\"`"
+                                    "unknown index kind: `{other}`; expected `\"hash\"`, `\"btree\"`, or `\"spatial\"`"
                                 ),
                             ));
                         }
@@ -362,6 +387,18 @@ impl Parse for IndexDeclParsed {
 
         if fields.is_empty() {
             return Err(input.error("fields(...) must contain at least one field name"));
+        }
+
+        if kind == IndexKind::Spatial && unique {
+            return Err(input.error(
+                "spatial indexes cannot be unique; spatial queries use intersection, not equality",
+            ));
+        }
+
+        if kind == IndexKind::Spatial && fields.len() > 1 {
+            return Err(input.error(
+                "spatial indexes must have exactly one field; compound spatial indexes are not supported",
+            ));
         }
 
         Ok(IndexDeclParsed {
