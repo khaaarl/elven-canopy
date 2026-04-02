@@ -5846,29 +5846,69 @@ out of the fog as fully-saturated objects against a hazy background, which
 looks incorrect — a fruit cluster at draw-distance edge should fade into
 the fog just like the surrounding voxel mesh does.
 
-Root cause hypothesis: the fog is implemented as a post-process effect
-that reads scene depth from the depth buffer. Billboards rendered with
-a transparent/unshaded material may not write to the depth buffer, or
-may be rendered in a separate pass that runs after the fog compositor
-has already composed the final image. Either way, the fog lerp is never
-applied to billboard fragments.
+Root cause hypothesis: The fog is part of a spatial post-process shader
+(post_process.gdshader) applied to a fullscreen QuadMesh at render_priority
+-10 in the transparent pass. It reads SCREEN_TEXTURE, applies edges + fog,
+and writes the result back. Billboard sprites render at priority 0–1,
+after the fog pass. The working theory is that sprites render after fog
+and are therefore never fogged, but the exact interaction between
+SCREEN_TEXTURE capture timing, render_priority, and transparent pass
+ordering has not been verified in practice.
 
 Likely fix approaches:
-- Split fog into two passes: one that composites on the opaque mesh
-  geometry, and one that runs after the billboard/transparent pass.
-  Godot's compositor allows multiple effects; ordering them correctly
-  relative to the transparent pass should solve it.
+- Split the post-process into two shaders: edge detection (priority -10)
+  and fog (priority 10, after sprites). The fog shader would need to
+  affect sprites already in the framebuffer without relying on
+  SCREEN_TEXTURE (which may not include sprites — Godot docs suggest the
+  3D screen capture happens before the transparent pass, but this has not
+  been confirmed experimentally).
 - Alternatively, move the fog logic into the billboard shader itself
   (sample depth or use VERTEX.z to compute fog factor and lerp the
   output color). This is simpler but means maintaining fog parameters
   in two places (mesh shader and billboard shader).
-- A third option: ensure billboards write to the depth buffer and are
-  included in the same compositor pass as opaque geometry. May require
-  changing the billboard material's depth-write settings.
+- A third option: use Godot's CompositorEffect API (available since
+  Godot 4.3) to run fog as a post-compositor effect after the entire
+  transparent pass.
 
 Affected objects: fruit sprites (VoxelType::Fruit rendered as billboard),
 creature sprites, arrow sprites, and any other billboard-rendered world
 objects.
+
+**Failed approaches:**
+
+**Attempt 1 — Two-pass split with blend_mul edges + blend_mix fog:**
+Split post_process.gdshader into geometry_edges.gdshader (priority -10,
+blend_mul) and distance_fog.gdshader (priority 10, default blend_mix).
+The edge shader used blend_mul to darken edges by multiplying the
+framebuffer without reading SCREEN_TEXTURE. The fog shader output
+ALBEDO = fog_color with ALPHA = fog_factor, relying on blend_mix to
+blend over the framebuffer. Result: edges were much less pronounced or
+nonexistent, fog was completely absent, and toggling settings did nothing.
+Suspected causes: blend_mul may not work as expected for fullscreen quads
+in Godot's spatial shader pipeline; the fog shader may not have been
+treated as transparent or may not have rendered at the expected priority.
+The exact failure mode is unknown.
+
+**Attempt 2 — fog reads SCREEN_TEXTURE at priority 10:**
+Added explicit blend_mix to fog render_mode. Changed fog shader to read
+SCREEN_TEXTURE and write back with ALPHA = 1.0. The theory was that
+SCREEN_TEXTURE would be captured after sprites at priority 10. This was
+not tested by the user — it was superseded before testing. Godot docs
+suggest this would not work (3D screen capture may happen before the
+transparent pass), but this has not been verified experimentally.
+
+**Attempt 3 — Proven edge technique + blend_mix fog:**
+Reverted edge shader to the original SCREEN_TEXTURE read-modify-write
+technique (identical to the working post_process.gdshader minus the fog
+section). Fog shader used explicit blend_mix with ALPHA = fog_factor,
+no SCREEN_TEXTURE read. Result: edges worked correctly (as expected,
+since the technique was identical to the proven original). Fog was still
+completely absent. The blend_mix + ALPHA approach for the fullscreen fog
+quad does not produce visible output. Suspected causes: ALPHA output may
+not behave as expected in this shader configuration, or Godot may handle
+alpha blending differently for fullscreen quads with depth_test_disabled,
+or there may be some other aspect of the rendering pipeline that prevents
+this approach from working. The exact failure mode is unknown.
 
 **Related:** F-distance-fog
 
