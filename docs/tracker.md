@@ -255,7 +255,8 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tab-indexmap-fork    Forked IndexMap with tombstone compaction (alternative to F-tab-ordered-idx)
 [ ] F-tab-joins            Join iterators across tables
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
-[ ] F-tab-spatial          Tabulosity spatial index (R*-tree)
+[ ] F-tab-spatial          Tabulosity spatial index — simple R-tree, point queries
+[ ] F-tab-spatial-2        Tabulosity spatial index — compound indexes, range/KNN queries
 [ ] F-tame-aggro           Taming failure can aggro the target animal
 [ ] F-task-assign-opt      Event-driven bidirectional task assignment
 [ ] F-task-panel-sprites   Creature sprites in tasks panel and activity cards
@@ -5678,6 +5679,9 @@ fly from terrain type at the world map location.
 **No separate sims:** Same sim code, same event queue, same DB. The zone
 is a simulation fidelity hint, not a separate world.
 
+**Per-zone coordinate systems:** Each zone has its own local voxel coordinate system. Spatial queries (creature lookup, fruit search, hostile detection) must be scoped to a zone. This requires compound spatial indexes in tabulosity — keyed by `(zone_id, spatial_box)` — so that a query like "creatures near position X in zone Z" only searches the R-tree for that zone, not the entire world. This is the primary reason this feature is blocked by F-tab-spatial-2.
+
+**Blocked by:** F-tab-spatial-2
 **Related:** F-bigger-world, F-dwarf-fort-gen, F-enemy-raids, F-forest-radar, F-lesser-trees, F-military-campaign, F-multi-tree, F-settlement-gen, F-tree-db, F-world-map
 
 ### Soul Mechanics & Magic
@@ -7922,29 +7926,48 @@ code.
 
 **Related:** F-save-load, F-sim-db-impl, F-tab-schema-evol
 
-#### F-tab-spatial — Tabulosity spatial index (R*-tree)
+#### F-tab-spatial — Tabulosity spatial index — simple R-tree, point queries
 **Status:** Todo
 
-**Status: speculative/design phase.** A general-purpose spatial index for tabulosity, enabling efficient spatial queries (box, KNN, radius) on any table with coordinate-typed fields. Intended as a first-class tabulosity index kind alongside BTree and Hash.
+Simple spatial index kind for tabulosity, backed by the `rstar` crate. Enough to replace the current manual `SimState.spatial_index` with a tabulosity-managed index on the Creature table.
 
-**Data structure:** R*-tree (Beckmann et al., 1990). Height-balanced (all leaves at same depth, like a B-tree), self-balancing, adapts to density without tuning parameters. Chosen over the basic R-tree for its overlap-minimizing insertion heuristic and forced-reinsert-on-overflow, which produce tighter bounding boxes and better query performance. Forced reinsert is bounded (each tree level reinserts at most once per insert operation), keeping inserts O(log n). Sibling nodes can have overlapping bounding boxes (unlike k-d trees or octrees which partition space), so queries may descend multiple branches in overlap zones, but R*-tree minimization keeps this well-bounded for non-pathological data distributions.
+**Scope (simple version):** Add a new `kind = "spatial"` index variant to tabulosity's `#[index(...)]` derive macro. Supports point intersection queries only — "which entries' bounding boxes contain/intersect this query box?" No compound spatial indexes, no KNN, no radius queries. Those belong to F-tab-spatial-2.
 
-**Existing crate candidate:** The `rstar` crate (v0.12.2, ~20M downloads, georust org, MIT/Apache-2.0) is a strong candidate for initial experimentation rather than writing a custom R*-tree from scratch. It supports N-dimensional coordinates, generic over coord type (i32 works natively via `RTreeNum`), has `Rectangle` for volumetric entries, KNN/box/distance queries, custom distance metrics via `PointDistance` trait, and mutable insert/remove. Dependencies are minimal (`num-traits`, `heapless`, `smallvec`). Known caveats: (1) `bulk_load` uses f32 arithmetic on element counts (not coordinates) to determine tree structure — safe for determinism, or avoidable by inserting one-by-one; (2) iteration order for range queries is not guaranteed — results must be sorted externally for determinism (KNN is distance-sorted but needs coordinate tie-breaking); (3) recursive Vec-of-children node storage is less cache-friendly than flat arrays but fine at game scale. Estimated ~2-5× slower than BTreeMap for point lookups and insert/delete due to bounding-box overhead, but dramatically better for spatial range queries and KNN which BTreeMap cannot efficiently support. Tabulosity's existing field-change detection means the spatial index is only updated when the position field actually changes, not on every row update.
+**Backing crate:** `rstar` (v0.12.2, georust org, MIT/Apache-2.0). N-dimensional, generic over coord type (i32 works natively), supports volumetric `Rectangle` entries, mutable insert/remove. Known caveats: (1) `bulk_load` uses f32 arithmetic for tree structure — fine since our coords are small integers representable exactly in f32, and we sort outputs by PK regardless; (2) iteration order not guaranteed — all query results sorted by PK for determinism.
 
-**Key design points (still speculative):**
+**Thin wrapper trait:** Tabulosity should NOT expose rstar types in its public API. Define a tabulosity `SpatialKey` trait that wraps what rstar needs (axis count, per-axis min/max, envelope/intersection). The rstar dependency is an implementation detail, swappable later. The indexed field type must implement `SpatialKey` (or be `Option<T>` where `T: SpatialKey`).
 
-- **SpatialKey trait:** Generic over any cartesian coordinate type — integer or float, any dimensionality. The trait provides axis count, per-axis min/max value access. VoxelCoord is the primary initial consumer but the design should not be VoxelCoord-specific. If using rstar, this may map to rstar's `RTreeObject` / `PointDistance` traits rather than a custom trait.
-- **VoxelBox type:** A new `VoxelBox { min: VoxelCoord, max: VoxelCoord }` (inclusive) replaces bare `VoxelCoord` for position fields on tables that need spatial indexing. Points are represented as zero-extent boxes (`VoxelBox::point(coord)` where min == max). `VoxelBox::center()` returns the integer center (biased downward for even dimensions via `min + (max - min) / 2`), serving as the canonical rendering coordinate. This is the natural indexed field type for the R*-tree since R-tree entries are already bounding boxes. The schema change from `VoxelCoord` to `VoxelBox` is independent of the R*-tree implementation and could land separately.
-- **Distance metric:** Caller-choosable (Chebyshev, Manhattan, squared Euclidean). Chebyshev is the recommended default because its cube iso-surfaces align with the R-tree's axis-aligned bounding boxes, giving tightest branch-and-bound pruning. Deterministic tie-breaking: results ordered by (distance, coordinate lexicographic order) for total ordering.
-- **Volumetric entries:** Entries can be points or volumes. A 2×2×2 creature is stored as a VoxelBox spanning its full footprint. Queries (box intersection, KNN, radius) work against the entry's bounding box, not just an anchor point. KNN distance is measured from the query point to the nearest face of the entry's box. Points are just zero-extent boxes — the R*-tree doesn't distinguish.
-- **Compound indexes:** A spatial field can appear in a compound index alongside non-spatial fields. Conceptually: BTreeMap<non_spatial_field, RStar<spatial_field, BTreeSet<PK>>>. Precedent exists with BTree+Hash compound indexes. Design details TBD.
-- **Query API:** Not yet designed. Likely includes box query, KNN, and radius query. Iteration order must be deterministic.
-- **Update path:** From tabulosity's perspective, updates are always delete + reinsert (consistent with how all tabulosity indexes work). O(log n) per update. If profiling later shows spatial index updates are a bottleneck, a check-and-skip optimization (detect that the moved entry still fits in its current leaf node, skip tree restructuring) could be added inside the R*-tree implementation below the tabulosity API, without changing the tabulosity interface. Not needed initially.
-- **Implementation plan:** Start by experimenting with rstar as the backing data structure, wrapping it in a tabulosity-compatible interface with deterministic result ordering. If rstar proves unsuitable (performance, determinism issues, trait impedance), fall back to a custom R*-tree implementation. Integrate with the derive macro once the core abstraction is stable.
+**Option handling:** Spatial indexes on `Option<T>` fields store `None`-keyed primary keys in a side container (BTreeSet if the table's primary storage is BTree-ordered, HashSet if hash-ordered). `None` values are NOT inserted into the R-tree since they have no geometry. The `None` set ensures all PKs are tracked somewhere. The simple version does not need to expose query methods for the `None` set — F-tab-spatial-2 will decide on iteration/query semantics for nulls.
 
-**Motivating use cases:** Creature position lookup (replacing SimState.spatial_index), tree fruit location queries ("find 10 nearest fruit"), hostile detection scanning, any future "find things near X" query. The creature case is notable because the current manual spatial index has special logic for multi-voxel creatures (2×2×2 trolls register at all occupied voxels) — with VoxelBox entries in the R*-tree, a troll is simply stored as a 2×2×2 box and queries find it via box intersection, no per-voxel registration needed.
+**No spatial fields in primary keys:** The derive macro should emit a compile error if a `SpatialKey` field appears in the primary key. Spatial types are about containment/intersection, not equality — mixing them in a PK is semantically wrong.
 
-**Blocks:** B-retire-spatidx
+**Filter support:** Works with tabulosity's existing `filter = "predicate_fn"` mechanism. Filter and Option-None exclusion are independent concerns — a row can be excluded from the R-tree because its spatial field is `None`, or because the filter predicate returns false, or both.
+
+**Generated query method:** `intersecting_{name}(&envelope)` — returns all rows whose spatial key intersects the query envelope, sorted by PK for determinism.
+
+**Index maintenance:** Same delete+reinsert pattern as all tabulosity indexes. Only updates the R-tree when the spatial field actually changes (tabulosity's existing field-change detection). R-tree is transient (`serde(skip)` equivalent) — rebuilt from row data on deserialization via `rebuild_all_indexes()`.
+
+**Motivating use case:** Creature position lookup. The Creature table would have an `Option<VoxelBox>` field indexed with `kind = "spatial"` and `filter = "Creature::is_alive"`. A 2×2×2 creature is stored as a single bounding box; point queries find it via box intersection. Replaces the current per-voxel registration approach. (The actual migration is B-retire-spatidx, not this item.)
+
+**Blocks:** B-retire-spatidx, F-tab-spatial-2
+
+#### F-tab-spatial-2 — Tabulosity spatial index — compound indexes, range/KNN queries
+**Status:** Todo
+
+Advanced spatial index features for tabulosity, building on F-tab-spatial's simple R-tree index.
+
+**Compound spatial indexes:** A spatial field combined with non-spatial fields in a single index. Conceptually: `BTreeMap<non_spatial_field, RTree<spatial_field, PK>>`. Enables queries like "all creatures of civilization X within bounding box Y" without scanning all civilizations. Design details TBD — needs to decide on query API shape, whether the non-spatial prefix uses BTree or Hash, and how compound + filter interact.
+
+**Range and radius queries:** Query methods beyond simple intersection — find all entries within a distance threshold from a query point, using caller-choosable distance metrics (Chebyshev, Manhattan, squared Euclidean). Chebyshev recommended as default since its cube iso-surfaces align with R-tree axis-aligned bounding boxes for tight pruning. Deterministic tie-breaking: results ordered by (distance, PK).
+
+**KNN queries:** K-nearest-neighbor lookups — "find the 10 closest fruit trees to this elf." rstar supports this natively via `nearest_neighbor_iter()`. Needs deterministic ordering (distance, then PK for ties).
+
+**None-set query API:** F-tab-spatial stores `None`-keyed PKs in a side container but doesn't expose query methods for them. This item should decide on iteration/query semantics for the `None` set — at minimum, a method to iterate all PKs with null spatial keys, and inclusion in "iterate everything" methods.
+
+**Motivating use cases:** The primary driver is F-zone-world: each zone has its own local coordinate system, so all spatial queries must be scoped by zone — requiring compound indexes keyed by `(zone_id, spatial_box)`. A query like "creatures near position X in zone Z" searches only that zone's R-tree partition, not the entire world. Beyond zones: hostile detection scanning (currently O(n) full scan of all creatures — a radius query would be O(log n + k)), tree fruit location queries ("find 10 nearest fruit"), social proximity scanning, any future "find things near X" query.
+
+**Blocked by:** F-tab-spatial
+**Blocks:** F-zone-world
 
 #### F-tab-unique-idx — Unique index enforcement
 **Status:** Done
