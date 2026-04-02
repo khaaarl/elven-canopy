@@ -69,10 +69,12 @@ fn dance_social_check_upserts_friendliness() {
     let elves = spawn_test_elves(&mut sim, 3);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position;
 
-    // Explicitly set CHA so impression checks reliably produce opinions,
-    // regardless of randomised stats from spawn.
+    // Zero all stats and skills, then set CHA high so impression checks
+    // reliably produce non-zero deltas (roll = CHA + Culture + noise(σ=50);
+    // with CHA=100 and Culture=0 the roll almost always exceeds +50).
     for &eid in &elves {
-        set_trait(&mut sim, eid, TraitKind::Charisma, 10);
+        zero_creature_stats(&mut sim, eid);
+        set_trait(&mut sim, eid, TraitKind::Charisma, 100);
     }
 
     let activity_id = setup_executing_dance(&mut sim, &elves, location);
