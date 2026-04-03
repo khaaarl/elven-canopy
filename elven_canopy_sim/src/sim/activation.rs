@@ -247,7 +247,7 @@ impl SimState {
             };
             let node = self
                 .graph_for_species(creature.species)
-                .node_at(creature.position)
+                .node_at(creature.position.min)
                 .unwrap(); // safe: creature_is_supported passed
             (Some(node), creature.action_kind)
         };
@@ -261,7 +261,7 @@ impl SimState {
                 .db
                 .creatures
                 .get(&creature_id)
-                .map(|c| c.position)
+                .map(|c| c.position.min)
                 .unwrap();
             let graph = self.graph_for_species(species);
             let new_node = match graph.find_nearest_node(pos, 5) {
@@ -270,11 +270,10 @@ impl SimState {
             };
             let new_pos = graph.node(new_node).position;
             if let Some(mut c) = self.db.creatures.get(&creature_id) {
-                c.position = new_pos;
+                c.position = c.position.with_anchor(new_pos);
                 c.path = None;
                 let _ = self.db.update_creature(c);
             }
-            self.update_creature_spatial_index(creature_id, species, pos, new_pos);
             self.set_creature_activation_tick(creature_id, self.tick + 1);
             return;
         }
@@ -301,7 +300,7 @@ impl SimState {
                     .db
                     .creatures
                     .get(&creature_id)
-                    .and_then(|c| self.graph_for_species(c.species).node_at(c.position));
+                    .and_then(|c| self.graph_for_species(c.species).node_at(c.position.min));
                 if current_node.is_none() {
                     return;
                 }
@@ -430,7 +429,7 @@ impl SimState {
                         .detect_hostile_targets(
                             creature_id,
                             species,
-                            creature.position,
+                            creature.position.min,
                             creature.civ_id,
                             detection_range_sq,
                         )
@@ -726,7 +725,7 @@ impl SimState {
                 }
             }
 
-            let target_pos = target.map(|c| c.position);
+            let target_pos = target.map(|c| c.position.min);
             match target_pos {
                 None => {
                     // Target creature is gone — abandon.
@@ -773,7 +772,7 @@ impl SimState {
                     // No reachable nav node for the task location — abandon.
                     self.interrupt_task(creature_id, task_id);
                     if let Some(c) = self.db.creatures.get(&creature_id) {
-                        let old_pos = c.position;
+                        let old_pos = c.position.min;
                         let graph = self.graph_for_species(species);
                         if let Some(new_node) = graph.find_nearest_node(old_pos, 5) {
                             self.ground_wander(creature_id, new_node, events);
@@ -794,12 +793,11 @@ impl SimState {
                 self.interrupt_task(creature_id, task_id);
                 let graph = self.graph_for_species(species);
                 if let Some(mut c) = self.db.creatures.get(&creature_id) {
-                    let old_pos = c.position;
+                    let old_pos = c.position.min;
                     if let Some(new_node) = graph.find_nearest_node(old_pos, 5) {
                         let new_pos = graph.node(new_node).position;
-                        c.position = new_pos;
+                        c.position = c.position.with_anchor(new_pos);
                         let _ = self.db.update_creature(c);
-                        self.update_creature_spatial_index(creature_id, species, old_pos, new_pos);
                         self.ground_wander(creature_id, new_node, events);
                     }
                 }
@@ -895,7 +893,7 @@ impl SimState {
         }
         // Flying creatures: position proximity.
         let pos = match self.db.creatures.get(&creature_id) {
-            Some(c) => c.position,
+            Some(c) => c.position.min,
             None => return false,
         };
         let dx = (pos.x - task_location_coord.x).abs();
@@ -1161,7 +1159,7 @@ impl SimState {
         let mope_coord = self
             .find_assigned_home_bed(creature_id)
             .map(|(bed_coord, _, _)| bed_coord)
-            .or_else(|| self.db.creatures.get(&creature_id).map(|c| c.position));
+            .or_else(|| self.db.creatures.get(&creature_id).map(|c| c.position.min));
         let mope_coord = match mope_coord {
             Some(c) => c,
             None => return,
@@ -1339,7 +1337,7 @@ impl SimState {
         }
         let inv_id = creature.inventory_id;
         let current_task = creature.current_task;
-        let creature_position = creature.position;
+        let creature_position = creature.position.min;
 
         // Get equipment wants from the creature's military group.
         let equipment_wants = creature
@@ -1471,7 +1469,7 @@ impl SimState {
                 .detect_hostile_targets(
                     creature_id,
                     species,
-                    creature.position,
+                    creature.position.min,
                     creature.civ_id,
                     detection_range_sq,
                 )

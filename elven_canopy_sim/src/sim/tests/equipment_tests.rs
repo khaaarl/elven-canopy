@@ -158,7 +158,7 @@ fn acquire_item_auto_equips_one_from_multi_qty() {
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
-        c.position = pile_nav_pos;
+        c.position = VoxelBox::point(pile_nav_pos);
         sim.db.update_creature(c).unwrap();
     }
 
@@ -346,7 +346,7 @@ fn acquire_item_preserves_material() {
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
-        c.position = pile_nav_pos;
+        c.position = VoxelBox::point(pile_nav_pos);
         sim.db.update_creature(c).unwrap();
     }
 
@@ -429,7 +429,7 @@ fn acquire_item_auto_equips_clothing() {
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
-        c.position = pile_nav_pos;
+        c.position = VoxelBox::point(pile_nav_pos);
         sim.db.update_creature(c).unwrap();
     }
 
@@ -519,7 +519,7 @@ fn acquire_item_does_not_equip_if_slot_occupied() {
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
-        c.position = pile_nav_pos;
+        c.position = VoxelBox::point(pile_nav_pos);
         sim.db.update_creature(c).unwrap();
     }
 
@@ -806,7 +806,7 @@ fn soldier_acquires_military_equipment_no_ownership_change() {
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
-        c.position = pile_nav_pos;
+        c.position = VoxelBox::point(pile_nav_pos);
         sim.db.update_creature(c).unwrap();
     }
 
@@ -1230,7 +1230,7 @@ fn military_equipment_drop_drops_other_owned_creature_items() {
 
     // Verify the dropped bow is now unowned in a ground pile (not stuck as
     // owned by elf_b forever).
-    let elf_a_pos = sim.db.creatures.get(&elf_a).unwrap().position;
+    let elf_a_pos = sim.db.creatures.get(&elf_a).unwrap().position.min;
     if let Some(pile) = sim
         .db
         .ground_piles
@@ -1961,7 +1961,7 @@ fn military_equipment_auto_equips_wearable_on_pickup() {
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
-        c.position = pile_nav_pos;
+        c.position = VoxelBox::point(pile_nav_pos);
         sim.db.update_creature(c).unwrap();
     }
 
@@ -2081,7 +2081,7 @@ fn military_equipment_auto_equip_displaces_existing_clothing() {
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
-        c.position = pile_nav_pos;
+        c.position = VoxelBox::point(pile_nav_pos);
         sim.db.update_creature(c).unwrap();
     }
 
@@ -2184,7 +2184,7 @@ fn military_equipment_non_wearable_not_equipped() {
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
-        c.position = pile_nav_pos;
+        c.position = VoxelBox::point(pile_nav_pos);
         sim.db.update_creature(c).unwrap();
     }
 

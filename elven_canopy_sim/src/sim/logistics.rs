@@ -209,7 +209,7 @@ impl SimState {
                 // are moved; personal belongings stay in the creature's
                 // inventory.
                 if let Some(creature) = self.db.creatures.get(&creature_id) {
-                    let pos = creature.position;
+                    let pos = creature.position.min;
                     let creature_inv = creature.inventory_id;
                     let pile_id = self.ensure_ground_pile(pos);
                     let pile_inv = self.db.ground_piles.get(&pile_id).unwrap().inventory_id;
@@ -338,10 +338,10 @@ impl SimState {
 
         let mut unclaimed_fruit: Vec<(VoxelCoord, NavNodeId)> = Vec::new();
         for tf in self.db.tree_fruits.iter_all() {
-            if !claimed_positions.contains(&tf.position)
-                && let Some(nav_node) = self.nav_graph.find_nearest_node(tf.position, 5)
+            if !claimed_positions.contains(&tf.position.min)
+                && let Some(nav_node) = self.nav_graph.find_nearest_node(tf.position.min, 5)
             {
-                unclaimed_fruit.push((tf.position, nav_node));
+                unclaimed_fruit.push((tf.position.min, nav_node));
             }
         }
 

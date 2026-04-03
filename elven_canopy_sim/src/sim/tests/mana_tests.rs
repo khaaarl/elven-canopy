@@ -1020,7 +1020,7 @@ fn drained_elf_can_still_claim_non_mana_tasks() {
 fn mana_wasted_position_recorded_on_failed_drain() {
     let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
-    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
 
     // Give the elf a task so try_drain_mana has something to work with.
     let task_id = TaskId::new(&mut sim.rng);

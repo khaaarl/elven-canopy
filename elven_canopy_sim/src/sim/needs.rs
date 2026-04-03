@@ -33,9 +33,9 @@ impl SimState {
         // passing to find_nearest which expects nav-node-exact coords).
         let mut fruit_candidates: Vec<(VoxelCoord, NavNodeId, VoxelCoord)> = Vec::new();
         for tf in self.db.tree_fruits.iter_all() {
-            if let Some(nav_node) = graph.find_nearest_node(tf.position, 5) {
+            if let Some(nav_node) = graph.find_nearest_node(tf.position.min, 5) {
                 let nav_pos = graph.node(nav_node).position;
-                fruit_candidates.push((tf.position, nav_node, nav_pos));
+                fruit_candidates.push((tf.position.min, nav_node, nav_pos));
             }
         }
 
@@ -109,7 +109,7 @@ impl SimState {
             let tree_fruit = self
                 .db
                 .tree_fruits
-                .by_position(&fruit_pos, tabulosity::QueryOpts::ASC)
+                .by_position(&VoxelBox::point(fruit_pos), tabulosity::QueryOpts::ASC)
                 .into_iter()
                 .next();
             let material = tree_fruit
@@ -122,7 +122,7 @@ impl SimState {
 
             // Create ground pile at creature's position with species material.
             if let Some(creature) = self.db.creatures.get(&creature_id) {
-                let pile_pos = creature.position;
+                let pile_pos = creature.position.min;
                 let pile_id = self.ensure_ground_pile(pile_pos);
                 let pile = self.db.ground_piles.get(&pile_id).unwrap();
                 self.inv_add_item(

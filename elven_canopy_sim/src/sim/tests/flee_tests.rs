@@ -12,7 +12,7 @@ use super::*;
 fn elf_flees_from_adjacent_goblin() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
     // Place goblin adjacent to elf.
@@ -27,7 +27,7 @@ fn elf_flees_from_adjacent_goblin() {
 
     // Run one activation — elf should move away from the goblin.
     sim.step(&[], tick + 2);
-    let elf_new_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_new_pos = sim.db.creatures.get(&elf).unwrap().position.min;
 
     // The elf should have moved (not stayed in place).
     assert_ne!(elf_pos, elf_new_pos, "Elf should flee from adjacent goblin");
@@ -91,7 +91,7 @@ fn elf_does_not_flee_when_goblin_out_of_range() {
     // goblin and wander moves 1 voxel at a time, so after 10k ticks
     // it shouldn't have moved more than ~20 voxels in any direction.
     let dist_before = elf_pos.manhattan_distance(goblin_pos);
-    let dist_after = elf_after.position.manhattan_distance(goblin_pos);
+    let dist_after = elf_after.position.min.manhattan_distance(goblin_pos);
     assert!(
         dist_after <= dist_before + 10,
         "Elf should not be fleeing (dist_before={dist_before}, dist_after={dist_after})"
@@ -102,7 +102,7 @@ fn elf_does_not_flee_when_goblin_out_of_range() {
 fn flee_interrupts_current_task() {
     let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
 
     // Give the elf a GoTo task to somewhere.
     let elf_node = creature_node(&sim, elf);
@@ -144,7 +144,7 @@ fn flee_interrupts_current_task() {
     );
 
     // Elf should have moved away from goblin.
-    let elf_new_pos = elf_creature.position;
+    let elf_new_pos = elf_creature.position.min;
     assert_ne!(elf_pos, elf_new_pos, "Elf should have moved while fleeing");
 }
 
@@ -152,7 +152,7 @@ fn flee_interrupts_current_task() {
 fn elf_resumes_normal_behavior_after_threat_leaves() {
     let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let elf_node = creature_node(&sim, elf);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -220,7 +220,7 @@ fn passive_species_with_detection_flees() {
     deer_style.hostile_detection_range_sq = 225;
 
     let deer = spawn_species(&mut sim, Species::Deer);
-    let deer_pos = sim.db.creatures.get(&deer).unwrap().position;
+    let deer_pos = sim.db.creatures.get(&deer).unwrap().position.min;
 
     // Spawn a goblin adjacent to the deer.
     let goblin = spawn_species(&mut sim, Species::Goblin);
@@ -240,7 +240,7 @@ fn passive_species_with_detection_flees() {
     schedule_activation_at(&mut sim, deer, tick + 1);
     sim.step(&[], tick + 2);
 
-    let deer_new_pos = sim.db.creatures.get(&deer).unwrap().position;
+    let deer_new_pos = sim.db.creatures.get(&deer).unwrap().position.min;
     assert_ne!(
         deer_pos, deer_new_pos,
         "Passive deer should flee from adjacent goblin"
@@ -264,7 +264,7 @@ fn flee_step_returns_true_when_threat_detected() {
     // and the creature has neighbors to flee to.
     let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let elf_node = creature_node(&sim, elf);
 
     // Place goblin adjacent.
@@ -283,7 +283,7 @@ fn flee_step_returns_true_when_threat_detected() {
 fn flee_from_multiple_threats_uses_nearest() {
     let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
 
     // Spawn two goblins at different distances.
     let goblin_near = spawn_species(&mut sim, Species::Goblin);
@@ -299,7 +299,7 @@ fn flee_from_multiple_threats_uses_nearest() {
     schedule_activation_at(&mut sim, elf, tick + 1);
     sim.step(&[], tick + 2);
 
-    let elf_new_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_new_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     assert_ne!(elf_pos, elf_new_pos, "Elf should have fled");
 
     // Elf should have moved away from the nearest goblin (at x+1).
@@ -652,7 +652,7 @@ fn ammo_exhausted_flee_disengages() {
     };
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
     let goblin_node = creature_node(&sim, goblin);
 
     // Give goblin a bow but NO arrows.
@@ -694,7 +694,7 @@ fn ammo_exhausted_switch_to_melee_pursues() {
     };
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
     let goblin_node = creature_node(&sim, goblin);
 
     // Give goblin a bow but NO arrows.
@@ -738,7 +738,7 @@ fn prefer_melee_closes_distance_before_shooting() {
     };
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
     let goblin_node = creature_node(&sim, goblin);
 
     // Give goblin bow + arrows.
@@ -766,7 +766,7 @@ fn prefer_melee_closes_distance_before_shooting() {
     // Goblin should have moved (taken a step along the nav graph toward target).
     // Note: the nav graph may route around terrain, so Manhattan distance can
     // temporarily increase. The key assertion is no projectile + movement.
-    let new_goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let new_goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
     assert_ne!(
         goblin_pos, new_goblin_pos,
         "PreferMelee creature should have moved toward target"
@@ -792,7 +792,7 @@ fn prefer_ranged_shoots_before_closing() {
     };
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
     let goblin_node = creature_node(&sim, goblin);
 
     // Give goblin bow + arrows.
@@ -908,7 +908,7 @@ fn non_civ_defensive_creature_not_targeted_by_civ() {
     let deer_id = spawn_species(&mut sim, Species::Deer);
 
     // Place them near each other.
-    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     let deer_pos = VoxelCoord::new(elf_pos.x + 2, elf_pos.y, elf_pos.z);
     force_position(&mut sim, deer_id, deer_pos);
 
@@ -997,7 +997,7 @@ fn defensive_creature_flees_far_threat_but_does_not_pursue() {
     sim.config.defensive_pursuit_range_sq = 9; // ~3 voxels
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
     let goblin_node = creature_node(&sim, goblin);
     force_idle(&mut sim, goblin);
 
@@ -1021,7 +1021,7 @@ fn defensive_creature_flees_far_threat_but_does_not_pursue() {
     );
 
     // Now via wander: the goblin should just ground_random_wander (not pursue).
-    let goblin_pos_before = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_pos_before = sim.db.creatures.get(&goblin).unwrap().position.min;
     sim.ground_wander(goblin, goblin_node, &mut events);
 
     // Goblin moved (random wander), but did NOT pursue toward the elf.
@@ -1113,7 +1113,7 @@ fn aggressive_soldier_interrupts_low_priority_task_to_fight() {
 
     // Create a low-priority AcquireItem task and assign it to the elf.
     // The task is at a distant location so the elf would be walking to it.
-    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     let far_pos = VoxelCoord::new(elf_pos.x + 20, elf_pos.y, elf_pos.z);
     let task_nav = sim.nav_graph.find_nearest_node(far_pos, 10).unwrap();
     let task_id = TaskId::new(&mut sim.rng);
@@ -1201,7 +1201,7 @@ fn creature_does_not_freeze_after_combat_preempts_task() {
     force_guaranteed_hits(&mut sim, elf_id);
 
     // Give elf a low-priority task.
-    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     let far_pos = VoxelCoord::new(elf_pos.x + 20, elf_pos.y, elf_pos.z);
     let task_nav = sim.nav_graph.find_nearest_node(far_pos, 10).unwrap();
     let task_id = TaskId::new(&mut sim.rng);
@@ -1304,7 +1304,7 @@ fn defensive_elf_fights_instead_of_claiming_non_preemptable_task() {
     arm_with_bow_and_arrows(&mut sim, elf_id, 20);
     zero_creature_stats(&mut sim, elf_id);
 
-    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
 
     // Remove all existing available tasks so we control exactly what's available.
     let all_tasks: Vec<TaskId> = sim
@@ -1417,7 +1417,7 @@ fn aggressive_soldier_shoots_repeatedly_over_time() {
 
     // Position elf and orc with clear LOS, within detection range.
     // Give orc high HP so it survives all 20 arrows.
-    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     let orc_id = spawn_species(&mut sim, Species::Orc);
     let mut orc = sim.db.creatures.get(&orc_id).unwrap();
     orc.hp = 10_000;
@@ -1487,7 +1487,7 @@ fn civilian_elf_flees_instead_of_fighting() {
     // Give elf bow + arrows (has the capability to fight, but shouldn't).
     arm_with_bow_and_arrows(&mut sim, elf_id, 20);
 
-    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     let goblin_id = spawn_species(&mut sim, Species::Goblin);
     let goblin_pos = VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin_id, goblin_pos);
@@ -1514,7 +1514,7 @@ fn civilian_elf_flees_instead_of_fighting() {
     // Elf should have moved (fled from goblin). The nav graph may route
     // around terrain so we can't guarantee distance increased, but the elf
     // should not be standing still.
-    let elf_new_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let elf_new_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     assert_ne!(
         elf_pos, elf_new_pos,
         "Civilian elf should have fled (moved from original position)"
@@ -1559,7 +1559,7 @@ fn defensive_elf_shoots_at_target_beyond_pursuit_range() {
     arm_with_bow_and_arrows(&mut sim, elf_id, 20);
     zero_creature_stats(&mut sim, elf_id);
 
-    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
 
     // Place orc at 10 voxels — beyond pursuit range (25 = 5^2) but within
     // detection range (225 = 15^2).
@@ -1683,8 +1683,8 @@ fn defensive_elf_with_flee_ammo_shoots_troll_at_10_voxels() {
     }
 
     // Record positions and arrow count.
-    let elf_start_pos = sim.db.creatures.get(&elf_id).unwrap().position;
-    let troll_pos = sim.db.creatures.get(&troll_id).unwrap().position;
+    let elf_start_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
+    let troll_pos = sim.db.creatures.get(&troll_id).unwrap().position.min;
     let dx = (elf_start_pos.x as i64 - troll_pos.x as i64).abs();
     let dy = (elf_start_pos.y as i64 - troll_pos.y as i64).abs();
     let dz = (elf_start_pos.z as i64 - troll_pos.z as i64).abs();
@@ -1761,7 +1761,7 @@ fn defensive_elf_does_not_freeze_after_shooting_once() {
     set_military_group(&mut sim, elf_id, Some(soldiers.id));
     arm_with_bow_and_arrows(&mut sim, elf_id, 20);
 
-    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
 
     // Spawn troll CLOSE (3 voxels, well within both detection and pursuit).
     let troll_spawn = VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z);
@@ -1848,7 +1848,7 @@ fn defensive_elf_with_task_interrupts_to_shoot_troll_at_10_voxels() {
     force_guaranteed_hits(&mut sim, elf_id);
     arm_with_bow_and_arrows(&mut sim, elf_id, 20);
 
-    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
 
     // Give elf a low-priority Autonomous task (walking far away).
     let far_pos = VoxelCoord::new(elf_pos.x + 30, elf_pos.y, elf_pos.z);
@@ -1987,7 +1987,7 @@ fn debug_spawn_troll_via_command_elf_detects_and_shoots() {
         .find(|c| c.species == Species::Troll && c.vital_status == VitalStatus::Alive)
         .expect("troll should have been spawned");
     let troll_id = troll.id;
-    let troll_pos = troll.position;
+    let troll_pos = troll.position.min;
 
     // Verify positions: elf and troll should be on the same Y level and
     // within detection range.

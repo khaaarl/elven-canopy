@@ -740,7 +740,7 @@ fn strength_modifies_melee_damage() {
     sim.db.update_creature_trait(t).unwrap();
 
     // Position them adjacent and make the goblin strike.
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, goblin);
@@ -1128,7 +1128,7 @@ fn hornet_spawns_at_air_position_not_nav_node() {
 
     let creature = sim.db.creatures.get(&id).unwrap();
     // Hornet should be at the exact air position, not snapped to a nav node.
-    assert_eq!(creature.position, air_pos);
+    assert_eq!(creature.position.min, air_pos);
     // Should be in the air — verify there's no nav node here.
     assert!(sim.nav_graph.node_at(air_pos).is_none());
 }
@@ -1139,7 +1139,7 @@ fn hornet_is_hostile_to_elves() {
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
     // Spawn the hornet close to the elf (within detection range of 14 voxels).
-    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     let hornet_pos = VoxelCoord::new(elf_pos.x, elf_pos.y + 3, elf_pos.z);
     let mut events = Vec::new();
     let hornet_id = sim
@@ -1157,7 +1157,7 @@ fn hornet_is_hostile_to_elves() {
     let targets = sim.detect_hostile_targets(
         hornet_id,
         Species::Hornet,
-        hornet.position,
+        hornet.position.min,
         hornet.civ_id,
         hornet_data.hostile_detection_range_sq,
     );
@@ -1270,7 +1270,7 @@ fn hornet_spawn_in_leaf_succeeds() {
     let id = sim
         .spawn_creature(Species::Hornet, leaf_pos, &mut events)
         .expect("hornet should spawn in leaf voxel");
-    assert_eq!(sim.db.creatures.get(&id).unwrap().position, leaf_pos);
+    assert_eq!(sim.db.creatures.get(&id).unwrap().position.min, leaf_pos);
 }
 #[test]
 fn flight_pathfinding_corner_cost_matches_scaled_distance() {
@@ -1349,7 +1349,7 @@ fn wyvern_serde_roundtrip() {
 fn wyvern_is_hostile_to_elves() {
     let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
-    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
 
     // Spawn wyvern above the elf (needs 2x2x2 clear space in the air).
     let wyvern_pos = VoxelCoord::new(elf_pos.x - 1, elf_pos.y + 5, elf_pos.z - 1);
@@ -1365,7 +1365,7 @@ fn wyvern_is_hostile_to_elves() {
     let targets = sim.detect_hostile_targets(
         wyvern_id,
         Species::Wyvern,
-        wyvern.position,
+        wyvern.position.min,
         wyvern.civ_id,
         wyvern_data.hostile_detection_range_sq,
     );
@@ -1407,8 +1407,8 @@ fn spawn_capybara_command() {
         .iter_all()
         .find(|c| c.species == Species::Capybara)
         .unwrap();
-    assert_eq!(capybara.position.y, 1);
-    assert!(sim.nav_graph.node_at(capybara.position).is_some());
+    assert_eq!(capybara.position.min.y, 1);
+    assert!(sim.nav_graph.node_at(capybara.position.min).is_some());
 }
 
 #[test]
@@ -1502,11 +1502,11 @@ fn elephant_spawns_on_large_graph() {
     let elephant = elephants[0];
     let node_id = sim
         .large_nav_graph
-        .node_at(elephant.position)
+        .node_at(elephant.position.min)
         .expect("Elephant should have a nav node in the large graph");
     let node = sim.large_nav_graph.node(node_id);
     assert_eq!(
-        node.position, elephant.position,
+        node.position, elephant.position.min,
         "Elephant position should match its large graph node",
     );
 }
@@ -1529,11 +1529,11 @@ fn troll_spawns_on_large_graph() {
     let troll = trolls[0];
     let node_id = sim
         .large_nav_graph
-        .node_at(troll.position)
+        .node_at(troll.position.min)
         .expect("Troll should have a nav node in the large graph");
     let node = sim.large_nav_graph.node(node_id);
     assert_eq!(
-        node.position, troll.position,
+        node.position, troll.position.min,
         "Troll position should match its large graph node",
     );
 }
@@ -1621,7 +1621,7 @@ fn spawn_boar_command() {
         .iter_all()
         .find(|c| c.species == Species::Boar)
         .unwrap();
-    assert_eq!(boar.position.y, 1);
+    assert_eq!(boar.position.min.y, 1);
 }
 
 #[test]
@@ -1655,7 +1655,7 @@ fn spawn_deer_command() {
         .iter_all()
         .find(|c| c.species == Species::Deer)
         .unwrap();
-    assert_eq!(deer.position.y, 1);
+    assert_eq!(deer.position.min.y, 1);
 }
 
 #[test]
@@ -1749,7 +1749,7 @@ fn all_small_species_spawn_and_coexist() {
     for creature in sim.db.creatures.iter_all() {
         assert!(
             sim.graph_for_species(creature.species)
-                .node_at(creature.position)
+                .node_at(creature.position.min)
                 .is_some(),
             "{:?} has no nav node at its position",
             creature.species

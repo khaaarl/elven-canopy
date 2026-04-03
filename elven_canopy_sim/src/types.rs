@@ -161,6 +161,115 @@ impl fmt::Display for VoxelCoord {
     }
 }
 
+/// An axis-aligned bounding box in the 3D voxel grid (inclusive on both ends).
+///
+/// Represents a creature's or object's spatial footprint. The `min` field is
+/// the anchor point (lower corner); `max` is the upper corner. For a 1×1×1
+/// entity, `min == max`. For a 2×2×2 troll anchored at `(5, 1, 5)`,
+/// `min = (5, 1, 5)` and `max = (6, 2, 6)`.
+///
+/// Implements `tabulosity::SpatialKey` so it can back R*-tree spatial indexes
+/// on tabulosity tables. See `db.rs` for the Creature table's spatial index.
+///
+/// ## Serde
+///
+/// Serializes as `{"min": {"x":..,"y":..,"z":..}, "max": {"x":..,"y":..,"z":..}}`.
+/// For backward compatibility with old saves that stored a bare `VoxelCoord`
+/// (`{"x":..,"y":..,"z":..}`), a custom deserializer accepts both formats.
+/// The bare-coord format deserializes as a 1×1×1 point box; callers must
+/// upgrade to the correct footprint in `rebuild_transient_state()`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+pub struct VoxelBox {
+    pub min: VoxelCoord,
+    pub max: VoxelCoord,
+}
+
+/// Backward-compatible deserializer: accepts both the new `{"min":..,"max":..}`
+/// format and the legacy bare `VoxelCoord` format `{"x":N,"y":N,"z":N}`.
+/// A bare coord deserializes as a 1×1×1 point box; callers must upgrade to the
+/// correct footprint in `rebuild_transient_state()` for creatures.
+impl<'de> Deserialize<'de> for VoxelBox {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        /// Helper that matches either format.
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum VoxelBoxOrCoord {
+            Box { min: VoxelCoord, max: VoxelCoord },
+            Coord { x: i32, y: i32, z: i32 },
+        }
+        match VoxelBoxOrCoord::deserialize(deserializer)? {
+            VoxelBoxOrCoord::Box { min, max } => Ok(VoxelBox { min, max }),
+            VoxelBoxOrCoord::Coord { x, y, z } => {
+                let coord = VoxelCoord::new(x, y, z);
+                Ok(VoxelBox::point(coord))
+            }
+        }
+    }
+}
+
+impl VoxelBox {
+    /// A 1×1×1 box at a single voxel coordinate.
+    pub const fn point(coord: VoxelCoord) -> Self {
+        Self {
+            min: coord,
+            max: coord,
+        }
+    }
+
+    /// Build a box from an anchor point and a footprint `[fx, fy, fz]`.
+    /// The anchor is the min corner; max = anchor + footprint - 1.
+    pub const fn from_anchor(anchor: VoxelCoord, footprint: [u8; 3]) -> Self {
+        Self {
+            min: anchor,
+            max: VoxelCoord::new(
+                anchor.x + footprint[0] as i32 - 1,
+                anchor.y + footprint[1] as i32 - 1,
+                anchor.z + footprint[2] as i32 - 1,
+            ),
+        }
+    }
+
+    /// Move the box to a new anchor while preserving its dimensions.
+    pub const fn with_anchor(self, new_anchor: VoxelCoord) -> Self {
+        let dx = self.max.x - self.min.x;
+        let dy = self.max.y - self.min.y;
+        let dz = self.max.z - self.min.z;
+        Self {
+            min: new_anchor,
+            max: VoxelCoord::new(new_anchor.x + dx, new_anchor.y + dy, new_anchor.z + dz),
+        }
+    }
+
+    /// Derive the footprint dimensions `[fx, fy, fz]` from the box.
+    pub const fn footprint_size(&self) -> [u8; 3] {
+        [
+            (self.max.x - self.min.x + 1) as u8,
+            (self.max.y - self.min.y + 1) as u8,
+            (self.max.z - self.min.z + 1) as u8,
+        ]
+    }
+}
+
+impl tabulosity::SpatialKey for VoxelBox {
+    type Point = [i32; 3];
+    fn spatial_min(&self) -> [i32; 3] {
+        [self.min.x, self.min.y, self.min.z]
+    }
+    fn spatial_max(&self) -> [i32; 3] {
+        [self.max.x, self.max.y, self.max.z]
+    }
+}
+
+impl fmt::Display for VoxelBox {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.min == self.max {
+            write!(f, "{}", self.min)
+        } else {
+            write!(f, "[{}–{}]", self.min, self.max)
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Entity IDs — deterministic UUID v4
 // ---------------------------------------------------------------------------
@@ -2390,5 +2499,98 @@ mod tests {
         let b = VoxelCoord::new(5, 6, 5);
         let line = a.line_to(b);
         assert_eq!(line, vec![a, b]);
+    }
+
+    // -----------------------------------------------------------------------
+    // VoxelBox tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn voxel_box_point_has_equal_min_max() {
+        let coord = VoxelCoord::new(3, 7, 11);
+        let b = VoxelBox::point(coord);
+        assert_eq!(b.min, coord);
+        assert_eq!(b.max, coord);
+        assert_eq!(b.footprint_size(), [1, 1, 1]);
+    }
+
+    #[test]
+    fn voxel_box_from_anchor_2x2x2() {
+        let anchor = VoxelCoord::new(5, 1, 5);
+        let b = VoxelBox::from_anchor(anchor, [2, 2, 2]);
+        assert_eq!(b.min, anchor);
+        assert_eq!(b.max, VoxelCoord::new(6, 2, 6));
+        assert_eq!(b.footprint_size(), [2, 2, 2]);
+    }
+
+    #[test]
+    fn voxel_box_from_anchor_1x1x1() {
+        let anchor = VoxelCoord::new(0, 0, 0);
+        let b = VoxelBox::from_anchor(anchor, [1, 1, 1]);
+        assert_eq!(b.min, b.max);
+        assert_eq!(b, VoxelBox::point(anchor));
+    }
+
+    #[test]
+    fn voxel_box_with_anchor_preserves_dimensions() {
+        let original = VoxelBox::from_anchor(VoxelCoord::new(5, 1, 5), [2, 3, 4]);
+        let moved = original.with_anchor(VoxelCoord::new(10, 20, 30));
+        assert_eq!(moved.min, VoxelCoord::new(10, 20, 30));
+        assert_eq!(moved.max, VoxelCoord::new(11, 22, 33));
+        assert_eq!(moved.footprint_size(), original.footprint_size());
+    }
+
+    #[test]
+    fn voxel_box_spatial_key_point() {
+        use tabulosity::SpatialKey;
+        let b = VoxelBox::point(VoxelCoord::new(3, 7, 11));
+        assert_eq!(b.spatial_min(), [3, 7, 11]);
+        assert_eq!(b.spatial_max(), [3, 7, 11]);
+    }
+
+    #[test]
+    fn voxel_box_spatial_key_range() {
+        use tabulosity::SpatialKey;
+        let b = VoxelBox::from_anchor(VoxelCoord::new(5, 1, 5), [2, 2, 2]);
+        assert_eq!(b.spatial_min(), [5, 1, 5]);
+        assert_eq!(b.spatial_max(), [6, 2, 6]);
+    }
+
+    #[test]
+    fn voxel_box_display_point() {
+        let b = VoxelBox::point(VoxelCoord::new(3, 7, 11));
+        assert_eq!(format!("{b}"), "(3, 7, 11)");
+    }
+
+    #[test]
+    fn voxel_box_display_range() {
+        let b = VoxelBox::from_anchor(VoxelCoord::new(5, 1, 5), [2, 2, 2]);
+        assert_eq!(format!("{b}"), "[(5, 1, 5)–(6, 2, 6)]");
+    }
+
+    #[test]
+    fn voxel_box_serde_roundtrip() {
+        let b = VoxelBox::from_anchor(VoxelCoord::new(5, 1, 5), [2, 2, 2]);
+        let json = serde_json::to_string(&b).unwrap();
+        let restored: VoxelBox = serde_json::from_str(&json).unwrap();
+        assert_eq!(b, restored);
+    }
+
+    #[test]
+    fn voxel_box_deserialize_legacy_coord_format() {
+        // Old saves stored a bare VoxelCoord where VoxelBox now lives.
+        let json = r#"{"x":3,"y":7,"z":11}"#;
+        let b: VoxelBox = serde_json::from_str(json).unwrap();
+        assert_eq!(b, VoxelBox::point(VoxelCoord::new(3, 7, 11)));
+    }
+
+    #[test]
+    fn voxel_box_deserialize_new_format() {
+        let json = r#"{"min":{"x":5,"y":1,"z":5},"max":{"x":6,"y":2,"z":6}}"#;
+        let b: VoxelBox = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            b,
+            VoxelBox::from_anchor(VoxelCoord::new(5, 1, 5), [2, 2, 2])
+        );
     }
 }

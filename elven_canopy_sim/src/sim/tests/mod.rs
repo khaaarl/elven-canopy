@@ -229,13 +229,13 @@ fn remove_tree_fruit_at_removes_correct_fruit() {
     let _ = sim.db.insert_tree_fruit_auto(|id| crate::db::TreeFruit {
         id,
         tree_id,
-        position: fruit_a,
+        position: VoxelBox::point(fruit_a),
         species_id,
     });
     let _ = sim.db.insert_tree_fruit_auto(|id| crate::db::TreeFruit {
         id,
         tree_id,
-        position: fruit_b,
+        position: VoxelBox::point(fruit_b),
         species_id,
     });
 
@@ -245,14 +245,14 @@ fn remove_tree_fruit_at_removes_correct_fruit() {
     assert!(
         sim.db
             .tree_fruits
-            .by_position(&fruit_a, tabulosity::QueryOpts::ASC)
+            .by_position(&VoxelBox::point(fruit_a), tabulosity::QueryOpts::ASC)
             .is_empty(),
         "fruit_a should be removed"
     );
     assert!(
         !sim.db
             .tree_fruits
-            .by_position(&fruit_b, tabulosity::QueryOpts::ASC)
+            .by_position(&VoxelBox::point(fruit_b), tabulosity::QueryOpts::ASC)
             .is_empty(),
         "fruit_b should still be present"
     );
@@ -338,7 +338,7 @@ fn flat_world_can_spawn_creatures() {
     let creature = sim.db.creatures.get(&elf).unwrap();
     assert_eq!(creature.species, Species::Elf);
     // Creature should be on the ground (y = floor_y + 1 = 1).
-    assert_eq!(creature.position.y, 1);
+    assert_eq!(creature.position.min.y, 1);
 }
 
 #[test]
@@ -588,14 +588,14 @@ fn state_checksum_changes_after_mutation() {
 }
 
 // =========================================================================
-// Spatial index tests
+// Spatial index tests (tabulosity R*-tree on Creature.position)
 // =========================================================================
 
 #[test]
 fn spatial_index_empty_before_spawn() {
     let sim = test_sim(legacy_test_seed());
     assert!(
-        sim.spatial_index.is_empty(),
+        sim.creatures_at_voxel(VoxelCoord::new(0, 0, 0)).is_empty(),
         "Spatial index should be empty before any creatures are spawned"
     );
 }
@@ -605,9 +605,9 @@ fn spatial_index_populated_after_spawn() {
     let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let elf = sim.db.creatures.get(&elf_id).unwrap();
-    let pos = elf.position;
+    let pos = elf.position.min;
 
-    // Elf has a [1,1,1] footprint — should be registered at exactly one voxel.
+    // Elf has a [1,1,1] footprint — should be found at its anchor voxel.
     let at_pos = sim.creatures_at_voxel(pos);
     assert!(
         at_pos.contains(&elf_id),
@@ -620,11 +620,11 @@ fn spatial_index_populated_after_spawn() {
 fn spatial_index_tracks_movement() {
     let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
-    let initial_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let initial_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
 
     // Run enough ticks for the elf to move at least once.
     sim.step(&[], sim.tick + 50_000);
-    let new_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let new_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
 
     if new_pos != initial_pos {
         assert!(
@@ -646,25 +646,15 @@ fn spatial_index_multiple_creatures_same_voxel() {
     let elf1 = spawn_elf(&mut sim);
     let elf2 = spawn_elf(&mut sim);
 
-    // Force both elves to the same position so the test always exercises
-    // multi-occupancy (spawn may place them at different nav nodes).
-    let pos1 = sim.db.creatures.get(&elf1).unwrap().position;
-    let pos2 = sim.db.creatures.get(&elf2).unwrap().position;
-    if pos1 != pos2 {
-        let species = sim.db.creatures.get(&elf2).unwrap().species;
-        let footprint = sim.species_table[&species].footprint;
-        SimState::deregister_creature_from_index(&mut sim.spatial_index, elf2, pos2, footprint);
-        let mut c = sim.db.creatures.get(&elf2).unwrap().clone();
-        c.position = pos1;
-        sim.db.update_creature(c).unwrap();
-        SimState::register_creature_in_index(&mut sim.spatial_index, elf2, pos1, footprint);
-    }
+    // Force both elves to the same position.
+    let pos1 = sim.db.creatures.get(&elf1).unwrap().position.min;
+    force_position(&mut sim, elf2, pos1);
 
     let at_pos = sim.creatures_at_voxel(pos1);
     assert!(at_pos.contains(&elf1));
     assert!(at_pos.contains(&elf2));
     assert_eq!(at_pos.len(), 2);
-    // Verify sorted for determinism.
+    // Verify sorted for determinism (tabulosity spatial queries sort by PK).
     assert!(
         at_pos[0] <= at_pos[1],
         "Spatial index entries should be sorted by CreatureId"
@@ -682,16 +672,17 @@ fn spatial_index_query_empty_voxel() {
 fn spatial_index_survives_save_load_roundtrip() {
     let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
-    let pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     assert!(sim.creatures_at_voxel(pos).contains(&elf_id));
 
-    // Roundtrip through JSON (spatial_index is #[serde(skip)]).
+    // Roundtrip through JSON. Tabulosity rebuilds the spatial index from
+    // the deserialized position data automatically.
     let json = sim.to_json().unwrap();
     let sim2 = SimState::from_json(&json).unwrap();
 
     let elf2 = sim2.db.creatures.get(&elf_id).unwrap();
     assert!(
-        sim2.creatures_at_voxel(elf2.position).contains(&elf_id),
+        sim2.creatures_at_voxel(elf2.position.min).contains(&elf_id),
         "Spatial index should be rebuilt after deserialization"
     );
 }
@@ -705,91 +696,163 @@ fn spatial_index_consistent_after_many_ticks() {
 
     sim.step(&[], sim.tick + 100_000);
 
-    // Every creature must be in the index at its current position.
+    // Every creature must be findable via spatial query at its current position.
     for &elf_id in &[elf1, elf2, elf3] {
         let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert!(
-            sim.creatures_at_voxel(elf.position).contains(&elf_id),
+            sim.creatures_at_voxel(elf.position.min).contains(&elf_id),
             "Creature {:?} should be at its position {:?}",
             elf_id,
             elf.position,
         );
     }
+}
 
-    // Total entries should match total footprint voxels.
-    let total_entries: usize = sim.spatial_index.values().map(|v| v.len()).sum();
-    let expected: usize = sim
-        .db
-        .creatures
-        .iter_all()
-        .map(|c| {
-            let fp = sim.species_table[&c.species].footprint;
-            fp[0] as usize * fp[1] as usize * fp[2] as usize
-        })
-        .sum();
-    assert_eq!(
-        total_entries, expected,
-        "Spatial index entry count should match total footprint voxels"
+// =========================================================================
+// Multi-voxel spatial index tests
+// =========================================================================
+
+#[test]
+fn spatial_index_multi_voxel_creature_found_at_all_footprint_voxels() {
+    let mut sim = test_sim(fresh_test_seed());
+    let troll = spawn_creature(&mut sim, Species::Troll);
+    let fp = sim.species_table[&Species::Troll].footprint;
+    assert!(
+        fp[0] > 1 || fp[1] > 1 || fp[2] > 1,
+        "Troll should have multi-voxel footprint"
+    );
+
+    let anchor = sim.db.creatures.get(&troll).unwrap().position.min;
+
+    // The troll should be found at every voxel in its footprint.
+    for dx in 0..fp[0] as i32 {
+        for dy in 0..fp[1] as i32 {
+            for dz in 0..fp[2] as i32 {
+                let voxel = VoxelCoord::new(anchor.x + dx, anchor.y + dy, anchor.z + dz);
+                assert!(
+                    sim.creatures_at_voxel(voxel).contains(&troll),
+                    "Troll should be found at footprint voxel offset ({dx}, {dy}, {dz})"
+                );
+            }
+        }
+    }
+
+    // Should NOT be found at an adjacent voxel outside the footprint.
+    let outside = VoxelCoord::new(anchor.x + fp[0] as i32, anchor.y, anchor.z);
+    assert!(
+        !sim.creatures_at_voxel(outside).contains(&troll),
+        "Troll should not be found outside its footprint"
     );
 }
 
 #[test]
-fn spatial_index_multi_voxel_footprint() {
-    let mut index = BTreeMap::<VoxelCoord, Vec<CreatureId>>::new();
-    let mut rng = GameRng::new(999);
-    let cid = CreatureId::new(&mut rng);
-    let anchor = VoxelCoord::new(5, 1, 5);
-    let footprint = [2, 2, 2];
+fn spatial_index_multi_voxel_creature_tracks_movement() {
+    let mut sim = test_sim(fresh_test_seed());
+    let troll = spawn_creature(&mut sim, Species::Troll);
+    let fp = sim.species_table[&Species::Troll].footprint;
+    let old_anchor = sim.db.creatures.get(&troll).unwrap().position.min;
 
-    SimState::register_creature_in_index(&mut index, cid, anchor, footprint);
+    // Move the troll to a new position.
+    let new_anchor = VoxelCoord::new(old_anchor.x + 5, old_anchor.y, old_anchor.z + 5);
+    force_position(&mut sim, troll, new_anchor);
 
-    // Should be registered at 8 voxels (2x2x2).
-    let mut registered_count = 0;
-    for dx in 0..2 {
-        for dy in 0..2 {
-            for dz in 0..2 {
-                let v = VoxelCoord::new(5 + dx, 1 + dy, 5 + dz);
+    // Should be at all new footprint voxels.
+    for dx in 0..fp[0] as i32 {
+        for dy in 0..fp[1] as i32 {
+            for dz in 0..fp[2] as i32 {
+                let voxel =
+                    VoxelCoord::new(new_anchor.x + dx, new_anchor.y + dy, new_anchor.z + dz);
                 assert!(
-                    index.get(&v).unwrap().contains(&cid),
-                    "Creature should be at ({}, {}, {})",
-                    5 + dx,
-                    1 + dy,
-                    5 + dz,
+                    sim.creatures_at_voxel(voxel).contains(&troll),
+                    "Troll should be at new footprint voxel offset ({dx}, {dy}, {dz})"
                 );
-                registered_count += 1;
             }
         }
     }
-    assert_eq!(registered_count, 8);
 
-    SimState::deregister_creature_from_index(&mut index, cid, anchor, footprint);
-    assert!(index.is_empty(), "Index should be empty after deregister");
+    // Should NOT be at any old footprint voxels (assuming no overlap).
+    for dx in 0..fp[0] as i32 {
+        for dy in 0..fp[1] as i32 {
+            for dz in 0..fp[2] as i32 {
+                let voxel =
+                    VoxelCoord::new(old_anchor.x + dx, old_anchor.y + dy, old_anchor.z + dz);
+                assert!(
+                    !sim.creatures_at_voxel(voxel).contains(&troll),
+                    "Troll should not be at old footprint voxel offset ({dx}, {dy}, {dz})"
+                );
+            }
+        }
+    }
 }
 
 #[test]
-fn spatial_index_sorted_entries() {
-    let mut index = BTreeMap::<VoxelCoord, Vec<CreatureId>>::new();
-    let pos = VoxelCoord::new(5, 1, 5);
-    let fp = [1, 1, 1];
+fn spawn_creature_sets_correct_voxel_box_footprint() {
+    let mut sim = test_sim(fresh_test_seed());
+    // Check several species.
+    for species in [Species::Elf, Species::Troll, Species::Elephant] {
+        let id = spawn_creature(&mut sim, species);
+        let creature = sim.db.creatures.get(&id).unwrap();
+        let expected_fp = sim.species_table[&species].footprint;
+        assert_eq!(
+            creature.position.footprint_size(),
+            expected_fp,
+            "Species {:?} should have footprint {:?} but got {:?}",
+            species,
+            expected_fp,
+            creature.position.footprint_size(),
+        );
+    }
+}
 
-    let mut rng = GameRng::new(12345);
-    let mut ids = [
-        CreatureId::new(&mut rng),
-        CreatureId::new(&mut rng),
-        CreatureId::new(&mut rng),
-    ];
-    ids.sort();
+#[test]
+fn upgrade_creature_positions_fixes_multi_voxel_from_legacy_save() {
+    let mut sim = test_sim(fresh_test_seed());
+    let troll = spawn_creature(&mut sim, Species::Troll);
+    let anchor = sim.db.creatures.get(&troll).unwrap().position.min;
+    let expected_fp = sim.species_table[&Species::Troll].footprint;
 
-    // Register in reverse order.
-    SimState::register_creature_in_index(&mut index, ids[2], pos, fp);
-    SimState::register_creature_in_index(&mut index, ids[0], pos, fp);
-    SimState::register_creature_in_index(&mut index, ids[1], pos, fp);
+    // Simulate a legacy save by shrinking position to a 1x1x1 point.
+    {
+        let mut c = sim.db.creatures.get(&troll).unwrap();
+        c.position = VoxelBox::point(anchor);
+        sim.db.update_creature(c).unwrap();
+    }
+    assert_eq!(
+        sim.db
+            .creatures
+            .get(&troll)
+            .unwrap()
+            .position
+            .footprint_size(),
+        [1, 1, 1]
+    );
 
-    let entries = &index[&pos];
-    assert_eq!(entries.len(), 3);
-    assert_eq!(entries[0], ids[0]);
-    assert_eq!(entries[1], ids[1]);
-    assert_eq!(entries[2], ids[2]);
+    // Roundtrip through JSON to trigger rebuild_transient_state.
+    let json = sim.to_json().unwrap();
+    let sim2 = SimState::from_json(&json).unwrap();
+
+    // Position should be upgraded to the correct footprint.
+    let restored = sim2.db.creatures.get(&troll).unwrap();
+    assert_eq!(
+        restored.position.footprint_size(),
+        expected_fp,
+        "Troll position should be upgraded from 1x1x1 to {:?}",
+        expected_fp,
+    );
+    assert_eq!(restored.position.min, anchor, "Anchor should be preserved");
+
+    // Should be findable via spatial query at all footprint voxels.
+    for dx in 0..expected_fp[0] as i32 {
+        for dy in 0..expected_fp[1] as i32 {
+            for dz in 0..expected_fp[2] as i32 {
+                let voxel = VoxelCoord::new(anchor.x + dx, anchor.y + dy, anchor.z + dz);
+                assert!(
+                    sim2.creatures_at_voxel(voxel).contains(&troll),
+                    "Troll should be in spatial index at upgraded footprint voxel ({dx}, {dy}, {dz})"
+                );
+            }
+        }
+    }
 }
 
 // =========================================================================

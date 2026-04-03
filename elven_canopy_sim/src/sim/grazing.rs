@@ -65,7 +65,7 @@ impl SimState {
     ) -> Option<(VoxelCoord, NavNodeId)> {
         let creature = self.db.creatures.get(&creature_id)?;
         let graph = self.graph_for_species(creature.species);
-        let start_node = graph.node_at(creature.position)?;
+        let start_node = graph.node_at(creature.position.min)?;
         let species_data = &self.species_table[&creature.species];
 
         // Custom Dijkstra that stops at the first grassy node rather than

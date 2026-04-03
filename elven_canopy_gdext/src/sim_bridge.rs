@@ -919,12 +919,12 @@ impl SimBridge {
         let mut arr = PackedInt32Array::new();
         for tf in sim.db.tree_fruits.iter_all() {
             // Skip voxels carved to Air so the renderer doesn't draw them.
-            if sim.world.get(tf.position) == VoxelType::Air {
+            if sim.world.get(tf.position.min) == VoxelType::Air {
                 continue;
             }
-            arr.push(tf.position.x);
-            arr.push(tf.position.y);
-            arr.push(tf.position.z);
+            arr.push(tf.position.min.x);
+            arr.push(tf.position.min.y);
+            arr.push(tf.position.min.z);
             arr.push(tf.species_id.0 as i32);
         }
         arr
@@ -3737,9 +3737,9 @@ impl SimBridge {
         {
             dict.set("owner_id", GString::from(owner_id.0.to_string().as_str()));
             dict.set("owner_name", GString::from(creature.name.as_str()));
-            dict.set("owner_x", creature.position.x);
-            dict.set("owner_y", creature.position.y);
-            dict.set("owner_z", creature.position.z);
+            dict.set("owner_x", creature.position.min.x);
+            dict.set("owner_y", creature.position.min.y);
+            dict.set("owner_z", creature.position.min.z);
         } else {
             dict.set("owner_id", GString::from(""));
             dict.set("owner_name", GString::from(""));

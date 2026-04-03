@@ -101,7 +101,7 @@ impl SimState {
             // Both ground: target must have a nav node.
             if self
                 .graph_for_species(target.species)
-                .find_nearest_node(target.position, 5)
+                .find_nearest_node(target.position.min, 5)
                 .is_none()
             {
                 return;
@@ -110,7 +110,7 @@ impl SimState {
 
         let attacker_species = attacker.species;
         // Use target's current position (dynamic pursuit updates it each activation).
-        let target_pos = target.position;
+        let target_pos = target.position.min;
 
         // Queue mode: append to the creature's command queue.
         if queue && let Some(tail_id) = self.find_queue_tail(attacker_id) {
@@ -173,7 +173,7 @@ impl SimState {
             .db
             .creatures
             .get(&target_id)
-            .map(|c| c.position)
+            .map(|c| c.position.min)
             .unwrap();
         let new_task = task::Task {
             id: task_id,
@@ -484,7 +484,7 @@ impl SimState {
                 let targets = self.detect_hostile_targets(
                     creature_id,
                     species,
-                    creature.position,
+                    creature.position.min,
                     creature.civ_id,
                     detection_range_sq,
                 );
@@ -494,7 +494,7 @@ impl SimState {
                         .db
                         .creatures
                         .get(&nearest_id)
-                        .map(|c| c.position)
+                        .map(|c| c.position.min)
                         .unwrap_or(task_location_coord);
                     if let Some(mut t) = self.db.tasks.get(&task_id) {
                         t.target_creature = Some(nearest_id);
@@ -581,7 +581,7 @@ impl SimState {
         // Check if the origin is already within detection range — if so,
         // normal hostile_pursue will handle engagement on the next activation.
         let detection_range_sq = self.effective_detection_range_sq(target_id, species);
-        let pos = creature.position;
+        let pos = creature.position.min;
         let dx = pos.x as i64 - origin_voxel.x as i64;
         let dy = pos.y as i64 - origin_voxel.y as i64;
         let dz = pos.z as i64 - origin_voxel.z as i64;
@@ -727,7 +727,7 @@ impl SimState {
 
         // Check for cached path.
         let creature = self.db.creatures.get(&creature_id).unwrap();
-        let cn = graph.node_at(creature.position);
+        let cn = graph.node_at(creature.position.min);
         let next_step = if let Some(ref path) = creature.path {
             if let Some(&next_pos) = path.remaining_positions.first() {
                 let dest_node = graph.node_at(next_pos);
@@ -804,10 +804,10 @@ impl SimState {
             .div_ceil(crate::nav::DIST_SCALE as u64)
             .max(1);
 
-        let old_pos = self.db.creatures.get(&creature_id).unwrap().position;
+        let old_pos = self.db.creatures.get(&creature_id).unwrap().position.min;
         let tick = self.tick;
         if let Some(mut creature) = self.db.creatures.get(&creature_id) {
-            creature.position = dest_pos;
+            creature.position = creature.position.with_anchor(dest_pos);
             creature.action_kind = ActionKind::Move;
             creature.next_available_tick = Some(tick + delay);
             if let Some(ref mut path) = creature.path
@@ -817,8 +817,6 @@ impl SimState {
             }
             let _ = self.db.update_creature(creature);
         }
-
-        self.update_creature_spatial_index(creature_id, species, old_pos, dest_pos);
 
         let move_action = MoveAction {
             creature_id,
@@ -851,9 +849,9 @@ impl SimState {
         };
         let species = attacker.species;
         let species_data = &self.species_table[&species];
-        let attacker_pos = attacker.position;
+        let attacker_pos = attacker.position.min;
         let attacker_footprint = species_data.footprint;
-        let target_pos = target.position;
+        let target_pos = target.position.min;
         let target_footprint = self.species_table[&target.species].footprint;
         let max_melee_range = self.max_melee_range_sq(creature_id);
 
@@ -961,9 +959,9 @@ impl SimState {
 
         let species = attacker.species;
         let species_data = &self.species_table[&species];
-        let attacker_pos = attacker.position;
+        let attacker_pos = attacker.position.min;
         let attacker_footprint = species_data.footprint;
-        let target_pos = target.position;
+        let target_pos = target.position.min;
         let target_footprint = self.species_table[&target.species].footprint;
         let max_melee_range = self.max_melee_range_sq(creature_id);
 
@@ -1091,7 +1089,7 @@ impl SimState {
 
         // Check for cached path.
         let creature = self.db.creatures.get(&creature_id).unwrap();
-        let cn = graph.node_at(creature.position);
+        let cn = graph.node_at(creature.position.min);
         let next_step = if let Some(ref path) = creature.path {
             if let Some(&next_pos) = path.remaining_positions.first() {
                 let dest_node = graph.node_at(next_pos);
@@ -1196,10 +1194,10 @@ impl SimState {
             .div_ceil(crate::nav::DIST_SCALE as u64)
             .max(1);
 
-        let old_pos = self.db.creatures.get(&creature_id).unwrap().position;
+        let old_pos = self.db.creatures.get(&creature_id).unwrap().position.min;
         let tick = self.tick;
         if let Some(mut creature) = self.db.creatures.get(&creature_id) {
-            creature.position = dest_pos;
+            creature.position = creature.position.with_anchor(dest_pos);
             creature.action_kind = ActionKind::Move;
             creature.next_available_tick = Some(tick + delay);
             if let Some(ref mut path) = creature.path
@@ -1209,8 +1207,6 @@ impl SimState {
             }
             let _ = self.db.update_creature(creature);
         }
-
-        self.update_creature_spatial_index(creature_id, species, old_pos, dest_pos);
 
         let move_action = MoveAction {
             creature_id,
@@ -1234,7 +1230,7 @@ impl SimState {
         events: &mut Vec<SimEvent>,
     ) {
         let (species, position) = match self.db.creatures.get(&creature_id) {
-            Some(c) if c.vital_status != VitalStatus::Dead => (c.species, c.position),
+            Some(c) if c.vital_status != VitalStatus::Dead => (c.species, c.position.min),
             _ => return,
         };
 
@@ -1317,7 +1313,7 @@ impl SimState {
         events: &mut Vec<SimEvent>,
     ) {
         let (species, position) = match self.db.creatures.get(&creature_id) {
-            Some(c) if c.vital_status != VitalStatus::Dead => (c.species, c.position),
+            Some(c) if c.vital_status != VitalStatus::Dead => (c.species, c.position.min),
             _ => return, // already dead or doesn't exist
         };
 
@@ -1382,16 +1378,7 @@ impl SimState {
             }
         }
 
-        // 3. Remove from spatial index.
-        let footprint = self.species_table[&species].footprint;
-        Self::deregister_creature_from_index(
-            &mut self.spatial_index,
-            creature_id,
-            position,
-            footprint,
-        );
-
-        // 4. Clear assigned_home, set vital_status = Dead, hp = 0.
+        // 3. Clear assigned_home, set vital_status = Dead, hp = 0.
         if let Some(mut c) = self.db.creatures.get(&creature_id) {
             c.assigned_home = None;
             c.vital_status = VitalStatus::Dead;
@@ -1700,9 +1687,9 @@ impl SimState {
         let attacker_footprint = species_data.footprint;
         let target_footprint = self.species_table[&target.species].footprint;
         let distance_sq = melee_distance_sq(
-            attacker.position,
+            attacker.position.min,
             attacker_footprint,
-            target.position,
+            target.position.min,
             target_footprint,
         );
 
@@ -1841,8 +1828,8 @@ impl SimState {
             return false;
         }
 
-        let attacker_pos = attacker.position;
-        let target_pos = target.position;
+        let attacker_pos = attacker.position.min;
+        let target_pos = target.position.min;
         let target_species = target.species;
         let target_footprint = self.species_table[&target_species].footprint;
 
@@ -2081,10 +2068,10 @@ impl SimState {
                 let dz = (new_voxel.z - origin_voxel.z).abs();
                 dx <= 1 && dy <= 1 && dz <= 1
             };
-            let creatures_here = self.creatures_at_voxel(new_voxel).to_vec();
+            let creatures_here = self.creatures_at_voxel(new_voxel);
             if !creatures_here.is_empty() {
                 // Filter to alive creatures, skipping non-hostiles near origin.
-                // Sort is preserved from spatial index for determinism.
+                // Sort is preserved from tabulosity spatial index for determinism.
                 let candidates: Vec<CreatureId> = creatures_here
                     .into_iter()
                     .filter(|cid| {
@@ -2916,7 +2903,7 @@ impl SimState {
             Some(c) => c,
             None => return false,
         };
-        let pos = creature.position;
+        let pos = creature.position.min;
         let civ_id = creature.civ_id;
         let detection_range_sq = self.effective_detection_range_sq(creature_id, species);
 
@@ -2940,7 +2927,7 @@ impl SimState {
 
         // Nearest threat anchor position (threats are sorted by distance).
         let nearest_threat_pos = match self.db.creatures.get(&threats[0].0) {
-            Some(c) => c.position,
+            Some(c) => c.position.min,
             None => return false,
         };
 
@@ -3040,7 +3027,7 @@ impl SimState {
             Some(c) => c,
             None => return false,
         };
-        let attacker_pos = attacker.position;
+        let attacker_pos = attacker.position.min;
         let attacker_civ = attacker.civ_id;
         let detection_range_sq = self.effective_detection_range_sq(creature_id, species);
         let attacker_footprint = self.species_table[&species].footprint;
@@ -3073,7 +3060,7 @@ impl SimState {
             in_melee_range(
                 attacker_pos,
                 attacker_footprint,
-                target.position,
+                target.position.min,
                 target_footprint,
                 melee_range_sq,
             )
@@ -3110,7 +3097,7 @@ impl SimState {
                     .iter()
                     .filter(|&&(tid, _)| {
                         let tpos = match self.db.creatures.get(&tid) {
-                            Some(c) => c.position,
+                            Some(c) => c.position.min,
                             None => return false,
                         };
                         let dx = attacker_pos.x as i64 - tpos.x as i64;
@@ -3219,7 +3206,7 @@ impl SimState {
                 Some(c) => c,
                 None => continue,
             };
-            let target_pos = target.position;
+            let target_pos = target.position.min;
             let target_fp = self.species_table[&target.species].footprint;
             for dx in -max_gap..=max_gap {
                 for dy in -max_gap..=max_gap {
@@ -3256,7 +3243,7 @@ impl SimState {
         };
         let strike_pos = candidates[nearest_idx];
 
-        let creature_pos = self.db.creatures.get(&creature_id).unwrap().position;
+        let creature_pos = self.db.creatures.get(&creature_id).unwrap().position.min;
         if creature_pos == strike_pos {
             return false;
         }
@@ -3310,73 +3297,67 @@ impl SimState {
         detection_range_sq: i64,
     ) -> Vec<(CreatureId, NavNodeId)> {
         let mut targets: Vec<(CreatureId, NavNodeId, i64)> = Vec::new();
-        // Track seen creature IDs to avoid duplicates from multi-voxel footprints.
-        let mut seen = std::collections::BTreeSet::new();
 
-        // O(n) scan over all creatures in the spatial index.
-        for (&_voxel, creature_ids) in &self.spatial_index {
-            for &cid in creature_ids {
-                if cid == attacker_id || !seen.insert(cid) {
-                    continue;
-                }
-                let creature = match self.db.creatures.get(&cid) {
-                    Some(c) => c,
+        let attacker_is_flyer = self.species_table[&attacker_species]
+            .flight_ticks_per_voxel
+            .is_some();
+
+        // O(n) scan over all alive creatures.
+        for creature in self.db.creatures.iter_all() {
+            let cid = creature.id;
+            if cid == attacker_id {
+                continue;
+            }
+            if creature.vital_status == VitalStatus::Dead {
+                continue;
+            }
+            // Resolve target's position to a nav node on the attacker's graph
+            // (targets may use a different graph, e.g. 1x1 vs 2x2 footprint).
+            // Flying creatures (either attacker or target) may be in open sky
+            // with no nearby nav node, so use a placeholder — the NavNodeId
+            // is unused by flying callers.
+            let target_is_flyer = self.species_table[&creature.species]
+                .flight_ticks_per_voxel
+                .is_some();
+            let node = if attacker_is_flyer || target_is_flyer {
+                // Flying attackers pathfind in 3D voxel space, not the nav
+                // graph, so they don't need a ground nav node for the target.
+                // Flying targets similarly have no ground nav node.
+                NavNodeId(u32::MAX)
+            } else {
+                match self
+                    .graph_for_species(creature.species)
+                    .find_nearest_node(creature.position.min, 5)
+                {
+                    Some(n) => n,
                     None => continue,
-                };
-                if creature.vital_status == VitalStatus::Dead {
-                    continue;
                 }
-                // Resolve target's position to a nav node on the attacker's graph
-                // (targets may use a different graph, e.g. 1x1 vs 2x2 footprint).
-                // Flying creatures (either attacker or target) may be in open sky
-                // with no nearby nav node, so use a placeholder — the NavNodeId
-                // is unused by flying callers.
-                let attacker_is_flyer = self.species_table[&attacker_species]
-                    .flight_ticks_per_voxel
-                    .is_some();
-                let target_is_flyer = self.species_table[&creature.species]
-                    .flight_ticks_per_voxel
-                    .is_some();
-                let node = if attacker_is_flyer || target_is_flyer {
-                    // Flying attackers pathfind in 3D voxel space, not the nav
-                    // graph, so they don't need a ground nav node for the target.
-                    // Flying targets similarly have no ground nav node.
-                    NavNodeId(u32::MAX)
-                } else {
-                    match self
-                        .graph_for_species(creature.species)
-                        .find_nearest_node(creature.position, 5)
-                    {
-                        Some(n) => n,
-                        None => continue,
-                    }
-                };
+            };
 
-                // Squared 3D euclidean distance (i64 to prevent overflow).
-                let dx = attacker_pos.x as i64 - creature.position.x as i64;
-                let dy = attacker_pos.y as i64 - creature.position.y as i64;
-                let dz = attacker_pos.z as i64 - creature.position.z as i64;
-                let dist_sq = dx * dx + dy * dy + dz * dz;
+            // Squared 3D euclidean distance (i64 to prevent overflow).
+            let dx = attacker_pos.x as i64 - creature.position.min.x as i64;
+            let dy = attacker_pos.y as i64 - creature.position.min.y as i64;
+            let dz = attacker_pos.z as i64 - creature.position.min.z as i64;
+            let dist_sq = dx * dx + dy * dy + dz * dz;
 
-                if dist_sq > detection_range_sq {
-                    continue;
-                }
+            if dist_sq > detection_range_sq {
+                continue;
+            }
 
-                // Check hostility. Non-civ attackers have an additional
-                // targeting rule: they only attack civ creatures of a
-                // *different* species (don't attack your own kind). This
-                // species-difference filter is a targeting constraint, not
-                // a diplomatic relation, so it stays here rather than in
-                // diplomatic_relation().
-                let is_target = if attacker_civ.is_none() {
-                    creature.civ_id.is_some() && creature.species != attacker_species
-                } else {
-                    self.creature_relation(attacker_id, cid).is_hostile()
-                };
+            // Check hostility. Non-civ attackers have an additional
+            // targeting rule: they only attack civ creatures of a
+            // *different* species (don't attack your own kind). This
+            // species-difference filter is a targeting constraint, not
+            // a diplomatic relation, so it stays here rather than in
+            // diplomatic_relation().
+            let is_target = if attacker_civ.is_none() {
+                creature.civ_id.is_some() && creature.species != attacker_species
+            } else {
+                self.creature_relation(attacker_id, cid).is_hostile()
+            };
 
-                if is_target {
-                    targets.push((cid, node, dist_sq));
-                }
+            if is_target {
+                targets.push((cid, node, dist_sq));
             }
         }
 
@@ -3544,7 +3525,7 @@ impl SimState {
             for dy in 0..footprint[1] as i32 {
                 for dz in 0..footprint[2] as i32 {
                     let voxel = VoxelCoord::new(dest_pos.x + dx, dest_pos.y + dy, dest_pos.z + dz);
-                    for &occupant_id in self.creatures_at_voxel(voxel) {
+                    for &occupant_id in &self.creatures_at_voxel(voxel) {
                         if occupant_id != creature_id
                             && !self.is_non_hostile(creature_id, occupant_id)
                             && self
@@ -3619,7 +3600,7 @@ impl SimState {
             // Check creatures at this voxel.
             if current_voxel != prev_voxel {
                 let creatures_here = self.creatures_at_voxel(current_voxel);
-                for &cid in creatures_here {
+                for &cid in &creatures_here {
                     if cid == shooter_id {
                         continue;
                     }
@@ -3684,7 +3665,7 @@ impl SimState {
             _ => return false,
         };
         let species = creature.species;
-        let pos = creature.position;
+        let pos = creature.position.min;
         let civ_id = creature.civ_id;
         let detection_range_sq = self.effective_detection_range_sq(creature_id, species);
 
@@ -3724,100 +3705,98 @@ impl SimState {
 
         // Check creatures within a 10-voxel radius (dist_sq <= 100).
         let check_range_sq: i64 = 100;
-        let mut seen = std::collections::BTreeSet::new();
 
-        for (&_voxel, creature_ids) in &self.spatial_index {
-            for &cid in creature_ids {
-                if cid == creature_id || !seen.insert(cid) {
-                    continue;
-                }
-                let other = match self.db.creatures.get(&cid) {
-                    Some(c) if c.vital_status == VitalStatus::Alive => c,
-                    _ => continue,
-                };
+        // O(n) scan over all alive creatures.
+        for other in self.db.creatures.iter_all() {
+            let cid = other.id;
+            if cid == creature_id {
+                continue;
+            }
+            if other.vital_status != VitalStatus::Alive {
+                continue;
+            }
 
-                // Must be non-hostile (friendly).
-                if !self.is_non_hostile(creature_id, cid) {
-                    continue;
-                }
+            // Must be non-hostile (friendly).
+            if !self.is_non_hostile(creature_id, cid) {
+                continue;
+            }
 
-                // Must be within check range of the candidate position.
-                let dx = candidate_pos.x as i64 - other.position.x as i64;
-                let dy = candidate_pos.y as i64 - other.position.y as i64;
-                let dz = candidate_pos.z as i64 - other.position.z as i64;
-                if dx * dx + dy * dy + dz * dz > check_range_sq {
-                    continue;
-                }
+            // Must be within check range of the candidate position.
+            let dx = candidate_pos.x as i64 - other.position.min.x as i64;
+            let dy = candidate_pos.y as i64 - other.position.min.y as i64;
+            let dz = candidate_pos.z as i64 - other.position.min.z as i64;
+            if dx * dx + dy * dy + dz * dz > check_range_sq {
+                continue;
+            }
 
-                // Must have a bow (is an archer).
-                let has_bow = self.inv_item_count(
-                    other.inventory_id,
-                    ItemKind::Bow,
-                    crate::inventory::MaterialFilter::Any,
-                ) > 0;
-                if !has_bow {
-                    continue;
-                }
+            // Must have a bow (is an archer).
+            let has_bow = self.inv_item_count(
+                other.inventory_id,
+                ItemKind::Bow,
+                crate::inventory::MaterialFilter::Any,
+            ) > 0;
+            if !has_bow {
+                continue;
+            }
 
-                // Must have a target.
-                let target_id = match other
-                    .current_task
-                    .and_then(|tid| self.db.tasks.get(&tid).and_then(|t| t.target_creature))
-                {
-                    Some(tid) => tid,
-                    None => continue,
-                };
-                let target = match self.db.creatures.get(&target_id) {
-                    Some(c) if c.vital_status != VitalStatus::Dead => c,
-                    _ => continue,
-                };
+            // Must have a target.
+            let target_id = match other
+                .current_task
+                .and_then(|tid| self.db.tasks.get(&tid).and_then(|t| t.target_creature))
+            {
+                Some(tid) => tid,
+                None => continue,
+            };
+            let target = match self.db.creatures.get(&target_id) {
+                Some(c) if c.vital_status != VitalStatus::Dead => c,
+                _ => continue,
+            };
 
-                // Check if candidate_pos is on the line from other to target.
-                // Use cross product: if |AB × AC| / |AB| < threshold, the
-                // point C is close to the line AB. We use squared distances
-                // to avoid sqrt, and check |AB × AC|² < threshold² * |AB|².
-                let ax = other.position.x as i64;
-                let ay = other.position.y as i64;
-                let az = other.position.z as i64;
-                let bx = target.position.x as i64;
-                let by = target.position.y as i64;
-                let bz = target.position.z as i64;
-                let cx = candidate_pos.x as i64;
-                let cy = candidate_pos.y as i64;
-                let cz = candidate_pos.z as i64;
+            // Check if candidate_pos is on the line from other to target.
+            // Use cross product: if |AB × AC| / |AB| < threshold, the
+            // point C is close to the line AB. We use squared distances
+            // to avoid sqrt, and check |AB × AC|² < threshold² * |AB|².
+            let ax = other.position.min.x as i64;
+            let ay = other.position.min.y as i64;
+            let az = other.position.min.z as i64;
+            let bx = target.position.min.x as i64;
+            let by = target.position.min.y as i64;
+            let bz = target.position.min.z as i64;
+            let cx = candidate_pos.x as i64;
+            let cy = candidate_pos.y as i64;
+            let cz = candidate_pos.z as i64;
 
-                let abx = bx - ax;
-                let aby = by - ay;
-                let abz = bz - az;
-                let acx = cx - ax;
-                let acy = cy - ay;
-                let acz = cz - az;
+            let abx = bx - ax;
+            let aby = by - ay;
+            let abz = bz - az;
+            let acx = cx - ax;
+            let acy = cy - ay;
+            let acz = cz - az;
 
-                // Cross product AB × AC.
-                let cross_x = aby * acz - abz * acy;
-                let cross_y = abz * acx - abx * acz;
-                let cross_z = abx * acy - aby * acx;
-                let cross_sq = cross_x * cross_x + cross_y * cross_y + cross_z * cross_z;
-                let ab_sq = abx * abx + aby * aby + abz * abz;
+            // Cross product AB × AC.
+            let cross_x = aby * acz - abz * acy;
+            let cross_y = abz * acx - abx * acz;
+            let cross_z = abx * acy - aby * acx;
+            let cross_sq = cross_x * cross_x + cross_y * cross_y + cross_z * cross_z;
+            let ab_sq = abx * abx + aby * aby + abz * abz;
 
-                if ab_sq == 0 {
-                    continue;
-                }
+            if ab_sq == 0 {
+                continue;
+            }
 
-                // Distance from line = |cross| / |AB|.
-                // Check: cross_sq < threshold² * ab_sq → within threshold
-                // voxels of the line. Use threshold = 1.5 → threshold² = 2.25
-                // → cross_sq * 4 < 9 * ab_sq (multiply to stay integer).
-                if cross_sq * 4 > 9 * ab_sq {
-                    continue;
-                }
+            // Distance from line = |cross| / |AB|.
+            // Check: cross_sq < threshold² * ab_sq → within threshold
+            // voxels of the line. Use threshold = 1.5 → threshold² = 2.25
+            // → cross_sq * 4 < 9 * ab_sq (multiply to stay integer).
+            if cross_sq * 4 > 9 * ab_sq {
+                continue;
+            }
 
-                // Also check that the candidate is between A and B (not behind
-                // or past). Dot product AB · AC should be > 0 and < |AB|².
-                let dot = abx * acx + aby * acy + abz * acz;
-                if dot > 0 && dot < ab_sq {
-                    return true;
-                }
+            // Also check that the candidate is between A and B (not behind
+            // or past). Dot product AB · AC should be > 0 and < |AB|².
+            let dot = abx * acx + aby * acy + abz * acz;
+            if dot > 0 && dot < ab_sq {
+                return true;
             }
         }
 
@@ -3840,13 +3819,13 @@ impl SimState {
         let creature = self.db.creatures.get(&creature_id)?;
         let species = creature.species;
         let graph = self.graph_for_species(species);
-        let current_node = graph.node_at(creature.position)?;
+        let current_node = graph.node_at(creature.position.min)?;
 
         let target = self.db.creatures.get(&target_id)?;
         if target.vital_status == VitalStatus::Dead {
             return None;
         }
-        let target_pos = target.position;
+        let target_pos = target.position.min;
         let target_species = target.species;
         let target_footprint = self.species_table[&target_species].footprint;
 

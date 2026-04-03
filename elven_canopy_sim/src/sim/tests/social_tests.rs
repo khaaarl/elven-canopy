@@ -1084,12 +1084,11 @@ fn casual_social_out_of_range_no_interaction() {
 
     // Move elf_b far away.
     let far_pos = VoxelCoord::new(100, 51, 100);
-    let old_pos = sim.db.creatures.get(&elf_b).unwrap().position;
+    let old_pos = sim.db.creatures.get(&elf_b).unwrap().position.min;
     if let Some(mut c) = sim.db.creatures.get(&elf_b) {
-        c.position = far_pos;
+        c.position = VoxelBox::point(far_pos);
         let _ = sim.db.update_creature(c);
     }
-    sim.update_creature_spatial_index(elf_b, Species::Elf, old_pos, far_pos);
 
     sim.try_casual_social(elf_a);
 

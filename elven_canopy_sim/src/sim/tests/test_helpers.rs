@@ -227,7 +227,6 @@ pub(super) fn flat_world_sim(seed: u64) -> SimState {
         lexicon: Some(lexicon),
         last_build_message: None,
         structure_voxels: BTreeMap::new(),
-        spatial_index: BTreeMap::new(),
         mana_wasted_positions: Vec::new(),
         grassless: BTreeSet::new(),
     };
@@ -589,26 +588,16 @@ pub(super) fn spawn_species(sim: &mut SimState, species: Species) -> CreatureId 
 pub(super) fn creature_node(sim: &SimState, creature_id: CreatureId) -> NavNodeId {
     let creature = sim.db.creatures.get(&creature_id).unwrap();
     sim.graph_for_species(creature.species)
-        .node_at(creature.position)
+        .node_at(creature.position.min)
         .expect("creature should have a nav node at its position")
 }
 
-/// Force a creature to a specific position, updating the spatial index.
+/// Force a creature to a specific position. The tabulosity spatial index on
+/// Creature.position is automatically maintained by `update_creature`.
 pub(super) fn force_position(sim: &mut SimState, creature_id: CreatureId, new_pos: VoxelCoord) {
-    let creature = sim.db.creatures.get(&creature_id).unwrap();
-    let old_pos = creature.position;
-    let species = creature.species;
-    let footprint = sim.species_table[&species].footprint;
-    SimState::deregister_creature_from_index(
-        &mut sim.spatial_index,
-        creature_id,
-        old_pos,
-        footprint,
-    );
     let mut creature = sim.db.creatures.get(&creature_id).unwrap();
-    creature.position = new_pos;
+    creature.position = creature.position.with_anchor(new_pos);
     sim.db.update_creature(creature).unwrap();
-    SimState::register_creature_in_index(&mut sim.spatial_index, creature_id, new_pos, footprint);
 }
 
 /// Set a creature's trait to a specific value (insert or modify).
@@ -1147,7 +1136,7 @@ pub(super) fn ensure_tree_has_fruit(sim: &mut SimState) -> VoxelCoord {
         .tree_fruits
         .by_tree_id(&tree_id, tabulosity::QueryOpts::ASC);
     if let Some(tf) = existing.first() {
-        return tf.position;
+        return tf.position.min;
     }
 
     let tree = sim.db.trees.get(&tree_id).unwrap();
@@ -1180,7 +1169,7 @@ pub(super) fn ensure_tree_has_fruit(sim: &mut SimState) -> VoxelCoord {
     let _ = sim.db.insert_tree_fruit_auto(|id| crate::db::TreeFruit {
         id,
         tree_id,
-        position: fruit_pos,
+        position: VoxelBox::point(fruit_pos),
         species_id,
     });
     fruit_pos

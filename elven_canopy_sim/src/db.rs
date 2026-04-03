@@ -71,7 +71,7 @@ use crate::types::{
     ItemStackId, MilitaryGroupId, NotificationId, OpinionKind, ParticipantRole, ParticipantStatus,
     PathId, ProjectId, ProjectileId, RecruitmentMode, SelectionGroupId, Species, StructureId,
     StrutId, TaskId, ThoughtKind, TraitKind, TraitValue, TreeFruitId, TreeId, VitalStatus,
-    VoxelCoord,
+    VoxelBox, VoxelCoord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -327,8 +327,9 @@ pub struct TreeFruit {
     #[indexed]
     pub tree_id: TreeId,
     /// Voxel position of this fruit (set to VoxelType::Fruit in the world grid).
+    /// Always a 1×1×1 `VoxelBox` (fruit occupies one voxel).
     #[indexed(unique)]
-    pub position: VoxelCoord,
+    pub position: VoxelBox,
     /// The species of this fruit.
     #[indexed]
     pub species_id: FruitSpeciesId,
@@ -361,17 +362,30 @@ pub struct GreatTreeInfo {
 /// Items are stored in the `item_stacks` table via the `inventory_id` FK.
 /// Personal wants are in the `logistics_want_rows` table (queried by
 /// `inventory_id`). Thoughts are in the `thoughts` table.
+///
+/// The `position` field is a `VoxelBox` representing the creature's spatial
+/// footprint. The `.min` corner is the anchor point used for pathfinding and
+/// distance calculations. A 1×1×1 elf has `min == max`; a 2×2×2 troll has
+/// `max = min + (1,1,1)`. The `creature_spatial` index is an R*-tree spatial
+/// index that enables efficient intersection queries (e.g., "what creatures
+/// occupy this voxel?"). Dead creatures are excluded by the filter.
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
 #[index(
     name = "activation_ready",
     fields("vital_status", "next_available_tick")
+)]
+#[index(
+    name = "creature_spatial",
+    fields("position"),
+    kind = "spatial",
+    filter = "Creature::is_spatially_present"
 )]
 pub struct Creature {
     #[primary_key]
     pub id: CreatureId,
     #[indexed]
     pub species: Species,
-    pub position: VoxelCoord,
+    pub position: VoxelBox,
     pub name: String,
     pub name_meaning: String,
     #[indexed]
@@ -805,10 +819,17 @@ impl Creature {
             }
         }
         (
-            self.position.x as f32,
-            self.position.y as f32,
-            self.position.z as f32,
+            self.position.min.x as f32,
+            self.position.min.y as f32,
+            self.position.min.z as f32,
         )
+    }
+
+    /// Filter predicate for the `creature_spatial` index. Returns `true` for
+    /// creatures that should be spatially indexed (alive or incapacitated).
+    /// Dead creatures are excluded so they don't appear in spatial queries.
+    fn is_spatially_present(&self) -> bool {
+        self.vital_status != VitalStatus::Dead
     }
 }
 

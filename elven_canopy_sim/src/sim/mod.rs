@@ -83,7 +83,7 @@
 // Creatures cannot move into voxels occupied by hostile creatures. This is
 // enforced at **move time** (not pathfind time) via `destination_blocked_by_hostile()`,
 // which checks all voxels in the mover's destination footprint against the
-// spatial index. Multi-voxel creatures (e.g. 2x2x2 elephants) check all
+// creature spatial index. Multi-voxel creatures (e.g. 2x2x2 elephants) check all
 // destination footprint voxels. When blocked, the creature stays put and
 // schedules a retry after `config.voxel_exclusion_retry_ticks`.
 //
@@ -237,7 +237,7 @@
 // Death does NOT delete the creature row. Instead, `vital_status` is set to
 // `Dead` and the creature remains in the DB (supporting future states like
 // Ghost or Undead). The death handler: interrupts any current task, drops
-// inventory as a ground pile, deregisters from the spatial index, clears
+// inventory as a ground pile, clears
 // `assigned_home`, emits `CreatureDied`, and creates a notification.
 // Heartbeats and activations check `vital_status` and skip dead creatures
 // (no rescheduling). All live-creature queries (rendering, counting, task
@@ -403,16 +403,6 @@ pub struct SimState {
     /// which structure the player clicked on.
     #[serde(skip)]
     pub structure_voxels: BTreeMap<VoxelCoord, StructureId>,
-
-    /// Spatial index mapping voxel coordinates to the creatures occupying them.
-    /// Multi-voxel creatures (footprint > `[1,1,1]`) are registered at every
-    /// voxel they occupy (anchor + footprint offsets). Transient — rebuilt from
-    /// alive creatures in `rebuild_transient_state()`. Used by projectile hit
-    /// detection and hostile detection scanning. `BTreeMap` with lexicographic
-    /// `VoxelCoord` ordering does NOT support efficient 3D range queries —
-    /// detection scans use O(n) iteration with distance filtering.
-    #[serde(skip)]
-    pub spatial_index: BTreeMap<VoxelCoord, Vec<CreatureId>>,
 
     /// Positions where mana-wasted work actions occurred during the current
     /// step. Cleared at the start of each `step()` call. Read by the GDScript
@@ -605,7 +595,7 @@ impl SimState {
         };
         let species = creature.species;
         let species_data = &self.species_table[&species];
-        let position = creature.position;
+        let position = creature.position.min;
 
         if let Some(flight_tpv) = species_data.flight_ticks_per_voxel {
             // Flying creature: A* on voxel grid.
@@ -662,7 +652,7 @@ impl SimState {
         };
         let species = creature.species;
         let species_data = &self.species_table[&species];
-        let position = creature.position;
+        let position = creature.position.min;
 
         if let Some(flight_tpv) = species_data.flight_ticks_per_voxel {
             // Flying creature: interleaved A* across candidates.
@@ -731,7 +721,7 @@ impl SimState {
         if let Some(tf) = self
             .db
             .tree_fruits
-            .by_position(&fruit_pos, tabulosity::QueryOpts::ASC)
+            .by_position(&VoxelBox::point(fruit_pos), tabulosity::QueryOpts::ASC)
             .into_iter()
             .next()
         {
@@ -788,7 +778,6 @@ impl SimState {
             lexicon: Some(elven_canopy_lang::default_lexicon()),
             last_build_message: None,
             structure_voxels: BTreeMap::new(),
-            spatial_index: BTreeMap::new(),
             mana_wasted_positions: Vec::new(),
             grassless: BTreeSet::new(),
         };
@@ -1685,7 +1674,7 @@ impl SimState {
 
                     if has_bread
                         && let Some(creature_pos) =
-                            self.db.creatures.get(&creature_id).map(|c| c.position)
+                            self.db.creatures.get(&creature_id).map(|c| c.position.min)
                     {
                         let task_id = TaskId::new(&mut self.rng);
                         let new_task = task::Task {
@@ -1838,12 +1827,12 @@ impl SimState {
                         } else if let Some(creature) = self.db.creatures.get(&creature_id)
                             && self
                                 .graph_for_species(creature.species)
-                                .node_at(creature.position)
+                                .node_at(creature.position.min)
                                 .is_some()
                         {
                             (
                                 None,
-                                creature.position,
+                                creature.position.min,
                                 self.config.sleep_ticks_ground,
                                 task::SleepLocation::Ground,
                             )
@@ -2147,7 +2136,7 @@ impl SimState {
         let tf = self
             .db
             .tree_fruits
-            .by_position(&pos, tabulosity::QueryOpts::ASC)
+            .by_position(&VoxelBox::point(pos), tabulosity::QueryOpts::ASC)
             .into_iter()
             .next()?;
         self.db.fruit_species.get(&tf.species_id)
@@ -2362,8 +2351,7 @@ impl SimState {
     ///
     /// The voxel world is now serialized directly, so only derived data
     /// structures need rebuilding: `nav_graph` (from world geometry),
-    /// `species_table` (from config), `spatial_index` (from creatures +
-    /// species footprints), `lexicon` (from embedded JSON),
+    /// `species_table` (from config), `lexicon` (from embedded JSON),
     /// `structure_voxels` (from completed blueprints + structures).
     pub fn rebuild_transient_state(&mut self) {
         self.face_data = self.face_data_list.iter().cloned().collect();
@@ -2373,9 +2361,11 @@ impl SimState {
         self.species_table = self.config.species.clone();
         self.lexicon = Some(elven_canopy_lang::default_lexicon());
 
-        // Rebuild spatial_index from all living creatures. Must run after
-        // species_table is populated (footprint data comes from SpeciesData).
-        self.rebuild_spatial_index();
+        // Upgrade creature positions from old saves: old saves store position
+        // as a bare VoxelCoord that deserializes as a 1×1×1 VoxelBox. Creatures
+        // with multi-voxel footprints need their position expanded to the real
+        // footprint. Must run after species_table is populated.
+        self.upgrade_creature_positions();
 
         // Rebuild structure_voxels from completed blueprints.
         self.structure_voxels.clear();
@@ -2397,97 +2387,38 @@ impl SimState {
         }
     }
 
-    /// Rebuild the spatial index from scratch using all creatures in the DB.
-    /// Must be called after `species_table` is populated (footprint lookups
-    /// depend on `SpeciesData`).
-    fn rebuild_spatial_index(&mut self) {
-        self.spatial_index.clear();
-        let entries: Vec<(CreatureId, Species, VoxelCoord)> = self
+    /// Query all creatures at a given voxel coordinate. Returns a sorted Vec
+    /// for deterministic iteration (sorted by `CreatureId` for PRNG selection).
+    /// Uses the tabulosity R*-tree spatial index on Creature.position.
+    pub fn creatures_at_voxel(&self, coord: VoxelCoord) -> Vec<CreatureId> {
+        self.db
+            .creatures
+            .intersecting_creature_spatial(&VoxelBox::point(coord))
+            .iter()
+            .map(|c| c.id)
+            .collect()
+    }
+
+    /// Upgrade creature positions from old saves that stored a bare VoxelCoord
+    /// (deserialized as a 1×1×1 VoxelBox). Creatures whose species has a
+    /// multi-voxel footprint need their position expanded. Must be called
+    /// after `species_table` is populated.
+    fn upgrade_creature_positions(&mut self) {
+        let updates: Vec<(CreatureId, [u8; 3])> = self
             .db
             .creatures
             .iter_all()
-            .filter(|c| c.vital_status != VitalStatus::Dead)
-            .map(|c| (c.id, c.species, c.position))
+            .filter(|c| {
+                let fp = self.species_table[&c.species].footprint;
+                fp != c.position.footprint_size()
+            })
+            .map(|c| (c.id, self.species_table[&c.species].footprint))
             .collect();
-        for (cid, species, pos) in entries {
-            let footprint = self.species_table[&species].footprint;
-            Self::register_creature_in_index(&mut self.spatial_index, cid, pos, footprint);
-        }
-    }
-
-    /// Register a creature in the spatial index at all voxels covered by its
-    /// footprint. The anchor position is the min-corner; the footprint
-    /// `[fx, fy, fz]` extends in the positive direction. Entries are kept
-    /// sorted by `CreatureId` for deterministic PRNG selection.
-    fn register_creature_in_index(
-        index: &mut BTreeMap<VoxelCoord, Vec<CreatureId>>,
-        creature_id: CreatureId,
-        anchor: VoxelCoord,
-        footprint: [u8; 3],
-    ) {
-        for dx in 0..footprint[0] as i32 {
-            for dy in 0..footprint[1] as i32 {
-                for dz in 0..footprint[2] as i32 {
-                    let voxel = VoxelCoord::new(anchor.x + dx, anchor.y + dy, anchor.z + dz);
-                    let vec = index.entry(voxel).or_default();
-                    let pos = vec.binary_search(&creature_id).unwrap_or_else(|p| p);
-                    vec.insert(pos, creature_id);
-                }
+        for (cid, footprint) in updates {
+            if let Some(mut c) = self.db.creatures.get(&cid) {
+                c.position = VoxelBox::from_anchor(c.position.min, footprint);
+                let _ = self.db.update_creature(c);
             }
-        }
-    }
-
-    /// Remove a creature from the spatial index at all voxels covered by its
-    /// footprint at the given anchor position.
-    fn deregister_creature_from_index(
-        index: &mut BTreeMap<VoxelCoord, Vec<CreatureId>>,
-        creature_id: CreatureId,
-        anchor: VoxelCoord,
-        footprint: [u8; 3],
-    ) {
-        for dx in 0..footprint[0] as i32 {
-            for dy in 0..footprint[1] as i32 {
-                for dz in 0..footprint[2] as i32 {
-                    let voxel = VoxelCoord::new(anchor.x + dx, anchor.y + dy, anchor.z + dz);
-                    if let Some(vec) = index.get_mut(&voxel) {
-                        vec.retain(|&id| id != creature_id);
-                        if vec.is_empty() {
-                            index.remove(&voxel);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Update the spatial index when a creature moves from `old_pos` to
-    /// `new_pos`. Deregisters from old voxels, registers at new voxels.
-    fn update_creature_spatial_index(
-        &mut self,
-        creature_id: CreatureId,
-        species: Species,
-        old_pos: VoxelCoord,
-        new_pos: VoxelCoord,
-    ) {
-        if old_pos == new_pos {
-            return;
-        }
-        let footprint = self.species_table[&species].footprint;
-        Self::deregister_creature_from_index(
-            &mut self.spatial_index,
-            creature_id,
-            old_pos,
-            footprint,
-        );
-        Self::register_creature_in_index(&mut self.spatial_index, creature_id, new_pos, footprint);
-    }
-
-    /// Query all creatures at a given voxel coordinate. Returns a sorted slice
-    /// for deterministic iteration (sorted by `CreatureId` for PRNG selection).
-    pub fn creatures_at_voxel(&self, coord: VoxelCoord) -> &[CreatureId] {
-        match self.spatial_index.get(&coord) {
-            Some(vec) => vec,
-            None => &[],
         }
     }
 

@@ -82,7 +82,7 @@ fn make_interp_creature(
     crate::db::Creature {
         id: CreatureId(SimUuid::new_v4(&mut GameRng::new(1))),
         species: Species::Elf,
-        position,
+        position: VoxelBox::point(position),
         name: String::new(),
         name_meaning: String::new(),
         path: None,
@@ -207,9 +207,9 @@ fn interpolated_position_with_build_action_returns_static() {
         // and should return the static position.
         let pos = elf.interpolated_position(sim.tick as f64, None);
         let expected = (
-            elf.position.x as f32,
-            elf.position.y as f32,
-            elf.position.z as f32,
+            elf.position.min.x as f32,
+            elf.position.min.y as f32,
+            elf.position.min.z as f32,
         );
         assert_eq!(
             pos, expected,
@@ -339,7 +339,7 @@ fn pursuit_task_repaths_when_target_moves() {
     let new_pos = sim.nav_graph.node(new_target_node).position;
     {
         let mut c = sim.db.creatures.get(&target_id).unwrap();
-        c.position = new_pos;
+        c.position = VoxelBox::point(new_pos);
         sim.db.update_creature(c).unwrap();
     }
 
@@ -377,12 +377,12 @@ fn pursuit_task_completes_when_adjacent() {
     let node_pos = sim.nav_graph.node(pursuer_node).position;
     {
         let mut c = sim.db.creatures.get(&target_id).unwrap();
-        c.position = node_pos;
+        c.position = VoxelBox::point(node_pos);
         sim.db.update_creature(c).unwrap();
     }
     {
         let mut c = sim.db.creatures.get(&pursuer_id).unwrap();
-        c.position = node_pos;
+        c.position = VoxelBox::point(node_pos);
         c.path = None;
         sim.db.update_creature(c).unwrap();
     }
@@ -466,7 +466,7 @@ fn pursuit_task_abandons_when_target_gone() {
     // branch in pursuit logic, causing the pursuer to abandon the task.
     {
         let mut c = sim.db.creatures.get(&target_id).unwrap();
-        c.position = VoxelCoord::new(0, 200, 0);
+        c.position = VoxelBox::point(VoxelCoord::new(0, 200, 0));
         sim.db.update_creature(c).unwrap();
     }
 
@@ -502,7 +502,7 @@ fn pursuit_task_abandons_when_target_unreachable() {
     // Move the target to an unreachable position with no nav node.
     {
         let mut c = sim.db.creatures.get(&target_id).unwrap();
-        c.position = VoxelCoord::new(0, 200, 0);
+        c.position = VoxelBox::point(VoxelCoord::new(0, 200, 0));
         sim.db.update_creature(c).unwrap();
     }
 
@@ -601,9 +601,9 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
     let elf_id = elf.id;
     let elf_node = sim
         .nav_graph
-        .node_at(elf.position)
+        .node_at(elf.position.min)
         .expect("elf should have a nav node");
-    let elf_pos = elf.position;
+    let elf_pos = elf.position.min;
 
     // Find two nav nodes: one close to the elf, one farther away.
     // We pick nodes by searching the graph for nodes at increasing
@@ -817,7 +817,7 @@ fn troll_pursues_elf_cross_graph_pathfinding() {
     let troll_id = sim
         .spawn_creature(Species::Troll, tree_pos, &mut events)
         .expect("spawn troll");
-    let troll_pos = sim.db.creatures.get(&troll_id).unwrap().position;
+    let troll_pos = sim.db.creatures.get(&troll_id).unwrap().position.min;
 
     // Find a standard-graph ground node whose ID >= large graph node count
     // AND is within troll detection range (144 = ~12 voxels).
@@ -895,8 +895,8 @@ fn voxel_exclusion_hostile_blocks_movement() {
     // Run a few ticks — elf should NOT move to goblin's voxel.
     sim.step(&[], sim.tick + 200);
 
-    let elf_pos_after = sim.db.creatures.get(&elf).unwrap().position;
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let elf_pos_after = sim.db.creatures.get(&elf).unwrap().position.min;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
 
     // Elf must not be at the goblin's position.
     assert_ne!(
@@ -925,7 +925,7 @@ fn voxel_exclusion_non_hostile_does_not_block() {
     );
 
     // The exclusion check should return false (not blocked).
-    let elf_b_pos = sim.db.creatures.get(&elf_b).unwrap().position;
+    let elf_b_pos = sim.db.creatures.get(&elf_b).unwrap().position.min;
     let elf_footprint = sim.species_table[&Species::Elf].footprint;
     assert!(
         !sim.destination_blocked_by_hostile(elf_a, elf_b_pos, elf_footprint),
@@ -940,7 +940,7 @@ fn voxel_exclusion_self_does_not_block() {
     let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let elf_footprint = sim.species_table[&Species::Elf].footprint;
 
     assert!(
@@ -966,7 +966,7 @@ fn voxel_exclusion_dead_hostile_does_not_block() {
         sim.db.update_creature(c).unwrap();
     }
 
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
     let elf_footprint = sim.species_table[&Species::Elf].footprint;
     assert!(
         !sim.destination_blocked_by_hostile(elf, goblin_pos, elf_footprint),
@@ -986,8 +986,8 @@ fn voxel_exclusion_bidirectional_blocking() {
     force_to_node(&mut sim, elf, node_a);
     force_to_node(&mut sim, goblin, node_b);
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
     let elf_fp = sim.species_table[&Species::Elf].footprint;
     let goblin_fp = sim.species_table[&Species::Goblin].footprint;
 
@@ -1016,8 +1016,8 @@ fn voxel_exclusion_hostile_pursue_blocked() {
     force_idle(&mut sim, goblin);
     force_idle(&mut sim, elf);
 
-    let goblin_pos_before = sim.db.creatures.get(&goblin).unwrap().position;
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos_before = sim.db.creatures.get(&goblin).unwrap().position.min;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
 
     // Freeze the elf so only the goblin activates.
     suppress_activation(&mut sim, elf);
@@ -1032,7 +1032,7 @@ fn voxel_exclusion_hostile_pursue_blocked() {
         .unwrap_or(sim.tick);
     sim.step(&[], goblin_tick + 1);
 
-    let goblin_pos_after = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_pos_after = sim.db.creatures.get(&goblin).unwrap().position.min;
 
     // Goblin should NOT have moved onto the elf's exact voxel.
     assert_ne!(
@@ -1071,7 +1071,7 @@ fn voxel_exclusion_wander_avoids_hostile_voxels() {
     suppress_activation_until(&mut sim, goblin, u64::MAX);
     suppress_activation_until(&mut sim, elf, u64::MAX);
 
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
 
     // Run many activations and verify the elf never lands on goblin's voxel.
     for i in 0..20 {
@@ -1081,7 +1081,7 @@ fn voxel_exclusion_wander_avoids_hostile_voxels() {
         schedule_activation_at(&mut sim, elf, tick);
         sim.step(&[], sim.tick + 200);
 
-        let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+        let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
         assert_ne!(
             elf_pos, goblin_pos,
             "Elf should not wander into hostile voxel (iteration {i})"
@@ -1107,14 +1107,14 @@ fn voxel_exclusion_flee_avoids_hostile_voxels() {
     suppress_activation_until(&mut sim, elf, u64::MAX);
     suppress_activation_until(&mut sim, goblin, u64::MAX);
 
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
 
     // Activate only the elf — it should detect the goblin and flee.
     let tick = sim.tick + 1;
     schedule_activation_at(&mut sim, elf, tick);
     sim.step(&[], sim.tick + 200);
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     // Elf should NOT have fled into the goblin's voxel.
     assert_ne!(
         elf_pos, goblin_pos,
@@ -1178,7 +1178,7 @@ fn voxel_exclusion_flee_cornered_still_moves() {
         );
     }
 
-    let elf_pos_before = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos_before = sim.db.creatures.get(&elf).unwrap().position.min;
 
     // Now activate the elf — it should be cornered but flee should still
     // use the fallback (allow movement through hostile).
@@ -1191,7 +1191,7 @@ fn voxel_exclusion_flee_cornered_still_moves() {
     // goblins are on adjacent nav nodes — well within range. The elf
     // should detect the threat and flee. Since all exits are hostile-
     // occupied, the flee fallback should allow movement through a hostile.
-    let elf_pos_after = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos_after = sim.db.creatures.get(&elf).unwrap().position.min;
     assert_ne!(
         elf_pos_before, elf_pos_after,
         "Cornered elf should flee (using fallback through hostile-occupied voxel)"
@@ -1227,14 +1227,14 @@ fn voxel_exclusion_ground_move_one_step_returns_false_when_blocked() {
         .find(|&idx| sim.nav_graph.edge(idx).to == node_b)
         .expect("Should have edge from A to B");
 
-    let elf_pos_before = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos_before = sim.db.creatures.get(&elf).unwrap().position.min;
     let result = sim.ground_move_one_step(elf, Species::Elf, edge_idx);
 
     assert!(
         !result,
         "ground_move_one_step should return false when blocked"
     );
-    let elf_pos_after = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos_after = sim.db.creatures.get(&elf).unwrap().position.min;
     assert_eq!(
         elf_pos_before, elf_pos_after,
         "Elf position should not change when move is blocked"
@@ -1281,7 +1281,7 @@ fn voxel_exclusion_skip_exclusion_allows_blocked_move() {
         "ground_move_one_step_inner with skip_exclusion should succeed"
     );
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let node_b_pos = sim.nav_graph.node(node_b).position;
     assert_eq!(
         elf_pos, node_b_pos,
@@ -1313,7 +1313,7 @@ fn voxel_exclusion_ground_move_one_step_returns_true_when_clear() {
         "ground_move_one_step should return true when path is clear"
     );
 
-    let elf_pos_after = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos_after = sim.db.creatures.get(&elf).unwrap().position.min;
     let node_b_pos = sim.nav_graph.node(node_b).position;
     assert_eq!(elf_pos_after, node_b_pos, "Elf should have moved to node B");
 }
@@ -1374,8 +1374,8 @@ fn voxel_exclusion_already_overlapping_allowed() {
     force_to_node(&mut sim, goblin, node_a);
 
     // Both are now at the same position — this should be fine.
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
     assert_eq!(
         elf_pos, goblin_pos,
         "Test setup: both should be at same position"
@@ -1404,7 +1404,7 @@ fn voxel_exclusion_different_hostile_civs_block() {
     force_to_node(&mut sim, elf, node_a);
     force_to_node(&mut sim, orc, node_b);
 
-    let orc_pos = sim.db.creatures.get(&orc).unwrap().position;
+    let orc_pos = sim.db.creatures.get(&orc).unwrap().position.min;
     let elf_fp = sim.species_table[&Species::Elf].footprint;
 
     // Orc is aggressive non-civ — should be hostile to elf.
@@ -1429,7 +1429,7 @@ fn voxel_exclusion_two_non_civ_same_species_share() {
     force_to_node(&mut sim, g1, node_a);
     force_to_node(&mut sim, g2, node_b);
 
-    let g2_pos = sim.db.creatures.get(&g2).unwrap().position;
+    let g2_pos = sim.db.creatures.get(&g2).unwrap().position.min;
     let goblin_fp = sim.species_table[&Species::Goblin].footprint;
 
     // Non-civ same-species are non-hostile.
@@ -1461,7 +1461,7 @@ fn voxel_exclusion_large_creature_blocked_by_small_hostile_in_footprint() {
     // Place the goblin at a position that would be inside the elephant's
     // destination footprint. If elephant anchor is at (x,y,z), the
     // footprint covers (x..x+2, y..y+2, z..z+2).
-    let elephant_pos = sim.db.creatures.get(&elephant).unwrap().position;
+    let elephant_pos = sim.db.creatures.get(&elephant).unwrap().position.min;
     // Place goblin at elephant_pos + (1, 0, 0) — inside the footprint.
     let goblin_pos = VoxelCoord::new(elephant_pos.x + 1, elephant_pos.y, elephant_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
@@ -1502,7 +1502,7 @@ fn voxel_exclusion_small_creature_blocked_by_large_hostile_footprint() {
 
     let troll = spawn_species(&mut sim, Species::Troll);
 
-    let troll_pos = sim.db.creatures.get(&troll).unwrap().position;
+    let troll_pos = sim.db.creatures.get(&troll).unwrap().position.min;
     // Troll footprint covers troll_pos to troll_pos + (1,1,1).
     // Test a position inside the footprint but not the anchor.
     let blocked_pos = VoxelCoord::new(troll_pos.x + 1, troll_pos.y, troll_pos.z);
@@ -1571,7 +1571,7 @@ fn voxel_exclusion_config_retry_ticks_respected() {
 
     sim.step(&[], tick_at_block + 499);
     // Elf should still be at node_a (retry not yet fired).
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let node_a_pos = sim.nav_graph.node(node_a).position;
     assert_eq!(
         elf_pos, node_a_pos,
@@ -1627,8 +1627,8 @@ fn voxel_exclusion_walk_toward_task_blocked() {
     schedule_activation_at(&mut sim, elf, tick);
     sim.step(&[], sim.tick + 200);
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
 
     assert_ne!(
         elf_pos, goblin_pos,
@@ -1751,7 +1751,7 @@ fn voxel_exclusion_hostile_dies_creature_retries_and_moves() {
     let result = sim.ground_move_one_step(elf, Species::Elf, edge_idx);
     assert!(!result, "Should be blocked while goblin is alive");
     assert_eq!(
-        sim.db.creatures.get(&elf).unwrap().position,
+        sim.db.creatures.get(&elf).unwrap().position.min,
         node_a_pos,
         "Elf should still be at node A"
     );
@@ -1779,7 +1779,7 @@ fn voxel_exclusion_hostile_dies_creature_retries_and_moves() {
     let result2 = sim.ground_move_one_step(elf, Species::Elf, edge_idx);
     assert!(result2, "Move should succeed after goblin dies");
     assert_eq!(
-        sim.db.creatures.get(&elf).unwrap().position,
+        sim.db.creatures.get(&elf).unwrap().position.min,
         node_b_pos,
         "Elf should have moved to node B"
     );
@@ -1827,10 +1827,10 @@ fn voxel_exclusion_attack_target_task_blocked_by_hostile() {
     );
 
     // Run for a bit — elf should NOT move onto blocking_goblin's voxel.
-    let blocking_pos = sim.db.creatures.get(&blocking_goblin).unwrap().position;
+    let blocking_pos = sim.db.creatures.get(&blocking_goblin).unwrap().position.min;
     sim.step(&[], tick + 500);
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     assert_ne!(
         elf_pos, blocking_pos,
         "Elf should not walk through blocking goblin to reach attack target"
@@ -1869,10 +1869,10 @@ fn voxel_exclusion_attack_move_task_blocked_by_hostile() {
     sim.step(&[cmd], tick + 2);
 
     // Run for a bit — elf should NOT move onto goblin's voxel.
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
     sim.step(&[], tick + 500);
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     assert_ne!(
         elf_pos, goblin_pos,
         "Elf on attack-move should not walk through hostile goblin"
@@ -1975,7 +1975,7 @@ fn hornet_pursues_and_damages_elf() {
     let elf_id = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf_id);
     force_idle_and_cancel_activations(&mut sim, elf_id);
-    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     let elf_hp_before = sim.db.creatures.get(&elf_id).unwrap().hp;
 
     // Spawn hornet 3 voxels above the elf (within detection range, likely
@@ -2002,7 +2002,7 @@ fn hornet_pursues_and_damages_elf() {
     // 60 HP and passive default engagement the elf likely didn't kill it).
     let hornet = sim.db.creatures.get(&hornet_id).unwrap();
     // Just verify it participated (was alive at some point and moved).
-    assert_ne!(hornet.position, hornet_pos, "hornet should have moved");
+    assert_ne!(hornet.position.min, hornet_pos, "hornet should have moved");
 }
 
 #[test]
@@ -2017,7 +2017,7 @@ fn hornet_wanders_when_alone() {
     sim.step(&[], target_tick);
 
     let hornet = sim.db.creatures.get(&hornet_id).unwrap();
-    assert_ne!(hornet.position, pos, "hornet should have wandered");
+    assert_ne!(hornet.position.min, pos, "hornet should have wandered");
 }
 
 /// Test matrix: aggressive elf (autonomous pursuit) vs hornet at various heights.
@@ -2225,7 +2225,7 @@ fn ordered_elf_vs_hornet_at_heights() {
             give_spear(&mut sim, elf_id);
         }
 
-        let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+        let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
 
         // Build a trunk pillar adjacent to the elf (same as aggressive test).
         for y in elf_pos.y..elf_pos.y + 5 {
@@ -2308,7 +2308,7 @@ fn wyvern_pursues_and_damages_elf() {
     );
 
     let wyvern = sim.db.creatures.get(&wyvern_id).unwrap();
-    assert_ne!(wyvern.position, wyvern_pos, "wyvern should have moved");
+    assert_ne!(wyvern.position.min, wyvern_pos, "wyvern should have moved");
 }
 
 // =========================================================================
@@ -2325,7 +2325,7 @@ fn creature_on_solid_ground_does_not_fall() {
         .expect("should spawn elf");
 
     // Elf should be on solid ground (terrain at y=0 is solid, elf at y=1).
-    let pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     assert_eq!(pos.y, 1);
     assert!(sim.creature_is_supported(elf_id));
 
@@ -2347,7 +2347,7 @@ fn creature_falls_when_platform_removed() {
         .spawn_creature(Species::Elf, VoxelCoord::new(10, 3, 10), &mut events)
         .expect("should spawn elf");
     let elf = sim.db.creatures.get(&elf_id).unwrap();
-    assert_eq!(elf.position.y, 3);
+    assert_eq!(elf.position.min.y, 3);
     let hp_before = elf.hp;
 
     // Remove the platform — elf is now unsupported.
@@ -2360,7 +2360,7 @@ fn creature_falls_when_platform_removed() {
 
     // Elf should have landed at y=1 (above terrain at y=0).
     let elf = sim.db.creatures.get(&elf_id).unwrap();
-    assert_eq!(elf.position.y, 1);
+    assert_eq!(elf.position.min.y, 1);
 
     // Elf should have taken fall damage: 2 voxels * fall_damage_per_voxel.
     let expected_damage = 2 * sim.config.fall_damage_per_voxel;
@@ -2466,7 +2466,7 @@ fn zero_fall_damage_config_means_no_damage() {
     sim.apply_creature_gravity(&mut events);
 
     let elf = sim.db.creatures.get(&elf_id).unwrap();
-    assert_eq!(elf.position.y, 1);
+    assert_eq!(elf.position.min.y, 1);
     assert_eq!(elf.hp, hp_before, "no damage when fall_damage_per_voxel=0");
 }
 
@@ -2498,7 +2498,7 @@ fn climber_on_trunk_does_not_fall() {
     // Move elf to trunk position (may already be there if spawn snapped).
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
-        c.position = trunk_adj;
+        c.position = VoxelBox::point(trunk_adj);
         sim.db.update_creature(c).unwrap();
     }
 
@@ -2515,7 +2515,7 @@ fn ground_only_creature_without_solid_below_falls() {
     let mut sim = test_sim(legacy_test_seed());
     // Spawn a capybara (ground_only=true) at ground level.
     let capy_id = spawn_creature(&mut sim, Species::Capybara);
-    let pos = sim.db.creatures.get(&capy_id).unwrap().position;
+    let pos = sim.db.creatures.get(&capy_id).unwrap().position.min;
     assert_eq!(pos.y, 1, "capybara should be on ground");
 
     // Teleport the capybara to a position without solid below — e.g., y=5
@@ -2523,7 +2523,7 @@ fn ground_only_creature_without_solid_below_falls() {
     let floating_pos = VoxelCoord::new(pos.x, 5, pos.z);
     {
         let mut c = sim.db.creatures.get(&capy_id).unwrap();
-        c.position = floating_pos;
+        c.position = VoxelBox::point(floating_pos);
         sim.db.update_creature(c).unwrap();
     }
 
@@ -2534,7 +2534,10 @@ fn ground_only_creature_without_solid_below_falls() {
     assert_eq!(fell, 1);
 
     let capy = sim.db.creatures.get(&capy_id).unwrap();
-    assert_eq!(capy.position.y, 1, "capybara should land at ground level");
+    assert_eq!(
+        capy.position.min.y, 1,
+        "capybara should land at ground level"
+    );
 }
 
 #[test]
@@ -2577,7 +2580,7 @@ fn creature_gravity_at_activation_time() {
     let elf_id = sim
         .spawn_creature(Species::Elf, VoxelCoord::new(10, 6, 10), &mut events)
         .expect("should spawn elf");
-    assert_eq!(sim.db.creatures.get(&elf_id).unwrap().position.y, 6);
+    assert_eq!(sim.db.creatures.get(&elf_id).unwrap().position.min.y, 6);
 
     // Remove the platform and rebuild nav.
     sim.world.set(platform_pos, VoxelType::Air);
@@ -2589,7 +2592,7 @@ fn creature_gravity_at_activation_time() {
 
     let elf = sim.db.creatures.get(&elf_id).unwrap();
     assert_eq!(
-        elf.position.y, 1,
+        elf.position.min.y, 1,
         "elf should fall to ground via activation"
     );
 
@@ -2645,7 +2648,7 @@ fn creature_gravity_clears_task_and_path() {
     sim.apply_creature_gravity(&mut events);
 
     let elf = sim.db.creatures.get(&elf_id).unwrap();
-    assert_eq!(elf.position.y, 1);
+    assert_eq!(elf.position.min.y, 1);
     assert!(elf.path.is_none(), "path should be cleared after fall");
     assert!(
         elf.current_task.is_none(),
@@ -2664,7 +2667,7 @@ fn logistics_heartbeat_triggers_creature_gravity() {
     let elf_id = sim
         .spawn_creature(Species::Elf, VoxelCoord::new(10, 6, 10), &mut events)
         .expect("should spawn elf");
-    assert_eq!(sim.db.creatures.get(&elf_id).unwrap().position.y, 6);
+    assert_eq!(sim.db.creatures.get(&elf_id).unwrap().position.min.y, 6);
 
     // Remove the platform and rebuild nav.
     sim.world.set(platform_pos, VoxelType::Air);
@@ -2677,7 +2680,10 @@ fn logistics_heartbeat_triggers_creature_gravity() {
 
     // Elf should have fallen to ground.
     let elf = sim.db.creatures.get(&elf_id).unwrap();
-    assert_eq!(elf.position.y, 1, "elf should fall via logistics heartbeat");
+    assert_eq!(
+        elf.position.min.y, 1,
+        "elf should fall via logistics heartbeat"
+    );
 
     // Should have a CreatureFell event in the step output.
     let fell_event = result
@@ -2707,7 +2713,7 @@ fn large_creature_falls_when_ground_removed() {
         .spawn_creature(Species::Elephant, VoxelCoord::new(10, 6, 10), &mut events)
         .expect("should spawn elephant");
 
-    let pos = sim.db.creatures.get(&elephant_id).unwrap().position;
+    let pos = sim.db.creatures.get(&elephant_id).unwrap().position.min;
     // Elephant should be on the platform (y=6, standing on platform at y=5).
     assert_eq!(pos.y, 6, "elephant should be on platform");
 
@@ -2726,9 +2732,9 @@ fn large_creature_falls_when_ground_removed() {
 
     let elephant = sim.db.creatures.get(&elephant_id).unwrap();
     assert!(
-        elephant.position.y < 6,
+        elephant.position.min.y < 6,
         "elephant should have fallen from y=6, now at y={}",
-        elephant.position.y
+        elephant.position.min.y
     );
 
     let fell_event = events
@@ -2754,7 +2760,7 @@ fn degenerate_landing_teleports_to_nearest_node() {
     let capy_id = sim
         .spawn_creature(Species::Capybara, VoxelCoord::new(5, 1, 5), &mut events)
         .expect("should spawn capybara");
-    let original_pos = sim.db.creatures.get(&capy_id).unwrap().position;
+    let original_pos = sim.db.creatures.get(&capy_id).unwrap().position.min;
 
     // Teleport to a column that's entirely air (outside where nav nodes are
     // generated). Use a corner of the world where there's terrain but
@@ -2762,7 +2768,7 @@ fn degenerate_landing_teleports_to_nearest_node() {
     let floating_pos = VoxelCoord::new(1, 10, 1);
     {
         let mut c = sim.db.creatures.get(&capy_id).unwrap();
-        c.position = floating_pos;
+        c.position = VoxelBox::point(floating_pos);
         sim.db.update_creature(c).unwrap();
     }
 
@@ -2774,13 +2780,13 @@ fn degenerate_landing_teleports_to_nearest_node() {
     // The creature should have landed somewhere valid — either at ground
     // level in the same column or teleported to the nearest nav node.
     let graph = sim.graph_for_species(Species::Capybara);
-    let has_node = graph.node_at(capy.position).is_some();
+    let has_node = graph.node_at(capy.position.min).is_some();
     let has_solid_below = sim
         .world
         .get(VoxelCoord::new(
-            capy.position.x,
-            capy.position.y - 1,
-            capy.position.z,
+            capy.position.min.x,
+            capy.position.min.y - 1,
+            capy.position.min.z,
         ))
         .is_solid();
     assert!(
@@ -2818,7 +2824,7 @@ fn ground_only_with_nav_node_but_no_solid_below_falls() {
         .expect("should spawn capybara");
     {
         let mut c = sim.db.creatures.get(&capy_id).unwrap();
-        c.position = standing_pos;
+        c.position = VoxelBox::point(standing_pos);
         sim.db.update_creature(c).unwrap();
     }
     assert!(
@@ -2847,7 +2853,7 @@ fn ground_only_with_nav_node_but_no_solid_below_falls() {
     let fell = sim.apply_creature_gravity(&mut events);
     assert_eq!(fell, 1, "capybara should fall");
     let capy = sim.db.creatures.get(&capy_id).unwrap();
-    assert_eq!(capy.position.y, 1, "should land at ground level");
+    assert_eq!(capy.position.min.y, 1, "should land at ground level");
 }
 
 // ===================================================================
@@ -2894,7 +2900,7 @@ fn flying_creature_directed_goto_creates_task() {
 fn flying_creature_goto_reaches_destination() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     // Spawn hornet above elf (known flyable area), then reposition.
     let hornet = spawn_hornet_at(
         &mut sim,
@@ -3047,7 +3053,7 @@ fn flying_creature_autonomous_combat_preempts_task() {
     // Now spawn an elf near the hornet (within detection range).
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf);
-    let hornet_pos = sim.db.creatures.get(&hornet).unwrap().position;
+    let hornet_pos = sim.db.creatures.get(&hornet).unwrap().position.min;
     force_position(
         &mut sim,
         elf,
@@ -3108,13 +3114,13 @@ fn find_available_task_works_for_flying_creature() {
 fn flying_creature_at_task_location_proximity() {
     let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let hornet = spawn_hornet_at(
         &mut sim,
         VoxelCoord::new(elf_pos.x, elf_pos.y + 3, elf_pos.z),
     );
     force_idle_and_cancel_activations(&mut sim, hornet);
-    let hornet_pos = sim.db.creatures.get(&hornet).unwrap().position;
+    let hornet_pos = sim.db.creatures.get(&hornet).unwrap().position.min;
 
     let target = VoxelCoord::new(hornet_pos.x + 1, hornet_pos.y, hornet_pos.z); // 1 voxel away
     assert!(
@@ -3142,7 +3148,7 @@ fn flying_creature_at_task_location_proximity() {
 fn flying_creature_walk_toward_task_unreachable_unassigns() {
     let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let hornet = spawn_hornet_at(
         &mut sim,
         VoxelCoord::new(elf_pos.x, elf_pos.y + 3, elf_pos.z),
@@ -3185,7 +3191,7 @@ fn flying_creature_walk_toward_task_unreachable_unassigns() {
 fn flying_creature_attack_move_engages_hostile_en_route() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     zero_creature_stats(&mut sim, elf);
 
     // Freeze the elf so it can't flee or interfere.
@@ -3233,13 +3239,13 @@ fn flying_creature_attack_move_engages_hostile_en_route() {
 fn flying_creature_find_available_task_nearest_by_euclidean() {
     let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let hornet = spawn_hornet_at(
         &mut sim,
         VoxelCoord::new(elf_pos.x, elf_pos.y + 3, elf_pos.z),
     );
     force_idle_and_cancel_activations(&mut sim, hornet);
-    let hornet_pos = sim.db.creatures.get(&hornet).unwrap().position;
+    let hornet_pos = sim.db.creatures.get(&hornet).unwrap().position.min;
 
     // Create two tasks: one near, one far.
     let near_task_id = TaskId::new(&mut sim.rng);
@@ -3290,14 +3296,14 @@ fn flying_creature_find_available_task_nearest_by_euclidean() {
 fn flying_creature_idle_wanders() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     // Spawn hornet far from elf to avoid combat.
     let hornet = spawn_hornet_at(
         &mut sim,
         VoxelCoord::new(elf_pos.x, elf_pos.y + 20, elf_pos.z),
     );
     force_idle_and_cancel_activations(&mut sim, hornet);
-    let hornet_pos = sim.db.creatures.get(&hornet).unwrap().position;
+    let hornet_pos = sim.db.creatures.get(&hornet).unwrap().position.min;
 
     // Trigger one activation. With no task and no hostiles in range,
     // the hornet should wander (move to a neighboring voxel).
@@ -3324,7 +3330,7 @@ fn flying_creature_idle_wanders() {
 fn flying_creature_directed_goto_mid_move_defers() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let hornet = spawn_hornet_at(
         &mut sim,
         VoxelCoord::new(elf_pos.x, elf_pos.y + 20, elf_pos.z),
@@ -3385,7 +3391,7 @@ fn flying_creature_pursue_closest_target() {
     let mut sim = test_sim(legacy_test_seed());
     let elf_near = spawn_elf(&mut sim);
     let elf_far = spawn_elf(&mut sim);
-    let elf_near_pos = sim.db.creatures.get(&elf_near).unwrap().position;
+    let elf_near_pos = sim.db.creatures.get(&elf_near).unwrap().position.min;
 
     // Spawn hornet above the near elf.
     let hornet_pos = VoxelCoord::new(elf_near_pos.x, elf_near_pos.y + 3, elf_near_pos.z);
@@ -3405,7 +3411,7 @@ fn flying_creature_pursue_closest_target() {
 
     assert!(pursued, "Flying creature should pursue a detected hostile");
     // Hornet should have moved (melee strike or flight step toward near elf).
-    let new_pos = sim.db.creatures.get(&hornet).unwrap().position;
+    let new_pos = sim.db.creatures.get(&hornet).unwrap().position.min;
     assert_ne!(
         new_pos, hornet_pos,
         "Hornet should have moved toward target"
@@ -3441,10 +3447,10 @@ fn capybara_wanders_on_ground() {
         .iter_all()
         .find(|c| c.species == Species::Capybara)
         .unwrap();
-    let capybara_nav = sim.nav_graph.node_at(capybara.position);
+    let capybara_nav = sim.nav_graph.node_at(capybara.position.min);
     assert!(capybara_nav.is_some());
     let node_pos = sim.nav_graph.node(capybara_nav.unwrap()).position;
-    assert_eq!(capybara.position, node_pos);
+    assert_eq!(capybara.position.min, node_pos);
 }
 
 #[test]
@@ -3472,7 +3478,7 @@ fn capybara_stays_on_ground() {
             .find(|c| c.species == Species::Capybara)
             .unwrap();
         assert_eq!(
-            capybara.position.y, 1,
+            capybara.position.min.y, 1,
             "Capybara left ground at tick {target}: pos={:?}",
             capybara.position
         );
@@ -3533,7 +3539,7 @@ fn wandering_creature_stays_on_nav_graph() {
             .unwrap();
         let node = sim
             .nav_graph
-            .node_at(elf.position)
+            .node_at(elf.position.min)
             .expect("Elf should always have a nav node at its position");
         assert!(
             (node.0 as usize) < sim.nav_graph.node_count(),
@@ -3543,7 +3549,7 @@ fn wandering_creature_stays_on_nav_graph() {
         );
         let node_pos = sim.nav_graph.node(node).position;
         assert_eq!(
-            elf.position, node_pos,
+            elf.position.min, node_pos,
             "Position mismatch at tick {}",
             target
         );
@@ -3582,7 +3588,7 @@ fn wander_sets_movement_metadata() {
     assert!(elf.next_available_tick.is_some());
     assert!(sim.db.move_actions.get(&elf_id).is_none());
 
-    let initial_pos = elf.position;
+    let initial_pos = elf.position.min;
 
     // Step to tick 2 — the first activation fires and the elf wanders.
     sim.step(&[], 2);
@@ -3608,7 +3614,7 @@ fn wander_sets_movement_metadata() {
         "move_from should be the spawn position"
     );
     assert_eq!(
-        ma.move_to, elf.position,
+        ma.move_to, elf.position.min,
         "move_to should be the new position"
     );
     assert_eq!(
@@ -3646,7 +3652,7 @@ fn boar_stays_on_ground() {
             .find(|c| c.species == Species::Boar)
             .unwrap();
         assert_eq!(
-            boar.position.y, 1,
+            boar.position.min.y, 1,
             "Boar left ground at tick {target}: pos={:?}",
             boar.position
         );
@@ -3677,7 +3683,7 @@ fn deer_stays_on_ground() {
             .find(|c| c.species == Species::Deer)
             .unwrap();
         assert_eq!(
-            deer.position.y, 1,
+            deer.position.min.y, 1,
             "Deer left ground at tick {target}: pos={:?}",
             deer.position
         );
@@ -3712,7 +3718,7 @@ fn monkey_can_climb() {
     // (trunk/branch surfaces). This verifies the species config allows
     // climbing edges. The monkey may still be at y=1 if the PRNG led it
     // only to ground neighbors, so we just verify it has a valid nav node.
-    assert!(sim.nav_graph.node_at(monkey.position).is_some());
+    assert!(sim.nav_graph.node_at(monkey.position.min).is_some());
 }
 
 #[test]
@@ -3738,7 +3744,7 @@ fn squirrel_can_climb() {
         .iter_all()
         .find(|c| c.species == Species::Squirrel)
         .unwrap();
-    assert!(sim.nav_graph.node_at(squirrel.position).is_some());
+    assert!(sim.nav_graph.node_at(squirrel.position.min).is_some());
 }
 
 // -----------------------------------------------------------------------

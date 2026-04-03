@@ -69,8 +69,8 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-fast-checksum        Incremental state checksum for desync detection (replace full-state JSON serialization)
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fog-billboards       Fog post-process does not obscure billboard sprites
+[ ] B-large-stuck          Large creatures (elephants) get permanently stuck at terrain inclines
 [ ] B-relay-stability      Windows TCP connection drops during singleplayer gameplay
-[ ] B-retire-spatidx       Retire SimState.spatial_index in favor of tabulosity Creature table index
 [ ] B-shared-inventory     Buildings completing around the same time show identical inventory contents
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-adventure-mode       Control individual elf (RPG-like)
@@ -323,6 +323,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-preview-blueprints   Preview treats blueprints as complete
 [x] B-quit-crash           Crash on quit from in-flight rayon mesh workers
 [x] B-raid-spawn           Raiders sometimes spawn inside map instead of at perimeter
+[x] B-retire-spatidx       Retire SimState.spatial_index in favor of tabulosity Creature table index
 [x] B-sim-floats           Remaining f32/f64 in sim logic threaten determinism
 [x] B-spawn-creature       spawn_creature test helper finds first creature of species, not newly spawned
 [x] B-start-paused-ui      start_paused_on_load UI desync and missing new-game support
@@ -1490,6 +1491,17 @@ would also confirm the fix.
 **Status:** Done
 
 After issuing move commands (select creatures, right-click a destination), creature movement becomes erratic and possibly faster than intended. Repro: select one or more creatures, right-click to move them, observe movement behavior.
+
+#### B-large-stuck — Large creatures (elephants) get permanently stuck at terrain inclines
+**Status:** Todo
+
+Large (2x2x2) creatures like elephants can get permanently stuck at certain terrain locations and never move again. Observed by spawning several elephants and watching them wander — some reach locations near slight terrain inclines (e.g., where 3 of the 4 ground columns under the 2x2 footprint are at one height and 1 is lower) and stop moving entirely.
+
+The large nav graph validates nodes via `large_node_surface_y()` (all 4 columns must have solid ground, height variation ≤ 1) and edges via `is_large_edge_valid()` (all columns in the union of both 2x2 footprints must have solid ground with height variation ≤ 1). Since edges check a larger region (3x2, 2x3, or 3x3 for orthogonal/diagonal moves), it's possible for a node to exist but have some or all outgoing edges fail validation due to problematic columns in the union footprint. If ALL edges from a node fail, `ground_random_wander` hits the `edge_indices.is_empty()` path and retries every 1000 ticks forever — the creature is permanently stuck.
+
+The graph is bidirectional (add_edge creates forward + reverse), so if a creature reached a node, there should be an edge back. But it's unclear whether incremental nav updates, terrain changes (tree growth), or edge validation asymmetries could leave a node with no valid outgoing edges despite being reachable. The root cause needs investigation with a diagnostic test.
+
+**Suggested diagnostic test:** Construct a sim with realistic hilly terrain (standard worldgen with terrain_max_height > 0, no main tree needed), spawn 10+ elephants with full food/rest so they don't get distracted by needs, run ~500 turns of ~500 ticks each, and track each elephant's position every turn. If any elephant stays at the same position for 10+ consecutive turns, flag it as stuck and print diagnostic info: the elephant's anchor position, its nav node (if any), the number of edges from that node, the terrain heights in the surrounding 5x5 columns, and whether each of the 8 neighbor anchors is a valid node / has a valid edge. This will reveal whether the stuck elephant has zero edges, edges that are all hostile-blocked, or some other cause.
 
 #### F-bounded-pathlen — Bounded max_path_len for all pathfinding call sites
 **Status:** Done
@@ -7220,7 +7232,7 @@ When quitting the game, Godot may tear down while rayon worker threads are still
 **References:** rayon issues #544 (no cancel API), #688 (no sync shutdown), #776 (hang on drop).
 
 #### B-retire-spatidx — Retire SimState.spatial_index in favor of tabulosity Creature table index
-**Status:** Todo
+**Status:** Done
 
 SimState.spatial_index is a manual BTreeMap<VoxelCoord, Vec<CreatureId>> maintained outside of tabulosity with hand-rolled insert/update/delete logic scattered across multiple call sites (wander, walk_toward_task, handle_creature_movement_complete, resnap_creatures, spawn, death). This should have been retired when the Creature table was migrated to tabulosity (SimDb). The creature position is already stored in the tabulosity Creature table, and tabulosity supports indexed fields — the spatial index should be a tabulosity index on the Creature table's position field, not a separate data structure on SimState.
 

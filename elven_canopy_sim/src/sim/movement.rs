@@ -246,7 +246,7 @@ impl SimState {
                 if c.vital_status != VitalStatus::Alive {
                     return None;
                 }
-                let node = self.nav_graph.find_nearest_node(c.position, 5)?;
+                let node = self.nav_graph.find_nearest_node(c.position.min, 5)?;
                 let pos = self.nav_graph.node(node).position;
                 Some((cid, pos))
             })
@@ -341,7 +341,7 @@ impl SimState {
         // Check if we already have a path. If so, resolve the next position
         // to a nav node + edge. If not (or path is exhausted), compute a new one.
         let creature = self.db.creatures.get(&creature_id).unwrap();
-        let cn = graph.node_at(creature.position);
+        let cn = graph.node_at(creature.position.min);
         let next_step = if let Some(ref path) = creature.path {
             if let Some(&next_pos) = path.remaining_positions.first() {
                 // Resolve the stored position to a nav node and find the edge.
@@ -421,10 +421,10 @@ impl SimState {
             .div_ceil(crate::nav::DIST_SCALE as u64)
             .max(1);
 
-        let old_pos = self.db.creatures.get(&creature_id).unwrap().position;
+        let old_pos = self.db.creatures.get(&creature_id).unwrap().position.min;
         let tick = self.tick;
         if let Some(mut creature) = self.db.creatures.get(&creature_id) {
-            creature.position = dest_pos;
+            creature.position = creature.position.with_anchor(dest_pos);
 
             // Set action state.
             creature.action_kind = ActionKind::Move;
@@ -438,8 +438,6 @@ impl SimState {
             }
             let _ = self.db.update_creature(creature);
         }
-
-        self.update_creature_spatial_index(creature_id, species, old_pos, dest_pos);
 
         // Insert MoveAction for render interpolation.
         let move_action = MoveAction {
@@ -542,18 +540,16 @@ impl SimState {
             .max(1);
 
         // Move creature to the destination.
-        let old_pos = self.db.creatures.get(&creature_id).unwrap().position;
+        let old_pos = self.db.creatures.get(&creature_id).unwrap().position.min;
         let tick = self.tick;
         if let Some(mut creature) = self.db.creatures.get(&creature_id) {
-            creature.position = dest_pos;
+            creature.position = creature.position.with_anchor(dest_pos);
 
             // Set action state.
             creature.action_kind = ActionKind::Move;
             creature.next_available_tick = Some(tick + delay);
             let _ = self.db.update_creature(creature);
         }
-
-        self.update_creature_spatial_index(creature_id, species, old_pos, dest_pos);
 
         // Insert MoveAction for render interpolation.
         let move_action = MoveAction {
@@ -720,7 +716,7 @@ impl SimState {
         _events: &mut Vec<SimEvent>,
     ) -> bool {
         let old_pos = match self.db.creatures.get(&creature_id) {
-            Some(c) => c.position,
+            Some(c) => c.position.min,
             None => return false,
         };
 
@@ -745,7 +741,7 @@ impl SimState {
 
         let tick = self.tick;
         if let Some(mut creature) = self.db.creatures.get(&creature_id) {
-            creature.position = dest_pos;
+            creature.position = creature.position.with_anchor(dest_pos);
             creature.action_kind = ActionKind::Move;
             creature.next_available_tick = Some(tick + delay);
 
@@ -757,8 +753,6 @@ impl SimState {
             }
             let _ = self.db.update_creature(creature);
         }
-
-        self.update_creature_spatial_index(creature_id, species, old_pos, dest_pos);
 
         // Insert MoveAction for render interpolation.
         let move_action = MoveAction {
@@ -784,7 +778,7 @@ impl SimState {
             Some(tpv) => tpv,
             None => return,
         };
-        let pos = creature.position;
+        let pos = creature.position.min;
 
         // Collect flyable neighbor positions (check full footprint clearance).
         let footprint = self.species_table[&species].footprint;

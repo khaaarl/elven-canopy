@@ -58,6 +58,7 @@ impl SimState {
         let heartbeat_interval = species_data.heartbeat_interval_ticks;
         let ground_only = species_data.ground_only;
         let is_flyer = species_data.flight_ticks_per_voxel.is_some();
+        let footprint = species_data.footprint;
         let sex_weights = species_data.sex_weights;
 
         // Flying creatures spawn at the raw position (entire footprint must be
@@ -109,7 +110,7 @@ impl SimState {
         let creature = crate::db::Creature {
             id: creature_id,
             species,
-            position: node_pos,
+            position: VoxelBox::from_anchor(node_pos, footprint),
             name,
             name_meaning,
             path: None,
@@ -163,10 +164,6 @@ impl SimState {
                 let _ = self.db.update_creature(c);
             }
         }
-
-        // Register in spatial index.
-        let footprint = self.species_table[&species].footprint;
-        Self::register_creature_in_index(&mut self.spatial_index, creature_id, node_pos, footprint);
 
         // Set default logistics wants for this creature.
         if !default_wants.is_empty() {
@@ -632,16 +629,16 @@ impl SimState {
             return true; // flying creatures are always supported
         }
         let graph = self.graph_for_species(creature.species);
-        let has_node = graph.node_at(creature.position).is_some();
+        let has_node = graph.node_at(creature.position.min).is_some();
         if !has_node {
             return false;
         }
         if species_data.ground_only {
             // Ground-only creatures also need solid below.
             let below = VoxelCoord::new(
-                creature.position.x,
-                creature.position.y - 1,
-                creature.position.z,
+                creature.position.min.x,
+                creature.position.min.y - 1,
+                creature.position.min.z,
             );
             self.world.get(below).is_solid()
         } else {
@@ -714,7 +711,7 @@ impl SimState {
             _ => return false,
         };
         let species = creature.species;
-        let old_pos = creature.position;
+        let old_pos = creature.position.min;
 
         // Flying creatures are exempt.
         if self.species_table[&species]
@@ -761,11 +758,10 @@ impl SimState {
 
         // Move creature to landing position.
         if let Some(mut c) = self.db.creatures.get(&creature_id) {
-            c.position = landing;
+            c.position = c.position.with_anchor(landing);
             c.path = None;
             let _ = self.db.update_creature(c);
         }
-        self.update_creature_spatial_index(creature_id, species, old_pos, landing);
 
         // Apply fall damage.
         let damage = fall_distance * self.config.fall_damage_per_voxel;

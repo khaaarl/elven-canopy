@@ -750,13 +750,13 @@ impl SimState {
             // There's a future waypoint — set up a Move action to arrive
             // at it on its tick (the beat).
             let target_wp = &waypoints[next_cursor];
-            let old_pos = self.db.creatures.get(&creature_id).unwrap().position;
+            let old_pos = self.db.creatures.get(&creature_id).unwrap().position.min;
             let new_pos = target_wp.position;
             let arrival_tick = target_wp.tick;
 
             let tick = self.tick;
             if let Some(mut c) = self.db.creatures.get(&creature_id) {
-                c.position = new_pos;
+                c.position = c.position.with_anchor(new_pos);
                 c.action_kind = crate::db::ActionKind::Move;
                 c.next_available_tick = Some(arrival_tick);
                 let _ = self.db.update_creature(c);
@@ -1128,7 +1128,7 @@ impl SimState {
         }
 
         let search_radius = self.config.activity.volunteer_search_radius.max(0) as u32;
-        let pos = creature.position;
+        let pos = creature.position.min;
 
         let mut best: Option<(ActivityId, u32)> = None;
 
@@ -1426,7 +1426,7 @@ impl SimState {
 
         // Find nearby dance halls.
         let search_radius = self.config.activity.volunteer_search_radius.max(0) as u32;
-        let pos = creature.position;
+        let pos = creature.position.min;
 
         let mut candidate_hall: Option<(crate::types::StructureId, u32)> = None;
 
@@ -1908,7 +1908,7 @@ impl SimState {
         // Find nearby dining halls with enough food and seats.
         let search_radius = self.config.activity.volunteer_search_radius.max(0) as u32;
         let min_count = self.config.activity.dinner_party_min_count.max(1) as usize;
-        let pos = creature.position;
+        let pos = creature.position.min;
 
         let mut candidate_hall: Option<(crate::types::StructureId, u32)> = None;
 

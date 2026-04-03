@@ -50,7 +50,7 @@ fn test_attack_move_walks_to_destination() {
     force_idle(&mut sim, elf);
 
     // Pick a destination a few voxels away (no hostiles present).
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let dest = VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z);
 
     let tick = sim.tick;
@@ -99,7 +99,7 @@ fn test_attack_move_engages_hostile() {
     suppress_activation(&mut sim, elf);
     suppress_activation(&mut sim, goblin);
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     // Use a far node on the nav graph as the destination.
     let dest_node = sim.nav_graph.live_nodes().last().map(|n| n.id).unwrap();
     let dest = sim.nav_graph.node(dest_node).position;
@@ -134,7 +134,7 @@ fn test_attack_move_resumes_after_kill() {
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
     // Place goblin near the elf.
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, elf);
@@ -183,7 +183,7 @@ fn test_attack_move_nearest_target() {
     let goblin_far = spawn_species(&mut sim, Species::Goblin);
 
     // Place near goblin closer, far goblin further.
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let near_pos = VoxelCoord::new(elf_pos.x + 2, elf_pos.y, elf_pos.z);
     let far_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin_near, near_pos);
@@ -437,7 +437,7 @@ fn trigger_raid_spawns_at_perimeter() {
     // Allow a margin of 5 voxels from the terrain edge for nav snapping.
     let margin = 5;
     for raider in &raiders {
-        let pos = raider.position;
+        let pos = raider.position.min;
         let near_north = pos.z <= min_z + margin;
         let near_south = pos.z >= max_z - margin;
         let near_east = pos.x >= max_x - margin;
@@ -477,8 +477,8 @@ fn trigger_raid_raiders_cluster_together() {
         let max_spread = 20; // generous upper bound for clustering
         for i in 0..raiders.len() {
             for j in (i + 1)..raiders.len() {
-                let a = raiders[i].position;
-                let b = raiders[j].position;
+                let a = raiders[i].position.min;
+                let b = raiders[j].position.min;
                 let dx = (a.x - b.x).abs();
                 let dz = (a.z - b.z).abs();
                 assert!(

@@ -141,7 +141,7 @@ fn eat_fruit_restores_food_using_forage_pct_for_monkey() {
     let monkey_id = spawn_creature(&mut sim, Species::Monkey);
 
     // Place fruit at the monkey's position.
-    let monkey_pos = sim.db.creatures.get(&monkey_id).unwrap().position;
+    let monkey_pos = sim.db.creatures.get(&monkey_id).unwrap().position.min;
     let fruit_pos = monkey_pos;
     let tree_id = sim.player_tree_id;
     let species_id = insert_test_fruit_species(&mut sim);
@@ -149,7 +149,7 @@ fn eat_fruit_restores_food_using_forage_pct_for_monkey() {
     let _ = sim.db.insert_tree_fruit_auto(|id| crate::db::TreeFruit {
         id,
         tree_id,
-        position: fruit_pos,
+        position: VoxelBox::point(fruit_pos),
         species_id,
     });
 
@@ -294,7 +294,7 @@ fn eat_fruit_restores_food_using_forage_pct_for_squirrel() {
     let forage_pct = sim.species_table[&Species::Squirrel].forage_food_restore_pct;
 
     let squirrel_id = spawn_creature(&mut sim, Species::Squirrel);
-    let squirrel_pos = sim.db.creatures.get(&squirrel_id).unwrap().position;
+    let squirrel_pos = sim.db.creatures.get(&squirrel_id).unwrap().position.min;
     let fruit_pos = squirrel_pos;
     let tree_id = sim.player_tree_id;
     let species_id = insert_test_fruit_species(&mut sim);
@@ -302,7 +302,7 @@ fn eat_fruit_restores_food_using_forage_pct_for_squirrel() {
     let _ = sim.db.insert_tree_fruit_auto(|id| crate::db::TreeFruit {
         id,
         tree_id,
-        position: fruit_pos,
+        position: VoxelBox::point(fruit_pos),
         species_id,
     });
 

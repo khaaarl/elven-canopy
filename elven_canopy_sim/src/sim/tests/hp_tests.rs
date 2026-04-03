@@ -572,7 +572,7 @@ fn death_drops_inventory_as_ground_pile() {
         tick + 1,
     );
 
-    let creature_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let creature_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
 
     // Kill the elf.
     let tick2 = sim.tick;
@@ -629,7 +629,7 @@ fn damage_to_zero_hp_incapacitates_not_kills() {
     zero_creature_stats(&mut sim, goblin);
     zero_creature_stats(&mut sim, elf);
     force_guaranteed_hits(&mut sim, goblin);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, goblin);
@@ -696,7 +696,7 @@ fn further_damage_on_incapacitated_pushes_hp_negative() {
     zero_creature_stats(&mut sim, goblin);
     zero_creature_stats(&mut sim, elf);
     force_guaranteed_hits(&mut sim, goblin);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, goblin);
@@ -874,7 +874,7 @@ fn incapacitated_creature_is_targetable_by_melee() {
     zero_creature_stats(&mut sim, goblin);
     zero_creature_stats(&mut sim, elf);
     force_guaranteed_hits(&mut sim, goblin);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, goblin);
@@ -999,7 +999,7 @@ fn incapacitated_creature_not_assigned_available_tasks() {
     sim.db.update_creature(c).unwrap();
 
     // Create an available task.
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let task_id = TaskId::new(&mut sim.rng);
     let go_task = task::Task {
         id: task_id,
@@ -1171,7 +1171,7 @@ fn incapacitated_creature_in_spatial_index_after_save_load() {
     let elf = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf);
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
 
     // Incapacitate.
     let mut c = sim.db.creatures.get(&elf).unwrap();
@@ -1363,7 +1363,7 @@ fn attack_target_continues_through_incapacitation_to_death() {
         .rest_decay_per_tick = 0;
     force_guaranteed_hits(&mut sim, goblin);
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     // Freeze elf so it doesn't flee; suppress goblin activation until the
@@ -1474,7 +1474,7 @@ fn dead_creature_not_assigned_tasks() {
     );
 
     // Create a GoTo task.
-    let pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     let tick2 = sim.tick;
     sim.step(
         &[SimCommand {
@@ -1578,7 +1578,7 @@ fn death_interrupts_current_task() {
     let elf_id = spawn_elf(&mut sim);
 
     // Create and claim a GoTo task.
-    let pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     let tick = sim.tick;
     sim.step(
         &[SimCommand {
@@ -1650,13 +1650,11 @@ fn kill_nonexistent_creature_is_noop() {
 fn death_removes_from_spatial_index() {
     let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
-    let pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
 
     // Elf should be in the spatial index before death.
     assert!(
-        sim.spatial_index
-            .get(&pos)
-            .is_some_and(|v| v.contains(&elf_id)),
+        sim.creatures_at_voxel(pos).contains(&elf_id),
         "living elf should be in spatial index"
     );
 
@@ -1673,11 +1671,9 @@ fn death_removes_from_spatial_index() {
         tick + 1,
     );
 
-    // Elf should no longer be in the spatial index.
+    // Elf should no longer be in the spatial index (filter excludes dead).
     assert!(
-        !sim.spatial_index
-            .get(&pos)
-            .is_some_and(|v| v.contains(&elf_id)),
+        !sim.creatures_at_voxel(pos).contains(&elf_id),
         "dead elf should be removed from spatial index"
     );
 }

@@ -63,7 +63,7 @@ impl super::SimState {
         });
 
         // Create the taming task at the target's current position.
-        let location = creature.position;
+        let location = creature.position.min;
         let task = task::Task {
             id: crate::types::TaskId::new(&mut self.rng),
             kind: task::TaskKind::Tame { target: target_id },

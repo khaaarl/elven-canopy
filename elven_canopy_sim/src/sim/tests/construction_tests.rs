@@ -785,7 +785,7 @@ fn build_displaces_creature_on_occupied_voxel() {
         if node_pos == air_coord {
             // Move the elf there.
             let mut elf = sim.db.creatures.get(&elf_id).unwrap().clone();
-            elf.position = air_coord;
+            elf.position = VoxelBox::point(air_coord);
             sim.db.update_creature(elf).unwrap();
         }
     }
@@ -825,11 +825,11 @@ fn build_displaces_creature_on_occupied_voxel() {
     // be at air_coord (which is now solid).
     let elf = sim.db.creatures.get(&elf_id).unwrap();
     assert_ne!(
-        elf.position, air_coord,
+        elf.position.min, air_coord,
         "Elf should have been displaced from the now-solid voxel"
     );
     // It should still have a valid nav node.
-    assert!(sim.nav_graph.node_at(elf.position).is_some());
+    assert!(sim.nav_graph.node_at(elf.position.min).is_some());
 }
 
 #[test]

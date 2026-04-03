@@ -2279,7 +2279,7 @@ fn arrow_creature_hit_always_destroyed_when_min_equals_max_hp() {
     sim.config.arrow_impact_damage_max = 3;
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
     let origin = VoxelCoord::new(goblin_pos.x - 10, goblin_pos.y, goblin_pos.z);
     sim.spawn_projectile(origin, goblin_pos, None);
 
@@ -2331,7 +2331,7 @@ fn arrow_creature_hit_survives_when_no_damage() {
     sim.config.arrow_impact_damage_max = 0;
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
     let origin = VoxelCoord::new(goblin_pos.x - 10, goblin_pos.y, goblin_pos.z);
     sim.spawn_projectile(origin, goblin_pos, None);
 
@@ -3224,7 +3224,7 @@ fn new_sim_has_initial_fruit() {
     let fruits = sim
         .db
         .tree_fruits
-        .by_position(&fruit_pos, tabulosity::QueryOpts::ASC);
+        .by_position(&VoxelBox::point(fruit_pos), tabulosity::QueryOpts::ASC);
     assert!(
         !fruits.is_empty(),
         "Tree should have fruit after ensure_tree_has_fruit"
@@ -3242,11 +3242,12 @@ fn fruit_hangs_below_leaf_voxels() {
         .by_tree_id(&tree_id, tabulosity::QueryOpts::ASC);
     for tf in &fruits {
         // The leaf above the fruit should be in the tree's leaf_voxels.
-        let leaf_above = VoxelCoord::new(tf.position.x, tf.position.y + 1, tf.position.z);
+        let leaf_above =
+            VoxelCoord::new(tf.position.min.x, tf.position.min.y + 1, tf.position.min.z);
         assert!(
             tree.leaf_voxels.contains(&leaf_above),
             "Fruit at {} should hang below a leaf voxel, but no leaf at {}",
-            tf.position,
+            tf.position.min,
             leaf_above
         );
     }
@@ -3262,10 +3263,10 @@ fn fruit_set_in_world_grid() {
         .by_tree_id(&tree_id, tabulosity::QueryOpts::ASC);
     for tf in &fruits {
         assert_eq!(
-            sim.world.get(tf.position),
+            sim.world.get(tf.position.min),
             VoxelType::Fruit,
             "World should have Fruit voxel at {}",
-            tf.position
+            tf.position.min
         );
     }
 }
@@ -3412,7 +3413,7 @@ fn fruit_species_at_returns_species() {
         .tree_fruits
         .by_tree_id(&tree_id, tabulosity::QueryOpts::ASC);
     if let Some(first_fruit) = fruits.first() {
-        let species = sim.fruit_species_at(first_fruit.position);
+        let species = sim.fruit_species_at(first_fruit.position.min);
         assert!(
             species.is_some(),
             "fruit_species_at should return a species"
@@ -3507,7 +3508,7 @@ fn harvest_fruit_carries_species_material() {
     assert!(
         sim.db
             .tree_fruits
-            .by_position(&fruit_pos, tabulosity::QueryOpts::ASC)
+            .by_position(&VoxelBox::point(fruit_pos), tabulosity::QueryOpts::ASC)
             .is_empty()
     );
 
@@ -3646,7 +3647,7 @@ fn tree_fruit_position_unique_index_prevents_duplicates() {
     let result1 = sim.db.insert_tree_fruit_auto(|id| crate::db::TreeFruit {
         id,
         tree_id,
-        position: pos,
+        position: VoxelBox::point(pos),
         species_id,
     });
     assert!(result1.is_ok(), "First insert should succeed");
@@ -3654,7 +3655,7 @@ fn tree_fruit_position_unique_index_prevents_duplicates() {
     let result2 = sim.db.insert_tree_fruit_auto(|id| crate::db::TreeFruit {
         id,
         tree_id,
-        position: pos,
+        position: VoxelBox::point(pos),
         species_id,
     });
     assert!(
@@ -3898,7 +3899,7 @@ fn death_drop_preserves_preexisting_pile_items() {
     // from another source, those items must not be affected.
     let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let elf_inv = sim.db.creatures.get(&elf).unwrap().inventory_id;
 
     // Pre-place arrows in a ground pile at the elf's position.

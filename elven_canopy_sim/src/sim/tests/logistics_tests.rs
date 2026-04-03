@@ -443,7 +443,7 @@ fn harvest_task_creates_ground_pile() {
     let elf_pos = sim.nav_graph.node(fruit_nav).position;
     {
         let mut elf = sim.db.creatures.get(&elf_id).unwrap();
-        elf.position = elf_pos;
+        elf.position = VoxelBox::point(elf_pos);
         sim.db.update_creature(elf).unwrap();
     }
 
@@ -484,7 +484,7 @@ fn harvest_task_creates_ground_pile() {
     assert!(
         sim.db
             .tree_fruits
-            .by_position(&fruit_pos, tabulosity::QueryOpts::ASC)
+            .by_position(&VoxelBox::point(fruit_pos), tabulosity::QueryOpts::ASC)
             .is_empty(),
         "Fruit should be removed from TreeFruit table"
     );
@@ -627,7 +627,7 @@ fn haul_source_empty_cancels() {
     let source_pos = sim.nav_graph.node(source_nav).position;
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
-        c.position = source_pos;
+        c.position = VoxelBox::point(source_pos);
         sim.db.update_creature(c).unwrap();
     }
     {
@@ -1444,7 +1444,7 @@ fn military_acquisition_suppressed_during_combat() {
     }
 
     // Spawn a troll near the elf so hostiles are in detection range.
-    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     let mut events = Vec::new();
     let troll_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
     sim.spawn_creature(Species::Troll, troll_pos, &mut events);
@@ -3197,7 +3197,7 @@ fn haul_cleanup_going_to_dest_drops_only_reserved_items() {
     // Ground pile should have 5 unowned, unreserved bread.
     // The pile may be at a slightly different Y than the elf (surface vs
     // walk position), so find any pile near the elf's XZ.
-    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     let pile = sim
         .db
         .ground_piles
@@ -3600,7 +3600,7 @@ fn death_during_haul_drops_all_items_unreserved_and_unowned() {
     sim.handle_creature_death(elf_id, crate::types::DeathCause::Debug, &mut events);
 
     // Find any ground piles near the elf's death position.
-    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     let all_bread_in_piles: Vec<_> = sim
         .db
         .ground_piles
@@ -3815,7 +3815,7 @@ fn acquire_item_picks_up_and_owns() {
     let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
-        c.position = pile_nav_pos;
+        c.position = VoxelBox::point(pile_nav_pos);
         sim.db.update_creature(c).unwrap();
     }
 

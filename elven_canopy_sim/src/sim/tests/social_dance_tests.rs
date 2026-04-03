@@ -67,7 +67,7 @@ fn setup_executing_dance(
 fn dance_social_check_upserts_friendliness() {
     let mut sim = flat_world_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 3);
-    let location = sim.db.creatures.get(&elves[0]).unwrap().position;
+    let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
     // Zero all stats and skills, then set CHA high so impression checks
     // reliably produce non-zero deltas (roll = CHA + Culture + noise(σ=50);
@@ -118,7 +118,7 @@ fn dance_social_check_uses_culture_skill() {
     // not Influence (even if Influence is higher).
     let mut sim = flat_world_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 3);
-    let location = sim.db.creatures.get(&elves[0]).unwrap().position;
+    let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
     // Give elf 0 high Influence, low Culture — dance should still advance Culture.
     zero_creature_stats(&mut sim, elves[0]);
@@ -164,7 +164,7 @@ fn dance_social_check_uses_culture_skill() {
 fn dance_social_check_awards_thoughts() {
     let mut sim = flat_world_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 3);
-    let location = sim.db.creatures.get(&elves[0]).unwrap().position;
+    let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
     let activity_id = setup_executing_dance(&mut sim, &elves, location);
 
@@ -207,7 +207,7 @@ fn dance_social_check_awards_thoughts() {
 fn dance_completion_friend_bonus() {
     let mut sim = flat_world_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 3);
-    let location = sim.db.creatures.get(&elves[0]).unwrap().position;
+    let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
     // Pre-seed a positive Friendliness opinion so elves[0] considers elves[1]
     // an Acquaintance (>= threshold, default 5).
@@ -246,7 +246,7 @@ fn dance_completion_friend_bonus() {
 fn dance_completion_no_friend_bonus_without_friends() {
     let mut sim = flat_world_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 3);
-    let location = sim.db.creatures.get(&elves[0]).unwrap().position;
+    let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
     // No pre-existing opinions — all strangers.
     let activity_id = setup_executing_dance(&mut sim, &elves, location);
@@ -308,7 +308,7 @@ fn dance_impressions_spread_across_duration() {
     // not all bunched at the start.
     let mut sim = flat_world_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 3);
-    let location = sim.db.creatures.get(&elves[0]).unwrap().position;
+    let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
     let activity_id = setup_executing_dance(&mut sim, &elves, location);
     sim.config.activity.dance_impressions_per_elf = 2;
@@ -360,7 +360,7 @@ fn dance_social_check_solo_dancer_no_panic() {
     // without panic when there are no other participants to impress.
     let mut sim = flat_world_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 3);
-    let location = sim.db.creatures.get(&elves[0]).unwrap().position;
+    let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
     let activity_id = setup_executing_dance(&mut sim, &elves, location);
     sim.config.activity.dance_impressions_per_elf = 4;
@@ -396,7 +396,7 @@ fn dance_zero_impressions_completes_cleanly() {
     // without any social checks or opinions.
     let mut sim = flat_world_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 3);
-    let location = sim.db.creatures.get(&elves[0]).unwrap().position;
+    let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
     let activity_id = setup_executing_dance(&mut sim, &elves, location);
     sim.config.activity.dance_impressions_per_elf = 0;
@@ -428,7 +428,7 @@ fn dance_friend_bonus_is_asymmetric() {
     // of elf A. Only elf A should get DancedWithFriend.
     let mut sim = flat_world_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 3);
-    let location = sim.db.creatures.get(&elves[0]).unwrap().position;
+    let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
     // Only A -> B friendship, not B -> A.
     sim.upsert_opinion(elves[0], OpinionKind::Friendliness, elves[1], 10);
@@ -477,7 +477,7 @@ fn dance_friend_bonus_below_threshold_no_bonus() {
     // the DancedWithFriend bonus.
     let mut sim = flat_world_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 3);
-    let location = sim.db.creatures.get(&elves[0]).unwrap().position;
+    let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
     // Pre-seed opinion below acquaintance threshold (default 5).
     sim.upsert_opinion(elves[0], OpinionKind::Friendliness, elves[1], 3);
@@ -536,7 +536,7 @@ fn dance_single_impression_fires_at_completion_boundary() {
     // on the same activation.
     let mut sim = flat_world_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 3);
-    let location = sim.db.creatures.get(&elves[0]).unwrap().position;
+    let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
     let activity_id = setup_executing_dance(&mut sim, &elves, location);
     sim.config.activity.dance_impressions_per_elf = 1;

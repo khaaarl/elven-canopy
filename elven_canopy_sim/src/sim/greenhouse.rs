@@ -126,7 +126,7 @@ impl SimState {
         if !self
             .db
             .tree_fruits
-            .by_position(&fruit_pos, tabulosity::QueryOpts::ASC)
+            .by_position(&VoxelBox::point(fruit_pos), tabulosity::QueryOpts::ASC)
             .is_empty()
         {
             return false;
@@ -137,7 +137,7 @@ impl SimState {
         let fruit = crate::db::TreeFruit {
             id: crate::types::TreeFruitId(0), // auto-increment
             tree_id,
-            position: fruit_pos,
+            position: VoxelBox::point(fruit_pos),
             species_id,
         };
         let _ = self

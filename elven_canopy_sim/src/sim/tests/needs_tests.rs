@@ -101,7 +101,7 @@ fn busy_tired_elf_does_not_create_sleep_task() {
 
     // Give the elf a GoTo task so it's busy. Use a valid nav node position
     // so the elf doesn't immediately fail pathfinding and drop the task.
-    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     let goto_target = sim
         .nav_graph
         .ground_node_ids()
@@ -522,7 +522,7 @@ fn find_nearest_fruit_returns_reachable() {
     let has_row = !sim
         .db
         .tree_fruits
-        .by_position(&fruit_pos, tabulosity::QueryOpts::ASC)
+        .by_position(&VoxelBox::point(fruit_pos), tabulosity::QueryOpts::ASC)
         .is_empty();
     assert!(has_row, "Returned fruit should have a TreeFruit row");
 
@@ -727,7 +727,7 @@ fn busy_hungry_elf_does_not_create_eat_fruit_task() {
 
     // Give the elf a GoTo task so it's busy. Use a valid nav node position
     // so the elf doesn't immediately fail pathfinding and drop the task.
-    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     let goto_target = sim
         .nav_graph
         .ground_node_ids()
@@ -809,7 +809,7 @@ fn hungry_elf_eats_fruit_and_food_increases() {
         .find(|c| c.species == Species::Elf)
         .unwrap()
         .id;
-    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
 
     // Place a fruit voxel at the elf's position (or very close).
     // This guarantees the fruit is reachable — the elf is already there.
@@ -832,7 +832,7 @@ fn hungry_elf_eats_fruit_and_food_increases() {
     let _ = sim.db.insert_tree_fruit_auto(|id| crate::db::TreeFruit {
         id,
         tree_id,
-        position: fruit_pos,
+        position: VoxelBox::point(fruit_pos),
         species_id,
     });
 
@@ -2293,7 +2293,7 @@ fn dine_at_hall_instant_on_arrival() {
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.food = food_max * 35 / 100;
-        c.position = table_pos;
+        c.position = VoxelBox::point(table_pos);
         sim.db.update_creature(c).unwrap();
     }
 
@@ -2606,7 +2606,7 @@ fn end_to_end_dining_hall() {
     }
 
     // 4. Elf is at a valid nav node.
-    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     let graph = sim.graph_for_species(Species::Elf);
     assert!(
         graph.node_at(elf_pos).is_some(),

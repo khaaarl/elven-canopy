@@ -81,7 +81,7 @@ pub(super) fn setup_aggressive_elf(sim: &mut SimState) -> (CreatureId, VoxelCoor
     set_military_group(sim, elf_id, Some(soldiers.id));
     // force_idle but keep activations — the elf needs to act autonomously.
     force_idle(sim, elf_id);
-    let pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     (elf_id, pos)
 }
 
@@ -143,7 +143,7 @@ fn fire_arrow_at_goblin_with_hp(seed: u64, arrow_hp: i32) -> i64 {
     agility_trait.value = TraitValue::Int(-500);
     sim.db.update_creature_trait(agility_trait).unwrap();
     sim.config.evasion_crit_threshold = 100_000;
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
     let origin = VoxelCoord::new(goblin_pos.x - 10, goblin_pos.y, goblin_pos.z);
     sim.spawn_projectile(origin, goblin_pos, None);
 
@@ -260,7 +260,7 @@ fn test_melee_strike_deals_damage() {
     zero_creature_stats(&mut sim, goblin);
     zero_creature_stats(&mut sim, elf);
     force_guaranteed_hits(&mut sim, goblin);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     // Place goblin adjacent (x+1).
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
@@ -306,7 +306,7 @@ fn test_melee_strike_incapacitates_target() {
     zero_creature_stats(&mut sim, goblin);
     zero_creature_stats(&mut sim, elf);
     force_guaranteed_hits(&mut sim, goblin);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, goblin);
@@ -345,7 +345,7 @@ fn test_melee_strike_out_of_range() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     // Place goblin 3 voxels away — out of range.
     let goblin_pos = VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
@@ -377,7 +377,7 @@ fn test_melee_strike_cooldown() {
     zero_creature_stats(&mut sim, goblin);
     zero_creature_stats(&mut sim, elf);
     force_guaranteed_hits(&mut sim, goblin);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, goblin);
@@ -430,7 +430,7 @@ fn test_melee_strike_dead_target() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, goblin);
@@ -490,7 +490,7 @@ fn test_melee_strike_zero_damage_species() {
     // Capybara has melee_damage = 0 — cannot melee.
     let capybara = spawn_species(&mut sim, Species::Capybara);
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     // Put capybara adjacent to elf.
     let capy_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, capybara, capy_pos);
@@ -532,7 +532,7 @@ fn test_melee_strike_cooldown_expires() {
     zero_creature_stats(&mut sim, goblin);
     zero_creature_stats(&mut sim, elf);
     force_guaranteed_hits(&mut sim, goblin);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, goblin);
@@ -591,7 +591,7 @@ fn test_melee_strike_dead_attacker() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, goblin);
@@ -639,7 +639,7 @@ fn armor_reduces_melee_damage() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     force_position(
         &mut sim,
         goblin,
@@ -693,7 +693,7 @@ fn armor_enforces_minimum_damage() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     force_position(
         &mut sim,
         goblin,
@@ -747,7 +747,7 @@ fn no_armor_means_full_damage() {
     sim.config.elf_default_wants = vec![];
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     force_position(
         &mut sim,
         goblin,
@@ -803,7 +803,7 @@ fn worn_armor_provides_less_protection() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     force_position(
         &mut sim,
         goblin,
@@ -893,7 +893,7 @@ fn damaged_armor_provides_even_less_protection() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     force_position(
         &mut sim,
         goblin,
@@ -1003,7 +1003,7 @@ fn armor_reduces_projectile_damage() {
     sim.db.update_creature_trait(agility_trait).unwrap();
     // Raise crit threshold to prevent the large margin from triggering crits.
     sim.config.evasion_crit_threshold = 100_000;
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
 
     // Equip full armor on the elf (total armor = 9).
     equip_full_armor(&mut sim, elf);
@@ -1112,7 +1112,7 @@ fn armor_degradation_penetrating_hit_reduces_durability() {
     zero_creature_stats(&mut sim, goblin);
     zero_creature_stats(&mut sim, elf);
     force_guaranteed_hits(&mut sim, goblin);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     force_position(
         &mut sim,
         goblin,
@@ -1217,7 +1217,7 @@ fn armor_degradation_non_penetrating_rare() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     force_position(
         &mut sim,
         goblin,
@@ -1315,7 +1315,7 @@ fn armor_degradation_empty_slot_no_crash() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     force_position(
         &mut sim,
         goblin,
@@ -1356,7 +1356,7 @@ fn clothing_degrades_from_combat_hit() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     force_position(
         &mut sim,
         goblin,
@@ -1457,7 +1457,7 @@ fn armor_degradation_destroys_item() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     force_position(
         &mut sim,
         goblin,
@@ -1543,7 +1543,7 @@ fn armor_mixed_condition_pieces_sum_correctly() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     force_position(
         &mut sim,
         goblin,
@@ -1633,7 +1633,7 @@ fn armor_extreme_penetrating_damage_no_overflow() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     force_position(
         &mut sim,
         goblin,
@@ -1691,7 +1691,7 @@ fn armor_projectile_degrades_equipment() {
     let elf = spawn_elf(&mut sim);
     // Zero stats so Evasion/Agility don't cause projectile misses.
     zero_creature_stats(&mut sim, elf);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
 
     // Unequip all, equip only a breastplate.
     let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
@@ -1781,7 +1781,7 @@ fn armor_melee_incapacitate_with_armor_equipped() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     force_position(
         &mut sim,
         goblin,
@@ -1831,7 +1831,7 @@ fn armor_save_load_roundtrip_preserves_combat() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     force_position(
         &mut sim,
         goblin,
@@ -1912,7 +1912,7 @@ fn armor_non_penetrating_degrade_disabled_when_recip_zero() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     force_position(
         &mut sim,
         goblin,
@@ -1983,7 +1983,7 @@ fn armor_degradation_targets_hands_slot() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     force_position(
         &mut sim,
         goblin,
@@ -2107,7 +2107,7 @@ fn test_shoot_arrow_spawns_projectile() {
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
     // Place them apart with clear LOS (same Y, 5 voxels apart on X).
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, elf);
@@ -2175,7 +2175,7 @@ fn test_shoot_arrow_no_bow_fails() {
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, elf);
@@ -2216,7 +2216,7 @@ fn test_shoot_arrow_no_arrows_fails() {
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, elf);
@@ -2249,7 +2249,7 @@ fn test_shoot_arrow_cooldown_prevents_second_shot() {
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, elf);
@@ -2303,7 +2303,7 @@ fn test_shoot_arrow_blocked_los_fails() {
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     // Place goblin 5 voxels away.
     let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
@@ -2339,7 +2339,7 @@ fn test_shoot_arrow_leaf_does_not_block_los() {
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, elf);
@@ -2375,7 +2375,7 @@ fn test_shoot_arrow_dead_target_fails() {
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, elf);
@@ -2417,7 +2417,7 @@ fn test_shoot_arrow_dead_attacker_fails() {
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, elf);
@@ -2466,7 +2466,7 @@ fn test_shoot_arrow_cooldown_expiry_allows_second_shot() {
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, elf);
@@ -2535,7 +2535,7 @@ fn test_shoot_arrow_rejected_when_not_idle() {
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     arm_with_bow_and_arrows(&mut sim, elf, 5);
@@ -2615,7 +2615,7 @@ fn flight_path_clear_no_creatures() {
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let target_voxel = VoxelCoord::new(elf_pos.x + 10, elf_pos.y, elf_pos.z);
 
     use crate::projectile::{compute_aim_velocity, sub_voxel_from_voxel_center};
@@ -2641,7 +2641,7 @@ fn flight_path_blocked_by_friendly_creature() {
     let shooter = spawn_elf(&mut sim);
     let blocker = spawn_elf(&mut sim);
 
-    let shooter_pos = sim.db.creatures.get(&shooter).unwrap().position;
+    let shooter_pos = sim.db.creatures.get(&shooter).unwrap().position.min;
     // Place blocker 5 voxels away (in the flight path).
     let blocker_pos = VoxelCoord::new(shooter_pos.x + 5, shooter_pos.y, shooter_pos.z);
     force_position(&mut sim, blocker, blocker_pos);
@@ -2670,7 +2670,7 @@ fn flight_path_origin_area_excluded_for_friendlies() {
     let shooter = spawn_elf(&mut sim);
     let buddy = spawn_elf(&mut sim);
 
-    let shooter_pos = sim.db.creatures.get(&shooter).unwrap().position;
+    let shooter_pos = sim.db.creatures.get(&shooter).unwrap().position.min;
     // Place buddy right next to shooter (adjacent voxel).
     let buddy_pos = VoxelCoord::new(shooter_pos.x + 1, shooter_pos.y, shooter_pos.z);
     force_position(&mut sim, buddy, buddy_pos);
@@ -2699,7 +2699,7 @@ fn shoot_arrow_blocked_by_friendly_in_path() {
     let blocker = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
-    let shooter_pos = sim.db.creatures.get(&shooter).unwrap().position;
+    let shooter_pos = sim.db.creatures.get(&shooter).unwrap().position.min;
     let blocker_pos = VoxelCoord::new(shooter_pos.x + 5, shooter_pos.y, shooter_pos.z);
     let goblin_pos = VoxelCoord::new(shooter_pos.x + 10, shooter_pos.y, shooter_pos.z);
     force_position(&mut sim, blocker, blocker_pos);
@@ -2751,7 +2751,7 @@ fn shoot_arrow_hostile_in_path_does_not_block() {
     let goblin_near = spawn_species(&mut sim, Species::Goblin);
     let goblin_far = spawn_species(&mut sim, Species::Goblin);
 
-    let shooter_pos = sim.db.creatures.get(&shooter).unwrap().position;
+    let shooter_pos = sim.db.creatures.get(&shooter).unwrap().position.min;
     let near_pos = VoxelCoord::new(shooter_pos.x + 5, shooter_pos.y, shooter_pos.z);
     let far_pos = VoxelCoord::new(shooter_pos.x + 10, shooter_pos.y, shooter_pos.z);
     force_position(&mut sim, goblin_near, near_pos);
@@ -3119,7 +3119,7 @@ fn indestructible_arrow_deals_full_damage() {
     agility_trait.value = TraitValue::Int(-500);
     sim.db.update_creature_trait(agility_trait).unwrap();
     sim.config.evasion_crit_threshold = 100_000;
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
     let origin = VoxelCoord::new(goblin_pos.x - 10, goblin_pos.y, goblin_pos.z);
     sim.spawn_projectile(origin, goblin_pos, None);
 
@@ -3163,7 +3163,7 @@ fn melee_weapon_club_replaces_species_damage() {
     zero_creature_stats(&mut sim, target);
     force_guaranteed_hits(&mut sim, elf);
 
-    let target_pos = sim.db.creatures.get(&target).unwrap().position;
+    let target_pos = sim.db.creatures.get(&target).unwrap().position.min;
     let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
     force_position(&mut sim, elf, elf_pos);
     force_idle_and_cancel_activations(&mut sim, elf);
@@ -3223,7 +3223,7 @@ fn melee_weapon_spear_extended_range() {
     zero_creature_stats(&mut sim, target);
     force_guaranteed_hits(&mut sim, elf);
 
-    let target_pos = sim.db.creatures.get(&target).unwrap().position;
+    let target_pos = sim.db.creatures.get(&target).unwrap().position.min;
     // Place elf 2 voxels away (distance_sq = 4 for a single axis offset of 2).
     let elf_pos = VoxelCoord::new(target_pos.x + 2, target_pos.y, target_pos.z);
     force_position(&mut sim, elf, elf_pos);
@@ -3300,7 +3300,7 @@ fn melee_weapon_prefers_highest_damage_when_both_in_range() {
     zero_creature_stats(&mut sim, target);
     force_guaranteed_hits(&mut sim, elf);
 
-    let target_pos = sim.db.creatures.get(&target).unwrap().position;
+    let target_pos = sim.db.creatures.get(&target).unwrap().position.min;
     let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
     force_position(&mut sim, elf, elf_pos);
     force_idle(&mut sim, elf);
@@ -3364,7 +3364,7 @@ fn melee_weapon_spear_only_at_extended_range() {
     zero_creature_stats(&mut sim, target);
     force_guaranteed_hits(&mut sim, elf);
 
-    let target_pos = sim.db.creatures.get(&target).unwrap().position;
+    let target_pos = sim.db.creatures.get(&target).unwrap().position.min;
     let elf_pos = VoxelCoord::new(target_pos.x + 2, target_pos.y, target_pos.z);
     force_position(&mut sim, elf, elf_pos);
     force_idle(&mut sim, elf);
@@ -3431,7 +3431,7 @@ fn melee_weapon_degrades_on_strike() {
     zero_creature_stats(&mut sim, target);
     force_guaranteed_hits(&mut sim, elf);
 
-    let target_pos = sim.db.creatures.get(&target).unwrap().position;
+    let target_pos = sim.db.creatures.get(&target).unwrap().position.min;
     let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
     force_position(&mut sim, elf, elf_pos);
     force_idle(&mut sim, elf);
@@ -3500,7 +3500,7 @@ fn melee_bare_hands_fallback() {
     zero_creature_stats(&mut sim, elf);
     force_guaranteed_hits(&mut sim, goblin);
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, goblin);
@@ -3593,7 +3593,7 @@ fn melee_weapon_enables_attack_for_zero_damage_species() {
     zero_creature_stats(&mut sim, target);
     force_guaranteed_hits(&mut sim, capybara);
 
-    let target_pos = sim.db.creatures.get(&target).unwrap().position;
+    let target_pos = sim.db.creatures.get(&target).unwrap().position.min;
     let cap_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
     force_position(&mut sim, capybara, cap_pos);
     force_idle(&mut sim, capybara);
@@ -3656,7 +3656,7 @@ fn melee_weapon_breaks_then_fallback_to_bare_hands() {
     zero_creature_stats(&mut sim, target);
     force_guaranteed_hits(&mut sim, elf);
 
-    let target_pos = sim.db.creatures.get(&target).unwrap().position;
+    let target_pos = sim.db.creatures.get(&target).unwrap().position.min;
     let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
     force_position(&mut sim, elf, elf_pos);
     force_idle(&mut sim, elf);
@@ -3774,7 +3774,7 @@ fn melee_weapon_degradation_noop_when_min_greater_than_max() {
     zero_creature_stats(&mut sim, elf);
     zero_creature_stats(&mut sim, target);
 
-    let target_pos = sim.db.creatures.get(&target).unwrap().position;
+    let target_pos = sim.db.creatures.get(&target).unwrap().position.min;
     let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
     force_position(&mut sim, elf, elf_pos);
     force_idle(&mut sim, elf);
@@ -3832,7 +3832,7 @@ fn melee_weapon_degradation_disabled_when_max_zero() {
     zero_creature_stats(&mut sim, elf);
     zero_creature_stats(&mut sim, target);
 
-    let target_pos = sim.db.creatures.get(&target).unwrap().position;
+    let target_pos = sim.db.creatures.get(&target).unwrap().position.min;
     let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
     force_position(&mut sim, elf, elf_pos);
     force_idle(&mut sim, elf);
@@ -3943,7 +3943,7 @@ fn weapon_damage_reduced_by_armor() {
     zero_creature_stats(&mut sim, target);
     force_guaranteed_hits(&mut sim, elf);
 
-    let target_pos = sim.db.creatures.get(&target).unwrap().position;
+    let target_pos = sim.db.creatures.get(&target).unwrap().position.min;
     let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
     force_position(&mut sim, elf, elf_pos);
     force_idle(&mut sim, elf);
@@ -4002,7 +4002,7 @@ fn weapon_damage_scales_with_strength() {
     zero_creature_stats(&mut sim, target);
     force_guaranteed_hits(&mut sim, elf);
 
-    let target_pos = sim.db.creatures.get(&target).unwrap().position;
+    let target_pos = sim.db.creatures.get(&target).unwrap().position.min;
     let elf_pos = VoxelCoord::new(target_pos.x + 1, target_pos.y, target_pos.z);
     force_position(&mut sim, elf, elf_pos);
     force_idle(&mut sim, elf);
@@ -4085,7 +4085,7 @@ fn attack_target_spear_stops_at_extended_range() {
     );
 
     // Place goblin 2 voxels away from elf (dist_sq=4).
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 2, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, elf);
@@ -4117,7 +4117,7 @@ fn attack_target_spear_stops_at_extended_range() {
     );
 
     // Elf should NOT have moved closer.
-    let elf_final_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_final_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     assert_eq!(
         elf_final_pos, elf_pos,
         "Elf should stay at spear range, not close to adjacent"
@@ -4150,7 +4150,7 @@ fn hostile_ai_spear_attacks_at_extended_range() {
     );
 
     // Place goblin 2 voxels from elf (dist_sq=4, within spear range_sq=8).
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 2, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, goblin);
@@ -4174,7 +4174,7 @@ fn hostile_ai_spear_attacks_at_extended_range() {
     );
 
     // Goblin should NOT have moved — it attacked from spear range.
-    let goblin_final_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_final_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
     assert_eq!(
         goblin_final_pos, goblin_pos,
         "Goblin should stay at spear range, not close to adjacent"
@@ -4192,7 +4192,7 @@ fn arrow_chase_creates_autonomous_attack_move() {
     // Zero stats so Perception doesn't inflate detection range beyond
     // the 20-voxel origin distance (base detection_range_sq=225 < 400).
     zero_creature_stats(&mut sim, goblin);
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
     let detection_range_sq = sim.species_table[&Species::Goblin].hostile_detection_range_sq;
 
     // Origin 20 voxels away (20² = 400 > 225 = detection range).
@@ -4219,7 +4219,7 @@ fn arrow_chase_creates_autonomous_attack_move() {
 fn arrow_chase_no_chase_within_detection_range() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
 
     // Origin 5 voxels away (25 < 225 = detection range).
     let origin = VoxelCoord::new(goblin_pos.x + 5, goblin_pos.y, goblin_pos.z);
@@ -4239,7 +4239,7 @@ fn arrow_chase_no_chase_within_detection_range() {
 fn arrow_chase_passive_creature_does_not_chase() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let capybara = spawn_species(&mut sim, Species::Capybara);
-    let capy_pos = sim.db.creatures.get(&capybara).unwrap().position;
+    let capy_pos = sim.db.creatures.get(&capybara).unwrap().position.min;
 
     let origin = VoxelCoord::new(capy_pos.x + 30, capy_pos.y, capy_pos.z);
 
@@ -4296,7 +4296,7 @@ fn arrow_chase_second_hit_updates_destination() {
 fn arrow_chase_dead_creature_does_not_chase() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
 
     // Kill the goblin.
     if let Some(mut c) = sim.db.creatures.get(&goblin) {
@@ -4319,7 +4319,7 @@ fn arrow_chase_dead_creature_does_not_chase() {
 fn arrow_chase_does_not_preempt_player_combat() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
 
     // Give the goblin a player-directed AttackMove.
     let player_dest = VoxelCoord::new(goblin_pos.x + 5, goblin_pos.y, goblin_pos.z);
@@ -4345,7 +4345,7 @@ fn arrow_chase_integration_projectile_triggers_chase() {
     let goblin = spawn_species(&mut sim, Species::Goblin);
     zero_creature_stats(&mut sim, goblin);
 
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
 
     // Place origin above the goblin (in open air, avoiding terrain).
     let origin = VoxelCoord::new(goblin_pos.x, goblin_pos.y + 20, goblin_pos.z);
@@ -4398,7 +4398,7 @@ fn arrow_chase_flying_creature_gets_chase_task() {
     // Zero stats so Perception doesn't inflate detection range beyond
     // the 20-voxel origin distance used below.
     zero_creature_stats(&mut sim, hornet);
-    let hornet_pos = sim.db.creatures.get(&hornet).unwrap().position;
+    let hornet_pos = sim.db.creatures.get(&hornet).unwrap().position.min;
 
     assert!(
         sim.species_table[&Species::Hornet]
@@ -4440,7 +4440,7 @@ fn arrow_chase_preempts_autonomous_task() {
     zero_creature_stats(&mut sim, goblin);
     // Freeze goblin so it doesn't get activated before we call maybe_arrow_chase.
     force_idle_and_cancel_activations(&mut sim, goblin);
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
 
     // Create a low-priority autonomous GoTo task.
     let task_id = TaskId::new(&mut sim.rng);
@@ -4486,7 +4486,7 @@ fn arrow_chase_second_hit_clears_target_creature() {
     let goblin = spawn_species(&mut sim, Species::Goblin);
     zero_creature_stats(&mut sim, goblin);
     let elf = spawn_elf(&mut sim);
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
 
     let origin1 = VoxelCoord::new(goblin_pos.x + 20, goblin_pos.y, goblin_pos.z);
     force_idle_and_cancel_activations(&mut sim, goblin);
@@ -4520,7 +4520,7 @@ fn arrow_chase_creates_task_for_flying_creature() {
     force_idle_and_cancel_activations(&mut sim, hornet);
 
     // Arrow origin far outside detection range.
-    let hornet_pos = sim.db.creatures.get(&hornet).unwrap().position;
+    let hornet_pos = sim.db.creatures.get(&hornet).unwrap().position.min;
     let origin = VoxelCoord::new(hornet_pos.x + 50, hornet_pos.y, hornet_pos.z);
 
     sim.maybe_arrow_chase(hornet, origin);
@@ -4685,7 +4685,7 @@ fn test_melee_miss_high_evasion() {
     agility_trait.value = TraitValue::Int(500);
     sim.db.update_creature_trait(agility_trait).unwrap();
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
 
@@ -4753,7 +4753,7 @@ fn test_melee_crit_doubles_damage() {
     dexterity_trait.value = TraitValue::Int(500);
     sim.db.update_creature_trait(dexterity_trait).unwrap();
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
 
@@ -4832,7 +4832,7 @@ fn test_melee_miss_still_consumes_cooldown() {
     agility_trait.value = TraitValue::Int(500);
     sim.db.update_creature_trait(agility_trait).unwrap();
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, goblin);
@@ -4879,7 +4879,7 @@ fn test_evasion_skill_advances_on_dodge() {
     agility_trait.value = TraitValue::Int(1000);
     sim.db.update_creature_trait(agility_trait).unwrap();
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
 
@@ -4930,7 +4930,7 @@ fn test_projectile_evaded_by_high_agi_target() {
             value: TraitValue::Int(500),
         })
         .unwrap();
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
 
     sim.config.arrow_gravity = 0;
@@ -4995,7 +4995,7 @@ fn test_projectile_crit_doubles_damage() {
     sim.db.update_creature(elf_creature).unwrap();
     sim.config.armor_degrade_location_weights = [0, 0, 0, 0, 0];
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     sim.config.arrow_gravity = 0;
     sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
     let origin = VoxelCoord::new(elf_pos.x - 10, elf_pos.y, elf_pos.z);
@@ -5072,7 +5072,7 @@ fn test_projectile_evasion_with_shooter_stats() {
     target_creature.hp_max = 100_000;
     sim.db.update_creature(target_creature).unwrap();
 
-    let target_pos = sim.db.creatures.get(&target).unwrap().position;
+    let target_pos = sim.db.creatures.get(&target).unwrap().position.min;
     sim.config.arrow_gravity = 0;
     sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
 
@@ -5131,7 +5131,7 @@ fn test_melee_miss_no_armor_degradation() {
 
     equip_full_armor(&mut sim, elf);
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
 
@@ -5191,7 +5191,7 @@ fn test_ranged_evasion_skill_advances_on_projectile_dodge() {
     let evasion_before = sim.trait_int(elf, TraitKind::Evasion, 0);
     assert_eq!(evasion_before, 0, "evasion should start at 0");
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     sim.config.arrow_gravity = 0;
     sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
 
@@ -5250,7 +5250,7 @@ fn test_evaded_arrow_still_triggers_chase() {
     agility_trait.value = TraitValue::Int(1000);
     sim.db.update_creature_trait(agility_trait).unwrap();
 
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
     let origin = VoxelCoord::new(goblin_pos.x, goblin_pos.y + 20, goblin_pos.z);
 
     force_idle_and_cancel_activations(&mut sim, goblin);
@@ -5328,7 +5328,7 @@ fn test_melee_weapon_no_degrade_on_miss() {
         None,
     );
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 2, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
 
@@ -5476,8 +5476,8 @@ fn hostile_creature_pursues_and_attacks_elf() {
     sim.step(&[], sim.tick + 10_000);
 
     let elf_hp_after = sim.db.creatures.get(&elf_id).unwrap().hp;
-    let goblin_pos = sim.db.creatures.get(&goblin_id).unwrap().position;
-    let elf_current_pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin_id).unwrap().position.min;
+    let elf_current_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     let new_dist = goblin_pos.manhattan_distance(elf_current_pos);
     let initial_dist = goblin_start.manhattan_distance(elf_pos);
 
@@ -5516,11 +5516,11 @@ fn hostile_creature_wanders_without_elves() {
     force_position(&mut sim, goblin_id, walkable);
     force_idle(&mut sim, goblin_id);
 
-    let goblin_start = sim.db.creatures.get(&goblin_id).unwrap().position;
+    let goblin_start = sim.db.creatures.get(&goblin_id).unwrap().position.min;
 
     sim.step(&[], sim.tick + 10_000);
 
-    let goblin_pos = sim.db.creatures.get(&goblin_id).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin_id).unwrap().position.min;
     assert_ne!(
         goblin_start, goblin_pos,
         "Goblin should wander even without elves to pursue"
@@ -5535,7 +5535,7 @@ fn hostile_creature_attacks_adjacent_elf() {
     zero_creature_stats(&mut sim, goblin);
     zero_creature_stats(&mut sim, elf);
     force_guaranteed_hits(&mut sim, goblin);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     // Place goblin adjacent to elf.
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
@@ -5679,7 +5679,7 @@ fn projectile_hits_creature_and_deals_damage() {
     agility_trait.value = TraitValue::Int(-500);
     sim.db.update_creature_trait(agility_trait).unwrap();
     sim.config.evasion_crit_threshold = 100_000;
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
     let goblin_hp_before = sim.db.creatures.get(&goblin).unwrap().hp;
 
     // Spawn projectile aimed at the goblin (no gravity for predictability).
@@ -5764,7 +5764,7 @@ fn projectile_does_not_hit_shooter() {
     let mut sim = flat_world_sim(legacy_test_seed());
     // Spawn an elf and shoot from their position.
     let elf = spawn_species(&mut sim, Species::Elf);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let elf_hp_before = sim.db.creatures.get(&elf).unwrap().hp;
 
     sim.config.arrow_gravity = 0;
@@ -5804,7 +5804,7 @@ fn hostile_creature_wanders_after_killing_elf() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     // Place goblin adjacent to elf.
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
@@ -5827,7 +5827,7 @@ fn hostile_creature_wanders_after_killing_elf() {
 
     // With no living elves, the goblin should fall back to random wander.
     sim.step(&[], sim.tick + 10_000);
-    let goblin_final = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_final = sim.db.creatures.get(&goblin).unwrap().position.min;
     assert_ne!(
         goblin_final, goblin_pos,
         "Goblin should wander after elf is dead"
@@ -5839,16 +5839,16 @@ fn projectile_skips_origin_voxel_creatures() {
     let mut sim = flat_world_sim(legacy_test_seed());
     // Spawn shooter and bystander at the same position.
     let shooter = spawn_species(&mut sim, Species::Elf);
-    let shooter_pos = sim.db.creatures.get(&shooter).unwrap().position;
+    let shooter_pos = sim.db.creatures.get(&shooter).unwrap().position.min;
     let shooter_hp = sim.db.creatures.get(&shooter).unwrap().hp;
 
     let bystander = spawn_species(&mut sim, Species::Elf);
     // Move bystander to the same position as the shooter.
     if let Some(mut c) = sim.db.creatures.get(&bystander) {
-        c.position = shooter_pos;
+        c.position = VoxelBox::point(shooter_pos);
         sim.db.update_creature(c).unwrap();
     }
-    sim.rebuild_spatial_index();
+    // Tabulosity spatial index is automatically updated by db.update_creature.
     let bystander_hp = sim.db.creatures.get(&bystander).unwrap().hp;
 
     sim.config.arrow_gravity = 0;
@@ -5909,7 +5909,7 @@ fn hostile_waits_on_cooldown_near_elf() {
     zero_creature_stats(&mut sim, goblin);
     zero_creature_stats(&mut sim, elf);
     force_guaranteed_hits(&mut sim, goblin);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle_and_cancel_activations(&mut sim, elf);
@@ -5964,7 +5964,7 @@ fn hostile_ignores_elf_outside_detection_range() {
     // Place elf far from goblin — 20 voxels away on X axis (20² = 400 >> 225).
     // Stay within the 64x64 world at ground level (y=1, solid terrain at y=0)
     // so the elf has a valid nav node and won't fall due to creature gravity.
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
     let far_x = (goblin_pos.x + 20).min(62);
     let far_pos = VoxelCoord::new(far_x, 1, goblin_pos.z);
     force_position(&mut sim, elf, far_pos);
@@ -6000,7 +6000,7 @@ fn hostile_pursues_elf_within_detection_range() {
     force_guaranteed_hits(&mut sim, goblin);
 
     // Place elf 5 voxels from goblin on X axis (5² = 25 < 225).
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
     let near_pos = VoxelCoord::new(goblin_pos.x + 5, goblin_pos.y, goblin_pos.z);
     force_position(&mut sim, elf, near_pos);
     // Freeze elf so it doesn't flee away from the goblin.
@@ -6015,8 +6015,8 @@ fn hostile_pursues_elf_within_detection_range() {
 
     sim.step(&[], tick + 10_000);
 
-    let goblin_final = sim.db.creatures.get(&goblin).unwrap().position;
-    let elf_current = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_final = sim.db.creatures.get(&goblin).unwrap().position.min;
+    let elf_current = sim.db.creatures.get(&elf).unwrap().position.min;
     let new_dist = goblin_final.manhattan_distance(elf_current);
     let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
 
@@ -6038,7 +6038,7 @@ fn hostile_does_not_attack_same_species() {
     let g2 = spawn_species(&mut sim, Species::Goblin);
 
     // Place them adjacent.
-    let g1_pos = sim.db.creatures.get(&g1).unwrap().position;
+    let g1_pos = sim.db.creatures.get(&g1).unwrap().position.min;
     let g2_pos = VoxelCoord::new(g1_pos.x + 1, g1_pos.y, g1_pos.z);
     force_position(&mut sim, g2, g2_pos);
     force_idle(&mut sim, g1);
@@ -6093,12 +6093,12 @@ fn all_hostile_species_pursue_elves() {
         force_position(&mut sim, hostile_id, pos_b);
         force_idle(&mut sim, hostile_id);
 
-        let hostile_start = sim.db.creatures.get(&hostile_id).unwrap().position;
+        let hostile_start = sim.db.creatures.get(&hostile_id).unwrap().position.min;
         let elf_hp_before = sim.db.creatures.get(&elf_id).unwrap().hp;
 
         sim.step(&[], sim.tick + 10_000);
 
-        let hostile_pos = sim.db.creatures.get(&hostile_id).unwrap().position;
+        let hostile_pos = sim.db.creatures.get(&hostile_id).unwrap().position.min;
         let elf_hp_after = sim.db.creatures.get(&elf_id).unwrap().hp;
 
         let moved = hostile_pos != hostile_start;
@@ -6140,10 +6140,10 @@ fn projectile_hits_creature_beyond_origin_voxel() {
     let origin = VoxelCoord::new(40, 1, 40);
     let target_pos = VoxelCoord::new(42, 1, 40);
     if let Some(mut c) = sim.db.creatures.get(&target) {
-        c.position = target_pos;
+        c.position = VoxelBox::point(target_pos);
         sim.db.update_creature(c).unwrap();
     }
-    sim.rebuild_spatial_index();
+    // Tabulosity spatial index is automatically updated by db.update_creature.
     let target_hp = sim.db.creatures.get(&target).unwrap().hp;
 
     sim.config.arrow_gravity = 0;
@@ -6260,7 +6260,7 @@ fn attack_creature_command_creates_task_and_assigns() {
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
     // Place them nearby.
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, elf);
@@ -6302,7 +6302,7 @@ fn attack_target_task_pursues_and_strikes() {
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
     // Place goblin within reach of elf.
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, elf);
@@ -6326,7 +6326,7 @@ fn attack_target_task_pursues_and_strikes() {
 
     let goblin_hp_after = sim.db.creatures.get(&goblin).unwrap().hp;
     let elf_creature = sim.db.creatures.get(&elf).unwrap();
-    let final_dist = elf_creature.position.manhattan_distance(goblin_pos);
+    let final_dist = elf_creature.position.min.manhattan_distance(goblin_pos);
 
     let moved_closer = final_dist < elf_pos.manhattan_distance(goblin_pos);
     let dealt_damage = goblin_hp_after < goblin_hp_before;
@@ -6345,7 +6345,7 @@ fn attack_target_completes_when_target_dies() {
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
     // Place goblin adjacent to elf (instant melee range).
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let adjacent_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, adjacent_pos);
     force_idle(&mut sim, elf);
@@ -7216,7 +7216,7 @@ fn attack_move_traversal_delay_uses_creature_stats() {
         .unwrap();
 
     // Find a ground node far from the elf to attack-move toward.
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let graph = sim.graph_for_species(Species::Elf);
     let distant_node = graph
         .ground_node_ids()
@@ -7313,7 +7313,7 @@ fn ground_creature_gives_up_on_high_flying_target() {
     // y=20 target). It should wander instead of freeze.
     sim.step(&[], sim.tick + 5000);
 
-    let goblin_pos_after = sim.db.creatures.get(&goblin_id).unwrap().position;
+    let goblin_pos_after = sim.db.creatures.get(&goblin_id).unwrap().position.min;
 
     // The goblin should NOT have moved closer to the hornet's y position.
     // (It may have wandered on the ground plane, which is fine.)
@@ -7355,8 +7355,8 @@ fn ground_creature_pursues_target_at_different_elevation() {
 
     sim.step(&[], sim.tick + 10_000);
 
-    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position;
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let new_dist = goblin_pos.manhattan_distance(elf_pos);
     let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
 
@@ -7390,8 +7390,8 @@ fn flying_creature_pursues_ground_target() {
 
     sim.step(&[], sim.tick + 10_000);
 
-    let hornet_pos = sim.db.creatures.get(&hornet).unwrap().position;
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let hornet_pos = sim.db.creatures.get(&hornet).unwrap().position.min;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let new_dist = hornet_pos.manhattan_distance(elf_pos);
     let elf_hp_after = sim.db.creatures.get(&elf).unwrap().hp;
 

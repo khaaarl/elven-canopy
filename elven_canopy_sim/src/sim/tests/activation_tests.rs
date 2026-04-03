@@ -36,11 +36,11 @@ fn elf_wanders_after_spawn() {
         .iter_all()
         .find(|c| c.species == Species::Elf)
         .unwrap();
-    let elf_nav = sim.nav_graph.node_at(elf.position);
+    let elf_nav = sim.nav_graph.node_at(elf.position.min);
     assert!(elf_nav.is_some());
     // Verify position matches current node.
     let node_pos = sim.nav_graph.node(elf_nav.unwrap()).position;
-    assert_eq!(elf.position, node_pos);
+    assert_eq!(elf.position.min, node_pos);
 }
 
 #[test]
@@ -119,6 +119,7 @@ fn creature_walks_to_task_location() {
         .get(&elf_id)
         .unwrap()
         .position
+        .min
         .manhattan_distance(task_location);
 
     // Step a moderate amount — creature should be closer to the target.
@@ -130,6 +131,7 @@ fn creature_walks_to_task_location() {
         .get(&elf_id)
         .unwrap()
         .position
+        .min
         .manhattan_distance(task_location);
 
     // The elf should either be closer to the task (still walking)
@@ -1031,7 +1033,7 @@ fn interrupt_clears_move_action() {
     let current_node = creature_node(&sim, elf_id);
 
     // Put the elf in a Move action.
-    let pos = sim.db.creatures.get(&elf_id).unwrap().position;
+    let pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.action_kind = ActionKind::Move;
         c.next_available_tick = Some(sim.tick + 1000);
@@ -1585,7 +1587,7 @@ fn attack_move_creature_reactivates_after_arriving_at_destination() {
     let elf = spawn_elf(&mut sim);
     force_idle_and_cancel_activations(&mut sim, elf);
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let dest = VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z);
 
     let tick = sim.tick;
@@ -1633,7 +1635,7 @@ fn attack_move_creature_wanders_after_arriving_at_destination() {
     let elf = spawn_elf(&mut sim);
     force_idle_and_cancel_activations(&mut sim, elf);
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let dest = VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z);
 
     let tick = sim.tick;
@@ -1980,7 +1982,7 @@ fn queue_completion_flows_to_next_task() {
     let elf = spawn_elf(&mut sim);
 
     // Get the elf's position for nearby GoTo commands.
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position;
+    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
 
     // Issue a GoTo to a nearby position.
     let pos_a = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
@@ -2674,7 +2676,7 @@ fn creature_wanders_via_activation_chain() {
         .iter_all()
         .find(|c| c.species == Species::Elf)
         .unwrap();
-    let initial_node = sim.nav_graph.node_at(elf.position).unwrap();
+    let initial_node = sim.nav_graph.node_at(elf.position.min).unwrap();
     let initial_pos = elf.position;
 
     // Step enough for many activations (each moves 1 edge; ground edges
@@ -2687,7 +2689,7 @@ fn creature_wanders_via_activation_chain() {
         .iter_all()
         .find(|c| c.species == Species::Elf)
         .unwrap();
-    let final_node = sim.nav_graph.node_at(elf.position).unwrap();
+    let final_node = sim.nav_graph.node_at(elf.position.min).unwrap();
 
     // After many activations, creature should have moved.
     assert_ne!(
@@ -2696,7 +2698,7 @@ fn creature_wanders_via_activation_chain() {
     );
     // Position should match current node.
     let node_pos = sim.nav_graph.node(final_node).position;
-    assert_eq!(elf.position, node_pos);
+    assert_eq!(elf.position.min, node_pos);
     // Creature should not have a stored path (wandering doesn't use paths).
     assert!(
         elf.path.is_none(),

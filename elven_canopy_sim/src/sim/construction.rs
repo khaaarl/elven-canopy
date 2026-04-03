@@ -1060,7 +1060,7 @@ impl SimState {
             true
         } else {
             // Insufficient mana: wasted action. Record position for VFX.
-            self.mana_wasted_positions.push(creature.position);
+            self.mana_wasted_positions.push(creature.position.min);
             let threshold = self.config.mana_abandon_threshold;
             let mut creature = creature;
             creature.wasted_action_count += 1;
@@ -1168,7 +1168,7 @@ impl SimState {
             .creatures
             .iter_all()
             .filter(|c| c.vital_status == VitalStatus::Alive)
-            .map(|c| c.position)
+            .map(|c| c.position.min)
             .collect();
 
         // Prefer unoccupied voxels.
@@ -1619,7 +1619,7 @@ impl SimState {
             .creatures
             .iter_all()
             .filter(|c| c.vital_status == VitalStatus::Alive)
-            .map(|c| (c.id, c.species, c.position))
+            .map(|c| (c.id, c.species, c.position.min))
             .collect();
         for (cid, species, old_pos) in creature_info {
             let graph = self.graph_for_species(species);
@@ -1630,12 +1630,9 @@ impl SimState {
             if let Some(mut creature) = self.db.creatures.get(&cid) {
                 creature.path = None;
                 if let Some(p) = new_pos {
-                    creature.position = p;
+                    creature.position = creature.position.with_anchor(p);
                 }
                 let _ = self.db.update_creature(creature);
-            }
-            if let Some(p) = new_pos {
-                self.update_creature_spatial_index(cid, species, old_pos, p);
             }
         }
     }
@@ -1655,7 +1652,7 @@ impl SimState {
             .creatures
             .iter_all()
             .filter(|c| c.vital_status == VitalStatus::Alive)
-            .map(|c| (c.id, c.species, c.position))
+            .map(|c| (c.id, c.species, c.position.min))
             .collect();
         let to_resnap: Vec<(CreatureId, Species, VoxelCoord)> = candidates
             .into_iter()
@@ -1674,12 +1671,9 @@ impl SimState {
             if let Some(mut creature) = self.db.creatures.get(&cid) {
                 creature.path = None;
                 if let Some(p) = new_pos {
-                    creature.position = p;
+                    creature.position = creature.position.with_anchor(p);
                 }
                 let _ = self.db.update_creature(creature);
-            }
-            if let Some(p) = new_pos {
-                self.update_creature_spatial_index(cid, species, old_pos, p);
             }
         }
     }
