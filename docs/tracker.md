@@ -71,6 +71,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-fog-billboards       Fog post-process does not obscure billboard sprites
 [ ] B-relay-stability      Windows TCP connection drops during singleplayer gameplay
 [ ] B-shared-inventory     Buildings completing around the same time show identical inventory contents
+[ ] B-sprite-shuffle       Non-elf creature sprites shuffle appearance when population changes
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-aggro-fauna          Neutral fauna with aggro triggers
@@ -1884,6 +1885,41 @@ task-driven system (player commands, construction, hauling, etc.).
 
 **Unblocked:** B-flying-arrow-chase, F-winged-elf
 **Related:** F-arrow-chase
+
+#### B-sprite-shuffle — Non-elf creature sprites shuffle appearance when population changes
+**Status:** Todo
+
+Non-elf creature sprites shuffle appearance when population changes (e.g., debug-spawning a creature changes the look of all existing creatures of that same species). Elves are unaffected.
+
+**Root cause:** Non-elf creature renderers (`creature_renderer.gd`, `capybara_renderer.gd`) use the creature's **array index** as the seed for `species_params_from_seed()`. Positions come from `get_creature_positions()` which iterates the sim's BTreeMap in UUID key order. When a new creature spawns, its random UUID inserts at an arbitrary BTreeMap position, shifting index-to-creature mappings. Sprites cached at old indices no longer correspond to the same creatures, so appearances shuffle.
+
+**Why elves are exempt:** Elf sprites use a completely different pipeline — `get_elf_sprites()` in `sim_bridge.rs` reads per-creature biological traits (HairColor, EyeColor, SkinTone, etc.) from the trait table and generates sprites from those stable trait values. Appearance is tied to identity, not iteration order.
+
+**Background — how we got here:** The trait-based sprite system was supposed to apply to ALL species, not just elves. A previous Claude session claimed it had been implemented for all creatures but in fact only did elves, leaving every other species on the broken array-index-seed path. This means the bug is not just a rendering quirk — it's a half-finished migration that was falsely reported as complete.
+
+---
+
+**ABSOLUTE IMMOVABLE REQUIREMENT: UNIFIED SPRITE RENDERING**
+
+**This is not optional. This is not a "nice to have." This is the fix.**
+
+ALL creature sprite rendering — every single species, no exceptions — MUST go through the same trait-based pipeline that elves currently use. The per-species renderer GDScript files (`creature_renderer.gd`, `capybara_renderer.gd`, and any other species-specific `*_renderer.gd` files) MUST BE DELETED ENTIRELY. They must not be refactored, consolidated, or "improved" — they must DIE. There must be ONE renderer path for all creatures, with species differences handled through parameterized configuration, not separate code paths.
+
+Specifically:
+
+1. **One renderer to rule them all.** A single creature renderer (or the existing elf renderer generalized) handles every species. Per-species `.gd` renderer files are deleted. No exceptions. No "we'll migrate the rest later." All of them, gone, in this bug fix.
+
+2. **Trait-based appearance for all species.** Every species gets its appearance from biological traits stored in the sim's trait table, exactly like elves do now. The `species_params_from_seed()` index-based path is removed from the rendering pipeline entirely. Species-specific appearance variation (capybara body colors, boar tusk styles, etc.) is driven by trait values, not array indices.
+
+3. **Minor parameterized tweaks, not separate algorithms.** Species differences in sprite generation (pixel size, billboard mode, HP bar placement, etc.) come from per-species config data, not from branching code paths. If a capybara needs a different pixel_size than a deer, that's a number in a config table, not a separate renderer file.
+
+**Key files currently involved:**
+- `godot/scripts/creature_renderer.gd:66-70` — broken: uses `_sprites.size()` as sprite seed
+- `godot/scripts/capybara_renderer.gd:56-59` — broken: same pattern
+- `elven_canopy_sprites/src/species.rs:107-122` — `species_params_from_seed()` (index-based, must not be used for rendering)
+- `elven_canopy_gdext/src/sim_bridge.rs:3095-3199` — elf trait-based pipeline (correct approach, must be generalized)
+
+**DO NOT consider this bug fixed unless every per-species renderer .gd file is gone and all species go through one unified path. Partial migrations are what caused this bug in the first place.**
 
 #### B-tame-already — Taming task doesn't detect already-tamed target
 **Status:** Done
