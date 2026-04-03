@@ -94,7 +94,13 @@ var _elf_picker_scroll: ScrollContainer
 var _elf_picker_vbox: VBoxContainer
 var _inventory_container: VBoxContainer
 var _inventory_empty_label: Label
-var _last_inventory: Array = []
+## Cache of the last inventory array passed to _update_inventory(), used to skip
+## redundant button rebuilds on per-frame refreshes. Null means "no cached
+## value" — the cache is invalidated (set to null) in show_structure() so that
+## _update_inventory() always rebuilds when switching to a new structure. This
+## is distinct from [] (cached, genuinely empty inventory) which correctly
+## skips rebuild when the structure simply has no items.
+var _last_inventory = null
 var _logistics_wrapper: VBoxContainer
 var _logistics_summary_label: Label
 var _logistics_details_button: Button
@@ -571,7 +577,7 @@ func set_logistics_material_options(options: Dictionary) -> void:
 
 
 func show_structure(info: Dictionary) -> void:
-	_last_inventory = []  # Force rebuild for new structure.
+	_last_inventory = null  # Invalidate cache so _update_inventory rebuilds.
 	_editing_name = false
 	_furnish_picker.visible = false
 	_greenhouse_picker_scroll.visible = false
@@ -723,7 +729,7 @@ func _update_inventory(info: Dictionary) -> void:
 	var inv: Array = info.get("inventory", [])
 	# Skip rebuild if inventory hasn't changed — newly-created buttons don't
 	# have a valid layout rect until the next frame, so clicks fall through.
-	if inv == _last_inventory:
+	if _last_inventory != null and inv == _last_inventory:
 		return
 	_last_inventory = inv.duplicate(true)
 

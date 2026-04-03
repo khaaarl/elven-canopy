@@ -383,6 +383,74 @@ func test_social_tab_empty_state() -> void:
 	assert_eq(_panel._social_container.get_child(0).text, "No opinions yet.")
 
 
+# -- Inventory display (B-shared-inventory) ------------------------------------
+
+
+func test_show_creature_with_items_displays_inventory_buttons() -> void:
+	var info := _minimal_info()
+	info["inventory"] = [
+		{"kind": "Log", "quantity": 3, "item_stack_id": 10},
+	]
+	_panel.show_creature("id-1", info)
+	# 1 empty label (hidden) + 1 item button = 2 children.
+	assert_eq(_panel._inventory_container.get_child_count(), 2)
+
+
+func test_switching_to_creature_with_empty_inventory_clears_buttons() -> void:
+	# Select creature A with items.
+	var info_a := _minimal_info()
+	info_a["inventory"] = [
+		{"kind": "Log", "quantity": 3, "item_stack_id": 10},
+		{"kind": "Berries", "quantity": 5, "item_stack_id": 11},
+	]
+	_panel.show_creature("id-1", info_a)
+	assert_eq(_panel._inventory_container.get_child_count(), 3)  # empty label + 2 buttons
+
+	# Now select creature B with an empty inventory.
+	var info_b := _minimal_info()
+	info_b["inventory"] = []
+	_panel.show_creature("id-2", info_b)
+	# Should only have the empty label, no stale buttons from creature A.
+	assert_eq(_panel._inventory_container.get_child_count(), 1)
+	assert_true(_panel._inventory_empty_label.visible)
+
+
+func test_reselect_same_creature_with_changed_inventory() -> void:
+	var info_a := _minimal_info()
+	info_a["inventory"] = [
+		{"kind": "Log", "quantity": 3, "item_stack_id": 10},
+	]
+	_panel.show_creature("id-1", info_a)
+	assert_eq(_panel._inventory_container.get_child(1).text, "Log: 3")
+
+	# Reselect same creature with updated inventory.
+	var info_b := _minimal_info()
+	info_b["inventory"] = [
+		{"kind": "Log", "quantity": 5, "item_stack_id": 10},
+	]
+	_panel.show_creature("id-1", info_b)
+	assert_eq(_panel._inventory_container.get_child(1).text, "Log: 5")
+
+
+func test_switching_between_creatures_with_different_items() -> void:
+	# Show creature A with a log.
+	var info_a := _minimal_info()
+	info_a["inventory"] = [
+		{"kind": "Log", "quantity": 3, "item_stack_id": 10},
+	]
+	_panel.show_creature("id-1", info_a)
+	assert_eq(_panel._inventory_container.get_child(1).text, "Log: 3")
+
+	# Show creature B with berries.
+	var info_b := _minimal_info()
+	info_b["inventory"] = [
+		{"kind": "Berries", "quantity": 5, "item_stack_id": 20},
+	]
+	_panel.show_creature("id-2", info_b)
+	assert_eq(_panel._inventory_container.get_child_count(), 2)
+	assert_eq(_panel._inventory_container.get_child(1).text, "Berries: 5")
+
+
 # -- Helpers -----------------------------------------------------------------
 
 

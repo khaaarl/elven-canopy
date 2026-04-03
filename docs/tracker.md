@@ -70,7 +70,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fog-billboards       Fog post-process does not obscure billboard sprites
 [ ] B-relay-stability      Windows TCP connection drops during singleplayer gameplay
-[ ] B-shared-inventory     Buildings completing around the same time show identical inventory contents
 [ ] B-sprite-shuffle       Non-elf creature sprites shuffle appearance when population changes
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-adventure-mode       Control individual elf (RPG-like)
@@ -292,6 +291,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-world-boundary       World boundary visualization
 [ ] F-world-map            World map view
 [ ] F-zone-world           Zone-based world with fidelity partitioning
+[ ] R-panel-dedup          Extract shared helpers from duplicated info panel code
 ```
 
 ### Done
@@ -327,6 +327,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-quit-crash           Crash on quit from in-flight rayon mesh workers
 [x] B-raid-spawn           Raiders sometimes spawn inside map instead of at perimeter
 [x] B-retire-spatidx       Retire SimState.spatial_index in favor of tabulosity Creature table index
+[x] B-shared-inventory     Buildings completing around the same time show identical inventory contents
 [x] B-sim-floats           Remaining f32/f64 in sim logic threaten determinism
 [x] B-spawn-creature       spawn_creature test helper finds first creature of species, not newly spawned
 [x] B-start-paused-ui      start_paused_on_load UI desync and missing new-game support
@@ -567,6 +568,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-worldgen-framework   Worldgen generator framework
 [x] F-wyvern               Wyvern hostile flying creature (2×2×2)
 [x] F-zlevel-vis           Z-level visibility (cutaway/toggle)
+[x] R-inv-display          Extract shared inventory display component (subsumed by R-panel-dedup)
 ```
 
 ---
@@ -2609,7 +2611,7 @@ Requires F-flying-nav-big.
 The DineAtHall code path speculatively inserts a task before checking if food can be reserved (needed for FK validation on item_stacks.reserved_by). If no food is available, the task is cleaned up via `complete_task()`, which sets it to Complete state rather than removing it. This leaves orphaned Complete DineAtHall tasks in the DB. While not a correctness bug, it creates unnecessary DB clutter. Consider either removing the task on the failure path, or adding a periodic GC for completed tasks with zero progress.
 
 #### B-shared-inventory — Buildings completing around the same time show identical inventory contents
-**Status:** Todo
+**Status:** Done
 
 When multiple buildings finish construction around the same time (e.g. building several structures in parallel), their inventory panels appear to show the same inventory contents. Clicking on different completed buildings shows identical item lists, as if they share one inventory or the UI is displaying the wrong structure's data.
 
@@ -7192,6 +7194,43 @@ How to show lower platforms when upper ones occlude them. Transparency,
 cutaway, or hide-upper-levels toggle. Open design question (§27).
 
 **Related:** F-bldg-transparency, F-ghost-above, F-minimap
+
+#### R-inv-display — Extract shared inventory display component (subsumed by R-panel-dedup)
+**Status:** Done
+
+The inventory display code (button list with item kind, quantity, item_stack_id click handling, empty label, and _last_inventory cache) is copy-pasted across three info panels: creature_info_panel.gd, structure_info_panel.gd, and ground_pile_info_panel.gd. Each has its own _update_inventory/_update_info with near-identical logic for building buttons, clearing old buttons, and caching.
+
+This duplication caused B-shared-inventory — the cache invalidation fix had to be applied in three places. Any future change to inventory display appearance, click behavior, or caching logic would need the same triple edit.
+
+Extract a shared InventoryDisplay component (scene or utility class) that all three panels use. This ensures consistent appearance and behavior, and means cache/rebuild logic only exists in one place. The component should handle:
+- Building item buttons from an inventory array
+- The _last_inventory cache with null-vs-[] invalidation
+- Empty state label
+- item_clicked signal emission
+- Button styling (left-aligned, expand fill)
+
+#### R-panel-dedup — Extract shared helpers from duplicated info panel code
+**Status:** Todo
+
+The GDScript info panels (creature_info_panel.gd, structure_info_panel.gd, ground_pile_info_panel.gd, tree_info_panel.gd, item_detail_panel.gd, group_info_panel.gd) share extensive duplicated code. This caused B-shared-inventory — a cache invalidation fix had to be applied in three places. Future changes to any of these patterns require error-prone multi-file edits.
+
+Specific patterns to extract into shared helpers or components:
+
+**1. Inventory display** (3 files, 3 instances) — Button list with item kind/quantity, _last_inventory null-vs-[] cache, empty label, item_clicked signal. Currently copy-pasted across creature, structure, and ground pile panels.
+
+**2. Progress bar rows** (3 files, 7 instances) — HBoxContainer with title Label + ProgressBar + numeric Label. Used for HP, MP, Food, Rest in creature_info_panel.gd; Mana, Capacity in tree_info_panel.gd; Durability in item_detail_panel.gd. All follow the same structure with minor variations (color styling, label format).
+
+**3. Panel header** (6 files, 8+ instances) — HBoxContainer with title Label (font_size 20, expand fill) + "X" close Button wired to _on_close_pressed. Every panel builds this identically. structure_info_panel.gd builds it 3 times (main + logistics details + crafting details).
+
+**4. Scroll + VBoxContainer setup** (3 files, 9+ instances) — ScrollContainer with horizontal scroll disabled + VBoxContainer child with expand fill and separation override. creature_info_panel.gd alone does this 6 times for its tab contents.
+
+**5. Margin container setup** (4+ files, 7+ instances) — MarginContainer with 12px on all four sides. Pure boilerplate repeated in every panel's _ready() and in nested detail panels within structure_info_panel.gd.
+
+**6. Row list clearing and rebuild** (2 files) — Clear all children from a container, then rebuild from a data array. Used in structure_info_panel.gd's elf picker (set_elf_list) and group_info_panel.gd's row rebuild. Same loop structure each time.
+
+**7. Panel lifecycle** (all 6 panel files) — All panels share the same show_*/hide_panel/_on_close_pressed/panel_closed pattern with the same visibility toggle + signal emit structure. Could be a base class or mixin.
+
+Approach: Extract shared utility functions (build_panel_header, build_margin, build_scrollable_vbox, build_progress_row) and shared components (InventoryDisplay widget, possibly a base InfoPanel class). The goal is that each pattern exists in exactly one place, so bugs like B-shared-inventory are fixed once.
 
 ### Sim Engine
 

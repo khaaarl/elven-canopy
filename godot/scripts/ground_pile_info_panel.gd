@@ -21,7 +21,13 @@ signal item_clicked(item_stack_id: int)
 var _position_label: Label
 var _inventory_container: VBoxContainer
 var _inventory_empty_label: Label
-var _last_inventory: Array = []
+## Cache of the last inventory array passed to _update_info(), used to skip
+## redundant button rebuilds on per-frame refreshes. Null means "no cached
+## value" — the cache is invalidated (set to null) in show_pile() so that
+## _update_info() always rebuilds when switching to a new pile. This is
+## distinct from [] (cached, genuinely empty inventory) which correctly
+## skips rebuild when the pile simply has no items.
+var _last_inventory = null
 
 
 func _ready() -> void:
@@ -82,7 +88,7 @@ func _ready() -> void:
 
 
 func show_pile(info: Dictionary) -> void:
-	_last_inventory = []  # Force rebuild for new pile.
+	_last_inventory = null  # Invalidate cache so _update_info rebuilds.
 	_update_info(info)
 	visible = true
 
@@ -104,7 +110,7 @@ func _update_info(info: Dictionary) -> void:
 	var inv: Array = info.get("inventory", [])
 	# Skip rebuild if inventory hasn't changed — newly-created buttons don't
 	# have a valid layout rect until the next frame, so clicks fall through.
-	if inv == _last_inventory:
+	if _last_inventory != null and inv == _last_inventory:
 		return
 	_last_inventory = inv.duplicate(true)
 

@@ -69,7 +69,13 @@ var _skill_labels: Dictionary = {}
 var _thoughts_container: VBoxContainer
 var _inventory_container: VBoxContainer
 var _inventory_empty_label: Label
-var _last_inventory: Array = []
+## Cache of the last inventory array passed to _update_inventory(), used to skip
+## redundant button rebuilds on per-frame refreshes. Null means "no cached
+## value" — the cache is invalidated (set to null) in show_creature() so that
+## _update_inventory() always rebuilds when switching to a new creature. This
+## is distinct from [] (cached, genuinely empty inventory) which correctly
+## skips rebuild when the creature simply has no items.
+var _last_inventory = null
 var _social_container: VBoxContainer
 var _follow_button: Button
 var _is_following: bool = false
@@ -613,7 +619,7 @@ func _on_tab_pressed(index: int) -> void:
 
 func show_creature(creature_id: String, info: Dictionary) -> void:
 	_selected_creature_id = creature_id
-	_last_inventory = []  # Force rebuild for new creature.
+	_last_inventory = null  # Invalidate cache so _update_inventory rebuilds.
 	var species: String = info.get("species", "")
 	var sex_symbol: String = info.get("sex_symbol", "")
 	if sex_symbol.is_empty():
@@ -848,7 +854,7 @@ func _update_inventory(info: Dictionary) -> void:
 	# Skip rebuild if inventory hasn't changed — newly-created buttons don't
 	# have a valid layout rect until the next frame, so clicks fall through
 	# them to _unhandled_input and cause deselection.
-	if inv == _last_inventory:
+	if _last_inventory != null and inv == _last_inventory:
 		return
 	_last_inventory = inv.duplicate(true)
 
