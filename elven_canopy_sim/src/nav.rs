@@ -1697,6 +1697,13 @@ pub(crate) fn large_node_surface_y(world: &VoxelWorld, ax: i32, az: i32) -> Opti
     Some(max_surface + 1)
 }
 
+/// Test-only wrapper for `top_solid_y_from_spans` so diagnostic tests can
+/// inspect per-column terrain heights.
+#[cfg(test)]
+pub fn top_solid_y_for_test(world: &VoxelWorld, x: u32, z: u32) -> Option<u8> {
+    top_solid_y_from_spans(world, x, z)
+}
+
 /// Find the topmost solid Y in a column using RLE spans.
 /// Returns `None` if the column has no solid voxels.
 fn top_solid_y_from_spans(world: &VoxelWorld, x: u32, z: u32) -> Option<u8> {

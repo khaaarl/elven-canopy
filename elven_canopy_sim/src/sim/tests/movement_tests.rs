@@ -4285,3 +4285,337 @@ fn path_resolution_nav_node_destroyed_no_panic() {
         "Creature should be alive after graceful repath"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Large creature stuck-at-incline reproduction (B-large-stuck)
+// ---------------------------------------------------------------------------
+
+/// Reproduce B-large-stuck: large (2×2×2) creatures like elephants can get
+/// permanently stuck at terrain inclines where a nav node exists but all
+/// outgoing edges fail validation due to the larger union-footprint height
+/// check in `is_large_edge_valid()`.
+///
+/// Strategy: create a world with hilly terrain (`terrain_max_height = 4`),
+/// spawn 15 elephants, run for many ticks, and check whether any elephant
+/// stays at the same position for 10+ consecutive sample windows. If so,
+/// print diagnostic info (position, nav node, edge count, surrounding
+/// terrain heights) and fail.
+#[test]
+fn large_creature_does_not_get_permanently_stuck_on_terrain() {
+    use crate::nav;
+    use std::collections::BTreeMap as Map;
+
+    let seed = fresh_test_seed();
+
+    // Build a world with hilly terrain — bigger than the usual 64^3 test
+    // world so elephants have room to wander and encounter inclines.
+    let mut config = GameConfig {
+        world_size: (128, 64, 128),
+        floor_y: 0,
+        ..GameConfig::default()
+    };
+    config.terrain_max_height = 4;
+    config.tree_profile.growth.initial_energy = 0.0; // No tree — just terrain.
+    config.lesser_trees.count = 0;
+    // Clear default initial creatures/piles — we'll spawn elephants manually.
+    config.initial_creatures.clear();
+    config.initial_ground_piles.clear();
+
+    let mut sim = SimState::with_config(seed, config);
+
+    // Spawn 15 elephants spread across the map.
+    let num_elephants: usize = 15;
+    let mut elephant_ids = Vec::new();
+    for i in 0..num_elephants {
+        // Spread spawn positions across the terrain.
+        let x = 20 + (i as i32 % 5) * 18;
+        let z = 20 + (i as i32 / 5) * 18;
+        let spawn_pos = VoxelCoord::new(x, 1, z);
+        let cmd = SimCommand {
+            player_name: String::new(),
+            tick: sim.tick + 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elephant,
+                position: spawn_pos,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 2);
+        // Find the newly spawned elephant.
+        let new_id = sim
+            .db
+            .creatures
+            .iter_all()
+            .filter(|c| c.species == Species::Elephant)
+            .map(|c| c.id)
+            .find(|id| !elephant_ids.contains(id));
+        if let Some(id) = new_id {
+            elephant_ids.push(id);
+        }
+    }
+
+    assert!(
+        elephant_ids.len() >= 10,
+        "Need at least 10 elephants spawned, got {}. \
+         Terrain may lack valid large nav nodes near spawn positions.",
+        elephant_ids.len()
+    );
+
+    // Track positions: map from creature ID → list of sampled positions.
+    let mut position_history: Map<CreatureId, Vec<VoxelCoord>> = Map::new();
+    for &id in &elephant_ids {
+        let pos = sim.db.creatures.get(&id).unwrap().position.min;
+        position_history.insert(id, vec![pos]);
+    }
+
+    // Run 50 sample windows of 2000 ticks each (enough to detect stuck creatures).
+    let num_turns = 50;
+    let ticks_per_turn: u64 = 2000;
+    for _turn in 0..num_turns {
+        let target = sim.tick + ticks_per_turn;
+        sim.step(&[], target);
+        for &id in &elephant_ids {
+            if let Some(creature) = sim.db.creatures.get(&id) {
+                position_history
+                    .get_mut(&id)
+                    .unwrap()
+                    .push(creature.position.min);
+            }
+        }
+    }
+
+    // Check for stuck elephants: same position for 10+ consecutive samples.
+    let stuck_threshold = 10;
+    let mut stuck_elephants = Vec::new();
+    for &id in &elephant_ids {
+        let history = &position_history[&id];
+        let mut consecutive = 1;
+        let mut max_consecutive = 1;
+        let mut stuck_pos = history[0];
+        for window in history.windows(2) {
+            if window[1] == window[0] {
+                consecutive += 1;
+                if consecutive > max_consecutive {
+                    max_consecutive = consecutive;
+                    stuck_pos = window[0];
+                }
+            } else {
+                consecutive = 1;
+            }
+        }
+        if max_consecutive >= stuck_threshold {
+            stuck_elephants.push((id, stuck_pos, max_consecutive));
+        }
+    }
+
+    if !stuck_elephants.is_empty() {
+        // Print diagnostics for each stuck elephant.
+        for &(id, pos, consecutive) in &stuck_elephants {
+            eprintln!("--- STUCK ELEPHANT {id:?} ---");
+            eprintln!(
+                "  Position: ({}, {}, {}), stuck for {consecutive} consecutive samples",
+                pos.x, pos.y, pos.z
+            );
+
+            // Print creature state.
+            if let Some(creature) = sim.db.creatures.get(&id) {
+                eprintln!(
+                    "  action_kind={:?}, next_available_tick={:?}, current_task={:?}, \
+                     current_activity={:?}, vital_status={:?}, food={}, rest={}",
+                    creature.action_kind,
+                    creature.next_available_tick,
+                    creature.current_task,
+                    creature.current_activity,
+                    creature.vital_status,
+                    creature.food,
+                    creature.rest,
+                );
+            }
+
+            // Check large nav graph node at this position.
+            let node = sim.large_nav_graph.node_at(pos);
+            match node {
+                Some(nid) => {
+                    let edges = sim.large_nav_graph.neighbors(nid);
+                    eprintln!("  Nav node: {nid:?}, edge count: {}", edges.len());
+                    for &eid in edges {
+                        let edge = sim.large_nav_graph.edge(eid);
+                        let dest = sim.large_nav_graph.node(edge.to).position;
+                        eprintln!(
+                            "    Edge {eid:?} -> ({}, {}, {}), type={:?}",
+                            dest.x, dest.y, dest.z, edge.edge_type
+                        );
+                    }
+                }
+                None => {
+                    eprintln!("  NO nav node at position!");
+                }
+            }
+
+            // Print surrounding terrain heights (6×6 columns around anchor).
+            eprintln!("  Terrain heights (6x6 around anchor):");
+            for dz in -2..=3 {
+                let mut row = String::new();
+                for dx in -2..=3 {
+                    let cx = (pos.x + dx) as u32;
+                    let cz = (pos.z + dz) as u32;
+                    if cx < sim.world.size_x && cz < sim.world.size_z {
+                        let top = nav::top_solid_y_for_test(&sim.world, cx, cz);
+                        match top {
+                            Some(y) => row.push_str(&format!("{y:3} ")),
+                            None => row.push_str("  - "),
+                        }
+                    } else {
+                        row.push_str(" OB ");
+                    }
+                }
+                eprintln!("    z={:3}: {row}", pos.z + dz);
+            }
+
+            // Check which neighbor anchors are valid nodes / have valid edges.
+            eprintln!("  Neighbor anchor validity:");
+            for &(ndx, ndz) in &[
+                (-1i32, -1i32),
+                (0, -1),
+                (1, -1),
+                (-1, 0),
+                (1, 0),
+                (-1, 1),
+                (0, 1),
+                (1, 1),
+            ] {
+                let nx = pos.x + ndx;
+                let nz = pos.z + ndz;
+                let neighbor_node = sim.large_nav_graph.node_at(VoxelCoord::new(nx, pos.y, nz));
+                let is_valid_node = neighbor_node.is_some();
+                // Also check if a node exists at any Y.
+                let surface_y = nav::large_node_surface_y(&sim.world, nx, nz);
+                eprintln!(
+                    "    ({ndx:+},{ndz:+}): anchor=({nx},{nz}), node_at_y={is_valid_node}, \
+                     surface_y={surface_y:?}"
+                );
+            }
+        }
+
+        panic!(
+            "{} elephant(s) got permanently stuck (>={stuck_threshold} consecutive samples \
+             at same position). See diagnostic output above. seed={seed}",
+            stuck_elephants.len()
+        );
+    }
+}
+
+/// Unit test for B-large-stuck fix: a 2×2 large creature at a nav node where
+/// the anchor column's surface is lower than another footprint column should
+/// be considered supported. Before the fix, `creature_is_supported` only
+/// checked the anchor column, returning false and trapping the creature in an
+/// infinite gravity loop.
+#[test]
+fn large_creature_supported_at_incline_with_mixed_column_heights() {
+    let mut sim = test_sim(fresh_test_seed());
+
+    // Build a 2×2 footprint with mixed heights: three columns at y=3,
+    // anchor column at y=2. This means large_node_surface_y returns
+    // max(2,3,3,3) + 1 = 4.
+    for dx in 0..2 {
+        for dz in 0..2 {
+            let height = if dx == 0 && dz == 0 { 2 } else { 3 };
+            for y in 0..=height {
+                sim.world
+                    .set(VoxelCoord::new(10 + dx, y, 10 + dz), VoxelType::Dirt);
+            }
+        }
+    }
+    sim.rebuild_transient_state();
+
+    // Verify the large nav graph has a node at (10, 4, 10).
+    let standing_pos = VoxelCoord::new(10, 4, 10);
+    assert!(
+        sim.large_nav_graph.node_at(standing_pos).is_some(),
+        "large nav node should exist at y=4 above mixed-height terrain"
+    );
+
+    // Spawn an elephant and teleport it to the incline position.
+    let mut events = Vec::new();
+    let elephant_id = sim
+        .spawn_creature(Species::Elephant, VoxelCoord::new(10, 4, 10), &mut events)
+        .expect("should spawn elephant near incline");
+    {
+        let footprint = sim.species_table[&Species::Elephant].footprint;
+        let mut c = sim.db.creatures.get(&elephant_id).unwrap();
+        c.position = VoxelBox::from_anchor(standing_pos, footprint);
+        sim.db.update_creature(c).unwrap();
+    }
+
+    // Key assertion: the elephant should be supported even though the anchor
+    // column (10, 10) only has solid up to y=2, making y=3 air. The fix
+    // checks all footprint columns and finds solid at y=3 in the other
+    // three columns.
+    assert!(
+        sim.creature_is_supported(elephant_id),
+        "2x2 elephant at incline should be supported: anchor column surface=2, \
+         other columns surface=3, nav node at y=4, so y-1=3 is solid in 3 of 4 columns"
+    );
+}
+
+/// Inverse of the incline test: a 2×2 large creature where NO footprint
+/// column has solid at y−1 should be unsupported. Ensures the footprint
+/// loop correctly returns false, not just true.
+#[test]
+fn large_creature_unsupported_when_no_footprint_column_has_solid_below() {
+    let mut sim = test_sim(fresh_test_seed());
+
+    // Build a 2×2 platform at y=5. All 4 columns have solid at y=5 only
+    // (no solid at y=4). Large nav node will be at y=6.
+    for dx in 0..2 {
+        for dz in 0..2 {
+            sim.world.set(
+                VoxelCoord::new(10 + dx, 5, 10 + dz),
+                VoxelType::GrownPlatform,
+            );
+        }
+    }
+    sim.rebuild_transient_state();
+
+    let standing_pos = VoxelCoord::new(10, 6, 10);
+    assert!(
+        sim.large_nav_graph.node_at(standing_pos).is_some(),
+        "large nav node should exist at y=6 above platform"
+    );
+
+    // Spawn elephant and teleport to the platform.
+    let mut events = Vec::new();
+    let elephant_id = sim
+        .spawn_creature(Species::Elephant, VoxelCoord::new(10, 6, 10), &mut events)
+        .expect("should spawn elephant on platform");
+    {
+        let footprint = sim.species_table[&Species::Elephant].footprint;
+        let mut c = sim.db.creatures.get(&elephant_id).unwrap();
+        c.position = VoxelBox::from_anchor(standing_pos, footprint);
+        sim.db.update_creature(c).unwrap();
+    }
+
+    // Should be supported: platform is solid at y=5, y-1=5 has solid.
+    assert!(
+        sim.creature_is_supported(elephant_id),
+        "elephant on intact platform should be supported"
+    );
+
+    // Remove the platform WITHOUT rebuilding nav — node persists but no
+    // solid below in any footprint column.
+    for dx in 0..2 {
+        for dz in 0..2 {
+            sim.world
+                .set(VoxelCoord::new(10 + dx, 5, 10 + dz), VoxelType::Air);
+        }
+    }
+    assert!(
+        sim.large_nav_graph.node_at(standing_pos).is_some(),
+        "nav node should still exist (no rebuild)"
+    );
+
+    // Now y-1=5 is air in all 4 columns — creature should be unsupported.
+    assert!(
+        !sim.creature_is_supported(elephant_id),
+        "elephant with no solid below in any footprint column should be unsupported"
+    );
+}

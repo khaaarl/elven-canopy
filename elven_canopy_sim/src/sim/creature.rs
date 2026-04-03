@@ -618,7 +618,8 @@ impl SimState {
     ///   exists at the creature's position.
     /// - 1x1 ground-only (`ground_only` = true): supported if a valid nav node
     ///   exists AND the voxel below is solid.
-    /// - 2x2x2: supported if a valid nav node exists in the large nav graph.
+    /// - 2x2x2 ground-only: supported if a valid nav node exists in the large
+    ///   nav graph AND at least one column in the footprint has solid at y−1.
     pub(crate) fn creature_is_supported(&self, creature_id: CreatureId) -> bool {
         let creature = match self.db.creatures.get(&creature_id) {
             Some(c) if c.vital_status == VitalStatus::Alive => c,
@@ -634,13 +635,33 @@ impl SimState {
             return false;
         }
         if species_data.ground_only {
-            // Ground-only creatures also need solid below.
-            let below = VoxelCoord::new(
-                creature.position.min.x,
-                creature.position.min.y - 1,
-                creature.position.min.z,
-            );
-            self.world.get(below).is_solid()
+            // Ground-only creatures also need solid below. For large creatures
+            // (2×2 footprint), the nav node y is `max_surface + 1` across all
+            // 4 columns, so the anchor column may have a lower surface than
+            // y−1. Check whether ANY column in the footprint has solid at y−1
+            // (B-large-stuck).
+            let y_below = creature.position.min.y - 1;
+            let fx = species_data.footprint[0] as i32;
+            let fz = species_data.footprint[2] as i32;
+            let ax = creature.position.min.x;
+            let az = creature.position.min.z;
+            let mut any_solid = false;
+            for dz in 0..fz {
+                for dx in 0..fx {
+                    if self
+                        .world
+                        .get(VoxelCoord::new(ax + dx, y_below, az + dz))
+                        .is_solid()
+                    {
+                        any_solid = true;
+                        break;
+                    }
+                }
+                if any_solid {
+                    break;
+                }
+            }
+            any_solid
         } else {
             // Climber with a valid nav node — supported.
             true

@@ -69,7 +69,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-fast-checksum        Incremental state checksum for desync detection (replace full-state JSON serialization)
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fog-billboards       Fog post-process does not obscure billboard sprites
-[ ] B-large-stuck          Large creatures (elephants) get permanently stuck at terrain inclines
 [ ] B-relay-stability      Windows TCP connection drops during singleplayer gameplay
 [ ] B-shared-inventory     Buildings completing around the same time show identical inventory contents
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
@@ -315,6 +314,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-flying-arrow-chase   Flying creatures excluded from arrow-chase
 [x] B-flying-tasks         Flying creatures skip task system entirely
 [x] B-hostile-detect-nav   detect_hostile_targets panics on flying targets (NavNodeId u32::MAX hack)
+[x] B-large-stuck          Large creatures (elephants) get permanently stuck at terrain inclines
 [x] B-leaf-diagonal        Leaf blobs sometimes only diagonally connected, looks bad
 [x] B-local-relay          Singleplayer must launch the real relay (on localhost), not use a fake tick-pacing LocalRelay
 [x] B-mesh-global-cfg      Mesh pipeline global atomics cause test flakiness risk
@@ -1493,15 +1493,15 @@ would also confirm the fix.
 After issuing move commands (select creatures, right-click a destination), creature movement becomes erratic and possibly faster than intended. Repro: select one or more creatures, right-click to move them, observe movement behavior.
 
 #### B-large-stuck — Large creatures (elephants) get permanently stuck at terrain inclines
-**Status:** Todo
+**Status:** Done
 
 Large (2x2x2) creatures like elephants can get permanently stuck at certain terrain locations and never move again. Observed by spawning several elephants and watching them wander — some reach locations near slight terrain inclines (e.g., where 3 of the 4 ground columns under the 2x2 footprint are at one height and 1 is lower) and stop moving entirely.
 
-The large nav graph validates nodes via `large_node_surface_y()` (all 4 columns must have solid ground, height variation ≤ 1) and edges via `is_large_edge_valid()` (all columns in the union of both 2x2 footprints must have solid ground with height variation ≤ 1). Since edges check a larger region (3x2, 2x3, or 3x3 for orthogonal/diagonal moves), it's possible for a node to exist but have some or all outgoing edges fail validation due to problematic columns in the union footprint. If ALL edges from a node fail, `ground_random_wander` hits the `edge_indices.is_empty()` path and retries every 1000 ticks forever — the creature is permanently stuck.
+**Root cause (confirmed):** `creature_is_supported()` in `creature.rs` only checked the anchor column (bottom-left corner of the 2x2 footprint) for solid ground at `y-1`. The large nav graph places nodes at `y = max_surface + 1` across all 4 footprint columns, so when the anchor column's surface is lower than another column (terrain incline), `y-1` at the anchor is air. This caused `creature_is_supported()` to return false, triggering a gravity check every tick. The gravity check found no valid landing below (the creature was already at the correct position), so it no-oped — but the activation returned early before the decision cascade, preventing the creature from ever wandering. The creature was activated every tick (`next_available_tick = tick + 1`) but never entered `ground_random_wander`.
 
-The graph is bidirectional (add_edge creates forward + reverse), so if a creature reached a node, there should be an edge back. But it's unclear whether incremental nav updates, terrain changes (tree growth), or edge validation asymmetries could leave a node with no valid outgoing edges despite being reachable. The root cause needs investigation with a diagnostic test.
+**Fix:** Changed the ground-only support check in `creature_is_supported()` to verify whether ANY column in the footprint has solid at `y-1`, not just the anchor column.
 
-**Suggested diagnostic test:** Construct a sim with realistic hilly terrain (standard worldgen with terrain_max_height > 0, no main tree needed), spawn 10+ elephants with full food/rest so they don't get distracted by needs, run ~500 turns of ~500 ticks each, and track each elephant's position every turn. If any elephant stays at the same position for 10+ consecutive turns, flag it as stuck and print diagnostic info: the elephant's anchor position, its nav node (if any), the number of edges from that node, the terrain heights in the surrounding 5x5 columns, and whether each of the 8 neighbor anchors is a valid node / has a valid edge. This will reveal whether the stuck elephant has zero edges, edges that are all hostile-blocked, or some other cause.
+**Original (incorrect) hypothesis, preserved for posterity:** The original theory was that `is_large_edge_valid()` was rejecting all outgoing edges due to the larger union-footprint height check (3x2, 2x3, or 3x3 region), leaving the creature at a node with zero valid edges and stuck in `ground_random_wander`'s 1000-tick retry loop. Investigation showed this was wrong — stuck elephants had 8 valid edges. The actual failure happened earlier in the activation pipeline, before edge selection was ever attempted. A good reminder that bugs often have surprising root causes.
 
 #### F-bounded-pathlen — Bounded max_path_len for all pathfinding call sites
 **Status:** Done
