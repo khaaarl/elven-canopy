@@ -256,8 +256,10 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tab-cycle            Tab to cycle focus through units in selection
 [ ] F-tab-indexmap-fork    Forked IndexMap with tombstone compaction (alternative to F-tab-ordered-idx)
 [ ] F-tab-joins            Join iterators across tables
+[ ] F-tab-nested-idx       Tabulosity general nested multi-kind compound indexes
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
-[ ] F-tab-spatial-2        Tabulosity spatial index — compound indexes, range/KNN queries
+[ ] F-tab-spatial-2        Tabulosity spatial index — compound spatial indexes
+[ ] F-tab-spatial-3        Tabulosity spatial index — range, KNN, and None-set queries
 [ ] F-tame-aggro           Taming failure can aggro the target animal
 [ ] F-task-assign-opt      Event-driven bidirectional task assignment
 [ ] F-task-panel-sprites   Creature sprites in tasks panel and activity cards
@@ -7910,6 +7912,27 @@ closure call. Database-level wrappers delegate to the table methods.
 
 **Related:** F-sim-db-impl, F-tab-query-opts
 
+#### F-tab-nested-idx — Tabulosity general nested multi-kind compound indexes
+**Status:** Todo
+
+General nested multi-kind compound indexes for tabulosity. Lifts the restriction from F-tab-spatial-2 that all non-spatial prefix fields must share the same kind.
+
+**Concept:** Each "kind boundary" in the field list creates a new nesting level. Consecutive fields with the same kind are grouped (tupled) into a single level. Example: `fields("a" btree, "b" hash, "c" btree, "d" btree)` produces `BTreeMap<A, InsOrdHashMap<B, BTreeMap<(C, D), BTreeSet<PK>>>>`.
+
+**Grammar:** Already forward-compatible — the per-field kind annotation syntax from F-tab-spatial-2 supports this without changes. The only difference is lifting the compile error that currently rejects mixed prefix kinds.
+
+**Codegen:** The derive macro must handle arbitrary nesting depth. Likely requires recursive codegen or a loop over nesting levels for insert/update/remove/rebuild. Each nesting level adds a layer of map lookup in generated code.
+
+**Query methods:** Each map-level field becomes a separate parameter. Tupled fields within a level are also separate parameters: `intersecting_deep(&a, &b, &c, &d, &envelope)`.
+
+**Partial-prefix queries:** With general nesting, querying at any nesting boundary becomes possible (e.g., "all entries with btree key A regardless of hash key B"). Whether to support this is a design decision for this item.
+
+**Priority:** Longer-term enhancement. The compound spatial index (F-tab-spatial-2) covers the immediate need, and the grammar is already compatible. No known blocking use case yet.
+
+**Draft:** docs/drafts/tabulosity_spatial_queries.md
+
+**Related:** F-tab-spatial-2
+
 #### F-tab-nonpk-autoinc — Non-PK auto-increment fields in tabulosity
 **Status:** Done
 
@@ -8071,24 +8094,49 @@ Simple spatial index kind for tabulosity, backed by the `rstar` crate. Enough to
 **Motivating use case:** Creature position lookup. The Creature table would have an `Option<VoxelBox>` field indexed with `kind = "spatial"` and `filter = "Creature::is_alive"`. A 2×2×2 creature is stored as a single bounding box; point queries find it via box intersection. Replaces the current per-voxel registration approach. (The actual migration is B-retire-spatidx, not this item.)
 
 **Unblocked:** B-retire-spatidx, F-tab-spatial-2
+**Related:** F-tab-spatial-3
 
-#### F-tab-spatial-2 — Tabulosity spatial index — compound indexes, range/KNN queries
+#### F-tab-spatial-2 — Tabulosity spatial index — compound spatial indexes
 **Status:** Todo
 
-Advanced spatial index features for tabulosity, building on F-tab-spatial's simple R-tree index.
+Compound spatial indexes for tabulosity: a non-spatial prefix (one or more fields) partitioning rows into separate R-trees, enabling queries like "all creatures within bounding box Y in zone Z" without scanning all zones.
 
-**Compound spatial indexes:** A spatial field combined with non-spatial fields in a single index. Conceptually: `BTreeMap<non_spatial_field, RTree<spatial_field, PK>>`. Enables queries like "all creatures of civilization X within bounding box Y" without scanning all civilizations. Design details TBD — needs to decide on query API shape, whether the non-spatial prefix uses BTree or Hash, and how compound + filter interact.
+**Attribute grammar:** Extends `fields(...)` to support optional per-field kind keywords (`btree`, `hash`, `spatial`) after the field name string. The index-level `kind` parameter sets the default for unannotated fields. The spatial field must be last. All non-spatial prefix fields must resolve to the same kind (btree or hash). Example: `#[index(name = "by_zone_pos", fields("zone_id", "pos" spatial))]` produces `BTreeMap<ZoneId, SpatialIndex<PK, Point>>`. With `kind = "hash"`, the prefix map uses `InsOrdHashMap`. Per-field annotations override the default: `fields("zone_id" hash, "pos" spatial)`.
 
-**Range and radius queries:** Query methods beyond simple intersection — find all entries within a distance threshold from a query point, using caller-choosable distance metrics (Chebyshev, Manhattan, squared Euclidean). Chebyshev recommended as default since its cube iso-surfaces align with R-tree axis-aligned bounding boxes for tight pruning. Deterministic tie-breaking: results ordered by (distance, PK).
+**Storage:** `Map<PrefixKey, SpatialIndex<PK, Point>>` plus a parallel `Map<PrefixKey, NoneSet<PK>>` for Option spatial fields. Single prefix field uses bare key; multiple prefix fields tuple the key. Partitions created lazily on first insert, removed when both R-tree and none-set are empty.
 
-**KNN queries:** K-nearest-neighbor lookups — "find the 10 closest fruit trees to this elf." rstar supports this natively via `nearest_neighbor_iter()`. Needs deterministic ordering (distance, then PK for ties).
+**Generated query methods:** `intersecting_by_{name}(&prefix_field1, ..., &envelope) -> Vec<Row>`, plus `iter_intersecting_` and `count_intersecting_` variants. Each non-spatial prefix field is a separate parameter. Missing partitions return empty results.
 
-**None-set query API:** F-tab-spatial stores `None`-keyed PKs in a side container but doesn't expose query methods for them. This item should decide on iteration/query semantics for the `None` set — at minimum, a method to iterate all PKs with null spatial keys, and inclusion in "iterate everything" methods.
+**Filter + Option handling:** Filters gate entry into the index identically to single-field spatial indexes. Option prefix fields use `Option<T>` as the map key directly (None is a valid BTreeMap/HashMap key). Option spatial fields use the per-partition none-set.
 
-**Motivating use cases:** The primary driver is F-zone-world: each zone has its own local coordinate system, so all spatial queries must be scoped by zone — requiring compound indexes keyed by `(zone_id, spatial_box)`. A query like "creatures near position X in zone Z" searches only that zone's R-tree partition, not the entire world. Beyond zones: hostile detection scanning (currently O(n) full scan of all creatures — a radius query would be O(log n + k)), tree fruit location queries ("find 10 nearest fruit"), social proximity scanning, any future "find things near X" query.
+**Index maintenance:** Same delete+reinsert pattern. On update, if the prefix key changed, remove from old partition and insert into new. If only spatial field changed, remove+reinsert within the same partition. Empty partition cleanup on remove.
+
+**Serde:** Transient (not serialized). Rebuilt from row data on deserialization.
+
+**Draft:** docs/drafts/tabulosity_compound_spatial.md
+
+**Motivating use case:** F-zone-world requires all spatial queries scoped by zone_id, which requires compound spatial indexes keyed by (zone_id, spatial_box).
 
 **Blocks:** F-zone-world
 **Unblocked by:** F-tab-spatial
+**Related:** F-tab-nested-idx, F-tab-spatial-3
+
+#### F-tab-spatial-3 — Tabulosity spatial index — range, KNN, and None-set queries
+**Status:** Todo
+
+Additional spatial query capabilities for tabulosity, independent of compound spatial indexes (F-tab-spatial-2).
+
+**Range / radius queries:** Find all entries within a distance threshold from a query point, using caller-choosable integer distance metrics: Chebyshev (cube iso-surfaces, tightest R-tree pruning), Manhattan (diamond), or squared Euclidean (sphere, avoids sqrt). All arithmetic in i64 for determinism. Results ordered by (distance, PK) for deterministic tie-breaking. Implementation: expand query point to conservative AABB, use R-tree intersection, post-filter by exact distance.
+
+**KNN queries:** K-nearest-neighbor lookups ("find the 10 closest fruit trees to this elf"). Leverages rstar's `nearest_neighbor_iter()` but with integer distance recomputation and (distance, PK) ordering for determinism. Needs careful termination logic: rstar uses f64 internally, so equidistant entries may be reordered — must over-fetch candidates past the Kth distance boundary, then sort and truncate.
+
+**None-set query API:** F-tab-spatial stores None-keyed PKs in a side container but exposes no query methods. This adds iteration/count methods for the None set: `none_{field}()`, `iter_none_{field}()`, `count_none_{field}()`. For compound spatial indexes: prefix-scoped `none_by_{name}(&prefix)` and unscoped `all_none_{name}()`.
+
+**Motivating use cases:** Hostile detection scanning (currently O(n) full scan — radius query would be O(log n + k)). Tree fruit location queries ("find 10 nearest fruit"). Social proximity scanning. Any "find things near X" pattern.
+
+**Draft:** docs/drafts/tabulosity_spatial_queries.md
+
+**Related:** F-tab-spatial, F-tab-spatial-2
 
 #### F-tab-unique-idx — Unique index enforcement
 **Status:** Done
