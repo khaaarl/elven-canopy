@@ -108,6 +108,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-combat               Combat and invader threat system
 [ ] F-combat-opinions      Respect and fear from combat events
 [ ] F-combat-singing       Combat singing buffs and musical instrument bands
+[ ] F-compact-save         Compact binary save format with compression
 [ ] F-conjured-creatures   Temporary creature spawning with lifetime and auto-despawn
 [ ] F-controls-config      Centralized controls config with rebinding and persistence
 [ ] F-controls-config-A    ControlsConfig autoload and handler migration
@@ -252,11 +253,13 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-stress-heatmap       Stress visualization in blueprint mode
 [ ] F-struct-upgrade       Structure expansion/upgrade
 [ ] F-sung-furniture       Sung furniture grown from living wood
+[ ] F-tab-binary-serde     Tabulosity binary serialization format
 [ ] F-tab-change-track     Change tracking (insert/update/delete diffs)
 [ ] F-tab-cycle            Tab to cycle focus through units in selection
 [ ] F-tab-indexmap-fork    Forked IndexMap with tombstone compaction (alternative to F-tab-ordered-idx)
 [ ] F-tab-joins            Join iterators across tables
 [ ] F-tab-nested-idx       Tabulosity general nested multi-kind compound indexes
+[ ] F-tab-row-crc          Per-row CRC with XOR table aggregation for incremental checksums
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
 [ ] F-tab-spatial-2        Tabulosity spatial index — compound spatial indexes
 [ ] F-tab-spatial-3        Tabulosity spatial index — range, KNN, and None-set queries
@@ -7414,6 +7417,44 @@ Sim posts deltas to a channel; render thread picks up the latest batch each fram
 
 **Not urgent** — current sim is fast. This becomes important as creature count, pathfinding complexity, and task processing grow.
 
+#### F-compact-save — Compact binary save format with compression
+**Status:** Todo
+
+Speculative / exploratory. Design and implement a compact binary save format for
+Elven Canopy that replaces the current JSON-based save with something suitable for
+both disk saves and multiplayer state sync (mid-game join, reconnect).
+
+Three components:
+
+1. **Voxel world packing.** Ensure voxel data is stored in a reasonable binary format —
+   not necessarily palette-compressed, but at minimum a tightly-packed binary encoding
+   rather than anything JSON-like. The current RLE column storage is already compact in
+   structure; this is about the serialized wire/disk representation.
+
+2. **Tabulosity binary serialization.** Use whichever binary format is chosen in
+   F-tab-binary-serde to serialize the full sim database. This is expected to be the
+   largest component of a mature save (hundreds of creatures with stats, skills, DNA,
+   opinions, equipment, etc.).
+
+3. **Generic compression.** Run the combined binary blob through zlib, zstd, or similar
+   general-purpose compression as a final pass.
+
+The resulting format must work for:
+- Disk saves (write on save, read on load)
+- Multiplayer mid-game join (host serializes full state, sends to joining player)
+- Potentially incremental sync / delta transfers in future (not required initially)
+
+Current rough estimate: a typical 1k×1k world with simple terrain is ~2-3 MB in naive
+binary packing before compression, and should compress significantly. The tabulosity
+content for a rich late-game world is the unknown — JSON serialization of hundreds of
+complex entities is likely the dominant save size cost today.
+
+Blocked on F-tab-binary-serde for the tabulosity component. Voxel packing and the
+compression wrapper could proceed independently.
+
+**Blocked by:** F-tab-binary-serde
+**Related:** F-mp-mid-join, F-save-load
+
 #### F-core-types — VoxelCoord, IDs, SimCommand, GameConfig
 **Status:** Done · **Phase:** 0 · **Refs:** §5, §7
 
@@ -7711,7 +7752,7 @@ of VoxelWorld completely replaced.
 Full sim state serialized to JSON in `user://saves/`. Save versioning
 for schema migration.
 
-**Related:** F-mp-mid-join, F-multiplayer, F-tab-schema-evol, F-tab-schema-ver
+**Related:** F-compact-save, F-mp-mid-join, F-multiplayer, F-tab-schema-evol, F-tab-schema-ver
 
 #### F-serde — Serialization for all sim types
 **Status:** Done · **Phase:** 0 · **Refs:** §5
@@ -7876,6 +7917,31 @@ Support compound (multi-column) primary keys in Tabulosity tables, analogous to 
 `#[primary_key(auto_increment)]` with a monotonic counter so callers don't need to generate IDs manually. Table gets `insert_auto_no_fk()` and `next_id()`. Database gets `insert_{singular}_auto()` with FK validation. Serde serializes auto tables as `{"next_id": N, "rows": [...]}` with defensive correction on deserialize.
 
 **Related:** F-sim-db-impl
+
+#### F-tab-binary-serde — Tabulosity binary serialization format
+**Status:** Todo
+
+Speculative / exploratory. Add a binary serialization format to tabulosity as an
+alternative to the current JSON serde. Candidate formats include MessagePack and
+bincode, but the choice is TBD — the key requirement is robust handling of schema
+evolution: columns that no longer exist must be silently skipped on deserialization,
+new columns must receive defaults, and column type changes need at least basic
+coercion or clear error reporting. This is important because tabulosity tables evolve
+across game versions and the format must tolerate mismatches gracefully without
+requiring explicit per-field migration code for simple additions/removals.
+
+Evaluate candidate formats (MessagePack, bincode, postcard, etc.) for:
+- Schema flexibility: how naturally do they handle missing/extra/reordered fields?
+- Compact representation of tabular data with uniform schemas (many rows, same columns)
+- Ease of integration with existing serde derives
+- Whether a custom table-level encoding (column-oriented, palette-based, etc.) would
+  outperform a generic row-level format
+
+This is forward-looking infrastructure — no immediate urgency. The result feeds into
+the compact save format for Elven Canopy (F-compact-save).
+
+**Blocks:** F-compact-save
+**Related:** F-tab-schema-evol
 
 #### F-tab-cascade-del — Cascade/nullify on delete
 **Status:** Done
@@ -8118,6 +8184,66 @@ combinators (`.take(n)`).
 
 **Related:** F-sim-db-impl, F-tab-modify-unchk
 
+#### F-tab-row-crc — Per-row CRC with XOR table aggregation for incremental checksums
+**Status:** Todo
+
+Add per-row incremental CRC support to tabulosity tables, with table-level XOR
+aggregation for cheap whole-table checksumming.
+
+**Mechanism:**
+
+Each row stores an `Option<u32>` CRC of its serialized content. Each table maintains
+a running XOR of all its row CRCs, also as `Option<u32>`. Both start as `None` —
+the system is inert until the first checksum is requested.
+
+**Initial state (no checksum requested yet):** All row CRCs are `None`, the table
+running XOR is `None`, and the dirty `Vec<PK>` is empty. No CRC work happens during
+normal gameplay until the first checksum request triggers a full initial computation.
+
+**Steady-state mutation flow:**
+
+1. Row is modified. If `row.crc` is `Some(old)`, XOR `old` out of the table's running
+   hash and push the row's PK onto the table's dirty `Vec<PK>`. Set `row.crc = None`.
+2. If `row.crc` is already `None`, the row is already dirty — no-op (no duplicate
+   pushed to the dirty Vec, no XOR adjustment needed).
+
+**Checksum request flow:**
+
+1. If the table running XOR is `None` (first checksum ever): compute CRC for every row,
+   store in `row.crc`, XOR them all together into the running hash, clear dirty Vec.
+2. Otherwise: drain the dirty `Vec<PK>`, recompute CRC for each referenced row, XOR
+   new values into the running hash. The Vec is small — proportional to rows changed
+   since last checkpoint.
+
+The dirty Vec uses `Vec<PK>` rather than a `HashSet`/`BTreeSet` — cheaper (no hashing
+or tree balancing), and duplicates cannot occur because the `Option<u32>` check in step
+1 prevents pushing a PK that's already dirty.
+
+**XOR properties and tradeoffs:**
+
+- Order-independent: row insertion/deletion order doesn't matter.
+- Weak against correlated errors (two bit-flips can cancel), but sufficient for
+  desync detection between sims that should be identical — not guarding against
+  adversarial corruption.
+- Table-level XOR enables O(1) table hash retrieval at checksum time for clean
+  tables, and O(changed_rows) for tables with mutations.
+
+**Diagnostic value:** When a desync is detected, the table-level hashes immediately
+narrow down which table(s) diverged. Row-level CRCs can then pinpoint the exact
+divergent row(s) without transmitting full state.
+
+**Open questions:**
+- CRC width: 32-bit is cheap and sufficient for XOR aggregation, but 16-bit per row
+  would halve storage overhead at the cost of higher collision risk.
+- Integration with tabulosity's derive macro — the CRC and XOR bookkeeping should be
+  automatic, not hand-rolled per table.
+- Compound PK tables pay a clone cost per dirty-Vec push. Likely negligible since
+  high-churn tables (creatures, items, tasks) have simple integer PKs, and compound-PK
+  tables (opinions, relationships) change less frequently per row.
+
+**Blocks:** B-fast-checksum
+**Related:** F-mp-checksums
+
 #### F-tab-schema-evol — Schema evolution: custom migrations
 **Status:** Todo
 
@@ -8131,7 +8257,7 @@ between tables). The SchemaSnapshot path is slower and only used when a migratio
 explicitly requires it; otherwise skipped. High complexity — defer until closer
 to beta. **Draft:** `docs/drafts/schema_migrations.md`
 
-**Related:** F-save-load, F-sim-db-impl, F-tab-schema-ver
+**Related:** F-save-load, F-sim-db-impl, F-tab-binary-serde, F-tab-schema-ver
 
 #### F-tab-schema-ver — Schema versioning fundamentals
 **Status:** Done
@@ -8237,13 +8363,15 @@ The key insight is that most of the sim state doesn't change between checksum in
 
 - **Voxel world:** Hash per-chunk. Each chunk maintains a dirty flag; when any voxel in the chunk changes, mark it dirty. At checksum time, only re-hash dirty chunks and combine with cached hashes for clean chunks. The voxel world is the single largest data structure and benefits most from this.
 
-- **Database tables (tabulosity):** Each table could maintain a running hash that's updated incrementally on insert/update/delete. Alternatively, hash per-table at checksum time but only re-hash tables with a dirty flag. Many tables (species config, nav graph structure) rarely change during gameplay.
+- **Database tables (tabulosity):** Per-table dirty flags are too coarse-grained for a mature game — many tables receive frequent small updates (creature positions, task state, opinions) and would be perpetually dirty. Instead, use per-row CRC with XOR table aggregation (see F-tab-row-crc). This makes checksum cost proportional to changed rows, not total rows or total dirty tables.
 
 - **Other state:** Tick counter, PRNG state, event queue — these are small and cheap to hash directly.
 
 The total state is too large to ever want to iterate over during ordinary gameplay. Full-state serialization should only happen on save/load, not during tick processing.
 
 **What this unblocks:** Re-enabling multiplayer desync detection. Currently disabled by B-local-relay.
+
+**Blocked by:** F-tab-row-crc
 
 #### B-local-relay — Singleplayer must launch the real relay (on localhost), not use a fake tick-pacing LocalRelay
 **Status:** Done
@@ -8335,7 +8463,7 @@ mismatch. The GDExtension bridge (`sim_bridge.rs`) sends checksums
 automatically every `CHECKSUM_INTERVAL_TICKS` (1000 ticks = 1 sim-second)
 after applying turns.
 
-**Related:** F-multiplayer
+**Related:** F-multiplayer, F-tab-row-crc
 
 #### F-mp-integ-test — Multiplayer integration test harness
 **Status:** Done · **Phase:** 8+ · **Refs:** §4
@@ -8359,7 +8487,7 @@ flushing during the transfer, and forwards it to the joining player.
 Pending joiner is excluded from checksum comparisons. Only one mid-game
 join can be in flight at a time.
 
-**Related:** F-mp-reconnect, F-multiplayer, F-save-load
+**Related:** F-compact-save, F-mp-reconnect, F-multiplayer, F-save-load
 
 #### F-mp-reconnect — Multiplayer reconnection after disconnect
 **Status:** Todo · **Phase:** 8+ · **Refs:** §4
