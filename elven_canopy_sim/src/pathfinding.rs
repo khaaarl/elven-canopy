@@ -105,7 +105,7 @@ pub enum PathLenLimit {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkBudget {
     /// Callee picks a reasonable budget derived from the resolved path
-    /// length limit and graph type. Nav graph: `path_len * 30`. Flight:
+    /// length limit and graph type. Ground: `path_len * 30`. Flight:
     /// `path_len * 100`. Nearest-among-N: multiply by `1 + isqrt(N)`.
     Auto,
     /// Exact node-expansion cap.
@@ -1194,7 +1194,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_limits_auto_single_target_navgraph() {
+    fn resolve_limits_auto_single_target_ground() {
         let opts = PathOpts::default();
         // manhattan=10 → path_len = 10*3 + 100 = 130, work = 130*30 = 3900
         let r = resolve_limits(&opts, 10, false, 1);

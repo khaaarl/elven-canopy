@@ -56,9 +56,9 @@ pub const FACE_OFFSETS: [(i32, i32, i32); 6] = [
 /// places the anchor at `max_surface + 1` and only the highest column(s)
 /// have solid directly at y-1.
 ///
-/// **Climber support (any face-adjacent solid — forward-compatible):**
-/// No large climbers exist yet (only elephants and trolls, both ground-only),
-/// but the rules are designed to support them when they arrive. The same
+/// **Climber support (any face-adjacent solid):**
+/// Large climbers exist (trolls have `climb_ticks_per_voxel`), so the climber
+/// support rules are actively used, not just forward-compatible. The same
 /// 3-of-4 / 1+2 thresholds apply, but each column counts as supported if
 /// ANY of its 6 face neighbors at the check depth is solid. The pathfinder's
 /// edge-type filter prevents non-climbers from reaching climbing positions.
@@ -129,7 +129,7 @@ pub fn footprint_walkable(
     }
 
     // --- Climber: count columns with ANY face-adjacent solid at y-1 ---
-    // (No large climbers exist yet, but this is forward-compatible design.)
+    // Large climbers exist (trolls have climb_ticks_per_voxel), so this path is actively used.
     let mut face_support = 0u32;
     for dx in 0..footprint[0] as i32 {
         for dz in 0..footprint[2] as i32 {
@@ -1069,5 +1069,97 @@ mod tests {
             );
             assert_eq!(n.y, 6, "All neighbors should be at y=6 on flat ground");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // derive_edge_type tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_derive_edge_type_trunk_vertical_vs_horizontal() {
+        // Trunk/Trunk with different Y → TrunkClimb.
+        let a = VoxelCoord::new(5, 6, 5);
+        let b = VoxelCoord::new(5, 7, 5);
+        assert_eq!(
+            derive_edge_type(VoxelType::Trunk, VoxelType::Trunk, a, b),
+            EdgeType::TrunkClimb,
+            "Trunk-to-Trunk with different Y should be TrunkClimb"
+        );
+        // Trunk/Trunk with same Y → TrunkCircumference.
+        let c = VoxelCoord::new(6, 6, 5);
+        assert_eq!(
+            derive_edge_type(VoxelType::Trunk, VoxelType::Trunk, a, c),
+            EdgeType::TrunkCircumference,
+            "Trunk-to-Trunk with same Y should be TrunkCircumference"
+        );
+    }
+
+    #[test]
+    fn test_derive_edge_type_dirt_trunk_boundary() {
+        let a = VoxelCoord::new(5, 6, 5);
+        let b = VoxelCoord::new(6, 6, 5);
+        assert_eq!(
+            derive_edge_type(VoxelType::Dirt, VoxelType::Trunk, a, b),
+            EdgeType::GroundToTrunk,
+            "Dirt-to-Trunk should be GroundToTrunk"
+        );
+        assert_eq!(
+            derive_edge_type(VoxelType::Trunk, VoxelType::Dirt, b, a),
+            EdgeType::GroundToTrunk,
+            "Trunk-to-Dirt should also be GroundToTrunk"
+        );
+    }
+
+    #[test]
+    fn test_derive_edge_type_ladder_transitions() {
+        let a = VoxelCoord::new(5, 6, 5);
+        let b = VoxelCoord::new(6, 6, 5);
+        assert_eq!(
+            derive_edge_type(VoxelType::WoodLadder, VoxelType::Dirt, a, b),
+            EdgeType::BranchWalk,
+            "WoodLadder-to-Dirt should be BranchWalk (stepping on/off ladder)"
+        );
+        assert_eq!(
+            derive_edge_type(VoxelType::Dirt, VoxelType::RopeLadder, a, b),
+            EdgeType::BranchWalk,
+            "Dirt-to-RopeLadder should be BranchWalk (stepping on/off ladder)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // is_edge_blocked_by_faces tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_is_edge_blocked_by_faces_no_faces() {
+        let fd = no_faces();
+        let a = VoxelCoord::new(5, 6, 5);
+        let b = VoxelCoord::new(6, 6, 5);
+        assert!(
+            !is_edge_blocked_by_faces(&fd, a, b),
+            "Empty face_data should never block an edge"
+        );
+        // Also test diagonal.
+        let c = VoxelCoord::new(6, 7, 6);
+        assert!(
+            !is_edge_blocked_by_faces(&fd, a, c),
+            "Empty face_data should never block a diagonal edge"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // derive_surface_type tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_derive_surface_type_standing_on_dirt() {
+        let world = ground_world(16, 16, 16, 5);
+        let fd = no_faces();
+        // Air voxel at y=6 above Dirt at y=5 → surface type is Dirt.
+        assert_eq!(
+            derive_surface_type(&world, &fd, VoxelCoord::new(5, 6, 5)),
+            VoxelType::Dirt,
+            "Air above Dirt should derive surface type Dirt"
+        );
     }
 }

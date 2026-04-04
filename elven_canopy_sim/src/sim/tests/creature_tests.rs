@@ -2420,9 +2420,9 @@ fn test_large_creature_landing_near_world_edge() {
 
     // Verify no panic occurred. The creature either landed somewhere or
     // remains (if no valid landing position exists near the edge).
-    let creature = sim.db.creatures.get(&elephant_id).unwrap();
+    // If we got here without panic, the bounds check works. Verify creature still exists.
     assert!(
-        creature.vital_status == VitalStatus::Alive || creature.vital_status != VitalStatus::Alive,
-        "Creature should exist without panic"
+        sim.db.creatures.get(&elephant_id).is_some(),
+        "Creature should still exist after gravity near world edge"
     );
 }

@@ -35,11 +35,6 @@ pub enum EdgeType {
 /// are represented without floats. A power of two for cheap multiply/divide.
 pub const DIST_SCALE: u32 = 1024;
 
-/// Heuristic scale for A*: `DIST_SCALE / sqrt(3)` rounded down.
-/// Ensures Manhattan-based heuristic remains admissible when edge costs
-/// are scaled by `DIST_SCALE`.
-pub const HEURISTIC_SCALE: i64 = 591;
-
 /// Compute a scaled integer Euclidean distance from coordinate deltas.
 /// Returns `floor(sqrt(dx² + dy² + dz²) * DIST_SCALE)`, computed with
 /// integer square root for determinism (no floats).
