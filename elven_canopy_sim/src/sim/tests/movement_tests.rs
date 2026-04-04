@@ -4518,3 +4518,196 @@ fn large_creature_unsupported_when_no_footprint_column_has_solid_below() {
         "elephant with no solid below in any footprint column should be unsupported"
     );
 }
+
+// ===================================================================
+// Large creature grounding bugs
+// ===================================================================
+
+/// Reproduce bug: elephants, trolls (2×2×2 footprint) wander into the sky
+/// on flat terrain. Elephants then fall and take damage. Ground creatures
+/// should never exceed floor_y + 1 on flat terrain.
+#[test]
+fn test_large_creatures_stay_grounded_on_flat_terrain() {
+    let mut sim = flat_world_sim(fresh_test_seed());
+    let floor_y = sim.config.floor_y;
+    let walking_y = floor_y + 1;
+
+    // Spawn 3 elephants, 3 trolls, 3 deer (control).
+    let mut elephants = Vec::new();
+    for _ in 0..3 {
+        elephants.push(spawn_creature(&mut sim, Species::Elephant));
+    }
+    let mut trolls = Vec::new();
+    for _ in 0..3 {
+        trolls.push(spawn_creature(&mut sim, Species::Troll));
+    }
+    let mut deer = Vec::new();
+    for _ in 0..3 {
+        deer.push(spawn_creature(&mut sim, Species::Deer));
+    }
+
+    let all_ids: Vec<(CreatureId, &str)> = elephants
+        .iter()
+        .map(|&id| (id, "Elephant"))
+        .chain(trolls.iter().map(|&id| (id, "Troll")))
+        .chain(deer.iter().map(|&id| (id, "Deer")))
+        .collect();
+
+    let mut violations: Vec<String> = Vec::new();
+
+    // Run 100 turns of 500 ticks each.
+    for turn in 0..100 {
+        let target_tick = sim.tick + 500;
+        sim.step(&[], target_tick);
+
+        // Check every creature's y position after each turn.
+        for &(id, species_name) in &all_ids {
+            if let Some(creature) = sim.db.creatures.get(&id) {
+                let y = creature.position.min.y;
+                if y > walking_y {
+                    violations.push(format!(
+                        "turn {turn}, tick {}: {species_name} ({id:?}) at y={y} (walking_y={walking_y})",
+                        sim.tick
+                    ));
+                }
+            }
+            // Creature may have died from fall damage — that's also evidence of the bug.
+        }
+    }
+
+    if !violations.is_empty() {
+        eprintln!("=== GROUNDING VIOLATIONS ({} total) ===", violations.len());
+        for v in &violations {
+            eprintln!("  {v}");
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "Ground creatures should never exceed walking_y={walking_y} on flat terrain, \
+         but got {} violations (see stderr for details)",
+        violations.len()
+    );
+}
+
+/// Reproduce bug: trolls climb into the air away from surfaces (trunk).
+/// When a troll is near the trunk, it should stay adjacent to solid voxels
+/// or on the ground — never floating in empty air.
+#[test]
+fn test_troll_stays_on_trunk_while_climbing() {
+    let mut sim = test_sim(legacy_test_seed());
+    let floor_y = sim.config.floor_y;
+    let walking_y = floor_y + 1;
+
+    // Find a trunk voxel, then find an adjacent air position where a 2×2×2
+    // footprint fits.
+    let trunk_pos = {
+        let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
+        tree.trunk_voxels
+            .first()
+            .copied()
+            .expect("test_sim should have a tree with trunk voxels")
+    };
+
+    // Search for an air position adjacent to trunk where 2×2×2 footprint fits.
+    let spawn_pos = {
+        let offsets = [
+            (-2, 0, 0),
+            (1, 0, 0),
+            (0, 0, -2),
+            (0, 0, 1),
+            (-2, 0, -1),
+            (1, 0, -1),
+            (-1, 0, -2),
+            (-1, 0, 1),
+        ];
+        let mut found = None;
+        for &(dx, dy, dz) in &offsets {
+            let pos = VoxelCoord::new(trunk_pos.x + dx, trunk_pos.y + dy, trunk_pos.z + dz);
+            // Check that all 8 voxels of the 2×2×2 footprint are air.
+            let all_air = (0..2).all(|fx| {
+                (0..2).all(|fy| {
+                    (0..2).all(|fz| {
+                        let p = VoxelCoord::new(pos.x + fx, pos.y + fy, pos.z + fz);
+                        sim.world.get(p) == VoxelType::Air
+                    })
+                })
+            });
+            if all_air {
+                found = Some(pos);
+                break;
+            }
+        }
+        found.expect("should find air position adjacent to trunk for 2x2x2 footprint")
+    };
+
+    // Spawn a troll and teleport it to the position near the trunk.
+    let troll_id = spawn_creature(&mut sim, Species::Troll);
+    {
+        let mut troll = sim.db.creatures.get(&troll_id).unwrap();
+        troll.position = VoxelBox::from_anchor(spawn_pos, [2, 2, 2]);
+        sim.db.update_creature(troll).unwrap();
+    }
+
+    let mut violations: Vec<String> = Vec::new();
+
+    // Run 100 turns of 500 ticks.
+    for turn in 0..100 {
+        let target_tick = sim.tick + 500;
+        sim.step(&[], target_tick);
+
+        if let Some(troll) = sim.db.creatures.get(&troll_id) {
+            let pos = troll.position.min;
+            let y = pos.y;
+
+            // If on the ground, that's fine.
+            if y <= walking_y {
+                continue;
+            }
+
+            // If above ground, check that at least one of the 8 footprint
+            // voxels has a face-neighbor that is solid (i.e., adjacent to a
+            // surface).
+            let has_adjacent_solid = (0..2).any(|fx| {
+                (0..2).any(|fy| {
+                    (0..2).any(|fz| {
+                        let p = VoxelCoord::new(pos.x + fx, pos.y + fy, pos.z + fz);
+                        // Check the 6 face neighbors.
+                        let neighbors = [
+                            VoxelCoord::new(p.x - 1, p.y, p.z),
+                            VoxelCoord::new(p.x + 1, p.y, p.z),
+                            VoxelCoord::new(p.x, p.y - 1, p.z),
+                            VoxelCoord::new(p.x, p.y + 1, p.z),
+                            VoxelCoord::new(p.x, p.y, p.z - 1),
+                            VoxelCoord::new(p.x, p.y, p.z + 1),
+                        ];
+                        neighbors.iter().any(|&n| sim.world.get(n).is_solid())
+                    })
+                })
+            });
+
+            if !has_adjacent_solid {
+                violations.push(format!(
+                    "turn {turn}, tick {}: troll at ({}, {}, {}) — floating in air with no adjacent solid",
+                    sim.tick, pos.x, y, pos.z
+                ));
+            }
+        }
+        // Troll may have died — also evidence of the bug if it fell.
+    }
+
+    if !violations.is_empty() {
+        eprintln!(
+            "=== TROLL FLOATING VIOLATIONS ({} total) ===",
+            violations.len()
+        );
+        for v in &violations {
+            eprintln!("  {v}");
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "Troll should never float in air away from all surfaces, \
+         but got {} violations (see stderr for details)",
+        violations.len()
+    );
+}

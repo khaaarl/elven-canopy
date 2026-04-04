@@ -29,6 +29,20 @@ pub const FACE_OFFSETS: [(i32, i32, i32); 6] = [
     (0, 0, -1),
 ];
 
+/// 4 horizontal face-neighbor offsets (±x, ±z). Used in the climber support
+/// section of `footprint_walkable` instead of `FACE_OFFSETS`. Excludes both
+/// vertical offsets:
+/// - (0, -1, 0): applied at y-1, this reaches y-2, finding the floor solid
+///   even when the creature is far above the floor — the root cause of the
+///   large-creature levitation bug.
+/// - (0, 1, 0): applied at y-1, this reaches y+0 (the creature's own anchor
+///   level), which is always air (the footprint all-air check already passed),
+///   so it never contributes useful information.
+///
+/// Downward support is already handled by the direct-support (y-1) and
+/// deep-support (y-2) checks that precede the climber section.
+const CLIMBER_FACE_OFFSETS: [(i32, i32, i32); 4] = [(1, 0, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1)];
+
 /// Check whether a ground-creature footprint anchored at `anchor` is walkable.
 /// The anchor is the min-corner of the bounding box. This is the **single
 /// authority** for walkability — all code paths use this function.
@@ -128,40 +142,82 @@ pub fn footprint_walkable(
         }
     }
 
-    // --- Climber: count columns with ANY face-adjacent solid at y-1 ---
-    // Large climbers exist (trolls have climb_ticks_per_voxel), so this path is actively used.
-    let mut face_support = 0u32;
-    for dx in 0..footprint[0] as i32 {
-        for dz in 0..footprint[2] as i32 {
-            let below = VoxelCoord::new(anchor.x + dx, anchor.y - 1, anchor.z + dz);
-            if FACE_OFFSETS.iter().any(|&(fx, fy, fz)| {
-                world
-                    .get(VoxelCoord::new(below.x + fx, below.y + fy, below.z + fz))
-                    .is_solid()
-            }) {
-                face_support += 1;
-            }
-        }
-    }
-    if face_support >= 3 {
-        return true;
-    }
-    if face_support >= 1 {
-        let mut deep_face = 0u32;
+    // --- Climber support: body-level adjacency OR below-level face support ---
+    // Large climbers exist (trolls have climb_ticks_per_voxel), so this path
+    // is actively used.
+    //
+    // Two independent checks, either of which grants walkability:
+    //
+    // 1. Body-level adjacency: any footprint voxel with a horizontal face-
+    //    adjacent solid. This is the core "clinging to a surface" check for
+    //    climbing creatures — the creature's body touches a wall, trunk, or
+    //    branch. Uses CLIMBER_FACE_OFFSETS (horizontal only) because:
+    //    - (0,-1,0) from body voxels can reach below the footprint, finding
+    //      the floor even when the creature is far above it (levitation bug).
+    //    - (0,1,0) from the top row reaches above the footprint, not useful
+    //      for support.
+    //
+    // 2. Below-level face support (y-1, y-2) with direct_support >= 1 gate:
+    //    handles positions on partial surfaces like platform edges where not
+    //    all 4 columns have ground directly below, but horizontally adjacent
+    //    columns do. The direct_support >= 1 gate ensures there's at least one
+    //    actual ground column — without it, face support from structures that
+    //    are entirely below the creature (e.g., branch tips at y-1/y-2 with no
+    //    solid at foot level) would allow floating.
+
+    // Check 1: body-level horizontal adjacency.
+    for dy in 0..footprint[1] as i32 {
         for dx in 0..footprint[0] as i32 {
             for dz in 0..footprint[2] as i32 {
-                let deep = VoxelCoord::new(anchor.x + dx, anchor.y - 2, anchor.z + dz);
-                if FACE_OFFSETS.iter().any(|&(fx, fy, fz)| {
+                let body = VoxelCoord::new(anchor.x + dx, anchor.y + dy, anchor.z + dz);
+                if CLIMBER_FACE_OFFSETS.iter().any(|&(fx, fy, fz)| {
                     world
-                        .get(VoxelCoord::new(deep.x + fx, deep.y + fy, deep.z + fz))
+                        .get(VoxelCoord::new(body.x + fx, body.y + fy, body.z + fz))
                         .is_solid()
                 }) {
-                    deep_face += 1;
+                    return true;
                 }
             }
         }
-        if deep_face >= 2 {
+    }
+
+    // Check 2: below-level face support, gated on at least 1 column having
+    // solid directly at y-1. Uses CLIMBER_FACE_OFFSETS (horizontal only) to
+    // avoid the (0,-1,0) offset from y-1 reaching y-2 (the levitation bug).
+    if direct_support >= 1 {
+        let mut face_support = 0u32;
+        for dx in 0..footprint[0] as i32 {
+            for dz in 0..footprint[2] as i32 {
+                let below = VoxelCoord::new(anchor.x + dx, anchor.y - 1, anchor.z + dz);
+                if CLIMBER_FACE_OFFSETS.iter().any(|&(fx, fy, fz)| {
+                    world
+                        .get(VoxelCoord::new(below.x + fx, below.y + fy, below.z + fz))
+                        .is_solid()
+                }) {
+                    face_support += 1;
+                }
+            }
+        }
+        if face_support >= 3 {
             return true;
+        }
+        if face_support >= 1 {
+            let mut deep_face = 0u32;
+            for dx in 0..footprint[0] as i32 {
+                for dz in 0..footprint[2] as i32 {
+                    let deep = VoxelCoord::new(anchor.x + dx, anchor.y - 2, anchor.z + dz);
+                    if CLIMBER_FACE_OFFSETS.iter().any(|&(fx, fy, fz)| {
+                        world
+                            .get(VoxelCoord::new(deep.x + fx, deep.y + fy, deep.z + fz))
+                            .is_solid()
+                    }) {
+                        deep_face += 1;
+                    }
+                }
+            }
+            if deep_face >= 2 {
+                return true;
+            }
         }
     }
     false
