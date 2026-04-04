@@ -23,7 +23,7 @@ const PuppetHelpersScript := preload("res://scripts/puppet_helpers.gd")
 const MAX_MESSAGE_SIZE := 1_048_576  # 1 MB
 ## Autoload names to skip when searching for the main scene.
 ## KEEP IN SYNC with the [autoload] section of project.godot.
-const AUTOLOAD_NAMES := ["GameConfig", "GameSession", "FocusGuard", "PuppetServer"]
+const AUTOLOAD_NAMES := ["GameConfig", "GameSession", "FocusGuard", "PuppetServer", "ModelManager"]
 const DEFAULT_TIMEOUT_SECS := 600
 
 var _server: TCPServer
