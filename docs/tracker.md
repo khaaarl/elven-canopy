@@ -214,6 +214,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-raid-polish          Raid polish: military groups, provisions for long treks
 [ ] F-random-seeds         Parameterized random-seed testing for hardened sim tests
 [ ] F-recipe-any-mat       Any-material recipe parameter support
+[ ] F-remove-navgraph      Remove NavGraph, replace with voxel-direct A*
 [ ] F-rescue               Rescue and stabilize incapacitated creatures
 [ ] F-retire-events        Retire event queue: poll-based heartbeats and periodic systems
 [ ] F-romance              Romantic relationships and courtship
@@ -1809,6 +1810,92 @@ creature resnapping.
 
 A* search with euclidean heuristic over the nav graph. Movement cost
 computed from edge distance and per-species speed config.
+
+#### F-remove-navgraph — Remove NavGraph, replace with voxel-direct A*
+**Status:** Todo
+
+Remove the NavGraph abstraction from elven_canopy_sim and replace ground-creature pathfinding with voxel-direct A*, matching the pattern already used by flying creatures (`astar_fly`).
+
+**What the NavGraph is:** A derived data structure (~4,400 lines in nav.rs, ~1,000 lines of navgraph-specific pathfinding code) that pre-computes all walkable positions and traversable edges from the voxel world, storing them as NavNode/NavEdge arrays with a column-based spatial index. Two instances exist: a 1x1x1 graph for normal creatures and a 2x2x2 graph for large creatures (elephants, trolls). Built from scratch at world generation and load (multi-second parallel BFS), updated incrementally during construction via two near-duplicate ~170-line update methods.
+
+**Why it's being removed:**
+- Redundant derived state that duplicates voxel world information and must be manually kept in sync, with no compiler or runtime enforcement.
+- Persistent source of bugs: dead-node panics (B-dead-node-panic), cross-graph ID confusion (trolls never chasing), large-creature stuck loops (B-large-stuck), hostile detection failures (B-hostile-detect-nav with u32::MAX hack). An active fruit-voxel desync bug was found during investigation (fruit spawn/removal in greenhouse.rs and needs.rs mutates voxels without updating the nav graph).
+- ~285 MB memory footprint (nodes + edges + column index) plus ~30 MB per-pathfind allocation for dense g_score/came_from/closed/depth arrays sized to total node count.
+- Multi-second startup cost requiring rayon parallelism and three separate historical optimization commits.
+- Edge memory leak: edges are appended during incremental updates but never removed, causing monotonic growth over long sessions.
+- Poor cache locality: A* on the graph chases pointers across ~300 MB of heap-fragmented data, while voxel-direct A* achieves spatial locality in ~10-50 KB of working set.
+
+**What replaces it:** Voxel-direct A* for ground creatures, modeled on the existing `astar_fly` implementation. Key components:
+- `astar_ground()`: 26-neighbor expansion on the voxel grid, calling `should_be_nav_node()` for walkability and `derive_surface_type()`/`derive_edge_type()` for traversal cost differentiation. Uses BTreeMap (or HashMap) for visited sets instead of dense arrays.
+- `find_nearest_walkable()`: expanding-box search on voxel grid, replacing `find_nearest_node()`.
+- Direct `should_be_nav_node()` calls replacing `node_at()`.
+- Floor-level voxel scan replacing `ground_node_ids()`.
+- Voxel-grid BFS replacing `spread_destinations()`.
+- Footprint clearance checks at search time (already proven for 2x2x2 wyverns) replacing the dual-graph pattern.
+
+**Existence proof:** `astar_fly` and `nearest_astar_fly` in pathfinding.rs already implement voxel-direct A* for flying creatures with footprint clearance, BTreeMap visited sets, and work-budget caps. Ground A* is a variant with different neighbor validation logic (walkability instead of flyability) and edge-type cost differentiation.
+
+**Key files affected:**
+- `elven_canopy_sim/src/nav.rs` (~4,400 lines) -- primary removal target
+- `elven_canopy_sim/src/pathfinding.rs` (~2,960 lines) -- remove astar_navgraph/nearest_astar_navgraph, add astar_ground/nearest_ground
+- `elven_canopy_sim/src/types.rs` -- remove NavNodeId, NavEdgeId
+- `elven_canopy_sim/src/sim/mod.rs` -- remove nav_graph/large_nav_graph from SimState, simplify find_path/find_nearest, remove graph_for_species dispatch
+- `elven_canopy_sim/src/sim/movement.rs` -- replace node_at/find_edge_to/ground_move_one_step
+- `elven_canopy_sim/src/sim/combat.rs` -- replace find_nearest_node for target snapping
+- `elven_canopy_sim/src/sim/construction.rs` -- remove update_after_voxel_solidified/update_after_building_voxel_set/resnap_removed_nodes
+- `elven_canopy_sim/src/sim/logistics.rs` -- replace ~12 find_nearest_node call sites
+- `elven_canopy_sim/src/sim/activation.rs` -- replace find_nearest_node for task location
+- `elven_canopy_sim/src/sim/creature.rs` -- replace find_nearest_ground_node for spawn placement
+- `elven_canopy_sim/src/sim/needs.rs` -- replace find_nearest_node for fruit/bed/dining hall
+- `elven_canopy_sim/src/sim/raid.rs` -- replace ground_node_ids for spawn selection
+- `elven_canopy_sim/src/sim/grazing.rs` -- replace Dijkstra on nav graph with voxel-grid flood-fill
+- `elven_canopy_sim/src/sim/crafting.rs` -- replace find_nearest_node accessibility check
+- `elven_canopy_sim/src/worldgen.rs` -- remove build_nav_graph/build_large_nav_graph calls
+- `elven_canopy_gdext/src/sim_bridge.rs` -- replace debug visualization and placement snapping
+- ~16 test files with ~232 nav graph references (mostly mechanical: remove nav graph construction, replace NavNodeId usage)
+
+**Phased implementation plan:**
+
+Phase 1 -- Build replacement infrastructure:
+- Extract walkability predicates into a standalone module (walkability.rs or similar). The functions `should_be_nav_node`, `derive_surface_type`, `derive_edge_type`, `is_edge_blocked_by_faces` are already free functions in nav.rs; they need to be preserved and moved.
+- Write `astar_ground()` modeled on `astar_fly` with ground-creature walkability checks, edge-type cost differentiation, species allowed_edge_types filtering, and footprint clearance for large creatures.
+- Implement `find_nearest_walkable()` as an expanding-box search on the voxel grid.
+- Implement voxel-grid BFS for `spread_destinations`.
+- Write a temporary validation test: for a generated world, confirm that every NavGraph node position passes `should_be_nav_node()` and vice versa.
+
+Phase 2 -- Migrate callers:
+- Replace `find_path`/`find_nearest` dispatch in sim/mod.rs to use voxel-direct functions.
+- Replace all `find_nearest_node()` call sites (~30+) with `find_nearest_walkable()`.
+- Replace `node_at()` calls with direct `should_be_nav_node()`.
+- Replace `ground_node_ids()` with floor-level scan.
+- Replace grazing Dijkstra with voxel-grid equivalent.
+- Update movement.rs ground_move_one_step to work without NavEdge.
+- Update gdext bridge debug visualization and placement snapping.
+- Keep EdgeType and traversal cost selection logic -- these are the valuable semantic concepts.
+
+Phase 3 -- Remove NavGraph:
+- Remove `nav_graph` and `large_nav_graph` from SimState.
+- Remove NavGraph, NavNode, NavEdge, NavNodeId, NavEdgeId types.
+- Remove build_nav_graph, build_large_nav_graph, all incremental update methods.
+- Remove the temporary validation test.
+- Simplify rebuild_transient_state (no graph rebuild on load).
+- Update all test files to remove nav graph construction and NavNodeId references.
+
+**What to watch out for:**
+- The edge-type cost model (walk vs climb vs ladder speed) must be preserved. Use `derive_surface_type()` and `derive_edge_type()` at pathfinding time instead of pre-computing.
+- Species `allowed_edge_types` filtering must happen inline during neighbor expansion.
+- The `CreaturePath` already stores `Vec<VoxelCoord>` (not `Vec<NavNodeId>`), which makes migration easier -- path storage is unaffected.
+- `find_nearest_walkable` frequency: logistics, combat, needs, and activation call `find_nearest_node` frequently. If profiling shows this is hot, a lightweight walkability column index (much simpler than NavGraph -- no edges, no free-slot management) can be added.
+- BTreeMap vs flat array for A* visited sets: BTreeMap is deterministic and allocates proportionally; a flat array indexed by linearized voxel coord gives O(1) but requires clearing. Start with BTreeMap (matching astar_fly), optimize if needed.
+- The grazing Dijkstra needs care: it currently does cost-weighted shortest-path search, not just BFS. The voxel-grid replacement must preserve cost-weighted behavior.
+- Movement code in ground_move_one_step currently resolves edge types from the nav graph to determine movement speed. This must derive edge type on-the-fly from the voxel types at source and destination.
+
+**Bugs fixed by this work:**
+- Active fruit-voxel desync: fruit spawn (greenhouse.rs) and fruit eating (needs.rs) mutate voxels without nav graph updates, leaving stale nodes/missing nodes. Eliminated because there is no secondary structure to desync.
+- Edge memory leak: nav graph edges grow monotonically during incremental updates. Eliminated because there are no stored edges.
+- Dead-node panic class: creatures referencing removed nav graph slots. Eliminated because creature positions are VoxelCoords, which always map to valid voxel lookups.
+- Cross-graph ID confusion class: passing NavNodeIds between the 1x1x1 and 2x2x2 graphs. Eliminated because there are no separate graphs or ID spaces.
 
 #### F-unified-pathing — Unified pathfinding API for ground (nav graph) and flying (voxel grid) creatures
 **Status:** Done · **Refs:** §4
