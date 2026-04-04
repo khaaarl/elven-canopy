@@ -232,7 +232,7 @@ pub struct PathResult {
 /// Combines the four per-species ticks-per-voxel values and the optional
 /// edge-type filter into a single struct to reduce argument lists. Construct
 /// from `SpeciesData` (raw speeds) or `CreatureMoveSpeeds` (stat-modified).
-pub struct NavGraphSpeeds<'a> {
+pub struct GroundSpeeds<'a> {
     pub walk_tpv: u64,
     pub climb_tpv: Option<u64>,
     pub wood_ladder_tpv: Option<u64>,
@@ -240,7 +240,7 @@ pub struct NavGraphSpeeds<'a> {
     pub allowed_edges: Option<&'a [EdgeType]>,
 }
 
-impl<'a> NavGraphSpeeds<'a> {
+impl<'a> GroundSpeeds<'a> {
     /// Build from raw species data fields.
     pub fn from_species(species_data: &'a crate::species::SpeciesData) -> Self {
         Self {
@@ -307,27 +307,27 @@ pub const NEIGHBOR_OFFSETS: [(i32, i32, i32, u64); 26] = [
     (1, 1, 1, 1773),
 ];
 
-/// Entry in the flight A* open set (min-heap via reversed ordering).
-struct FlightOpenEntry {
+/// Entry in the A* open set (min-heap via reversed ordering).
+struct OpenEntry {
     pos: VoxelCoord,
     f_score: i64,
 }
 
-impl PartialEq for FlightOpenEntry {
+impl PartialEq for OpenEntry {
     fn eq(&self, other: &Self) -> bool {
         self.f_score == other.f_score && self.pos == other.pos
     }
 }
 
-impl Eq for FlightOpenEntry {}
+impl Eq for OpenEntry {}
 
-impl PartialOrd for FlightOpenEntry {
+impl PartialOrd for OpenEntry {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for FlightOpenEntry {
+impl Ord for OpenEntry {
     fn cmp(&self, other: &Self) -> Ordering {
         // Reversed for min-heap: smallest f_score is "greatest".
         // Tiebreaker: VoxelCoord ordering for determinism.
@@ -433,7 +433,7 @@ pub fn astar_fly(
 
     g_score.insert(start, 0);
     depth.insert(start, 0);
-    open.push(FlightOpenEntry {
+    open.push(OpenEntry {
         pos: start,
         f_score: octile_heuristic_3d(start, goal, flight_tpv),
     });
@@ -441,7 +441,7 @@ pub fn astar_fly(
     let mut expanded: u32 = 0;
     let mut hit_path_len_limit = false;
 
-    while let Some(FlightOpenEntry { pos, f_score }) = open.pop() {
+    while let Some(OpenEntry { pos, f_score }) = open.pop() {
         if pos == goal {
             // Reconstruct path.
             let mut path = vec![goal];
@@ -504,7 +504,7 @@ pub fn astar_fly(
                 came_from.insert(neighbor, pos);
                 depth.insert(neighbor, current_depth + 1);
                 let h = octile_heuristic_3d(neighbor, goal, flight_tpv);
-                open.push(FlightOpenEntry {
+                open.push(OpenEntry {
                     pos: neighbor,
                     f_score: tentative_g + h,
                 });
@@ -573,12 +573,12 @@ pub fn nearest_astar_fly(
     g_score.insert(start, 0);
     depth.insert(start, 0);
 
-    let mut open_sets: Vec<BinaryHeap<FlightOpenEntry>> = candidate_indices
+    let mut open_sets: Vec<BinaryHeap<OpenEntry>> = candidate_indices
         .iter()
         .map(|&i| {
             let mut heap = BinaryHeap::new();
             let h = octile_heuristic_3d(start, candidates[i], flight_tpv);
-            heap.push(FlightOpenEntry {
+            heap.push(OpenEntry {
                 pos: start,
                 f_score: h,
             });
@@ -704,7 +704,7 @@ pub fn nearest_astar_fly(
                     {
                         continue;
                     }
-                    heap.push(FlightOpenEntry {
+                    heap.push(OpenEntry {
                         pos: neighbor,
                         f_score: f,
                     });
@@ -750,7 +750,7 @@ pub fn nearest_fly(
 /// Compute the ticks-per-voxel for traversing an edge of the given type.
 /// Returns `None` if the species cannot traverse this edge type (e.g., a
 /// ground-only creature encountering a climb edge with no climb speed).
-fn tpv_for_edge_type(edge_type: EdgeType, speeds: &NavGraphSpeeds) -> Option<u64> {
+fn tpv_for_edge_type(edge_type: EdgeType, speeds: &GroundSpeeds) -> Option<u64> {
     match edge_type {
         EdgeType::TrunkClimb | EdgeType::GroundToTrunk => speeds.climb_tpv,
         EdgeType::WoodLadderClimb => speeds.wood_ladder_tpv,
@@ -778,7 +778,7 @@ pub fn astar_ground(
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     start: VoxelCoord,
     goal: VoxelCoord,
-    speeds: &NavGraphSpeeds,
+    speeds: &GroundSpeeds,
     opts: &PathOpts,
     footprint: [u8; 3],
 ) -> Result<PathResult, PathError> {
@@ -807,7 +807,7 @@ pub fn astar_ground(
 
     g_score.insert(start, 0);
     depth.insert(start, 0);
-    open.push(FlightOpenEntry {
+    open.push(OpenEntry {
         pos: start,
         f_score: octile_heuristic_3d(start, goal, walk_tpv),
     });
@@ -815,7 +815,7 @@ pub fn astar_ground(
     let mut expanded: u32 = 0;
     let mut hit_path_len_limit = false;
 
-    while let Some(FlightOpenEntry { pos, f_score }) = open.pop() {
+    while let Some(OpenEntry { pos, f_score }) = open.pop() {
         if pos == goal {
             // Reconstruct path.
             let mut path = vec![goal];
@@ -888,7 +888,7 @@ pub fn astar_ground(
                 came_from.insert(neighbor, pos);
                 depth.insert(neighbor, current_depth + 1);
                 let h = octile_heuristic_3d(neighbor, goal, walk_tpv);
-                open.push(FlightOpenEntry {
+                open.push(OpenEntry {
                     pos: neighbor,
                     f_score: tentative_g + h,
                 });
@@ -916,7 +916,7 @@ pub fn nearest_astar_ground(
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     start: VoxelCoord,
     candidates: &[VoxelCoord],
-    speeds: &NavGraphSpeeds,
+    speeds: &GroundSpeeds,
     opts: &PathOpts,
     footprint: [u8; 3],
 ) -> Result<VoxelCoord, PathError> {
@@ -956,12 +956,12 @@ pub fn nearest_astar_ground(
     g_score.insert(start, 0);
     depth.insert(start, 0);
 
-    let mut open_sets: Vec<BinaryHeap<FlightOpenEntry>> = candidate_indices
+    let mut open_sets: Vec<BinaryHeap<OpenEntry>> = candidate_indices
         .iter()
         .map(|&i| {
             let mut heap = BinaryHeap::new();
             let h = octile_heuristic_3d(start, candidates[i], walk_tpv);
-            heap.push(FlightOpenEntry {
+            heap.push(OpenEntry {
                 pos: start,
                 f_score: h,
             });
@@ -1102,7 +1102,7 @@ pub fn nearest_astar_ground(
                     {
                         continue;
                     }
-                    heap.push(FlightOpenEntry {
+                    heap.push(OpenEntry {
                         pos: neighbor,
                         f_score: f,
                     });
@@ -1132,7 +1132,7 @@ pub fn nearest_ground(
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     start: VoxelCoord,
     candidates: &[VoxelCoord],
-    speeds: &NavGraphSpeeds,
+    speeds: &GroundSpeeds,
     opts: &PathOpts,
     footprint: [u8; 3],
 ) -> Result<VoxelCoord, PathError> {
@@ -1146,8 +1146,8 @@ mod tests {
     use crate::world::VoxelWorld;
 
     /// Default speeds for tests: walk_tpv=1, climb_tpv=2, no ladders, all edges.
-    fn test_speeds() -> NavGraphSpeeds<'static> {
-        NavGraphSpeeds {
+    fn test_speeds() -> GroundSpeeds<'static> {
+        GroundSpeeds {
             walk_tpv: 1,
             climb_tpv: Some(2),
             wood_ladder_tpv: None,
@@ -1157,8 +1157,8 @@ mod tests {
     }
 
     /// Speeds with an edge filter.
-    fn test_speeds_filtered(allowed: &[EdgeType]) -> NavGraphSpeeds<'_> {
-        NavGraphSpeeds {
+    fn test_speeds_filtered(allowed: &[EdgeType]) -> GroundSpeeds<'_> {
+        GroundSpeeds {
             walk_tpv: 1,
             climb_tpv: Some(2),
             wood_ladder_tpv: None,

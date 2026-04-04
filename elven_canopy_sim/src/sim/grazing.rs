@@ -63,8 +63,8 @@ impl SimState {
         }
 
         // Custom Dijkstra over the voxel grid that stops at the first grassy
-        // position. Uses 26-neighbor expansion with walkability and face-
-        // blocking checks.
+        // position. Uses `ground_neighbors` for neighbor expansion (handles
+        // walkability, face-blocking, and large-creature surface snapping).
         let mut dist: std::collections::BTreeMap<VoxelCoord, u64> =
             std::collections::BTreeMap::new();
         let mut heap = std::collections::BinaryHeap::new();
@@ -83,24 +83,11 @@ impl SimState {
                 return Some(surface_below);
             }
 
-            // Expand 26-neighbors.
-            for &(dx, dy, dz, dist_scaled) in &crate::pathfinding::NEIGHBOR_OFFSETS {
-                let neighbor = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
-                if !self.world.in_bounds(neighbor) {
-                    continue;
-                }
-                if !crate::walkability::footprint_walkable(
-                    &self.world,
-                    &self.face_data,
-                    neighbor,
-                    footprint,
-                ) {
-                    continue;
-                }
-                if crate::walkability::is_edge_blocked_by_faces(&self.face_data, pos, neighbor) {
-                    continue;
-                }
-
+            // Expand neighbors via ground_neighbors (handles walkability,
+            // face-blocking, and large-creature surface snapping).
+            for (neighbor, dist_scaled) in
+                crate::walkability::ground_neighbors(&self.world, &self.face_data, pos, footprint)
+            {
                 // Derive edge type to check species restrictions and speed.
                 let from_surface =
                     crate::walkability::derive_surface_type(&self.world, &self.face_data, pos);

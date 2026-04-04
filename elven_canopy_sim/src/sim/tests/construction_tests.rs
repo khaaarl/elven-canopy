@@ -2266,7 +2266,7 @@ fn test_cancel_carve_restores_originals() {
 }
 
 #[test]
-fn test_carve_nav_graph_update() {
+fn test_carve_updates_walkability() {
     let mut config = test_config();
     config.carve_work_ticks_per_voxel = 1;
     let mut sim = SimState::with_config(legacy_test_seed(), config);

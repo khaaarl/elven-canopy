@@ -625,12 +625,11 @@ impl SimState {
     /// Check whether a creature is supported at its current position.
     /// Support rules:
     /// - Flying: always supported (exempt from gravity).
-    /// - 1x1 climber (`ground_only` = false): supported if the position is
-    ///   walkable.
-    /// - 1x1 ground-only (`ground_only` = true): supported if the position is
-    ///   walkable AND the voxel below is solid.
-    /// - 2x2x2 ground-only: supported if the position is walkable AND at
-    ///   least one column in the footprint has solid at y−1.
+    /// - Climber (`ground_only` = false): supported if the position is walkable.
+    /// - Ground-only: supported if the position is walkable AND the non-climber
+    ///   support rules are met (same thresholds as `footprint_walkable`):
+    ///   - 1x1: solid at y-1.
+    ///   - 2x2x2: 3+ columns with solid at y-1, OR 1+ at y-1 and 2+ at y-2.
     pub(crate) fn creature_is_supported(&self, creature_id: CreatureId) -> bool {
         let creature = match self.db.creatures.get(&creature_id) {
             Some(c) if c.vital_status == VitalStatus::Alive => c,
@@ -650,35 +649,54 @@ impl SimState {
             return false;
         }
         if species_data.ground_only {
-            // Ground-only creatures also need solid below. For large creatures
-            // (2×2 footprint), the nav node y is `max_surface + 1` across all
-            // 4 columns, so the anchor column may have a lower surface than
-            // y−1. Check whether ANY column in the footprint has solid at y−1
-            // (B-large-stuck).
-            let y_below = creature.position.min.y - 1;
+            // Ground-only creatures need solid below (non-climber support).
+            // Uses the same 3-of-4 / 1+2 thresholds as footprint_walkable.
+            let anchor = creature.position.min;
             let fx = species_data.footprint[0] as i32;
             let fz = species_data.footprint[2] as i32;
-            let ax = creature.position.min.x;
-            let az = creature.position.min.z;
-            let mut any_solid = false;
+
+            // Count columns with solid directly at y-1.
+            let mut direct_support = 0u32;
             for dz in 0..fz {
                 for dx in 0..fx {
                     if self
                         .world
-                        .get(VoxelCoord::new(ax + dx, y_below, az + dz))
+                        .get(VoxelCoord::new(anchor.x + dx, anchor.y - 1, anchor.z + dz))
                         .is_solid()
                     {
-                        any_solid = true;
-                        break;
+                        direct_support += 1;
                     }
                 }
-                if any_solid {
-                    break;
+            }
+            let total_columns = (fx * fz) as u32;
+            if total_columns <= 1 {
+                // 1x1: need solid directly below.
+                return direct_support >= 1;
+            }
+            // Large footprint: 3+ columns at y-1, or 1+ at y-1 and 2+ at y-2.
+            if direct_support >= 3 {
+                return true;
+            }
+            if direct_support >= 1 {
+                let mut deep_support = 0u32;
+                for dz in 0..fz {
+                    for dx in 0..fx {
+                        if self
+                            .world
+                            .get(VoxelCoord::new(anchor.x + dx, anchor.y - 2, anchor.z + dz))
+                            .is_solid()
+                        {
+                            deep_support += 1;
+                        }
+                    }
+                }
+                if deep_support >= 2 {
+                    return true;
                 }
             }
-            any_solid
+            false
         } else {
-            // Climber with a valid nav node — supported.
+            // Climber with a walkable position — supported.
             true
         }
     }
@@ -700,6 +718,12 @@ impl SimState {
             // below the creature, that's the landing. No iteration needed.
             let ax = pos.x;
             let az = pos.z;
+            let wx = self.world.size_x as i32;
+            let wz = self.world.size_z as i32;
+            // Bounds check: large_node_surface_y accesses (ax..ax+2, az..az+2).
+            if ax < 0 || ax + 1 >= wx || az < 0 || az + 1 >= wz {
+                return None;
+            }
             if let Some(surface_y) = crate::walkability::large_node_surface_y(&self.world, ax, az)
                 && surface_y < pos.y
             {

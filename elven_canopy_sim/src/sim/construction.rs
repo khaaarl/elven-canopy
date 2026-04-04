@@ -1633,9 +1633,6 @@ impl SimState {
         }
     }
 
-    /// Resnap only creatures whose position is no longer walkable after a
-    /// voxel change. Used after incremental walkability changes where most
-    /// creatures are unaffected — much cheaper than resnapping all creatures.
     /// DDA voxel raycast returning `(StructureId, VoxelCoord)` of the first
     /// structure voxel hit. Like `raycast_structure()` but also returns the
     /// hit coordinate, needed by the roof-click-select feature to decide

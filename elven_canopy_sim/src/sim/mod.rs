@@ -581,7 +581,7 @@ impl SimState {
             let strength = self.trait_int(creature_id, TraitKind::Strength, 0);
             let move_speeds =
                 crate::stats::CreatureMoveSpeeds::new(species_data, agility, strength);
-            let nav_speeds = crate::pathfinding::NavGraphSpeeds::from_move_speeds(
+            let nav_speeds = crate::pathfinding::GroundSpeeds::from_move_speeds(
                 &move_speeds,
                 species_data.allowed_edge_types.as_deref(),
             );
@@ -649,7 +649,7 @@ impl SimState {
             let strength = self.trait_int(creature_id, TraitKind::Strength, 0);
             let move_speeds =
                 crate::stats::CreatureMoveSpeeds::new(species_data, agility, strength);
-            let nav_speeds = crate::pathfinding::NavGraphSpeeds::from_move_speeds(
+            let nav_speeds = crate::pathfinding::GroundSpeeds::from_move_speeds(
                 &move_speeds,
                 species_data.allowed_edge_types.as_deref(),
             );

@@ -45,21 +45,23 @@ pub const FACE_OFFSETS: [(i32, i32, i32); 6] = [
 ///
 /// ## [2,2,2] creatures (the only other size that currently exists)
 ///
-/// All 8 voxels in the footprint must be non-solid and y >= 1. At least one
-/// ground-plane column must have support from any of its 6 face directions
-/// (not just below). The single-column threshold is necessary because
-/// `large_node_surface_y` places the anchor at `max_surface + 1` on
-/// inclines, so only the highest column(s) have solid directly at y-1.
+/// All 8 voxels in the footprint must be non-solid and y >= 1. Then we
+/// check support across the 4 ground-plane columns (footprint X × Z):
 ///
-/// **Why climber rules?** `footprint_walkable` doesn't know whether the creature
-/// can climb. It uses the most permissive rules (any face direction counts for
-/// support). The distinction between climber and non-climber is enforced by
-/// the pathfinder's edge-type filter, which prevents non-climbers from reaching
-/// climbing positions — the same pattern used for 1×1×1 creatures.
+/// **Non-climber support (solid directly below):**
+/// - 3+ columns have solid at y-1 → walkable, OR
+/// - 1+ column has solid at y-1 AND 2+ columns have solid at y-2 → walkable.
 ///
-/// **Future note:** There are no large climbers yet (only elephants and trolls,
-/// both non-climbers), but the rules are designed to support them when they
-/// exist. This is not dead code — it's forward-compatible design.
+/// The 1+2 fallback handles terrain inclines where `large_node_surface_y`
+/// places the anchor at `max_surface + 1` and only the highest column(s)
+/// have solid directly at y-1.
+///
+/// **Climber support (any face-adjacent solid — forward-compatible):**
+/// No large climbers exist yet (only elephants and trolls, both ground-only),
+/// but the rules are designed to support them when they arrive. The same
+/// 3-of-4 / 1+2 thresholds apply, but each column counts as supported if
+/// ANY of its 6 face neighbors at the check depth is solid. The pathfinder's
+/// edge-type filter prevents non-climbers from reaching climbing positions.
 pub fn footprint_walkable(
     world: &VoxelWorld,
     face_data: &BTreeMap<VoxelCoord, FaceData>,
@@ -84,36 +86,85 @@ pub fn footprint_walkable(
         }
     }
 
-    // Support check: at least one ground-plane column must have a solid voxel
-    // at y-1, OR have a solid voxel adjacent to y-1 in any face direction
-    // (climber rules — most permissive; see doc comment above).
+    // Support check across the 4 ground-plane columns.
     //
-    // The single-column threshold allows large creatures to stand on terrain
-    // inclines where `large_node_surface_y` places the anchor at
-    // `max_surface + 1` — only the highest column(s) have solid at y-1.
+    // Non-climber rules (solid directly below):
+    //   3+ columns with solid at y-1 → supported, OR
+    //   1+ column with solid at y-1 AND 2+ columns with solid at y-2 → supported.
+    //
+    // Climber rules (any face-adjacent solid — forward-compatible):
+    //   Same 3/1+2 thresholds, but each column checks all 6 face neighbors
+    //   instead of only the voxel directly below.
+
+    // --- Non-climber: count columns with solid directly at y-1 ---
+    let mut direct_support = 0u32;
     for dx in 0..footprint[0] as i32 {
         for dz in 0..footprint[2] as i32 {
-            let below = VoxelCoord::new(anchor.x + dx, anchor.y - 1, anchor.z + dz);
-            // Direct support: solid at y-1 (standing on something).
-            if world.get(below).is_solid() {
-                return true;
-            }
-            // Climber support: solid adjacent to y-1 in any face direction.
-            if has_face_support(world, below) {
-                return true;
+            if world
+                .get(VoxelCoord::new(anchor.x + dx, anchor.y - 1, anchor.z + dz))
+                .is_solid()
+            {
+                direct_support += 1;
             }
         }
     }
-    false
-}
+    if direct_support >= 3 {
+        return true;
+    }
+    if direct_support >= 1 {
+        let mut deep_support = 0u32;
+        for dx in 0..footprint[0] as i32 {
+            for dz in 0..footprint[2] as i32 {
+                if world
+                    .get(VoxelCoord::new(anchor.x + dx, anchor.y - 2, anchor.z + dz))
+                    .is_solid()
+                {
+                    deep_support += 1;
+                }
+            }
+        }
+        if deep_support >= 2 {
+            return true;
+        }
+    }
 
-/// Check whether any of the 6 face directions from `pos` has a solid voxel.
-fn has_face_support(world: &VoxelWorld, pos: VoxelCoord) -> bool {
-    FACE_OFFSETS.iter().any(|&(dx, dy, dz)| {
-        world
-            .get(VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz))
-            .is_solid()
-    })
+    // --- Climber: count columns with ANY face-adjacent solid at y-1 ---
+    // (No large climbers exist yet, but this is forward-compatible design.)
+    let mut face_support = 0u32;
+    for dx in 0..footprint[0] as i32 {
+        for dz in 0..footprint[2] as i32 {
+            let below = VoxelCoord::new(anchor.x + dx, anchor.y - 1, anchor.z + dz);
+            if FACE_OFFSETS.iter().any(|&(fx, fy, fz)| {
+                world
+                    .get(VoxelCoord::new(below.x + fx, below.y + fy, below.z + fz))
+                    .is_solid()
+            }) {
+                face_support += 1;
+            }
+        }
+    }
+    if face_support >= 3 {
+        return true;
+    }
+    if face_support >= 1 {
+        let mut deep_face = 0u32;
+        for dx in 0..footprint[0] as i32 {
+            for dz in 0..footprint[2] as i32 {
+                let deep = VoxelCoord::new(anchor.x + dx, anchor.y - 2, anchor.z + dz);
+                if FACE_OFFSETS.iter().any(|&(fx, fy, fz)| {
+                    world
+                        .get(VoxelCoord::new(deep.x + fx, deep.y + fy, deep.z + fz))
+                        .is_solid()
+                }) {
+                    deep_face += 1;
+                }
+            }
+        }
+        if deep_face >= 2 {
+            return true;
+        }
+    }
+    false
 }
 
 /// Inner walkability check for 1×1×1 creatures. Not public — all external

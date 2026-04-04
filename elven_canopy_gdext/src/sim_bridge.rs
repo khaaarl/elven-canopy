@@ -1267,7 +1267,7 @@ impl SimBridge {
         origin: Vector3,
         dir: Vector3,
         ground_only: bool,
-        _large: bool,
+        large: bool,
     ) -> VarDictionary {
         let mut dict = VarDictionary::new();
         let Some(sim) = &self.session.sim else {
@@ -1301,13 +1301,14 @@ impl SimBridge {
             solid_coord.z + offset.2,
         );
 
+        let footprint: [u8; 3] = if large { [2, 2, 2] } else { [1, 1, 1] };
         let nearest = if ground_only {
             elven_canopy_sim::walkability::find_nearest_ground_walkable(
                 &sim.world,
                 &sim.face_data,
                 air_pos,
                 5,
-                [1, 1, 1],
+                footprint,
             )
         } else {
             elven_canopy_sim::walkability::find_nearest_walkable(
@@ -1315,7 +1316,7 @@ impl SimBridge {
                 &sim.face_data,
                 air_pos,
                 5,
-                [1, 1, 1],
+                footprint,
             )
         };
 
