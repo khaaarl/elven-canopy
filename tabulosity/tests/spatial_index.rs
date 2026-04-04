@@ -1,8 +1,12 @@
-//! Integration tests for spatial indexes (`kind = "spatial"`).
+//! Integration tests for spatial indexes (`kind = "spatial"`) and compound
+//! spatial indexes (`fields("prefix", "pos" spatial)`).
 //!
 //! Tests the derive-macro-generated spatial index support: insert, update,
 //! remove, intersection queries, Option<T> handling, filter support, rebuild,
-//! and deterministic PK-sorted results.
+//! and deterministic PK-sorted results. Compound spatial tests cover partitioned
+//! R-trees keyed by prefix fields, with btree/hash prefix kinds, multi-prefix
+//! fields, filter interactions, and partition cleanup. Serde roundtrip tests
+//! for compound spatial live in `serde.rs`.
 
 use tabulosity::{Bounded, SpatialKey, Table};
 
@@ -765,7 +769,7 @@ fn spatial_optional_some_to_different_some_update() {
 // Compound PK + spatial index
 // =============================================================================
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Bounded)]
 struct ZoneId(u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Bounded)]
@@ -967,4 +971,1322 @@ fn spatial_coexists_with_btree_index() {
     let cat1 = table.by_category(&1, tabulosity::QueryOpts::ASC);
     assert_eq!(cat1.len(), 1);
     assert_eq!(cat1[0].id, EntityId(2));
+}
+
+// =============================================================================
+// Compound spatial indexes
+// =============================================================================
+
+#[derive(Table, Clone, Debug, PartialEq)]
+#[index(name = "zone_pos", fields("zone_id", "pos" spatial))]
+struct ZonedEntity {
+    #[primary_key(auto_increment)]
+    pub id: u32,
+    pub zone_id: ZoneId,
+    pub pos: Box3d,
+}
+
+#[test]
+fn compound_spatial_basic_insert_and_query() {
+    let mut table = ZonedEntityTable::new();
+
+    table
+        .insert_auto_no_fk(|id| ZonedEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|id| ZonedEntity {
+            id,
+            zone_id: ZoneId(2),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|id| ZonedEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: Box3d::new([10, 10, 10], [15, 15, 15]),
+        })
+        .unwrap();
+
+    // Query zone 1 near origin — should find only entity 0.
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [5, 5, 5]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, 0);
+
+    // Query zone 1 with large envelope — should find both zone 1 entities.
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [20, 20, 20]));
+    assert_eq!(hits.len(), 2);
+    assert_eq!(hits[0].id, 0);
+    assert_eq!(hits[1].id, 2);
+
+    // Query zone 2 — should find only entity 1.
+    let hits = table.intersecting_by_zone_pos(&ZoneId(2), &Box3d::new([0, 0, 0], [20, 20, 20]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, 1);
+
+    // Query nonexistent zone — empty results.
+    let hits = table.intersecting_by_zone_pos(&ZoneId(99), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert!(hits.is_empty());
+
+    // iter_ and count_ variants.
+    let count = table.count_intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [5, 5, 5]));
+    assert_eq!(count, 1);
+    let iter_hits: Vec<_> = table
+        .iter_intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [20, 20, 20]))
+        .collect();
+    assert_eq!(iter_hits.len(), 2);
+}
+
+#[test]
+fn compound_spatial_remove_with_partition_cleanup() {
+    let mut table = ZonedEntityTable::new();
+
+    let id0 = table
+        .insert_auto_no_fk(|id| ZonedEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+    let id1 = table
+        .insert_auto_no_fk(|id| ZonedEntity {
+            id,
+            zone_id: ZoneId(2),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+
+    // Remove the only entity in zone 2 — partition should be cleaned up.
+    table.remove_no_fk(&id1).unwrap();
+
+    // Zone 2 query returns empty (partition gone).
+    let hits = table.intersecting_by_zone_pos(&ZoneId(2), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert!(hits.is_empty());
+
+    // Zone 1 still has its entity.
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, id0);
+}
+
+#[test]
+fn compound_spatial_update_prefix_change() {
+    let mut table = ZonedEntityTable::new();
+
+    table
+        .insert_auto_no_fk(|id| ZonedEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+
+    // Move entity from zone 1 to zone 2.
+    table
+        .update_no_fk(ZonedEntity {
+            id: 0,
+            zone_id: ZoneId(2),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+
+    // Gone from zone 1.
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert!(hits.is_empty());
+
+    // Present in zone 2.
+    let hits = table.intersecting_by_zone_pos(&ZoneId(2), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, 0);
+}
+
+#[test]
+fn compound_spatial_update_spatial_change() {
+    let mut table = ZonedEntityTable::new();
+
+    table
+        .insert_auto_no_fk(|id| ZonedEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+
+    // Move within zone 1.
+    table
+        .update_no_fk(ZonedEntity {
+            id: 0,
+            zone_id: ZoneId(1),
+            pos: Box3d::new([50, 50, 50], [55, 55, 55]),
+        })
+        .unwrap();
+
+    // Old location empty.
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [5, 5, 5]));
+    assert!(hits.is_empty());
+
+    // New location found.
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([50, 50, 50], [55, 55, 55]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, 0);
+}
+
+#[test]
+fn compound_spatial_update_both_prefix_and_spatial() {
+    let mut table = ZonedEntityTable::new();
+
+    table
+        .insert_auto_no_fk(|id| ZonedEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+
+    // Change both zone and position.
+    table
+        .update_no_fk(ZonedEntity {
+            id: 0,
+            zone_id: ZoneId(3),
+            pos: Box3d::new([100, 100, 100], [105, 105, 105]),
+        })
+        .unwrap();
+
+    // Gone from old zone+location.
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [200, 200, 200]));
+    assert!(hits.is_empty());
+
+    // Present in new zone+location.
+    let hits =
+        table.intersecting_by_zone_pos(&ZoneId(3), &Box3d::new([100, 100, 100], [105, 105, 105]));
+    assert_eq!(hits.len(), 1);
+}
+
+#[test]
+fn compound_spatial_update_no_change() {
+    let mut table = ZonedEntityTable::new();
+
+    table
+        .insert_auto_no_fk(|id| ZonedEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+
+    // Update with identical values — should be a no-op.
+    table
+        .update_no_fk(ZonedEntity {
+            id: 0,
+            zone_id: ZoneId(1),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [5, 5, 5]));
+    assert_eq!(hits.len(), 1);
+}
+
+#[test]
+fn compound_spatial_rebuild() {
+    let mut table = ZonedEntityTable::new();
+
+    table
+        .insert_auto_no_fk(|id| ZonedEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|id| ZonedEntity {
+            id,
+            zone_id: ZoneId(2),
+            pos: Box3d::new([10, 10, 10], [15, 15, 15]),
+        })
+        .unwrap();
+
+    table.manual_rebuild_all_indexes();
+
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, 0);
+
+    let hits = table.intersecting_by_zone_pos(&ZoneId(2), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, 1);
+}
+
+// --- Compound spatial with Optional spatial field ---
+
+#[derive(Table, Clone, Debug, PartialEq)]
+#[index(name = "zone_pos", fields("zone_id", "pos" spatial))]
+struct ZonedOptEntity {
+    #[primary_key(auto_increment)]
+    pub id: u32,
+    pub zone_id: ZoneId,
+    pub pos: Option<Box3d>,
+}
+
+#[test]
+fn compound_spatial_optional_spatial_field() {
+    let mut table = ZonedOptEntityTable::new();
+
+    table
+        .insert_auto_no_fk(|id| ZonedOptEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: Some(Box3d::new([0, 0, 0], [5, 5, 5])),
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|id| ZonedOptEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: None,
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|id| ZonedOptEntity {
+            id,
+            zone_id: ZoneId(2),
+            pos: Some(Box3d::new([0, 0, 0], [5, 5, 5])),
+        })
+        .unwrap();
+
+    // Zone 1: only the Some entity matches.
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, 0);
+
+    // Update None -> Some: should now appear in queries.
+    table
+        .update_no_fk(ZonedOptEntity {
+            id: 1,
+            zone_id: ZoneId(1),
+            pos: Some(Box3d::new([10, 10, 10], [15, 15, 15])),
+        })
+        .unwrap();
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 2);
+
+    // Update Some -> None: should disappear from queries.
+    table
+        .update_no_fk(ZonedOptEntity {
+            id: 0,
+            zone_id: ZoneId(1),
+            pos: None,
+        })
+        .unwrap();
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, 1);
+}
+
+// --- Compound spatial with filter ---
+
+fn is_zoned_active(e: &ZonedFilterEntity) -> bool {
+    e.active
+}
+
+#[derive(Table, Clone, Debug, PartialEq)]
+#[index(
+    name = "zone_pos",
+    fields("zone_id", "pos" spatial),
+    filter = "is_zoned_active"
+)]
+struct ZonedFilterEntity {
+    #[primary_key(auto_increment)]
+    pub id: u32,
+    pub zone_id: ZoneId,
+    pub pos: Box3d,
+    pub active: bool,
+}
+
+#[test]
+fn compound_spatial_filter_basic() {
+    let mut table = ZonedFilterEntityTable::new();
+
+    table
+        .insert_auto_no_fk(|id| ZonedFilterEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+            active: true,
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|id| ZonedFilterEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+            active: false,
+        })
+        .unwrap();
+
+    // Only active entity is in the index.
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, 0);
+}
+
+#[test]
+fn compound_spatial_filter_update_transitions() {
+    let mut table = ZonedFilterEntityTable::new();
+
+    table
+        .insert_auto_no_fk(|id| ZonedFilterEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+            active: true,
+        })
+        .unwrap();
+
+    // Deactivate (true → false): should leave the index.
+    table
+        .update_no_fk(ZonedFilterEntity {
+            id: 0,
+            zone_id: ZoneId(1),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+            active: false,
+        })
+        .unwrap();
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert!(hits.is_empty());
+
+    // Reactivate (false → true): should re-enter the index.
+    table
+        .update_no_fk(ZonedFilterEntity {
+            id: 0,
+            zone_id: ZoneId(1),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+            active: true,
+        })
+        .unwrap();
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
+}
+
+#[test]
+fn compound_spatial_filter_deactivate_cleans_up_partition() {
+    let mut table = ZonedFilterEntityTable::new();
+
+    // Only entity in zone 3 — deactivating it should clean up the partition.
+    table
+        .insert_auto_no_fk(|id| ZonedFilterEntity {
+            id,
+            zone_id: ZoneId(3),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+            active: true,
+        })
+        .unwrap();
+
+    table
+        .update_no_fk(ZonedFilterEntity {
+            id: 0,
+            zone_id: ZoneId(3),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+            active: false,
+        })
+        .unwrap();
+
+    let hits = table.intersecting_by_zone_pos(&ZoneId(3), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert!(hits.is_empty());
+}
+
+// --- Compound spatial with hash prefix ---
+
+#[derive(Table, Clone, Debug, PartialEq)]
+#[index(name = "zone_pos", fields("zone_id" hash, "pos" spatial))]
+struct HashPrefixEntity {
+    #[primary_key(auto_increment)]
+    pub id: u32,
+    pub zone_id: ZoneId,
+    pub pos: Box3d,
+}
+
+#[test]
+fn compound_spatial_hash_prefix() {
+    let mut table = HashPrefixEntityTable::new();
+
+    table
+        .insert_auto_no_fk(|id| HashPrefixEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|id| HashPrefixEntity {
+            id,
+            zone_id: ZoneId(2),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, 0);
+
+    // Remove and verify partition cleanup.
+    table.remove_no_fk(&0).unwrap();
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert!(hits.is_empty());
+}
+
+// --- Multi-prefix compound spatial ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Bounded)]
+struct CivId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq)]
+#[index(name = "zone_civ_pos", fields("zone_id", "civ_id", "pos" spatial))]
+struct MultiPrefixEntity {
+    #[primary_key(auto_increment)]
+    pub id: u32,
+    pub zone_id: ZoneId,
+    pub civ_id: CivId,
+    pub pos: Box3d,
+}
+
+#[test]
+fn compound_spatial_multi_prefix() {
+    let mut table = MultiPrefixEntityTable::new();
+
+    table
+        .insert_auto_no_fk(|id| MultiPrefixEntity {
+            id,
+            zone_id: ZoneId(1),
+            civ_id: CivId(10),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|id| MultiPrefixEntity {
+            id,
+            zone_id: ZoneId(1),
+            civ_id: CivId(20),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|id| MultiPrefixEntity {
+            id,
+            zone_id: ZoneId(2),
+            civ_id: CivId(10),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+
+    // Query zone 1 + civ 10.
+    let hits = table.intersecting_by_zone_civ_pos(
+        &ZoneId(1),
+        &CivId(10),
+        &Box3d::new([0, 0, 0], [100, 100, 100]),
+    );
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, 0);
+
+    // Query zone 1 + civ 20.
+    let hits = table.intersecting_by_zone_civ_pos(
+        &ZoneId(1),
+        &CivId(20),
+        &Box3d::new([0, 0, 0], [100, 100, 100]),
+    );
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, 1);
+
+    // Nonexistent combination.
+    let hits = table.intersecting_by_zone_civ_pos(
+        &ZoneId(2),
+        &CivId(20),
+        &Box3d::new([0, 0, 0], [100, 100, 100]),
+    );
+    assert!(hits.is_empty());
+}
+
+// --- Hash primary storage + compound spatial ---
+
+#[derive(Table, Clone, Debug, PartialEq)]
+#[table(primary_storage = "hash")]
+#[index(name = "zone_pos", fields("zone_id", "pos" spatial))]
+struct HashStorageZonedEntity {
+    #[primary_key(auto_increment)]
+    pub id: u32,
+    pub zone_id: ZoneId,
+    pub pos: Box3d,
+}
+
+#[test]
+fn compound_spatial_hash_primary_storage() {
+    let mut table = HashStorageZonedEntityTable::new();
+
+    table
+        .insert_auto_no_fk(|id| HashStorageZonedEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|id| HashStorageZonedEntity {
+            id,
+            zone_id: ZoneId(2),
+            pos: Box3d::new([10, 10, 10], [15, 15, 15]),
+        })
+        .unwrap();
+
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, 0);
+
+    // Update and verify.
+    table
+        .update_no_fk(HashStorageZonedEntity {
+            id: 0,
+            zone_id: ZoneId(2),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert!(hits.is_empty());
+    let hits = table.intersecting_by_zone_pos(&ZoneId(2), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 2);
+}
+
+// --- Upsert with compound spatial ---
+
+#[test]
+fn compound_spatial_upsert() {
+    let mut table = ZonedEntityTable::new();
+
+    // Upsert insert path.
+    table.upsert_no_fk(ZonedEntity {
+        id: 0,
+        zone_id: ZoneId(1),
+        pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+    });
+
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
+
+    // Upsert update path — change zone.
+    table.upsert_no_fk(ZonedEntity {
+        id: 0,
+        zone_id: ZoneId(2),
+        pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+    });
+
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert!(hits.is_empty());
+    let hits = table.intersecting_by_zone_pos(&ZoneId(2), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
+}
+
+// --- modify_unchecked includes compound spatial fields ---
+
+#[test]
+#[cfg(debug_assertions)]
+fn compound_spatial_modify_unchecked_asserts_prefix_field() {
+    let mut table = ZonedEntityTable::new();
+    table
+        .insert_auto_no_fk(|id| ZonedEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        table.modify_unchecked(&0, |row| {
+            row.zone_id = ZoneId(99);
+        })
+    }));
+    assert!(
+        result.is_err(),
+        "should panic when modifying indexed prefix field"
+    );
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn compound_spatial_modify_unchecked_asserts_spatial_field() {
+    let mut table = ZonedEntityTable::new();
+    table
+        .insert_auto_no_fk(|id| ZonedEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        table.modify_unchecked(&0, |row| {
+            row.pos = Box3d::new([99, 99, 99], [100, 100, 100]);
+        })
+    }));
+    assert!(
+        result.is_err(),
+        "should panic when modifying indexed spatial field"
+    );
+}
+
+// --- Compound spatial with 2D spatial key ---
+
+#[derive(Table, Clone, Debug, PartialEq)]
+#[index(name = "zone_pos", fields("zone_id", "pos" spatial))]
+struct ZonedEntity2d {
+    #[primary_key(auto_increment)]
+    pub id: u32,
+    pub zone_id: ZoneId,
+    pub pos: Box2d,
+}
+
+#[test]
+fn compound_spatial_2d() {
+    let mut table = ZonedEntity2dTable::new();
+
+    table
+        .insert_auto_no_fk(|id| ZonedEntity2d {
+            id,
+            zone_id: ZoneId(1),
+            pos: Box2d {
+                min: [0, 0],
+                max: [5, 5],
+            },
+        })
+        .unwrap();
+
+    let hits = table.intersecting_by_zone_pos(
+        &ZoneId(1),
+        &Box2d {
+            min: [0, 0],
+            max: [10, 10],
+        },
+    );
+    assert_eq!(hits.len(), 1);
+}
+
+// --- Equivalent single-field spatial via per-field annotation ---
+
+#[derive(Table, Clone, Debug, PartialEq)]
+#[index(name = "pos_idx", fields("bounds" spatial))]
+struct PerFieldAnnotatedEntity {
+    #[primary_key]
+    pub id: EntityId,
+    pub bounds: Box3d,
+}
+
+#[test]
+fn per_field_spatial_annotation_single_field() {
+    // Verify that `fields("pos" spatial)` on a single field produces the same
+    // query API as `kind = "spatial"` (not compound spatial).
+    let mut table = PerFieldAnnotatedEntityTable::new();
+    table
+        .insert_no_fk(PerFieldAnnotatedEntity {
+            id: EntityId(1),
+            bounds: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+
+    // Method name is `intersecting_pos_idx` (no "by_" prefix — single-field spatial).
+    let hits = table.intersecting_pos_idx(&Box3d::new([0, 0, 0], [10, 10, 10]));
+    assert_eq!(hits.len(), 1);
+}
+
+// --- Filter + prefix change (true,true branch with partition migration) ---
+
+#[test]
+fn compound_spatial_filter_with_prefix_change() {
+    let mut table = ZonedFilterEntityTable::new();
+
+    // Insert two active entities in zone 1.
+    table
+        .insert_auto_no_fk(|id| ZonedFilterEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+            active: true,
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|id| ZonedFilterEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: Box3d::new([10, 10, 10], [15, 15, 15]),
+            active: true,
+        })
+        .unwrap();
+
+    // Move entity 0 to zone 2 (prefix change while filter stays true).
+    table
+        .update_no_fk(ZonedFilterEntity {
+            id: 0,
+            zone_id: ZoneId(2),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+            active: true,
+        })
+        .unwrap();
+
+    // Zone 1 should have only entity 1.
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, 1);
+
+    // Zone 2 should have entity 0.
+    let hits = table.intersecting_by_zone_pos(&ZoneId(2), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, 0);
+}
+
+// --- Rebuild with filter ---
+
+#[test]
+fn compound_spatial_rebuild_with_filter() {
+    let mut table = ZonedFilterEntityTable::new();
+
+    table
+        .insert_auto_no_fk(|id| ZonedFilterEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+            active: true,
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|id| ZonedFilterEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: Box3d::new([10, 10, 10], [15, 15, 15]),
+            active: false,
+        })
+        .unwrap();
+
+    table.manual_rebuild_all_indexes();
+
+    // Only active entity should be in the index after rebuild.
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, 0);
+}
+
+// --- Rebuild with optional None ---
+
+#[test]
+fn compound_spatial_rebuild_with_optional_none() {
+    let mut table = ZonedOptEntityTable::new();
+
+    table
+        .insert_auto_no_fk(|id| ZonedOptEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: Some(Box3d::new([0, 0, 0], [5, 5, 5])),
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|id| ZonedOptEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: None,
+        })
+        .unwrap();
+
+    table.manual_rebuild_all_indexes();
+
+    // Only the Some entity should appear in spatial queries.
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, 0);
+}
+
+// --- Multi-prefix partial update ---
+
+#[test]
+fn compound_spatial_multi_prefix_update_partial() {
+    let mut table = MultiPrefixEntityTable::new();
+
+    table
+        .insert_auto_no_fk(|id| MultiPrefixEntity {
+            id,
+            zone_id: ZoneId(1),
+            civ_id: CivId(10),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+
+    // Change only civ_id (partial prefix change).
+    table
+        .update_no_fk(MultiPrefixEntity {
+            id: 0,
+            zone_id: ZoneId(1),
+            civ_id: CivId(20),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+
+    // Old partition (1, 10) should be empty.
+    let hits = table.intersecting_by_zone_civ_pos(
+        &ZoneId(1),
+        &CivId(10),
+        &Box3d::new([0, 0, 0], [100, 100, 100]),
+    );
+    assert!(hits.is_empty());
+
+    // New partition (1, 20) should have the entity.
+    let hits = table.intersecting_by_zone_civ_pos(
+        &ZoneId(1),
+        &CivId(20),
+        &Box3d::new([0, 0, 0], [100, 100, 100]),
+    );
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, 0);
+}
+
+// --- Hash prefix update with prefix change ---
+
+#[test]
+fn compound_spatial_hash_prefix_update() {
+    let mut table = HashPrefixEntityTable::new();
+
+    table
+        .insert_auto_no_fk(|id| HashPrefixEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+
+    // Move to different zone (prefix change via hash-prefix codepath).
+    table
+        .update_no_fk(HashPrefixEntity {
+            id: 0,
+            zone_id: ZoneId(2),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert!(hits.is_empty());
+
+    let hits = table.intersecting_by_zone_pos(&ZoneId(2), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, 0);
+}
+
+// --- Option prefix field ---
+
+#[derive(Table, Clone, Debug, PartialEq)]
+#[index(name = "zone_pos", fields("zone_id", "pos" spatial))]
+struct OptPrefixEntity {
+    #[primary_key(auto_increment)]
+    pub id: u32,
+    pub zone_id: Option<ZoneId>,
+    pub pos: Box3d,
+}
+
+#[test]
+fn compound_spatial_option_prefix_field() {
+    let mut table = OptPrefixEntityTable::new();
+
+    // Insert with Some prefix.
+    table
+        .insert_auto_no_fk(|id| OptPrefixEntity {
+            id,
+            zone_id: Some(ZoneId(1)),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+    // Insert with None prefix.
+    table
+        .insert_auto_no_fk(|id| OptPrefixEntity {
+            id,
+            zone_id: None,
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+    // Another Some(1).
+    table
+        .insert_auto_no_fk(|id| OptPrefixEntity {
+            id,
+            zone_id: Some(ZoneId(1)),
+            pos: Box3d::new([10, 10, 10], [15, 15, 15]),
+        })
+        .unwrap();
+
+    // Query Some(1) partition.
+    let hits =
+        table.intersecting_by_zone_pos(&Some(ZoneId(1)), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 2);
+    assert_eq!(hits[0].id, 0);
+    assert_eq!(hits[1].id, 2);
+
+    // Query None partition.
+    let hits = table.intersecting_by_zone_pos(&None, &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, 1);
+
+    // Query nonexistent Some(99).
+    let hits =
+        table.intersecting_by_zone_pos(&Some(ZoneId(99)), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert!(hits.is_empty());
+
+    // Update: move entity from None to Some(2).
+    table
+        .update_no_fk(OptPrefixEntity {
+            id: 1,
+            zone_id: Some(ZoneId(2)),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+
+    let hits = table.intersecting_by_zone_pos(&None, &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert!(hits.is_empty());
+
+    let hits =
+        table.intersecting_by_zone_pos(&Some(ZoneId(2)), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, 1);
+}
+
+// --- Multi-prefix with hash kind ---
+
+#[derive(Table, Clone, Debug, PartialEq)]
+#[index(
+    name = "zone_civ_pos",
+    fields("zone_id", "civ_id", "pos" spatial),
+    kind = "hash"
+)]
+struct MultiPrefixHashEntity {
+    #[primary_key(auto_increment)]
+    pub id: u32,
+    pub zone_id: ZoneId,
+    pub civ_id: CivId,
+    pub pos: Box3d,
+}
+
+#[test]
+fn compound_spatial_multi_prefix_hash() {
+    let mut table = MultiPrefixHashEntityTable::new();
+
+    table
+        .insert_auto_no_fk(|id| MultiPrefixHashEntity {
+            id,
+            zone_id: ZoneId(1),
+            civ_id: CivId(10),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|id| MultiPrefixHashEntity {
+            id,
+            zone_id: ZoneId(1),
+            civ_id: CivId(20),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+    table
+        .insert_auto_no_fk(|id| MultiPrefixHashEntity {
+            id,
+            zone_id: ZoneId(2),
+            civ_id: CivId(10),
+            pos: Box3d::new([10, 10, 10], [15, 15, 15]),
+        })
+        .unwrap();
+
+    // Query (zone=1, civ=10).
+    let hits = table.intersecting_by_zone_civ_pos(
+        &ZoneId(1),
+        &CivId(10),
+        &Box3d::new([0, 0, 0], [100, 100, 100]),
+    );
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, 0);
+
+    // Query (zone=1, civ=20).
+    let hits = table.intersecting_by_zone_civ_pos(
+        &ZoneId(1),
+        &CivId(20),
+        &Box3d::new([0, 0, 0], [100, 100, 100]),
+    );
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, 1);
+
+    // Update: change one prefix field.
+    table
+        .update_no_fk(MultiPrefixHashEntity {
+            id: 0,
+            zone_id: ZoneId(1),
+            civ_id: CivId(20),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+
+    // Old partition (1,10) empty.
+    let hits = table.intersecting_by_zone_civ_pos(
+        &ZoneId(1),
+        &CivId(10),
+        &Box3d::new([0, 0, 0], [100, 100, 100]),
+    );
+    assert!(hits.is_empty());
+
+    // New partition (1,20) has both.
+    let hits = table.intersecting_by_zone_civ_pos(
+        &ZoneId(1),
+        &CivId(20),
+        &Box3d::new([0, 0, 0], [100, 100, 100]),
+    );
+    assert_eq!(hits.len(), 2);
+
+    // Remove and verify partition cleanup.
+    table.remove_no_fk(&0).unwrap();
+    table.remove_no_fk(&1).unwrap();
+    let hits = table.intersecting_by_zone_civ_pos(
+        &ZoneId(1),
+        &CivId(20),
+        &Box3d::new([0, 0, 0], [100, 100, 100]),
+    );
+    assert!(hits.is_empty());
+
+    // Rebuild and verify.
+    table.manual_rebuild_all_indexes();
+    let hits = table.intersecting_by_zone_civ_pos(
+        &ZoneId(2),
+        &CivId(10),
+        &Box3d::new([0, 0, 0], [100, 100, 100]),
+    );
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, 2);
+}
+
+// --- Filter + optional spatial field ---
+
+fn is_zoned_opt_active(e: &ZonedFilterOptEntity) -> bool {
+    e.active
+}
+
+#[derive(Table, Clone, Debug, PartialEq)]
+#[index(
+    name = "zone_pos",
+    fields("zone_id", "pos" spatial),
+    filter = "is_zoned_opt_active"
+)]
+struct ZonedFilterOptEntity {
+    #[primary_key(auto_increment)]
+    pub id: u32,
+    pub zone_id: ZoneId,
+    pub pos: Option<Box3d>,
+    pub active: bool,
+}
+
+#[test]
+fn compound_spatial_filter_with_optional_spatial() {
+    let mut table = ZonedFilterOptEntityTable::new();
+
+    // active + Some — enters R-tree partition.
+    table
+        .insert_auto_no_fk(|id| ZonedFilterOptEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: Some(Box3d::new([0, 0, 0], [5, 5, 5])),
+            active: true,
+        })
+        .unwrap();
+    // active + None — enters none-set partition.
+    table
+        .insert_auto_no_fk(|id| ZonedFilterOptEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: None,
+            active: true,
+        })
+        .unwrap();
+    // inactive + Some — excluded by filter.
+    table
+        .insert_auto_no_fk(|id| ZonedFilterOptEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: Some(Box3d::new([0, 0, 0], [5, 5, 5])),
+            active: false,
+        })
+        .unwrap();
+
+    // Only entity 0 (active + Some) in spatial queries.
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, 0);
+
+    // Deactivate entity 0 (true→false, Some spatial).
+    table
+        .update_no_fk(ZonedFilterOptEntity {
+            id: 0,
+            zone_id: ZoneId(1),
+            pos: Some(Box3d::new([0, 0, 0], [5, 5, 5])),
+            active: false,
+        })
+        .unwrap();
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert!(hits.is_empty());
+
+    // Activate entity 2 (false→true, Some spatial).
+    table
+        .update_no_fk(ZonedFilterOptEntity {
+            id: 2,
+            zone_id: ZoneId(1),
+            pos: Some(Box3d::new([0, 0, 0], [5, 5, 5])),
+            active: true,
+        })
+        .unwrap();
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, 2);
+}
+
+// --- Remove last none-entry cleans partition ---
+
+#[test]
+fn compound_spatial_remove_last_none_entry_cleans_partition() {
+    let mut table = ZonedOptEntityTable::new();
+
+    // Insert a single entity with pos: None in zone 1.
+    table
+        .insert_auto_no_fk(|id| ZonedOptEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: None,
+        })
+        .unwrap();
+
+    // Remove it — the partition (R-tree empty, none-set now empty) should be cleaned up.
+    table.remove_no_fk(&0).unwrap();
+
+    // Insert a new entity in zone 1 — partition should be recreated cleanly.
+    table
+        .insert_auto_no_fk(|id| ZonedOptEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: Some(Box3d::new([0, 0, 0], [5, 5, 5])),
+        })
+        .unwrap();
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, 1);
+}
+
+// --- Optional spatial prefix change with None value ---
+
+#[test]
+fn compound_spatial_update_prefix_change_with_none_spatial() {
+    let mut table = ZonedOptEntityTable::new();
+
+    // Insert with pos: None in zone 1.
+    table
+        .insert_auto_no_fk(|id| ZonedOptEntity {
+            id,
+            zone_id: ZoneId(1),
+            pos: None,
+        })
+        .unwrap();
+
+    // Change prefix (zone 1 → zone 2) while spatial stays None.
+    // This migrates the entry between none-set partitions.
+    table
+        .update_no_fk(ZonedOptEntity {
+            id: 0,
+            zone_id: ZoneId(2),
+            pos: None,
+        })
+        .unwrap();
+
+    // Zone 1 should be empty (partition cleaned up).
+    let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert!(hits.is_empty());
+    let count =
+        table.count_intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(count, 0);
+
+    // Entity still exists (just not in spatial queries since pos is None).
+    assert!(table.contains(&0));
+}
+
+// --- Compound PK + compound spatial ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Bounded)]
+struct RegionId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq)]
+#[primary_key("region", "slot")]
+#[index(name = "cat_pos", fields("category", "pos" spatial))]
+struct CompoundPkZonedEntity {
+    pub region: RegionId,
+    pub slot: SlotId,
+    pub category: u32,
+    pub pos: Box3d,
+}
+
+#[test]
+fn compound_spatial_with_compound_pk() {
+    let mut table = CompoundPkZonedEntityTable::new();
+
+    table
+        .insert_no_fk(CompoundPkZonedEntity {
+            region: RegionId(1),
+            slot: SlotId(1),
+            category: 10,
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+    table
+        .insert_no_fk(CompoundPkZonedEntity {
+            region: RegionId(1),
+            slot: SlotId(2),
+            category: 10,
+            pos: Box3d::new([10, 10, 10], [15, 15, 15]),
+        })
+        .unwrap();
+    table
+        .insert_no_fk(CompoundPkZonedEntity {
+            region: RegionId(2),
+            slot: SlotId(1),
+            category: 20,
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+
+    // Query category 10.
+    let hits = table.intersecting_by_cat_pos(&10, &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 2);
+    assert_eq!(hits[0].region, RegionId(1));
+    assert_eq!(hits[0].slot, SlotId(1));
+    assert_eq!(hits[1].region, RegionId(1));
+    assert_eq!(hits[1].slot, SlotId(2));
+
+    // Query category 20.
+    let hits = table.intersecting_by_cat_pos(&20, &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
+
+    // Update: change category (prefix change with compound PK).
+    table
+        .update_no_fk(CompoundPkZonedEntity {
+            region: RegionId(1),
+            slot: SlotId(1),
+            category: 20,
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+
+    let hits = table.intersecting_by_cat_pos(&10, &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
+    let hits = table.intersecting_by_cat_pos(&20, &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 2);
+
+    // Remove with compound PK.
+    table.remove_no_fk(&(RegionId(1), SlotId(1))).unwrap();
+    let hits = table.intersecting_by_cat_pos(&20, &Box3d::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
 }

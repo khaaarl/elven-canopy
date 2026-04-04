@@ -193,8 +193,22 @@ let count = table.count_intersecting_bounds(&envelope);
 Spatial indexes can also use struct-level syntax with filters:
 `#[index(name = "pos", fields("bounds"), kind = "spatial", filter = "is_alive")]`
 
-**Constraints:** Spatial indexes cannot be `unique`, cannot index PK fields,
-and are limited to one field (compound spatial indexes are not yet supported).
+**Compound spatial indexes** partition rows into separate R-trees keyed by
+one or more non-spatial prefix fields. Use per-field kind annotation:
+```rust
+// BTree prefix (default):
+#[index(name = "zone_pos", fields("zone_id", "pos" spatial))]
+// Hash prefix:
+#[index(name = "zone_pos", fields("zone_id" hash, "pos" spatial))]
+// Multi-prefix:
+#[index(name = "zone_civ_pos", fields("zone_id", "civ_id", "pos" spatial))]
+```
+Query methods take prefix fields as separate parameters:
+`table.intersecting_by_zone_pos(&zone_id, &envelope)`
+
+**Constraints:** Spatial indexes cannot be `unique`, cannot index PK fields.
+The spatial field must be the last field. All prefix fields must resolve to
+the same kind (btree or hash).
 
 **Serde:** Spatial indexes are transient — not serialized. They are rebuilt
 automatically from row data on deserialization.

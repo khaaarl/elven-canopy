@@ -7,6 +7,13 @@
 //! - Hash indexes from `#[indexed(hash)]`: `InsOrdHashMap<FieldType, OneOrMany<PK, Inner>>`
 //! - Unique indexes from `#[indexed(unique)]` or `#[indexed(hash, unique)]`
 //! - Compound indexes from `#[index(...)]` with optional `kind = "hash"`
+//! - Spatial indexes from `#[indexed(spatial)]` or `#[index(kind = "spatial")]`:
+//!   R-tree-backed intersection queries via `SpatialIndex`. `Option<T>` spatial
+//!   fields use a parallel none-set for rows where the field is `None`.
+//! - Compound spatial indexes from per-field kind annotations (e.g.,
+//!   `fields("zone_id", "pos" spatial)`): prefix fields partition rows into
+//!   separate R-trees via `BTreeMap<PrefixKey, SpatialIndex>` (or `InsOrdHashMap`
+//!   for hash prefixes). Query methods take prefix params + envelope.
 //! - Filtered indexes via optional `filter` on `#[index(...)]`
 //! - Tracked bounds per unique type across all indexes: `_bounds_{type}`
 //! - Public read methods (get, get_ref, contains, len, is_empty, keys, etc.)
@@ -195,6 +202,17 @@ impl PkInfo {
     }
 }
 
+/// Compound spatial index metadata — present only when an index has
+/// non-spatial prefix fields followed by a spatial tail field.
+struct CompoundSpatialInfo {
+    /// Indices into `ResolvedIndex.fields` for the non-spatial prefix fields.
+    prefix_field_indices: Vec<usize>,
+    /// Index into `ResolvedIndex.fields` for the spatial field (always last).
+    spatial_field_index: usize,
+    /// Resolved kind for the prefix map (BTree or Hash).
+    prefix_kind: IndexKind,
+}
+
 /// A resolved index — either from `#[indexed]` sugar or `#[index(...)]`.
 struct ResolvedIndex {
     name: String,
@@ -204,6 +222,9 @@ struct ResolvedIndex {
     is_unique: bool,
     /// The index backing storage kind: BTree, Hash, or Spatial.
     kind: IndexKind,
+    /// Compound spatial support. `None` for non-compound-spatial indexes
+    /// (including single-field spatial indexes).
+    compound_spatial: Option<CompoundSpatialInfo>,
 }
 
 /// Generate a hash key expression from field clones.
@@ -237,6 +258,129 @@ fn gen_one_or_many_iter(primary_storage: PrimaryStorageKind) -> Ident {
     match primary_storage {
         PrimaryStorageKind::BTree => format_ident!("iter_btree"),
         PrimaryStorageKind::Hash => format_ident!("iter_hash"),
+    }
+}
+
+/// Generate the prefix key type for a compound spatial index.
+/// Single prefix field: bare type. Multiple: tuple.
+fn gen_compound_prefix_key_ty(cs: &CompoundSpatialInfo, fields: &[(Ident, Type)]) -> TokenStream {
+    let prefix_tys: Vec<&Type> = cs
+        .prefix_field_indices
+        .iter()
+        .map(|&i| &fields[i].1)
+        .collect();
+    if prefix_tys.len() == 1 {
+        let ty = prefix_tys[0];
+        quote! { #ty }
+    } else {
+        quote! { (#(#prefix_tys),*) }
+    }
+}
+
+/// Generate the prefix key expression from a row variable for a compound spatial index.
+/// Single prefix field: `row.field.clone()`. Multiple: `(row.a.clone(), row.b.clone())`.
+fn gen_compound_prefix_key_expr(
+    cs: &CompoundSpatialInfo,
+    fields: &[(Ident, Type)],
+    row_var: &str,
+) -> TokenStream {
+    let row_ident = format_ident!("{}", row_var);
+    let clones: Vec<TokenStream> = cs
+        .prefix_field_indices
+        .iter()
+        .map(|&i| {
+            let fi = &fields[i].0;
+            quote! { #row_ident.#fi.clone() }
+        })
+        .collect();
+    if clones.len() == 1 {
+        clones[0].clone()
+    } else {
+        quote! { (#(#clones),*) }
+    }
+}
+
+/// Generate the compound spatial insert body: extract prefix key, get-or-create
+/// partition, then insert into R-tree or none-set.
+///
+/// Uses `entry().or_insert_with()` for BTreeMap prefixes, and a
+/// `get_mut / insert` pattern for InsOrdHashMap prefixes (which lack `entry()`).
+fn gen_compound_spatial_insert(
+    cs: &CompoundSpatialInfo,
+    idx: &ResolvedIndex,
+    primary_storage: PrimaryStorageKind,
+    row_var: &str,
+) -> TokenStream {
+    let idx_name = format_ident!("idx_{}", idx.name);
+    let none_name = format_ident!("idx_{}_none", idx.name);
+    let none_insert = gen_none_set_insert(primary_storage);
+    let spatial_fi = &idx.fields[cs.spatial_field_index].0;
+    let prefix_key_expr = gen_compound_prefix_key_expr(cs, &idx.fields, row_var);
+    let row_ident = format_ident!("{}", row_var);
+
+    match cs.prefix_kind {
+        IndexKind::BTree => {
+            let none_set_new = gen_none_set_new(primary_storage);
+            quote! {
+                let __prefix_key = #prefix_key_expr;
+                match ::tabulosity::MaybeSpatialKey::as_spatial(&#row_ident.#spatial_fi) {
+                    ::std::option::Option::Some(__key) => {
+                        self.#idx_name
+                            .entry(__prefix_key)
+                            .or_insert_with(|| ::tabulosity::SpatialIndex::new())
+                            .insert(__key, pk.clone());
+                    }
+                    ::std::option::Option::None => {
+                        self.#none_name
+                            .entry(__prefix_key)
+                            .or_insert_with(|| #none_set_new)
+                            .#none_insert;
+                    }
+                }
+            }
+        }
+        IndexKind::Hash => {
+            // InsOrdHashMap has no entry() API — use get_mut/insert pattern.
+            let none_set_new = gen_none_set_new(primary_storage);
+            quote! {
+                let __prefix_key = #prefix_key_expr;
+                match ::tabulosity::MaybeSpatialKey::as_spatial(&#row_ident.#spatial_fi) {
+                    ::std::option::Option::Some(__key) => {
+                        match self.#idx_name.get_mut(&__prefix_key) {
+                            ::std::option::Option::Some(__p) => {
+                                __p.insert(__key, pk.clone());
+                            }
+                            ::std::option::Option::None => {
+                                let mut __p = ::tabulosity::SpatialIndex::new();
+                                __p.insert(__key, pk.clone());
+                                self.#idx_name.insert(__prefix_key, __p);
+                            }
+                        }
+                    }
+                    ::std::option::Option::None => {
+                        match self.#none_name.get_mut(&__prefix_key) {
+                            ::std::option::Option::Some(__ns) => {
+                                __ns.#none_insert;
+                            }
+                            ::std::option::Option::None => {
+                                let mut __ns = #none_set_new;
+                                __ns.#none_insert;
+                                self.#none_name.insert(__prefix_key, __ns);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        IndexKind::Spatial => unreachable!("prefix kind cannot be Spatial"),
+    }
+}
+
+/// Generate a constructor expression for a spatial index's none-set.
+fn gen_none_set_new(primary_storage: PrimaryStorageKind) -> TokenStream {
+    match primary_storage {
+        PrimaryStorageKind::BTree => quote! { ::std::collections::BTreeSet::new() },
+        PrimaryStorageKind::Hash => quote! { ::tabulosity::InsOrdHashMap::new() },
     }
 }
 
@@ -868,6 +1012,7 @@ fn resolve_indexes(
                 filter: None,
                 is_unique: f.is_unique,
                 kind: f.index_kind,
+                compound_spatial: None,
             });
         }
     }
@@ -880,18 +1025,131 @@ fn resolve_indexes(
         let idx_fields: Vec<(Ident, Type)> = decl
             .fields
             .iter()
-            .map(|fname| {
-                let f = fields.iter().find(|f| f.ident == fname.as_str()).unwrap();
+            .map(|fd| {
+                let f = fields.iter().find(|f| f.ident == fd.name.as_str()).unwrap();
                 (f.ident.clone(), f.ty.clone())
             })
             .collect();
+
+        // Resolve per-field kinds and detect compound spatial indexes.
+        let resolved_kinds: Vec<IndexKind> = decl
+            .fields
+            .iter()
+            .map(|fd| fd.kind_override.unwrap_or(decl.kind))
+            .collect();
+
+        // Find spatial fields.
+        let spatial_indices: Vec<usize> = resolved_kinds
+            .iter()
+            .enumerate()
+            .filter(|(_, k)| **k == IndexKind::Spatial)
+            .map(|(i, _)| i)
+            .collect();
+
+        if spatial_indices.len() > 1 {
+            // Check if all fields inherited spatial from the index-level kind.
+            let all_inherited = decl.kind == IndexKind::Spatial
+                && decl.fields.iter().all(|fd| fd.kind_override.is_none());
+            if all_inherited {
+                return Err(syn::Error::new_spanned(
+                    input,
+                    format!(
+                        "index `{}`: index-level kind = \"spatial\" cannot be used with multiple fields; \
+                         use per-field spatial annotation on the spatial field instead \
+                         (e.g., fields(\"a\", \"b\" spatial))",
+                        decl.name
+                    ),
+                ));
+            }
+            return Err(syn::Error::new_spanned(
+                input,
+                format!("index `{}`: at most one field may be `spatial`", decl.name),
+            ));
+        }
+
+        let (resolved_kind, compound_spatial) = if let Some(&spatial_idx) = spatial_indices.first()
+        {
+            // Validate spatial field is last.
+            if spatial_idx != decl.fields.len() - 1 {
+                return Err(syn::Error::new_spanned(
+                    input,
+                    format!(
+                        "index `{}`: the spatial field must be the last field in fields(...)",
+                        decl.name
+                    ),
+                ));
+            }
+
+            if decl.fields.len() == 1 {
+                // Single-field spatial — no compound info needed.
+                (IndexKind::Spatial, None)
+            } else {
+                // Compound spatial: validate all prefix fields have the same kind.
+                let prefix_kinds: Vec<IndexKind> = resolved_kinds[..spatial_idx].to_vec();
+                let first_prefix_kind = prefix_kinds[0];
+                if first_prefix_kind == IndexKind::Spatial {
+                    return Err(syn::Error::new_spanned(
+                        input,
+                        format!(
+                            "index `{}`: prefix fields cannot be spatial; only the last field can be spatial",
+                            decl.name
+                        ),
+                    ));
+                }
+                for (i, pk) in prefix_kinds.iter().enumerate().skip(1) {
+                    if *pk != first_prefix_kind {
+                        return Err(syn::Error::new_spanned(
+                            input,
+                            format!(
+                                "index `{}`: all prefix fields must have the same kind, but field `{}` \
+                                 is {:?} while field `{}` is {:?}; set the index-level `kind` or annotate \
+                                 each prefix field explicitly",
+                                decl.name,
+                                decl.fields[0].name,
+                                first_prefix_kind,
+                                decl.fields[i].name,
+                                pk,
+                            ),
+                        ));
+                    }
+                }
+
+                let prefix_field_indices = (0..spatial_idx).collect();
+                (
+                    IndexKind::Spatial,
+                    Some(CompoundSpatialInfo {
+                        prefix_field_indices,
+                        spatial_field_index: spatial_idx,
+                        prefix_kind: first_prefix_kind,
+                    }),
+                )
+            }
+        } else {
+            // No spatial field — use the index-level kind as-is.
+            (decl.kind, None)
+        };
+
+        // Spatial indexes (including compound spatial detected via per-field
+        // annotation) cannot be unique. The parse-time check only catches
+        // `kind = "spatial"` + `unique`; per-field annotation resolves to
+        // Spatial at resolution time, so we need a post-resolution check.
+        if resolved_kind == IndexKind::Spatial && decl.unique {
+            return Err(syn::Error::new_spanned(
+                input,
+                format!(
+                    "index `{}`: spatial indexes cannot be unique; spatial queries use intersection, not equality",
+                    decl.name
+                ),
+            ));
+        }
 
         resolved.push(ResolvedIndex {
             name: decl.name.clone(),
             fields: idx_fields,
             filter: decl.filter.clone(),
             is_unique: decl.unique,
-            kind: decl.kind,
+            kind: resolved_kind,
+            compound_spatial,
         });
     }
 
@@ -919,15 +1177,15 @@ fn validate_index_decl(
         .iter()
         .map(|(id, _)| id.to_string())
         .collect();
-    for fname in &decl.fields {
-        let field = fields.iter().find(|f| f.ident == fname.as_str());
+    for fd in &decl.fields {
+        let field = fields.iter().find(|f| f.ident == fd.name.as_str());
         match field {
             None => {
                 return Err(syn::Error::new_spanned(
                     input,
                     format!(
                         "index `{}`: field `{}` does not exist on the struct",
-                        decl.name, fname
+                        decl.name, fd.name
                     ),
                 ));
             }
@@ -936,7 +1194,7 @@ fn validate_index_decl(
                     input,
                     format!(
                         "index `{}`: field '{}' is part of the primary key and is automatically included in every index; remove it from fields(...)",
-                        decl.name, fname
+                        decl.name, fd.name
                     ),
                 ));
             }
@@ -987,8 +1245,27 @@ fn collect_unique_tracked_types(indexes: &[ResolvedIndex], pk_info: &PkInfo) -> 
     let mut seen = std::collections::BTreeSet::new();
 
     for idx in indexes {
-        // Hash and spatial indexes don't need bounds tracking.
-        if idx.kind == IndexKind::Hash || idx.kind == IndexKind::Spatial {
+        // Hash indexes don't need bounds tracking.
+        if idx.kind == IndexKind::Hash {
+            continue;
+        }
+        // Spatial indexes: single-field spatial doesn't need bounds tracking.
+        // Compound spatial with btree prefix does need it for prefix fields.
+        if idx.kind == IndexKind::Spatial {
+            if let Some(cs) = &idx.compound_spatial
+                && cs.prefix_kind == IndexKind::BTree
+            {
+                for &i in &cs.prefix_field_indices {
+                    let ty = &idx.fields[i].1;
+                    let suffix = type_suffix(ty);
+                    if seen.insert(suffix.clone()) {
+                        result.push(TrackedType {
+                            bounds_suffix: suffix,
+                            ty: ty.clone(),
+                        });
+                    }
+                }
+            }
             continue;
         }
         for (_, ty) in &idx.fields {
@@ -1065,19 +1342,8 @@ fn gen_idx_field_decls(
                 }
             }
             IndexKind::Spatial => {
-                // Spatial index: the field type implements SpatialKey (or
-                // Option<T> where T: SpatialKey). We use MaybeSpatialKey to
-                // extract the inner key type for the SpatialIndex generic.
-                let field_ty = field_tys[0];
-                result.push(quote! {
-                    #idx_name: ::tabulosity::SpatialIndex<
-                        #key_ty,
-                        <<#field_ty as ::tabulosity::MaybeSpatialKey>::Key as ::tabulosity::SpatialKey>::Point,
-                    >
-                });
-                // None-set: stores PKs for rows where the spatial field is None.
                 let none_name = format_ident!("idx_{}_none", idx.name);
-                let none_ty = match primary_storage {
+                let none_set_ty = match primary_storage {
                     PrimaryStorageKind::BTree => {
                         quote! { ::std::collections::BTreeSet<#key_ty> }
                     }
@@ -1085,9 +1351,53 @@ fn gen_idx_field_decls(
                         quote! { ::tabulosity::InsOrdHashMap<#key_ty, ()> }
                     }
                 };
-                result.push(quote! {
-                    #none_name: #none_ty
-                });
+
+                if let Some(cs) = &idx.compound_spatial {
+                    // Compound spatial: Map<PrefixKey, SpatialIndex<PK, Point>>
+                    let spatial_field_ty = &idx.fields[cs.spatial_field_index].1;
+                    let prefix_key_ty = gen_compound_prefix_key_ty(cs, &idx.fields);
+
+                    let (outer_map_ty, outer_none_map_ty) = match cs.prefix_kind {
+                        IndexKind::BTree => (
+                            quote! {
+                                ::std::collections::BTreeMap<#prefix_key_ty, ::tabulosity::SpatialIndex<
+                                    #key_ty,
+                                    <<#spatial_field_ty as ::tabulosity::MaybeSpatialKey>::Key as ::tabulosity::SpatialKey>::Point,
+                                >>
+                            },
+                            quote! {
+                                ::std::collections::BTreeMap<#prefix_key_ty, #none_set_ty>
+                            },
+                        ),
+                        IndexKind::Hash => (
+                            quote! {
+                                ::tabulosity::InsOrdHashMap<#prefix_key_ty, ::tabulosity::SpatialIndex<
+                                    #key_ty,
+                                    <<#spatial_field_ty as ::tabulosity::MaybeSpatialKey>::Key as ::tabulosity::SpatialKey>::Point,
+                                >>
+                            },
+                            quote! {
+                                ::tabulosity::InsOrdHashMap<#prefix_key_ty, #none_set_ty>
+                            },
+                        ),
+                        IndexKind::Spatial => unreachable!("prefix kind cannot be Spatial"),
+                    };
+
+                    result.push(quote! { #idx_name: #outer_map_ty });
+                    result.push(quote! { #none_name: #outer_none_map_ty });
+                } else {
+                    // Single-field spatial index.
+                    let field_ty = field_tys[0];
+                    result.push(quote! {
+                        #idx_name: ::tabulosity::SpatialIndex<
+                            #key_ty,
+                            <<#field_ty as ::tabulosity::MaybeSpatialKey>::Key as ::tabulosity::SpatialKey>::Point,
+                        >
+                    });
+                    result.push(quote! {
+                        #none_name: #none_set_ty
+                    });
+                }
             }
         }
     }
@@ -1120,14 +1430,29 @@ fn gen_idx_field_inits(
                 result.push(quote! { #idx_name: ::tabulosity::InsOrdHashMap::new() });
             }
             IndexKind::Spatial => {
-                result.push(quote! { #idx_name: ::tabulosity::SpatialIndex::new() });
                 let none_name = format_ident!("idx_{}_none", idx.name);
-                match primary_storage {
-                    PrimaryStorageKind::BTree => {
-                        result.push(quote! { #none_name: ::std::collections::BTreeSet::new() });
+                if let Some(cs) = &idx.compound_spatial {
+                    // Compound spatial: initialize outer maps to empty.
+                    match cs.prefix_kind {
+                        IndexKind::BTree => {
+                            result.push(quote! { #idx_name: ::std::collections::BTreeMap::new() });
+                            result.push(quote! { #none_name: ::std::collections::BTreeMap::new() });
+                        }
+                        IndexKind::Hash => {
+                            result.push(quote! { #idx_name: ::tabulosity::InsOrdHashMap::new() });
+                            result.push(quote! { #none_name: ::tabulosity::InsOrdHashMap::new() });
+                        }
+                        IndexKind::Spatial => unreachable!("prefix kind cannot be Spatial"),
                     }
-                    PrimaryStorageKind::Hash => {
-                        result.push(quote! { #none_name: ::tabulosity::InsOrdHashMap::new() });
+                } else {
+                    result.push(quote! { #idx_name: ::tabulosity::SpatialIndex::new() });
+                    match primary_storage {
+                        PrimaryStorageKind::BTree => {
+                            result.push(quote! { #none_name: ::std::collections::BTreeSet::new() });
+                        }
+                        PrimaryStorageKind::Hash => {
+                            result.push(quote! { #none_name: ::tabulosity::InsOrdHashMap::new() });
+                        }
                     }
                 }
             }
@@ -1162,8 +1487,40 @@ fn gen_bounds_widen(
     let mut seen_fields = std::collections::BTreeSet::new();
 
     for idx in indexes {
-        // Hash and spatial indexes don't need bounds tracking.
-        if idx.kind == IndexKind::Hash || idx.kind == IndexKind::Spatial {
+        // Hash indexes don't need bounds tracking.
+        if idx.kind == IndexKind::Hash {
+            continue;
+        }
+        // Spatial indexes: only compound spatial with btree prefix needs
+        // bounds widening, and only for prefix fields.
+        if idx.kind == IndexKind::Spatial {
+            if let Some(cs) = &idx.compound_spatial
+                && cs.prefix_kind == IndexKind::BTree
+            {
+                for &i in &cs.prefix_field_indices {
+                    let field_ident = &idx.fields[i].0;
+                    let f = all_fields.iter().find(|f| &f.ident == field_ident).unwrap();
+                    let suffix = type_suffix(&f.ty);
+                    let key = field_ident.to_string();
+                    if seen_fields.insert(key) {
+                        let bounds_name = format_ident!("_bounds_{}", suffix);
+                        wideners.push(quote! {
+                            match &mut self.#bounds_name {
+                                ::std::option::Option::Some((lo, hi)) => {
+                                    if row.#field_ident < *lo { *lo = row.#field_ident.clone(); }
+                                    if row.#field_ident > *hi { *hi = row.#field_ident.clone(); }
+                                }
+                                ::std::option::Option::None => {
+                                    self.#bounds_name = ::std::option::Option::Some((
+                                        row.#field_ident.clone(),
+                                        row.#field_ident.clone(),
+                                    ));
+                                }
+                            }
+                        });
+                    }
+                }
+            }
             continue;
         }
         for (field_ident, _) in &idx.fields {
@@ -1562,17 +1919,21 @@ fn gen_idx_insert(
             }
         }
         IndexKind::Spatial => {
-            let fi = &idx.fields[0].0;
-            let none_name = format_ident!("idx_{}_none", idx.name);
-            let none_insert = gen_none_set_insert(primary_storage);
-            // `pk` variable is in scope from the calling insert_no_fk method.
-            quote! {
-                match ::tabulosity::MaybeSpatialKey::as_spatial(&row.#fi) {
-                    ::std::option::Option::Some(__key) => {
-                        self.#idx_name.insert(__key, pk.clone());
-                    }
-                    ::std::option::Option::None => {
-                        self.#none_name.#none_insert;
+            if let Some(cs) = &idx.compound_spatial {
+                gen_compound_spatial_insert(cs, idx, primary_storage, "row")
+            } else {
+                let none_name = format_ident!("idx_{}_none", idx.name);
+                let none_insert = gen_none_set_insert(primary_storage);
+                let fi = &idx.fields[0].0;
+                // `pk` variable is in scope from the calling insert_no_fk method.
+                quote! {
+                    match ::tabulosity::MaybeSpatialKey::as_spatial(&row.#fi) {
+                        ::std::option::Option::Some(__key) => {
+                            self.#idx_name.insert(__key, pk.clone());
+                        }
+                        ::std::option::Option::None => {
+                            self.#none_name.#none_insert;
+                        }
                     }
                 }
             }
@@ -1665,34 +2026,135 @@ fn gen_idx_update(
             }
         }
         IndexKind::Spatial => {
-            let fi = &idx.fields[0].0;
             let none_name = format_ident!("idx_{}_none", idx.name);
-            let none_insert = gen_none_set_insert(primary_storage);
             let none_remove = gen_none_set_remove(primary_storage);
 
-            // Remove from old location (R-tree or none-set).
-            let remove_stmt = quote! {
-                match ::tabulosity::MaybeSpatialKey::as_spatial(&old_row.#fi) {
-                    ::std::option::Option::Some(__key) => {
-                        self.#idx_name.remove(__key, &pk);
+            if let Some(cs) = &idx.compound_spatial {
+                // Compound spatial: bypass gen_idx_update_with_stmts and implement
+                // full four-branch filter logic with prefix/spatial change detection.
+                let spatial_fi = &idx.fields[cs.spatial_field_index].0;
+                let old_prefix_expr = gen_compound_prefix_key_expr(cs, &idx.fields, "old_row");
+
+                // Prefix changed check.
+                let prefix_changed_checks: Vec<TokenStream> = cs
+                    .prefix_field_indices
+                    .iter()
+                    .map(|&i| {
+                        let fi = &idx.fields[i].0;
+                        quote! { old_row.#fi != row.#fi }
+                    })
+                    .collect();
+
+                // Remove from old partition.
+                let remove_from_old = quote! {
+                    let __old_prefix = #old_prefix_expr;
+                    match ::tabulosity::MaybeSpatialKey::as_spatial(&old_row.#spatial_fi) {
+                        ::std::option::Option::Some(__key) => {
+                            if let ::std::option::Option::Some(__p) = self.#idx_name.get_mut(&__old_prefix) {
+                                __p.remove(__key, &pk);
+                            }
+                        }
+                        ::std::option::Option::None => {
+                            if let ::std::option::Option::Some(__ns) = self.#none_name.get_mut(&__old_prefix) {
+                                __ns.#none_remove;
+                            }
+                        }
                     }
-                    ::std::option::Option::None => {
-                        self.#none_name.#none_remove;
+                };
+
+                // Partition cleanup for old prefix (only needed when prefix changed).
+                let partition_cleanup = quote! {
+                    if __prefix_changed {
+                        let __rtree_empty = self.#idx_name
+                            .get(&__old_prefix).map_or(true, |p| p.is_empty());
+                        let __none_empty = self.#none_name
+                            .get(&__old_prefix).map_or(true, |s| s.is_empty());
+                        if __rtree_empty && __none_empty {
+                            self.#idx_name.remove(&__old_prefix);
+                            self.#none_name.remove(&__old_prefix);
+                        }
+                    }
+                };
+
+                // Insert into new partition (reuses the compound spatial insert helper).
+                let insert_into_new = gen_compound_spatial_insert(cs, idx, primary_storage, "row");
+
+                // Remove-only with cleanup (for filter true→false).
+                let remove_only_with_cleanup = quote! {
+                    #remove_from_old
+                    // Always check cleanup when removing without reinserting.
+                    {
+                        let __prefix_changed = true;
+                        #partition_cleanup
+                    }
+                };
+
+                let true_true_body = quote! {
+                    let __prefix_changed = #(#prefix_changed_checks)||*;
+                    let __spatial_changed = old_row.#spatial_fi != row.#spatial_fi;
+                    if __prefix_changed || __spatial_changed {
+                        #remove_from_old
+                        #partition_cleanup
+                        #insert_into_new
+                    }
+                };
+
+                match &idx.filter {
+                    Some(filter_path) => {
+                        let filter_fn: syn::ExprPath = syn::parse_str(filter_path).unwrap();
+                        quote! {
+                            {
+                                let old_passes = #filter_fn(&old_row);
+                                let new_passes = #filter_fn(&row);
+                                match (old_passes, new_passes) {
+                                    (true, true) => {
+                                        #true_true_body
+                                    }
+                                    (true, false) => {
+                                        #remove_only_with_cleanup
+                                    }
+                                    (false, true) => {
+                                        #insert_into_new
+                                    }
+                                    (false, false) => {}
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        quote! {
+                            #true_true_body
+                        }
                     }
                 }
-            };
-            // Insert at new location (R-tree or none-set).
-            let insert_stmt = quote! {
-                match ::tabulosity::MaybeSpatialKey::as_spatial(&row.#fi) {
-                    ::std::option::Option::Some(__key) => {
-                        self.#idx_name.insert(__key, pk.clone());
+            } else {
+                let none_insert = gen_none_set_insert(primary_storage);
+                let fi = &idx.fields[0].0;
+
+                // Remove from old location (R-tree or none-set).
+                let remove_stmt = quote! {
+                    match ::tabulosity::MaybeSpatialKey::as_spatial(&old_row.#fi) {
+                        ::std::option::Option::Some(__key) => {
+                            self.#idx_name.remove(__key, &pk);
+                        }
+                        ::std::option::Option::None => {
+                            self.#none_name.#none_remove;
+                        }
                     }
-                    ::std::option::Option::None => {
-                        self.#none_name.#none_insert;
+                };
+                // Insert at new location (R-tree or none-set).
+                let insert_stmt = quote! {
+                    match ::tabulosity::MaybeSpatialKey::as_spatial(&row.#fi) {
+                        ::std::option::Option::Some(__key) => {
+                            self.#idx_name.insert(__key, pk.clone());
+                        }
+                        ::std::option::Option::None => {
+                            self.#none_name.#none_insert;
+                        }
                     }
-                }
-            };
-            gen_idx_update_with_stmts(idx, &field_changed_check, &remove_stmt, &insert_stmt)
+                };
+                gen_idx_update_with_stmts(idx, &field_changed_check, &remove_stmt, &insert_stmt)
+            }
         }
     }
 }
@@ -1779,16 +2241,47 @@ fn gen_idx_remove(
             }
         }
         IndexKind::Spatial => {
-            let fi = &idx.fields[0].0;
             let none_name = format_ident!("idx_{}_none", idx.name);
             let none_remove = gen_none_set_remove(primary_storage);
-            quote! {
-                match ::tabulosity::MaybeSpatialKey::as_spatial(&row.#fi) {
-                    ::std::option::Option::Some(__key) => {
-                        self.#idx_name.remove(__key, &pk);
+
+            if let Some(cs) = &idx.compound_spatial {
+                let spatial_fi = &idx.fields[cs.spatial_field_index].0;
+                let prefix_key_expr = gen_compound_prefix_key_expr(cs, &idx.fields, "row");
+
+                quote! {
+                    let __prefix = #prefix_key_expr;
+                    match ::tabulosity::MaybeSpatialKey::as_spatial(&row.#spatial_fi) {
+                        ::std::option::Option::Some(__key) => {
+                            if let ::std::option::Option::Some(__partition) = self.#idx_name.get_mut(&__prefix) {
+                                __partition.remove(__key, &pk);
+                            }
+                        }
+                        ::std::option::Option::None => {
+                            if let ::std::option::Option::Some(__none_set) = self.#none_name.get_mut(&__prefix) {
+                                __none_set.#none_remove;
+                            }
+                        }
                     }
-                    ::std::option::Option::None => {
-                        self.#none_name.#none_remove;
+                    // Partition cleanup: remove empty partitions.
+                    let __rtree_empty = self.#idx_name
+                        .get(&__prefix).map_or(true, |p| p.is_empty());
+                    let __none_empty = self.#none_name
+                        .get(&__prefix).map_or(true, |s| s.is_empty());
+                    if __rtree_empty && __none_empty {
+                        self.#idx_name.remove(&__prefix);
+                        self.#none_name.remove(&__prefix);
+                    }
+                }
+            } else {
+                let fi = &idx.fields[0].0;
+                quote! {
+                    match ::tabulosity::MaybeSpatialKey::as_spatial(&row.#fi) {
+                        ::std::option::Option::Some(__key) => {
+                            self.#idx_name.remove(__key, &pk);
+                        }
+                        ::std::option::Option::None => {
+                            self.#none_name.#none_remove;
+                        }
                     }
                 }
             }
@@ -2100,16 +2593,21 @@ fn gen_rebuild_body(
                     }
                 }
                 IndexKind::Spatial => {
-                    let fi = &idx.fields[0].0;
                     let none_name = format_ident!("idx_{}_none", idx.name);
                     let none_insert = gen_none_set_insert(primary_storage);
-                    quote! {
-                        match ::tabulosity::MaybeSpatialKey::as_spatial(&row.#fi) {
-                            ::std::option::Option::Some(__key) => {
-                                self.#idx_name.insert(__key, pk.clone());
-                            }
-                            ::std::option::Option::None => {
-                                self.#none_name.#none_insert;
+
+                    if let Some(cs) = &idx.compound_spatial {
+                        gen_compound_spatial_insert(cs, idx, primary_storage, "row")
+                    } else {
+                        let fi = &idx.fields[0].0;
+                        quote! {
+                            match ::tabulosity::MaybeSpatialKey::as_spatial(&row.#fi) {
+                                ::std::option::Option::Some(__key) => {
+                                    self.#idx_name.insert(__key, pk.clone());
+                                }
+                                ::std::option::Option::None => {
+                                    self.#none_name.#none_insert;
+                                }
                             }
                         }
                     }
@@ -2299,40 +2797,112 @@ fn gen_spatial_query_methods(
     pk_info: &PkInfo,
     row_name: &Ident,
 ) -> TokenStream {
-    let intersecting_fn = format_ident!("intersecting_{}", idx.name);
-    let iter_intersecting_fn = format_ident!("iter_intersecting_{}", idx.name);
-    let count_intersecting_fn = format_ident!("count_intersecting_{}", idx.name);
     let idx_name = format_ident!("idx_{}", idx.name);
     let key_ty = pk_info.key_type();
-    let field_ty = &idx.fields[0].1;
 
-    // The query parameter type is the inner SpatialKey type (sans Option).
-    // MaybeSpatialKey::Key gives us this.
-    let envelope_ty = quote! { <#field_ty as ::tabulosity::MaybeSpatialKey>::Key };
+    if let Some(cs) = &idx.compound_spatial {
+        // Compound spatial: query methods take prefix field params + envelope.
+        let intersecting_fn = format_ident!("intersecting_by_{}", idx.name);
+        let iter_intersecting_fn = format_ident!("iter_intersecting_by_{}", idx.name);
+        let count_intersecting_fn = format_ident!("count_intersecting_by_{}", idx.name);
 
-    quote! {
-        /// Returns cloned rows whose spatial key intersects the given envelope,
-        /// sorted by primary key.
-        pub fn #intersecting_fn(&self, __envelope: &#envelope_ty) -> ::std::vec::Vec<#row_name> {
-            let __pks: ::std::vec::Vec<#key_ty> = self.#idx_name.intersecting(__envelope);
-            __pks.into_iter()
-                .filter_map(|__pk| self.rows.get(&__pk).cloned())
-                .collect()
-        }
+        let spatial_field_ty = &idx.fields[cs.spatial_field_index].1;
+        let envelope_ty = quote! { <#spatial_field_ty as ::tabulosity::MaybeSpatialKey>::Key };
 
-        /// Returns a boxed iterator over references to rows whose spatial key
-        /// intersects the given envelope, sorted by primary key.
-        pub fn #iter_intersecting_fn(&self, __envelope: &#envelope_ty) -> ::std::boxed::Box<dyn ::std::iter::Iterator<Item = &#row_name> + '_> {
-            let __pks: ::std::vec::Vec<#key_ty> = self.#idx_name.intersecting(__envelope);
-            ::std::boxed::Box::new(
+        // Prefix field params: each prefix field is a separate `&Type` parameter.
+        let prefix_params: Vec<TokenStream> = cs
+            .prefix_field_indices
+            .iter()
+            .map(|&i| {
+                let fi = &idx.fields[i].0;
+                let ty = &idx.fields[i].1;
+                quote! { #fi: &#ty }
+            })
+            .collect();
+
+        // Build partition lookup key expression.
+        let prefix_lookup_key = if cs.prefix_field_indices.len() == 1 {
+            let fi = &idx.fields[cs.prefix_field_indices[0]].0;
+            quote! { #fi }
+        } else {
+            let clones: Vec<TokenStream> = cs
+                .prefix_field_indices
+                .iter()
+                .map(|&i| {
+                    let fi = &idx.fields[i].0;
+                    quote! { #fi.clone() }
+                })
+                .collect();
+            quote! { &(#(#clones),*) }
+        };
+
+        quote! {
+            /// Returns cloned rows in the partition whose spatial key intersects
+            /// the envelope, sorted by primary key.
+            pub fn #intersecting_fn(&self, #(#prefix_params,)* __envelope: &#envelope_ty) -> ::std::vec::Vec<#row_name> {
+                let __partition = match self.#idx_name.get(#prefix_lookup_key) {
+                    ::std::option::Option::Some(p) => p,
+                    ::std::option::Option::None => return ::std::vec::Vec::new(),
+                };
+                let __pks: ::std::vec::Vec<#key_ty> = __partition.intersecting(__envelope);
                 __pks.into_iter()
-                    .filter_map(move |__pk| self.rows.get(&__pk))
-            )
-        }
+                    .filter_map(|__pk| self.rows.get(&__pk).cloned())
+                    .collect()
+            }
 
-        /// Returns the count of rows whose spatial key intersects the given envelope.
-        pub fn #count_intersecting_fn(&self, __envelope: &#envelope_ty) -> usize {
-            self.#idx_name.count_intersecting(__envelope)
+            /// Iterator variant.
+            pub fn #iter_intersecting_fn(&self, #(#prefix_params,)* __envelope: &#envelope_ty) -> ::std::boxed::Box<dyn ::std::iter::Iterator<Item = &#row_name> + '_> {
+                let __partition = match self.#idx_name.get(#prefix_lookup_key) {
+                    ::std::option::Option::Some(p) => p,
+                    ::std::option::Option::None => return ::std::boxed::Box::new(::std::iter::empty()),
+                };
+                let __pks: ::std::vec::Vec<#key_ty> = __partition.intersecting(__envelope);
+                ::std::boxed::Box::new(
+                    __pks.into_iter()
+                        .filter_map(move |__pk| self.rows.get(&__pk))
+                )
+            }
+
+            /// Count variant — no allocation (beyond R-tree traversal).
+            pub fn #count_intersecting_fn(&self, #(#prefix_params,)* __envelope: &#envelope_ty) -> usize {
+                match self.#idx_name.get(#prefix_lookup_key) {
+                    ::std::option::Option::Some(p) => p.count_intersecting(__envelope),
+                    ::std::option::Option::None => 0,
+                }
+            }
+        }
+    } else {
+        // Single-field spatial: existing query shape.
+        let intersecting_fn = format_ident!("intersecting_{}", idx.name);
+        let iter_intersecting_fn = format_ident!("iter_intersecting_{}", idx.name);
+        let count_intersecting_fn = format_ident!("count_intersecting_{}", idx.name);
+        let field_ty = &idx.fields[0].1;
+        let envelope_ty = quote! { <#field_ty as ::tabulosity::MaybeSpatialKey>::Key };
+
+        quote! {
+            /// Returns cloned rows whose spatial key intersects the given envelope,
+            /// sorted by primary key.
+            pub fn #intersecting_fn(&self, __envelope: &#envelope_ty) -> ::std::vec::Vec<#row_name> {
+                let __pks: ::std::vec::Vec<#key_ty> = self.#idx_name.intersecting(__envelope);
+                __pks.into_iter()
+                    .filter_map(|__pk| self.rows.get(&__pk).cloned())
+                    .collect()
+            }
+
+            /// Returns a boxed iterator over references to rows whose spatial key
+            /// intersects the given envelope, sorted by primary key.
+            pub fn #iter_intersecting_fn(&self, __envelope: &#envelope_ty) -> ::std::boxed::Box<dyn ::std::iter::Iterator<Item = &#row_name> + '_> {
+                let __pks: ::std::vec::Vec<#key_ty> = self.#idx_name.intersecting(__envelope);
+                ::std::boxed::Box::new(
+                    __pks.into_iter()
+                        .filter_map(move |__pk| self.rows.get(&__pk))
+                )
+            }
+
+            /// Returns the count of rows whose spatial key intersects the given envelope.
+            pub fn #count_intersecting_fn(&self, __envelope: &#envelope_ty) -> usize {
+                self.#idx_name.count_intersecting(__envelope)
+            }
         }
     }
 }

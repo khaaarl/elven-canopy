@@ -3122,3 +3122,66 @@ fn spatial_index_filtered_serde_roundtrip() {
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].id, SpatialEntityId(1));
 }
+
+// =============================================================================
+// Compound spatial index serde roundtrip
+// =============================================================================
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Bounded, Serialize, Deserialize,
+)]
+struct SerdeZoneId(u32);
+
+#[derive(Table, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[index(name = "zone_pos", fields("zone_id", "pos" spatial))]
+struct CompoundSpatialEntity {
+    #[primary_key]
+    pub id: SpatialEntityId,
+    pub zone_id: SerdeZoneId,
+    pub pos: SBox,
+}
+
+#[test]
+fn compound_spatial_index_serde_roundtrip() {
+    let mut table = CompoundSpatialEntityTable::new();
+    table
+        .insert_no_fk(CompoundSpatialEntity {
+            id: SpatialEntityId(1),
+            zone_id: SerdeZoneId(10),
+            pos: SBox::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
+    table
+        .insert_no_fk(CompoundSpatialEntity {
+            id: SpatialEntityId(2),
+            zone_id: SerdeZoneId(20),
+            pos: SBox::new([10, 10, 10], [15, 15, 15]),
+        })
+        .unwrap();
+
+    // Verify before serialization.
+    let hits =
+        table.intersecting_by_zone_pos(&SerdeZoneId(10), &SBox::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, SpatialEntityId(1));
+
+    // Serialize and deserialize.
+    let json = serde_json::to_string(&table).unwrap();
+    let restored: CompoundSpatialEntityTable = serde_json::from_str(&json).unwrap();
+
+    // Verify spatial queries work after deserialization (partitioned R-trees rebuilt).
+    let hits =
+        restored.intersecting_by_zone_pos(&SerdeZoneId(10), &SBox::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, SpatialEntityId(1));
+
+    let hits =
+        restored.intersecting_by_zone_pos(&SerdeZoneId(20), &SBox::new([0, 0, 0], [100, 100, 100]));
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, SpatialEntityId(2));
+
+    // Nonexistent zone after rebuild.
+    let hits =
+        restored.intersecting_by_zone_pos(&SerdeZoneId(99), &SBox::new([0, 0, 0], [100, 100, 100]));
+    assert!(hits.is_empty());
+}

@@ -264,7 +264,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tab-nested-idx       Tabulosity general nested multi-kind compound indexes
 [ ] F-tab-row-crc          Per-row CRC with XOR table aggregation for incremental checksums
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
-[ ] F-tab-spatial-2        Tabulosity spatial index — compound spatial indexes
 [ ] F-tab-spatial-3        Tabulosity spatial index — range, KNN, and None-set queries
 [ ] F-tame-aggro           Taming failure can aggro the target animal
 [ ] F-task-assign-opt      Event-driven bidirectional task assignment
@@ -548,6 +547,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-tab-query-opts       Query options struct for index queries
 [x] F-tab-schema-ver       Schema versioning fundamentals
 [x] F-tab-spatial          Tabulosity spatial index — simple R-tree, point queries
+[x] F-tab-spatial-2        Tabulosity spatial index — compound spatial indexes
 [x] F-tab-unique-idx       Unique index enforcement
 [x] F-taming               Tame neutral creatures via Scout-path elves
 [x] F-task-interruption    Unified task interruption and cleanup
@@ -5746,7 +5746,10 @@ Zone-based world architecture within a single unified sim. The world is partitio
 
 **No separate sims:** Same sim code, same event queue, same DB. The zone is a simulation fidelity hint, not a separate world.
 
-**Blocked by:** F-tab-spatial-2, F-zone-schema
+**Per-zone coordinate systems:** Each zone has its own local voxel coordinate system. Spatial queries (creature lookup, fruit search, hostile detection) must be scoped to a zone. This requires compound spatial indexes in tabulosity — keyed by `(zone_id, spatial_box)` — so that a query like "creatures near position X in zone Z" only searches the R-tree for that zone, not the entire world. This is the primary reason this feature is blocked by F-tab-spatial-2.
+
+**Blocked by:** F-zone-schema
+**Unblocked by:** F-tab-spatial-2
 **Related:** F-bigger-world, F-dwarf-fort-gen, F-enemy-raids, F-forest-radar, F-lesser-trees, F-military-campaign, F-multi-tree, F-settlement-gen, F-tree-db, F-world-map, F-zone-schema
 
 ### Soul Mechanics & Magic
@@ -8345,7 +8348,7 @@ Simple spatial index kind for tabulosity, backed by the `rstar` crate. Enough to
 **Related:** F-tab-spatial-3
 
 #### F-tab-spatial-2 — Tabulosity spatial index — compound spatial indexes
-**Status:** Todo
+**Status:** Done
 
 Compound spatial indexes for tabulosity: a non-spatial prefix (one or more fields) partitioning rows into separate R-trees, enabling queries like "all creatures within bounding box Y in zone Z" without scanning all zones.
 
@@ -8367,6 +8370,7 @@ Compound spatial indexes for tabulosity: a non-spatial prefix (one or more field
 
 **Blocks:** F-zone-schema, F-zone-world
 **Unblocked by:** F-tab-spatial
+**Unblocked:** F-zone-world
 **Related:** F-tab-nested-idx, F-tab-spatial-3
 
 #### F-tab-spatial-3 — Tabulosity spatial index — range, KNN, and None-set queries

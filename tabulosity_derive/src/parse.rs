@@ -4,10 +4,10 @@
 //! `#[indexed]` / `#[indexed(hash)]` / `#[indexed(unique)]` / `#[indexed(spatial)]`
 //! / `#[indexed(hash, unique)]` annotations from struct fields,
 //! `#[primary_key("field1", "field2")]` from struct-level attributes (compound PKs),
-//! `#[index(name = "...", fields(...), kind = "hash"|"btree"|"spatial", filter = "...",
-//! unique)]` from struct-level attributes, and `#[table(primary_storage = "hash")]`
-//! from the struct being derived. Used by `table.rs` during `#[derive(Table)]`
-//! expansion.
+//! `#[index(name = "...", fields("a", "b" spatial), kind = "hash"|"btree"|"spatial",
+//! filter = "...", unique)]` from struct-level attributes (with optional per-field kind
+//! keywords), and `#[table(primary_storage = "hash")]` from the struct being derived.
+//! Used by `table.rs` during `#[derive(Table)]` expansion.
 
 use syn::parse::{Parse, ParseStream};
 use syn::{DeriveInput, Field, Ident, LitStr, Token, Type};
@@ -48,10 +48,22 @@ pub struct ParsedField {
     pub index_kind: IndexKind,
 }
 
+/// A single field within an `#[index(fields(...))]` declaration.
+///
+/// Each field has a name (string literal) and an optional per-field kind
+/// override. When `kind_override` is `None`, the field inherits the
+/// index-level `kind` parameter (default: `BTree`).
+pub struct IndexFieldDecl {
+    pub name: String,
+    /// Per-field kind override (`btree`, `hash`, or `spatial` keyword after
+    /// the field name string). `None` = inherit from index-level `kind`.
+    pub kind_override: Option<IndexKind>,
+}
+
 /// A parsed `#[index(...)]` struct-level attribute.
 pub struct IndexDecl {
     pub name: String,
-    pub fields: Vec<String>,
+    pub fields: Vec<IndexFieldDecl>,
     pub filter: Option<String>,
     pub unique: bool,
     /// The index kind. Defaults to `BTree` if `kind` is omitted.
@@ -305,10 +317,10 @@ pub fn parse_index_attrs(input: &DeriveInput) -> syn::Result<Vec<IndexDecl>> {
     Ok(decls)
 }
 
-/// Internal parsed form for `#[index(name = "...", fields("a", "b"), kind = "hash", filter = "...", unique)]`.
+/// Internal parsed form for `#[index(name = "...", fields("a", "b" spatial), kind = "hash", filter = "...", unique)]`.
 struct IndexDeclParsed {
     name: String,
-    fields: Vec<String>,
+    fields: Vec<IndexFieldDecl>,
     filter: Option<String>,
     unique: bool,
     kind: IndexKind,
@@ -333,15 +345,37 @@ impl Parse for IndexDeclParsed {
                 "fields" => {
                     let content;
                     syn::parenthesized!(content in input);
-                    let mut field_names = Vec::new();
+                    let mut field_decls = Vec::new();
                     while !content.is_empty() {
                         let lit: LitStr = content.parse()?;
-                        field_names.push(lit.value());
+                        // Optionally consume a per-field kind keyword after the string.
+                        let kind_override = if content.peek(Ident) {
+                            let kind_ident: Ident = content.parse()?;
+                            match kind_ident.to_string().as_str() {
+                                "btree" => Some(IndexKind::BTree),
+                                "hash" => Some(IndexKind::Hash),
+                                "spatial" => Some(IndexKind::Spatial),
+                                other => {
+                                    return Err(syn::Error::new(
+                                        kind_ident.span(),
+                                        format!(
+                                            "unknown per-field kind: `{other}`; expected `btree`, `hash`, or `spatial`"
+                                        ),
+                                    ));
+                                }
+                            }
+                        } else {
+                            None
+                        };
+                        field_decls.push(IndexFieldDecl {
+                            name: lit.value(),
+                            kind_override,
+                        });
                         if content.peek(Token![,]) {
                             let _: Token![,] = content.parse()?;
                         }
                     }
-                    fields = Some(field_names);
+                    fields = Some(field_decls);
                 }
                 "filter" => {
                     let _: Token![=] = input.parse()?;
@@ -392,12 +426,6 @@ impl Parse for IndexDeclParsed {
         if kind == IndexKind::Spatial && unique {
             return Err(input.error(
                 "spatial indexes cannot be unique; spatial queries use intersection, not equality",
-            ));
-        }
-
-        if kind == IndexKind::Spatial && fields.len() > 1 {
-            return Err(input.error(
-                "spatial indexes must have exactly one field; compound spatial indexes are not supported",
             ));
         }
 
