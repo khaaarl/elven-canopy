@@ -111,6 +111,8 @@ For the full list of codebase patterns, conventions, and gotchas, see `docs/code
 - **Before writing ANY code that touches tabulosity tables, read `tabulosity/README.md` in full.**
 - **Do not use `_no_fk` or `modify_unchecked` methods in new code without explicit user approval.** Use database-level methods (`db.update_foo()`, etc.) instead.
 
+**Type identity must match conceptual identity.** Different concepts get different types. Never repurpose a type via sentinel values or special-case IDs (e.g., `ZoneId(0)` meaning "the world map," `\0` as both data and delimiter, falsy values meaning "not loaded"). Use enums, `Option`, or distinct types instead.
+
 **When to extract helpers:** The threshold for extracting shared code into a helper is complexity, not count. Two copies of a subtle or error-prone calculation warrant a helper; five copies of a trivial boilerplate call don't.
 
 **No relying on Godot node names for identity.** Godot silently renames children on `add_child()` when a sibling has the same name (including `queue_free()`d nodes still in the tree). Use direct references instead of name-based lookups.
