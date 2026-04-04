@@ -1305,7 +1305,7 @@ impl SimBridge {
         origin: Vector3,
         dir: Vector3,
         ground_only: bool,
-        large: bool,
+        _large: bool,
     ) -> VarDictionary {
         let mut dict = VarDictionary::new();
         let Some(sim) = &self.session.sim else {
@@ -1339,21 +1339,24 @@ impl SimBridge {
             solid_coord.z + offset.2,
         );
 
-        let graph = if large {
-            &sim.large_nav_graph
-        } else {
-            &sim.nav_graph
-        };
-
         let nearest = if ground_only {
-            graph.find_nearest_ground_node(air_pos, 5)
+            elven_canopy_sim::walkability::find_nearest_ground_walkable(
+                &sim.world,
+                &sim.face_data,
+                air_pos,
+                5,
+            )
         } else {
-            graph.find_nearest_node(air_pos, 5)
+            elven_canopy_sim::walkability::find_nearest_walkable(
+                &sim.world,
+                &sim.face_data,
+                air_pos,
+                5,
+            )
         };
 
         match nearest {
-            Some(id) => {
-                let p = graph.node(id).position;
+            Some(p) => {
                 dict.set("hit", true);
                 dict.set("position", Vector3::new(p.x as f32, p.y as f32, p.z as f32));
             }
