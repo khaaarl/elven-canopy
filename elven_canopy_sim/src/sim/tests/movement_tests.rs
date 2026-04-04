@@ -243,22 +243,17 @@ fn walk_toward_dead_task_node_does_not_panic() {
 
     let elf_id = *sim.db.creatures.iter_keys().next().unwrap();
 
-    // Find a ground nav node different from the elf's to use as task target.
-    let elf_node = creature_pos(&sim, elf_id);
-    let task_node = sim
-        .nav_graph
-        .ground_node_ids()
-        .into_iter()
-        .find(|&nid| nid != elf_node)
-        .expect("Need at least 2 ground nodes");
+    // Find a walkable position different from the elf's to use as task target.
+    let elf_pos = creature_pos(&sim, elf_id);
+    let task_pos = find_different_walkable(&sim, elf_pos);
 
-    // Create a GoTo task at that nav node and assign it to the elf.
+    // Create a GoTo task at that position and assign it to the elf.
     let task_id = TaskId::new(&mut sim.rng);
     sim.insert_task(Task {
         id: task_id,
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(task_node).position,
+        location: task_pos,
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -274,31 +269,27 @@ fn walk_toward_dead_task_node_does_not_panic() {
         sim.db.update_creature(c).unwrap();
     }
 
-    // Directly kill the task node's slot to simulate an incremental update
-    // that removed it without recycling the slot. This is the exact state
-    // that causes the panic: the NavNodeId in the task points to a dead
-    // (None) slot.
-    sim.nav_graph.kill_node(task_node);
+    // Make the task position unwalkable by filling it with solid voxel,
+    // simulating a world change that invalidates the task's destination.
+    sim.world.set(task_pos, VoxelType::Dirt);
+    sim.rebuild_transient_state();
 
     assert!(
-        !sim.nav_graph.is_node_alive(task_node),
-        "Task node should be dead",
+        !crate::walkability::is_walkable(&sim.world, &sim.face_data, task_pos),
+        "Task position should be unwalkable",
     );
 
-    // Step the sim — the elf should gracefully handle the dead task
-    // node by either redirecting to the nearest alive node (and
-    // completing the GoTo) or abandoning the task. Must NOT panic.
+    // Step the sim — the elf should gracefully handle the unwalkable task
+    // position by abandoning the task. Must NOT panic.
     sim.step(&[], 50000);
 
-    // With VoxelCoord-based task locations, the task resolves to the
-    // nearest alive node. The elf should have completed the GoTo task
-    // (walked to the nearest alive node) or abandoned it. Either way,
-    // it should not still be working on the original task.
+    // The elf should have completed the GoTo task or abandoned it.
+    // Either way, it should not still be working on the original task.
     let elf = sim.db.creatures.get(&elf_id).unwrap();
     if let Some(tid) = elf.current_task {
         assert_ne!(
             tid, task_id,
-            "Elf should not still be working on the task with the dead location node",
+            "Elf should not still be working on the task with the unwalkable location",
         );
     }
 }
@@ -316,13 +307,9 @@ fn pursuit_task_repaths_when_target_moves() {
     // Get target's initial node.
     let target_node = creature_pos(&sim, target_id);
 
-    // Pick a different alive node to move the target to (use a neighbor).
-    let new_target_node = {
-        let graph = sim.graph_for_species(Species::Elf);
-        let edges = graph.neighbors(target_node);
-        graph.edge(edges[0]).to
-    };
-    assert_ne!(target_node, new_target_node);
+    // Pick a different walkable position to move the target to.
+    let new_target_pos = find_different_walkable(&sim, target_node);
+    assert_ne!(target_node, new_target_pos);
 
     // Freeze all creatures so only the pursuer activates.
     let all_ids: Vec<CreatureId> = sim.db.creatures.iter_all().map(|c| c.id).collect();
@@ -330,13 +317,13 @@ fn pursuit_task_repaths_when_target_moves() {
         force_idle_and_cancel_activations(&mut sim, *cid);
     }
 
-    // Create pursuit task at target's current node, assigned to pursuer.
-    let target_pos = sim.nav_graph.node(target_node).position;
+    // Create pursuit task at target's current position, assigned to pursuer.
+    let target_pos = target_node;
     let task_id = insert_pursuit_task(&mut sim, pursuer_id, target_id, target_pos);
     assert_eq!(sim.db.tasks.get(&task_id).unwrap().location, target_pos);
 
-    // Manually move the target to the new node (simulates target movement).
-    let new_pos = sim.nav_graph.node(new_target_node).position;
+    // Manually move the target to the new position (simulates target movement).
+    let new_pos = new_target_pos;
     {
         let mut c = sim.db.creatures.get(&target_id).unwrap();
         c.position = VoxelBox::point(new_pos);
@@ -373,8 +360,8 @@ fn pursuit_task_completes_when_adjacent() {
     // Read the pursuer's current node (may have wandered during spawns).
     let pursuer_node = creature_pos(&sim, pursuer_id);
 
-    // Place both creatures at the same node and prevent them from wandering.
-    let node_pos = sim.nav_graph.node(pursuer_node).position;
+    // Place both creatures at the same position and prevent them from wandering.
+    let node_pos = pursuer_node;
     {
         let mut c = sim.db.creatures.get(&target_id).unwrap();
         c.position = VoxelBox::point(node_pos);
@@ -396,7 +383,7 @@ fn pursuit_task_completes_when_adjacent() {
             location: task::SleepLocation::Ground,
         },
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(pursuer_node).position,
+        location: pursuer_node,
         progress: 0,
         total_cost: 999999,
         required_species: Some(Species::Elf),
@@ -411,8 +398,8 @@ fn pursuit_task_completes_when_adjacent() {
     target.current_task = Some(sleep_task_id);
     sim.db.update_creature(target).unwrap();
 
-    // Create pursuit task at the shared node.
-    let pursuer_pos = sim.nav_graph.node(pursuer_node).position;
+    // Create pursuit task at the shared position.
+    let pursuer_pos = pursuer_node;
     let task_id = insert_pursuit_task(&mut sim, pursuer_id, target_id, pursuer_pos);
 
     // Clear pursuer's action state and schedule an immediate activation so
@@ -458,11 +445,11 @@ fn pursuit_task_abandons_when_target_gone() {
     pursuer.path = None;
     sim.db.update_creature(pursuer).unwrap();
 
-    let target_pos = sim.nav_graph.node(target_node).position;
+    let target_pos = target_node;
     let task_id = insert_pursuit_task(&mut sim, pursuer_id, target_id, target_pos);
 
-    // Simulate target becoming unreachable by moving it to a position with
-    // no nav node. This triggers the `node_at(target.position) == None`
+    // Simulate target becoming unreachable by moving it to a position that
+    // is not walkable. This triggers the unreachable target
     // branch in pursuit logic, causing the pursuer to abandon the task.
     {
         let mut c = sim.db.creatures.get(&target_id).unwrap();
@@ -553,7 +540,7 @@ fn pursuit_task_serde_roundtrip() {
     let target_id = spawn_second_elf(&mut sim);
     let target_node = creature_pos(&sim, target_id);
 
-    let target_pos = sim.nav_graph.node(target_node).position;
+    let target_pos = target_node;
     let task_id = insert_pursuit_task(&mut sim, pursuer_id, target_id, target_pos);
 
     // Verify the task has target_creature set.
@@ -599,30 +586,26 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
         .find(|c| c.species == Species::Elf)
         .expect("elf should exist");
     let elf_id = elf.id;
-    let elf_node = sim
-        .nav_graph
-        .node_at(elf.position.min)
-        .expect("elf should have a nav node");
     let elf_pos = elf.position.min;
+    assert!(
+        crate::walkability::is_walkable(&sim.world, &sim.face_data, elf_pos),
+        "elf should be at a walkable position"
+    );
 
-    // Find two nav nodes: one close to the elf, one farther away.
-    // We pick nodes by searching the graph for nodes at increasing
-    // Manhattan distances from the elf.
-    let mut nodes_by_distance: Vec<(NavNodeId, u32)> = sim
-        .nav_graph
-        .live_nodes()
-        .filter(|n| n.id != elf_node)
-        .map(|n| (n.id, n.position.manhattan_distance(elf_pos)))
-        .collect();
-    nodes_by_distance.sort_by_key(|&(_, d)| d);
-
-    // Pick a near node (close to elf) and a far node (much farther).
-    let near_node = nodes_by_distance[0].0;
-    let far_node = nodes_by_distance
-        .iter()
-        .find(|&&(_, d)| d >= 10)
-        .expect("should have a node at least 10 manhattan away")
-        .0;
+    // Find two walkable positions: one close to the elf, one farther away.
+    let floor_y = sim.config.floor_y + 1;
+    let near_pos = find_different_walkable(&sim, elf_pos);
+    // Find a far position at least 10 manhattan distance away.
+    let (ws_x, _, ws_z) = sim.config.world_size;
+    let far_pos = (1..(ws_x as i32 - 1))
+        .flat_map(|x| (1..(ws_z as i32 - 1)).map(move |z| VoxelCoord::new(x, floor_y, z)))
+        .filter(|p| {
+            *p != elf_pos
+                && p.manhattan_distance(elf_pos) >= 10
+                && crate::walkability::is_walkable(&sim.world, &sim.face_data, *p)
+        })
+        .next()
+        .expect("should have a walkable position at least 10 manhattan away");
 
     // Create two Available tasks — far task first (to ensure it would be
     // picked under the old first-found behavior if its TaskId sorts first).
@@ -633,7 +616,7 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
         id: far_task_id,
         kind_tag: TaskKindTag::GoTo,
         state: TaskState::Available,
-        location: sim.nav_graph.node(far_node).position,
+        location: far_pos,
         progress: 0,
         total_cost: 1,
         required_species: None,
@@ -647,7 +630,7 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
         id: near_task_id,
         kind_tag: TaskKindTag::GoTo,
         state: TaskState::Available,
-        location: sim.nav_graph.node(near_node).position,
+        location: near_pos,
         progress: 0,
         total_cost: 1,
         required_species: None,
@@ -698,20 +681,16 @@ fn find_available_task_single_candidate_skips_dijkstra() {
         .expect("elf should exist");
     let elf_id = elf.id;
 
-    // Pick any nav node for the single task.
-    let task_node = sim
-        .nav_graph
-        .live_nodes()
-        .next()
-        .expect("should have nodes")
-        .id;
+    // Pick any walkable position for the single task.
+    let task_pos =
+        find_walkable(&sim, elf.position.min, 20).expect("should have a walkable position");
 
     let task_id = TaskId::new(&mut sim.rng);
     let task = crate::db::Task {
         id: task_id,
         kind_tag: TaskKindTag::GoTo,
         state: TaskState::Available,
-        location: sim.nav_graph.node(task_node).position,
+        location: task_pos,
         progress: 0,
         total_cost: 1,
         required_species: None,
@@ -759,12 +738,8 @@ fn find_available_task_respects_species_filter_with_proximity() {
         .expect("capybara should exist");
     let capy_id = capy.id;
 
-    let task_node = sim
-        .nav_graph
-        .live_nodes()
-        .next()
-        .expect("should have nodes")
-        .id;
+    let task_pos =
+        find_walkable(&sim, capy.position.min, 20).expect("should have a walkable position");
 
     // Create an elf-only task — capybara should not see it.
     let elf_task_id = TaskId::new(&mut sim.rng);
@@ -772,7 +747,7 @@ fn find_available_task_respects_species_filter_with_proximity() {
         id: elf_task_id,
         kind_tag: TaskKindTag::GoTo,
         state: TaskState::Available,
-        location: sim.nav_graph.node(task_node).position,
+        location: task_pos,
         progress: 0,
         total_cost: 1,
         required_species: Some(Species::Elf),
@@ -801,14 +776,10 @@ fn find_available_task_respects_species_filter_with_proximity() {
 // ===================================================================
 
 #[test]
-fn troll_pursues_elf_cross_graph_pathfinding() {
-    // Trolls (2x2x2) use the large_nav_graph while elves (1x1x1) use the
-    // standard nav_graph. pursue_closest_target must translate target
-    // positions to the troll's graph, not use raw NavNodeIds.
-    //
-    // On flat terrain the standard graph has ~4096 nodes but the large graph
-    // has ~3969, so standard-graph nodes with IDs >= 3969 don't exist on
-    // the large graph — exactly the scenario that triggers the bug.
+fn troll_pursues_elf_cross_species_pathfinding() {
+    // Trolls (2x2x2) and elves (1x1x1) use different footprints for
+    // pathfinding. A troll should still be able to pursue a nearby elf
+    // using voxel-direct A* even when footprint sizes differ.
     let mut sim = flat_world_sim(legacy_test_seed());
     let mut events = Vec::new();
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -819,41 +790,11 @@ fn troll_pursues_elf_cross_graph_pathfinding() {
         .expect("spawn troll");
     let troll_pos = sim.db.creatures.get(&troll_id).unwrap().position.min;
 
-    // Find a standard-graph ground node whose ID >= large graph node count
-    // AND is within troll detection range (144 = ~12 voxels).
-    let large_graph_size = sim.large_nav_graph.node_count() as u32;
-    let candidate = sim.nav_graph.live_nodes().find(|n| {
-        if n.id.0 < large_graph_size {
-            return false;
-        }
-        let dx = (n.position.x as i64 - troll_pos.x as i64).abs();
-        let dy = (n.position.y as i64 - troll_pos.y as i64).abs();
-        let dz = (n.position.z as i64 - troll_pos.z as i64).abs();
-        let dist_sq = dx * dx + dy * dy + dz * dz;
-        dist_sq > 0 && dist_sq <= 144
-    });
-
-    let Some(target_node) = candidate else {
-        // On this seed, all nearby standard-graph nodes have IDs within the
-        // large graph's range. The bug can't be triggered with this seed.
-        // This is not a failure — the test is only meaningful when IDs
-        // don't overlap.
-        return;
-    };
-
-    // Spawn elf at this high-ID node.
+    // Spawn elf within troll detection range (~12 voxels).
+    let elf_spawn_pos = VoxelCoord::new(troll_pos.x + 5, troll_pos.y, troll_pos.z);
     let elf_id = sim
-        .spawn_creature(Species::Elf, target_node.position, &mut events)
+        .spawn_creature(Species::Elf, elf_spawn_pos, &mut events)
         .expect("spawn elf");
-    let elf_node = creature_pos(&sim, elf_id);
-
-    // Confirm the elf's node ID doesn't exist on the large graph.
-    assert!(
-        !sim.large_nav_graph.is_node_alive(elf_node),
-        "Test setup: elf node {:?} should NOT exist on large graph (size={})",
-        elf_node,
-        large_graph_size
-    );
 
     force_idle_and_cancel_activations(&mut sim, troll_id);
     force_idle_and_cancel_activations(&mut sim, elf_id);
@@ -863,10 +804,7 @@ fn troll_pursues_elf_cross_graph_pathfinding() {
 
     assert!(
         pursued,
-        "Troll should pursue elf even when elf's NavNodeId ({:?}) \
-         doesn't exist on the large_nav_graph (size={}). \
-         pursue_closest_target must translate positions, not use raw IDs.",
-        elf_node, large_graph_size
+        "Troll should pursue nearby elf using voxel-direct A*"
     );
 }
 
@@ -1130,33 +1068,20 @@ fn voxel_exclusion_flee_cornered_still_moves() {
     let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
 
-    // Find a node with at least 2 neighbors and place goblins on ALL neighbors.
-    let elf_node = sim
-        .nav_graph
-        .live_nodes()
-        .find(|n| n.edge_indices.len() >= 2)
-        .map(|n| n.id)
-        .expect("Need a node with >= 2 neighbors");
+    // Use a chain of three walkable positions. Place elf at center with
+    // goblins on both sides, so elf is cornered.
+    let (pos_left, elf_pos, pos_right) = find_chain_of_three(&sim);
 
-    force_position(&mut sim, elf, elf_node);
+    force_position(&mut sim, elf, elf_pos);
     force_idle(&mut sim, elf);
 
-    let neighbor_positions: Vec<(NavNodeId, VoxelCoord)> = sim
-        .nav_graph
-        .neighbors(elf_node)
-        .iter()
-        .map(|&edge_idx| {
-            let edge = sim.nav_graph.edge(edge_idx);
-            let pos = sim.nav_graph.node(edge.to).position;
-            (edge.to, pos)
-        })
-        .collect();
+    let neighbor_positions: Vec<VoxelCoord> = vec![pos_left, pos_right];
 
     // Spawn a goblin at each neighbor.
     let mut goblins = Vec::new();
-    for &(neighbor_node, _) in &neighbor_positions {
+    for &neighbor_pos in &neighbor_positions {
         let g = spawn_species(&mut sim, Species::Goblin);
-        force_position(&mut sim, g, neighbor_node);
+        force_position(&mut sim, g, neighbor_pos);
         force_idle(&mut sim, g);
         // Prevent goblins from being polled for activation.
         // (None means "immediately ready" in the poll model, so use u64::MAX.)
@@ -1164,14 +1089,14 @@ fn voxel_exclusion_flee_cornered_still_moves() {
         goblins.push(g);
     }
 
-    // Also make sure the elf is still at the right node (spawning moves
+    // Also make sure the elf is still at the right position (spawning moves
     // things around).
-    force_position(&mut sim, elf, elf_node);
+    force_position(&mut sim, elf, elf_pos);
     force_idle(&mut sim, elf);
 
     // Verify that all neighbors are indeed hostile-blocked.
     let elf_fp = sim.species_table[&Species::Elf].footprint;
-    for &(_, pos) in &neighbor_positions {
+    for &pos in &neighbor_positions {
         assert!(
             sim.destination_blocked_by_hostile(elf, pos, elf_fp),
             "Expected neighbor at {pos:?} to be hostile-blocked"
@@ -1188,7 +1113,7 @@ fn voxel_exclusion_flee_cornered_still_moves() {
     sim.step(&[], sim.tick + 200);
 
     // The elf has hostile_detection_range_sq=225 (15 voxels) and the
-    // goblins are on adjacent nav nodes — well within range. The elf
+    // goblins are on adjacent positions — well within range. The elf
     // should detect the threat and flee. Since all exits are hostile-
     // occupied, the flee fallback should allow movement through a hostile.
     let elf_pos_after = sim.db.creatures.get(&elf).unwrap().position.min;
@@ -1198,7 +1123,7 @@ fn voxel_exclusion_flee_cornered_still_moves() {
     );
     // Elf moved — verify it went to one of the neighbor positions
     // (which are all hostile-occupied, confirming fallback worked).
-    let moved_to_neighbor = neighbor_positions.iter().any(|&(_, p)| p == elf_pos_after);
+    let moved_to_neighbor = neighbor_positions.iter().any(|&p| p == elf_pos_after);
     assert!(
         moved_to_neighbor,
         "Cornered elf should flee to a neighbor (even hostile-occupied)"
@@ -1218,17 +1143,8 @@ fn voxel_exclusion_ground_move_one_step_returns_false_when_blocked() {
     force_idle(&mut sim, elf);
     force_idle(&mut sim, goblin);
 
-    // Find the edge from node_a to node_b.
-    let edge_idx = sim
-        .nav_graph
-        .neighbors(node_a)
-        .iter()
-        .copied()
-        .find(|&idx| sim.nav_graph.edge(idx).to == node_b)
-        .expect("Should have edge from A to B");
-
     let elf_pos_before = sim.db.creatures.get(&elf).unwrap().position.min;
-    let result = sim.ground_move_one_step(elf, Species::Elf, edge_idx);
+    let result = sim.ground_move_one_step(elf, Species::Elf, node_b);
 
     assert!(
         !result,
@@ -1256,16 +1172,8 @@ fn voxel_exclusion_skip_exclusion_allows_blocked_move() {
     force_idle(&mut sim, elf);
     force_idle(&mut sim, goblin);
 
-    let edge_idx = sim
-        .nav_graph
-        .neighbors(node_a)
-        .iter()
-        .copied()
-        .find(|&idx| sim.nav_graph.edge(idx).to == node_b)
-        .expect("Should have edge from A to B");
-
     // Without skip_exclusion: blocked.
-    let result_blocked = sim.ground_move_one_step(elf, Species::Elf, edge_idx);
+    let result_blocked = sim.ground_move_one_step(elf, Species::Elf, node_b);
     assert!(
         !result_blocked,
         "ground_move_one_step should block when hostile present"
@@ -1275,16 +1183,15 @@ fn voxel_exclusion_skip_exclusion_allows_blocked_move() {
     suppress_activation_until(&mut sim, elf, u64::MAX);
 
     // With skip_exclusion: allowed.
-    let result_forced = sim.ground_move_one_step_inner(elf, Species::Elf, edge_idx, true);
+    let result_forced = sim.ground_move_one_step_inner(elf, Species::Elf, node_b, true);
     assert!(
         result_forced,
         "ground_move_one_step_inner with skip_exclusion should succeed"
     );
 
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
-    let node_b_pos = sim.nav_graph.node(node_b).position;
     assert_eq!(
-        elf_pos, node_b_pos,
+        elf_pos, node_b,
         "Elf should have moved to goblin's voxel with skip_exclusion"
     );
 }
@@ -1299,23 +1206,14 @@ fn voxel_exclusion_ground_move_one_step_returns_true_when_clear() {
     force_position(&mut sim, elf, node_a);
     force_idle(&mut sim, elf);
 
-    let edge_idx = sim
-        .nav_graph
-        .neighbors(node_a)
-        .iter()
-        .copied()
-        .find(|&idx| sim.nav_graph.edge(idx).to == node_b)
-        .expect("Should have edge from A to B");
-
-    let result = sim.ground_move_one_step(elf, Species::Elf, edge_idx);
+    let result = sim.ground_move_one_step(elf, Species::Elf, node_b);
     assert!(
         result,
         "ground_move_one_step should return true when path is clear"
     );
 
     let elf_pos_after = sim.db.creatures.get(&elf).unwrap().position.min;
-    let node_b_pos = sim.nav_graph.node(node_b).position;
-    assert_eq!(elf_pos_after, node_b_pos, "Elf should have moved to node B");
+    assert_eq!(elf_pos_after, node_b, "Elf should have moved to node B");
 }
 
 #[test]
@@ -1334,19 +1232,11 @@ fn voxel_exclusion_blocked_schedules_retry() {
     suppress_activation_until(&mut sim, elf, u64::MAX);
     suppress_activation_until(&mut sim, goblin, u64::MAX);
 
-    let edge_idx = sim
-        .nav_graph
-        .neighbors(node_a)
-        .iter()
-        .copied()
-        .find(|&idx| sim.nav_graph.edge(idx).to == node_b)
-        .expect("Should have edge from A to B");
-
     // Before the blocked move, elf is suppressed (next_available_tick = u64::MAX).
     let nat_before = sim.db.creatures.get(&elf).unwrap().next_available_tick;
     assert_eq!(nat_before, Some(u64::MAX), "precondition: elf suppressed");
 
-    sim.ground_move_one_step(elf, Species::Elf, edge_idx);
+    sim.ground_move_one_step(elf, Species::Elf, node_b);
 
     // After the blocked move, next_available_tick should be set to a
     // near-future retry tick (tick + voxel_exclusion_retry_ticks), not
@@ -1551,16 +1441,8 @@ fn voxel_exclusion_config_retry_ticks_respected() {
     suppress_activation_until(&mut sim, elf, u64::MAX);
     suppress_activation_until(&mut sim, goblin, u64::MAX);
 
-    let edge_idx = sim
-        .nav_graph
-        .neighbors(node_a)
-        .iter()
-        .copied()
-        .find(|&idx| sim.nav_graph.edge(idx).to == node_b)
-        .expect("Should have edge from A to B");
-
     let tick_at_block = sim.tick;
-    sim.ground_move_one_step(elf, Species::Elf, edge_idx);
+    sim.ground_move_one_step(elf, Species::Elf, node_b);
 
     // Step to just before the retry — activation should NOT have fired.
     let activations_before = sim.count_pending_activations_for(elf);
@@ -1572,9 +1454,8 @@ fn voxel_exclusion_config_retry_ticks_respected() {
     sim.step(&[], tick_at_block + 499);
     // Elf should still be at node_a (retry not yet fired).
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
-    let node_a_pos = sim.nav_graph.node(node_a).position;
     assert_eq!(
-        elf_pos, node_a_pos,
+        elf_pos, node_a,
         "Elf should not have moved before retry delay expires"
     );
 
@@ -1682,9 +1563,9 @@ fn voxel_exclusion_walk_toward_task_clears_cached_path() {
     suppress_activation_until(&mut sim, goblin, u64::MAX);
     suppress_activation_until(&mut sim, elf, u64::MAX);
 
-    // Give the elf a cached path through the goblin's node.
-    let pos_b = sim.nav_graph.node(node_b).position;
-    let pos_c = sim.nav_graph.node(node_c).position;
+    // Give the elf a cached path through the goblin's position.
+    let pos_b = node_b;
+    let pos_c = node_c;
     {
         let mut c = sim.db.creatures.get(&elf).unwrap();
         c.path = Some(CreaturePath {
@@ -1736,23 +1617,12 @@ fn voxel_exclusion_hostile_dies_creature_retries_and_moves() {
     suppress_activation_until(&mut sim, goblin, u64::MAX);
     suppress_activation_until(&mut sim, elf, u64::MAX);
 
-    let node_a_pos = sim.nav_graph.node(node_a).position;
-    let node_b_pos = sim.nav_graph.node(node_b).position;
-
     // Try to move — should be blocked.
-    let edge_idx = sim
-        .nav_graph
-        .neighbors(node_a)
-        .iter()
-        .copied()
-        .find(|&idx| sim.nav_graph.edge(idx).to == node_b)
-        .expect("Should have edge from A to B");
-
-    let result = sim.ground_move_one_step(elf, Species::Elf, edge_idx);
+    let result = sim.ground_move_one_step(elf, Species::Elf, node_b);
     assert!(!result, "Should be blocked while goblin is alive");
     assert_eq!(
         sim.db.creatures.get(&elf).unwrap().position.min,
-        node_a_pos,
+        node_a,
         "Elf should still be at node A"
     );
 
@@ -1771,16 +1641,16 @@ fn voxel_exclusion_hostile_dies_creature_retries_and_moves() {
     // The goblin is dead, so the voxel should now be clear.
     let goblin_fp = sim.species_table[&Species::Goblin].footprint;
     assert!(
-        !sim.destination_blocked_by_hostile(elf, node_b_pos, goblin_fp),
+        !sim.destination_blocked_by_hostile(elf, node_b, goblin_fp),
         "Dead goblin should not block"
     );
 
     // Now manually retry the move — should succeed.
-    let result2 = sim.ground_move_one_step(elf, Species::Elf, edge_idx);
+    let result2 = sim.ground_move_one_step(elf, Species::Elf, node_b);
     assert!(result2, "Move should succeed after goblin dies");
     assert_eq!(
         sim.db.creatures.get(&elf).unwrap().position.min,
-        node_b_pos,
+        node_b,
         "Elf should have moved to node B"
     );
 }
@@ -1853,7 +1723,7 @@ fn voxel_exclusion_attack_move_task_blocked_by_hostile() {
     suppress_activation_until(&mut sim, goblin, u64::MAX);
     suppress_activation_until(&mut sim, elf, u64::MAX);
 
-    let dest_pos = sim.nav_graph.node(node_c).position;
+    let dest_pos = node_c;
 
     // Issue AttackMove command toward node_c.
     let tick = sim.tick;
@@ -1929,8 +1799,16 @@ fn cached_path_reroutes_when_nav_node_destroyed() {
     // test which uses one bogus + one real). This forces a full repath.
     let bogus_a = VoxelCoord::new(63, 63, 63);
     let bogus_b = VoxelCoord::new(62, 63, 63);
-    assert!(sim.nav_graph.node_at(bogus_a).is_none());
-    assert!(sim.nav_graph.node_at(bogus_b).is_none());
+    assert!(!crate::walkability::is_walkable(
+        &sim.world,
+        &sim.face_data,
+        bogus_a
+    ));
+    assert!(!crate::walkability::is_walkable(
+        &sim.world,
+        &sim.face_data,
+        bogus_b
+    ));
 
     {
         let mut c = sim.db.creatures.get(&elf).unwrap();
@@ -2113,7 +1991,7 @@ fn aggressive_elf_vs_hornet_at_heights() {
                 VoxelType::Trunk,
             );
         }
-        sim.nav_graph = crate::nav::build_nav_graph(&sim.world, &sim.face_data);
+        sim.rebuild_transient_state();
 
         let hornet_pos = VoxelCoord::new(elf_pos.x, elf_pos.y + case.dy, elf_pos.z);
         let hornet_id = setup_frozen_hornet(&mut sim, hornet_pos);
@@ -2234,7 +2112,7 @@ fn ordered_elf_vs_hornet_at_heights() {
                 VoxelType::Trunk,
             );
         }
-        sim.nav_graph = crate::nav::build_nav_graph(&sim.world, &sim.face_data);
+        sim.rebuild_transient_state();
 
         let hornet_pos = VoxelCoord::new(elf_pos.x, elf_pos.y + case.dy, elf_pos.z);
         let hornet_id = setup_frozen_hornet(&mut sim, hornet_pos);
@@ -2480,12 +2358,11 @@ fn climber_on_trunk_does_not_fall() {
     }
     sim.rebuild_transient_state();
 
-    // Find a nav node adjacent to the trunk (on the trunk surface).
-    // Trunk climb nodes are at positions adjacent to solid trunk voxels.
-    let graph = &sim.nav_graph;
+    // Find a walkable position adjacent to the trunk (on the trunk surface).
+    // Trunk climb positions are adjacent to solid trunk voxels.
     let trunk_adj = VoxelCoord::new(16, 3, 15); // east of trunk
-    if graph.node_at(trunk_adj).is_none() {
-        // No trunk climb node here — skip test (topology dependent).
+    if !crate::walkability::is_walkable(&sim.world, &sim.face_data, trunk_adj) {
+        // Not walkable here — skip test (topology dependent).
         return;
     }
 
@@ -2778,9 +2655,9 @@ fn degenerate_landing_teleports_to_nearest_node() {
 
     let capy = sim.db.creatures.get(&capy_id).unwrap();
     // The creature should have landed somewhere valid — either at ground
-    // level in the same column or teleported to the nearest nav node.
-    let graph = sim.graph_for_species(Species::Capybara);
-    let has_node = graph.node_at(capy.position.min).is_some();
+    // level in the same column or teleported to the nearest walkable position.
+    let is_walkable =
+        crate::walkability::is_walkable(&sim.world, &sim.face_data, capy.position.min);
     let has_solid_below = sim
         .world
         .get(VoxelCoord::new(
@@ -2790,9 +2667,9 @@ fn degenerate_landing_teleports_to_nearest_node() {
         ))
         .is_solid();
     assert!(
-        has_node && has_solid_below,
+        is_walkable && has_solid_below,
         "capybara should be at a valid supported position after degenerate fall \
-         (pos={:?}, has_node={has_node}, solid_below={has_solid_below})",
+         (pos={:?}, is_walkable={is_walkable}, solid_below={has_solid_below})",
         capy.position
     );
 }
@@ -2810,11 +2687,10 @@ fn ground_only_with_nav_node_but_no_solid_below_falls() {
     sim.rebuild_transient_state();
 
     let standing_pos = VoxelCoord::new(10, 4, 10);
-    // Verify nav node exists at standing position.
-    let graph = sim.graph_for_species(Species::Capybara);
+    // Verify position is walkable above platform.
     assert!(
-        graph.node_at(standing_pos).is_some(),
-        "nav node should exist above platform"
+        crate::walkability::is_walkable(&sim.world, &sim.face_data, standing_pos),
+        "position should be walkable above platform"
     );
 
     // Spawn capybara at ground level, then teleport to the platform pos.
@@ -2832,18 +2708,13 @@ fn ground_only_with_nav_node_but_no_solid_below_falls() {
         "should be supported on platform"
     );
 
-    // Remove the platform but do NOT rebuild nav — node still exists.
+    // Remove the platform — position becomes unwalkable but creature is
+    // still there. Creature should be unsupported: ground_only needs solid below.
     sim.world.set(platform_pos, VoxelType::Air);
-    let graph = sim.graph_for_species(Species::Capybara);
-    assert!(
-        graph.node_at(standing_pos).is_some(),
-        "nav node should still exist (no rebuild)"
-    );
 
-    // Creature should be unsupported: ground_only needs solid below.
     assert!(
         !sim.creature_is_supported(capy_id),
-        "ground_only creature without solid below should be unsupported even with nav node"
+        "ground_only creature without solid below should be unsupported"
     );
 
     // Apply gravity — should fall. Rebuild nav first so landing positions
@@ -3447,10 +3318,10 @@ fn capybara_wanders_on_ground() {
         .iter_all()
         .find(|c| c.species == Species::Capybara)
         .unwrap();
-    let capybara_nav = sim.nav_graph.node_at(capybara.position.min);
-    assert!(capybara_nav.is_some());
-    let node_pos = sim.nav_graph.node(capybara_nav.unwrap()).position;
-    assert_eq!(capybara.position.min, node_pos);
+    assert!(
+        crate::walkability::is_walkable(&sim.world, &sim.face_data, capybara.position.min),
+        "capybara should be at a walkable position"
+    );
 }
 
 #[test]
@@ -3514,7 +3385,7 @@ fn determinism_with_capybara() {
 }
 
 #[test]
-fn wandering_creature_stays_on_nav_graph() {
+fn wandering_creature_stays_on_walkable_position() {
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
@@ -3528,7 +3399,7 @@ fn wandering_creature_stays_on_nav_graph() {
     };
     sim.step(&[cmd], 2);
 
-    // Run for many ticks, periodically checking node validity.
+    // Run for many ticks, periodically checking walkability.
     for target in (10000..100000).step_by(10000) {
         sim.step(&[], target);
         let elf = sim
@@ -3537,21 +3408,10 @@ fn wandering_creature_stays_on_nav_graph() {
             .iter_all()
             .find(|c| c.species == Species::Elf)
             .unwrap();
-        let node = sim
-            .nav_graph
-            .node_at(elf.position.min)
-            .expect("Elf should always have a nav node at its position");
         assert!(
-            (node.0 as usize) < sim.nav_graph.node_count(),
-            "Node ID {} out of range at tick {}",
-            node.0,
-            target
-        );
-        let node_pos = sim.nav_graph.node(node).position;
-        assert_eq!(
-            elf.position.min, node_pos,
-            "Position mismatch at tick {}",
-            target
+            crate::walkability::is_walkable(&sim.world, &sim.face_data, elf.position.min),
+            "Elf should always be at a walkable position (tick {target}, pos {:?})",
+            elf.position.min
         );
     }
 }
@@ -3718,7 +3578,10 @@ fn monkey_can_climb() {
     // (trunk/branch surfaces). This verifies the species config allows
     // climbing edges. The monkey may still be at y=1 if the PRNG led it
     // only to ground neighbors, so we just verify it has a valid nav node.
-    assert!(sim.nav_graph.node_at(monkey.position.min).is_some());
+    assert!(
+        crate::walkability::is_walkable(&sim.world, &sim.face_data, monkey.position.min),
+        "monkey should be at a walkable position"
+    );
 }
 
 #[test]
@@ -3744,7 +3607,10 @@ fn squirrel_can_climb() {
         .iter_all()
         .find(|c| c.species == Species::Squirrel)
         .unwrap();
-    assert!(sim.nav_graph.node_at(squirrel.position.min).is_some());
+    assert!(
+        crate::walkability::is_walkable(&sim.world, &sim.face_data, squirrel.position.min),
+        "squirrel should be at a walkable position"
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -3791,12 +3657,12 @@ fn directed_goto_replaces_player_directed_task() {
 
     // Give elf a PlayerDirected GoTo task (PlayerDirected level 2).
     let task_id = TaskId::new(&mut sim.rng);
-    let dest_node = sim.nav_graph.live_nodes().last().map(|n| n.id).unwrap();
+    let dest_pos = find_different_walkable(&sim, creature_pos(&sim, elf));
     let task = Task {
         id: task_id,
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(dest_node).position,
+        location: dest_pos,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -3843,13 +3709,13 @@ fn directed_goto_preempts_autonomous_task() {
 
     // Give elf an autonomous Harvest task (Autonomous level 1).
     let task_id = TaskId::new(&mut sim.rng);
-    let dest_node = sim.nav_graph.live_nodes().last().map(|n| n.id).unwrap();
+    let dest_pos = find_different_walkable(&sim, creature_pos(&sim, elf));
     let fruit_pos = VoxelCoord::new(0, 0, 0);
     let task = Task {
         id: task_id,
         kind: TaskKind::Harvest { fruit_pos },
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(dest_node).position,
+        location: dest_pos,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -4255,11 +4121,11 @@ fn path_resolution_nav_node_destroyed_no_panic() {
     // Use a coordinate far from the world (no node will exist there).
     let bogus_pos = VoxelCoord::new(63, 63, 63);
     assert!(
-        sim.nav_graph.node_at(bogus_pos).is_none(),
-        "Test setup: bogus position should have no nav node"
+        !crate::walkability::is_walkable(&sim.world, &sim.face_data, bogus_pos),
+        "Test setup: bogus position should not be walkable"
     );
 
-    let real_dest = sim.nav_graph.node(node_b).position;
+    let real_dest = node_b;
     {
         let mut c = sim.db.creatures.get(&elf).unwrap();
         c.path = Some(CreaturePath {
@@ -4431,25 +4297,11 @@ fn large_creature_does_not_get_permanently_stuck_on_terrain() {
                 );
             }
 
-            // Check large nav graph node at this position.
-            let node = sim.large_nav_graph.node_at(pos);
-            match node {
-                Some(nid) => {
-                    let edges = sim.large_nav_graph.neighbors(nid);
-                    eprintln!("  Nav node: {nid:?}, edge count: {}", edges.len());
-                    for &eid in edges {
-                        let edge = sim.large_nav_graph.edge(eid);
-                        let dest = sim.large_nav_graph.node(edge.to).position;
-                        eprintln!(
-                            "    Edge {eid:?} -> ({}, {}, {}), type={:?}",
-                            dest.x, dest.y, dest.z, edge.edge_type
-                        );
-                    }
-                }
-                None => {
-                    eprintln!("  NO nav node at position!");
-                }
-            }
+            // Check walkability at this position.
+            let footprint = sim.species_table[&Species::Elephant].footprint;
+            let walkable =
+                crate::walkability::footprint_walkable(&sim.world, &sim.face_data, pos, footprint);
+            eprintln!("  Footprint walkable: {walkable}");
 
             // Print surrounding terrain heights (6×6 columns around anchor).
             eprintln!("  Terrain heights (6x6 around anchor):");
@@ -4459,8 +4311,8 @@ fn large_creature_does_not_get_permanently_stuck_on_terrain() {
                     let cx = (pos.x + dx) as u32;
                     let cz = (pos.z + dz) as u32;
                     if cx < sim.world.size_x && cz < sim.world.size_z {
-                        let top = nav::top_solid_y_for_test(&sim.world, cx, cz);
-                        match top {
+                        let surface_y = nav::large_node_surface_y(&sim.world, cx as i32, cz as i32);
+                        match surface_y {
                             Some(y) => row.push_str(&format!("{y:3} ")),
                             None => row.push_str("  - "),
                         }
@@ -4471,7 +4323,7 @@ fn large_creature_does_not_get_permanently_stuck_on_terrain() {
                 eprintln!("    z={:3}: {row}", pos.z + dz);
             }
 
-            // Check which neighbor anchors are valid nodes / have valid edges.
+            // Check which neighbor anchors have valid walkable positions.
             eprintln!("  Neighbor anchor validity:");
             for &(ndx, ndz) in &[
                 (-1i32, -1i32),
@@ -4485,12 +4337,15 @@ fn large_creature_does_not_get_permanently_stuck_on_terrain() {
             ] {
                 let nx = pos.x + ndx;
                 let nz = pos.z + ndz;
-                let neighbor_node = sim.large_nav_graph.node_at(VoxelCoord::new(nx, pos.y, nz));
-                let is_valid_node = neighbor_node.is_some();
-                // Also check if a node exists at any Y.
+                let neighbor_walkable = crate::walkability::footprint_walkable(
+                    &sim.world,
+                    &sim.face_data,
+                    VoxelCoord::new(nx, pos.y, nz),
+                    footprint,
+                );
                 let surface_y = nav::large_node_surface_y(&sim.world, nx, nz);
                 eprintln!(
-                    "    ({ndx:+},{ndz:+}): anchor=({nx},{nz}), node_at_y={is_valid_node}, \
+                    "    ({ndx:+},{ndz:+}): anchor=({nx},{nz}), walkable={neighbor_walkable}, \
                      surface_y={surface_y:?}"
                 );
             }
@@ -4527,11 +4382,17 @@ fn large_creature_supported_at_incline_with_mixed_column_heights() {
     }
     sim.rebuild_transient_state();
 
-    // Verify the large nav graph has a node at (10, 4, 10).
+    // Verify the position is walkable for a 2x2 footprint at (10, 4, 10).
     let standing_pos = VoxelCoord::new(10, 4, 10);
+    let elephant_fp = sim.species_table[&Species::Elephant].footprint;
     assert!(
-        sim.large_nav_graph.node_at(standing_pos).is_some(),
-        "large nav node should exist at y=4 above mixed-height terrain"
+        crate::walkability::footprint_walkable(
+            &sim.world,
+            &sim.face_data,
+            standing_pos,
+            elephant_fp
+        ),
+        "position should be walkable for elephant at y=4 above mixed-height terrain"
     );
 
     // Spawn an elephant and teleport it to the incline position.
@@ -4577,9 +4438,15 @@ fn large_creature_unsupported_when_no_footprint_column_has_solid_below() {
     sim.rebuild_transient_state();
 
     let standing_pos = VoxelCoord::new(10, 6, 10);
+    let elephant_fp = sim.species_table[&Species::Elephant].footprint;
     assert!(
-        sim.large_nav_graph.node_at(standing_pos).is_some(),
-        "large nav node should exist at y=6 above platform"
+        crate::walkability::footprint_walkable(
+            &sim.world,
+            &sim.face_data,
+            standing_pos,
+            elephant_fp
+        ),
+        "position should be walkable for elephant at y=6 above platform"
     );
 
     // Spawn elephant and teleport to the platform.
@@ -4588,9 +4455,8 @@ fn large_creature_unsupported_when_no_footprint_column_has_solid_below() {
         .spawn_creature(Species::Elephant, VoxelCoord::new(10, 6, 10), &mut events)
         .expect("should spawn elephant on platform");
     {
-        let footprint = sim.species_table[&Species::Elephant].footprint;
         let mut c = sim.db.creatures.get(&elephant_id).unwrap();
-        c.position = VoxelBox::from_anchor(standing_pos, footprint);
+        c.position = VoxelBox::from_anchor(standing_pos, elephant_fp);
         sim.db.update_creature(c).unwrap();
     }
 
@@ -4600,18 +4466,13 @@ fn large_creature_unsupported_when_no_footprint_column_has_solid_below() {
         "elephant on intact platform should be supported"
     );
 
-    // Remove the platform WITHOUT rebuilding nav — node persists but no
-    // solid below in any footprint column.
+    // Remove the platform — no solid below in any footprint column.
     for dx in 0..2 {
         for dz in 0..2 {
             sim.world
                 .set(VoxelCoord::new(10 + dx, 5, 10 + dz), VoxelType::Air);
         }
     }
-    assert!(
-        sim.large_nav_graph.node_at(standing_pos).is_some(),
-        "nav node should still exist (no rebuild)"
-    );
 
     // Now y-1=5 is air in all 4 columns — creature should be unsupported.
     assert!(

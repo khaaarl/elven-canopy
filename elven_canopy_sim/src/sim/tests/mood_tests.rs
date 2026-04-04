@@ -591,9 +591,7 @@ fn dormitory_sleep_generates_thought() {
     let rest_max = sim.species_table[&Species::Elf].rest_max;
 
     // Add a dormitory with beds near the tree.
-    let graph = sim.graph_for_species(Species::Elf);
-    let bed_node = graph.find_nearest_node(tree_pos, 10).unwrap();
-    let bed_pos = graph.node(bed_node).position;
+    let bed_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
     let structure_id = StructureId(999);
     let project_id = ProjectId::new(&mut sim.rng);
@@ -701,9 +699,7 @@ fn home_sleep_generates_thought() {
     let rest_max = sim.species_table[&Species::Elf].rest_max;
 
     // Add a home with a bed near the tree.
-    let graph = sim.graph_for_species(Species::Elf);
-    let bed_node = graph.find_nearest_node(tree_pos, 10).unwrap();
-    let bed_pos = graph.node(bed_node).position;
+    let bed_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
     let structure_id = StructureId(888);
     let project_id = ProjectId::new(&mut sim.rng);
@@ -823,9 +819,7 @@ fn low_ceiling_generates_thought() {
     let rest_max = sim.species_table[&Species::Elf].rest_max;
 
     // Add a dormitory with height=1 (low ceiling).
-    let graph = sim.graph_for_species(Species::Elf);
-    let bed_node = graph.find_nearest_node(tree_pos, 10).unwrap();
-    let bed_pos = graph.node(bed_node).position;
+    let bed_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
     let structure_id = StructureId(888);
     let project_id = ProjectId::new(&mut sim.rng);
@@ -1295,7 +1289,7 @@ fn mope_task_location_is_home_when_assigned() {
         .find(|f| f.placed)
         .unwrap()
         .coord;
-    let home_nav_node = sim.nav_graph.find_nearest_node(bed_pos, 10).unwrap();
+    let home_walkable = find_walkable(&sim, bed_pos, 10).unwrap();
 
     // Spawn an elf.
     let cmd = SimCommand {
@@ -1345,11 +1339,10 @@ fn mope_task_location_is_home_when_assigned() {
                 .is_some_and(|c| c.current_task == Some(t.id))
     });
     assert!(mope_task.is_some(), "Elf should have a Mope task");
-    let home_pos = sim.nav_graph.node(home_nav_node).position;
     assert_eq!(
         mope_task.unwrap().location,
-        home_pos,
-        "Mope task location should be the home's nav node position"
+        home_walkable,
+        "Mope task location should be the home's walkable position"
     );
 }
 
@@ -1629,14 +1622,14 @@ fn devastated_elf_interrupts_task_to_mope() {
 
     // Assign a GoTo task to the elf so it's not idle.
     // Find a distant node for the GoTo task.
-    let nav_count = sim.nav_graph.node_count();
-    let far_node = NavNodeId((nav_count / 2) as u32);
+    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
+    let far_pos = find_far_walkable(&sim, elf_pos, 10);
     let task_id = TaskId::new(&mut sim.rng);
     let goto_task = Task {
         id: task_id,
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(far_node).position,
+        location: far_pos,
         progress: 0,
         total_cost: 0,
         required_species: None,

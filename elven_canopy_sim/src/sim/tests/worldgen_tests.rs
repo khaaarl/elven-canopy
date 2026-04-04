@@ -40,22 +40,8 @@ fn worldgen_is_deterministic() {
     assert_eq!(result1.player_tree_id, result2.player_tree_id);
     assert_eq!(result1.player_civ_id, result2.player_civ_id);
 
-    assert_eq!(
-        result1.nav_graph.node_count(),
-        result2.nav_graph.node_count()
-    );
-    assert_eq!(
-        result1.nav_graph.edge_count(),
-        result2.nav_graph.edge_count()
-    );
-    assert_eq!(
-        result1.large_nav_graph.node_count(),
-        result2.large_nav_graph.node_count()
-    );
-    assert_eq!(
-        result1.large_nav_graph.edge_count(),
-        result2.large_nav_graph.edge_count()
-    );
+    // Walkability is derived from voxel geometry (already compared above via
+    // trunk/branch/leaf/root voxels), so no separate nav-graph assertion needed.
 }
 
 #[test]

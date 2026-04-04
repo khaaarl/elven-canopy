@@ -1129,8 +1129,12 @@ fn hornet_spawns_at_air_position_not_nav_node() {
     let creature = sim.db.creatures.get(&id).unwrap();
     // Hornet should be at the exact air position, not snapped to a nav node.
     assert_eq!(creature.position.min, air_pos);
-    // Should be in the air — verify there's no nav node here.
-    assert!(sim.nav_graph.node_at(air_pos).is_none());
+    // Should be in the air — verify it's not walkable ground.
+    assert!(!crate::walkability::is_walkable(
+        &sim.world,
+        &sim.face_data,
+        air_pos
+    ));
 }
 
 #[test]
@@ -1408,7 +1412,11 @@ fn spawn_capybara_command() {
         .find(|c| c.species == Species::Capybara)
         .unwrap();
     assert_eq!(capybara.position.min.y, 1);
-    assert!(sim.nav_graph.node_at(capybara.position.min).is_some());
+    assert!(crate::walkability::is_walkable(
+        &sim.world,
+        &sim.face_data,
+        capybara.position.min
+    ));
 }
 
 #[test]
@@ -1458,38 +1466,17 @@ fn species_data_loaded_from_config() {
     assert_eq!(elf_data.ticks_per_hp_regen, 0);
 }
 
-#[test]
-fn graph_for_species_dispatch() {
-    let sim = test_sim(legacy_test_seed());
-
-    // Elf (1x1x1) → standard graph.
-    let elf_graph = sim.graph_for_species(Species::Elf) as *const _;
-    let standard = &sim.nav_graph as *const _;
-    assert_eq!(elf_graph, standard, "Elf should use standard nav graph");
-
-    // Elephant (2x2x2) → large graph.
-    let elephant_graph = sim.graph_for_species(Species::Elephant) as *const _;
-    let large = &sim.large_nav_graph as *const _;
-    assert_eq!(elephant_graph, large, "Elephant should use large nav graph");
-}
+// Tests for graph_for_species_dispatch, new_sim_has_large_nav_graph,
+// elephant_spawns_on_large_graph, and troll_spawns_on_large_graph removed:
+// NavGraph no longer exists; walkability is derived from voxel geometry.
 
 #[test]
-fn new_sim_has_large_nav_graph() {
-    let sim = test_sim(legacy_test_seed());
-    assert!(
-        sim.large_nav_graph.live_nodes().count() > 0,
-        "Large nav graph should have nodes after construction",
-    );
-}
-
-#[test]
-fn elephant_spawns_on_large_graph() {
+fn elephant_spawns_on_walkable_ground() {
     let mut sim = test_sim(legacy_test_seed());
     let mut events = Vec::new();
     let spawn_pos = VoxelCoord::new(10, 1, 10);
     sim.spawn_creature(Species::Elephant, spawn_pos, &mut events);
 
-    // There should be exactly one elephant.
     let elephants: Vec<&crate::db::Creature> = sim
         .db
         .creatures
@@ -1498,21 +1485,15 @@ fn elephant_spawns_on_large_graph() {
         .collect();
     assert_eq!(elephants.len(), 1, "Should have spawned one elephant");
 
-    // Its position should map to a node in the large nav graph.
     let elephant = elephants[0];
-    let node_id = sim
-        .large_nav_graph
-        .node_at(elephant.position.min)
-        .expect("Elephant should have a nav node in the large graph");
-    let node = sim.large_nav_graph.node(node_id);
-    assert_eq!(
-        node.position, elephant.position.min,
-        "Elephant position should match its large graph node",
+    assert!(
+        crate::walkability::is_walkable(&sim.world, &sim.face_data, elephant.position.min),
+        "Elephant position should be walkable",
     );
 }
 
 #[test]
-fn troll_spawns_on_large_graph() {
+fn troll_spawns_on_walkable_ground() {
     let mut sim = test_sim(legacy_test_seed());
     let mut events = Vec::new();
     let spawn_pos = VoxelCoord::new(10, 1, 10);
@@ -1527,14 +1508,9 @@ fn troll_spawns_on_large_graph() {
     assert_eq!(trolls.len(), 1, "Should have spawned one troll");
 
     let troll = trolls[0];
-    let node_id = sim
-        .large_nav_graph
-        .node_at(troll.position.min)
-        .expect("Troll should have a nav node in the large graph");
-    let node = sim.large_nav_graph.node(node_id);
-    assert_eq!(
-        node.position, troll.position.min,
-        "Troll position should match its large graph node",
+    assert!(
+        crate::walkability::is_walkable(&sim.world, &sim.face_data, troll.position.min),
+        "Troll position should be walkable",
     );
 }
 
@@ -1748,11 +1724,10 @@ fn all_small_species_spawn_and_coexist() {
     assert_eq!(sim.db.creatures.len(), 6);
     for creature in sim.db.creatures.iter_all() {
         assert!(
-            sim.graph_for_species(creature.species)
-                .node_at(creature.position.min)
-                .is_some(),
-            "{:?} has no nav node at its position",
-            creature.species
+            crate::walkability::is_walkable(&sim.world, &sim.face_data, creature.position.min),
+            "{:?} has no walkable position at {:?}",
+            creature.species,
+            creature.position.min,
         );
     }
 }

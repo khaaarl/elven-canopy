@@ -106,12 +106,9 @@ fn flee_interrupts_current_task() {
 
     // Give the elf a GoTo task to somewhere.
     let elf_node = creature_pos(&sim, elf);
-    let graph = sim.graph_for_species(Species::Elf);
-    let neighbors = graph.neighbors(elf_node);
-    assert!(!neighbors.is_empty(), "Need at least one neighbor node");
-    let goto_node = graph.edge(neighbors[0]).to;
+    let goto_pos = find_different_walkable(&sim, elf_node);
 
-    let task_id = insert_goto_task(&mut sim, goto_node);
+    let task_id = insert_goto_task(&mut sim, goto_pos);
     // Force-assign the task to the elf.
     if let Some(mut t) = sim.db.tasks.get(&task_id) {
         t.state = TaskState::InProgress;
@@ -1115,7 +1112,7 @@ fn aggressive_soldier_interrupts_low_priority_task_to_fight() {
     // The task is at a distant location so the elf would be walking to it.
     let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     let far_pos = VoxelCoord::new(elf_pos.x + 20, elf_pos.y, elf_pos.z);
-    let task_nav = sim.nav_graph.find_nearest_node(far_pos, 10).unwrap();
+    let task_loc = find_walkable(&sim, far_pos, 10).unwrap();
     let task_id = TaskId::new(&mut sim.rng);
     let acquire_task = task::Task {
         id: task_id,
@@ -1125,7 +1122,7 @@ fn aggressive_soldier_interrupts_low_priority_task_to_fight() {
             quantity: 2,
         },
         state: task::TaskState::InProgress,
-        location: sim.nav_graph.node(task_nav).position,
+        location: task_loc,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -1203,7 +1200,7 @@ fn creature_does_not_freeze_after_combat_preempts_task() {
     // Give elf a low-priority task.
     let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     let far_pos = VoxelCoord::new(elf_pos.x + 20, elf_pos.y, elf_pos.z);
-    let task_nav = sim.nav_graph.find_nearest_node(far_pos, 10).unwrap();
+    let task_loc = find_walkable(&sim, far_pos, 10).unwrap();
     let task_id = TaskId::new(&mut sim.rng);
     let acquire_task = task::Task {
         id: task_id,
@@ -1213,7 +1210,7 @@ fn creature_does_not_freeze_after_combat_preempts_task() {
             quantity: 2,
         },
         state: task::TaskState::InProgress,
-        location: sim.nav_graph.node(task_nav).position,
+        location: task_loc,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -1322,13 +1319,13 @@ fn defensive_elf_fights_instead_of_claiming_non_preemptable_task() {
     // autonomous combat). This is the trap: without the fix, the elf claims
     // this and walks away instead of fighting.
     let far_pos = VoxelCoord::new(elf_pos.x + 30, elf_pos.y, elf_pos.z);
-    let far_node = sim.nav_graph.find_nearest_node(far_pos, 10).unwrap();
+    let far_loc = find_walkable(&sim, far_pos, 10).unwrap();
     let goto_task_id = TaskId::new(&mut sim.rng);
     let goto_task = task::Task {
         id: goto_task_id,
         kind: task::TaskKind::GoTo,
         state: task::TaskState::Available,
-        location: sim.nav_graph.node(far_node).position,
+        location: far_loc,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -1852,7 +1849,7 @@ fn defensive_elf_with_task_interrupts_to_shoot_troll_at_10_voxels() {
 
     // Give elf a low-priority Autonomous task (walking far away).
     let far_pos = VoxelCoord::new(elf_pos.x + 30, elf_pos.y, elf_pos.z);
-    let task_nav = sim.nav_graph.find_nearest_node(far_pos, 10).unwrap();
+    let task_loc = find_walkable(&sim, far_pos, 10).unwrap();
     let task_id = TaskId::new(&mut sim.rng);
     let acquire_task = task::Task {
         id: task_id,
@@ -1862,7 +1859,7 @@ fn defensive_elf_with_task_interrupts_to_shoot_troll_at_10_voxels() {
             quantity: 2,
         },
         state: task::TaskState::InProgress,
-        location: sim.nav_graph.node(task_nav).position,
+        location: task_loc,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
