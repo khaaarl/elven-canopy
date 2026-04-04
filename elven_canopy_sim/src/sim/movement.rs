@@ -39,9 +39,13 @@ impl SimState {
         let task_location = if is_flying {
             position
         } else {
-            let graph = self.graph_for_species(species);
-            match graph.find_nearest_node(position, 5) {
-                Some(node) => graph.node(node).position,
+            match crate::walkability::find_nearest_walkable(
+                &self.world,
+                &self.face_data,
+                position,
+                5,
+            ) {
+                Some(pos) => pos,
                 None => return,
             }
         };
@@ -232,8 +236,13 @@ impl SimState {
         creature_ids: &[CreatureId],
         target: VoxelCoord,
     ) -> Vec<(CreatureId, VoxelCoord)> {
-        let center = match self.nav_graph.find_nearest_node(target, 5) {
-            Some(n) => n,
+        let center = match crate::walkability::find_nearest_walkable(
+            &self.world,
+            &self.face_data,
+            target,
+            5,
+        ) {
+            Some(p) => p,
             None => return Vec::new(),
         };
 
@@ -245,9 +254,7 @@ impl SimState {
                 if c.vital_status != VitalStatus::Alive {
                     return None;
                 }
-                let node = self.nav_graph.find_nearest_node(c.position.min, 5)?;
-                let pos = self.nav_graph.node(node).position;
-                Some((cid, pos))
+                Some((cid, c.position.min))
             })
             .collect();
 
@@ -255,12 +262,17 @@ impl SimState {
             return Vec::new();
         }
 
-        // Get spread destinations via BFS.
-        let dest_nodes = self.nav_graph.spread_destinations(center, creatures.len());
-        let dest_positions: Vec<(usize, VoxelCoord)> = dest_nodes
+        // Get spread destinations via BFS on walkable voxel grid.
+        let dest_coords = crate::walkability::spread_destinations(
+            &self.world,
+            &self.face_data,
+            center,
+            creatures.len(),
+        );
+        let dest_positions: Vec<(usize, VoxelCoord)> = dest_coords
             .iter()
             .enumerate()
-            .map(|(i, &nid)| (i, self.nav_graph.node(nid).position))
+            .map(|(i, &p)| (i, p))
             .collect();
 
         // Greedy assignment: build all (creature, dest) pairs sorted by
@@ -288,11 +300,10 @@ impl SimState {
         }
 
         // Any creatures that didn't get a unique destination (more creatures
-        // than available nav nodes) get the center.
-        let center_pos = self.nav_graph.node(center).position;
+        // than available positions) get the center.
         for (ci, &(cid, _)) in creatures.iter().enumerate() {
             if !used_creatures[ci] {
-                assignments.push((cid, center_pos));
+                assignments.push((cid, center));
             }
         }
 

@@ -97,11 +97,14 @@ impl SimState {
             .flight_ticks_per_voxel
             .is_some();
         if !attacker_is_flying && !target_is_flying {
-            // Both ground: target must have a nav node.
-            if self
-                .graph_for_species(target.species)
-                .find_nearest_node(target.position.min, 5)
-                .is_none()
+            // Both ground: target must be in a walkable position.
+            if crate::walkability::find_nearest_walkable(
+                &self.world,
+                &self.face_data,
+                target.position.min,
+                5,
+            )
+            .is_none()
             {
                 return;
             }
@@ -226,9 +229,13 @@ impl SimState {
         let destination = if is_flying {
             destination
         } else {
-            let graph = self.graph_for_species(species);
-            match graph.find_nearest_node(destination, 5) {
-                Some(node) => graph.node(node).position,
+            match crate::walkability::find_nearest_walkable(
+                &self.world,
+                &self.face_data,
+                destination,
+                5,
+            ) {
+                Some(pos) => pos,
                 None => return,
             }
         };
@@ -625,12 +632,15 @@ impl SimState {
             return;
         }
 
-        // Ground creatures need a reachable nav node at the destination.
+        // Ground creatures need a reachable walkable position at the destination.
         if !is_flying
-            && self
-                .graph_for_species(species)
-                .find_nearest_node(origin_voxel, 20)
-                .is_none()
+            && crate::walkability::find_nearest_walkable(
+                &self.world,
+                &self.face_data,
+                origin_voxel,
+                20,
+            )
+            .is_none()
         {
             return;
         }
@@ -3106,7 +3116,7 @@ impl SimState {
 
         // For defensive creatures, limit pursuit (movement) to the short
         // defensive range. Melee and ranged attacks use the full target list.
-        let pursuit_targets: Vec<(CreatureId, NavNodeId)> =
+        let pursuit_targets: Vec<(CreatureId, VoxelCoord)> =
             if style.initiative == crate::species::EngagementInitiative::Defensive {
                 let pursuit_range_sq = self.config.defensive_pursuit_range_sq;
                 targets
@@ -3207,7 +3217,7 @@ impl SimState {
         &mut self,
         creature_id: CreatureId,
         species: Species,
-        targets: &[(CreatureId, NavNodeId)],
+        targets: &[(CreatureId, VoxelCoord)],
         events: &mut Vec<SimEvent>,
     ) -> bool {
         let attacker_fp = self.species_table[&species].footprint;
@@ -3311,12 +3321,8 @@ impl SimState {
         attacker_pos: VoxelCoord,
         attacker_civ: Option<CivId>,
         detection_range_sq: i64,
-    ) -> Vec<(CreatureId, NavNodeId)> {
-        let mut targets: Vec<(CreatureId, NavNodeId, i64)> = Vec::new();
-
-        let attacker_is_flyer = self.species_table[&attacker_species]
-            .flight_ticks_per_voxel
-            .is_some();
+    ) -> Vec<(CreatureId, VoxelCoord)> {
+        let mut targets: Vec<(CreatureId, VoxelCoord, i64)> = Vec::new();
 
         // O(n) scan over all alive creatures.
         for creature in self.db.creatures.iter_all() {
@@ -3327,28 +3333,7 @@ impl SimState {
             if creature.vital_status == VitalStatus::Dead {
                 continue;
             }
-            // Resolve target's position to a nav node on the attacker's graph
-            // (targets may use a different graph, e.g. 1x1 vs 2x2 footprint).
-            // Flying creatures (either attacker or target) may be in open sky
-            // with no nearby nav node, so use a placeholder — the NavNodeId
-            // is unused by flying callers.
-            let target_is_flyer = self.species_table[&creature.species]
-                .flight_ticks_per_voxel
-                .is_some();
-            let node = if attacker_is_flyer || target_is_flyer {
-                // Flying attackers pathfind in 3D voxel space, not the nav
-                // graph, so they don't need a ground nav node for the target.
-                // Flying targets similarly have no ground nav node.
-                NavNodeId(u32::MAX)
-            } else {
-                match self
-                    .graph_for_species(creature.species)
-                    .find_nearest_node(creature.position.min, 5)
-                {
-                    Some(n) => n,
-                    None => continue,
-                }
-            };
+            let target_pos = creature.position.min;
 
             // Squared 3D euclidean distance (i64 to prevent overflow).
             let dx = attacker_pos.x as i64 - creature.position.min.x as i64;
@@ -3373,7 +3358,7 @@ impl SimState {
             };
 
             if is_target {
-                targets.push((cid, node, dist_sq));
+                targets.push((cid, target_pos, dist_sq));
             }
         }
 
@@ -3382,7 +3367,7 @@ impl SimState {
 
         targets
             .into_iter()
-            .map(|(cid, node, _)| (cid, node))
+            .map(|(cid, pos, _)| (cid, pos))
             .collect()
     }
 
