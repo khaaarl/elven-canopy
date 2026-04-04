@@ -760,8 +760,8 @@ fn prefer_melee_closes_distance_before_shooting() {
         "PreferMelee creature should close distance, not shoot, when path exists"
     );
 
-    // Goblin should have moved (taken a step along the nav graph toward target).
-    // Note: the nav graph may route around terrain, so Manhattan distance can
+    // Goblin should have moved (taken a step toward target).
+    // Note: A* may route around terrain, so Manhattan distance can
     // temporarily increase. The key assertion is no projectile + movement.
     let new_goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
     assert_ne!(
@@ -1508,7 +1508,7 @@ fn civilian_elf_flees_instead_of_fighting() {
         "Civilian elf should flee, not fight — all 20 arrows should remain"
     );
 
-    // Elf should have moved (fled from goblin). The nav graph may route
+    // Elf should have moved (fled from goblin). A* may route
     // around terrain so we can't guarantee distance increased, but the elf
     // should not be standing still.
     let elf_new_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;

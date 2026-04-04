@@ -1988,8 +1988,8 @@ fn aggressive_elf_vs_hornet_at_heights() {
             give_spear(&mut sim, elf_id);
         }
 
-        // Build a trunk pillar adjacent to the elf. The nav graph creates
-        // climbable trunk-surface nodes on its exterior, letting the elf
+        // Build a trunk pillar adjacent to the elf. Walkability detects
+        // climbable trunk-surface positions on its exterior, letting the elf
         // ascend vertically while staying adjacent (dx=1) to the hornet
         // column — within bare-hands melee range at any shared height.
         for y in elf_pos.y..elf_pos.y + 5 {
@@ -2036,7 +2036,7 @@ fn aggressive_elf_vs_hornet_at_heights() {
 ///
 /// Same height cases as above, but the elf is a civilian (passive initiative)
 /// given a player-directed AttackCreature command. The elf should pursue the
-/// target if a nav-graph path gets it within melee range. If not reachable,
+/// target if a path gets it within melee range. If not reachable,
 /// the attack task should eventually cancel (path_failures >= retry limit).
 #[test]
 fn ordered_elf_vs_hornet_at_heights() {
@@ -2403,7 +2403,7 @@ fn ground_only_creature_without_solid_below_falls() {
     assert_eq!(pos.y, 1, "capybara should be on ground");
 
     // Teleport the capybara to a position without solid below — e.g., y=5
-    // with no platform. The nav graph likely has no node here either.
+    // with no platform. Not walkable either.
     let floating_pos = VoxelCoord::new(pos.x, 5, pos.z);
     {
         let mut c = sim.db.creatures.get(&capy_id).unwrap();
@@ -2580,7 +2580,7 @@ fn logistics_heartbeat_triggers_creature_gravity() {
 #[test]
 fn large_creature_falls_when_ground_removed() {
     let mut sim = test_sim(legacy_test_seed());
-    // Elephants use the 2x2x2 nav graph. Place a 2x2 platform at y=5
+    // Elephants use 2x2x2 footprint walkability. Place a 2x2 platform at y=5
     // and spawn an elephant on it.
     for dx in 0..2 {
         for dz in 0..2 {
@@ -2955,7 +2955,7 @@ fn flying_creature_autonomous_combat_preempts_task() {
 }
 
 /// find_available_task should find tasks for flying creatures using
-/// Euclidean distance instead of nav-graph Dijkstra.
+/// Euclidean distance instead of ground A*.
 #[test]
 fn find_available_task_works_for_flying_creature() {
     let mut sim = flat_world_sim(legacy_test_seed());

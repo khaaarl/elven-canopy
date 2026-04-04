@@ -15,12 +15,12 @@
 //   ticks/sec, a value of 1250 means 0.8 voxels per second climbing.
 // - `flight_ticks_per_voxel` — ticks per 1.0 units of 3D flight. `None`
 //   means the species cannot fly. Flying creatures use vanilla A* on the
-//   voxel grid (`pathfinding.rs`) instead of the nav graph.
+//   voxel grid (`pathfinding.rs`) instead of ground A*.
 // - `heartbeat_interval_ticks` — interval for `CreatureHeartbeat` events.
 //   Note: heartbeats do NOT drive movement (that's the activation chain in
 //   `sim/activation.rs`); they handle periodic non-movement checks like mood and mana.
-// - `allowed_edge_types` — restricts which nav graph edges the species can
-//   traverse. `None` = all edges (elves can climb trunks and walk branches).
+// - `allowed_edge_types` — restricts which edge types the species can
+//   traverse. `None` = all types (elves can climb trunks and walk branches).
 //   `Some(vec)` = only listed types (capybaras are ground-only).
 // - `ground_only` — if true, spawning and wandering are restricted to
 //   ground-level nav nodes (`Dirt` surface type).
@@ -170,7 +170,7 @@ pub struct SpeciesData {
 
     /// Ticks per 1.0 units of 3D flight movement. `None` means the species
     /// cannot fly. Flying creatures use vanilla A* on the voxel grid instead
-    /// of the nav graph. At 1000 ticks/sec, 250 = 4 voxels/sec flying.
+    /// of ground A*. At 1000 ticks/sec, 250 = 4 voxels/sec flying.
     #[serde(default)]
     pub flight_ticks_per_voxel: Option<u64>,
 

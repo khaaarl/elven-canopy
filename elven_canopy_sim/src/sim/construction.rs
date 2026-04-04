@@ -2,7 +2,7 @@
 //
 // Handles the full lifecycle of player-designated construction: validation,
 // blueprint creation, voxel materialization (one voxel per build action),
-// structure completion, furnishing, and nav graph updates. Also includes
+// structure completion, furnishing, and walkability updates. Also includes
 // raycasting for structure identification and home assignment.
 //
 // See also: `blueprint.rs` (blueprint data model), `building.rs` (building
@@ -778,7 +778,7 @@ impl SimState {
 
     /// Cancel a blueprint by ProjectId. Removes the associated Build task,
     /// unassigns any workers, reverts materialized voxels to Air, and rebuilds
-    /// the nav graph. Emits `BuildCancelled` if found.
+    /// walkability data. Emits `BuildCancelled` if found.
     /// Silent no-op if the ProjectId doesn't exist (idempotent for multiplayer).
     pub(crate) fn cancel_build(&mut self, project_id: ProjectId, events: &mut Vec<SimEvent>) {
         let bp = match self.db.blueprints.get(&project_id) {
@@ -1601,9 +1601,9 @@ impl SimState {
         false
     }
 
-    /// After a nav graph rebuild, re-resolve every creature's position
-    /// by finding the nearest node to its current position. Clears stored paths
-    /// since NavNodeIds change when the graph is rebuilt.
+    /// After a voxel change that affects walkability, re-resolve every
+    /// creature's position by finding the nearest walkable voxel. Clears
+    /// stored paths since walkability may have changed.
     pub(crate) fn resnap_creature_nodes(&mut self) {
         let creature_info: Vec<(CreatureId, Species, VoxelCoord)> = self
             .db
@@ -1634,7 +1634,7 @@ impl SimState {
     }
 
     /// Resnap only creatures whose position is no longer walkable after a
-    /// nav graph update. Used after incremental nav graph updates where most
+    /// voxel change. Used after incremental walkability changes where most
     /// creatures are unaffected — much cheaper than resnapping all creatures.
     /// DDA voxel raycast returning `(StructureId, VoxelCoord)` of the first
     /// structure voxel hit. Like `raycast_structure()` but also returns the

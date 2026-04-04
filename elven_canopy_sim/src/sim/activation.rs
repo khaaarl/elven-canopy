@@ -368,7 +368,7 @@ impl SimState {
         }
 
         // --- Flee check ---
-        // Dispatch: ground uses nav-graph edges (ground_flee_step),
+        // Dispatch: ground uses walkable neighbors (ground_flee_step),
         // flying uses fly_wander (B-flying-flee tracks proper directional flee).
         if self.should_flee(creature_id, species) {
             if let Some(cn) = current_node {
@@ -555,8 +555,8 @@ impl SimState {
     }
 
     /// Find the nearest available task this creature can work on.
-    /// Uses Dijkstra search on the nav graph to prefer tasks closest by
-    /// actual travel cost, not just insertion order. Respects species
+    /// Uses A* search to prefer tasks closest by actual travel cost, not
+    /// just insertion order. Respects species
     /// and civilization restrictions: tasks with `required_species` or
     /// `required_civ_id` are only visible to matching creatures.
     pub(crate) fn find_available_task(&self, creature_id: CreatureId) -> Option<TaskId> {

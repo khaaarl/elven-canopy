@@ -21,16 +21,16 @@
 // Creature behavior uses **poll-based activation**: each tick, all living
 // creatures whose `next_available_tick <= current_tick` are activated in
 // deterministic CreatureId order. Each activation performs one action (walk
-// 1 nav edge or do 1 unit of task work) and sets `next_available_tick` for
-// the next poll. The sim runs at **1000 ticks per simulated second**
-// (`tick_duration_ms = 1`). Edge traversal time is computed as
-// `ceil(edge.distance * species_ticks_per_voxel)` where ticks_per_voxel is
+// one voxel step or do 1 unit of task work) and sets `next_available_tick`
+// for the next poll. The sim runs at **1000 ticks per simulated second**
+// (`tick_duration_ms = 1`). Step traversal time is computed as
+// `ceil(distance * species_ticks_per_voxel)` where ticks_per_voxel is
 // `walk_ticks_per_voxel` for flat edges or `climb_ticks_per_voxel` for
 // TrunkClimb/GroundToTrunk edges (from `species.rs`).
 //
 // ## Movement interpolation
 //
-// When a creature starts traversing a nav edge, a `MoveAction` row is
+// When a creature starts traversing a voxel step, a `MoveAction` row is
 // inserted into the `move_actions` table with `move_from`, `move_to`, and
 // `move_start_tick`. The end tick is the creature's `next_available_tick`.
 // `interpolated_position(render_tick, move_action)` lerps between them,
@@ -64,12 +64,13 @@
 //      should flee (based on `engagement_style` disengage threshold) and detects
 //      a hostile within its effective detection range (base `hostile_detection_range_sq`
 //      scaled by Perception via `effective_detection_range_sq()`), interrupt any current task
-//      and perform a greedy retreat step (pick the nav neighbor that maximizes
-//      squared distance from the nearest threat). Ties broken by `NavNodeId`.
+//      and perform a greedy retreat step (pick the walkable neighbor that
+//      maximizes squared distance from the nearest threat). Ties broken by
+//      `VoxelCoord` for determinism.
 //   1. If the creature has no task (`current_task == None`), check for an
 //      available task to claim. If none found, **wander**: pick a random
-//      adjacent nav node, move there, and schedule the next activation at
-//      `now + ceil(edge.distance * ticks_per_voxel)`.
+//      adjacent walkable voxel, move there, and schedule the next activation at
+//      `now + ceil(distance * ticks_per_voxel)`.
 //   2. If the creature has a task, run its **behavior script** (see below).
 //
 // Wandering is intentionally local and aimless — no pathfinding, just 1 random
@@ -112,7 +113,7 @@
 //   `EatFruit`, `Sleep`, `Furnish`, `Haul`, `Cook`, `Harvest`, `AcquireItem`,
 //   `Mope`, `Craft`, `AttackTarget`, `AttackMove`).
 // - `state: TaskState` — lifecycle: `Available` → `InProgress` → `Complete`.
-// - `location: NavNodeId` — where creatures go to work on the task.
+// - `location: VoxelCoord` — where creatures go to work on the task.
 // - Assignment tracked via `creature.current_task` FK.
 // - `progress: i64` and `total_cost: i64` — for tasks that require work units
 //   (0 total_cost means instant completion, e.g. GoTo).
@@ -124,9 +125,9 @@
 // 1. A `CreateTask` command (from the UI via `sim_bridge.rs`) creates a task
 //    in `Available` state, snapped to the nearest nav node.
 // 2. On its next activation, an idle creature whose species matches calls
-//    `find_available_task`, which uses Dijkstra search on the nav graph to
-//    find the nearest `Available` task by travel cost. The creature calls
-//    `claim_task`, which sets the task to `InProgress`, sets the creature's
+//    `find_available_task`, which uses A* search to find the nearest
+//    `Available` task by travel cost. The creature calls `claim_task`,
+//    which sets the task to `InProgress`, sets the creature's
 //    `current_task`, and computes an A* path to `task.location`.
 // 3. Each subsequent activation runs the task's behavior script (see below).
 // 4. On completion, `complete_task` sets the task to `Complete` and clears
@@ -204,9 +205,8 @@
 //
 // `find_available_task` filters by: (1) `TaskState::Available`, (2) species
 // compatibility (`required_species` is `None` or matches the creature's
-// species). Among candidates it picks the nearest by Dijkstra nav-graph
-// distance (actual travel cost), falling back to arbitrary order only for
-// tasks at the same nav node.
+// species). Among candidates it picks the nearest by A* travel cost,
+// falling back to arbitrary order only for tasks at the same position.
 //
 // Task checking happens on every activation of an idle creature. This is
 // simple and correct; optimization (checking less frequently) is deferred.
@@ -244,8 +244,8 @@
 //
 // `SimState` derives `Serialize`/`Deserialize` via serde. The voxel world is
 // serialized directly using a compact binary pack format (see `world.rs`).
-// Several transient fields (`nav_graph`, `large_nav_graph`, `species_table`,
-// `lexicon`, `face_data`, `ladder_orientations`, `structure_voxels`) are
+// Several transient fields (`species_table`, `lexicon`, `face_data`,
+// `ladder_orientations`, `structure_voxels`) are
 // `#[serde(skip)]` and must be rebuilt after deserialization via
 // `rebuild_transient_state()`. Convenience methods `to_json()` and
 // `from_json()` handle the full serialize/deserialize + rebuild cycle.
@@ -409,11 +409,9 @@ pub struct SimState {
     pub grassless: BTreeSet<VoxelCoord>,
 }
 
-/// A creature's current path through the nav graph.
+/// A creature's current path through the voxel world.
 ///
-/// Stores positions (`VoxelCoord`) instead of `NavNodeId`s so that paths are
-/// independent of nav-graph node ID assignment. At each step the sim resolves
-/// the next position to a `NavNodeId` via the graph's spatial index.
+/// Stores a sequence of `VoxelCoord` positions to visit.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CreaturePath {
     /// Remaining positions to visit (next position is index 0).
@@ -541,18 +539,18 @@ impl SimState {
 
     /// Find a path from a creature's current position to `goal`.
     ///
-    /// Dispatches to nav-graph A* (ground creatures) or flight A* (flying
+    /// Dispatches to voxel-direct A* (ground creatures) or flight A* (flying
     /// creatures) based on species. Uses stat-modified movement speeds.
     /// Search is bounded by `opts` (path length limit and work budget).
     ///
     /// Returns `Err(PathError)` with a structured error on failure:
     /// `StartNotOnGraph` if the creature doesn't exist or its position isn't
-    /// on the nav graph, `TargetNotOnGraph` if the goal isn't on the graph,
+    /// walkable, `TargetNotOnGraph` if the goal isn't walkable,
     /// `Unreachable` / `ExceededPathLen` / `ExceededWorkBudget` for search
     /// failures.
     ///
-    /// For ground creatures, the returned `PathResult` has `nav_nodes` and
-    /// `nav_edges` populated. For flyers, those fields are empty.
+    /// For ground creatures, the returned `PathResult` has positions and
+    /// edge types populated. For flyers, edge types are empty.
     ///
     /// Named `find_path` rather than `creature_path` to avoid collision with
     /// the elf life-path method in `paths.rs`.
@@ -601,8 +599,8 @@ impl SimState {
 
     /// Find the nearest reachable candidate from a creature's current position.
     ///
-    /// Dispatches to interleaved A* on the nav graph (ground creatures) or
-    /// voxel grid (flying creatures) based on species. Uses stat-modified
+    /// Dispatches to interleaved A* on the voxel grid for both ground and
+    /// flying creatures based on species. Uses stat-modified
     /// movement speeds and the species' edge-type filter. Search is bounded
     /// by `opts` (path length limit and work budget).
     ///
@@ -2391,7 +2389,7 @@ impl SimState {
     }
 
     /// Deserialize a simulation state from a JSON string and rebuild
-    /// transient fields (world, nav_graph, species_table, lexicon).
+    /// transient fields (world, species_table, lexicon, face_data).
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         let mut state: SimState = serde_json::from_str(json)?;
         state.rebuild_transient_state();

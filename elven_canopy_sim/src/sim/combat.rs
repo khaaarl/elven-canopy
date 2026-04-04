@@ -711,7 +711,7 @@ impl SimState {
 
     /// Walk toward an attack-move engagement target. On pathfinding failure,
     /// immediately disengages (unlike AttackTarget which retries). Works for
-    /// both ground (nav-graph A*) and flying (voxel A*) creatures.
+    /// both ground (voxel-direct A*) and flying (voxel A*) creatures.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn walk_toward_attack_move_target(
         &mut self,
@@ -1064,7 +1064,7 @@ impl SimState {
     /// Walk toward the attack target, with retry-limit handling on pathfinding
     /// failure. On failure, increments the path_failures counter; if it exceeds
     /// `attack_path_retry_limit`, cancels the task. Works for both ground
-    /// (nav-graph A*) and flying (voxel A*) creatures.
+    /// (voxel-direct A*) and flying (voxel A*) creatures.
     pub(crate) fn walk_toward_attack_target(
         &mut self,
         creature_id: CreatureId,
@@ -2925,7 +2925,7 @@ impl SimState {
     ///
     /// On each activation, if the creature detects a hostile within its detection
     /// range, it picks the nav neighbor that maximizes squared euclidean distance
-    /// from the nearest threat's anchor position. Ties are broken by `NavNodeId`
+    /// from the nearest threat's anchor position. Ties are broken by `VoxelCoord`
     /// for determinism. If the creature has a current task, it is interrupted
     /// first.
     ///
@@ -3309,10 +3309,8 @@ impl SimState {
     }
 
     /// Detect hostile targets within detection range. Returns a list of
-    /// `(CreatureId, NavNodeId)` pairs sorted by squared euclidean distance
-    /// (nearest first). **Note:** for flying creatures the `NavNodeId` is a
-    /// placeholder (`u32::MAX`) — callers must not dereference it. Use the
-    /// creature's position from the DB instead.
+    /// `(CreatureId, VoxelCoord)` pairs sorted by squared euclidean distance
+    /// (nearest first).
     ///
     /// Hostility rules for the initial pass:
     /// - Non-civ aggressive creature (no `civ_id`): targets all living civ

@@ -54,7 +54,7 @@ mod taming_tests;
 mod worldgen_tests;
 
 // =========================================================================
-// Core tests: basic sim setup, determinism, serialization, tree, nav graph
+// Core tests: basic sim setup, determinism, serialization, tree
 // =========================================================================
 
 #[test]

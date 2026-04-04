@@ -134,9 +134,9 @@ pub(super) fn flat_world_config() -> GameConfig {
 }
 
 /// Create a test SimState with a flat, treeless world. Clones cached
-/// geometry (world + nav graphs) and overlays seed-dependent state
-/// (civs, diplomacy, tree row, RNG). Fast because the expensive nav
-/// graph build is amortized across all callers.
+/// geometry (world + face data) and overlays seed-dependent state
+/// (civs, diplomacy, tree row, RNG). Fast because the expensive world
+/// setup is amortized across all callers.
 ///
 /// The home tree DB row exists (for `player_tree_id` lookups) but has no
 /// voxels. Creatures can be spawned and will snap to the flat ground's

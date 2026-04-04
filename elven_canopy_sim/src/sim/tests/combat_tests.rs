@@ -7326,7 +7326,7 @@ fn ground_creature_pursues_target_at_different_elevation() {
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
 
-    // Force elf to y=2 (off the nav graph in a flat world).
+    // Force elf to y=2 (not walkable in a flat world).
     force_position(&mut sim, elf, VoxelCoord::new(37, 2, 32));
     force_position(&mut sim, goblin, VoxelCoord::new(34, 1, 32));
     force_guaranteed_hits(&mut sim, goblin);

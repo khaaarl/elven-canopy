@@ -500,7 +500,7 @@ fn find_nearest_fruit_returns_reachable() {
         .unwrap()
         .id;
 
-    // find_nearest_fruit should return a fruit reachable via nav graph.
+    // find_nearest_fruit should return a fruit reachable via A* pathfinding.
     let result = sim.find_nearest_fruit(elf_id);
     assert!(
         result.is_some(),
@@ -2426,7 +2426,7 @@ fn dining_preempts_autonomous_task() {
 
 #[test]
 fn find_dining_hall_with_realistic_building() {
-    // Use the real building pipeline (voxels + nav graph rebuild + furnish
+    // Use the real building pipeline (voxels + walkability rebuild + furnish
     // command) to verify find_nearest_dining_hall works with a properly
     // constructed building, not just manually inserted DB rows.
     let mut sim = test_sim(legacy_test_seed());

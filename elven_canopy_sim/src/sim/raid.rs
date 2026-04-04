@@ -5,10 +5,10 @@
 // an attack-move task toward the tree. Currently debug-only (no periodic
 // trigger or detection gating).
 //
-// Spawn positions are found by scanning the nav graph's ground nodes for
-// the actual terrain bounding box, picking a random point along the chosen
-// edge, then selecting the nearest `count` ground nodes to that point so
-// raiders spawn clustered together.
+// Spawn positions are found by scanning walkable ground positions for the
+// actual terrain bounding box, picking a random point along the chosen
+// edge, then selecting the nearest `count` walkable positions to that point
+// so raiders spawn clustered together.
 //
 // See also: `creature.rs` for `spawn_creature_with_civ()`, `combat.rs` for
 // `command_attack_move()`, `worldgen.rs` for civ/relationship generation,

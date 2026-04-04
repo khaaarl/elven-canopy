@@ -1,6 +1,6 @@
 // Creature lifecycle — spawning, surface placement, pile management, gravity, and task cleanup.
 //
-// Handles creature spawning (with species-specific nav graph snapping),
+// Handles creature spawning (with species-specific walkability snapping),
 // biological trait rolling (hair/eye/skin/body colors etc. stored in the
 // `creature_traits` table), surface position finding, ground pile creation
 // and gravity (both pile and creature), and the task interruption/preemption/
@@ -21,8 +21,8 @@ use crate::inventory;
 use crate::task;
 
 impl SimState {
-    /// Spawn a creature at the nearest nav node to the given position.
-    /// Ground-only species snap to ground nodes; others snap to any node.
+    /// Spawn a creature at the nearest walkable position to the given position.
+    /// Ground-only species snap to ground-level walkable voxels.
     /// Elves are automatically affiliated with the player's civ; other species
     /// are unaffiliated. Use `spawn_creature_with_civ()` for explicit civ control.
     pub(crate) fn spawn_creature(
@@ -625,12 +625,12 @@ impl SimState {
     /// Check whether a creature is supported at its current position.
     /// Support rules:
     /// - Flying: always supported (exempt from gravity).
-    /// - 1x1 climber (`ground_only` = false): supported if a valid nav node
-    ///   exists at the creature's position.
-    /// - 1x1 ground-only (`ground_only` = true): supported if a valid nav node
-    ///   exists AND the voxel below is solid.
-    /// - 2x2x2 ground-only: supported if a valid nav node exists in the large
-    ///   nav graph AND at least one column in the footprint has solid at y−1.
+    /// - 1x1 climber (`ground_only` = false): supported if the position is
+    ///   walkable.
+    /// - 1x1 ground-only (`ground_only` = true): supported if the position is
+    ///   walkable AND the voxel below is solid.
+    /// - 2x2x2 ground-only: supported if the position is walkable AND at
+    ///   least one column in the footprint has solid at y−1.
     pub(crate) fn creature_is_supported(&self, creature_id: CreatureId) -> bool {
         let creature = match self.db.creatures.get(&creature_id) {
             Some(c) if c.vital_status == VitalStatus::Alive => c,

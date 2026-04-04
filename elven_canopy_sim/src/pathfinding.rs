@@ -81,11 +81,11 @@ impl std::fmt::Display for PathError {
                 )
             }
             Self::Unreachable => write!(f, "target unreachable"),
-            Self::StartNotOnGraph => write!(f, "start position not on nav graph"),
+            Self::StartNotOnGraph => write!(f, "start position not walkable"),
             Self::StartBlockedByFootprint => {
                 write!(f, "start position blocked by footprint")
             }
-            Self::TargetNotOnGraph => write!(f, "target position not on nav graph"),
+            Self::TargetNotOnGraph => write!(f, "target position not walkable"),
             Self::NoTargets => write!(f, "no valid targets"),
         }
     }
@@ -189,7 +189,7 @@ fn isqrt(n: u32) -> u32 {
 ///
 /// - `manhattan_to_target`: Manhattan distance from start to goal (or
 ///   furthest candidate for nearest-among-N).
-/// - `is_flight`: true for voxel-grid flight A*, false for nav-graph A*.
+/// - `is_flight`: true for voxel-grid flight A*, false for ground A*.
 /// - `n_candidates`: number of candidates (1 for single-target searches).
 fn resolve_limits(
     opts: &PathOpts,
@@ -227,7 +227,7 @@ pub struct PathResult {
     pub total_cost: i64,
 }
 
-/// Bundled speed parameters for nav-graph pathfinding.
+/// Bundled speed parameters for ground pathfinding.
 ///
 /// Combines the four per-species ticks-per-voxel values and the optional
 /// edge-type filter into a single struct to reduce argument lists. Construct

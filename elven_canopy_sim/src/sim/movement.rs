@@ -5,8 +5,8 @@
 // movement execution with voxel exclusion, idle wandering, and command queue
 // management (`find_queue_tail` for shift+right-click sequential queuing).
 //
-// See also: `pathfinding.rs` (A* for ground and flight), `nav.rs` (graph
-// structure), `combat.rs` (attack-move walking, flee steps).
+// See also: `pathfinding.rs` (A* for ground and flight), `nav.rs` (edge
+// types and distance constants), `combat.rs` (attack-move walking, flee steps).
 use super::*;
 use crate::db::{ActionKind, MoveAction};
 use crate::event::SimEvent;
@@ -28,9 +28,9 @@ impl SimState {
             _ => return,
         };
 
-        // Ground creatures need a reachable nav node at the destination.
-        // Snap the task location to the nav node position so that find_path
-        // (which uses node_at) can resolve it exactly.
+        // Ground creatures need a walkable position at the destination.
+        // Snap the task location to the nearest walkable voxel so that
+        // find_path can resolve it exactly.
         // Flying creatures can go anywhere in open air.
         let species = creature.species;
         let is_flying = self.species_table[&species]
@@ -515,7 +515,7 @@ impl SimState {
         self.ground_random_wander(creature_id, current_pos, species);
     }
 
-    /// Move a creature one step along the given nav graph edge: update position,
+    /// Move a creature one step to an adjacent voxel: update position,
     /// spatial index, action state, render interpolation, and schedule the next
     /// activation. Shared by random wander, hostile pursuit, and flee.
     ///

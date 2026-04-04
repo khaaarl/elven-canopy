@@ -41,7 +41,7 @@ fn worldgen_is_deterministic() {
     assert_eq!(result1.player_civ_id, result2.player_civ_id);
 
     // Walkability is derived from voxel geometry (already compared above via
-    // trunk/branch/leaf/root voxels), so no separate nav-graph assertion needed.
+    // trunk/branch/leaf/root voxels), so no separate walkability assertion needed.
 }
 
 #[test]
