@@ -59,6 +59,7 @@ This reduces merge conflicts when parallel work streams add items.
 [~] F-notifications        Player-visible event notifications
 [~] F-parallel-dedup       Radix-partitioned parallel dedup (elven_canopy_utils)
 [~] F-path-ui              Path management UI and notifications
+[~] F-remove-navgraph      Remove NavGraph, replace with voxel-direct A*
 [~] F-ssao                 Screen-space ambient occlusion toggle
 ```
 
@@ -215,7 +216,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-raid-polish          Raid polish: military groups, provisions for long treks
 [ ] F-random-seeds         Parameterized random-seed testing for hardened sim tests
 [ ] F-recipe-any-mat       Any-material recipe parameter support
-[ ] F-remove-navgraph      Remove NavGraph, replace with voxel-direct A*
 [ ] F-rescue               Rescue and stabilize incapacitated creatures
 [ ] F-retire-events        Retire event queue: poll-based heartbeats and periodic systems
 [ ] F-romance              Romantic relationships and courtship
@@ -1813,7 +1813,7 @@ A* search with euclidean heuristic over the nav graph. Movement cost
 computed from edge distance and per-species speed config.
 
 #### F-remove-navgraph — Remove NavGraph, replace with voxel-direct A*
-**Status:** Todo
+**Status:** In Progress
 
 Remove the NavGraph abstraction from elven_canopy_sim and replace ground-creature pathfinding with voxel-direct A*, matching the pattern already used by flying creatures (`astar_fly`).
 
