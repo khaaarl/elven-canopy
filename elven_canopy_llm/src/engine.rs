@@ -9,7 +9,8 @@ use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
-use llama_cpp_2::model::LlamaModel;
+#[allow(deprecated)] // Special is deprecated; migrate to token_to_piece later.
+use llama_cpp_2::model::{AddBos, LlamaModel, Special};
 use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::token::LlamaToken;
 use serde::{Deserialize, Serialize};
@@ -102,7 +103,7 @@ impl LlmEngine {
     /// Converts the JSON schema to a GBNF grammar, tokenizes the prompt,
     /// processes it through the model, and samples tokens until EOS or
     /// `max_tokens`.
-    pub fn infer(&self, request: &InferenceRequest) -> Result<InferenceResult, LlmError> {
+    pub fn infer(&mut self, request: &InferenceRequest) -> Result<InferenceResult, LlmError> {
         let start = Instant::now();
 
         // Create a fresh context for each request. KV cache reuse across
@@ -114,19 +115,19 @@ impl LlmEngine {
 
         // Convert JSON schema to GBNF grammar for constrained generation.
         let grammar_str =
-            llama_cpp_2::grammar::json_schema_to_grammar(&request.response_schema)
+            llama_cpp_2::json_schema_to_grammar(&request.response_schema)
                 .map_err(|e| LlmError::Grammar(e.to_string()))?;
 
-        // Build sampler chain with grammar constraint.
-        let sampler = LlamaSampler::chain_simple([
-            LlamaSampler::grammar(&self.model, &grammar_str, "root"),
-            LlamaSampler::greedy(),
-        ]);
+        // Build sampler chain with grammar constraint and greedy sampling.
+        let grammar_sampler = LlamaSampler::grammar(&self.model, &grammar_str, "root")
+            .map_err(|e| LlmError::Grammar(e.to_string()))?;
+        let mut sampler =
+            LlamaSampler::chain_simple([grammar_sampler, LlamaSampler::greedy()]);
 
         // Tokenize the prompt.
         let tokens = self
             .model
-            .str_to_token(&request.prompt, llama_cpp_2::model::AddBos::Always)
+            .str_to_token(&request.prompt, AddBos::Always)
             .map_err(|e| LlmError::Inference(e.to_string()))?;
 
         let prompt_token_count = tokens.len() as u32;
@@ -170,14 +171,20 @@ impl LlmEngine {
         }
 
         // Detokenize the output.
-        let mut text = String::new();
-        for token in &output_tokens {
-            let piece = self
-                .model
-                .token_to_str(*token, llama_cpp_2::token::Special::Tokenize)
-                .map_err(|e| LlmError::Inference(format!("detokenize failed: {e}")))?;
-            text.push_str(&piece);
-        }
+        // Uses the deprecated token_to_str for simplicity; migrate to
+        // token_to_piece (which requires an encoding_rs::Decoder) later.
+        #[allow(deprecated)]
+        let text = {
+            let mut s = String::new();
+            for token in &output_tokens {
+                let piece = self
+                    .model
+                    .token_to_str(*token, Special::Tokenize)
+                    .map_err(|e| LlmError::Inference(format!("detokenize failed: {e}")))?;
+                s.push_str(&piece);
+            }
+            s
+        };
 
         let elapsed = start.elapsed();
 
