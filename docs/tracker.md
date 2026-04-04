@@ -192,6 +192,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mp-chat              Multiplayer in-game chat
 [ ] F-mp-reconnect         Multiplayer reconnection after disconnect
 [ ] F-multi-tree           NPC trees with personalities
+[ ] F-multi-tree-schema    Multi-tree / multi-player schema additions
 [ ] F-narrative-log        Events and narrative log
 [ ] F-night-predators      Nocturnal predators
 [ ] F-pack-animals         Beast-of-burden hauling for heavy loads and caravans
@@ -220,6 +221,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-rope-retract         Retractable rope ladders (furl/unfurl)
 [ ] F-round-building       Round/circular building construction
 [ ] F-rust-mesh-complex    Rust mesh gen for buildings/ladders
+[ ] F-save-stable          Save format stability checkpoint
 [ ] F-sculptures           Decorative sculptures
 [ ] F-seasons              Seasonal visual and gameplay effects
 [ ] F-selection-bar        Bottom-of-screen selection bar (SC2-style)
@@ -293,6 +295,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-wood-stats           Wood-type material variation for crafted items
 [ ] F-world-boundary       World boundary visualization
 [ ] F-world-map            World map view
+[ ] F-zone-schema          Zone ID on all spatial tables
 [ ] F-zone-world           Zone-based world with fidelity partitioning
 [ ] R-panel-dedup          Extract shared helpers from duplicated info panel code
 ```
@@ -5475,17 +5478,12 @@ with F-uplift-tree.
 #### F-multi-tree — NPC trees with personalities
 **Status:** Todo · **Phase:** 7 · **Refs:** §2, §7
 
-Multiple trees in the world, each with personality traits (preferences,
-aversions) that affect mana generation and elf morale. Also enables
-**separate-tree multiplayer** — each player controls their own tree with
-their own elves and mana, in cooperative or competitive configurations
-(see `design_doc.md` §1 and `docs/drafts/multiplayer_relay.md` §4). Requires
-per-player entity ownership, per-player command validation, and per-player
-fog of war rendering.
+Multiple trees in the world, each with personality traits (preferences, aversions) that affect mana generation and elf morale. Also enables **separate-tree multiplayer** — each player controls their own tree with their own elves and mana, in cooperative or competitive configurations (see `design_doc.md` §1 and `docs/drafts/multiplayer_relay.md` §4). Requires per-player entity ownership, per-player command validation, and per-player fog of war rendering. Schema prerequisites (command authorization, fog-of-war state, per-civ scoping audit) are tracked in F-multi-tree-schema.
 
+**Blocked by:** F-multi-tree-schema
 **Blocks:** F-cultural-drift, F-root-network
 **Unblocked by:** F-tree-db
-**Related:** F-bigger-world, F-multiplayer, F-settlement-gen, F-tree-capacity, F-tree-db, F-tree-species, F-uplift-tree, F-zone-world
+**Related:** F-bigger-world, F-multi-tree-schema, F-multiplayer, F-settlement-gen, F-tree-capacity, F-tree-db, F-tree-species, F-uplift-tree, F-zone-world
 
 #### F-predators — Wild predator food cycle
 **Status:** Todo
@@ -5733,42 +5731,21 @@ the pattern for generator sequencing.
 #### F-zone-world — Zone-based world with fidelity partitioning
 **Status:** Todo
 
-Zone-based world architecture within a single unified sim. The world is
-partitioned into spatial zones, each a bounded voxel grid, but all zones
-share one SimDb, one save file, one deterministic simulation.
+Zone-based world architecture within a single unified sim. The world is partitioned into spatial zones, each a bounded voxel grid, but all zones share one SimDb, one save file, one deterministic simulation. DB schema changes (zone table, zone_id columns, compound spatial indexes) are tracked separately in F-zone-schema.
 
 **Zone states:**
-- **Active:** Full voxel sim — pathfinding, creature actions, construction,
-  combat. This is the current game, applied per-zone.
-- **Background:** Coarse heartbeat — population changes, repair/expansion
-  progress, resource accumulation. No pathfinding, no voxel-level movement.
-  Used for NPC civ towns, unoccupied areas.
-- **Seed:** Never visited. Exists as worldgen parameters + civ metadata.
-  Deterministically generated into full voxels on first activation.
+- **Active:** Full voxel sim — pathfinding, creature actions, construction, combat. This is the current game, applied per-zone.
+- **Background:** Coarse heartbeat — population changes, repair/expansion progress, resource accumulation. No pathfinding, no voxel-level movement. Used for NPC civ towns, unoccupied areas.
+- **Seed:** Never visited. Exists as worldgen parameters + civ metadata. Deterministically generated into full voxels on first activation.
 
-**DB changes:** Zone table in SimDb (zone_id, zone_state, world_map_pos,
-terrain_type, owning_civ, seed, etc.). zone_id column added to creature,
-structure, item, and other spatially-located tables.
+**Fidelity transitions:** Deterministic rules govern when zones change state. Active→Background when no player-relevant creatures remain. Seed→Active on first player creature entry (or other deterministic trigger). Background zones tick on a coarse schedule. All transitions must be deterministic for multiplayer/replay compatibility.
 
-**Fidelity transitions:** Deterministic rules govern when zones change state.
-Active→Background when no player-relevant creatures remain. Seed→Active
-on first player creature entry (or other deterministic trigger). Background
-zones tick on a coarse schedule. All transitions must be deterministic for
-multiplayer/replay compatibility.
+**Inter-zone travel:** Creatures moving between zones have a world-map travel phase with nontrivial duration. Zones are not topologically connected at edges — implied uninteresting space between them. Encounters en route (e.g., intercept a raiding party) generate a battle zone on the fly from terrain type at the world map location.
 
-**Inter-zone travel:** Creatures moving between zones have a world-map
-travel phase with nontrivial duration. Zones are not topologically
-connected at edges — implied uninteresting space between them. Encounters
-en route (e.g., intercept a raiding party) generate a battle zone on the
-fly from terrain type at the world map location.
+**No separate sims:** Same sim code, same event queue, same DB. The zone is a simulation fidelity hint, not a separate world.
 
-**No separate sims:** Same sim code, same event queue, same DB. The zone
-is a simulation fidelity hint, not a separate world.
-
-**Per-zone coordinate systems:** Each zone has its own local voxel coordinate system. Spatial queries (creature lookup, fruit search, hostile detection) must be scoped to a zone. This requires compound spatial indexes in tabulosity — keyed by `(zone_id, spatial_box)` — so that a query like "creatures near position X in zone Z" only searches the R-tree for that zone, not the entire world. This is the primary reason this feature is blocked by F-tab-spatial-2.
-
-**Blocked by:** F-tab-spatial-2
-**Related:** F-bigger-world, F-dwarf-fort-gen, F-enemy-raids, F-forest-radar, F-lesser-trees, F-military-campaign, F-multi-tree, F-settlement-gen, F-tree-db, F-world-map
+**Blocked by:** F-tab-spatial-2, F-zone-schema
+**Related:** F-bigger-world, F-dwarf-fort-gen, F-enemy-raids, F-forest-radar, F-lesser-trees, F-military-campaign, F-multi-tree, F-settlement-gen, F-tree-db, F-world-map, F-zone-schema
 
 ### Soul Mechanics & Magic
 
@@ -7663,6 +7640,21 @@ These exercise the "boring chunk" fast paths that real gameplay produces many of
 Plugin/scripting system for custom structures, elf behaviors, invader
 types. Open design question (§27).
 
+#### F-multi-tree-schema — Multi-tree / multi-player schema additions
+**Status:** Todo
+
+Design pass and implementation of any non-additive schema changes needed for separate-tree multiplayer (F-multi-tree), beyond what the existing Player→Civ→Tree chain already provides. Candidates to evaluate:
+
+- **Per-player command authorization:** which player issued a SimCommand, for validation in separate-tree mode.
+- **Per-player/per-civ notification scoping:** notification table may need a `civ_id` or `player_name` column.
+- **Fog-of-war state:** new table or columns tracking what each civ has revealed.
+- **Per-civ scoping gaps:** audit tasks, activities, and other tables for missing civ scoping that currently assumes single-civ play.
+
+The first step is the design audit — enumerate exactly what's missing. Some or all of these may turn out to be purely additive (new columns with defaults, new tables), in which case they don't strictly need to precede the save stability line. But the audit itself must happen before F-save-stable so we know for sure.
+
+**Blocks:** F-multi-tree, F-save-stable
+**Related:** F-multi-tree, F-multiplayer
+
 #### F-nav-perf — Optimize nav graph generation performance
 **Status:** Done
 
@@ -7752,7 +7744,20 @@ of VoxelWorld completely replaced.
 Full sim state serialized to JSON in `user://saves/`. Save versioning
 for schema migration.
 
-**Related:** F-compact-save, F-mp-mid-join, F-multiplayer, F-tab-schema-evol, F-tab-schema-ver
+**Related:** F-compact-save, F-mp-mid-join, F-multiplayer, F-save-stable, F-tab-schema-evol, F-tab-schema-ver
+
+#### F-save-stable — Save format stability checkpoint
+**Status:** Todo
+
+Gate item: declare save format backward-compatibility and document the contract. Once F-zone-schema and F-multi-tree-schema are resolved:
+
+1. **Audit every SimDb table:** would any planned feature require changing existing columns, PKs, indexes, or FKs? If yes, do those changes first.
+2. **Add save metadata:** include schema version number (from tabulosity's `#[schema_version]`), git hash, and GitHub release name in the save file — informational, for diagnostics and bug reports.
+3. **Document the stability contract:** old saves will always load into newer versions. New features get default values via `#[serde(default)]` and tabulosity's empty-table deserialization. The `schema_version` number is bumped with each release that adds schema.
+4. **No more structural changes** to existing tables without a migration path. New columns (with defaults) and new tables are fine.
+
+**Blocked by:** F-multi-tree-schema, F-zone-schema
+**Related:** F-save-load, F-tab-schema-evol, F-tab-schema-ver
 
 #### F-serde — Serialization for all sim types
 **Status:** Done · **Phase:** 0 · **Refs:** §5
@@ -7827,7 +7832,7 @@ an explicit DB row before multiple trees can coexist. Also enables per-tree
 mana pools, per-tree elf rosters, and tree-specific stats/upgrades.
 
 **Unblocked:** F-multi-tree
-**Related:** F-multi-tree, F-uplift-tree, F-zone-world
+**Related:** F-multi-tree, F-uplift-tree, F-zone-schema, F-zone-world
 
 #### F-tree-gen — Procedural tree generation (trunk+branches)
 **Status:** Done · **Phase:** 1 · **Refs:** §8
@@ -7835,6 +7840,22 @@ mana pools, per-tree elf rosters, and tree-specific stats/upgrades.
 Trunk is first branch — all segments use same growth algorithm with
 different params. Cross-section bridging ensures 6-connectivity. Voxel
 type priority prevents overwrites.
+
+#### F-zone-schema — Zone ID on all spatial tables
+**Status:** Todo
+
+The DB-structural part of F-zone-world, extracted so schema changes can be planned and reviewed independently of zone simulation logic. Adds:
+
+- **Zone table** in SimDb: `zone_id`, `zone_state`, `world_map_pos`, `terrain_type`, `owning_civ`, `seed`, etc.
+- **`zone_id` FK column** on all spatially-located tables: creatures, structures, blueprints, ground piles, trees, tree fruits, projectiles, and any others identified during implementation.
+- **Compound spatial indexes** keyed by `(zone_id, spatial_box)` so spatial queries are scoped per-zone.
+- **Migration from implicit single zone:** all existing rows get `zone_id = 0`, positions unchanged.
+
+This is the largest structural schema change remaining before save format stability. F-zone-world retains all simulation logic (zone state transitions, fidelity partitioning, inter-zone travel, background heartbeats).
+
+**Blocked by:** F-tab-spatial-2
+**Blocks:** F-save-stable, F-zone-world
+**Related:** F-tree-db, F-zone-world
 
 ### Tabulosity
 
@@ -8247,17 +8268,13 @@ divergent row(s) without transmitting full state.
 #### F-tab-schema-evol — Schema evolution: custom migrations
 **Status:** Todo
 
-Custom migration support for breaking schema changes across save-file versions.
-Two tiers of migration code: (1) typed post-deserialize migrations that operate
-on the current Rust structs (for simple transforms like populating new fields from
-old data), and (2) low-level migrations that operate on a format-agnostic
-SchemaSnapshot (untyped table-of-rows representation) for structural changes that
-can't be expressed in current types (table renames, merges, splits, field moves
-between tables). The SchemaSnapshot path is slower and only used when a migration
-explicitly requires it; otherwise skipped. High complexity — defer until closer
-to beta. **Draft:** `docs/drafts/schema_migrations.md`
+Custom migration support for breaking schema changes across save-file versions. Now that tabulosity handles additive changes natively (missing tables default to empty, new fields use `#[serde(default)]`, `#[schema_version]` gates deserialization), this item covers only the non-additive case: migrations that operate on a format-agnostic SchemaSnapshot (untyped table-of-rows representation) for structural changes that can't be expressed in current types (table renames, merges, splits, field moves between tables). The SchemaSnapshot path is slower and only used when a migration explicitly requires it; otherwise skipped.
 
-**Related:** F-save-load, F-sim-db-impl, F-tab-binary-serde, F-tab-schema-ver
+Deferred off the critical path for save format stability — the goal of F-save-stable is to avoid ever needing this. Build if/when a post-stability change requires non-additive migration.
+
+**Draft:** `docs/drafts/schema_migrations.md`
+
+**Related:** F-save-load, F-save-stable, F-sim-db-impl, F-tab-binary-serde, F-tab-schema-ver
 
 #### F-tab-schema-ver — Schema versioning fundamentals
 **Status:** Done
@@ -8269,7 +8286,7 @@ fields on existing row types use `#[serde(default)]`. These changes make additiv
 schema changes (new tables, new columns with defaults) work without any migration
 code.
 
-**Related:** F-save-load, F-sim-db-impl, F-tab-schema-evol
+**Related:** F-save-load, F-save-stable, F-sim-db-impl, F-tab-schema-evol
 
 #### F-tab-spatial — Tabulosity spatial index — simple R-tree, point queries
 **Status:** Done
@@ -8318,7 +8335,7 @@ Compound spatial indexes for tabulosity: a non-spatial prefix (one or more field
 
 **Motivating use case:** F-zone-world requires all spatial queries scoped by zone_id, which requires compound spatial indexes keyed by (zone_id, spatial_box).
 
-**Blocks:** F-zone-world
+**Blocks:** F-zone-schema, F-zone-world
 **Unblocked by:** F-tab-spatial
 **Related:** F-tab-nested-idx, F-tab-spatial-3
 
@@ -8518,7 +8535,7 @@ trees) deferred to F-multi-tree. Draft doc covers relay architecture,
 session management, and UI design (main menu flow, lobby, in-game controls,
 ESC menu behavior, save/load semantics, sim speed policy).
 
-**Related:** F-immediate-commands, F-mp-chat, F-mp-checksums, F-mp-integ-test, F-mp-mid-join, F-mp-reconnect, F-multi-tree, F-relay-multi-game, F-relay-release, F-save-load, F-session-sm
+**Related:** F-immediate-commands, F-mp-chat, F-mp-checksums, F-mp-integ-test, F-mp-mid-join, F-mp-reconnect, F-multi-tree, F-multi-tree-schema, F-relay-multi-game, F-relay-release, F-save-load, F-session-sm
 
 #### F-player-identity — Persistent player identity with username
 **Status:** Done · **Phase:** 2
