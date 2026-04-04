@@ -602,16 +602,8 @@ impl SimState {
             let footprint = species_data.footprint;
             crate::pathfinding::astar_fly(&self.world, position, goal, flight_tpv, opts, footprint)
         } else {
-            // Ground creature: A* on nav graph with stat-modified speeds.
-            let graph = self.graph_for_species(species);
-            let start_node = match graph.node_at(position) {
-                Some(n) => n,
-                None => return Err(PathError::StartNotOnGraph),
-            };
-            let goal_node = match graph.node_at(goal) {
-                Some(n) => n,
-                None => return Err(PathError::TargetNotOnGraph),
-            };
+            // Ground creature: voxel-direct A* with stat-modified speeds.
+            let footprint = species_data.footprint;
             let agility = self.trait_int(creature_id, TraitKind::Agility, 0);
             let strength = self.trait_int(creature_id, TraitKind::Strength, 0);
             let move_speeds =
@@ -620,7 +612,15 @@ impl SimState {
                 &move_speeds,
                 species_data.allowed_edge_types.as_deref(),
             );
-            crate::pathfinding::astar_navgraph(graph, start_node, goal_node, &nav_speeds, opts)
+            crate::pathfinding::astar_ground(
+                &self.world,
+                &self.face_data,
+                position,
+                goal,
+                &nav_speeds,
+                opts,
+                footprint,
+            )
         }
     }
 
@@ -670,26 +670,8 @@ impl SimState {
                 .position(|&c| c == nearest_coord)
                 .ok_or(PathError::Unreachable)
         } else {
-            // Ground creature: interleaved A* on nav graph.
-            let graph = self.graph_for_species(species);
-            let start_node = match graph.node_at(position) {
-                Some(n) => n,
-                None => return Err(PathError::StartNotOnGraph),
-            };
-
-            // Convert candidate VoxelCoords to NavNodeIds, tracking the mapping.
-            let mut target_nodes = Vec::with_capacity(candidates.len());
-            let mut index_map = Vec::with_capacity(candidates.len());
-            for (i, &coord) in candidates.iter().enumerate() {
-                if let Some(nav_node) = graph.node_at(coord) {
-                    target_nodes.push(nav_node);
-                    index_map.push(i);
-                }
-            }
-            if target_nodes.is_empty() {
-                return Err(PathError::NoTargets);
-            }
-
+            // Ground creature: voxel-direct interleaved A*.
+            let footprint = species_data.footprint;
             let agility = self.trait_int(creature_id, TraitKind::Agility, 0);
             let strength = self.trait_int(creature_id, TraitKind::Strength, 0);
             let move_speeds =
@@ -699,20 +681,19 @@ impl SimState {
                 species_data.allowed_edge_types.as_deref(),
             );
 
-            let nearest_node = crate::pathfinding::nearest_navgraph(
-                graph,
-                start_node,
-                &target_nodes,
+            let nearest_coord = crate::pathfinding::nearest_ground(
+                &self.world,
+                &self.face_data,
+                position,
+                candidates,
                 &nav_speeds,
                 opts,
+                footprint,
             )?;
-
-            // Map the NavNodeId back to the original candidate index.
-            let target_idx = target_nodes
+            candidates
                 .iter()
-                .position(|&n| n == nearest_node)
-                .ok_or(PathError::Unreachable)?;
-            Ok(index_map[target_idx])
+                .position(|&c| c == nearest_coord)
+                .ok_or(PathError::Unreachable)
         }
     }
 

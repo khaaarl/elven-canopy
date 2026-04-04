@@ -12,7 +12,6 @@ use crate::db::{ActionKind, MoveAction};
 use crate::event::SimEvent;
 use crate::preemption;
 use crate::task;
-use crate::types::NavEdgeId;
 
 impl SimState {
     /// Process a `DirectedGoTo` command: create a GoTo task for a specific
@@ -301,14 +300,14 @@ impl SimState {
     }
 
     /// Move one step toward a target position. Flying creatures use voxel-grid
-    /// A* via `fly_toward_target`; ground creatures use nav-graph A* and
+    /// A* via `fly_toward_target`; ground creatures use voxel-direct A* and
     /// `ground_move_one_step`. Both store cached paths in `creature.path` as
     /// `Vec<VoxelCoord>`.
     pub(crate) fn walk_toward_task(
         &mut self,
         creature_id: CreatureId,
         target_coord: VoxelCoord,
-        current_node: Option<NavNodeId>,
+        current_pos: Option<VoxelCoord>,
         events: &mut Vec<SimEvent>,
     ) {
         let creature = match self.db.creatures.get(&creature_id) {
@@ -330,27 +329,21 @@ impl SimState {
             return;
         }
 
-        // Ground creatures: use graph A* via find_path.
-        let current_node = match current_node {
+        // Ground creatures: use voxel-direct A* via find_path.
+        let current_pos = match current_pos {
             Some(n) => n,
             None => return,
         };
-        let species_data = &self.species_table[&species];
-        let graph = self.graph_for_species(species);
 
-        // Check if we already have a path. If so, resolve the next position
-        // to a nav node + edge. If not (or path is exhausted), compute a new one.
+        // Check if we already have a cached path with a walkable next step.
         let creature = self.db.creatures.get(&creature_id).unwrap();
-        let cn = graph.node_at(creature.position.min);
-        let next_step = if let Some(ref path) = creature.path {
-            if let Some(&next_pos) = path.remaining_positions.first() {
-                // Resolve the stored position to a nav node and find the edge.
-                let dest_node = graph.node_at(next_pos);
-                let edge_idx =
-                    dest_node.and_then(|dn| cn.and_then(|cn| graph.find_edge_to(cn, dn)));
-                match (edge_idx, dest_node) {
-                    (Some(ei), Some(dn)) => Some((ei, dn)),
-                    _ => None, // graph changed; repath
+        let next_pos = if let Some(ref path) = creature.path {
+            if let Some(&next) = path.remaining_positions.first() {
+                // Validate: next position must still be walkable.
+                if crate::walkability::is_walkable(&self.world, &self.face_data, next) {
+                    Some(next)
+                } else {
+                    None // world changed; repath
                 }
             } else {
                 None
@@ -359,13 +352,8 @@ impl SimState {
             None
         };
 
-        // Apply creature stats to movement speeds (for edge traversal timing).
-        let agility = self.trait_int(creature_id, TraitKind::Agility, 0);
-        let strength = self.trait_int(creature_id, TraitKind::Strength, 0);
-        let speeds = crate::stats::CreatureMoveSpeeds::new(species_data, agility, strength);
-
-        let (edge_idx, dest_node) = if let Some(step) = next_step {
-            step
+        let dest_pos = if let Some(pos) = next_pos {
+            pos
         } else {
             // Compute path to task location.
             let path_result = self.find_path(
@@ -375,17 +363,16 @@ impl SimState {
             );
 
             let path_result = match path_result {
-                Ok(r) if r.nav_nodes.len() >= 2 => r,
+                Ok(r) if r.positions.len() >= 2 => r,
                 _ => {
                     // Can't reach task — unassign and wander.
                     self.unassign_creature_from_task(creature_id);
-                    self.ground_wander(creature_id, current_node, events);
+                    self.ground_wander(creature_id, current_pos, events);
                     return;
                 }
             };
 
-            let first_edge = path_result.nav_edges[0];
-            let first_dest = path_result.nav_nodes[1];
+            let first_dest = path_result.positions[1];
 
             // Store remaining path as positions for future activations.
             let remaining_positions: Vec<VoxelCoord> = path_result.positions[1..].to_vec();
@@ -396,13 +383,8 @@ impl SimState {
                 let _ = self.db.update_creature(creature);
             }
 
-            (first_edge, first_dest)
+            first_dest
         };
-
-        // Move one edge. Compute traversal time from distance * ticks-per-voxel.
-        let graph = self.graph_for_species(species);
-        let edge = graph.edge(edge_idx);
-        let dest_pos = graph.node(dest_node).position;
 
         // Voxel exclusion: reject move if destination is hostile-occupied.
         let footprint = self.species_table[&species].footprint;
@@ -416,12 +398,28 @@ impl SimState {
             return;
         }
 
-        let tpv = speeds.tpv_for_edge(edge.edge_type);
-        let delay = (edge.distance as u64 * tpv)
+        // Derive edge type for speed computation and compute traversal delay.
+        let old_pos = self.db.creatures.get(&creature_id).unwrap().position.min;
+        let from_surface =
+            crate::walkability::derive_surface_type(&self.world, &self.face_data, old_pos);
+        let to_surface =
+            crate::walkability::derive_surface_type(&self.world, &self.face_data, dest_pos);
+        let edge_type =
+            crate::walkability::derive_edge_type(from_surface, to_surface, old_pos, dest_pos);
+
+        let species_data = &self.species_table[&species];
+        let agility = self.trait_int(creature_id, TraitKind::Agility, 0);
+        let strength = self.trait_int(creature_id, TraitKind::Strength, 0);
+        let speeds = crate::stats::CreatureMoveSpeeds::new(species_data, agility, strength);
+        let tpv = speeds.tpv_for_edge(edge_type);
+        let dx = dest_pos.x - old_pos.x;
+        let dy = dest_pos.y - old_pos.y;
+        let dz = dest_pos.z - old_pos.z;
+        let distance = crate::nav::scaled_distance(dx, dy, dz);
+        let delay = (distance as u64 * tpv)
             .div_ceil(crate::nav::DIST_SCALE as u64)
             .max(1);
 
-        let old_pos = self.db.creatures.get(&creature_id).unwrap().position.min;
         let tick = self.tick;
         if let Some(mut creature) = self.db.creatures.get(&creature_id) {
             creature.position = creature.position.with_anchor(dest_pos);
@@ -459,7 +457,7 @@ impl SimState {
     pub(crate) fn ground_wander(
         &mut self,
         creature_id: CreatureId,
-        current_node: NavNodeId,
+        current_pos: VoxelCoord,
         events: &mut Vec<SimEvent>,
     ) {
         let creature = match self.db.creatures.get(&creature_id) {
@@ -477,12 +475,12 @@ impl SimState {
         if matches!(
             style.initiative,
             EngagementInitiative::Aggressive | EngagementInitiative::Defensive
-        ) && self.hostile_pursue(creature_id, Some(current_node), species, events)
+        ) && self.hostile_pursue(creature_id, None, species, events)
         {
             return;
         }
 
-        self.ground_random_wander(creature_id, current_node, species);
+        self.ground_random_wander(creature_id, current_pos, species);
     }
 
     /// Move a creature one step along the given nav graph edge: update position,
@@ -500,9 +498,9 @@ impl SimState {
         &mut self,
         creature_id: CreatureId,
         species: Species,
-        edge_idx: NavEdgeId,
+        dest_pos: VoxelCoord,
     ) -> bool {
-        self.ground_move_one_step_inner(creature_id, species, edge_idx, false)
+        self.ground_move_one_step_inner(creature_id, species, dest_pos, false)
     }
 
     /// Inner implementation of `ground_move_one_step` with an optional exclusion bypass.
@@ -510,17 +508,13 @@ impl SimState {
         &mut self,
         creature_id: CreatureId,
         species: Species,
-        edge_idx: NavEdgeId,
+        dest_pos: VoxelCoord,
         skip_exclusion: bool,
     ) -> bool {
         let species_data = &self.species_table[&species];
-        let graph = self.graph_for_species(species);
-        let edge = graph.edge(edge_idx);
-        let dest_node = edge.to;
 
         // Voxel exclusion: reject the move if any destination footprint voxel
         // is occupied by a living hostile creature.
-        let dest_pos = graph.node(dest_node).position;
         if !skip_exclusion {
             let footprint = species_data.footprint;
             if self.destination_blocked_by_hostile(creature_id, dest_pos, footprint) {
@@ -530,17 +524,29 @@ impl SimState {
             }
         }
 
+        // Derive edge type from voxel surfaces for speed computation.
+        let old_pos = self.db.creatures.get(&creature_id).unwrap().position.min;
+        let from_surface =
+            crate::walkability::derive_surface_type(&self.world, &self.face_data, old_pos);
+        let to_surface =
+            crate::walkability::derive_surface_type(&self.world, &self.face_data, dest_pos);
+        let edge_type =
+            crate::walkability::derive_edge_type(from_surface, to_surface, old_pos, dest_pos);
+
         // Compute stat-modified ticks-per-voxel.
         let agility = self.trait_int(creature_id, TraitKind::Agility, 0);
         let strength = self.trait_int(creature_id, TraitKind::Strength, 0);
         let speeds = crate::stats::CreatureMoveSpeeds::new(species_data, agility, strength);
-        let tpv = speeds.tpv_for_edge(edge.edge_type);
-        let delay = (edge.distance as u64 * tpv)
+        let tpv = speeds.tpv_for_edge(edge_type);
+        let dx = dest_pos.x - old_pos.x;
+        let dy = dest_pos.y - old_pos.y;
+        let dz = dest_pos.z - old_pos.z;
+        let distance = crate::nav::scaled_distance(dx, dy, dz);
+        let delay = (distance as u64 * tpv)
             .div_ceil(crate::nav::DIST_SCALE as u64)
             .max(1);
 
         // Move creature to the destination.
-        let old_pos = self.db.creatures.get(&creature_id).unwrap().position.min;
         let tick = self.tick;
         if let Some(mut creature) = self.db.creatures.get(&creature_id) {
             creature.position = creature.position.with_anchor(dest_pos);
@@ -564,72 +570,78 @@ impl SimState {
         true
     }
 
-    /// Random wander: pick a random eligible edge and move one step.
+    /// Random wander: pick a random walkable neighbor and move one step.
     pub(crate) fn ground_random_wander(
         &mut self,
         creature_id: CreatureId,
-        current_node: NavNodeId,
+        current_pos: VoxelCoord,
         species: Species,
     ) {
-        // Collect eligible edges before mutably borrowing self (for rng).
-        let eligible_edges: Vec<NavEdgeId> = {
-            let species_data = &self.species_table[&species];
-            let graph = self.graph_for_species(species);
-            let edge_indices = graph.neighbors(current_node);
-            if edge_indices.is_empty() {
-                self.set_creature_activation_tick(creature_id, self.tick + 1000);
-                return;
-            }
-            if let Some(ref allowed) = species_data.allowed_edge_types {
-                edge_indices
-                    .iter()
-                    .copied()
-                    .filter(|&idx| allowed.contains(&graph.edge(idx).edge_type))
-                    .collect()
-            } else {
-                edge_indices.to_vec()
-            }
-        };
+        use crate::pathfinding::NEIGHBOR_OFFSETS;
+        let species_data = &self.species_table[&species];
+        let footprint = species_data.footprint;
 
-        if eligible_edges.is_empty() {
+        // Collect walkable neighbors, respecting edge-type filtering.
+        let from_surface =
+            crate::walkability::derive_surface_type(&self.world, &self.face_data, current_pos);
+        let mut eligible: Vec<VoxelCoord> = Vec::new();
+        for &(dx, dy, dz, _) in &NEIGHBOR_OFFSETS {
+            let neighbor =
+                VoxelCoord::new(current_pos.x + dx, current_pos.y + dy, current_pos.z + dz);
+            if !crate::walkability::footprint_walkable(
+                &self.world,
+                &self.face_data,
+                neighbor,
+                footprint,
+            ) {
+                continue;
+            }
+            if crate::walkability::is_edge_blocked_by_faces(&self.face_data, current_pos, neighbor)
+            {
+                continue;
+            }
+            // Check edge type allowed.
+            let to_surface =
+                crate::walkability::derive_surface_type(&self.world, &self.face_data, neighbor);
+            let edge_type = crate::walkability::derive_edge_type(
+                from_surface,
+                to_surface,
+                current_pos,
+                neighbor,
+            );
+            if let Some(ref allowed) = species_data.allowed_edge_types
+                && !allowed.contains(&edge_type)
+            {
+                continue;
+            }
+            eligible.push(neighbor);
+        }
+
+        if eligible.is_empty() {
             self.set_creature_activation_tick(creature_id, self.tick + 1000);
             return;
         }
 
-        // Voxel exclusion: filter out edges leading to hostile-occupied voxels.
-        let footprint = self.species_table[&species].footprint;
-        let unblocked_edges: Vec<NavEdgeId> = {
-            let graph = self.graph_for_species(species);
-            eligible_edges
-                .iter()
-                .copied()
-                .filter(|&idx| {
-                    let dest_id = graph.edge(idx).to;
-                    if !graph.is_node_alive(dest_id) {
-                        return false;
-                    }
-                    let dest_pos = graph.node(dest_id).position;
-                    !self.destination_blocked_by_hostile(creature_id, dest_pos, footprint)
-                })
-                .collect()
-        };
+        // Voxel exclusion: filter out neighbors occupied by hostiles.
+        let unblocked: Vec<VoxelCoord> = eligible
+            .iter()
+            .copied()
+            .filter(|&dest| !self.destination_blocked_by_hostile(creature_id, dest, footprint))
+            .collect();
 
-        let edges_to_pick = if unblocked_edges.is_empty() {
-            // All neighbors hostile-occupied — wait rather than walk into a hostile.
+        if unblocked.is_empty() {
             self.set_creature_activation_tick(
                 creature_id,
                 self.tick + self.config.voxel_exclusion_retry_ticks,
             );
             return;
-        } else {
-            &unblocked_edges
-        };
+        }
 
-        // Pick a random eligible edge.
-        let chosen_idx = self.rng.range_u64(0, edges_to_pick.len() as u64) as usize;
-        let edge_idx = edges_to_pick[chosen_idx];
+        // Pick a random eligible neighbor.
+        let chosen_idx = self.rng.range_u64(0, unblocked.len() as u64) as usize;
+        let dest_pos = unblocked[chosen_idx];
 
-        self.ground_move_one_step(creature_id, species, edge_idx);
+        self.ground_move_one_step(creature_id, species, dest_pos);
     }
 
     // -----------------------------------------------------------------------

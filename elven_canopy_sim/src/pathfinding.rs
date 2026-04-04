@@ -1157,7 +1157,7 @@ fn reconstruct_navgraph_path(
 /// Face-adjacent (6): distance = DIST_SCALE (1024)
 /// Edge-diagonal (12): distance = floor(sqrt(2) * 1024) = 1448
 /// Corner-diagonal (8): distance = floor(sqrt(3) * 1024) = 1773
-const NEIGHBOR_OFFSETS: [(i32, i32, i32, u64); 26] = [
+pub const NEIGHBOR_OFFSETS: [(i32, i32, i32, u64); 26] = [
     // Face-adjacent (6)
     (-1, 0, 0, 1024),
     (1, 0, 0, 1024),
