@@ -13,7 +13,6 @@ use crate::building;
 use crate::db::ActionKind;
 use crate::event::{SimEvent, SimEventKind};
 use crate::inventory;
-use crate::nav::{self};
 use crate::structural;
 use crate::task;
 use std::collections::BTreeMap;
@@ -875,9 +874,7 @@ impl SimState {
                 .retain(|(coord, _)| !bp_voxels.contains(coord));
         }
 
-        // Rebuild nav graph if geometry changed.
         if any_reverted {
-            self.nav_graph = nav::build_nav_graph(&self.world, &self.face_data);
             self.resnap_creature_nodes();
             // Reverted voxels may have been supporting ground piles.
             self.apply_pile_gravity();
@@ -1236,33 +1233,6 @@ impl SimState {
                     }
                 }
             }
-            let removed = self.nav_graph.update_after_building_voxel_set(
-                &self.world,
-                &self.face_data,
-                chosen,
-            );
-            let large_removed = nav::update_large_after_voxel_solidified(
-                &mut self.large_nav_graph,
-                &self.world,
-                chosen,
-            );
-            let mut all_removed = removed;
-            all_removed.extend(large_removed);
-            self.resnap_removed_nodes(&all_removed);
-        } else {
-            // Incrementally update nav graph (touches only ~7 affected positions
-            // instead of scanning the entire world) and resnap displaced creatures.
-            let removed =
-                self.nav_graph
-                    .update_after_voxel_solidified(&self.world, &self.face_data, chosen);
-            let large_removed = nav::update_large_after_voxel_solidified(
-                &mut self.large_nav_graph,
-                &self.world,
-                chosen,
-            );
-            let mut all_removed = removed;
-            all_removed.extend(large_removed);
-            self.resnap_removed_nodes(&all_removed);
         }
     }
 
@@ -1294,20 +1264,6 @@ impl SimState {
         // Set to Air.
         self.set_voxel(chosen, VoxelType::Air);
         self.carved_voxels.push(chosen);
-
-        // Nav update: the algorithm is state-based and works for both
-        // solidifying and clearing voxels.
-        let removed =
-            self.nav_graph
-                .update_after_voxel_solidified(&self.world, &self.face_data, chosen);
-        let large_removed = nav::update_large_after_voxel_solidified(
-            &mut self.large_nav_graph,
-            &self.world,
-            chosen,
-        );
-        let mut all_removed = removed;
-        all_removed.extend(large_removed);
-        self.resnap_removed_nodes(&all_removed);
 
         // A carved voxel may have been supporting a ground pile above it.
         self.apply_pile_gravity();
@@ -1662,43 +1618,6 @@ impl SimState {
     /// Resnap only creatures whose position is no longer walkable after a
     /// nav graph update. Used after incremental nav graph updates where most
     /// creatures are unaffected — much cheaper than resnapping all creatures.
-    pub(crate) fn resnap_removed_nodes(&mut self, removed: &[NavNodeId]) {
-        if removed.is_empty() {
-            return;
-        }
-        // Collect candidate creatures first, then filter by walkability.
-        let candidates: Vec<(CreatureId, Species, VoxelCoord)> = self
-            .db
-            .creatures
-            .iter_all()
-            .filter(|c| c.vital_status == VitalStatus::Alive)
-            .map(|c| (c.id, c.species, c.position.min))
-            .collect();
-        let to_resnap: Vec<(CreatureId, Species, VoxelCoord)> = candidates
-            .into_iter()
-            .filter(|&(_, _species, pos)| {
-                !crate::walkability::is_walkable(&self.world, &self.face_data, pos)
-            })
-            .collect();
-        for (cid, _species, old_pos) in to_resnap {
-            // Generous limit: resnap happens after incremental graph updates
-            // where the nearest surviving walkable position may be far away.
-            let new_pos = crate::walkability::find_nearest_walkable(
-                &self.world,
-                &self.face_data,
-                old_pos,
-                20,
-            );
-            if let Some(mut creature) = self.db.creatures.get(&cid) {
-                creature.path = None;
-                if let Some(p) = new_pos {
-                    creature.position = creature.position.with_anchor(p);
-                }
-                let _ = self.db.update_creature(creature);
-            }
-        }
-    }
-
     /// DDA voxel raycast returning `(StructureId, VoxelCoord)` of the first
     /// structure voxel hit. Like `raycast_structure()` but also returns the
     /// hit coordinate, needed by the roof-click-select feature to decide

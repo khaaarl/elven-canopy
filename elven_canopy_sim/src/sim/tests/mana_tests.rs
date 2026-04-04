@@ -544,12 +544,12 @@ fn nonmagical_creature_cannot_claim_build_task() {
     // We need a valid ProjectId — create a fake one.
     let project_id = ProjectId::new(&mut sim.rng);
     let task_id = TaskId::new(&mut sim.rng);
-    let gob_node = creature_node(&sim, gob_id);
+    let gob_node = creature_pos(&sim, gob_id);
     let task = Task {
         id: task_id,
         kind: TaskKind::Build { project_id },
         state: TaskState::Available,
-        location: sim.nav_graph.node(gob_node).position,
+        location: gob_node,
         progress: 0,
         total_cost: 1,
         required_species: None,
@@ -590,12 +590,12 @@ fn elf_with_no_mana_skips_build_task() {
     // Insert a Build task at the elf's location.
     let project_id = ProjectId::new(&mut sim.rng);
     let task_id = TaskId::new(&mut sim.rng);
-    let elf_node = creature_node(&sim, elf_id);
+    let elf_node = creature_pos(&sim, elf_id);
     let task = Task {
         id: task_id,
         kind: TaskKind::Build { project_id },
         state: TaskState::Available,
-        location: sim.nav_graph.node(elf_node).position,
+        location: elf_node,
         progress: 0,
         total_cost: 1,
         required_species: Some(Species::Elf),
@@ -715,12 +715,12 @@ fn try_drain_mana_exact_boundary() {
 
     // Give the elf a task so abandon logic has something to work with.
     let task_id = TaskId::new(&mut sim.rng);
-    let elf_node = creature_node(&sim, elf_id);
+    let elf_node = creature_pos(&sim, elf_id);
     let task = Task {
         id: task_id,
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(elf_node).position,
+        location: elf_node,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -749,14 +749,14 @@ fn nonmagical_creature_cannot_claim_furnish_task() {
     assert_eq!(sim.db.creatures.get(&gob_id).unwrap().mp_max, 0);
 
     let task_id = TaskId::new(&mut sim.rng);
-    let gob_node = creature_node(&sim, gob_id);
+    let gob_node = creature_pos(&sim, gob_id);
     let task = Task {
         id: task_id,
         kind: TaskKind::Furnish {
             structure_id: StructureId(999),
         },
         state: TaskState::Available,
-        location: sim.nav_graph.node(gob_node).position,
+        location: gob_node,
         progress: 0,
         total_cost: 1,
         required_species: None,
@@ -925,12 +925,12 @@ fn cleanup_early_exit_resets_wasted_action_count() {
 
     // Create a task, assign elf, set nonzero wasted count.
     let task_id = TaskId::new(&mut sim.rng);
-    let elf_node = creature_node(&sim, elf_id);
+    let elf_node = creature_pos(&sim, elf_id);
     let task = Task {
         id: task_id,
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(elf_node).position,
+        location: elf_node,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -1000,7 +1000,7 @@ fn drained_elf_can_still_claim_non_mana_tasks() {
     sim.db.update_creature(c).unwrap();
 
     // Insert a GoTo task (non-mana) at the elf's location.
-    let elf_node = creature_node(&sim, elf_id);
+    let elf_node = creature_pos(&sim, elf_id);
     let task_id = insert_goto_task(&mut sim, elf_node);
 
     // Elf with 0 mana should still find the GoTo task.
@@ -1024,12 +1024,12 @@ fn mana_wasted_position_recorded_on_failed_drain() {
 
     // Give the elf a task so try_drain_mana has something to work with.
     let task_id = TaskId::new(&mut sim.rng);
-    let elf_node = creature_node(&sim, elf_id);
+    let elf_node = creature_pos(&sim, elf_id);
     let task = Task {
         id: task_id,
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(elf_node).position,
+        location: elf_node,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -1076,12 +1076,12 @@ fn successful_drain_does_not_record_position() {
 
     // Give the elf a task.
     let task_id = TaskId::new(&mut sim.rng);
-    let elf_node = creature_node(&sim, elf_id);
+    let elf_node = creature_pos(&sim, elf_id);
     let task = Task {
         id: task_id,
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(elf_node).position,
+        location: elf_node,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),

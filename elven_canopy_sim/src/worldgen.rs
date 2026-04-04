@@ -99,7 +99,6 @@ macro_rules! wg_time {
     };
 }
 use crate::db::{GreatTreeInfo, Tree};
-use crate::nav::{self, NavGraph};
 use crate::structural;
 use crate::tree_gen;
 use crate::types::{CivId, CivOpinion, CivSpecies, CultureTag, TreeId, VoxelCoord};
@@ -131,12 +130,6 @@ pub struct WorldgenResult {
 
     /// The player's home tree ID.
     pub player_tree_id: TreeId,
-
-    /// Standard navigation graph (1x1x1 creatures).
-    pub nav_graph: NavGraph,
-
-    /// Large navigation graph (2x2x2 creatures like elephants).
-    pub large_nav_graph: NavGraph,
 
     /// The SimDb, populated by worldgen generators (civilizations, etc.).
     pub db: SimDb,
@@ -261,16 +254,6 @@ pub fn run_worldgen(seed: u64, config: &GameConfig, log: &WgLog) -> WorldgenResu
         let _ = db.insert_tree(lesser);
     }
 
-    // Build nav graphs from the completed voxel world.
-    let nav_graph = {
-        wg_time!("nav graph", log.as_ref());
-        nav::build_nav_graph(&world, &BTreeMap::new())
-    };
-    let large_nav_graph = {
-        wg_time!("large nav graph", log.as_ref());
-        nav::build_large_nav_graph(&world)
-    };
-
     // Derive the runtime PRNG from the worldgen PRNG's current state.
     // This uses the worldgen PRNG to generate a new seed, ensuring the
     // runtime PRNG is deterministically derived but independent of the
@@ -282,8 +265,6 @@ pub fn run_worldgen(seed: u64, config: &GameConfig, log: &WgLog) -> WorldgenResu
         runtime_rng,
         world,
         player_tree_id,
-        nav_graph,
-        large_nav_graph,
         db,
         player_civ_id,
     }

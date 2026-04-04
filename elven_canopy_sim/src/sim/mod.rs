@@ -3,17 +3,14 @@
 // `SimState` is the single source of truth for the entire game world. Entity
 // data (creatures, tasks, blueprints, structures, ground piles, trees) lives in
 // `SimState.db` (a tabulosity `SimDb`). The sim also owns the voxel world,
-// the nav graph, the event queue, the PRNG, and the game config.
+// the event queue, the PRNG, and the game config.
 // The sim is a pure function:
 // `(state, commands) -> (new_state, events)`.
 //
 // On construction (`new()`/`with_config()`), the sim delegates world creation
 // to `worldgen.rs`, which runs generators in order (tree → fruits → civs →
 // knowledge) using a dedicated worldgen PRNG. The runtime PRNG is derived from
-// the worldgen PRNG's final state. Two nav graphs are maintained: the standard
-// graph for 1x1x1 creatures and a large graph for 2x2x2 creatures (elephants).
-// `graph_for_species()` dispatches to the correct graph based on the species'
-// `footprint` field from `species.rs`. Creature spawning and movement are
+// the worldgen PRNG's final state. Creature spawning and movement are
 // handled through the command/event system. Initial creature populations are
 // spawned by `spawn_initial_creatures()`, called from `session.rs` during
 // `StartGame` processing — it reads `config.initial_creatures` and
@@ -288,7 +285,6 @@ use crate::config::GameConfig;
 use crate::db::{ActionKind, SimDb};
 use crate::event::{EventQueue, ScheduledEventKind, SimEvent};
 use crate::inventory;
-use crate::nav::{self, NavGraph};
 use crate::prng::GameRng;
 use crate::species::SpeciesData;
 use crate::structural;
@@ -371,15 +367,6 @@ pub struct SimState {
 
     /// The 3D voxel world grid. Serialized compactly as packed binary data.
     pub world: VoxelWorld,
-
-    /// The navigation graph built from tree geometry. Regenerated from seed, not serialized.
-    #[serde(skip)]
-    pub nav_graph: NavGraph,
-
-    /// Navigation graph for large (2x2x2 footprint) creatures. Only contains
-    /// ground-level nodes where a 2x2x2 volume is clear. Regenerated, not serialized.
-    #[serde(skip)]
-    pub large_nav_graph: NavGraph,
 
     /// Species data table built from config. Not serialized (rebuilt from config).
     #[serde(skip)]
@@ -550,18 +537,6 @@ impl SimState {
     /// Create a new simulation with default config and the given seed.
     pub fn new(seed: u64) -> Self {
         Self::with_config(seed, GameConfig::default())
-    }
-
-    /// Return the appropriate nav graph for a species based on its footprint.
-    /// Species with a footprint wider than 1 in x or z use the large nav graph;
-    /// all others use the standard graph.
-    pub fn graph_for_species(&self, species: Species) -> &NavGraph {
-        let data = &self.species_table[&species];
-        if data.footprint[0] > 1 || data.footprint[2] > 1 {
-            &self.large_nav_graph
-        } else {
-            &self.nav_graph
-        }
     }
 
     /// Find a path from a creature's current position to `goal`.
@@ -753,8 +728,6 @@ impl SimState {
             player_tree_id,
             player_civ_id: Some(wg.player_civ_id),
             world: wg.world,
-            nav_graph: wg.nav_graph,
-            large_nav_graph: wg.large_nav_graph,
             species_table,
             lexicon: Some(elven_canopy_lang::default_lexicon()),
             last_build_message: None,
@@ -2332,14 +2305,12 @@ impl SimState {
     /// Rebuild all transient (`#[serde(skip)]`) fields after deserialization.
     ///
     /// The voxel world is now serialized directly, so only derived data
-    /// structures need rebuilding: `nav_graph` (from world geometry),
-    /// `species_table` (from config), `lexicon` (from embedded JSON),
-    /// `structure_voxels` (from completed blueprints + structures).
+    /// structures need rebuilding: `species_table` (from config), `lexicon`
+    /// (from embedded JSON), `structure_voxels` (from completed blueprints +
+    /// structures).
     pub fn rebuild_transient_state(&mut self) {
         self.face_data = self.face_data_list.iter().cloned().collect();
         self.ladder_orientations = self.ladder_orientations_list.iter().cloned().collect();
-        self.nav_graph = nav::build_nav_graph(&self.world, &self.face_data);
-        self.large_nav_graph = nav::build_large_nav_graph(&self.world);
         self.species_table = self.config.species.clone();
         self.lexicon = Some(elven_canopy_lang::default_lexicon());
 

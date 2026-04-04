@@ -244,7 +244,7 @@ fn walk_toward_dead_task_node_does_not_panic() {
     let elf_id = *sim.db.creatures.iter_keys().next().unwrap();
 
     // Find a ground nav node different from the elf's to use as task target.
-    let elf_node = creature_node(&sim, elf_id);
+    let elf_node = creature_pos(&sim, elf_id);
     let task_node = sim
         .nav_graph
         .ground_node_ids()
@@ -314,7 +314,7 @@ fn pursuit_task_repaths_when_target_moves() {
     let target_id = spawn_second_elf(&mut sim);
 
     // Get target's initial node.
-    let target_node = creature_node(&sim, target_id);
+    let target_node = creature_pos(&sim, target_id);
 
     // Pick a different alive node to move the target to (use a neighbor).
     let new_target_node = {
@@ -371,7 +371,7 @@ fn pursuit_task_completes_when_adjacent() {
     let target_id = spawn_second_elf(&mut sim);
 
     // Read the pursuer's current node (may have wandered during spawns).
-    let pursuer_node = creature_node(&sim, pursuer_id);
+    let pursuer_node = creature_pos(&sim, pursuer_id);
 
     // Place both creatures at the same node and prevent them from wandering.
     let node_pos = sim.nav_graph.node(pursuer_node).position;
@@ -450,7 +450,7 @@ fn pursuit_task_abandons_when_target_gone() {
     // Let both creatures settle (complete initial movement).
     sim.step(&[], sim.tick + 10000);
 
-    let target_node = creature_node(&sim, target_id);
+    let target_node = creature_pos(&sim, target_id);
 
     // Assign pursuit task — clear any existing task first.
     let mut pursuer = sim.db.creatures.get(&pursuer_id).unwrap();
@@ -526,7 +526,7 @@ fn non_pursuit_tasks_unaffected() {
     // Verify existing GoTo tasks (without target_creature) still work.
     let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
-    let elf_node = creature_node(&sim, elf_id);
+    let elf_node = creature_pos(&sim, elf_id);
 
     // Insert a regular GoTo task (no target_creature).
     let task_id = insert_goto_task(&mut sim, elf_node);
@@ -551,7 +551,7 @@ fn pursuit_task_serde_roundtrip() {
     let mut sim = test_sim(legacy_test_seed());
     let pursuer_id = spawn_elf(&mut sim);
     let target_id = spawn_second_elf(&mut sim);
-    let target_node = creature_node(&sim, target_id);
+    let target_node = creature_pos(&sim, target_id);
 
     let target_pos = sim.nav_graph.node(target_node).position;
     let task_id = insert_pursuit_task(&mut sim, pursuer_id, target_id, target_pos);
@@ -845,7 +845,7 @@ fn troll_pursues_elf_cross_graph_pathfinding() {
     let elf_id = sim
         .spawn_creature(Species::Elf, target_node.position, &mut events)
         .expect("spawn elf");
-    let elf_node = creature_node(&sim, elf_id);
+    let elf_node = creature_pos(&sim, elf_id);
 
     // Confirm the elf's node ID doesn't exist on the large graph.
     assert!(
@@ -858,7 +858,7 @@ fn troll_pursues_elf_cross_graph_pathfinding() {
     force_idle_and_cancel_activations(&mut sim, troll_id);
     force_idle_and_cancel_activations(&mut sim, elf_id);
 
-    let troll_node = creature_node(&sim, troll_id);
+    let troll_node = creature_pos(&sim, troll_id);
     let pursued = sim.hostile_pursue(troll_id, Some(troll_node), Species::Troll, &mut events);
 
     assert!(
@@ -882,8 +882,8 @@ fn voxel_exclusion_hostile_blocks_movement() {
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
     let (node_a, node_b) = find_connected_pair(&sim);
-    force_to_node(&mut sim, elf, node_a);
-    force_to_node(&mut sim, goblin, node_b);
+    force_position(&mut sim, elf, node_a);
+    force_position(&mut sim, goblin, node_b);
     force_idle(&mut sim, elf);
     force_idle(&mut sim, goblin);
 
@@ -913,8 +913,8 @@ fn voxel_exclusion_non_hostile_does_not_block() {
     let elf_b = spawn_elf(&mut sim);
 
     let (node_a, node_b) = find_connected_pair(&sim);
-    force_to_node(&mut sim, elf_a, node_a);
-    force_to_node(&mut sim, elf_b, node_b);
+    force_position(&mut sim, elf_a, node_a);
+    force_position(&mut sim, elf_b, node_b);
     force_idle(&mut sim, elf_a);
     force_idle(&mut sim, elf_b);
 
@@ -957,8 +957,8 @@ fn voxel_exclusion_dead_hostile_does_not_block() {
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
     let (node_a, node_b) = find_connected_pair(&sim);
-    force_to_node(&mut sim, elf, node_a);
-    force_to_node(&mut sim, goblin, node_b);
+    force_position(&mut sim, elf, node_a);
+    force_position(&mut sim, goblin, node_b);
 
     // Kill the goblin (vital_status is indexed, so use update).
     if let Some(mut c) = sim.db.creatures.get(&goblin) {
@@ -983,8 +983,8 @@ fn voxel_exclusion_bidirectional_blocking() {
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
     let (node_a, node_b) = find_connected_pair(&sim);
-    force_to_node(&mut sim, elf, node_a);
-    force_to_node(&mut sim, goblin, node_b);
+    force_position(&mut sim, elf, node_a);
+    force_position(&mut sim, goblin, node_b);
 
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
@@ -1011,8 +1011,8 @@ fn voxel_exclusion_hostile_pursue_blocked() {
 
     // Place them on adjacent nodes.
     let (node_a, node_b) = find_connected_pair(&sim);
-    force_to_node(&mut sim, goblin, node_a);
-    force_to_node(&mut sim, elf, node_b);
+    force_position(&mut sim, goblin, node_a);
+    force_position(&mut sim, elf, node_b);
     force_idle(&mut sim, goblin);
     force_idle(&mut sim, elf);
 
@@ -1062,8 +1062,8 @@ fn voxel_exclusion_wander_avoids_hostile_voxels() {
 
     // Place elf at node_b, goblin at node_c. Elf should not wander to node_c.
     let (_node_a, node_b, node_c) = find_chain_of_three(&sim);
-    force_to_node(&mut sim, elf, node_b);
-    force_to_node(&mut sim, goblin, node_c);
+    force_position(&mut sim, elf, node_b);
+    force_position(&mut sim, goblin, node_c);
     force_idle(&mut sim, elf);
     force_idle(&mut sim, goblin);
 
@@ -1076,7 +1076,7 @@ fn voxel_exclusion_wander_avoids_hostile_voxels() {
     // Run many activations and verify the elf never lands on goblin's voxel.
     for i in 0..20 {
         force_idle(&mut sim, elf);
-        force_to_node(&mut sim, elf, node_b);
+        force_position(&mut sim, elf, node_b);
         let tick = sim.tick + 1;
         schedule_activation_at(&mut sim, elf, tick);
         sim.step(&[], sim.tick + 200);
@@ -1099,8 +1099,8 @@ fn voxel_exclusion_flee_avoids_hostile_voxels() {
     // Set up: elf at node_b (middle), goblin at node_a (nearby threatening).
     // Node_c should be unoccupied — elf should flee toward node_c, not node_a.
     let (node_a, node_b, _node_c) = find_chain_of_three(&sim);
-    force_to_node(&mut sim, elf, node_b);
-    force_to_node(&mut sim, goblin, node_a);
+    force_position(&mut sim, elf, node_b);
+    force_position(&mut sim, goblin, node_a);
     force_idle(&mut sim, elf);
     force_idle(&mut sim, goblin);
 
@@ -1138,7 +1138,7 @@ fn voxel_exclusion_flee_cornered_still_moves() {
         .map(|n| n.id)
         .expect("Need a node with >= 2 neighbors");
 
-    force_to_node(&mut sim, elf, elf_node);
+    force_position(&mut sim, elf, elf_node);
     force_idle(&mut sim, elf);
 
     let neighbor_positions: Vec<(NavNodeId, VoxelCoord)> = sim
@@ -1156,7 +1156,7 @@ fn voxel_exclusion_flee_cornered_still_moves() {
     let mut goblins = Vec::new();
     for &(neighbor_node, _) in &neighbor_positions {
         let g = spawn_species(&mut sim, Species::Goblin);
-        force_to_node(&mut sim, g, neighbor_node);
+        force_position(&mut sim, g, neighbor_node);
         force_idle(&mut sim, g);
         // Prevent goblins from being polled for activation.
         // (None means "immediately ready" in the poll model, so use u64::MAX.)
@@ -1166,7 +1166,7 @@ fn voxel_exclusion_flee_cornered_still_moves() {
 
     // Also make sure the elf is still at the right node (spawning moves
     // things around).
-    force_to_node(&mut sim, elf, elf_node);
+    force_position(&mut sim, elf, elf_node);
     force_idle(&mut sim, elf);
 
     // Verify that all neighbors are indeed hostile-blocked.
@@ -1213,8 +1213,8 @@ fn voxel_exclusion_ground_move_one_step_returns_false_when_blocked() {
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
     let (node_a, node_b) = find_connected_pair(&sim);
-    force_to_node(&mut sim, elf, node_a);
-    force_to_node(&mut sim, goblin, node_b);
+    force_position(&mut sim, elf, node_a);
+    force_position(&mut sim, goblin, node_b);
     force_idle(&mut sim, elf);
     force_idle(&mut sim, goblin);
 
@@ -1251,8 +1251,8 @@ fn voxel_exclusion_skip_exclusion_allows_blocked_move() {
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
     let (node_a, node_b) = find_connected_pair(&sim);
-    force_to_node(&mut sim, elf, node_a);
-    force_to_node(&mut sim, goblin, node_b);
+    force_position(&mut sim, elf, node_a);
+    force_position(&mut sim, goblin, node_b);
     force_idle(&mut sim, elf);
     force_idle(&mut sim, goblin);
 
@@ -1296,7 +1296,7 @@ fn voxel_exclusion_ground_move_one_step_returns_true_when_clear() {
     let elf = spawn_elf(&mut sim);
 
     let (node_a, node_b) = find_connected_pair(&sim);
-    force_to_node(&mut sim, elf, node_a);
+    force_position(&mut sim, elf, node_a);
     force_idle(&mut sim, elf);
 
     let edge_idx = sim
@@ -1326,8 +1326,8 @@ fn voxel_exclusion_blocked_schedules_retry() {
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
     let (node_a, node_b) = find_connected_pair(&sim);
-    force_to_node(&mut sim, elf, node_a);
-    force_to_node(&mut sim, goblin, node_b);
+    force_position(&mut sim, elf, node_a);
+    force_position(&mut sim, goblin, node_b);
     force_idle(&mut sim, elf);
     force_idle(&mut sim, goblin);
 
@@ -1370,8 +1370,8 @@ fn voxel_exclusion_already_overlapping_allowed() {
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
     let (node_a, _) = find_connected_pair(&sim);
-    force_to_node(&mut sim, elf, node_a);
-    force_to_node(&mut sim, goblin, node_a);
+    force_position(&mut sim, elf, node_a);
+    force_position(&mut sim, goblin, node_a);
 
     // Both are now at the same position — this should be fine.
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
@@ -1401,8 +1401,8 @@ fn voxel_exclusion_different_hostile_civs_block() {
     let orc = spawn_species(&mut sim, Species::Orc);
 
     let (node_a, node_b) = find_connected_pair(&sim);
-    force_to_node(&mut sim, elf, node_a);
-    force_to_node(&mut sim, orc, node_b);
+    force_position(&mut sim, elf, node_a);
+    force_position(&mut sim, orc, node_b);
 
     let orc_pos = sim.db.creatures.get(&orc).unwrap().position.min;
     let elf_fp = sim.species_table[&Species::Elf].footprint;
@@ -1426,8 +1426,8 @@ fn voxel_exclusion_two_non_civ_same_species_share() {
     let g2 = spawn_species(&mut sim, Species::Goblin);
 
     let (node_a, node_b) = find_connected_pair(&sim);
-    force_to_node(&mut sim, g1, node_a);
-    force_to_node(&mut sim, g2, node_b);
+    force_position(&mut sim, g1, node_a);
+    force_position(&mut sim, g2, node_b);
 
     let g2_pos = sim.db.creatures.get(&g2).unwrap().position.min;
     let goblin_fp = sim.species_table[&Species::Goblin].footprint;
@@ -1543,8 +1543,8 @@ fn voxel_exclusion_config_retry_ticks_respected() {
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
     let (node_a, node_b) = find_connected_pair(&sim);
-    force_to_node(&mut sim, elf, node_a);
-    force_to_node(&mut sim, goblin, node_b);
+    force_position(&mut sim, elf, node_a);
+    force_position(&mut sim, goblin, node_b);
     force_idle(&mut sim, elf);
     force_idle(&mut sim, goblin);
 
@@ -1603,8 +1603,8 @@ fn voxel_exclusion_walk_toward_task_blocked() {
 
     // Find a chain so elf can walk from A through B (goblin) to C (task).
     let (node_a, node_b, node_c) = find_chain_of_three(&sim);
-    force_to_node(&mut sim, elf, node_a);
-    force_to_node(&mut sim, goblin, node_b);
+    force_position(&mut sim, elf, node_a);
+    force_position(&mut sim, goblin, node_b);
     force_idle(&mut sim, elf);
     force_idle(&mut sim, goblin);
 
@@ -1675,8 +1675,8 @@ fn voxel_exclusion_walk_toward_task_clears_cached_path() {
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
     let (node_a, node_b, node_c) = find_chain_of_three(&sim);
-    force_to_node(&mut sim, elf, node_a);
-    force_to_node(&mut sim, goblin, node_b);
+    force_position(&mut sim, elf, node_a);
+    force_position(&mut sim, goblin, node_b);
     force_idle(&mut sim, elf);
     force_idle(&mut sim, goblin);
     suppress_activation_until(&mut sim, goblin, u64::MAX);
@@ -1729,8 +1729,8 @@ fn voxel_exclusion_hostile_dies_creature_retries_and_moves() {
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
     let (node_a, node_b) = find_connected_pair(&sim);
-    force_to_node(&mut sim, elf, node_a);
-    force_to_node(&mut sim, goblin, node_b);
+    force_position(&mut sim, elf, node_a);
+    force_position(&mut sim, goblin, node_b);
     force_idle(&mut sim, elf);
     force_idle(&mut sim, goblin);
     suppress_activation_until(&mut sim, goblin, u64::MAX);
@@ -1797,9 +1797,9 @@ fn voxel_exclusion_attack_target_task_blocked_by_hostile() {
     // Set up: elf at A, blocking_goblin at B, target_goblin at C.
     // Elf must walk through B to reach C.
     let (node_a, node_b, node_c) = find_chain_of_three(&sim);
-    force_to_node(&mut sim, elf, node_a);
-    force_to_node(&mut sim, blocking_goblin, node_b);
-    force_to_node(&mut sim, target_goblin, node_c);
+    force_position(&mut sim, elf, node_a);
+    force_position(&mut sim, blocking_goblin, node_b);
+    force_position(&mut sim, target_goblin, node_c);
     force_idle(&mut sim, elf);
     force_idle(&mut sim, blocking_goblin);
     force_idle(&mut sim, target_goblin);
@@ -1846,8 +1846,8 @@ fn voxel_exclusion_attack_move_task_blocked_by_hostile() {
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
     let (node_a, node_b, node_c) = find_chain_of_three(&sim);
-    force_to_node(&mut sim, elf, node_a);
-    force_to_node(&mut sim, goblin, node_b);
+    force_position(&mut sim, elf, node_a);
+    force_position(&mut sim, goblin, node_b);
     force_idle(&mut sim, elf);
     force_idle(&mut sim, goblin);
     suppress_activation_until(&mut sim, goblin, u64::MAX);
@@ -1911,7 +1911,7 @@ fn cached_path_reroutes_when_nav_node_destroyed() {
 
     // Find two connected nodes: start (A) and destination (B).
     let (node_a, node_b) = find_connected_pair(&sim);
-    force_to_node(&mut sim, elf, node_a);
+    force_position(&mut sim, elf, node_a);
     force_idle(&mut sim, elf);
 
     // Give the elf a GoTo task at node_b.
@@ -4237,7 +4237,7 @@ fn path_resolution_nav_node_destroyed_no_panic() {
 
     // Find a connected pair so the elf has a valid starting node.
     let (node_a, node_b) = find_connected_pair(&sim);
-    force_to_node(&mut sim, elf, node_a);
+    force_position(&mut sim, elf, node_a);
     force_idle(&mut sim, elf);
 
     // Give the elf a GoTo task at node_b so it has reason to move.

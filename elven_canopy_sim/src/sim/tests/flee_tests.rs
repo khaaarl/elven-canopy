@@ -105,7 +105,7 @@ fn flee_interrupts_current_task() {
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
 
     // Give the elf a GoTo task to somewhere.
-    let elf_node = creature_node(&sim, elf);
+    let elf_node = creature_pos(&sim, elf);
     let graph = sim.graph_for_species(Species::Elf);
     let neighbors = graph.neighbors(elf_node);
     assert!(!neighbors.is_empty(), "Need at least one neighbor node");
@@ -153,7 +153,7 @@ fn elf_resumes_normal_behavior_after_threat_leaves() {
     let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
-    let elf_node = creature_node(&sim, elf);
+    let elf_node = creature_pos(&sim, elf);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
     // Place goblin adjacent to elf.
@@ -187,7 +187,7 @@ fn elf_resumes_normal_behavior_after_threat_leaves() {
     // ground_flee_step should return false (no living threats detected).
     force_position(&mut sim, elf, elf_pos);
     force_idle(&mut sim, elf);
-    let elf_node = creature_node(&sim, elf);
+    let elf_node = creature_pos(&sim, elf);
     assert!(
         !sim.ground_flee_step(elf, elf_node, Species::Elf),
         "Elf should not flee from a dead goblin"
@@ -265,7 +265,7 @@ fn flee_step_returns_true_when_threat_detected() {
     let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
-    let elf_node = creature_node(&sim, elf);
+    let elf_node = creature_pos(&sim, elf);
 
     // Place goblin adjacent.
     let goblin = spawn_species(&mut sim, Species::Goblin);
@@ -565,7 +565,7 @@ fn defensive_creature_does_not_chase_far() {
     // Place goblin at a known position so creature_node lookup succeeds.
     let goblin_pos = VoxelCoord::new(32, 1, 32);
     force_position(&mut sim, goblin, goblin_pos);
-    let goblin_node = creature_node(&sim, goblin);
+    let goblin_node = creature_pos(&sim, goblin);
     force_idle_and_cancel_activations(&mut sim, goblin);
 
     // Spawn elf far away (10 voxels = 100 sq distance, well beyond 9).
@@ -653,7 +653,7 @@ fn ammo_exhausted_flee_disengages() {
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
-    let goblin_node = creature_node(&sim, goblin);
+    let goblin_node = creature_pos(&sim, goblin);
 
     // Give goblin a bow but NO arrows.
     let inv_id = sim.db.creatures.get(&goblin).unwrap().inventory_id;
@@ -695,7 +695,7 @@ fn ammo_exhausted_switch_to_melee_pursues() {
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
-    let goblin_node = creature_node(&sim, goblin);
+    let goblin_node = creature_pos(&sim, goblin);
 
     // Give goblin a bow but NO arrows.
     let inv_id = sim.db.creatures.get(&goblin).unwrap().inventory_id;
@@ -739,7 +739,7 @@ fn prefer_melee_closes_distance_before_shooting() {
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
-    let goblin_node = creature_node(&sim, goblin);
+    let goblin_node = creature_pos(&sim, goblin);
 
     // Give goblin bow + arrows.
     arm_with_bow_and_arrows(&mut sim, goblin, 10);
@@ -793,7 +793,7 @@ fn prefer_ranged_shoots_before_closing() {
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
-    let goblin_node = creature_node(&sim, goblin);
+    let goblin_node = creature_pos(&sim, goblin);
 
     // Give goblin bow + arrows.
     arm_with_bow_and_arrows(&mut sim, goblin, 10);
@@ -998,7 +998,7 @@ fn defensive_creature_flees_far_threat_but_does_not_pursue() {
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
-    let goblin_node = creature_node(&sim, goblin);
+    let goblin_node = creature_pos(&sim, goblin);
     force_idle(&mut sim, goblin);
 
     // Spawn elf at 8 voxels (sq=64, within detection=225 but far beyond pursuit=9).

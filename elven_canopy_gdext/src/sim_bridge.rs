@@ -1253,42 +1253,6 @@ impl SimBridge {
         self.creature_count_by_name(GString::from("Capybara"))
     }
 
-    /// Return all nav node positions as a PackedVector3Array.
-    #[func]
-    fn get_all_nav_nodes(&self) -> PackedVector3Array {
-        let Some(sim) = &self.session.sim else {
-            return PackedVector3Array::new();
-        };
-        let mut arr = PackedVector3Array::new();
-        for node in sim.nav_graph.live_nodes() {
-            arr.push(Vector3::new(
-                node.position.x as f32,
-                node.position.y as f32,
-                node.position.z as f32,
-            ));
-        }
-        arr
-    }
-
-    /// Return ground-level (Dirt surface type) nav node positions as a
-    /// PackedVector3Array.
-    #[func]
-    fn get_ground_nav_nodes(&self) -> PackedVector3Array {
-        let Some(sim) = &self.session.sim else {
-            return PackedVector3Array::new();
-        };
-        let mut arr = PackedVector3Array::new();
-        for id in sim.nav_graph.ground_node_ids() {
-            let node = sim.nav_graph.node(id);
-            arr.push(Vector3::new(
-                node.position.x as f32,
-                node.position.y as f32,
-                node.position.z as f32,
-            ));
-        }
-        arr
-    }
-
     /// Snap the mouse ray to the nearest nav node for placement.
     ///
     /// Casts `raycast_solid` along the ray to find where it hits geometry,

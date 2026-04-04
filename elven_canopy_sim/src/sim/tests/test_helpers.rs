@@ -53,16 +53,10 @@ pub(super) static CACHED_SIM_42: LazyLock<SimState> =
 static CACHED_SIM_FRESH: LazyLock<SimState> =
     LazyLock::new(|| SimState::with_config(*FRESH_SEED, test_config()));
 
-/// Cached flat-world geometry (world + nav graphs). These are seed-independent
+/// Cached flat-world geometry (world only). Seed-independent
 /// (terrain_max_height=0 makes zero PRNG calls), so one copy serves all seeds.
-/// The expensive nav graph build (~150ms) runs once; `flat_world_sim` clones
-/// the geometry and overlays seed-dependent civs/diplomacy/RNG.
-static FLAT_GEOMETRY: LazyLock<(
-    crate::world::VoxelWorld,
-    crate::nav::NavGraph,
-    crate::nav::NavGraph,
-)> = LazyLock::new(|| {
-    use crate::nav;
+/// `flat_world_sim` clones the world and overlays seed-dependent civs/diplomacy/RNG.
+static FLAT_GEOMETRY: LazyLock<crate::world::VoxelWorld> = LazyLock::new(|| {
     let config = flat_world_config();
     let (ws_x, ws_y, ws_z) = config.world_size;
     let mut world = crate::world::VoxelWorld::new(ws_x, ws_y, ws_z);
@@ -70,9 +64,7 @@ static FLAT_GEOMETRY: LazyLock<(
     crate::tree_gen::generate_terrain(&mut world, &config, &mut elven_canopy_prng::GameRng::new(0));
     world.clear_dirty_voxels();
     world.repack_all();
-    let nav_graph = nav::build_nav_graph(&world, &BTreeMap::new());
-    let large_nav_graph = nav::build_large_nav_graph(&world);
-    (world, nav_graph, large_nav_graph)
+    world
 });
 
 /// Test config with a small 64^3 world and reduced tree energy.
@@ -156,7 +148,7 @@ pub(super) fn flat_world_sim(seed: u64) -> SimState {
     use elven_canopy_prng::GameRng;
 
     let config = flat_world_config();
-    let (ref world, ref nav, ref large_nav) = *FLAT_GEOMETRY;
+    let ref world = *FLAT_GEOMETRY;
 
     // Seed-dependent: IDs, civs, diplomacy, runtime RNG.
     let mut rng = GameRng::new(seed);
@@ -221,8 +213,6 @@ pub(super) fn flat_world_sim(seed: u64) -> SimState {
         player_tree_id,
         player_civ_id: Some(player_civ_id),
         world: world.clone(),
-        nav_graph: nav.clone(),
-        large_nav_graph: large_nav.clone(),
         species_table,
         lexicon: Some(lexicon),
         last_build_message: None,
@@ -349,10 +339,9 @@ pub(super) fn insert_stub_task(sim: &mut SimState, task_id: TaskId) {
         .unwrap();
 }
 
-/// Helper: insert a GoTo task at the given nav node (elf-only).
-pub(super) fn insert_goto_task(sim: &mut SimState, location: NavNodeId) -> TaskId {
+/// Helper: insert a GoTo task at the given position (elf-only).
+pub(super) fn insert_goto_task(sim: &mut SimState, location_coord: VoxelCoord) -> TaskId {
     let task_id = TaskId::new(&mut sim.rng);
-    let location_coord = sim.nav_graph.node(location).position;
     let task = Task {
         id: task_id,
         kind: TaskKind::GoTo,
@@ -547,9 +536,6 @@ pub(super) fn insert_completed_building(sim: &mut SimState, anchor: VoxelCoord) 
         })
         .unwrap();
 
-    // Rebuild nav graph so there are nav nodes inside the building.
-    sim.nav_graph = nav::build_nav_graph(&sim.world, &sim.face_data);
-
     id
 }
 
@@ -584,12 +570,46 @@ pub(super) fn spawn_species(sim: &mut SimState, species: Species) -> CreatureId 
         .id
 }
 
-/// Look up a creature's current nav node from its position.
-pub(super) fn creature_node(sim: &SimState, creature_id: CreatureId) -> NavNodeId {
-    let creature = sim.db.creatures.get(&creature_id).unwrap();
-    sim.graph_for_species(creature.species)
-        .node_at(creature.position.min)
-        .expect("creature should have a nav node at its position")
+/// Look up a creature's current position (anchor voxel).
+pub(super) fn creature_pos(sim: &SimState, creature_id: CreatureId) -> VoxelCoord {
+    sim.db.creatures.get(&creature_id).unwrap().position.min
+}
+
+/// Find the nearest walkable position to `pos`, searching up to `radius` voxels.
+pub(super) fn find_walkable(sim: &SimState, pos: VoxelCoord, radius: u32) -> Option<VoxelCoord> {
+    crate::walkability::find_nearest_walkable(&sim.world, &sim.face_data, pos, radius)
+}
+
+/// Find any walkable position on the ground floor that isn't `exclude`.
+pub(super) fn find_different_walkable(sim: &SimState, exclude: VoxelCoord) -> VoxelCoord {
+    let floor_y = sim.config.floor_y + 1;
+    let (ws_x, _, ws_z) = sim.config.world_size;
+    for x in 1..(ws_x as i32 - 1) {
+        for z in 1..(ws_z as i32 - 1) {
+            let pos = VoxelCoord::new(x, floor_y, z);
+            if pos != exclude && crate::walkability::is_walkable(&sim.world, &sim.face_data, pos) {
+                return pos;
+            }
+        }
+    }
+    panic!("No walkable position found that differs from {exclude:?}");
+}
+
+/// Find a walkable position at least `min_dist` Manhattan distance from `from`.
+pub(super) fn find_far_walkable(sim: &SimState, from: VoxelCoord, min_dist: u32) -> VoxelCoord {
+    let floor_y = sim.config.floor_y + 1;
+    let (ws_x, _, ws_z) = sim.config.world_size;
+    for x in 1..(ws_x as i32 - 1) {
+        for z in 1..(ws_z as i32 - 1) {
+            let pos = VoxelCoord::new(x, floor_y, z);
+            if pos.manhattan_distance(from) >= min_dist
+                && crate::walkability::is_walkable(&sim.world, &sim.face_data, pos)
+            {
+                return pos;
+            }
+        }
+    }
+    panic!("No walkable position found at least {min_dist} away from {from:?}");
 }
 
 /// Force a creature to a specific position. The tabulosity spatial index on
@@ -723,13 +743,6 @@ pub(super) fn force_guaranteed_hits(sim: &mut SimState, creature_id: CreatureId)
 // Voxel exclusion (F-voxel-exclusion): creatures cannot enter voxels
 // occupied by hostile creatures.
 // -----------------------------------------------------------------------
-
-/// Helper: place a creature at a specific nav node, updating position
-/// and spatial index.
-pub(super) fn force_to_node(sim: &mut SimState, creature_id: CreatureId, node_id: NavNodeId) {
-    let node_pos = sim.nav_graph.node(node_id).position;
-    force_position(sim, creature_id, node_pos);
-}
 
 impl SimState {
     /// Test helper: count pending activations for a creature.
@@ -982,29 +995,42 @@ pub(super) fn arm_with_bow_and_arrows(sim: &mut SimState, creature_id: CreatureI
     );
 }
 
-/// Find two connected nav nodes (A has an edge to B).
-pub(super) fn find_connected_pair(sim: &SimState) -> (NavNodeId, NavNodeId) {
-    for node in sim.nav_graph.live_nodes() {
-        if !node.edge_indices.is_empty() {
-            let edge = sim.nav_graph.edge(node.edge_indices[0]);
-            return (node.id, edge.to);
-        }
-    }
-    panic!("No connected nav nodes found in test sim");
-}
-
-/// Find three connected nav nodes in a chain: A->B->C.
-pub(super) fn find_chain_of_three(sim: &SimState) -> (NavNodeId, NavNodeId, NavNodeId) {
-    for node_b in sim.nav_graph.live_nodes() {
-        if node_b.edge_indices.len() >= 2 {
-            let edge_0 = sim.nav_graph.edge(node_b.edge_indices[0]);
-            let edge_1 = sim.nav_graph.edge(node_b.edge_indices[1]);
-            if edge_0.to != edge_1.to {
-                return (edge_0.to, node_b.id, edge_1.to);
+/// Find two adjacent walkable positions.
+pub(super) fn find_connected_pair(sim: &SimState) -> (VoxelCoord, VoxelCoord) {
+    let floor_y = sim.config.floor_y + 1;
+    let (ws_x, _, ws_z) = sim.config.world_size;
+    for x in 1..(ws_x as i32 - 1) {
+        for z in 1..(ws_z as i32 - 1) {
+            let a = VoxelCoord::new(x, floor_y, z);
+            let b = VoxelCoord::new(x + 1, floor_y, z);
+            if crate::walkability::is_walkable(&sim.world, &sim.face_data, a)
+                && crate::walkability::is_walkable(&sim.world, &sim.face_data, b)
+            {
+                return (a, b);
             }
         }
     }
-    panic!("No chain of three nav nodes found");
+    panic!("No connected walkable pair found in test sim");
+}
+
+/// Find three walkable positions in a chain: A-B-C.
+pub(super) fn find_chain_of_three(sim: &SimState) -> (VoxelCoord, VoxelCoord, VoxelCoord) {
+    let floor_y = sim.config.floor_y + 1;
+    let (ws_x, _, ws_z) = sim.config.world_size;
+    for x in 1..(ws_x as i32 - 2) {
+        for z in 1..(ws_z as i32 - 1) {
+            let a = VoxelCoord::new(x, floor_y, z);
+            let b = VoxelCoord::new(x + 1, floor_y, z);
+            let c = VoxelCoord::new(x + 2, floor_y, z);
+            if crate::walkability::is_walkable(&sim.world, &sim.face_data, a)
+                && crate::walkability::is_walkable(&sim.world, &sim.face_data, b)
+                && crate::walkability::is_walkable(&sim.world, &sim.face_data, c)
+            {
+                return (a, b, c);
+            }
+        }
+    }
+    panic!("No chain of three walkable positions found");
 }
 
 /// Spawn an elf using SpawnCreature command and return the newly spawned ID.

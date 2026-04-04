@@ -92,8 +92,8 @@ fn test_attack_move_engages_hostile() {
 
     // Use connected nav nodes to ensure valid positions.
     let (node_a, node_b) = find_connected_pair(&sim);
-    force_to_node(&mut sim, elf, node_a);
-    force_to_node(&mut sim, goblin, node_b);
+    force_position(&mut sim, elf, node_a);
+    force_position(&mut sim, goblin, node_b);
     force_idle(&mut sim, elf);
     force_guaranteed_hits(&mut sim, elf);
     suppress_activation(&mut sim, elf);

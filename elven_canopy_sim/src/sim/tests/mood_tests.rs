@@ -161,7 +161,7 @@ fn eat_bread_generates_thought() {
         .find(|c| c.species == Species::Elf)
         .unwrap()
         .id;
-    let elf_node = creature_node(&sim, elf_id);
+    let elf_node = creature_pos(&sim, elf_id);
 
     // Give bread and set food low.
     sim.inv_add_simple_item(
@@ -183,7 +183,7 @@ fn eat_bread_generates_thought() {
         id: task_id,
         kind: TaskKind::EatBread,
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(elf_node).position,
+        location: elf_node,
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -1115,7 +1115,7 @@ fn mope_does_not_interrupt_autonomous_sleep() {
     }
 
     // Manually assign a Sleep task to the elf.
-    let elf_node = creature_node(&sim, elf_id);
+    let elf_node = creature_pos(&sim, elf_id);
     let sleep_task_id = TaskId::new(&mut sim.rng);
     let sleep_task = Task {
         id: sleep_task_id,
@@ -1124,7 +1124,7 @@ fn mope_does_not_interrupt_autonomous_sleep() {
             location: crate::task::SleepLocation::Ground,
         },
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(elf_node).position,
+        location: elf_node,
         progress: 0,
         total_cost: 1000000,
         required_species: None,
@@ -1226,14 +1226,14 @@ fn mope_always_preempts_player_directed_build() {
     );
 
     // Assign a long-running Build task at the elf's current node.
-    let elf_node = creature_node(&sim, elf_id);
+    let elf_node = creature_pos(&sim, elf_id);
     let task_id = TaskId::new(&mut sim.rng);
     let project_id = crate::types::ProjectId::new(&mut sim.rng);
     let build_task = Task {
         id: task_id,
         kind: TaskKind::Build { project_id },
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(elf_node).position,
+        location: elf_node,
         progress: 0,
         total_cost: 1000000,
         required_species: None,

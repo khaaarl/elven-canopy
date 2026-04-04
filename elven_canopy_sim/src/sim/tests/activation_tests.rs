@@ -450,7 +450,7 @@ fn sleep_adaptive_completion_rest_full_exits_early() {
     }
 
     // Create a ground sleep task at elf's location.
-    let elf_node = creature_node(&sim, elf_id);
+    let elf_node = creature_pos(&sim, elf_id);
     let task_id = TaskId::new(&mut sim.rng);
     let sleep_task = task::Task {
         id: task_id,
@@ -597,7 +597,7 @@ fn eat_action_ticks_controls_timing() {
         .id;
 
     // Create an EatBread task at the elf's location.
-    let elf_node = creature_node(&sim, elf_id);
+    let elf_node = creature_pos(&sim, elf_id);
     let task_id = TaskId::new(&mut sim.rng);
     let eat_task = task::Task {
         id: task_id,
@@ -971,7 +971,7 @@ fn interrupt_sleep_completes_task() {
     let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
 
-    let current_node = creature_node(&sim, elf_id);
+    let current_node = creature_pos(&sim, elf_id);
     let task_id = TaskId::new(&mut sim.rng);
     let sleep_task = Task {
         id: task_id,
@@ -1030,7 +1030,7 @@ fn interrupt_clears_move_action() {
     let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
 
-    let current_node = creature_node(&sim, elf_id);
+    let current_node = creature_pos(&sim, elf_id);
 
     // Put the elf in a Move action.
     let pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
@@ -1328,7 +1328,7 @@ fn directed_goto_on_wandering_creature_does_not_schedule_extra_activation() {
     force_idle_and_cancel_activations(&mut sim, elf);
 
     // Put the elf into a wander state: no task, mid-Move.
-    let elf_node = creature_node(&sim, elf);
+    let elf_node = creature_pos(&sim, elf);
     let mut events = Vec::new();
     sim.ground_wander(elf, elf_node, &mut events);
 
@@ -1380,7 +1380,7 @@ fn directed_goto_on_wandering_creature_preserves_move_action() {
     force_idle_and_cancel_activations(&mut sim, elf);
 
     // Put the elf into a wander state.
-    let elf_node = creature_node(&sim, elf);
+    let elf_node = creature_pos(&sim, elf);
     let mut events = Vec::new();
     sim.ground_wander(elf, elf_node, &mut events);
 
@@ -1538,7 +1538,7 @@ fn attack_move_on_wandering_creature_does_not_schedule_extra_activation() {
     let elf = spawn_elf(&mut sim);
     force_idle_and_cancel_activations(&mut sim, elf);
 
-    let elf_node = creature_node(&sim, elf);
+    let elf_node = creature_pos(&sim, elf);
     let mut events = Vec::new();
     sim.ground_wander(elf, elf_node, &mut events);
 
@@ -2713,7 +2713,7 @@ fn goto_task_completes_on_arrival() {
     let elf_id = spawn_elf(&mut sim);
 
     // Put the task at the elf's current location for instant completion.
-    let elf_node = creature_node(&sim, elf_id);
+    let elf_node = creature_pos(&sim, elf_id);
     let task_id = insert_goto_task(&mut sim, elf_node);
 
     // One activation should be enough: elf claims task, is already there, completes.
@@ -2738,7 +2738,7 @@ fn completed_task_creature_resumes_wandering() {
     let elf_id = spawn_elf(&mut sim);
 
     // Put the task at the elf's current location for instant completion.
-    let elf_node = creature_node(&sim, elf_id);
+    let elf_node = creature_pos(&sim, elf_id);
     let _task_id = insert_goto_task(&mut sim, elf_node);
 
     // Complete the task.

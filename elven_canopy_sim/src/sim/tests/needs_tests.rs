@@ -555,7 +555,7 @@ fn eat_fruit_task_restores_food_on_arrival() {
         .find(|c| c.species == Species::Elf)
         .unwrap()
         .id;
-    let elf_node = creature_node(&sim, elf_id);
+    let elf_node = creature_pos(&sim, elf_id);
 
     // Set elf food low.
     {
@@ -572,7 +572,7 @@ fn eat_fruit_task_restores_food_on_arrival() {
         id: task_id,
         kind: TaskKind::EatFruit { fruit_pos },
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(elf_node).position,
+        location: elf_node,
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -947,7 +947,7 @@ fn eat_bread_restores_food_and_removes_bread() {
         .find(|c| c.species == Species::Elf)
         .unwrap()
         .id;
-    let elf_node = creature_node(&sim, elf_id);
+    let elf_node = creature_pos(&sim, elf_id);
 
     // Give the elf owned bread.
     sim.inv_add_simple_item(
@@ -972,7 +972,7 @@ fn eat_bread_restores_food_and_removes_bread() {
         id: task_id,
         kind: TaskKind::EatBread,
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(elf_node).position,
+        location: elf_node,
         progress: 0,
         total_cost: 0,
         required_species: None,
