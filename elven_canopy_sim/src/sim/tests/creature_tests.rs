@@ -2377,3 +2377,52 @@ fn spawned_capybara_has_blend_traits() {
         "capybara should have BodyBlendWeight trait"
     );
 }
+
+#[test]
+fn test_large_creature_landing_near_world_edge() {
+    let mut sim = flat_world_sim(fresh_test_seed());
+    let (ws_x, _, _) = sim.config.world_size;
+    let floor_y = sim.config.floor_y;
+
+    // Spawn an elephant.
+    let mut events = Vec::new();
+    let elephant_id = sim
+        .spawn_creature(
+            Species::Elephant,
+            VoxelCoord::new(ws_x as i32 / 2, floor_y + 1, ws_x as i32 / 2),
+            &mut events,
+        )
+        .expect("should spawn elephant");
+
+    // Teleport elephant to near the world edge (x = world_size_x - 2).
+    let edge_x = ws_x as i32 - 2;
+    let edge_pos = VoxelCoord::new(edge_x, floor_y + 3, 10);
+    {
+        let mut c = sim.db.creatures.get(&elephant_id).unwrap();
+        c.position = VoxelBox::point(edge_pos);
+        sim.db.update_creature(c).unwrap();
+    }
+
+    // Remove ground below the elephant to trigger gravity.
+    for dx in 0..2 {
+        for dz in 0..2 {
+            sim.world.set(
+                VoxelCoord::new(edge_x + dx, floor_y, 10 + dz),
+                VoxelType::Air,
+            );
+        }
+    }
+    sim.rebuild_transient_state();
+
+    // Apply gravity — should not panic even near world edge.
+    events.clear();
+    let _fell = sim.apply_single_creature_gravity(elephant_id, &mut events);
+
+    // Verify no panic occurred. The creature either landed somewhere or
+    // remains (if no valid landing position exists near the edge).
+    let creature = sim.db.creatures.get(&elephant_id).unwrap();
+    assert!(
+        creature.vital_status == VitalStatus::Alive || creature.vital_status != VitalStatus::Alive,
+        "Creature should exist without panic"
+    );
+}

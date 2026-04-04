@@ -869,4 +869,205 @@ mod tests {
             [2, 1, 2]
         ));
     }
+
+    // -----------------------------------------------------------------------
+    // 2x2x2 footprint walkability tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_footprint_walkable_2x2x2_actual_footprint() {
+        // Flat dirt floor at y=5. A [2,2,2] creature at y=6 occupies y=6..7.
+        // All 8 voxels are air, all 4 ground columns have solid at y=5.
+        let world = ground_world(16, 16, 16, 5);
+        let fd = no_faces();
+        assert!(
+            footprint_walkable(&world, &fd, VoxelCoord::new(5, 6, 5), [2, 2, 2]),
+            "2x2x2 should be walkable at y=6 on flat dirt floor at y=5"
+        );
+
+        // Block one upper-layer voxel (y=7) — should become unwalkable.
+        let mut world2 = ground_world(16, 16, 16, 5);
+        world2.set(VoxelCoord::new(5, 7, 5), VoxelType::Dirt);
+        assert!(
+            !footprint_walkable(&world2, &fd, VoxelCoord::new(5, 6, 5), [2, 2, 2]),
+            "2x2x2 should NOT be walkable when one upper voxel is solid"
+        );
+    }
+
+    #[test]
+    fn test_footprint_walkable_2x2x2_three_columns_supported() {
+        // 3 of 4 ground columns have solid at y-1 (y=5), 1 column does not.
+        // 3 >= 3 threshold → walkable.
+        let mut world = VoxelWorld::new(16, 16, 16);
+        let fd = no_faces();
+        // Place dirt at y=5 for 3 columns but not (6,5,6).
+        world.set(VoxelCoord::new(5, 5, 5), VoxelType::Dirt);
+        world.set(VoxelCoord::new(6, 5, 5), VoxelType::Dirt);
+        world.set(VoxelCoord::new(5, 5, 6), VoxelType::Dirt);
+        // (6,5,6) is air — only 3 columns supported.
+        assert!(
+            footprint_walkable(&world, &fd, VoxelCoord::new(5, 6, 5), [2, 2, 2]),
+            "3 of 4 columns supported at y-1 should be walkable"
+        );
+    }
+
+    #[test]
+    fn test_footprint_walkable_2x2x2_two_columns_unsupported() {
+        // In a 2x2 footprint, all 4 ground columns are face-adjacent to each
+        // other. So 2 columns with solid at y-1 gives all 4 columns face
+        // support via the climber fallback. To test the "not enough support"
+        // case, we need NO solid anywhere near the footprint (y-1 or
+        // face-adjacent), with solid ONLY at y-3 (too far for any rule).
+        let mut world = VoxelWorld::new(16, 16, 16);
+        let fd = no_faces();
+        // Place solid only at y=3 (y-3 from anchor y=6), too deep for any rule.
+        world.set(VoxelCoord::new(5, 3, 5), VoxelType::Dirt);
+        world.set(VoxelCoord::new(6, 3, 5), VoxelType::Dirt);
+        // No solid at y=5 (y-1) or y=4 (y-2) or face-adjacent to y-1.
+        assert!(
+            !footprint_walkable(&world, &fd, VoxelCoord::new(5, 6, 5), [2, 2, 2]),
+            "Solid only at y-3 should NOT provide support for 2x2x2 creature"
+        );
+    }
+
+    #[test]
+    fn test_footprint_walkable_2x2x2_one_direct_two_deep() {
+        // 1 column has solid at y-1, 2 columns have solid at y-2 (but not y-1).
+        // 1+ at y-1 AND 2+ at y-2 → walkable.
+        let mut world = VoxelWorld::new(16, 16, 16);
+        let fd = no_faces();
+        // 1 column with direct support at y=5.
+        world.set(VoxelCoord::new(5, 5, 5), VoxelType::Dirt);
+        // 2 columns with deep support at y=4 (no solid at y=5).
+        world.set(VoxelCoord::new(6, 4, 5), VoxelType::Dirt);
+        world.set(VoxelCoord::new(5, 4, 6), VoxelType::Dirt);
+        // (6,5,6) has no support at all.
+        assert!(
+            footprint_walkable(&world, &fd, VoxelCoord::new(5, 6, 5), [2, 2, 2]),
+            "1 direct + 2 deep support should be walkable"
+        );
+    }
+
+    #[test]
+    fn test_footprint_walkable_2x2x2_zero_direct_support() {
+        // 0 columns have solid at y-1 directly, but solid at y-2 makes the
+        // y-2 voxels face-adjacent to y-1 (via the -Y face offset). The
+        // climber fallback at y-1 will see face_support >= 1, and then the
+        // deep climber check at y-2 will also see face_support >= 2.
+        // So solid at y-2 DOES provide support through the climber path.
+        //
+        // To actually get false, there must be no solid within face-adjacency
+        // of y-1 or y-2 for any column — i.e., no solid at y-1, y-2, y-3,
+        // or horizontally adjacent at those levels.
+        let world = VoxelWorld::new(16, 16, 16);
+        let fd = no_faces();
+        // Completely empty world — no solid anywhere.
+        assert!(
+            !footprint_walkable(&world, &fd, VoxelCoord::new(5, 6, 5), [2, 2, 2]),
+            "Empty world should NOT be walkable for 2x2x2 creature"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // large_node_surface_y tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_large_node_surface_y_flat() {
+        let world = ground_world(16, 16, 16, 5);
+        // Flat dirt floor at y=5. Surface y for a 2x2 at (5,5) should be 6.
+        assert_eq!(large_node_surface_y(&world, 5, 5), Some(6));
+    }
+
+    #[test]
+    fn test_large_node_surface_y_height_variation_exceeds_1() {
+        // One column at height 2, another at height 5 — variation > 1 → None.
+        let mut world = VoxelWorld::new(16, 16, 16);
+        world.set(VoxelCoord::new(5, 2, 5), VoxelType::Dirt);
+        world.set(VoxelCoord::new(6, 2, 5), VoxelType::Dirt);
+        world.set(VoxelCoord::new(5, 5, 6), VoxelType::Dirt);
+        world.set(VoxelCoord::new(6, 5, 6), VoxelType::Dirt);
+        assert_eq!(
+            large_node_surface_y(&world, 5, 5),
+            None,
+            "Height variation of 3 should return None"
+        );
+    }
+
+    #[test]
+    fn test_large_node_surface_y_empty_column() {
+        // One column in the 2x2 has no solid → None.
+        let mut world = VoxelWorld::new(16, 16, 16);
+        world.set(VoxelCoord::new(5, 5, 5), VoxelType::Dirt);
+        world.set(VoxelCoord::new(6, 5, 5), VoxelType::Dirt);
+        world.set(VoxelCoord::new(5, 5, 6), VoxelType::Dirt);
+        // (6, *, 6) has no solid at all.
+        assert_eq!(
+            large_node_surface_y(&world, 5, 5),
+            None,
+            "Empty column should return None"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // ground_neighbors tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_ground_neighbors_large_surface_snap() {
+        // Test ground_neighbors for a [2,2,2] creature on flat terrain.
+        // Verifies that neighbors include positions at the ground surface
+        // level (y=6), all returned neighbors are walkable, and there are
+        // enough neighbors for movement in multiple directions.
+        let world = ground_world(16, 16, 16, 5);
+        let fd = no_faces();
+        let pos = VoxelCoord::new(5, 6, 5);
+        assert!(
+            footprint_walkable(&world, &fd, pos, [2, 2, 2]),
+            "Starting position should be walkable"
+        );
+        let neighbors = ground_neighbors(&world, &fd, pos, [2, 2, 2]);
+        assert!(
+            !neighbors.is_empty(),
+            "2x2x2 creature should have ground neighbors on flat terrain"
+        );
+        // All returned neighbors must be walkable.
+        for (n, _dist) in &neighbors {
+            assert!(
+                footprint_walkable(&world, &fd, *n, [2, 2, 2]),
+                "Neighbor {:?} should be walkable for [2,2,2]",
+                n
+            );
+        }
+        // Should include y=6 neighbors (ground surface level).
+        let ground_level: Vec<_> = neighbors.iter().filter(|(n, _)| n.y == 6).collect();
+        assert!(
+            !ground_level.is_empty(),
+            "Should have neighbors at ground surface level y=6"
+        );
+        // Should have multiple neighbors (at least 4 cardinal directions).
+        assert!(
+            neighbors.len() >= 4,
+            "Should have at least 4 neighbors, got {}",
+            neighbors.len()
+        );
+    }
+
+    #[test]
+    fn test_ground_neighbors_1x1_basic() {
+        let world = ground_world(16, 16, 16, 5);
+        let fd = no_faces();
+        let pos = VoxelCoord::new(5, 6, 5);
+        let neighbors = ground_neighbors(&world, &fd, pos, [1, 1, 1]);
+        // All neighbors should be walkable and at y=6 on flat ground.
+        assert!(!neighbors.is_empty(), "Should have at least some neighbors");
+        for (n, _dist) in &neighbors {
+            assert!(
+                footprint_walkable(&world, &fd, *n, [1, 1, 1]),
+                "Neighbor {:?} should be walkable",
+                n
+            );
+            assert_eq!(n.y, 6, "All neighbors should be at y=6 on flat ground");
+        }
+    }
 }

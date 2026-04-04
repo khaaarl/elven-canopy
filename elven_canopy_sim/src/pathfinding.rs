@@ -2144,4 +2144,28 @@ mod tests {
         );
         assert_eq!(result.unwrap(), start);
     }
+
+    #[test]
+    fn test_astar_ground_2x2x2_flat_dirt() {
+        let world = ground_world(16, 16, 16, 5);
+        let fd = no_faces();
+        let start = VoxelCoord::new(2, 6, 5);
+        let goal = VoxelCoord::new(5, 6, 5);
+        let result = astar_ground(
+            &world,
+            &fd,
+            start,
+            goal,
+            &test_speeds(),
+            &PathOpts::default(),
+            [2, 2, 2],
+        );
+        let path = result.expect("should find path for 2x2x2 on flat dirt");
+        assert_eq!(*path.positions.first().unwrap(), start);
+        assert_eq!(*path.positions.last().unwrap(), goal);
+        assert!(
+            path.positions.iter().all(|p| p.y == 6),
+            "All positions should be at y=6 on flat ground"
+        );
+    }
 }
