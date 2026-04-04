@@ -69,6 +69,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-fast-checksum        Incremental state checksum for desync detection (replace full-state JSON serialization)
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fog-billboards       Fog post-process does not obscure billboard sprites
+[ ] B-large-fall-deflect   Large creatures may land at invalid positions during gravity fall
 [ ] B-per-species-iter     Eliminate per-species iteration in selection and tooltip controllers
 [ ] B-relay-stability      Windows TCP connection drops during singleplayer gameplay
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
@@ -1982,6 +1983,23 @@ task-driven system (player commands, construction, hauling, etc.).
 
 **Unblocked:** B-flying-arrow-chase, F-winged-elf
 **Related:** F-arrow-chase
+
+#### B-large-fall-deflect — Large creatures may land at invalid positions during gravity fall
+**Status:** Todo
+
+When a large (2x2x2 footprint) ground creature like an elephant loses support and gravity kicks in, `find_creature_landing` only checks the creature's current anchor column `(ax, az)` via `large_node_surface_y`. If that specific 2x2 anchor position doesn't have valid ground below (e.g., the creature was knocked off a platform onto a narrow column, or terrain was destroyed beneath it), the function returns `None`.
+
+The fallback in `apply_single_creature_gravity` calls `find_nearest_walkable` with `max_distance=5`, which searches a Manhattan-distance-5 sphere around the creature's **current floating position**. If the ground is more than 5 voxels below and there are no platforms nearby, this also returns `None`.
+
+When both fail, `apply_single_creature_gravity` returns `false` — the creature stays at its current unsupported position. On the next tick, `creature_is_supported` returns false again, the same lookup fails again, and the creature is stuck hovering forever.
+
+**Current behavior:** Large creature gets permanently stuck floating at an invalid position.
+
+**Expected behavior:** The creature should fall to the ground. Two possible fixes:
+1. In `find_creature_landing`'s large-creature path, if the current anchor column fails, try nearby anchor columns at each Y level scanning downward (similar to how the 1x1 path scans downward).
+2. Increase the `find_nearest_walkable` fallback search radius, or make the fallback scan downward iteratively (search radius 5 at current Y, then radius 5 at Y-5, etc.) until ground is found.
+
+**Relevant code:** `find_creature_landing` and `apply_single_creature_gravity` in `elven_canopy_sim/src/sim/creature.rs` (lines ~689-790), `large_node_surface_y` in `elven_canopy_sim/src/walkability.rs` (line ~162).
 
 #### B-sprite-shuffle — Non-elf creature sprites shuffle appearance when population changes
 **Status:** Done
@@ -7973,8 +7991,8 @@ The DB-structural part of F-zone-world, extracted so schema changes can be plann
 
 This is the largest structural schema change remaining before save format stability. F-zone-world retains all simulation logic (zone state transitions, fidelity partitioning, inter-zone travel, background heartbeats).
 
-**Blocked by:** F-tab-spatial-2
 **Blocks:** F-save-stable, F-zone-world
+**Unblocked by:** F-tab-spatial-2
 **Related:** F-tree-db, F-zone-world
 
 ### Tabulosity
@@ -8455,9 +8473,8 @@ Compound spatial indexes for tabulosity: a non-spatial prefix (one or more field
 
 **Motivating use case:** F-zone-world requires all spatial queries scoped by zone_id, which requires compound spatial indexes keyed by (zone_id, spatial_box).
 
-**Blocks:** F-zone-schema, F-zone-world
 **Unblocked by:** F-tab-spatial
-**Unblocked:** F-zone-world
+**Unblocked:** F-zone-schema, F-zone-world
 **Related:** F-tab-nested-idx, F-tab-spatial-3
 
 #### F-tab-spatial-3 — Tabulosity spatial index — range, KNN, and None-set queries
