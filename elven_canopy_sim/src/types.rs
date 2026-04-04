@@ -14,9 +14,6 @@
 // - **Sequential IDs:** `StructureId` is a sequential `u64` newtype (not
 //   UUID-based) for user-friendly numbering (#0, #1, #2). Assigned by
 //   `SimState` when a build completes.
-// - **Nav graph IDs:** `NavNodeId` and `NavEdgeId` — compact `u32` wrappers
-//   (not UUIDs) since nav nodes are rebuilt from world geometry and never
-//   persisted across sessions.
 // - **Simulation enums:** `Species`, `Priority`, `BuildType`.
 // - **Creature biology:** `TraitKind` (enum of all biological trait names)
 //   and `TraitValue` (Int or Text sum type). Stored in the `creature_traits`
@@ -892,20 +889,6 @@ impl fmt::Display for FruitSpeciesId {
         write!(f, "FruitSpeciesId({})", self.0)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Nav graph IDs — simple integers, not UUIDs, for compactness.
-// ---------------------------------------------------------------------------
-
-/// Compact identifier for a navigation graph node.
-/// Not serializable — nav node IDs are ephemeral and change when the graph is rebuilt.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct NavNodeId(pub u32);
-
-/// Compact identifier for a navigation graph edge.
-/// Not serializable — nav edge IDs are ephemeral and change when the graph is rebuilt.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct NavEdgeId(pub u32);
 
 // ---------------------------------------------------------------------------
 // Simulation enums
