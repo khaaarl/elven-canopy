@@ -344,6 +344,7 @@ impl SimState {
                     &self.face_data,
                     tf.position.min,
                     5,
+                    [1, 1, 1],
                 )
                 .is_some()
             {
@@ -544,6 +545,7 @@ impl SimState {
                     &self.face_data,
                     pile.position,
                     5,
+                    [1, 1, 1],
                 )
                 .is_some()
             {
@@ -575,6 +577,7 @@ impl SimState {
                     &self.face_data,
                     structure.anchor,
                     5,
+                    [1, 1, 1],
                 )
                 .is_some()
             {
@@ -607,6 +610,7 @@ impl SimState {
                     &self.face_data,
                     structure.anchor,
                     5,
+                    [1, 1, 1],
                 )
                 .is_some()
             {
@@ -674,6 +678,7 @@ impl SimState {
                     &self.face_data,
                     pile.position,
                     5,
+                    [1, 1, 1],
                 )
             {
                 return Some((
@@ -695,6 +700,7 @@ impl SimState {
                     &self.face_data,
                     structure.anchor,
                     5,
+                    [1, 1, 1],
                 )
             {
                 return Some((
@@ -729,6 +735,7 @@ impl SimState {
                     &self.face_data,
                     pile.position,
                     5,
+                    [1, 1, 1],
                 )
             {
                 return Some((
@@ -749,6 +756,7 @@ impl SimState {
                     &self.face_data,
                     structure.anchor,
                     5,
+                    [1, 1, 1],
                 )
             {
                 return Some((

@@ -275,7 +275,7 @@ fn walk_toward_dead_task_node_does_not_panic() {
     sim.rebuild_transient_state();
 
     assert!(
-        !crate::walkability::is_walkable(&sim.world, &sim.face_data, task_pos),
+        !crate::walkability::footprint_walkable(&sim.world, &sim.face_data, task_pos, [1, 1, 1]),
         "Task position should be unwalkable",
     );
 
@@ -588,7 +588,7 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
     let elf_id = elf.id;
     let elf_pos = elf.position.min;
     assert!(
-        crate::walkability::is_walkable(&sim.world, &sim.face_data, elf_pos),
+        crate::walkability::footprint_walkable(&sim.world, &sim.face_data, elf_pos, [1, 1, 1]),
         "elf should be at a walkable position"
     );
 
@@ -598,11 +598,11 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
     let near_pos = VoxelCoord::new(elf_pos.x + 2, floor_y, elf_pos.z);
     let far_pos = VoxelCoord::new(elf_pos.x + 15, floor_y, elf_pos.z);
     assert!(
-        crate::walkability::is_walkable(&sim.world, &sim.face_data, near_pos),
+        crate::walkability::footprint_walkable(&sim.world, &sim.face_data, near_pos, [1, 1, 1]),
         "near_pos should be walkable"
     );
     assert!(
-        crate::walkability::is_walkable(&sim.world, &sim.face_data, far_pos),
+        crate::walkability::footprint_walkable(&sim.world, &sim.face_data, far_pos, [1, 1, 1]),
         "far_pos should be walkable"
     );
 
@@ -1079,7 +1079,9 @@ fn voxel_exclusion_flee_cornered_still_moves() {
     let walkable_neighbors: Vec<VoxelCoord> = crate::pathfinding::NEIGHBOR_OFFSETS
         .iter()
         .map(|&(dx, dy, dz, _)| VoxelCoord::new(elf_pos.x + dx, elf_pos.y + dy, elf_pos.z + dz))
-        .filter(|&pos| crate::walkability::is_walkable(&sim.world, &sim.face_data, pos))
+        .filter(|&pos| {
+            crate::walkability::footprint_walkable(&sim.world, &sim.face_data, pos, [1, 1, 1])
+        })
         .collect();
 
     // Spawn a goblin at each walkable neighbor so every exit is hostile.
@@ -1802,15 +1804,17 @@ fn cached_path_reroutes_when_nav_node_destroyed() {
     // test which uses one bogus + one real). This forces a full repath.
     let bogus_a = VoxelCoord::new(63, 63, 63);
     let bogus_b = VoxelCoord::new(62, 63, 63);
-    assert!(!crate::walkability::is_walkable(
+    assert!(!crate::walkability::footprint_walkable(
         &sim.world,
         &sim.face_data,
-        bogus_a
+        bogus_a,
+        [1, 1, 1]
     ));
-    assert!(!crate::walkability::is_walkable(
+    assert!(!crate::walkability::footprint_walkable(
         &sim.world,
         &sim.face_data,
-        bogus_b
+        bogus_b,
+        [1, 1, 1]
     ));
 
     {
@@ -2364,7 +2368,7 @@ fn climber_on_trunk_does_not_fall() {
     // Find a walkable position adjacent to the trunk (on the trunk surface).
     // Trunk climb positions are adjacent to solid trunk voxels.
     let trunk_adj = VoxelCoord::new(16, 3, 15); // east of trunk
-    if !crate::walkability::is_walkable(&sim.world, &sim.face_data, trunk_adj) {
+    if !crate::walkability::footprint_walkable(&sim.world, &sim.face_data, trunk_adj, [1, 1, 1]) {
         // Not walkable here — skip test (topology dependent).
         return;
     }
@@ -2659,8 +2663,12 @@ fn degenerate_landing_teleports_to_nearest_node() {
     let capy = sim.db.creatures.get(&capy_id).unwrap();
     // The creature should have landed somewhere valid — either at ground
     // level in the same column or teleported to the nearest walkable position.
-    let is_walkable =
-        crate::walkability::is_walkable(&sim.world, &sim.face_data, capy.position.min);
+    let is_walkable = crate::walkability::footprint_walkable(
+        &sim.world,
+        &sim.face_data,
+        capy.position.min,
+        [1, 1, 1],
+    );
     let has_solid_below = sim
         .world
         .get(VoxelCoord::new(
@@ -2692,7 +2700,7 @@ fn ground_only_with_nav_node_but_no_solid_below_falls() {
     let standing_pos = VoxelCoord::new(10, 4, 10);
     // Verify position is walkable above platform.
     assert!(
-        crate::walkability::is_walkable(&sim.world, &sim.face_data, standing_pos),
+        crate::walkability::footprint_walkable(&sim.world, &sim.face_data, standing_pos, [1, 1, 1]),
         "position should be walkable above platform"
     );
 
@@ -3322,7 +3330,12 @@ fn capybara_wanders_on_ground() {
         .find(|c| c.species == Species::Capybara)
         .unwrap();
     assert!(
-        crate::walkability::is_walkable(&sim.world, &sim.face_data, capybara.position.min),
+        crate::walkability::footprint_walkable(
+            &sim.world,
+            &sim.face_data,
+            capybara.position.min,
+            [1, 1, 1]
+        ),
         "capybara should be at a walkable position"
     );
 }
@@ -3412,7 +3425,12 @@ fn wandering_creature_stays_on_walkable_position() {
             .find(|c| c.species == Species::Elf)
             .unwrap();
         assert!(
-            crate::walkability::is_walkable(&sim.world, &sim.face_data, elf.position.min),
+            crate::walkability::footprint_walkable(
+                &sim.world,
+                &sim.face_data,
+                elf.position.min,
+                [1, 1, 1]
+            ),
             "Elf should always be at a walkable position (tick {target}, pos {:?})",
             elf.position.min
         );
@@ -3582,7 +3600,12 @@ fn monkey_can_climb() {
     // climbing edges. The monkey may still be at y=1 if the PRNG led it
     // only to ground neighbors, so we just verify it has a valid nav node.
     assert!(
-        crate::walkability::is_walkable(&sim.world, &sim.face_data, monkey.position.min),
+        crate::walkability::footprint_walkable(
+            &sim.world,
+            &sim.face_data,
+            monkey.position.min,
+            [1, 1, 1]
+        ),
         "monkey should be at a walkable position"
     );
 }
@@ -3611,7 +3634,12 @@ fn squirrel_can_climb() {
         .find(|c| c.species == Species::Squirrel)
         .unwrap();
     assert!(
-        crate::walkability::is_walkable(&sim.world, &sim.face_data, squirrel.position.min),
+        crate::walkability::footprint_walkable(
+            &sim.world,
+            &sim.face_data,
+            squirrel.position.min,
+            [1, 1, 1]
+        ),
         "squirrel should be at a walkable position"
     );
 }
@@ -4124,7 +4152,7 @@ fn path_resolution_nav_node_destroyed_no_panic() {
     // Use a coordinate far from the world (no node will exist there).
     let bogus_pos = VoxelCoord::new(63, 63, 63);
     assert!(
-        !crate::walkability::is_walkable(&sim.world, &sim.face_data, bogus_pos),
+        !crate::walkability::footprint_walkable(&sim.world, &sim.face_data, bogus_pos, [1, 1, 1]),
         "Test setup: bogus position should not be walkable"
     );
 
@@ -4171,7 +4199,6 @@ fn path_resolution_nav_node_destroyed_no_panic() {
 /// terrain heights) and fail.
 #[test]
 fn large_creature_does_not_get_permanently_stuck_on_terrain() {
-    use crate::nav;
     use std::collections::BTreeMap as Map;
 
     let seed = fresh_test_seed();
@@ -4253,9 +4280,15 @@ fn large_creature_does_not_get_permanently_stuck_on_terrain() {
     }
 
     // Check for stuck elephants: same position for 10+ consecutive samples.
+    // Exclude incapacitated/dead elephants — they don't move by design.
     let stuck_threshold = 10;
     let mut stuck_elephants = Vec::new();
     for &id in &elephant_ids {
+        if let Some(creature) = sim.db.creatures.get(&id) {
+            if creature.vital_status != VitalStatus::Alive {
+                continue;
+            }
+        }
         let history = &position_history[&id];
         let mut consecutive = 1;
         let mut max_consecutive = 1;
@@ -4314,7 +4347,9 @@ fn large_creature_does_not_get_permanently_stuck_on_terrain() {
                     let cx = (pos.x + dx) as u32;
                     let cz = (pos.z + dz) as u32;
                     if cx < sim.world.size_x && cz < sim.world.size_z {
-                        let surface_y = nav::large_node_surface_y(&sim.world, cx as i32, cz as i32);
+                        let surface_y = crate::walkability::large_node_surface_y(
+                            &sim.world, cx as i32, cz as i32,
+                        );
                         match surface_y {
                             Some(y) => row.push_str(&format!("{y:3} ")),
                             None => row.push_str("  - "),
@@ -4346,7 +4381,7 @@ fn large_creature_does_not_get_permanently_stuck_on_terrain() {
                     VoxelCoord::new(nx, pos.y, nz),
                     footprint,
                 );
-                let surface_y = nav::large_node_surface_y(&sim.world, nx, nz);
+                let surface_y = crate::walkability::large_node_surface_y(&sim.world, nx, nz);
                 eprintln!(
                     "    ({ndx:+},{ndz:+}): anchor=({nx},{nz}), walkable={neighbor_walkable}, \
                      surface_y={surface_y:?}"

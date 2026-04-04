@@ -1130,10 +1130,11 @@ fn hornet_spawns_at_air_position_not_nav_node() {
     // Hornet should be at the exact air position, not snapped to a nav node.
     assert_eq!(creature.position.min, air_pos);
     // Should be in the air — verify it's not walkable ground.
-    assert!(!crate::walkability::is_walkable(
+    assert!(!crate::walkability::footprint_walkable(
         &sim.world,
         &sim.face_data,
-        air_pos
+        air_pos,
+        [1, 1, 1]
     ));
 }
 
@@ -1412,10 +1413,11 @@ fn spawn_capybara_command() {
         .find(|c| c.species == Species::Capybara)
         .unwrap();
     assert_eq!(capybara.position.min.y, 1);
-    assert!(crate::walkability::is_walkable(
+    assert!(crate::walkability::footprint_walkable(
         &sim.world,
         &sim.face_data,
-        capybara.position.min
+        capybara.position.min,
+        [1, 1, 1]
     ));
 }
 
@@ -1487,7 +1489,12 @@ fn elephant_spawns_on_walkable_ground() {
 
     let elephant = elephants[0];
     assert!(
-        crate::walkability::is_walkable(&sim.world, &sim.face_data, elephant.position.min),
+        crate::walkability::footprint_walkable(
+            &sim.world,
+            &sim.face_data,
+            elephant.position.min,
+            [1, 1, 1]
+        ),
         "Elephant position should be walkable",
     );
 }
@@ -1509,7 +1516,12 @@ fn troll_spawns_on_walkable_ground() {
 
     let troll = trolls[0];
     assert!(
-        crate::walkability::is_walkable(&sim.world, &sim.face_data, troll.position.min),
+        crate::walkability::footprint_walkable(
+            &sim.world,
+            &sim.face_data,
+            troll.position.min,
+            [1, 1, 1]
+        ),
         "Troll position should be walkable",
     );
 }
@@ -1724,7 +1736,12 @@ fn all_small_species_spawn_and_coexist() {
     assert_eq!(sim.db.creatures.len(), 6);
     for creature in sim.db.creatures.iter_all() {
         assert!(
-            crate::walkability::is_walkable(&sim.world, &sim.face_data, creature.position.min),
+            crate::walkability::footprint_walkable(
+                &sim.world,
+                &sim.face_data,
+                creature.position.min,
+                [1, 1, 1]
+            ),
             "{:?} has no walkable position at {:?}",
             creature.species,
             creature.position.min,

@@ -250,8 +250,9 @@ impl SimState {
 
         // Guard: creature on non-walkable position (ground creatures only).
         // Snap to nearest walkable position if the world changed under them.
+        let footprint = self.species_table[&species].footprint;
         if let Some(pos) = current_node
-            && !crate::walkability::is_walkable(&self.world, &self.face_data, pos)
+            && !crate::walkability::footprint_walkable(&self.world, &self.face_data, pos, footprint)
         {
             self.abort_current_action(creature_id);
             let new_pos = match crate::walkability::find_nearest_walkable(
@@ -259,6 +260,7 @@ impl SimState {
                 &self.face_data,
                 pos,
                 5,
+                footprint,
             ) {
                 Some(p) => p,
                 None => return,
@@ -670,16 +672,13 @@ impl SimState {
         current_node: Option<VoxelCoord>,
         events: &mut Vec<SimEvent>,
     ) {
-        let is_flying = self
-            .db
-            .creatures
-            .get(&creature_id)
-            .map(|c| {
-                self.species_table[&c.species]
-                    .flight_ticks_per_voxel
-                    .is_some()
-            })
+        let creature_species = self.db.creatures.get(&creature_id).map(|c| c.species);
+        let is_flying = creature_species
+            .map(|s| self.species_table[&s].flight_ticks_per_voxel.is_some())
             .unwrap_or(false);
+        let footprint = creature_species
+            .map(|s| self.species_table[&s].footprint)
+            .unwrap_or([1, 1, 1]);
 
         let (mut task_location_coord, target_creature, task_kind_tag) =
             match self.db.tasks.get(&task_id) {
@@ -748,6 +747,7 @@ impl SimState {
                 &self.face_data,
                 task_location_coord,
                 5,
+                footprint,
             ) {
                 Some(p) => {
                     task_location_coord = p;

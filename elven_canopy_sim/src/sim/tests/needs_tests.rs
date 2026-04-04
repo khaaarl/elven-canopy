@@ -2569,7 +2569,7 @@ fn end_to_end_dining_hall() {
     // 4. Elf is at a walkable position.
     let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     assert!(
-        crate::walkability::is_walkable(&sim.world, &sim.face_data, elf_pos),
+        crate::walkability::footprint_walkable(&sim.world, &sim.face_data, elf_pos, [1, 1, 1]),
         "Elf must be at a walkable position, pos={elf_pos:?}"
     );
 
@@ -3291,7 +3291,9 @@ fn find_nearest_dining_hall_picks_closer_of_two() {
     let (ws_x, _, ws_z) = sim.config.world_size;
     let mut positions: Vec<_> = (1..ws_x as i32 - 1)
         .flat_map(|x| (1..ws_z as i32 - 1).map(move |z| VoxelCoord::new(x, floor_y, z)))
-        .filter(|&pos| crate::walkability::is_walkable(&sim.world, &sim.face_data, pos))
+        .filter(|&pos| {
+            crate::walkability::footprint_walkable(&sim.world, &sim.face_data, pos, [1, 1, 1])
+        })
         .map(|pos| (pos.manhattan_distance(elf_pos), pos))
         .collect();
     positions.sort_by_key(|(d, _)| *d);
@@ -3333,7 +3335,9 @@ fn find_nearest_dining_hall_skips_closer_hall_without_food() {
     let (ws_x, _, ws_z) = sim.config.world_size;
     let mut positions: Vec<_> = (1..ws_x as i32 - 1)
         .flat_map(|x| (1..ws_z as i32 - 1).map(move |z| VoxelCoord::new(x, floor_y, z)))
-        .filter(|&pos| crate::walkability::is_walkable(&sim.world, &sim.face_data, pos))
+        .filter(|&pos| {
+            crate::walkability::footprint_walkable(&sim.world, &sim.face_data, pos, [1, 1, 1])
+        })
         .map(|pos| (pos.manhattan_distance(elf_pos), pos))
         .collect();
     positions.sort_by_key(|(d, _)| *d);
@@ -3373,7 +3377,9 @@ fn find_nearest_dining_hall_skips_closer_full_table() {
     let (ws_x, _, ws_z) = sim.config.world_size;
     let mut positions: Vec<_> = (1..ws_x as i32 - 1)
         .flat_map(|x| (1..ws_z as i32 - 1).map(move |z| VoxelCoord::new(x, floor_y, z)))
-        .filter(|&pos| crate::walkability::is_walkable(&sim.world, &sim.face_data, pos))
+        .filter(|&pos| {
+            crate::walkability::footprint_walkable(&sim.world, &sim.face_data, pos, [1, 1, 1])
+        })
         .map(|pos| (pos.manhattan_distance(elf_pos), pos))
         .collect();
     positions.sort_by_key(|(d, _)| *d);

@@ -1,21 +1,20 @@
 // Walkability predicates for voxel-direct ground pathfinding.
 //
-// These functions determine whether a voxel position is walkable, what surface
-// type a creature touches there, what edge type connects two walkable positions,
-// and whether face data blocks movement between positions. They are the core
-// building blocks for `astar_ground` and `nearest_ground` in `pathfinding.rs`,
-// replacing the pre-computed NavGraph with on-the-fly voxel queries.
+// `footprint_walkable` is the single authority for "can a creature with this
+// footprint stand at this position." All walkability checks — pathfinding,
+// movement, combat, grazing, gravity — go through this function.
 //
-// Originally extracted from `nav.rs` where they were private helpers for graph
-// construction. Now public so pathfinding, movement, and other systems can
-// query walkability directly from the voxel world without an intermediate
-// graph structure.
+// `ground_neighbors` centralizes neighbor expansion for ground creatures,
+// including surface-snap logic for large (2×2×2) footprints. Callers like
+// `astar_ground`, `ground_random_wander`, and `ground_flee_step` use this
+// instead of rolling their own neighbor loops.
 //
 // See also: `pathfinding.rs` (A* using these predicates), `nav.rs` (EdgeType
 // enum and DIST_SCALE constants), `world.rs` (VoxelWorld), `types.rs`
 // (FaceData, FaceDirection, FaceType).
 
 use crate::nav::EdgeType;
+use crate::pathfinding::NEIGHBOR_OFFSETS;
 use crate::types::{FaceData, FaceDirection, FaceType, VoxelCoord, VoxelType};
 use crate::world::VoxelWorld;
 use std::collections::BTreeMap;
@@ -30,17 +29,96 @@ pub const FACE_OFFSETS: [(i32, i32, i32); 6] = [
     (0, 0, -1),
 ];
 
-/// Determine whether a voxel at `pos` is a walkable position for ground creatures.
+/// Check whether a ground-creature footprint anchored at `anchor` is walkable.
+/// The anchor is the min-corner of the bounding box. This is the **single
+/// authority** for walkability — all code paths use this function.
 ///
-/// Rules:
-/// - y < 1 or solid → false
-/// - `BuildingInterior` → always true (face data provides surfaces)
-/// - Ladder voxel → always true
-/// - Air with a solid face neighbor → true
-/// - Air next to a `BuildingInterior` neighbor whose blocking face points
-///   toward `pos` → true (the face acts as a virtual solid surface)
-/// - Otherwise → false
-pub fn is_walkable(
+/// ## [1,1,1] creatures
+///
+/// The voxel at anchor must be non-solid and y >= 1. `BuildingInterior` and
+/// ladder voxels are always walkable. Otherwise, the voxel must have a solid
+/// neighbor in at least one of the 6 face directions. Face data from
+/// `BuildingInterior` neighbors with blocking faces also provides support.
+///
+/// This covers both climbers and non-climbers — the pathfinder's edge-type
+/// filter prevents non-climbers from reaching wall/climb positions.
+///
+/// ## [2,2,2] creatures (the only other size that currently exists)
+///
+/// All 8 voxels in the footprint must be non-solid and y >= 1. At least one
+/// ground-plane column must have support from any of its 6 face directions
+/// (not just below). The single-column threshold is necessary because
+/// `large_node_surface_y` places the anchor at `max_surface + 1` on
+/// inclines, so only the highest column(s) have solid directly at y-1.
+///
+/// **Why climber rules?** `footprint_walkable` doesn't know whether the creature
+/// can climb. It uses the most permissive rules (any face direction counts for
+/// support). The distinction between climber and non-climber is enforced by
+/// the pathfinder's edge-type filter, which prevents non-climbers from reaching
+/// climbing positions — the same pattern used for 1×1×1 creatures.
+///
+/// **Future note:** There are no large climbers yet (only elephants and trolls,
+/// both non-climbers), but the rules are designed to support them when they
+/// exist. This is not dead code — it's forward-compatible design.
+pub fn footprint_walkable(
+    world: &VoxelWorld,
+    face_data: &BTreeMap<VoxelCoord, FaceData>,
+    anchor: VoxelCoord,
+    footprint: [u8; 3],
+) -> bool {
+    // Fast path for 1x1x1 creatures (the common case).
+    if footprint == [1, 1, 1] {
+        return footprint_walkable_1x1(world, face_data, anchor);
+    }
+
+    // --- Large footprint (2×2×2) ---
+    // All voxels in the footprint must be non-solid and y >= 1.
+    for dx in 0..footprint[0] as i32 {
+        for dy in 0..footprint[1] as i32 {
+            for dz in 0..footprint[2] as i32 {
+                let v = VoxelCoord::new(anchor.x + dx, anchor.y + dy, anchor.z + dz);
+                if v.y < 1 || world.get(v).is_solid() {
+                    return false;
+                }
+            }
+        }
+    }
+
+    // Support check: at least one ground-plane column must have a solid voxel
+    // at y-1, OR have a solid voxel adjacent to y-1 in any face direction
+    // (climber rules — most permissive; see doc comment above).
+    //
+    // The single-column threshold allows large creatures to stand on terrain
+    // inclines where `large_node_surface_y` places the anchor at
+    // `max_surface + 1` — only the highest column(s) have solid at y-1.
+    for dx in 0..footprint[0] as i32 {
+        for dz in 0..footprint[2] as i32 {
+            let below = VoxelCoord::new(anchor.x + dx, anchor.y - 1, anchor.z + dz);
+            // Direct support: solid at y-1 (standing on something).
+            if world.get(below).is_solid() {
+                return true;
+            }
+            // Climber support: solid adjacent to y-1 in any face direction.
+            if has_face_support(world, below) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Check whether any of the 6 face directions from `pos` has a solid voxel.
+fn has_face_support(world: &VoxelWorld, pos: VoxelCoord) -> bool {
+    FACE_OFFSETS.iter().any(|&(dx, dy, dz)| {
+        world
+            .get(VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz))
+            .is_solid()
+    })
+}
+
+/// Inner walkability check for 1×1×1 creatures. Not public — all external
+/// callers go through `footprint_walkable`.
+fn footprint_walkable_1x1(
     world: &VoxelWorld,
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     pos: VoxelCoord,
@@ -75,48 +153,130 @@ pub fn is_walkable(
     })
 }
 
-/// Check whether a ground-creature footprint anchored at `anchor` is walkable.
-/// The anchor is the min-corner of the bounding box.
+/// Compute the surface Y (air voxel above ground) for a 2×2 footprint
+/// anchored at `(ax, az)`. Returns `None` if any column lacks solid ground
+/// or if height variation across the 4 columns exceeds 1 voxel.
 ///
-/// For 1x1x1 creatures, this simply checks `is_walkable` at the anchor.
+/// Used by `ground_neighbors` for large-creature surface snapping and by
+/// `creature.rs` for finding landing positions during gravity.
+pub fn large_node_surface_y(world: &VoxelWorld, ax: i32, az: i32) -> Option<i32> {
+    let mut min_surface = i32::MAX;
+    let mut max_surface = i32::MIN;
+    for dz in 0..2 {
+        for dx in 0..2 {
+            let top_solid = top_solid_y_from_spans(world, (ax + dx) as u32, (az + dz) as u32);
+            match top_solid {
+                Some(y) => {
+                    min_surface = min_surface.min(y as i32);
+                    max_surface = max_surface.max(y as i32);
+                }
+                None => return None,
+            }
+        }
+    }
+    if max_surface - min_surface > 1 {
+        return None;
+    }
+    Some(max_surface + 1)
+}
+
+/// Find the topmost solid Y in a column using RLE spans.
+/// Returns `None` if the column has no solid voxels.
+fn top_solid_y_from_spans(world: &VoxelWorld, x: u32, z: u32) -> Option<u8> {
+    let mut top: Option<u8> = None;
+    for (vt, _y_start, y_end) in world.column_spans(x, z) {
+        if vt.is_solid() {
+            top = Some(y_end);
+        }
+    }
+    top
+}
+
+/// 8 horizontal neighbor offsets for large-creature surface-snap expansion.
+const HORIZONTAL_OFFSETS: [(i32, i32); 8] = [
+    (-1, -1),
+    (0, -1),
+    (1, -1),
+    (-1, 0),
+    (1, 0),
+    (-1, 1),
+    (0, 1),
+    (1, 1),
+];
+
+/// Return all valid neighboring positions for a ground creature with the
+/// given footprint, along with scaled distances. For \[1,1,1\] creatures,
+/// expands 26 neighbors via NEIGHBOR_OFFSETS and checks `footprint_walkable`
+/// and `is_edge_blocked_by_faces`. For larger creatures, additionally tries
+/// surface-snapped Y positions for horizontal neighbors, bridging terrain
+/// inclines where the valid standing Y changes by more than 1 between
+/// adjacent anchors.
 ///
-/// For larger footprints, the logic is more nuanced: all voxels in the footprint
-/// must be non-solid (the creature can physically occupy them), AND at least one
-/// ground-plane column must have solid directly below (the creature is standing
-/// on something). This matches the old large-nav-graph behavior which allowed
-/// height variation across the footprint columns.
-pub fn footprint_walkable(
+/// The returned `Vec<(VoxelCoord, u64)>` pairs each reachable position with
+/// a scaled Euclidean distance suitable for cost computation. Callers derive
+/// edge type and cost from these positions.
+pub fn ground_neighbors(
     world: &VoxelWorld,
     face_data: &BTreeMap<VoxelCoord, FaceData>,
-    anchor: VoxelCoord,
+    pos: VoxelCoord,
     footprint: [u8; 3],
-) -> bool {
-    // Fast path for 1x1x1 creatures (the common case).
-    if footprint == [1, 1, 1] {
-        return is_walkable(world, face_data, anchor);
+) -> Vec<(VoxelCoord, u64)> {
+    let mut result = Vec::new();
+
+    // Standard 26-neighbor expansion.
+    for &(dx, dy, dz, dist_scaled) in &NEIGHBOR_OFFSETS {
+        let neighbor = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
+        if !footprint_walkable(world, face_data, neighbor, footprint) {
+            continue;
+        }
+        if is_edge_blocked_by_faces(face_data, pos, neighbor) {
+            continue;
+        }
+        result.push((neighbor, dist_scaled));
     }
 
-    // For larger footprints: all voxels must be non-solid, and at least one
-    // ground-plane column must have solid support below the anchor y.
-    let mut has_support = false;
-    for dx in 0..footprint[0] as i32 {
-        for dy in 0..footprint[1] as i32 {
-            for dz in 0..footprint[2] as i32 {
-                let v = VoxelCoord::new(anchor.x + dx, anchor.y + dy, anchor.z + dz);
-                if v.y < 1 || world.get(v).is_solid() {
-                    return false;
-                }
+    // Large creature surface-snap neighbors: for each horizontal (dx,dz)
+    // offset, compute the valid large-creature standing y via
+    // large_node_surface_y and try that position if it differs from the
+    // y values already tried by NEIGHBOR_OFFSETS (±1).
+    let is_large = footprint[0] > 1 || footprint[2] > 1;
+    if is_large {
+        let wx = world.size_x as i32;
+        let wz = world.size_z as i32;
+        for &(dx, dz) in &HORIZONTAL_OFFSETS {
+            let nx = pos.x + dx;
+            let nz = pos.z + dz;
+            // Bounds check: large_node_surface_y accesses (nx..nx+2, nz..nz+2).
+            if nx < 0 || nx + 1 >= wx || nz < 0 || nz + 1 >= wz {
+                continue;
             }
-        }
-        // Check support below for each ground-plane column.
-        for dz in 0..footprint[2] as i32 {
-            let below = VoxelCoord::new(anchor.x + dx, anchor.y - 1, anchor.z + dz);
-            if world.get(below).is_solid() {
-                has_support = true;
+            if let Some(sy) = large_node_surface_y(world, nx, nz) {
+                // Skip if already covered by NEIGHBOR_OFFSETS (y within ±1).
+                let dy = sy - pos.y;
+                if (-1..=1).contains(&dy) {
+                    continue;
+                }
+                let neighbor = VoxelCoord::new(nx, sy, nz);
+                if !footprint_walkable(world, face_data, neighbor, footprint) {
+                    continue;
+                }
+                if is_edge_blocked_by_faces(face_data, pos, neighbor) {
+                    continue;
+                }
+                // Approximate 3D octile distance: 1024*max + 424*mid + 318*min.
+                let adx = dx.unsigned_abs() as u64;
+                let adz = dz.unsigned_abs() as u64;
+                let ady = dy.unsigned_abs() as u64;
+                let max_comp = adx.max(adz).max(ady);
+                let min_comp = adx.min(adz).min(ady);
+                let mid_comp = adx + adz + ady - max_comp - min_comp;
+                let dist_scaled = 1024 * max_comp + 424 * mid_comp + 318 * min_comp;
+                result.push((neighbor, dist_scaled));
             }
         }
     }
-    has_support
+
+    result
 }
 
 /// Determine what surface a creature at `pos` is touching.
@@ -317,20 +477,22 @@ pub fn derive_edge_type(
     }
 }
 
-/// Find the nearest walkable voxel to `pos` within `max_distance` (Manhattan).
+/// Find the nearest walkable voxel to `pos` within `max_distance` (Manhattan)
+/// for a creature with the given footprint.
 ///
 /// Expanding-box search: checks all voxels in expanding Manhattan-radius rings
 /// around `pos`. Returns the closest walkable position, or `None` if none found.
 ///
-/// The optional `filter` closure allows callers to impose additional constraints
-/// (e.g., surface type == Dirt for ground-only searches).
+/// For [1,1,1] creatures, this is equivalent to the old `find_nearest_walkable`.
+/// For larger footprints, tests `footprint_walkable` at each candidate.
 pub fn find_nearest_walkable(
     world: &VoxelWorld,
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     pos: VoxelCoord,
     max_distance: u32,
+    footprint: [u8; 3],
 ) -> Option<VoxelCoord> {
-    find_nearest_walkable_filtered(world, face_data, pos, max_distance, |_| true)
+    find_nearest_walkable_filtered(world, face_data, pos, max_distance, footprint, |_| true)
 }
 
 /// Find the nearest walkable ground-level voxel (surface type `Dirt`) to `pos`.
@@ -339,42 +501,30 @@ pub fn find_nearest_ground_walkable(
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     pos: VoxelCoord,
     max_distance: u32,
+    footprint: [u8; 3],
 ) -> Option<VoxelCoord> {
-    find_nearest_walkable_filtered(world, face_data, pos, max_distance, |p| {
+    find_nearest_walkable_filtered(world, face_data, pos, max_distance, footprint, |p| {
         derive_surface_type(world, face_data, p) == VoxelType::Dirt
     })
 }
 
-/// Find the nearest position where a large creature's full footprint is walkable.
+/// Find the nearest position where a creature's full footprint is walkable,
+/// with an additional filter.
 ///
-/// Expanding-box search around `pos`, testing `footprint_walkable` at each candidate.
-pub fn find_nearest_footprint_walkable(
-    world: &VoxelWorld,
-    face_data: &BTreeMap<VoxelCoord, FaceData>,
-    pos: VoxelCoord,
-    max_distance: u32,
-    footprint: [u8; 3],
-) -> Option<VoxelCoord> {
-    find_nearest_walkable_filtered(world, face_data, pos, max_distance, |p| {
-        footprint_walkable(world, face_data, p, footprint)
-    })
-}
-
-/// Find the nearest walkable voxel satisfying an additional filter.
-///
-/// Searches in expanding Manhattan-radius shells around `pos`. Within each
-/// shell, iterates all positions at exactly that Manhattan distance using
-/// a 3D diamond enumeration. Stops when a match is found and the shell is
-/// complete (to guarantee the closest match by Manhattan distance).
+/// Expanding-box search around `pos`, testing `footprint_walkable` at each
+/// candidate. This consolidates the old `find_nearest_walkable`,
+/// `find_nearest_footprint_walkable`, and `find_nearest_ground_walkable` — they
+/// all delegate here with different filters.
 fn find_nearest_walkable_filtered(
     world: &VoxelWorld,
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     pos: VoxelCoord,
     max_distance: u32,
+    footprint: [u8; 3],
     filter: impl Fn(VoxelCoord) -> bool,
 ) -> Option<VoxelCoord> {
     // Check the position itself first.
-    if is_walkable(world, face_data, pos) && filter(pos) {
+    if footprint_walkable(world, face_data, pos, footprint) && filter(pos) {
         return Some(pos);
     }
 
@@ -406,7 +556,9 @@ fn find_nearest_walkable_filtered(
                     if !world.in_bounds(candidate) {
                         continue;
                     }
-                    if is_walkable(world, face_data, candidate) && filter(candidate) {
+                    if footprint_walkable(world, face_data, candidate, footprint)
+                        && filter(candidate)
+                    {
                         let dist = pos.manhattan_distance(candidate);
                         if best.is_none() || dist < best.unwrap().0 {
                             best = Some((dist, candidate));
@@ -434,8 +586,9 @@ pub fn spread_destinations(
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     center: VoxelCoord,
     count: usize,
+    footprint: [u8; 3],
 ) -> Vec<VoxelCoord> {
-    if count == 0 || !is_walkable(world, face_data, center) {
+    if count == 0 || !footprint_walkable(world, face_data, center, footprint) {
         return Vec::new();
     }
     let mut result = Vec::with_capacity(count);
@@ -444,53 +597,18 @@ pub fn spread_destinations(
         return result;
     }
 
-    // BFS outward from center using 26-connectivity, checking walkability.
+    // BFS outward from center using ground_neighbors for expansion.
     let mut visited = std::collections::BTreeSet::new();
     visited.insert(center);
     let mut queue = std::collections::VecDeque::new();
     queue.push_back(center);
 
-    // Reuse the 26-neighbor offsets from pathfinding.
-    let offsets: [(i32, i32, i32); 26] = [
-        (-1, 0, 0),
-        (1, 0, 0),
-        (0, -1, 0),
-        (0, 1, 0),
-        (0, 0, -1),
-        (0, 0, 1),
-        (-1, -1, 0),
-        (-1, 1, 0),
-        (1, -1, 0),
-        (1, 1, 0),
-        (-1, 0, -1),
-        (-1, 0, 1),
-        (1, 0, -1),
-        (1, 0, 1),
-        (0, -1, -1),
-        (0, -1, 1),
-        (0, 1, -1),
-        (0, 1, 1),
-        (-1, -1, -1),
-        (-1, -1, 1),
-        (-1, 1, -1),
-        (-1, 1, 1),
-        (1, -1, -1),
-        (1, -1, 1),
-        (1, 1, -1),
-        (1, 1, 1),
-    ];
-
     while let Some(pos) = queue.pop_front() {
-        for &(dx, dy, dz) in &offsets {
-            let neighbor = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
+        for (neighbor, _dist) in ground_neighbors(world, face_data, pos, footprint) {
             if visited.contains(&neighbor) {
                 continue;
             }
-            if !world.in_bounds(neighbor) || !is_walkable(world, face_data, neighbor) {
-                continue;
-            }
-            // Check face-blocking between pos and neighbor.
-            if is_edge_blocked_by_faces(face_data, pos, neighbor) {
+            if !world.in_bounds(neighbor) {
                 continue;
             }
             visited.insert(neighbor);
@@ -525,26 +643,53 @@ mod tests {
         BTreeMap::new()
     }
 
+    const FP1: [u8; 3] = [1, 1, 1];
+
     #[test]
-    fn is_walkable_air_above_dirt() {
+    fn walkable_air_above_dirt() {
         let world = ground_world(16, 16, 16, 5);
         let fd = no_faces();
         // Air at y=6 above dirt at y=5 — walkable.
-        assert!(is_walkable(&world, &fd, VoxelCoord::new(5, 6, 5)));
+        assert!(footprint_walkable(
+            &world,
+            &fd,
+            VoxelCoord::new(5, 6, 5),
+            FP1
+        ));
         // Dirt at y=5 — solid, not walkable.
-        assert!(!is_walkable(&world, &fd, VoxelCoord::new(5, 5, 5)));
+        assert!(!footprint_walkable(
+            &world,
+            &fd,
+            VoxelCoord::new(5, 5, 5),
+            FP1
+        ));
         // Air at y=10 with no solid neighbor — not walkable.
-        assert!(!is_walkable(&world, &fd, VoxelCoord::new(5, 10, 5)));
+        assert!(!footprint_walkable(
+            &world,
+            &fd,
+            VoxelCoord::new(5, 10, 5),
+            FP1
+        ));
     }
 
     #[test]
-    fn is_walkable_y_below_1() {
+    fn walkable_y_below_1() {
         let world = ground_world(16, 16, 16, 0);
         let fd = no_faces();
         // Even though y=0 has dirt below, y < 1 returns false.
-        assert!(!is_walkable(&world, &fd, VoxelCoord::new(5, 0, 5)));
+        assert!(!footprint_walkable(
+            &world,
+            &fd,
+            VoxelCoord::new(5, 0, 5),
+            FP1
+        ));
         // y=1 above dirt at y=0 — walkable.
-        assert!(is_walkable(&world, &fd, VoxelCoord::new(5, 1, 5)));
+        assert!(footprint_walkable(
+            &world,
+            &fd,
+            VoxelCoord::new(5, 1, 5),
+            FP1
+        ));
     }
 
     #[test]
@@ -552,7 +697,7 @@ mod tests {
         let world = ground_world(16, 16, 16, 5);
         let fd = no_faces();
         let pos = VoxelCoord::new(5, 6, 5);
-        assert_eq!(find_nearest_walkable(&world, &fd, pos, 5), Some(pos));
+        assert_eq!(find_nearest_walkable(&world, &fd, pos, 5, FP1), Some(pos));
     }
 
     #[test]
@@ -562,11 +707,11 @@ mod tests {
         // Searching from inside dirt at y=5 — should find walkable at distance 1.
         // Both y=4 (air below dirt) and y=6 (air above dirt) are at distance 1.
         let pos = VoxelCoord::new(5, 5, 5);
-        let result = find_nearest_walkable(&world, &fd, pos, 5);
+        let result = find_nearest_walkable(&world, &fd, pos, 5, FP1);
         assert!(result.is_some());
         let found = result.unwrap();
         assert_eq!(pos.manhattan_distance(found), 1);
-        assert!(is_walkable(&world, &fd, found));
+        assert!(footprint_walkable(&world, &fd, found, FP1));
     }
 
     #[test]
@@ -574,7 +719,7 @@ mod tests {
         let world = VoxelWorld::new(16, 16, 16); // all air
         let fd = no_faces();
         let pos = VoxelCoord::new(5, 5, 5);
-        assert_eq!(find_nearest_walkable(&world, &fd, pos, 5), None);
+        assert_eq!(find_nearest_walkable(&world, &fd, pos, 5, FP1), None);
     }
 
     #[test]
@@ -586,9 +731,9 @@ mod tests {
         world.set(VoxelCoord::new(5, 6, 5), VoxelType::Trunk);
         let pos = VoxelCoord::new(6, 6, 5);
         // find_nearest_walkable returns pos itself (adjacent to trunk, walkable).
-        assert_eq!(find_nearest_walkable(&world, &fd, pos, 5), Some(pos));
+        assert_eq!(find_nearest_walkable(&world, &fd, pos, 5, FP1), Some(pos));
         // find_nearest_ground_walkable should find a Dirt-surface position.
-        let result = find_nearest_ground_walkable(&world, &fd, pos, 5);
+        let result = find_nearest_ground_walkable(&world, &fd, pos, 5, FP1);
         assert!(result.is_some());
         let found = result.unwrap();
         assert_eq!(derive_surface_type(&world, &fd, found), VoxelType::Dirt);
@@ -599,7 +744,7 @@ mod tests {
         let world = ground_world(16, 16, 16, 5);
         let fd = no_faces();
         let center = VoxelCoord::new(5, 6, 5);
-        let result = spread_destinations(&world, &fd, center, 5);
+        let result = spread_destinations(&world, &fd, center, 5, FP1);
         assert!(!result.is_empty());
         assert_eq!(result[0], center);
         assert_eq!(result.len(), 5);
@@ -610,7 +755,7 @@ mod tests {
         let world = ground_world(16, 16, 16, 5);
         let fd = no_faces();
         let center = VoxelCoord::new(5, 6, 5);
-        let result = spread_destinations(&world, &fd, center, 1);
+        let result = spread_destinations(&world, &fd, center, 1, FP1);
         assert_eq!(result, vec![center]);
     }
 
@@ -619,7 +764,7 @@ mod tests {
         let world = VoxelWorld::new(16, 16, 16); // all air
         let fd = no_faces();
         let center = VoxelCoord::new(5, 5, 5);
-        let result = spread_destinations(&world, &fd, center, 5);
+        let result = spread_destinations(&world, &fd, center, 5, FP1);
         assert!(result.is_empty());
     }
 
@@ -628,7 +773,7 @@ mod tests {
         let world = ground_world(16, 16, 16, 5);
         let fd = no_faces();
         let center = VoxelCoord::new(5, 6, 5);
-        let result = spread_destinations(&world, &fd, center, 20);
+        let result = spread_destinations(&world, &fd, center, 20, FP1);
         let unique: std::collections::BTreeSet<_> = result.iter().collect();
         assert_eq!(
             unique.len(),

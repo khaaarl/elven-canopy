@@ -32,6 +32,7 @@ impl SimState {
                 &self.face_data,
                 tf.position.min,
                 5,
+                [1, 1, 1],
             ) {
                 fruit_candidates.push((tf.position.min, walkable_pos));
             }
@@ -526,8 +527,13 @@ impl SimState {
             .by_structure_id(&home_id, tabulosity::QueryOpts::ASC)
             .into_iter()
             .find(|f| f.placed)?;
-        let walkable_pos =
-            crate::walkability::find_nearest_walkable(&self.world, &self.face_data, bed.coord, 5)?;
+        let walkable_pos = crate::walkability::find_nearest_walkable(
+            &self.world,
+            &self.face_data,
+            bed.coord,
+            5,
+            [1, 1, 1],
+        )?;
         Some((bed.coord, walkable_pos, home_id))
     }
 
@@ -588,8 +594,13 @@ impl SimState {
             .ok()?;
         let (bed_pos, structure_id) = bed_candidates[idx];
         // Beds are placed on walkable positions.
-        let walkable_pos =
-            crate::walkability::find_nearest_walkable(&self.world, &self.face_data, bed_pos, 5)?;
+        let walkable_pos = crate::walkability::find_nearest_walkable(
+            &self.world,
+            &self.face_data,
+            bed_pos,
+            5,
+            [1, 1, 1],
+        )?;
 
         Some((bed_pos, walkable_pos, structure_id))
     }
@@ -677,6 +688,7 @@ impl SimState {
             &self.face_data,
             table_coord,
             5,
+            [1, 1, 1],
         )?;
 
         Some((table_coord, walkable_pos, structure_id))

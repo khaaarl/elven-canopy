@@ -528,6 +528,7 @@ impl SimState {
                 &self.face_data,
                 interior_pos,
                 5,
+                [1, 1, 1],
             )
             .is_none()
             {

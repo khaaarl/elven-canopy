@@ -49,46 +49,6 @@ pub fn scaled_distance(dx: i32, dy: i32, dz: i32) -> u32 {
     scaled_sq.isqrt() as u32
 }
 
-// ---------------------------------------------------------------------------
-// Large-creature surface helpers (used by creature gravity)
-// ---------------------------------------------------------------------------
-
-use crate::world::VoxelWorld;
-
-/// Find the topmost solid Y in a column using RLE spans.
-/// Returns `None` if the column has no solid voxels.
-fn top_solid_y_from_spans(world: &VoxelWorld, x: u32, z: u32) -> Option<u8> {
-    let mut top: Option<u8> = None;
-    for (vt, _y_start, y_end) in world.column_spans(x, z) {
-        if vt.is_solid() {
-            top = Some(y_end);
-        }
-    }
-    top
-}
-
-/// Compute the surface Y (air voxel above ground) for a 2x2 footprint
-/// anchored at `(ax, az)`. Returns `None` if any column lacks solid ground
-/// or if height variation across the 4 columns exceeds 1 voxel.
-///
-/// Used by creature gravity (`creature.rs`) for large creatures.
-pub(crate) fn large_node_surface_y(world: &VoxelWorld, ax: i32, az: i32) -> Option<i32> {
-    let mut min_surface = i32::MAX;
-    let mut max_surface = i32::MIN;
-    for dz in 0..2 {
-        for dx in 0..2 {
-            let top_solid = top_solid_y_from_spans(world, (ax + dx) as u32, (az + dz) as u32);
-            match top_solid {
-                Some(y) => {
-                    min_surface = min_surface.min(y as i32);
-                    max_surface = max_surface.max(y as i32);
-                }
-                None => return None,
-            }
-        }
-    }
-    if max_surface - min_surface > 1 {
-        return None;
-    }
-    Some(max_surface + 1)
-}
+// Large-creature surface helpers have been moved to `walkability.rs`
+// (`large_node_surface_y`, `top_solid_y_from_spans`) where they are used
+// by `ground_neighbors` and `creature.rs`.

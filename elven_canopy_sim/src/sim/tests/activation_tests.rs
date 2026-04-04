@@ -38,7 +38,12 @@ fn elf_wanders_after_spawn() {
         .unwrap();
     // Verify elf is at a walkable position.
     assert!(
-        crate::walkability::is_walkable(&sim.world, &sim.face_data, elf.position.min),
+        crate::walkability::footprint_walkable(
+            &sim.world,
+            &sim.face_data,
+            elf.position.min,
+            [1, 1, 1]
+        ),
         "Elf should be at a walkable position"
     );
 }
@@ -2672,7 +2677,12 @@ fn creature_wanders_via_activation_chain() {
     );
     // Position should be walkable.
     assert!(
-        crate::walkability::is_walkable(&sim.world, &sim.face_data, elf.position.min),
+        crate::walkability::footprint_walkable(
+            &sim.world,
+            &sim.face_data,
+            elf.position.min,
+            [1, 1, 1]
+        ),
         "Elf should be at a walkable position"
     );
     // Creature should not have a stored path (wandering doesn't use paths).

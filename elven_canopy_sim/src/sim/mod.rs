@@ -1779,10 +1779,11 @@ impl SimState {
                                 task::SleepLocation::Dormitory(sid),
                             )
                         } else if let Some(creature) = self.db.creatures.get(&creature_id)
-                            && crate::walkability::is_walkable(
+                            && crate::walkability::footprint_walkable(
                                 &self.world,
                                 &self.face_data,
                                 creature.position.min,
+                                self.species_table[&creature.species].footprint,
                             )
                         {
                             (

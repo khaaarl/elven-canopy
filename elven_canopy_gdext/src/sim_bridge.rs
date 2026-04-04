@@ -1309,6 +1309,7 @@ impl SimBridge {
                 &sim.face_data,
                 air_pos,
                 5,
+                [1, 1, 1],
             )
         } else {
             elven_canopy_sim::walkability::find_nearest_walkable(
@@ -1316,6 +1317,7 @@ impl SimBridge {
                 &sim.face_data,
                 air_pos,
                 5,
+                [1, 1, 1],
             )
         };
 

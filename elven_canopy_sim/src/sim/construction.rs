@@ -226,6 +226,7 @@ impl SimState {
             &self.face_data,
             build_voxels[0],
             5,
+            [1, 1, 1],
         ) {
             Some(pos) => pos,
             None => return,
@@ -402,8 +403,14 @@ impl SimState {
         let project_id = ProjectId::new(&mut self.rng);
 
         // Create a Build task at the nearest walkable position.
-        if crate::walkability::find_nearest_walkable(&self.world, &self.face_data, voxels[0], 5)
-            .is_none()
+        if crate::walkability::find_nearest_walkable(
+            &self.world,
+            &self.face_data,
+            voxels[0],
+            5,
+            [1, 1, 1],
+        )
+        .is_none()
         {
             return;
         }
@@ -576,6 +583,7 @@ impl SimState {
             &self.face_data,
             build_voxels[0],
             5,
+            [1, 1, 1],
         )
         .is_none()
         {
@@ -718,6 +726,7 @@ impl SimState {
             &self.face_data,
             carve_voxels[0],
             5,
+            [1, 1, 1],
         ) {
             Some(pos) => pos,
             None => return,
@@ -900,6 +909,7 @@ impl SimState {
             &self.face_data,
             position,
             5,
+            [1, 1, 1],
         ) {
             Some(pos) => pos,
             None => return,
@@ -1427,8 +1437,14 @@ impl SimState {
         let _ = self.db.update_structure(structure);
         self.set_inv_wants(inv_id, &default_wants);
 
-        if crate::walkability::find_nearest_walkable(&self.world, &self.face_data, task_pos, 5)
-            .is_none()
+        if crate::walkability::find_nearest_walkable(
+            &self.world,
+            &self.face_data,
+            task_pos,
+            5,
+            [1, 1, 1],
+        )
+        .is_none()
         {
             return;
         }
@@ -1596,14 +1612,16 @@ impl SimState {
             .filter(|c| c.vital_status == VitalStatus::Alive)
             .map(|c| (c.id, c.species, c.position.min))
             .collect();
-        for (cid, _species, old_pos) in creature_info {
+        for (cid, species, old_pos) in creature_info {
             // Generous limit: resnap happens after major graph rebuilds where
             // creatures may be far from any surviving walkable position.
+            let footprint = self.species_table[&species].footprint;
             let new_pos = crate::walkability::find_nearest_walkable(
                 &self.world,
                 &self.face_data,
                 old_pos,
                 20,
+                footprint,
             );
             if let Some(mut creature) = self.db.creatures.get(&cid) {
                 creature.path = None;

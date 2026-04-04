@@ -56,10 +56,11 @@ impl SimState {
     pub(crate) fn find_nearest_grass(&self, creature_id: CreatureId) -> Option<VoxelCoord> {
         let creature = self.db.creatures.get(&creature_id)?;
         let start = creature.position.min;
-        if !crate::walkability::is_walkable(&self.world, &self.face_data, start) {
+        let species_data = &self.species_table[&creature.species];
+        let footprint = species_data.footprint;
+        if !crate::walkability::footprint_walkable(&self.world, &self.face_data, start, footprint) {
             return None;
         }
-        let species_data = &self.species_table[&creature.species];
 
         // Custom Dijkstra over the voxel grid that stops at the first grassy
         // position. Uses 26-neighbor expansion with walkability and face-
@@ -88,7 +89,12 @@ impl SimState {
                 if !self.world.in_bounds(neighbor) {
                     continue;
                 }
-                if !crate::walkability::is_walkable(&self.world, &self.face_data, neighbor) {
+                if !crate::walkability::footprint_walkable(
+                    &self.world,
+                    &self.face_data,
+                    neighbor,
+                    footprint,
+                ) {
                     continue;
                 }
                 if crate::walkability::is_edge_blocked_by_faces(&self.face_data, pos, neighbor) {

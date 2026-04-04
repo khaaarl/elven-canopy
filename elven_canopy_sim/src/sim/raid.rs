@@ -159,9 +159,13 @@ impl SimState {
         for x in 0..wx as i32 {
             for z in 0..wz as i32 {
                 let pos = VoxelCoord::new(x, floor_y, z);
-                if crate::walkability::is_walkable(&self.world, &self.face_data, pos)
-                    && crate::walkability::derive_surface_type(&self.world, &self.face_data, pos)
-                        == VoxelType::Dirt
+                if crate::walkability::footprint_walkable(
+                    &self.world,
+                    &self.face_data,
+                    pos,
+                    [1, 1, 1],
+                ) && crate::walkability::derive_surface_type(&self.world, &self.face_data, pos)
+                    == VoxelType::Dirt
                 {
                     ground_positions.push(pos);
                 }
@@ -236,7 +240,9 @@ impl SimState {
     /// we scan the floor level for ground-only species, and a reasonable Y range
     /// for climbers.
     fn find_wood_adjacent_nodes(&self, species: Species) -> Vec<VoxelCoord> {
-        let ground_only = self.species_table[&species].ground_only;
+        let species_data = &self.species_table[&species];
+        let ground_only = species_data.ground_only;
+        let footprint = species_data.footprint;
         let (wx, wy, wz) = self.config.world_size;
 
         let mut targets = Vec::new();
@@ -253,7 +259,12 @@ impl SimState {
             for x in 0..wx as i32 {
                 for z in 0..wz as i32 {
                     let pos = VoxelCoord::new(x, y, z);
-                    if !crate::walkability::is_walkable(&self.world, &self.face_data, pos) {
+                    if !crate::walkability::footprint_walkable(
+                        &self.world,
+                        &self.face_data,
+                        pos,
+                        footprint,
+                    ) {
                         continue;
                     }
 

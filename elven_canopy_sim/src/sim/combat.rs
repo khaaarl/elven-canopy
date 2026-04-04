@@ -98,11 +98,13 @@ impl SimState {
             .is_some();
         if !attacker_is_flying && !target_is_flying {
             // Both ground: target must be in a walkable position.
+            let attacker_footprint = self.species_table[&attacker.species].footprint;
             if crate::walkability::find_nearest_walkable(
                 &self.world,
                 &self.face_data,
                 target.position.min,
                 5,
+                attacker_footprint,
             )
             .is_none()
             {
@@ -226,6 +228,7 @@ impl SimState {
         let is_flying = self.species_table[&species]
             .flight_ticks_per_voxel
             .is_some();
+        let footprint = self.species_table[&species].footprint;
         let destination = if is_flying {
             destination
         } else {
@@ -234,6 +237,7 @@ impl SimState {
                 &self.face_data,
                 destination,
                 5,
+                footprint,
             ) {
                 Some(pos) => pos,
                 None => return,
@@ -391,16 +395,13 @@ impl SimState {
         };
         let destination = move_data.destination;
 
-        let is_flying = self
-            .db
-            .creatures
-            .get(&creature_id)
-            .map(|c| {
-                self.species_table[&c.species]
-                    .flight_ticks_per_voxel
-                    .is_some()
-            })
+        let creature_species = self.db.creatures.get(&creature_id).map(|c| c.species);
+        let is_flying = creature_species
+            .map(|s| self.species_table[&s].flight_ticks_per_voxel.is_some())
             .unwrap_or(false);
+        let footprint = creature_species
+            .map(|s| self.species_table[&s].footprint)
+            .unwrap_or([1, 1, 1]);
 
         // Ground creatures: resolve destination to walkable position for location checks.
         // Flying creatures use VoxelCoord directly.
@@ -410,6 +411,7 @@ impl SimState {
                 &self.face_data,
                 destination,
                 5,
+                footprint,
             ) {
                 Some(p) => Some(p),
                 None => {
@@ -461,6 +463,7 @@ impl SimState {
                         &self.face_data,
                         task_location_coord,
                         5,
+                        footprint,
                     )
                 } else {
                     None
@@ -633,12 +636,14 @@ impl SimState {
         }
 
         // Ground creatures need a reachable walkable position at the destination.
+        let chase_footprint = self.species_table[&species].footprint;
         if !is_flying
             && crate::walkability::find_nearest_walkable(
                 &self.world,
                 &self.face_data,
                 origin_voxel,
                 20,
+                chase_footprint,
             )
             .is_none()
         {
@@ -744,9 +749,15 @@ impl SimState {
 
         // Check for cached path.
         let creature = self.db.creatures.get(&creature_id).unwrap();
+        let footprint = self.species_table[&species].footprint;
         let next_pos = if let Some(ref path) = creature.path {
             if let Some(&next) = path.remaining_positions.first() {
-                if crate::walkability::is_walkable(&self.world, &self.face_data, next) {
+                if crate::walkability::footprint_walkable(
+                    &self.world,
+                    &self.face_data,
+                    next,
+                    footprint,
+                ) {
                     Some(next)
                 } else {
                     None
@@ -1107,9 +1118,15 @@ impl SimState {
 
         // Check for cached path.
         let creature = self.db.creatures.get(&creature_id).unwrap();
+        let footprint = self.species_table[&species].footprint;
         let next_pos = if let Some(ref path) = creature.path {
             if let Some(&next) = path.remaining_positions.first() {
-                if crate::walkability::is_walkable(&self.world, &self.face_data, next) {
+                if crate::walkability::footprint_walkable(
+                    &self.world,
+                    &self.face_data,
+                    next,
+                    footprint,
+                ) {
                     Some(next)
                 } else {
                     None
@@ -2921,8 +2938,6 @@ impl SimState {
         current_pos: VoxelCoord,
         species: Species,
     ) -> bool {
-        use crate::pathfinding::NEIGHBOR_OFFSETS;
-
         let creature = match self.db.creatures.get(&creature_id) {
             Some(c) => c,
             None => return false,
@@ -2963,21 +2978,12 @@ impl SimState {
             crate::walkability::derive_surface_type(&self.world, &self.face_data, current_pos);
 
         let mut eligible: Vec<VoxelCoord> = Vec::new();
-        for &(dx, dy, dz, _) in &NEIGHBOR_OFFSETS {
-            let neighbor =
-                VoxelCoord::new(current_pos.x + dx, current_pos.y + dy, current_pos.z + dz);
-            if !crate::walkability::footprint_walkable(
-                &self.world,
-                &self.face_data,
-                neighbor,
-                footprint,
-            ) {
-                continue;
-            }
-            if crate::walkability::is_edge_blocked_by_faces(&self.face_data, current_pos, neighbor)
-            {
-                continue;
-            }
+        for (neighbor, _dist) in crate::walkability::ground_neighbors(
+            &self.world,
+            &self.face_data,
+            current_pos,
+            footprint,
+        ) {
             let to_surface =
                 crate::walkability::derive_surface_type(&self.world, &self.face_data, neighbor);
             let edge_type = crate::walkability::derive_edge_type(
@@ -2992,70 +2998,6 @@ impl SimState {
                 continue;
             }
             eligible.push(neighbor);
-        }
-
-        // Large creature surface-snap neighbors: try the correct standing y
-        // at each horizontal neighbor anchor to handle terrain inclines.
-        let is_large = footprint[0] > 1 || footprint[2] > 1;
-        if is_large {
-            use crate::nav::large_node_surface_y;
-            let wx = self.world.size_x as i32;
-            let wz = self.world.size_z as i32;
-            for &(dx, dz) in &[
-                (-1i32, -1i32),
-                (0, -1),
-                (1, -1),
-                (-1, 0),
-                (1, 0),
-                (-1, 1),
-                (0, 1),
-                (1, 1),
-            ] {
-                let nx = current_pos.x + dx;
-                let nz = current_pos.z + dz;
-                if nx < 0 || nx + 1 >= wx || nz < 0 || nz + 1 >= wz {
-                    continue;
-                }
-                if let Some(sy) = large_node_surface_y(&self.world, nx, nz) {
-                    let dy = sy - current_pos.y;
-                    if (-1..=1).contains(&dy) {
-                        continue; // already covered by NEIGHBOR_OFFSETS
-                    }
-                    let neighbor = VoxelCoord::new(nx, sy, nz);
-                    if !crate::walkability::footprint_walkable(
-                        &self.world,
-                        &self.face_data,
-                        neighbor,
-                        footprint,
-                    ) {
-                        continue;
-                    }
-                    if crate::walkability::is_edge_blocked_by_faces(
-                        &self.face_data,
-                        current_pos,
-                        neighbor,
-                    ) {
-                        continue;
-                    }
-                    let to_surface = crate::walkability::derive_surface_type(
-                        &self.world,
-                        &self.face_data,
-                        neighbor,
-                    );
-                    let edge_type = crate::walkability::derive_edge_type(
-                        from_surface,
-                        to_surface,
-                        current_pos,
-                        neighbor,
-                    );
-                    if let Some(ref allowed) = species_data.allowed_edge_types
-                        && !allowed.contains(&edge_type)
-                    {
-                        continue;
-                    }
-                    eligible.push(neighbor);
-                }
-            }
         }
 
         if eligible.is_empty() {
@@ -3879,12 +3821,18 @@ impl SimState {
         creature_id: CreatureId,
         target_id: CreatureId,
     ) -> Option<VoxelCoord> {
-        use crate::pathfinding::NEIGHBOR_OFFSETS;
         use crate::projectile::{compute_aim_velocity, sub_voxel_from_voxel_center};
 
         let creature = self.db.creatures.get(&creature_id)?;
+        let species = creature.species;
+        let footprint = self.species_table[&species].footprint;
         let current_pos = creature.position.min;
-        if !crate::walkability::is_walkable(&self.world, &self.face_data, current_pos) {
+        if !crate::walkability::footprint_walkable(
+            &self.world,
+            &self.face_data,
+            current_pos,
+            footprint,
+        ) {
             return None;
         }
 
@@ -3903,20 +3851,12 @@ impl SimState {
         let mut best_clear: Option<(VoxelCoord, bool, i64)> = None;
         let mut best_fallback: Option<(VoxelCoord, i64)> = None;
 
-        for &(dx, dy, dz, _) in &NEIGHBOR_OFFSETS {
-            let neighbor_pos =
-                VoxelCoord::new(current_pos.x + dx, current_pos.y + dy, current_pos.z + dz);
-            if !crate::walkability::is_walkable(&self.world, &self.face_data, neighbor_pos) {
-                continue;
-            }
-            if crate::walkability::is_edge_blocked_by_faces(
-                &self.face_data,
-                current_pos,
-                neighbor_pos,
-            ) {
-                continue;
-            }
-
+        for (neighbor_pos, _dist) in crate::walkability::ground_neighbors(
+            &self.world,
+            &self.face_data,
+            current_pos,
+            footprint,
+        ) {
             let blocks_others = self.position_blocks_friendly_archers(creature_id, neighbor_pos);
 
             // Score by distance to target.

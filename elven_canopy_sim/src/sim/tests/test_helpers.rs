@@ -576,8 +576,9 @@ pub(super) fn creature_pos(sim: &SimState, creature_id: CreatureId) -> VoxelCoor
 }
 
 /// Find the nearest walkable position to `pos`, searching up to `radius` voxels.
+/// Uses [1,1,1] footprint (standard creature size).
 pub(super) fn find_walkable(sim: &SimState, pos: VoxelCoord, radius: u32) -> Option<VoxelCoord> {
-    crate::walkability::find_nearest_walkable(&sim.world, &sim.face_data, pos, radius)
+    crate::walkability::find_nearest_walkable(&sim.world, &sim.face_data, pos, radius, [1, 1, 1])
 }
 
 /// Find any walkable position on the ground floor that isn't `exclude`.
@@ -587,7 +588,14 @@ pub(super) fn find_different_walkable(sim: &SimState, exclude: VoxelCoord) -> Vo
     for x in 1..(ws_x as i32 - 1) {
         for z in 1..(ws_z as i32 - 1) {
             let pos = VoxelCoord::new(x, floor_y, z);
-            if pos != exclude && crate::walkability::is_walkable(&sim.world, &sim.face_data, pos) {
+            if pos != exclude
+                && crate::walkability::footprint_walkable(
+                    &sim.world,
+                    &sim.face_data,
+                    pos,
+                    [1, 1, 1],
+                )
+            {
                 return pos;
             }
         }
@@ -603,7 +611,12 @@ pub(super) fn find_far_walkable(sim: &SimState, from: VoxelCoord, min_dist: u32)
         for z in 1..(ws_z as i32 - 1) {
             let pos = VoxelCoord::new(x, floor_y, z);
             if pos.manhattan_distance(from) >= min_dist
-                && crate::walkability::is_walkable(&sim.world, &sim.face_data, pos)
+                && crate::walkability::footprint_walkable(
+                    &sim.world,
+                    &sim.face_data,
+                    pos,
+                    [1, 1, 1],
+                )
             {
                 return pos;
             }
@@ -1003,8 +1016,8 @@ pub(super) fn find_connected_pair(sim: &SimState) -> (VoxelCoord, VoxelCoord) {
         for z in 1..(ws_z as i32 - 1) {
             let a = VoxelCoord::new(x, floor_y, z);
             let b = VoxelCoord::new(x + 1, floor_y, z);
-            if crate::walkability::is_walkable(&sim.world, &sim.face_data, a)
-                && crate::walkability::is_walkable(&sim.world, &sim.face_data, b)
+            if crate::walkability::footprint_walkable(&sim.world, &sim.face_data, a, [1, 1, 1])
+                && crate::walkability::footprint_walkable(&sim.world, &sim.face_data, b, [1, 1, 1])
             {
                 return (a, b);
             }
@@ -1022,9 +1035,9 @@ pub(super) fn find_chain_of_three(sim: &SimState) -> (VoxelCoord, VoxelCoord, Vo
             let a = VoxelCoord::new(x, floor_y, z);
             let b = VoxelCoord::new(x + 1, floor_y, z);
             let c = VoxelCoord::new(x + 2, floor_y, z);
-            if crate::walkability::is_walkable(&sim.world, &sim.face_data, a)
-                && crate::walkability::is_walkable(&sim.world, &sim.face_data, b)
-                && crate::walkability::is_walkable(&sim.world, &sim.face_data, c)
+            if crate::walkability::footprint_walkable(&sim.world, &sim.face_data, a, [1, 1, 1])
+                && crate::walkability::footprint_walkable(&sim.world, &sim.face_data, b, [1, 1, 1])
+                && crate::walkability::footprint_walkable(&sim.world, &sim.face_data, c, [1, 1, 1])
             {
                 return (a, b, c);
             }
