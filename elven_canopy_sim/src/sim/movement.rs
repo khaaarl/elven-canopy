@@ -628,6 +628,70 @@ impl SimState {
             eligible.push(neighbor);
         }
 
+        // Large creature surface-snap neighbors: try the correct standing y
+        // at each horizontal neighbor anchor to handle terrain inclines.
+        let is_large = footprint[0] > 1 || footprint[2] > 1;
+        if is_large {
+            use crate::nav::large_node_surface_y;
+            let wx = self.world.size_x as i32;
+            let wz = self.world.size_z as i32;
+            for &(dx, dz) in &[
+                (-1i32, -1i32),
+                (0, -1),
+                (1, -1),
+                (-1, 0),
+                (1, 0),
+                (-1, 1),
+                (0, 1),
+                (1, 1),
+            ] {
+                let nx = current_pos.x + dx;
+                let nz = current_pos.z + dz;
+                if nx < 0 || nx + 1 >= wx || nz < 0 || nz + 1 >= wz {
+                    continue;
+                }
+                if let Some(sy) = large_node_surface_y(&self.world, nx, nz) {
+                    let dy = sy - current_pos.y;
+                    if (-1..=1).contains(&dy) {
+                        continue;
+                    }
+                    let neighbor = VoxelCoord::new(nx, sy, nz);
+                    if !crate::walkability::footprint_walkable(
+                        &self.world,
+                        &self.face_data,
+                        neighbor,
+                        footprint,
+                    ) {
+                        continue;
+                    }
+                    if crate::walkability::is_edge_blocked_by_faces(
+                        &self.face_data,
+                        current_pos,
+                        neighbor,
+                    ) {
+                        continue;
+                    }
+                    let to_surface = crate::walkability::derive_surface_type(
+                        &self.world,
+                        &self.face_data,
+                        neighbor,
+                    );
+                    let edge_type = crate::walkability::derive_edge_type(
+                        from_surface,
+                        to_surface,
+                        current_pos,
+                        neighbor,
+                    );
+                    if let Some(ref allowed) = species_data.allowed_edge_types
+                        && !allowed.contains(&edge_type)
+                    {
+                        continue;
+                    }
+                    eligible.push(neighbor);
+                }
+            }
+        }
+
         if eligible.is_empty() {
             self.set_creature_activation_tick(creature_id, self.tick + 1000);
             return;

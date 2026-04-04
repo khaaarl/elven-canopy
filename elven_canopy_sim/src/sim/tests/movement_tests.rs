@@ -565,7 +565,7 @@ fn pursuit_task_serde_roundtrip() {
 
 #[test]
 fn find_available_task_prefers_nearest_by_nav_distance() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = flat_world_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn an elf near the tree.
@@ -592,20 +592,19 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
         "elf should be at a walkable position"
     );
 
-    // Find two walkable positions: one close to the elf, one farther away.
+    // Use explicit positions relative to the elf: near_pos is 2 voxels away,
+    // far_pos is 15 voxels away. Both on the same floor_y.
     let floor_y = sim.config.floor_y + 1;
-    let near_pos = find_different_walkable(&sim, elf_pos);
-    // Find a far position at least 10 manhattan distance away.
-    let (ws_x, _, ws_z) = sim.config.world_size;
-    let far_pos = (1..(ws_x as i32 - 1))
-        .flat_map(|x| (1..(ws_z as i32 - 1)).map(move |z| VoxelCoord::new(x, floor_y, z)))
-        .filter(|p| {
-            *p != elf_pos
-                && p.manhattan_distance(elf_pos) >= 10
-                && crate::walkability::is_walkable(&sim.world, &sim.face_data, *p)
-        })
-        .next()
-        .expect("should have a walkable position at least 10 manhattan away");
+    let near_pos = VoxelCoord::new(elf_pos.x + 2, floor_y, elf_pos.z);
+    let far_pos = VoxelCoord::new(elf_pos.x + 15, floor_y, elf_pos.z);
+    assert!(
+        crate::walkability::is_walkable(&sim.world, &sim.face_data, near_pos),
+        "near_pos should be walkable"
+    );
+    assert!(
+        crate::walkability::is_walkable(&sim.world, &sim.face_data, far_pos),
+        "far_pos should be walkable"
+    );
 
     // Create two Available tasks — far task first (to ensure it would be
     // picked under the old first-found behavior if its TaskId sorts first).
@@ -1065,38 +1064,41 @@ fn voxel_exclusion_flee_cornered_still_moves() {
     // If ALL neighboring voxels have hostiles, the fleeing creature should
     // still be allowed to move (flee fallback — better to move through a
     // hostile than freeze).
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
 
-    // Use a chain of three walkable positions. Place elf at center with
-    // goblins on both sides, so elf is cornered.
-    let (pos_left, elf_pos, pos_right) = find_chain_of_three(&sim);
-
+    // Use a flat-world position so all 26 neighbors are walkable.
+    let floor_y = sim.config.floor_y + 1;
+    let elf_pos = VoxelCoord::new(30, floor_y, 30);
     force_position(&mut sim, elf, elf_pos);
     force_idle(&mut sim, elf);
 
-    let neighbor_positions: Vec<VoxelCoord> = vec![pos_left, pos_right];
+    // Enumerate ALL walkable neighbors (from NEIGHBOR_OFFSETS) so the elf
+    // is truly cornered. On the flat world the only walkable neighbors are
+    // those at the same y (ground plane) since y+1 has no adjacent solid.
+    let walkable_neighbors: Vec<VoxelCoord> = crate::pathfinding::NEIGHBOR_OFFSETS
+        .iter()
+        .map(|&(dx, dy, dz, _)| VoxelCoord::new(elf_pos.x + dx, elf_pos.y + dy, elf_pos.z + dz))
+        .filter(|&pos| crate::walkability::is_walkable(&sim.world, &sim.face_data, pos))
+        .collect();
 
-    // Spawn a goblin at each neighbor.
+    // Spawn a goblin at each walkable neighbor so every exit is hostile.
     let mut goblins = Vec::new();
-    for &neighbor_pos in &neighbor_positions {
+    for &neighbor_pos in &walkable_neighbors {
         let g = spawn_species(&mut sim, Species::Goblin);
         force_position(&mut sim, g, neighbor_pos);
         force_idle(&mut sim, g);
-        // Prevent goblins from being polled for activation.
-        // (None means "immediately ready" in the poll model, so use u64::MAX.)
         suppress_activation_until(&mut sim, g, u64::MAX);
         goblins.push(g);
     }
 
-    // Also make sure the elf is still at the right position (spawning moves
-    // things around).
+    // Re-confirm elf position (spawning may have moved things).
     force_position(&mut sim, elf, elf_pos);
     force_idle(&mut sim, elf);
 
-    // Verify that all neighbors are indeed hostile-blocked.
+    // Verify that all walkable neighbors are indeed hostile-blocked.
     let elf_fp = sim.species_table[&Species::Elf].footprint;
-    for &pos in &neighbor_positions {
+    for &pos in &walkable_neighbors {
         assert!(
             sim.destination_blocked_by_hostile(elf, pos, elf_fp),
             "Expected neighbor at {pos:?} to be hostile-blocked"
@@ -1121,12 +1123,13 @@ fn voxel_exclusion_flee_cornered_still_moves() {
         elf_pos_before, elf_pos_after,
         "Cornered elf should flee (using fallback through hostile-occupied voxel)"
     );
-    // Elf moved — verify it went to one of the neighbor positions
+    // Elf moved — verify it went to one of the walkable neighbor positions
     // (which are all hostile-occupied, confirming fallback worked).
-    let moved_to_neighbor = neighbor_positions.iter().any(|&p| p == elf_pos_after);
+    let moved_to_neighbor = walkable_neighbors.iter().any(|&p| p == elf_pos_after);
     assert!(
         moved_to_neighbor,
-        "Cornered elf should flee to a neighbor (even hostile-occupied)"
+        "Cornered elf should flee to a neighbor (even hostile-occupied), \
+         instead moved from {elf_pos_before:?} to {elf_pos_after:?}"
     );
 }
 
@@ -3108,7 +3111,7 @@ fn flying_creature_attack_move_engages_hostile_en_route() {
 /// pick the nearest by squared Euclidean distance.
 #[test]
 fn flying_creature_find_available_task_nearest_by_euclidean() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let hornet = spawn_hornet_at(

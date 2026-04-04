@@ -1351,7 +1351,7 @@ fn wyvern_serde_roundtrip() {
 
 #[test]
 fn wyvern_is_hostile_to_elves() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
 

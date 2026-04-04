@@ -860,6 +860,15 @@ pub fn astar_ground(
         // Derive surface type at current position for edge-type computation.
         let from_surface = walkability::derive_surface_type(world, face_data, pos);
 
+        // For large creatures (footprint > 1×1), the standard NEIGHBOR_OFFSETS
+        // only step y by ±1 which can't bridge terrain inclines where the
+        // valid standing y changes by ≥2 between adjacent anchors. Collect
+        // extra snap-to-surface neighbors after the standard loop.
+        let is_large = footprint[0] > 1 || footprint[2] > 1;
+        // We inline a closure-like block to avoid borrowing issues; instead
+        // we collect extra neighbors into a small vec and process them after.
+        let mut extra_neighbors: Vec<(VoxelCoord, u64)> = Vec::new();
+
         for &(dx, dy, dz, dist_scaled) in &NEIGHBOR_OFFSETS {
             let neighbor = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
 
@@ -891,6 +900,83 @@ pub fn astar_ground(
             let move_cost = (dist_scaled * tpv) as i64;
             let tentative_g = current_g + move_cost;
 
+            if tentative_g < g_score.get(&neighbor).copied().unwrap_or(i64::MAX) {
+                g_score.insert(neighbor, tentative_g);
+                came_from.insert(neighbor, pos);
+                depth.insert(neighbor, current_depth + 1);
+                let h = octile_heuristic_3d(neighbor, goal, walk_tpv);
+                open.push(FlightOpenEntry {
+                    pos: neighbor,
+                    f_score: tentative_g + h,
+                });
+            }
+        }
+
+        // Large creature surface-snap neighbors: for each horizontal (dx,dz)
+        // offset, compute the valid large-creature standing y via
+        // large_node_surface_y and try that position if it differs from the
+        // y values already tried by NEIGHBOR_OFFSETS (±1).
+        if is_large {
+            use crate::nav::large_node_surface_y;
+            let wx = world.size_x as i32;
+            let wz = world.size_z as i32;
+            for &(dx, dz) in &[
+                (-1i32, -1i32),
+                (0, -1),
+                (1, -1),
+                (-1, 0),
+                (1, 0),
+                (-1, 1),
+                (0, 1),
+                (1, 1),
+            ] {
+                let nx = pos.x + dx;
+                let nz = pos.z + dz;
+                // Bounds check: large_node_surface_y accesses (nx..nx+2, nz..nz+2).
+                if nx < 0 || nx + 1 >= wx || nz < 0 || nz + 1 >= wz {
+                    continue;
+                }
+                if let Some(sy) = large_node_surface_y(world, nx, nz) {
+                    // Skip if already covered by NEIGHBOR_OFFSETS (y within ±1).
+                    let dy = sy - pos.y;
+                    if (-1..=1).contains(&dy) {
+                        continue;
+                    }
+                    let neighbor = VoxelCoord::new(nx, sy, nz);
+                    // Use octile distance scaled for the actual displacement.
+                    let adx = dx.unsigned_abs() as u64;
+                    let adz = dz.unsigned_abs() as u64;
+                    let ady = dy.unsigned_abs() as u64;
+                    let max_comp = adx.max(adz).max(ady);
+                    let mid_comp = adx + adz + ady - max_comp - adx.min(adz).min(ady);
+                    let min_comp = adx.min(adz).min(ady);
+                    // Approximate 3D distance: 1024*max + 424*mid + 318*min
+                    let dist_scaled = 1024 * max_comp + 424 * mid_comp + 318 * min_comp;
+                    extra_neighbors.push((neighbor, dist_scaled));
+                }
+            }
+        }
+
+        for (neighbor, dist_scaled) in extra_neighbors {
+            if !walkability::footprint_walkable(world, face_data, neighbor, footprint) {
+                continue;
+            }
+            if walkability::is_edge_blocked_by_faces(face_data, pos, neighbor) {
+                continue;
+            }
+            let to_surface = walkability::derive_surface_type(world, face_data, neighbor);
+            let edge_type = walkability::derive_edge_type(from_surface, to_surface, pos, neighbor);
+            if let Some(allowed) = speeds.allowed_edges
+                && !allowed.contains(&edge_type)
+            {
+                continue;
+            }
+            let tpv = match tpv_for_edge_type(edge_type, speeds) {
+                Some(t) => t,
+                None => continue,
+            };
+            let move_cost = (dist_scaled * tpv) as i64;
+            let tentative_g = current_g + move_cost;
             if tentative_g < g_score.get(&neighbor).copied().unwrap_or(i64::MAX) {
                 g_score.insert(neighbor, tentative_g);
                 came_from.insert(neighbor, pos);
@@ -1069,6 +1155,8 @@ pub fn nearest_astar_ground(
         }
 
         let from_surface = walkability::derive_surface_type(world, face_data, pos);
+        let is_large = footprint[0] > 1 || footprint[2] > 1;
+        let mut extra_neighbors: Vec<(VoxelCoord, u64)> = Vec::new();
 
         for &(dx, dy, dz, dist_scaled) in &NEIGHBOR_OFFSETS {
             let neighbor = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
@@ -1104,6 +1192,89 @@ pub fn nearest_astar_ground(
                 g_score.insert(neighbor, tentative_g);
                 depth.insert(neighbor, current_depth + 1);
 
+                for (oci, heap) in open_sets.iter_mut().enumerate() {
+                    if !active[oci] {
+                        continue;
+                    }
+                    let h =
+                        octile_heuristic_3d(neighbor, candidates[candidate_indices[oci]], walk_tpv);
+                    let f = tentative_g + h;
+                    if let Some((_, best_c)) = best_cost
+                        && f >= best_c
+                    {
+                        continue;
+                    }
+                    heap.push(FlightOpenEntry {
+                        pos: neighbor,
+                        f_score: f,
+                    });
+                }
+            }
+        }
+
+        // Large creature surface-snap neighbors (same logic as astar_ground).
+        if is_large {
+            use crate::nav::large_node_surface_y;
+            let wx = world.size_x as i32;
+            let wz = world.size_z as i32;
+            for &(dx, dz) in &[
+                (-1i32, -1i32),
+                (0, -1),
+                (1, -1),
+                (-1, 0),
+                (1, 0),
+                (-1, 1),
+                (0, 1),
+                (1, 1),
+            ] {
+                let nx = pos.x + dx;
+                let nz = pos.z + dz;
+                if nx < 0 || nx + 1 >= wx || nz < 0 || nz + 1 >= wz {
+                    continue;
+                }
+                if let Some(sy) = large_node_surface_y(world, nx, nz) {
+                    let dy = sy - pos.y;
+                    if (-1..=1).contains(&dy) {
+                        continue;
+                    }
+                    let neighbor = VoxelCoord::new(nx, sy, nz);
+                    let adx = dx.unsigned_abs() as u64;
+                    let adz = dz.unsigned_abs() as u64;
+                    let ady = dy.unsigned_abs() as u64;
+                    let max_comp = adx.max(adz).max(ady);
+                    let mid_comp = adx + adz + ady - max_comp - adx.min(adz).min(ady);
+                    let min_comp = adx.min(adz).min(ady);
+                    let dist_scaled = 1024 * max_comp + 424 * mid_comp + 318 * min_comp;
+                    extra_neighbors.push((neighbor, dist_scaled));
+                }
+            }
+        }
+
+        for (neighbor, dist_scaled) in extra_neighbors {
+            if closed.contains(&neighbor)
+                || !walkability::footprint_walkable(world, face_data, neighbor, footprint)
+            {
+                continue;
+            }
+            if walkability::is_edge_blocked_by_faces(face_data, pos, neighbor) {
+                continue;
+            }
+            let to_surface = walkability::derive_surface_type(world, face_data, neighbor);
+            let edge_type = walkability::derive_edge_type(from_surface, to_surface, pos, neighbor);
+            if let Some(allowed) = speeds.allowed_edges
+                && !allowed.contains(&edge_type)
+            {
+                continue;
+            }
+            let tpv = match tpv_for_edge_type(edge_type, speeds) {
+                Some(t) => t,
+                None => continue,
+            };
+            let move_cost = (dist_scaled * tpv) as i64;
+            let tentative_g = current_g + move_cost;
+            if tentative_g < g_score.get(&neighbor).copied().unwrap_or(i64::MAX) {
+                g_score.insert(neighbor, tentative_g);
+                depth.insert(neighbor, current_depth + 1);
                 for (oci, heap) in open_sets.iter_mut().enumerate() {
                     if !active[oci] {
                         continue;

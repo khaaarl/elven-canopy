@@ -69,7 +69,8 @@ impl SimState {
                 return None;
             }
             position
-        } else {
+        } else if footprint == [1, 1, 1] {
+            // Standard 1x1x1 creature: find nearest walkable position.
             let nearest = if ground_only {
                 crate::walkability::find_nearest_ground_walkable(
                     &self.world,
@@ -86,6 +87,15 @@ impl SimState {
                 )
             };
             nearest?
+        } else {
+            // Large creature: find nearest position where the full footprint fits.
+            crate::walkability::find_nearest_footprint_walkable(
+                &self.world,
+                &self.face_data,
+                position,
+                10,
+                footprint,
+            )?
         };
         let creature_id = CreatureId::new(&mut self.rng);
 
@@ -637,8 +647,12 @@ impl SimState {
         if species_data.flight_ticks_per_voxel.is_some() {
             return true; // flying creatures are always supported
         }
-        let walkable =
-            crate::walkability::is_walkable(&self.world, &self.face_data, creature.position.min);
+        let walkable = crate::walkability::footprint_walkable(
+            &self.world,
+            &self.face_data,
+            creature.position.min,
+            species_data.footprint,
+        );
         if !walkable {
             return false;
         }
@@ -697,7 +711,12 @@ impl SimState {
                 && surface_y < pos.y
             {
                 let landing = VoxelCoord::new(ax, surface_y, az);
-                if crate::walkability::is_walkable(&self.world, &self.face_data, landing) {
+                if crate::walkability::footprint_walkable(
+                    &self.world,
+                    &self.face_data,
+                    landing,
+                    species_data.footprint,
+                ) {
                     return Some(landing);
                 }
             }
@@ -757,12 +776,14 @@ impl SimState {
             Some(pos) => pos,
             None => {
                 // Degenerate: no valid landing column. Teleport to nearest
-                // walkable position.
-                match crate::walkability::find_nearest_walkable(
+                // footprint-walkable position.
+                let fp = self.species_table[&species].footprint;
+                match crate::walkability::find_nearest_footprint_walkable(
                     &self.world,
                     &self.face_data,
                     old_pos,
                     5,
+                    fp,
                 ) {
                     Some(pos) => pos,
                     None => return false, // no walkable positions — nothing to do

@@ -75,25 +75,48 @@ pub fn is_walkable(
     })
 }
 
-/// Check whether all voxels in a ground-creature footprint anchored at `anchor`
-/// are walkable. The anchor is the min-corner of the bounding box.
+/// Check whether a ground-creature footprint anchored at `anchor` is walkable.
+/// The anchor is the min-corner of the bounding box.
+///
+/// For 1x1x1 creatures, this simply checks `is_walkable` at the anchor.
+///
+/// For larger footprints, the logic is more nuanced: all voxels in the footprint
+/// must be non-solid (the creature can physically occupy them), AND at least one
+/// ground-plane column must have solid directly below (the creature is standing
+/// on something). This matches the old large-nav-graph behavior which allowed
+/// height variation across the footprint columns.
 pub fn footprint_walkable(
     world: &VoxelWorld,
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     anchor: VoxelCoord,
     footprint: [u8; 3],
 ) -> bool {
+    // Fast path for 1x1x1 creatures (the common case).
+    if footprint == [1, 1, 1] {
+        return is_walkable(world, face_data, anchor);
+    }
+
+    // For larger footprints: all voxels must be non-solid, and at least one
+    // ground-plane column must have solid support below the anchor y.
+    let mut has_support = false;
     for dx in 0..footprint[0] as i32 {
         for dy in 0..footprint[1] as i32 {
             for dz in 0..footprint[2] as i32 {
                 let v = VoxelCoord::new(anchor.x + dx, anchor.y + dy, anchor.z + dz);
-                if !is_walkable(world, face_data, v) {
+                if v.y < 1 || world.get(v).is_solid() {
                     return false;
                 }
             }
         }
+        // Check support below for each ground-plane column.
+        for dz in 0..footprint[2] as i32 {
+            let below = VoxelCoord::new(anchor.x + dx, anchor.y - 1, anchor.z + dz);
+            if world.get(below).is_solid() {
+                has_support = true;
+            }
+        }
     }
-    true
+    has_support
 }
 
 /// Determine what surface a creature at `pos` is touching.
@@ -319,6 +342,21 @@ pub fn find_nearest_ground_walkable(
 ) -> Option<VoxelCoord> {
     find_nearest_walkable_filtered(world, face_data, pos, max_distance, |p| {
         derive_surface_type(world, face_data, p) == VoxelType::Dirt
+    })
+}
+
+/// Find the nearest position where a large creature's full footprint is walkable.
+///
+/// Expanding-box search around `pos`, testing `footprint_walkable` at each candidate.
+pub fn find_nearest_footprint_walkable(
+    world: &VoxelWorld,
+    face_data: &BTreeMap<VoxelCoord, FaceData>,
+    pos: VoxelCoord,
+    max_distance: u32,
+    footprint: [u8; 3],
+) -> Option<VoxelCoord> {
+    find_nearest_walkable_filtered(world, face_data, pos, max_distance, |p| {
+        footprint_walkable(world, face_data, p, footprint)
     })
 }
 
