@@ -55,6 +55,7 @@ This reduces merge conflicts when parallel work streams add items.
 [~] F-face-tint            Directional face tinting by normal (top warm, bottom cool)
 [~] F-fruit-variety        Procedural fruit variety and processing
 [~] F-genetics             Creature genetics (additive SNP bitfield genomes with inheritance)
+[~] F-llm-creatures        LLM creature infrastructure: model download, llama.cpp, relay inference pipeline
 [~] F-multiplayer          Relay-coordinator multiplayer networking
 [~] F-notifications        Player-visible event notifications
 [~] F-parallel-dedup       Radix-partitioned parallel dedup (elven_canopy_utils)
@@ -170,8 +171,8 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-leaf-tuning          Leaf visual fine-tuning and interior decisions
 [ ] F-llm-activities       LLM-driven activity scheduling and task inclination nudging
 [ ] F-llm-convo-ui         Creature conversation text bubbles and detail panel log
-[ ] F-llm-creatures        LLM creature infrastructure: model download, llama.cpp, relay inference pipeline
 [ ] F-llm-diplomacy        LLM-driven foreign civilization diplomatic decisions
+[ ] F-llm-dl-prompt        First-launch prompt for AI creature personality download
 [ ] F-llm-monologue        LLM inner monologue with emergent personality drift
 [ ] F-llm-social-chat      LLM-generated creature dialogue in social interactions
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
@@ -3911,7 +3912,7 @@ This is the "life decisions" layer: not moment-to-moment task execution, but hig
 **Related:** F-llm-monologue, F-llm-social-chat
 
 #### F-llm-creatures — LLM creature infrastructure: model download, llama.cpp, relay inference pipeline
-**Status:** Todo
+**Status:** In Progress
 
 Foundation for all LLM-driven creature features. Concrete decisions made (see draft for full details):
 
@@ -3921,7 +3922,7 @@ Foundation for all LLM-driven creature features. Concrete decisions made (see dr
 
 **Relay routing (Option C — hybrid):** Dedicated protocol messages for dispatch (`ClientMessage::LlmRequest`, `ServerMessage::LlmDispatch`), but results delivered inside Turn messages (`Turn.llm_results`) for simple canonicalization. The relay selects LLM-capable peers (signaled via `llm_capable` field in `Hello`), load-balances, and buffers results until the next turn flush. Payloads are opaque `Vec<u8>` — the relay never inspects prompts or results.
 
-**THE RELAY IS THE ONLY PATH.** All LLM inference — singleplayer AND multiplayer — goes through the relay. The relay is the sole mechanism for dispatch and canonicalization. The code that submits a request and the code that consumes the result are identical regardless of player count. This is enforced at the architectural level (B-local-relay ensures singleplayer uses the real relay on localhost).
+**THE RELAY IS THE ONLY PATH.** All LLM inference — singleplayer AND multiplayer — goes through the relay. The relay is the sole mechanism for dispatch and canonicalization. The code that submits a request and the code that consumes the result are identical regardless of player count. This is enforced at the architectural level (B-local-relay landed — singleplayer now uses the real relay on localhost).
 
 **Response processing:** LLM results enter the sim as `SimAction::LlmResult` via a new `SessionMessage::LlmResult` variant. The sim matches by `request_id`, validates the deadline, deserializes the JSON, and applies mechanical effects. Grammar-constrained generation (GBNF via JSON schema) guarantees valid output format.
 
@@ -3931,10 +3932,29 @@ Foundation for all LLM-driven creature features. Concrete decisions made (see dr
 
 **Draft:** docs/drafts/llm-creatures.md
 
-**Draft:** docs/drafts/llm-creatures.md
+**Progress:**
 
-**Blocks:** F-llm-activities, F-llm-diplomacy, F-llm-social-chat
-**Unblocked by:** B-local-relay
+**DONE — Model download manager (branch `feature/F-llm-creatures-download`):**
+- `godot/scripts/model_manager.gd` — autoload singleton managing the full download lifecycle. Downloads Qwen 3 1.7B Q5_K_M (~1.17 GB) from HuggingFace (`unsloth/Qwen3-1.7B-GGUF` repo, publicly accessible, no auth required). State machine: NOT_DOWNLOADED → DOWNLOADING → VERIFYING → READY (or FAILED). Downloads to `.part` file first, renames atomically on success. Size verification on startup detects corrupt/partial files. SHA-256 verification scaffolded (hash constant is empty — fill in after first verified download). Uses Godot's `HTTPRequest` with `use_threads = true` for background download. Stores in `user://models/` (Godot's platform-conventional user data dir). `get_model_path()` returns the path for future LLM crate consumption.
+- `godot/scripts/settings_panel.gd` — new "AI" section with "Creature Personalities" row. Shows download status, live progress (percentage + bytes), and action button (Download/Cancel/Delete/Retry depending on state). Connects to ModelManager's `state_changed` signal + polls progress in `_process` during downloads.
+- `godot/project.godot` — ModelManager registered as autoload.
+- `godot/test/test_model_manager.gd` — unit tests for format_bytes, SHA-256 computation against known value, state transitions, signal emission, delete behavior, path queries.
+
+**Remaining work:**
+
+1. **`elven_canopy_llm` crate** — new Rust crate wrapping `llama-cpp-2`. Model loading from filesystem path, inference execution, grammar-constrained generation via JSON schema → GBNF, KV cache save/restore for preamble caching. Optional feature flag (`llm`) so the game compiles without it. GPU backend feature flags (`llm-cuda`, `llm-vulkan`, `llm-rocm`). This is the most uncertain piece — the `llama-cpp-2` API surface and CMake/GPU build system complexity need exploration.
+
+2. **Sim outbox mechanism** — `OutboundRequest` enum, `PendingLlmRequest` tracking in `BTreeMap`, `next_request_id` counter, deadline expiry logic, `SimAction::LlmResult` variant. Pure sim logic. The sim emits requests and consumes results — it never knows how they're fulfilled.
+
+3. **Protocol message types** — `LlmRequest`, `LlmResponse`, `LlmDispatch`, `LlmResult` structs with serde in `elven_canopy_protocol`. `Turn` struct gets `llm_results: Vec<LlmResult>` field with `#[serde(default)]`. These are just data types.
+
+4. **Relay dispatch logic** — `Session` gets `pending_llm_results` and `outstanding_dispatches` fields. Peer selection, load balancing, disconnect cleanup, result buffering until turn flush. (B-local-relay is done, so this is unblocked.)
+
+5. **gdext integration** — drain sim outbox after `step()`, serialize and send `ClientMessage::LlmRequest` via `NetClient`, receive `ServerMessage::LlmDispatch`, run local inference via `elven_canopy_llm`, send `ClientMessage::LlmResponse` back.
+
+6. **Multiplayer capability signaling** — `llm_capable` field in `ClientMessage::Hello`, `ClientMessage::LlmCapabilityChanged` variant, relay-side per-player capability tracking.
+
+**Blocks:** F-llm-activities, F-llm-diplomacy, F-llm-dl-prompt, F-llm-social-chat
 
 #### F-llm-diplomacy — LLM-driven foreign civilization diplomatic decisions
 **Status:** Todo
@@ -6808,6 +6828,13 @@ Player-facing UI for LLM-generated creature conversations. Text bubbles in the w
 
 **Blocked by:** F-llm-social-chat
 
+#### F-llm-dl-prompt — First-launch prompt for AI creature personality download
+**Status:** Todo
+
+On first launch (or when the model becomes available for the first time), prompt the player: "Enable AI creature personalities? (requires ~1.5 GB download)". Currently the download option is only accessible via the Settings panel, which means players who don't explore settings will never discover the feature. The prompt should be unobtrusive, dismissable, and not reappear if the player declines. If the player accepts, start the download immediately (using the existing ModelManager infrastructure). A GameConfig setting like `llm_prompt_dismissed` can track whether the prompt has been shown.
+
+**Blocked by:** F-llm-creatures
+
 #### F-lod-sprites — LOD sprites (chibi / detailed)
 **Status:** Todo · **Phase:** 8+ · **Refs:** §24
 
@@ -7973,8 +8000,8 @@ The DB-structural part of F-zone-world, extracted so schema changes can be plann
 
 This is the largest structural schema change remaining before save format stability. F-zone-world retains all simulation logic (zone state transitions, fidelity partitioning, inter-zone travel, background heartbeats).
 
-**Blocked by:** F-tab-spatial-2
 **Blocks:** F-save-stable, F-zone-world
+**Unblocked by:** F-tab-spatial-2
 **Related:** F-tree-db, F-zone-world
 
 ### Tabulosity
@@ -8455,9 +8482,8 @@ Compound spatial indexes for tabulosity: a non-spatial prefix (one or more field
 
 **Motivating use case:** F-zone-world requires all spatial queries scoped by zone_id, which requires compound spatial indexes keyed by (zone_id, spatial_box).
 
-**Blocks:** F-zone-schema, F-zone-world
 **Unblocked by:** F-tab-spatial
-**Unblocked:** F-zone-world
+**Unblocked:** F-zone-schema, F-zone-world
 **Related:** F-tab-nested-idx, F-tab-spatial-3
 
 #### F-tab-spatial-3 — Tabulosity spatial index — range, KNN, and None-set queries
@@ -8554,8 +8580,6 @@ The sim_bridge should have ONE code path for command dispatch: serialize the Sim
 - The tick-pacing behavior is now handled by the relay's turn flush timer (same as MP), no separate accumulator
 
 **What this unblocks:** F-llm-creatures (LLM inference dispatch through relay requires a real relay in singleplayer), and any future relay-level feature (spectator mode, replay recording, command logging, anti-cheat).
-
-**Unblocked:** F-llm-creatures
 
 #### B-relay-stability — Windows TCP connection drops during singleplayer gameplay
 **Status:** Todo

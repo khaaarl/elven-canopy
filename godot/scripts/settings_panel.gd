@@ -15,6 +15,7 @@
 ##   - Fog end (LineEdit, voxels)
 ##   - Window mode (dropdown: Windowed / Borderless Fullscreen / Exclusive Fullscreen)
 ##   - Edge outline (toggle button)
+##   - AI creature personalities (download status + action button, via ModelManager)
 ##
 ## On open, reads current values from the provided GameConfig instance.
 ## Save writes values back to GameConfig and closes. Cancel discards edits.
@@ -54,6 +55,9 @@ var _fog_end_input: LineEdit
 var _edge_outline_toggle: Button
 var _edge_scroll_toggle: Button
 var _window_mode_dropdown: OptionButton
+var _ai_status_label: Label
+var _ai_action_btn: Button
+var _ai_progress_label: Label
 var _save_btn: Button
 var _paused_value: bool = false
 var _fog_enabled_value: bool = true
@@ -294,6 +298,45 @@ func _ready() -> void:
 	_edge_outline_toggle.pressed.connect(_toggle_edge_outline)
 	edge_outline_row.add_child(_edge_outline_toggle)
 
+	# --- AI section ---
+	var ai_label := Label.new()
+	ai_label.text = "AI"
+	ai_label.add_theme_font_size_override("font_size", 18)
+	outer_vbox.add_child(ai_label)
+
+	var ai_vbox := VBoxContainer.new()
+	ai_vbox.add_theme_constant_override("separation", 10)
+	outer_vbox.add_child(ai_vbox)
+
+	# AI creature personalities row.
+	var ai_row := HBoxContainer.new()
+	ai_row.add_theme_constant_override("separation", 10)
+	ai_vbox.add_child(ai_row)
+
+	var ai_row_label := Label.new()
+	ai_row_label.text = "Creature Personalities"
+	ai_row_label.custom_minimum_size = Vector2(160, 0)
+	ai_row.add_child(ai_row_label)
+
+	_ai_status_label = Label.new()
+	_ai_status_label.custom_minimum_size = Vector2(200, 0)
+	ai_row.add_child(_ai_status_label)
+
+	_ai_action_btn = Button.new()
+	_ai_action_btn.custom_minimum_size = Vector2(120, 0)
+	_ai_action_btn.pressed.connect(_on_ai_action_pressed)
+	ai_row.add_child(_ai_action_btn)
+
+	# Progress label (shown only during download).
+	_ai_progress_label = Label.new()
+	_ai_progress_label.add_theme_font_size_override("font_size", 13)
+	ai_vbox.add_child(_ai_progress_label)
+
+	_update_ai_display()
+	var mm := _get_model_manager()
+	if mm:
+		mm.state_changed.connect(_update_ai_display)
+
 	# --- Button row ---
 	var spacer := Control.new()
 	spacer.custom_minimum_size = Vector2(0, 8)
@@ -365,6 +408,72 @@ func _update_edge_outline_label() -> void:
 	_edge_outline_toggle.text = "\u2713 ENABLED" if _edge_outline_value else "\u2717 DISABLED"
 
 
+func _process(_delta: float) -> void:
+	# Live progress updates during model download.
+	var mm := _get_model_manager()
+	if mm and mm.state == mm.State.DOWNLOADING:
+		_update_ai_display()
+
+
+func _on_ai_action_pressed() -> void:
+	var mm := _get_model_manager()
+	if mm == null:
+		return
+	match mm.state:
+		mm.State.NOT_DOWNLOADED, mm.State.FAILED:
+			mm.start_download()
+		mm.State.DOWNLOADING:
+			mm.cancel_download()
+		mm.State.READY:
+			mm.delete_model()
+	_update_ai_display()
+
+
+func _update_ai_display() -> void:
+	var mm := _get_model_manager()
+	if mm == null:
+		_ai_status_label.text = "Not available"
+		_ai_action_btn.visible = false
+		_ai_progress_label.visible = false
+		return
+
+	_ai_action_btn.visible = true
+	match mm.state:
+		mm.State.NOT_DOWNLOADED:
+			var size_str := ModelManager.format_bytes(ModelManager.MODEL_EXPECTED_SIZE)
+			_ai_status_label.text = "Not downloaded"
+			_ai_action_btn.text = "Download (%s)" % size_str
+			_ai_progress_label.visible = false
+		mm.State.DOWNLOADING:
+			var dl_str := ModelManager.format_bytes(mm.downloaded_bytes)
+			var total_str := ModelManager.format_bytes(ModelManager.MODEL_EXPECTED_SIZE)
+			_ai_status_label.text = "Downloading... %d%%" % int(mm.progress_fraction * 100.0)
+			_ai_action_btn.text = "Cancel"
+			_ai_progress_label.text = "%s / %s" % [dl_str, total_str]
+			_ai_progress_label.visible = true
+		mm.State.VERIFYING:
+			_ai_status_label.text = "Verifying..."
+			_ai_action_btn.visible = false
+			_ai_progress_label.visible = false
+		mm.State.READY:
+			var size_str := ModelManager.format_bytes(ModelManager.MODEL_EXPECTED_SIZE)
+			_ai_status_label.text = "Ready (%s)" % size_str
+			_ai_action_btn.text = "Delete"
+			_ai_progress_label.visible = false
+		mm.State.FAILED:
+			_ai_status_label.text = "Failed"
+			_ai_action_btn.text = "Retry"
+			_ai_progress_label.text = mm.error_message
+			_ai_progress_label.visible = true
+
+
+func _get_model_manager() -> Node:
+	var root := get_tree().root if get_tree() else null
+	if root and root.has_node("ModelManager"):
+		return root.get_node("ModelManager")
+	return null
+
+
 ## Parse draw distance text to a clamped int (0–500). Invalid input returns
 ## the current config value (or the default 50 if no config is set).
 func _parse_draw_distance() -> int:
@@ -417,6 +526,12 @@ func open(config: Node) -> void:
 	_save_btn.disabled = _name_input.text.strip_edges().is_empty()
 
 
+func _disconnect_model_manager() -> void:
+	var mm := _get_model_manager()
+	if mm and mm.state_changed.is_connected(_update_ai_display):
+		mm.state_changed.disconnect(_update_ai_display)
+
+
 ## Write edited values to GameConfig and close.
 func save_and_close() -> void:
 	var name_text := _name_input.text.strip_edges()
@@ -433,12 +548,14 @@ func save_and_close() -> void:
 	var wm_value: String = WINDOW_MODES[_window_mode_dropdown.selected]
 	_config.set_setting("window_mode", wm_value)
 	_apply_window_mode(wm_value)
+	_disconnect_model_manager()
 	closed.emit()
 	queue_free()
 
 
 ## Discard edits and close.
 func cancel_and_close() -> void:
+	_disconnect_model_manager()
 	closed.emit()
 	queue_free()
 
