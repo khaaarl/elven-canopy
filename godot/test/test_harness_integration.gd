@@ -794,41 +794,6 @@ func test_save_load_round_trip() -> void:
 # ===========================================================================
 
 
-func test_sprite_species_elf() -> void:
-	var gen := SpriteGenerator.new()
-	var tex := gen.species_sprite("Elf", 42)
-	assert_not_null(tex, "Elf sprite should not be null")
-	assert_gt(tex.get_width(), 0, "Elf sprite width should be positive")
-	assert_gt(tex.get_height(), 0, "Elf sprite height should be positive")
-
-
-func test_sprite_all_species() -> void:
-	var gen := SpriteGenerator.new()
-	var species := [
-		"Elf",
-		"Capybara",
-		"Boar",
-		"Deer",
-		"Elephant",
-		"Goblin",
-		"Monkey",
-		"Orc",
-		"Squirrel",
-		"Troll",
-	]
-	for sp in species:
-		var tex := gen.species_sprite(sp, 42)
-		assert_not_null(tex, "%s sprite should not be null" % sp)
-		assert_gt(tex.get_width(), 0, "%s sprite width should be positive" % sp)
-		assert_gt(tex.get_height(), 0, "%s sprite height should be positive" % sp)
-
-
-func test_sprite_invalid_species_returns_null() -> void:
-	var gen := SpriteGenerator.new()
-	var tex := gen.species_sprite("InvalidSpecies", 0)
-	assert_null(tex, "Invalid species should return null")
-
-
 func test_sprite_fruit_round() -> void:
 	var gen := SpriteGenerator.new()
 	var tex := gen.fruit_sprite("Round", 200, 100, 50, 100, false)

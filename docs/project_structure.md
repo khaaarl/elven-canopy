@@ -124,7 +124,7 @@ elven-canopy/
 │       ├── drawing.rs          # PixelBuffer with drawing primitives (circle, ellipse, rect, line)
 │       ├── fruit.rs            # 16x16 fruit sprites (6 shapes + glow effect)
 │       └── species/            # Dispatcher + per-species modules (12 species, 32x32 to 96x80)
-│           ├── elf.rs          # Elf base sprite + CreatureDrawInfo compositing
+│           ├── elf.rs          # Elf base sprite + equipment overlay compositing
 │           └── elf_equipment.rs # Equipment overlay drawing (11 equippable item kinds)
 ├── elven_canopy_music/         # Palestrina-style polyphonic music generator
 │   ├── src/
@@ -190,8 +190,8 @@ elven-canopy/
 │       ├── save_dialog.gd      # Modal save-game dialog (name input)
 │       ├── load_dialog.gd      # Modal load-game dialog (file list)
 │       ├── orbital_camera.gd   # Camera controls (orbit, follow, vertical snap)
-│       ├── elf_renderer.gd     # Billboard chibi elf sprites (pool pattern)
-│       ├── capybara_renderer.gd # Billboard chibi capybara sprites
+│       ├── creature_renderer.gd # Unified billboard creature sprites (all species, trait-based)
+│       ├── creature_sprites.gd # Central sprite cache (CreatureSprites class_name)
 │       ├── tree_renderer.gd    # Tree voxel chunk mesh rendering (tiling shader materials)
 │       ├── action_toolbar.gd   # Top toolbar (speed controls, gameplay) + toggleable debug panel
 │       ├── construction_controller.gd # Click-drag construction placement (5-state FSM)

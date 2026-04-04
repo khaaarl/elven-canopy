@@ -6,7 +6,6 @@
 //
 // See also: `species.rs` for the dispatcher.
 
-use super::knuth_hash;
 use crate::color::Color;
 use crate::drawing::PixelBuffer;
 
@@ -26,18 +25,10 @@ pub enum TuskType {
 
 const TUSK_TYPES: [TuskType; 3] = [TuskType::Short, TuskType::Long, TuskType::None];
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ElephantParams {
     pub body_color: Color,
     pub tusk_type: TuskType,
-}
-
-pub fn params_from_seed(seed: i64) -> ElephantParams {
-    let h = knuth_hash(seed);
-    ElephantParams {
-        body_color: BODY_COLORS[(h % 4) as usize],
-        tusk_type: TUSK_TYPES[((h / 17) % 3) as usize],
-    }
 }
 
 pub fn params_from_traits(traits: &super::TraitMap) -> ElephantParams {

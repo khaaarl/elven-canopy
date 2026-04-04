@@ -1,27 +1,18 @@
 // GDExtension bridge for elven_canopy_sprites — converts pixel buffers to Godot textures.
 //
-// `SpriteGenerator` is a static utility class that GDScript calls to generate
-// creature and fruit sprites. Internally it delegates to `elven_canopy_sprites`
-// for all drawing, then wraps the raw RGBA8 bytes in a Godot `Image` →
-// `ImageTexture`.
+// `SpriteGenerator` is a static utility class exposing fruit sprite
+// generation to GDScript. Creature sprites are handled entirely by the
+// trait-based pipeline in `sim_bridge.rs` (`get_creature_sprite_by_id`)
+// and the `CreatureSprites` GDScript cache.
 //
-// API:
-// - `species_sprite(species_name, seed)` → `ImageTexture` (base sprite, no equipment)
-// - `species_sprite_fallen(species_name, seed)` → `ImageTexture` (rotated 90° CW for incapacitated)
-// - `fruit_sprite(shape, r, g, b, size_percent, glows)` → `ImageTexture`
+// Also provides the `pixel_buffer_to_texture` helper used by sim_bridge.
 //
-// Elf sprites with equipment are handled by the Rust-side sprite cache in
-// `sim_bridge.rs` (`get_elf_sprites`), not by direct GDScript calls. The
-// `species_sprite` API remains for non-elf species and the elfcyclopedia.
-//
-// See also: `elven_canopy_sprites` for the pure Rust sprite generation,
-// `sim_bridge.rs` for the main Godot↔Sim interface and elf sprite caching.
+// See also: `sim_bridge.rs` for the creature sprite cache,
+// `creature_sprites.gd` for the GDScript-side central sprite cache,
+// `elven_canopy_sprites` for the pure Rust sprite generation.
 
 use elven_canopy_sim::fruit::{FruitAppearance, FruitColor, FruitShape};
-use elven_canopy_sim::types::Species;
-use elven_canopy_sprites::{
-    PixelBuffer, create_fruit, create_species_sprite, species_params_from_seed,
-};
+use elven_canopy_sprites::{PixelBuffer, create_fruit};
 use godot::classes::image::Format;
 use godot::classes::{Image, ImageTexture};
 use godot::prelude::*;
@@ -44,56 +35,8 @@ pub(crate) fn pixel_buffer_to_texture(buf: &PixelBuffer) -> Option<Gd<ImageTextu
     ImageTexture::create_from_image(&image)
 }
 
-/// Parse a species name string into a `Species` enum value.
-fn parse_species_name(name: &str) -> Option<Species> {
-    match name {
-        "Elf" => Some(Species::Elf),
-        "Capybara" => Some(Species::Capybara),
-        "Boar" => Some(Species::Boar),
-        "Deer" => Some(Species::Deer),
-        "Elephant" => Some(Species::Elephant),
-        "Goblin" => Some(Species::Goblin),
-        "Monkey" => Some(Species::Monkey),
-        "Orc" => Some(Species::Orc),
-        "Squirrel" => Some(Species::Squirrel),
-        "Troll" => Some(Species::Troll),
-        "Hornet" => Some(Species::Hornet),
-        "Wyvern" => Some(Species::Wyvern),
-        _ => None,
-    }
-}
-
 #[godot_api]
 impl SpriteGenerator {
-    /// Generate a creature sprite texture from species name and integer seed.
-    /// Returns null if the species name is unknown.
-    #[func]
-    fn species_sprite(species_name: GString, seed: i64) -> Option<Gd<ImageTexture>> {
-        let species = parse_species_name(&species_name.to_string()).or_else(|| {
-            godot_warn!("SpriteGenerator: unknown species '{species_name}'");
-            None
-        })?;
-        let params = species_params_from_seed(species, seed);
-        let buf = create_species_sprite(&params);
-        pixel_buffer_to_texture(&buf)
-    }
-
-    /// Generate a creature sprite rotated 90° clockwise (fallen/incapacitated).
-    /// Same as `species_sprite` but the image is rotated so the creature
-    /// appears lying on its side. Used by creature renderers for incapacitated
-    /// creatures since billboard mode prevents node-level rotation.
-    #[func]
-    fn species_sprite_fallen(species_name: GString, seed: i64) -> Option<Gd<ImageTexture>> {
-        let species = parse_species_name(&species_name.to_string()).or_else(|| {
-            godot_warn!("SpriteGenerator: unknown species '{species_name}'");
-            None
-        })?;
-        let params = species_params_from_seed(species, seed);
-        let buf = create_species_sprite(&params);
-        let rotated = buf.rotate_90_cw();
-        pixel_buffer_to_texture(&rotated)
-    }
-
     /// Generate a 16x16 fruit sprite texture from appearance parameters.
     #[func]
     fn fruit_sprite(

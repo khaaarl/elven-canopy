@@ -9,7 +9,7 @@
 // simple and soft, armor is bulkier with highlights. Footwear has three
 // tiers: sandals (minimal straps), shoes (closed but short), boots (chunky
 // armor). Draw order is
-// managed by `create_creature_sprite` in `elf.rs` — this module just draws
+// managed by `apply_equipment_overlays` in `elf.rs` — this module just draws
 // individual pieces.
 //
 // See also: `elf.rs` for base sprite and compositing, `color.rs` for Color.

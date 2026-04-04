@@ -64,8 +64,7 @@
 ## ground_pile_info_panel.gd for the pile UI panel, orbital_camera.gd
 ## for follow mode, placement_controller.gd for the ray-snap algorithm
 ## origin, construction_controller.gd for construction placement suppression,
-## elf_renderer.gd / capybara_renderer.gd / creature_renderer.gd for
-## sprite position offsets.
+## creature_renderer.gd for sprite position offsets.
 
 extends Node3D
 

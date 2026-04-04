@@ -5,7 +5,6 @@
 //
 // See also: `species.rs` for the dispatcher.
 
-use super::knuth_hash;
 use crate::color::Color;
 use crate::drawing::PixelBuffer;
 
@@ -25,18 +24,10 @@ pub enum TuskSize {
 
 const TUSK_SIZES: [TuskSize; 3] = [TuskSize::Small, TuskSize::Medium, TuskSize::Large];
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct BoarParams {
     pub body_color: Color,
     pub tusk_size: TuskSize,
-}
-
-pub fn params_from_seed(seed: i64) -> BoarParams {
-    let h = knuth_hash(seed);
-    BoarParams {
-        body_color: BODY_COLORS[(h % 4) as usize],
-        tusk_size: TUSK_SIZES[((h / 17) % 3) as usize],
-    }
 }
 
 pub fn params_from_traits(traits: &super::TraitMap) -> BoarParams {

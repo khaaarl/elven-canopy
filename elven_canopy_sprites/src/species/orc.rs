@@ -5,7 +5,6 @@
 //
 // See also: `species.rs` for the dispatcher.
 
-use super::knuth_hash;
 use crate::color::Color;
 use crate::drawing::PixelBuffer;
 
@@ -25,18 +24,10 @@ pub enum WarPaint {
 
 const WAR_PAINTS: [WarPaint; 3] = [WarPaint::None, WarPaint::Stripe, WarPaint::Cross];
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct OrcParams {
     pub skin_color: Color,
     pub war_paint: WarPaint,
-}
-
-pub fn params_from_seed(seed: i64) -> OrcParams {
-    let h = knuth_hash(seed);
-    OrcParams {
-        skin_color: SKIN_COLORS[(h % 4) as usize],
-        war_paint: WAR_PAINTS[((h / 17) % 3) as usize],
-    }
 }
 
 pub fn params_from_traits(traits: &super::TraitMap) -> OrcParams {

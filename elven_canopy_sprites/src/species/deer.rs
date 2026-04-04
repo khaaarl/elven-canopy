@@ -5,7 +5,6 @@
 //
 // See also: `species.rs` for the dispatcher.
 
-use super::knuth_hash;
 use crate::color::Color;
 use crate::drawing::PixelBuffer;
 
@@ -37,22 +36,12 @@ pub enum SpotPattern {
 
 const SPOT_PATTERNS: [SpotPattern; 2] = [SpotPattern::None, SpotPattern::Spotted];
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct DeerParams {
     pub body_color: Color,
     pub antler_style: AntlerStyle,
     pub spot_pattern: SpotPattern,
     pub seed: i64,
-}
-
-pub fn params_from_seed(seed: i64) -> DeerParams {
-    let h = knuth_hash(seed);
-    DeerParams {
-        body_color: BODY_COLORS[(h % 4) as usize],
-        antler_style: ANTLER_STYLES[((h / 11) % 3) as usize],
-        spot_pattern: SPOT_PATTERNS[((h / 41) % 2) as usize],
-        seed,
-    }
 }
 
 pub fn params_from_traits(traits: &super::TraitMap) -> DeerParams {

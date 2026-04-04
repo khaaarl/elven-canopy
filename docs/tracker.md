@@ -69,8 +69,8 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-fast-checksum        Incremental state checksum for desync detection (replace full-state JSON serialization)
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fog-billboards       Fog post-process does not obscure billboard sprites
+[ ] B-per-species-iter     Eliminate per-species iteration in selection and tooltip controllers
 [ ] B-relay-stability      Windows TCP connection drops during singleplayer gameplay
-[ ] B-sprite-shuffle       Non-elf creature sprites shuffle appearance when population changes
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-aggro-fauna          Neutral fauna with aggro triggers
@@ -248,6 +248,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-spell-summon         Conjure temporary allied creature
 [ ] F-spell-system         Core spell casting infrastructure (SpellId, commands, mana costs)
 [ ] F-spell-thornbriar     Thornbriar zone spell (slow + damage area)
+[ ] F-sprite-cache-evict   Evict dead creatures from sprite caches
 [ ] F-stairs               Stairs and ramps for vertical movement
 [ ] F-starvation-rework    Starvation rework: incapacitation interaction and bleed-out
 [ ] F-status-effects       Generic creature status effect system
@@ -336,6 +337,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-shared-inventory     Buildings completing around the same time show identical inventory contents
 [x] B-sim-floats           Remaining f32/f64 in sim logic threaten determinism
 [x] B-spawn-creature       spawn_creature test helper finds first creature of species, not newly spawned
+[x] B-sprite-shuffle       Non-elf creature sprites shuffle appearance when population changes
 [x] B-start-paused-ui      start_paused_on_load UI desync and missing new-game support
 [x] B-tab-serde-tests      Fix tabulosity test compilation under feature unification
 [x] B-tame-already         Taming task doesn't detect already-tamed target
@@ -1895,7 +1897,7 @@ task-driven system (player commands, construction, hauling, etc.).
 **Related:** F-arrow-chase
 
 #### B-sprite-shuffle — Non-elf creature sprites shuffle appearance when population changes
-**Status:** Todo
+**Status:** Done
 
 Non-elf creature sprites shuffle appearance when population changes (e.g., debug-spawning a creature changes the look of all existing creatures of that same species). Elves are unaffected.
 
@@ -5954,6 +5956,20 @@ Chunks in the distance sometimes remain visible ("ghost" chunks) after they shou
 
 Most gameplay hotkeys (B, T, U, M, I, Y, Space, F1–F3, F12, ?) fire even when Ctrl/Shift/Alt are held. They should generally be suppressed when modifiers are active, but some cases may need individual consideration (e.g., Ctrl+1–9 for selection groups already uses modifiers intentionally). Go through each hotkey handler in action_toolbar.gd, main.gd, construction_controller.gd, and selection_controller.gd on a case-by-case basis.
 
+#### B-per-species-iter — Eliminate per-species iteration in selection and tooltip controllers
+**Status:** Todo
+
+`selection_controller.gd` and `tooltip_controller.gd` both have their own copies of `SPECIES_Y_OFFSETS` and iterate per-species to find creatures by ray-casting. They call per-species bridge functions (`get_creature_positions_with_ids(species, ...)`) in a loop over all species.
+
+This should be refactored so these controllers use a single all-species query (similar to `get_creature_render_data` which already returns all creatures at once). The duplicated `SPECIES_Y_OFFSETS` tables should reference the canonical one in `creature_renderer.gd`.
+
+The per-species `get_creature_positions_with_ids(species)`, `get_creature_hp_ratios(species)`, `get_creature_mp_ratios(species)`, and `get_creature_incapacitated(species)` bridge functions are now only used by these two controllers and should be consolidated or removed once the controllers are updated.
+
+**Key files:**
+- `godot/scripts/selection_controller.gd` — multiple per-species iteration loops for click/box/double-click selection
+- `godot/scripts/tooltip_controller.gd` — per-species iteration for hover tooltips
+- `elven_canopy_gdext/src/sim_bridge.rs` — per-species bridge functions still exist
+
 #### B-qem-deformation — QEM decimation visual artifacts
 **Status:** In Progress
 
@@ -7019,6 +7035,20 @@ Toolbar with creature spawn buttons and keyboard shortcuts. Placement
 controller handles click-to-place with nav node highlighting.
 
 **Related:** F-debug-menu
+
+#### F-sprite-cache-evict — Evict dead creatures from sprite caches
+**Status:** Todo
+
+The `creature_sprite_cache` HashMap in sim_bridge.rs and the `CreatureSprites._cache`/`_fallen_cache` static dictionaries in creature_sprites.gd never evict entries for dead creatures. They only clear on save load or new game init. In a long session with many creature deaths/spawns (e.g., extended combat, repeated debug spawning), texture entries accumulate without bound.
+
+Each entry holds two `Gd<ImageTexture>` objects (normal + fallen) plus a `SpriteKey`. For typical sessions this is negligible, but multi-hour sessions with aggressive raids could accumulate hundreds of stale entries.
+
+**Possible approaches:**
+- After the `for creature in &alive` loop in `get_creature_sprites()`, compute the alive creature ID set and remove cache entries not in it. This piggybacks on the per-frame iteration with no extra DB queries.
+- Periodic sweep on a timer (e.g., every 60 seconds) rather than per-frame, to amortize the cost.
+- On the GDScript side, `CreatureSprites` could accept a set of alive IDs from the renderer and prune stale entries.
+
+Low priority — only matters for very long sessions with high creature turnover.
 
 #### F-ssao — Screen-space ambient occlusion toggle
 **Status:** In Progress

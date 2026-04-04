@@ -6,7 +6,6 @@
 //
 // See also: `species.rs` for the dispatcher.
 
-use super::knuth_hash;
 use crate::color::Color;
 use crate::drawing::PixelBuffer;
 
@@ -32,18 +31,10 @@ const ACCESSORIES: [Accessory; 4] = [
     Accessory::Bow,
 ];
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CapybaraParams {
     pub body_color: Color,
     pub accessory: Accessory,
-}
-
-pub fn params_from_seed(seed: i64) -> CapybaraParams {
-    let h = knuth_hash(seed);
-    CapybaraParams {
-        body_color: BODY_COLORS[(h % 4) as usize],
-        accessory: ACCESSORIES[((h / 13) % 4) as usize],
-    }
 }
 
 pub fn params_from_traits(traits: &super::TraitMap) -> CapybaraParams {

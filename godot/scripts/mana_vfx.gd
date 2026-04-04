@@ -9,7 +9,7 @@
 ## Idle sprites are hidden and reused. The swirl texture is a procedural
 ## 12x12 blue spiral glyph generated once at startup.
 ##
-## See also: hp_bar.gd (overhead bar rendering), elf_renderer.gd (which
+## See also: hp_bar.gd (overhead bar rendering), creature_renderer.gd (which
 ## manages creature sprites), sim_bridge.rs get_mana_wasted_positions().
 
 extends Node3D

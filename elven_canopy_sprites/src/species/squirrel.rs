@@ -6,7 +6,6 @@
 //
 // See also: `species.rs` for the dispatcher.
 
-use super::knuth_hash;
 use crate::color::Color;
 use crate::drawing::PixelBuffer;
 
@@ -26,18 +25,10 @@ pub enum TailType {
 
 const TAIL_TYPES: [TailType; 3] = [TailType::Fluffy, TailType::ExtraFluffy, TailType::Curled];
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SquirrelParams {
     pub fur_color: Color,
     pub tail_type: TailType,
-}
-
-pub fn params_from_seed(seed: i64) -> SquirrelParams {
-    let h = knuth_hash(seed);
-    SquirrelParams {
-        fur_color: FUR_COLORS[(h % 4) as usize],
-        tail_type: TAIL_TYPES[((h / 23) % 3) as usize],
-    }
 }
 
 pub fn params_from_traits(traits: &super::TraitMap) -> SquirrelParams {

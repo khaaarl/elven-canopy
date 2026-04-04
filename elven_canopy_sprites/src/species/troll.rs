@@ -6,7 +6,6 @@
 //
 // See also: `species.rs` for the dispatcher.
 
-use super::knuth_hash;
 use crate::color::Color;
 use crate::drawing::PixelBuffer;
 
@@ -26,18 +25,10 @@ pub enum HornStyle {
 
 const HORN_STYLES: [HornStyle; 3] = [HornStyle::Short, HornStyle::Curved, HornStyle::None];
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TrollParams {
     pub skin_color: Color,
     pub horn_style: HornStyle,
-}
-
-pub fn params_from_seed(seed: i64) -> TrollParams {
-    let h = knuth_hash(seed);
-    TrollParams {
-        skin_color: SKIN_COLORS[(h % 4) as usize],
-        horn_style: HORN_STYLES[((h / 17) % 3) as usize],
-    }
 }
 
 pub fn params_from_traits(traits: &super::TraitMap) -> TrollParams {

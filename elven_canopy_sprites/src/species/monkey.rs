@@ -6,7 +6,6 @@
 //
 // See also: `species.rs` for the dispatcher.
 
-use super::knuth_hash;
 use crate::color::Color;
 use crate::drawing::PixelBuffer;
 
@@ -30,18 +29,10 @@ const FACE_MARKINGS: [FaceMarking; 3] = [
     FaceMarking::EyePatches,
 ];
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct MonkeyParams {
     pub fur_color: Color,
     pub face_marking: FaceMarking,
-}
-
-pub fn params_from_seed(seed: i64) -> MonkeyParams {
-    let h = knuth_hash(seed);
-    MonkeyParams {
-        fur_color: FUR_COLORS[(h % 4) as usize],
-        face_marking: FACE_MARKINGS[((h / 19) % 3) as usize],
-    }
 }
 
 pub fn params_from_traits(traits: &super::TraitMap) -> MonkeyParams {

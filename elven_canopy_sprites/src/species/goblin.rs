@@ -5,7 +5,6 @@
 //
 // See also: `species.rs` for the dispatcher.
 
-use super::knuth_hash;
 use crate::color::Color;
 use crate::drawing::PixelBuffer;
 
@@ -25,18 +24,10 @@ pub enum EarStyle {
 
 const EAR_STYLES: [EarStyle; 3] = [EarStyle::Pointed, EarStyle::Droopy, EarStyle::Wide];
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GoblinParams {
     pub skin_color: Color,
     pub ear_style: EarStyle,
-}
-
-pub fn params_from_seed(seed: i64) -> GoblinParams {
-    let h = knuth_hash(seed);
-    GoblinParams {
-        skin_color: SKIN_COLORS[(h % 4) as usize],
-        ear_style: EAR_STYLES[((h / 17) % 3) as usize],
-    }
 }
 
 pub fn params_from_traits(traits: &super::TraitMap) -> GoblinParams {

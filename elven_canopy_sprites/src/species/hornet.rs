@@ -7,7 +7,6 @@
 //
 // See also: `species.rs` for the dispatcher.
 
-use super::knuth_hash;
 use crate::color::Color;
 use crate::drawing::PixelBuffer;
 
@@ -46,20 +45,11 @@ pub enum WingStyle {
 
 const WING_STYLES: [WingStyle; 3] = [WingStyle::Short, WingStyle::Medium, WingStyle::Long];
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct HornetParams {
     pub body_color: Color,
     pub stripe_pattern: StripePattern,
     pub wing_style: WingStyle,
-}
-
-pub fn params_from_seed(seed: i64) -> HornetParams {
-    let h = knuth_hash(seed);
-    HornetParams {
-        body_color: BODY_COLORS[(h % 4) as usize],
-        stripe_pattern: STRIPE_PATTERNS[((h / 17) % 3) as usize],
-        wing_style: WING_STYLES[((h / 59) % 3) as usize],
-    }
 }
 
 pub fn params_from_traits(traits: &super::TraitMap) -> HornetParams {

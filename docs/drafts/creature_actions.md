@@ -347,7 +347,7 @@ All callers of `interpolated_position()` need updating to pass the MoveAction
 lookup:
 
 - `get_creature_positions()` — iterates creatures by species, used by
-  `get_elf_positions()` and `get_capybara_positions()`.
+  `creature_renderer.gd` for all species.
 - `get_creature_info()` — single creature lookup for the info panel.
 
 Each call site adds an O(1) `db.move_actions.get(&creature.id)` lookup.

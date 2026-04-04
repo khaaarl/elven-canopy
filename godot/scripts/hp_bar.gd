@@ -1,9 +1,8 @@
 ## Shared HP and MP bar utilities for creature renderers.
 ##
 ## Provides static helpers to create and update overhead bar sprites.
-## HP bars are used by elf_renderer.gd, capybara_renderer.gd, and
-## creature_renderer.gd. MP (mana) bars are only used by elf_renderer.gd
-## (elves are the only magical species currently).
+## HP and MP bars are used by creature_renderer.gd (the unified renderer for
+## all species). MP (mana) bars are only enabled for elves currently.
 ##
 ## HP bars show green/yellow/red fill proportional to current HP.
 ## Incapacitated creatures get a dark gray on black bar (always visible).
@@ -15,8 +14,8 @@
 ## Textures are cached: 21 pre-generated textures (0%, 5%, ..., 100% fill)
 ## per bar type, avoiding per-frame allocation.
 ##
-## See also: elf_renderer.gd, capybara_renderer.gd, creature_renderer.gd
-## which use these helpers, sim_bridge.rs get_creature_hp_ratios() and
+## See also: creature_renderer.gd which uses these helpers,
+## sim_bridge.rs get_creature_hp_ratios() and
 ## get_creature_mp_ratios() for the data sources.
 
 extends RefCounted

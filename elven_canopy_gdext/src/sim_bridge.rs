@@ -73,8 +73,7 @@
 //   large)` — casts `raycast_solid` along the mouse ray to find solid
 //   geometry, then snaps to the nearest nav node via `find_nearest_node`.
 // - **Commands:** `spawn_creature(species_name, x,y,z)` — generic creature
-//   spawner replacing `spawn_elf()` / `spawn_capybara()` (which remain as
-//   thin wrappers). Also `create_goto_task(x,y,z)`, `designate_build(x,y,z)`,
+//   spawner. Also `create_goto_task(x,y,z)`, `designate_build(x,y,z)`,
 //   `designate_build_rect(x,y,z,width,depth)`, etc. Commands are sent to
 //   the relay via `apply_or_send()` and applied when the Turn comes back.
 //   In test mode (no relay), they are applied directly to the session.
@@ -168,7 +167,7 @@
 // query callers, `construction_controller.gd` for build placement,
 // `blueprint_renderer.gd` for blueprint visualization.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use elven_canopy_protocol::message::ServerMessage;
@@ -554,10 +553,30 @@ pub struct SimBridge {
     /// Background music composition results, keyed by CompositionId.
     /// Each entry is None while generating, Some(pcm_data) when ready.
     pending_compositions: BTreeMap<u64, Arc<Mutex<Option<Vec<f32>>>>>,
-    /// Cached elf sprite textures and the draw info that produced them.
-    /// Indexed parallel to alive-elf iteration order. The cache invalidates
-    /// per-elf when `CreatureDrawInfo` changes (equipment, wear, etc.).
-    elf_sprite_cache: Vec<(elven_canopy_sprites::CreatureDrawInfo, Gd<ImageTexture>)>,
+    /// Unified sprite cache keyed by creature identity. Stores normal and
+    /// fallen (90° CW rotated) textures alongside the `SpriteKey` that
+    /// produced them. All species use the same key structure (`SpriteParams`
+    /// from biological traits + equipment). Invalidates per-creature when the
+    /// key changes.
+    creature_sprite_cache: HashMap<CreatureId, CachedCreatureSprite>,
+}
+
+/// Cache key for sprite invalidation — captures everything that affects a
+/// creature's visual appearance. Species-agnostic: all creatures use the
+/// same struct with `SpriteParams` (from biological traits) plus equipment.
+#[derive(Clone, Debug, PartialEq)]
+struct SpriteKey {
+    params: elven_canopy_sprites::SpriteParams,
+    equipment: [Option<elven_canopy_sprites::EquipSlotDrawInfo>;
+        elven_canopy_sim::inventory::EquipSlot::COUNT],
+}
+
+/// A cached creature sprite: the key that produced it, plus normal and fallen
+/// (incapacitated) textures.
+struct CachedCreatureSprite {
+    key: SpriteKey,
+    normal: Gd<ImageTexture>,
+    fallen: Gd<ImageTexture>,
 }
 
 #[godot_api]
@@ -581,7 +600,7 @@ impl INode for SimBridge {
             base_ticks_per_turn: 50,
             mp_time_since_turn: 0.0,
             pending_compositions: BTreeMap::new(),
-            elf_sprite_cache: Vec::new(),
+            creature_sprite_cache: HashMap::new(),
         }
     }
 }
@@ -621,7 +640,7 @@ impl SimBridge {
         // Drop Godot-object references (Gd<ImageTexture>) while the engine is
         // still intact. Without this, they survive until Godot frees the
         // SimBridge node during engine shutdown, which can crash on Windows.
-        self.elf_sprite_cache.clear();
+        self.creature_sprite_cache.clear();
 
         godot_print!("SimBridge: shutdown complete");
     }
@@ -706,6 +725,7 @@ impl SimBridge {
         self.wait_for_sim_ready();
         if self.session.has_sim() {
             self.rebuild_mesh_cache();
+            self.creature_sprite_cache.clear();
             godot_print!("SimBridge: simulation initialized with seed {seed}");
         }
     }
@@ -1103,12 +1123,6 @@ impl SimBridge {
         })
     }
 
-    /// Return elf positions. Legacy wrapper — delegates to `get_creature_positions`.
-    #[func]
-    fn get_elf_positions(&self, render_tick: f64) -> PackedVector3Array {
-        self.get_creature_positions(GString::from("Elf"), render_tick)
-    }
-
     /// Return the number of elves. Legacy wrapper — delegates to `creature_count_by_name`.
     #[func]
     fn elf_count(&self) -> i32 {
@@ -1147,9 +1161,9 @@ impl SimBridge {
 
     /// Spawn a creature of the named species at the given voxel position.
     ///
-    /// Generic replacement for `spawn_elf()` / `spawn_capybara()`. Species
-    /// name must match a `Species` enum variant ("Elf", "Capybara", "Boar",
-    /// "Deer", "Monkey", "Squirrel"). Unknown names are silently ignored.
+    /// Species name must match a `Species` enum variant ("Elf", "Capybara",
+    /// "Boar", "Deer", "Monkey", "Squirrel", etc.). Unknown names are
+    /// silently ignored.
     #[func]
     fn spawn_creature(&mut self, species_name: GString, x: i32, y: i32, z: i32) {
         let Some(species) = parse_species(&species_name.to_string()) else {
@@ -1231,12 +1245,6 @@ impl SimBridge {
     #[func]
     fn spawn_elf(&mut self, x: i32, y: i32, z: i32) {
         self.spawn_creature(GString::from("Elf"), x, y, z);
-    }
-
-    /// Return capybara positions. Legacy wrapper — delegates to `get_creature_positions`.
-    #[func]
-    fn get_capybara_positions(&self, render_tick: f64) -> PackedVector3Array {
-        self.get_creature_positions(GString::from("Capybara"), render_tick)
     }
 
     /// Return the number of capybaras. Legacy wrapper — delegates to `creature_count_by_name`.
@@ -1512,8 +1520,8 @@ impl SimBridge {
     /// Return info about the creature at the given species-filtered index.
     ///
     /// The index corresponds to the creature's position in the iteration
-    /// order of `get_elf_positions()` or `get_capybara_positions()` — i.e.,
-    /// BTreeMap order filtered by species. The `render_tick` parameter is
+    /// order of `get_creature_positions()` — i.e., BTreeMap order filtered
+    /// by species. The `render_tick` parameter is
     /// used for position interpolation (same as the position getters).
     ///
     /// Returns a VarDictionary with keys: "species", "x", "y", "z", "has_task",
@@ -2956,7 +2964,7 @@ impl SimBridge {
 
     /// Return positions for any species as a PackedVector3Array, interpolated
     /// to the given render tick for smooth movement between nav nodes.
-    /// Generic replacement for `get_elf_positions()` / `get_capybara_positions()`.
+    /// Returns positions for any species, used by creature_renderer.gd.
     #[func]
     fn get_creature_positions(
         &self,
@@ -3079,123 +3087,187 @@ impl SimBridge {
         arr
     }
 
-    /// Return sprite textures and change flags for all alive elves.
-    ///
-    /// Returns a `VarDictionary` with two keys:
-    /// - `"textures"`: `VarArray` of `ImageTexture`, one per alive elf
-    ///   (parallel to `get_elf_positions`).
-    /// - `"changed"`: `PackedByteArray` of 0/1 flags indicating which
-    ///   textures were regenerated this frame.
-    ///
-    /// The cache is keyed on `CreatureDrawInfo` — a struct that captures
-    /// everything affecting sprite appearance (seed, equipment, wear state).
-    /// Adding new visual dimensions later is a Rust-only change: extend
-    /// `CreatureDrawInfo`, and the cache invalidates automatically.
-    #[func]
-    fn get_elf_sprites(&mut self) -> VarDictionary {
+    /// Build a `SpriteKey` for a creature from current sim state.
+    /// Species-agnostic: all creatures use the same path — biological traits
+    /// for appearance, inventory for equipment.
+    fn build_sprite_key(
+        sim: &elven_canopy_sim::sim::SimState,
+        creature: &elven_canopy_sim::db::Creature,
+    ) -> SpriteKey {
         use elven_canopy_sim::inventory::{EquipSlot, WearCategory};
-        use elven_canopy_sim::types::TraitKind;
-        use elven_canopy_sprites::{CreatureDrawInfo, EquipSlotDrawInfo};
+        use elven_canopy_sprites::EquipSlotDrawInfo;
 
-        let mut textures = VarArray::new();
-        let mut changed = PackedByteArray::new();
-        let Some(sim) = &self.session.sim else {
-            let mut result = VarDictionary::new();
-            result.set("textures", textures);
-            result.set("changed", changed);
-            return result;
-        };
+        // Appearance from biological traits (all species).
+        let trait_rows = sim
+            .db
+            .creature_traits
+            .by_creature_id(&creature.id, elven_canopy_sim::tabulosity::QueryOpts::ASC);
+        let trait_map: elven_canopy_sprites::TraitMap = trait_rows
+            .into_iter()
+            .map(|t| (t.trait_kind, t.value))
+            .collect();
+        let params = elven_canopy_sprites::species_params_from_traits(creature.species, &trait_map);
 
+        // Equipment from inventory (all species — non-equipped creatures
+        // just have all-None, which is free to compare).
         let worn_pct = sim.config.durability_worn_pct;
         let damaged_pct = sim.config.durability_damaged_pct;
-
-        let alive_elves: Vec<_> = sim
-            .db
-            .creatures
-            .iter_all()
-            .filter(|c| c.species == Species::Elf && c.vital_status != VitalStatus::Dead)
-            .collect();
-
-        // Resize cache if elf count changed.
-        // We'll rebuild entries that need it below.
-        let elf_count = alive_elves.len();
-
-        for (i, creature) in alive_elves.iter().enumerate() {
-            // Build the draw info from current sim state.
-            let mut equipment = [None; EquipSlot::COUNT];
-            for stack in sim.inv_items(creature.inventory_id) {
-                if let Some(slot) = stack.equipped_slot {
-                    let color = sim.item_color(&stack);
-                    equipment[slot as usize] = Some(EquipSlotDrawInfo {
-                        kind: stack.kind,
-                        color: elven_canopy_sprites::Color::from_item_color(color),
-                        wear: WearCategory::from_hp(
-                            stack.current_hp,
-                            stack.max_hp,
-                            worn_pct,
-                            damaged_pct,
-                        ),
-                    });
-                }
-            }
-            let cid = creature.id;
-            let info = CreatureDrawInfo {
-                hair_color_idx: sim.trait_int(cid, TraitKind::HairColor, 0) as u8,
-                eye_color_idx: sim.trait_int(cid, TraitKind::EyeColor, 0) as u8,
-                skin_tone_idx: sim.trait_int(cid, TraitKind::SkinTone, 0) as u8,
-                hair_style_idx: sim.trait_int(cid, TraitKind::HairStyle, 0) as u8,
-                hair_value: sim.trait_int(cid, TraitKind::HairValue, 0),
-                hair_saturation: sim.trait_int(cid, TraitKind::HairSaturation, 0),
-                eye_value: sim.trait_int(cid, TraitKind::EyeValue, 0),
-                eye_saturation: sim.trait_int(cid, TraitKind::EyeSaturation, 0),
-                skin_melanin: sim.trait_int(cid, TraitKind::SkinMelanin, 0),
-                skin_ruddiness: sim.trait_int(cid, TraitKind::SkinRuddiness, 0),
-                hair_blend_target: sim.trait_int(cid, TraitKind::HairBlendTarget, -1),
-                hair_blend_weight: sim.trait_int(cid, TraitKind::HairBlendWeight, 0),
-                eye_blend_target: sim.trait_int(cid, TraitKind::EyeBlendTarget, -1),
-                eye_blend_weight: sim.trait_int(cid, TraitKind::EyeBlendWeight, 0),
-                equipment,
-            };
-
-            // Check cache hit.
-            let is_changed = if i < self.elf_sprite_cache.len() {
-                self.elf_sprite_cache[i].0 != info
-            } else {
-                true
-            };
-
-            if is_changed {
-                let buf = elven_canopy_sprites::create_creature_sprite(&info);
-                if let Some(tex) = pixel_buffer_to_texture(&buf) {
-                    if i < self.elf_sprite_cache.len() {
-                        self.elf_sprite_cache[i] = (info, tex.clone());
-                    } else {
-                        self.elf_sprite_cache.push((info, tex.clone()));
-                    }
-                    textures.push(&tex.to_variant());
-                    changed.push(1);
-                } else {
-                    // pixel_buffer_to_texture failed (shouldn't happen).
-                    // Push cached texture if available, otherwise skip to
-                    // keep textures/changed arrays aligned.
-                    if i < self.elf_sprite_cache.len() {
-                        textures.push(&self.elf_sprite_cache[i].1.to_variant());
-                    }
-                    changed.push(0);
-                }
-            } else {
-                textures.push(&self.elf_sprite_cache[i].1.to_variant());
-                changed.push(0);
+        let mut equipment = [None; EquipSlot::COUNT];
+        for stack in sim.inv_items(creature.inventory_id) {
+            if let Some(slot) = stack.equipped_slot {
+                let color = sim.item_color(&stack);
+                equipment[slot as usize] = Some(EquipSlotDrawInfo {
+                    kind: stack.kind,
+                    color: elven_canopy_sprites::Color::from_item_color(color),
+                    wear: WearCategory::from_hp(
+                        stack.current_hp,
+                        stack.max_hp,
+                        worn_pct,
+                        damaged_pct,
+                    ),
+                });
             }
         }
 
-        // Trim cache if elf count shrank (deaths).
-        self.elf_sprite_cache.truncate(elf_count);
+        SpriteKey { params, equipment }
+    }
+
+    /// Render a sprite from a `SpriteKey`, returning normal and fallen
+    /// (90° CW rotated) textures.
+    fn render_sprite(key: &SpriteKey) -> Option<(Gd<ImageTexture>, Gd<ImageTexture>)> {
+        let buf = elven_canopy_sprites::create_sprite_with_equipment(&key.params, &key.equipment);
+        let normal = pixel_buffer_to_texture(&buf)?;
+        let fallen = pixel_buffer_to_texture(&buf.rotate_90_cw())?;
+        Some((normal, fallen))
+    }
+
+    /// Return positions and status for all alive creatures in one call.
+    ///
+    /// Sprites are NOT included — callers get sprites per-creature via
+    /// `get_creature_sprite_by_id()` (wrapped by `CreatureSprites` in
+    /// GDScript). The Rust-side sprite cache handles change detection.
+    ///
+    /// Returns a `VarDictionary` with parallel arrays (all in BTreeMap
+    /// iteration order, no species filtering):
+    /// - `creature_ids`: `PackedStringArray` of creature UUID strings
+    /// - `species`: `PackedStringArray` of species name strings
+    /// - `positions`: `PackedVector3Array` of interpolated positions
+    /// - `hp_ratios`: `PackedFloat32Array` (0.0–1.0)
+    /// - `mp_ratios`: `PackedFloat32Array` (0.0–1.0, 1.0 for non-mana species)
+    /// - `incap_flags`: `PackedByteArray` (1 = incapacitated)
+    #[func]
+    fn get_creature_render_data(&self, render_tick: f64) -> VarDictionary {
+        let mut creature_ids = PackedStringArray::new();
+        let mut species_names = PackedStringArray::new();
+        let mut positions = PackedVector3Array::new();
+        let mut hp_ratios = PackedFloat32Array::new();
+        let mut mp_ratios = PackedFloat32Array::new();
+        let mut incap_flags = PackedByteArray::new();
+
+        let Some(sim) = &self.session.sim else {
+            let mut result = VarDictionary::new();
+            result.set("creature_ids", creature_ids);
+            result.set("species", species_names);
+            result.set("positions", positions);
+            result.set("hp_ratios", hp_ratios);
+            result.set("mp_ratios", mp_ratios);
+            result.set("incap_flags", incap_flags);
+            return result;
+        };
+
+        for creature in sim
+            .db
+            .creatures
+            .iter_all()
+            .filter(|c| c.vital_status != VitalStatus::Dead)
+        {
+            let cid = creature.id;
+            creature_ids.push(&GString::from(cid.0.to_string().as_str()));
+            species_names.push(&GString::from(species_name(creature.species)));
+
+            let ma = sim.db.move_actions.get(&cid);
+            let (x, y, z) = creature.interpolated_position(render_tick, ma.as_ref());
+            positions.push(Vector3::new(x, y, z));
+
+            let hp_ratio = if creature.hp_max > 0 {
+                creature.hp as f32 / creature.hp_max as f32
+            } else {
+                1.0
+            };
+            hp_ratios.push(hp_ratio.clamp(0.0, 1.0));
+            let mp_ratio = if creature.mp_max > 0 {
+                creature.mp as f32 / creature.mp_max as f32
+            } else {
+                1.0
+            };
+            mp_ratios.push(mp_ratio.clamp(0.0, 1.0));
+            let is_incap: u8 = if creature.vital_status == VitalStatus::Incapacitated {
+                1
+            } else {
+                0
+            };
+            incap_flags.push(is_incap);
+        }
 
         let mut result = VarDictionary::new();
-        result.set("textures", textures);
-        result.set("changed", changed);
+        result.set("creature_ids", creature_ids);
+        result.set("species", species_names);
+        result.set("positions", positions);
+        result.set("hp_ratios", hp_ratios);
+        result.set("mp_ratios", mp_ratios);
+        result.set("incap_flags", incap_flags);
         result
+    }
+
+    /// Return the trait-based sprite for a single creature by ID.
+    ///
+    /// Returns a `VarDictionary` with `normal` and `fallen` `ImageTexture`
+    /// keys plus a `changed` bool, or an empty dict if the creature is not
+    /// found. Uses the `creature_sprite_cache`.
+    #[func]
+    fn get_creature_sprite_by_id(&mut self, creature_id: GString) -> VarDictionary {
+        let Some(cid) = parse_creature_id(&creature_id.to_string()) else {
+            return VarDictionary::new();
+        };
+        let Some(sim) = &self.session.sim else {
+            return VarDictionary::new();
+        };
+        let Some(creature) = sim.db.creatures.get(&cid) else {
+            return VarDictionary::new();
+        };
+
+        let key = Self::build_sprite_key(sim, &creature);
+
+        let is_changed = self
+            .creature_sprite_cache
+            .get(&cid)
+            .is_none_or(|cached| cached.key != key);
+
+        if is_changed && let Some((normal, fallen)) = Self::render_sprite(&key) {
+            self.creature_sprite_cache.insert(
+                cid,
+                CachedCreatureSprite {
+                    key,
+                    normal: normal.clone(),
+                    fallen: fallen.clone(),
+                },
+            );
+            let mut result = VarDictionary::new();
+            result.set("normal", normal);
+            result.set("fallen", fallen);
+            result.set("changed", true);
+            return result;
+        }
+
+        if let Some(cached) = self.creature_sprite_cache.get(&cid) {
+            let mut result = VarDictionary::new();
+            result.set("normal", cached.normal.clone());
+            result.set("fallen", cached.fallen.clone());
+            result.set("changed", false);
+            result
+        } else {
+            VarDictionary::new()
+        }
     }
 
     /// Return positions of all in-flight projectiles as a PackedVector3Array.
@@ -3479,6 +3551,10 @@ impl SimBridge {
                 );
             }
             self.rebuild_mesh_cache();
+            // Clear sprite caches so loaded creatures get fresh textures
+            // from their trait data rather than stale entries from the
+            // previous session.
+            self.creature_sprite_cache.clear();
             true
         } else {
             for e in &events {
@@ -3584,13 +3660,6 @@ impl SimBridge {
         if let Some(handle) = self.relay_handle.take() {
             handle.stop();
         }
-    }
-
-    /// Spawn a capybara at the given voxel position.
-    /// Legacy wrapper — delegates to `spawn_creature("Capybara", ...)`.
-    #[func]
-    fn spawn_capybara(&mut self, x: i32, y: i32, z: i32) {
-        self.spawn_creature(GString::from("Capybara"), x, y, z);
     }
 
     /// Return all ground piles as a `VarArray` of dictionaries.

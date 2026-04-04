@@ -4,16 +4,17 @@
 // and skin tone. The base sprite is bare-skinned — all clothing and armor
 // visuals come from equipment overlays drawn by `elf_equipment.rs`.
 //
-// `create_base_sprite` produces the unclothed elf. `create_creature_sprite`
-// composites equipment overlays on top of the base, using item-resolved colors
-// from a `CreatureDrawInfo` fingerprint. The old `create_sprite` function calls
-// `create_base_sprite` for backward compatibility (e.g., elfcyclopedia).
+// `create_base_sprite` produces the unclothed elf. Equipment compositing is
+// handled by `apply_equipment_overlays`, which layers slot-ordered overlays
+// onto a base sprite. The species-agnostic entry point is
+// `create_sprite_with_equipment` in `species.rs`. The old `create_sprite`
+// function calls `create_base_sprite` for backward compatibility (e.g.,
+// elfcyclopedia).
 //
 // See also: `elf_equipment.rs` for equipment overlay drawing, `color.rs`
 // for the ItemColor→Color conversion, `species.rs` for the dispatcher.
 
 use super::elf_equipment;
-use super::knuth_hash;
 use crate::color::Color;
 use crate::drawing::PixelBuffer;
 use elven_canopy_sim::inventory::{EquipSlot, ItemKind, WearCategory};
@@ -65,7 +66,7 @@ const HAIR_STYLES: [HairStyle; 3] = [
     HairStyle::Wild,
 ];
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ElfParams {
     pub hair_color: Color,
     pub eye_color: Color,
@@ -79,54 +80,6 @@ pub struct EquipSlotDrawInfo {
     pub kind: ItemKind,
     pub color: Color,
     pub wear: WearCategory,
-}
-
-/// Complete drawing info for one creature — the fingerprint that determines
-/// sprite appearance. The render function `create_creature_sprite` is a
-/// deterministic stateless function of this struct: same `CreatureDrawInfo`
-/// always produces the same `PixelBuffer`.
-///
-/// Biological trait indices (hair color, eye color, etc.) come from the
-/// `creature_traits` table in the sim. Adding a new visual dimension means
-/// adding a field here — the cache in gdext will automatically invalidate
-/// when the struct changes.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CreatureDrawInfo {
-    pub hair_color_idx: u8,
-    pub eye_color_idx: u8,
-    pub skin_tone_idx: u8,
-    pub hair_style_idx: u8,
-    /// VSH pigmentation: hair value (dark↔light), 0 = no adjustment.
-    pub hair_value: i64,
-    /// VSH pigmentation: hair saturation (muted↔vivid), 0 = no adjustment.
-    pub hair_saturation: i64,
-    /// VSH pigmentation: eye value (dark↔light), 0 = no adjustment.
-    pub eye_value: i64,
-    /// VSH pigmentation: eye saturation (muted↔vivid), 0 = no adjustment.
-    pub eye_saturation: i64,
-    /// VSH pigmentation: skin melanin, 0 = no adjustment.
-    pub skin_melanin: i64,
-    /// VSH pigmentation: skin ruddiness, 0 = no adjustment.
-    pub skin_ruddiness: i64,
-    /// Hue blend: secondary hair hue index (-1 = no blend).
-    pub hair_blend_target: i64,
-    /// Hue blend: weight toward secondary (0–255, 0 = fully primary).
-    pub hair_blend_weight: i64,
-    /// Hue blend: secondary eye hue index (-1 = no blend).
-    pub eye_blend_target: i64,
-    /// Hue blend: weight toward secondary (0–255, 0 = fully primary).
-    pub eye_blend_weight: i64,
-    pub equipment: [Option<EquipSlotDrawInfo>; EquipSlot::COUNT],
-}
-
-pub fn params_from_seed(seed: i64) -> ElfParams {
-    let h = knuth_hash(seed);
-    ElfParams {
-        hair_color: HAIR_COLORS[(h % 7) as usize],
-        eye_color: EYE_COLORS[((h / 7) % 6) as usize],
-        skin_tone: SKIN_TONES[((h / 31) % 4) as usize],
-        hair_style: HAIR_STYLES[((h / 131) % 3) as usize],
-    }
 }
 
 /// Build `ElfParams` from trait indices (as stored in the `creature_traits` table).
@@ -164,35 +117,6 @@ pub fn params_from_traits(traits: &super::TraitMap) -> ElfParams {
             .apply_saturation(eye_sat),
         skin_tone: apply_skin_vsh(SKIN_TONES[skin_idx], melanin, ruddiness),
         hair_style: HAIR_STYLES[style_idx],
-    }
-}
-
-/// Build `ElfParams` directly from the `CreatureDrawInfo` trait indices and
-/// VSH pigmentation values, including hue blending.
-fn params_from_draw_info(info: &CreatureDrawInfo) -> ElfParams {
-    let hair_hue = super::resolve_hue(
-        &HAIR_COLORS,
-        info.hair_color_idx as usize,
-        info.hair_blend_target,
-        info.hair_blend_weight,
-    );
-    let eye_hue = super::resolve_hue(
-        &EYE_COLORS,
-        info.eye_color_idx as usize,
-        info.eye_blend_target,
-        info.eye_blend_weight,
-    );
-    let base_skin = SKIN_TONES[info.skin_tone_idx as usize % SKIN_TONES.len()];
-
-    ElfParams {
-        hair_color: hair_hue
-            .apply_value(info.hair_value)
-            .apply_saturation(info.hair_saturation),
-        eye_color: eye_hue
-            .apply_value(info.eye_value)
-            .apply_saturation(info.eye_saturation),
-        skin_tone: apply_skin_vsh(base_skin, info.skin_melanin, info.skin_ruddiness),
-        hair_style: HAIR_STYLES[info.hair_style_idx as usize % HAIR_STYLES.len()],
     }
 }
 
@@ -384,30 +308,24 @@ fn slot_draw_order(slot: EquipSlot) -> u8 {
     }
 }
 
-/// Create a fully composited creature sprite from a `CreatureDrawInfo`.
-/// Deterministic and stateless — same input always produces the same output.
-/// Equipment is drawn in a fixed z-order (legs → feet → torso → hands → head).
-pub fn create_creature_sprite(info: &CreatureDrawInfo) -> PixelBuffer {
-    let params = params_from_draw_info(info);
-    let mut buf = create_base_sprite(&params);
-
-    // Collect equipped slots, sort by draw order for correct z-layering.
+/// Apply equipment overlays onto an existing sprite buffer. Equipment is
+/// drawn in a fixed z-order (legs → feet → torso → hands → head).
+/// Species-agnostic entry point — called from `create_sprite_with_equipment`
+/// for any species that has overlay art (currently only elves).
+pub fn apply_equipment_overlays(
+    buf: &mut PixelBuffer,
+    equipment: &[Option<EquipSlotDrawInfo>; EquipSlot::COUNT],
+) {
     let mut slots: Vec<(EquipSlot, &EquipSlotDrawInfo)> = ALL_SLOTS
         .iter()
         .copied()
-        .filter_map(|slot| {
-            info.equipment[slot as usize]
-                .as_ref()
-                .map(|draw| (slot, draw))
-        })
+        .filter_map(|slot| equipment[slot as usize].as_ref().map(|draw| (slot, draw)))
         .collect();
     slots.sort_by_key(|(slot, _)| slot_draw_order(*slot));
 
     for (_slot, draw) in slots {
-        elf_equipment::draw_equipment(&mut buf, draw.kind, draw.color);
+        elf_equipment::draw_equipment(buf, draw.kind, draw.color);
     }
-
-    buf
 }
 
 /// All equip slots in declaration order, for iteration.
@@ -422,35 +340,16 @@ const ALL_SLOTS: [EquipSlot; EquipSlot::COUNT] = [
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn bare_info() -> CreatureDrawInfo {
-        CreatureDrawInfo {
-            hair_color_idx: 2,
-            eye_color_idx: 1,
-            skin_tone_idx: 0,
-            hair_style_idx: 1,
-            hair_value: 0,
-            hair_saturation: 0,
-            eye_value: 0,
-            eye_saturation: 0,
-            skin_melanin: 0,
-            skin_ruddiness: 0,
-            hair_blend_target: -1,
-            hair_blend_weight: 0,
-            eye_blend_target: -1,
-            eye_blend_weight: 0,
-            equipment: [None; EquipSlot::COUNT],
-        }
-    }
+    use crate::species::SpriteParams;
 
     fn with_slot(
-        info: &CreatureDrawInfo,
+        equipment: &[Option<EquipSlotDrawInfo>; EquipSlot::COUNT],
         slot: EquipSlot,
         kind: ItemKind,
         color: Color,
-    ) -> CreatureDrawInfo {
-        let mut new = info.clone();
-        new.equipment[slot as usize] = Some(EquipSlotDrawInfo {
+    ) -> [Option<EquipSlotDrawInfo>; EquipSlot::COUNT] {
+        let mut new = *equipment;
+        new[slot as usize] = Some(EquipSlotDrawInfo {
             kind,
             color,
             wear: WearCategory::Good,
@@ -458,23 +357,35 @@ mod tests {
         new
     }
 
+    fn default_elf_params() -> ElfParams {
+        let traits = std::collections::BTreeMap::new();
+        params_from_traits(&traits)
+    }
+
+    fn make_sprite(
+        params: &ElfParams,
+        equipment: &[Option<EquipSlotDrawInfo>; EquipSlot::COUNT],
+    ) -> PixelBuffer {
+        super::super::create_sprite_with_equipment(&SpriteParams::Elf(params.clone()), equipment)
+    }
+
     #[test]
     fn base_sprite_dimensions() {
-        let buf = create_base_sprite(&params_from_seed(42));
+        let buf = create_base_sprite(&default_elf_params());
         assert_eq!(buf.width(), 48);
         assert_eq!(buf.height(), 48);
     }
 
     #[test]
     fn base_sprite_has_opaque_pixels() {
-        let buf = create_base_sprite(&params_from_seed(42));
+        let buf = create_base_sprite(&default_elf_params());
         let has_opaque = buf.data().chunks(4).any(|px| px[3] > 0);
         assert!(has_opaque);
     }
 
     #[test]
     fn create_sprite_backward_compat() {
-        let p = params_from_seed(42);
+        let p = default_elf_params();
         let buf = create_sprite(&p);
         assert_eq!(buf.width(), 48);
         assert_eq!(buf.height(), 48);
@@ -483,9 +394,11 @@ mod tests {
 
     #[test]
     fn creature_sprite_deterministic() {
-        let info = with_slot(
+        let params = default_elf_params();
+        let no_equip = [None; EquipSlot::COUNT];
+        let equipment = with_slot(
             &with_slot(
-                &bare_info(),
+                &no_equip,
                 EquipSlot::Head,
                 ItemKind::Helmet,
                 Color::rgb(0.5, 0.5, 0.5),
@@ -494,138 +407,97 @@ mod tests {
             ItemKind::Breastplate,
             Color::rgb(0.6, 0.3, 0.2),
         );
-        let b1 = create_creature_sprite(&info);
-        let b2 = create_creature_sprite(&info);
+        let b1 = make_sprite(&params, &equipment);
+        let b2 = make_sprite(&params, &equipment);
         assert_eq!(b1.data(), b2.data());
     }
 
     #[test]
     fn creature_sprite_differs_from_bare() {
-        let bare = create_creature_sprite(&bare_info());
+        let params = default_elf_params();
+        let no_equip = [None; EquipSlot::COUNT];
+        let bare = make_sprite(&params, &no_equip);
         let equipped = with_slot(
-            &bare_info(),
+            &no_equip,
             EquipSlot::Torso,
             ItemKind::Tunic,
             Color::rgb(0.8, 0.2, 0.2),
         );
-        let equipped_buf = create_creature_sprite(&equipped);
+        let equipped_buf = make_sprite(&params, &equipped);
         assert_ne!(bare.data(), equipped_buf.data());
     }
 
     #[test]
     fn different_equipment_colors_produce_different_sprites() {
+        let params = default_elf_params();
+        let no_equip = [None; EquipSlot::COUNT];
         let red = with_slot(
-            &bare_info(),
+            &no_equip,
             EquipSlot::Torso,
             ItemKind::Tunic,
             Color::rgb(0.9, 0.1, 0.1),
         );
         let blue = with_slot(
-            &bare_info(),
+            &no_equip,
             EquipSlot::Torso,
             ItemKind::Tunic,
             Color::rgb(0.1, 0.1, 0.9),
         );
         assert_ne!(
-            create_creature_sprite(&red).data(),
-            create_creature_sprite(&blue).data()
+            make_sprite(&params, &red).data(),
+            make_sprite(&params, &blue).data()
         );
-    }
-
-    #[test]
-    fn creature_draw_info_equality() {
-        let a = with_slot(
-            &bare_info(),
-            EquipSlot::Head,
-            ItemKind::Hat,
-            Color::rgb(0.5, 0.5, 0.5),
-        );
-        let b = with_slot(
-            &bare_info(),
-            EquipSlot::Head,
-            ItemKind::Hat,
-            Color::rgb(0.5, 0.5, 0.5),
-        );
-        assert_eq!(a, b);
-
-        let c = with_slot(
-            &bare_info(),
-            EquipSlot::Head,
-            ItemKind::Helmet,
-            Color::rgb(0.5, 0.5, 0.5),
-        );
-        assert_ne!(a, c);
     }
 
     #[test]
     fn fully_equipped_creature_sprite() {
-        let info = CreatureDrawInfo {
-            hair_color_idx: 0,
-            eye_color_idx: 0,
-            skin_tone_idx: 0,
-            hair_style_idx: 0,
-            hair_value: 0,
-            hair_saturation: 0,
-            eye_value: 0,
-            eye_saturation: 0,
-            skin_melanin: 0,
-            skin_ruddiness: 0,
-            hair_blend_target: -1,
-            hair_blend_weight: 0,
-            eye_blend_target: -1,
-            eye_blend_weight: 0,
-            equipment: [
-                Some(EquipSlotDrawInfo {
-                    kind: ItemKind::Helmet,
-                    color: Color::rgb(0.5, 0.5, 0.5),
-                    wear: WearCategory::Good,
-                }),
-                Some(EquipSlotDrawInfo {
-                    kind: ItemKind::Breastplate,
-                    color: Color::rgb(0.6, 0.3, 0.2),
-                    wear: WearCategory::Worn,
-                }),
-                Some(EquipSlotDrawInfo {
-                    kind: ItemKind::Greaves,
-                    color: Color::rgb(0.4, 0.4, 0.4),
-                    wear: WearCategory::Good,
-                }),
-                Some(EquipSlotDrawInfo {
-                    kind: ItemKind::Boots,
-                    color: Color::rgb(0.3, 0.2, 0.1),
-                    wear: WearCategory::Good,
-                }),
-                Some(EquipSlotDrawInfo {
-                    kind: ItemKind::Gauntlets,
-                    color: Color::rgb(0.5, 0.5, 0.5),
-                    wear: WearCategory::Damaged,
-                }),
-            ],
-        };
-        let buf = create_creature_sprite(&info);
+        let params = default_elf_params();
+        let equipment: [Option<EquipSlotDrawInfo>; EquipSlot::COUNT] = [
+            Some(EquipSlotDrawInfo {
+                kind: ItemKind::Helmet,
+                color: Color::rgb(0.5, 0.5, 0.5),
+                wear: WearCategory::Good,
+            }),
+            Some(EquipSlotDrawInfo {
+                kind: ItemKind::Breastplate,
+                color: Color::rgb(0.6, 0.3, 0.2),
+                wear: WearCategory::Worn,
+            }),
+            Some(EquipSlotDrawInfo {
+                kind: ItemKind::Greaves,
+                color: Color::rgb(0.4, 0.4, 0.4),
+                wear: WearCategory::Good,
+            }),
+            Some(EquipSlotDrawInfo {
+                kind: ItemKind::Boots,
+                color: Color::rgb(0.3, 0.2, 0.1),
+                wear: WearCategory::Good,
+            }),
+            Some(EquipSlotDrawInfo {
+                kind: ItemKind::Gauntlets,
+                color: Color::rgb(0.5, 0.5, 0.5),
+                wear: WearCategory::Damaged,
+            }),
+        ];
+        let buf = make_sprite(&params, &equipment);
         assert_eq!(buf.width(), 48);
         assert_eq!(buf.height(), 48);
-        // Should differ from bare sprite (equipment overlays drawn).
-        let bare = create_creature_sprite(&bare_info());
+        let no_equip = [None; EquipSlot::COUNT];
+        let bare = make_sprite(&params, &no_equip);
         assert_ne!(buf.data(), bare.data());
     }
 
     #[test]
-    fn wear_category_in_fingerprint() {
-        let mut info = with_slot(
-            &bare_info(),
+    fn wear_category_in_equip_slot_draw_info() {
+        let no_equip = [None; EquipSlot::COUNT];
+        let good = with_slot(
+            &no_equip,
             EquipSlot::Torso,
             ItemKind::Tunic,
             Color::rgb(0.5, 0.5, 0.5),
         );
-        let good = info.clone();
-        info.equipment[EquipSlot::Torso as usize]
-            .as_mut()
-            .unwrap()
-            .wear = WearCategory::Damaged;
-        // Different wear category → different fingerprint (even if pixels
-        // are the same today, the fingerprint must differ so the cache
-        // invalidates when we add wear visuals later).
-        assert_ne!(good, info);
+        let mut damaged = good;
+        damaged[EquipSlot::Torso as usize].as_mut().unwrap().wear = WearCategory::Damaged;
+        assert_ne!(good, damaged);
     }
 }

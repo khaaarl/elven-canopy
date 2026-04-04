@@ -43,7 +43,6 @@ var _bridge: SimBridge
 var _title_label: Label
 var _rows_container: VBoxContainer
 var _creature_ids: Array = []
-var _sprite_cache: Dictionary = {}
 var _render_tick: float = 0.0
 ## Maps creature_id -> HBoxContainer row node for reconciliation.
 var _row_nodes: Dictionary = {}
@@ -186,7 +185,7 @@ func _create_row(cid: String, info: Dictionary) -> HBoxContainer:
 	tex_rect.name = "Sprite"
 	tex_rect.custom_minimum_size = Vector2(32, 32)
 	tex_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	tex_rect.texture = _get_sprite(cid, species, species_index)
+	tex_rect.texture = CreatureSprites.get_sprite(_bridge, cid)
 	tex_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	row.add_child(tex_rect)
 
@@ -221,8 +220,14 @@ func _on_row_input(event: InputEvent, row: HBoxContainer) -> void:
 
 func _update_row(row: HBoxContainer, info: Dictionary) -> void:
 	var species: String = info.get("species", "")
+	var cid: String = info.get("creature_id", "")
 	var creature_name: String = info.get("name", "")
 	var task_kind: String = info.get("task_kind", "")
+
+	# Refresh sprite texture (equipment changes, etc.).
+	var tex_rect: TextureRect = row.find_child("Sprite", true, false)
+	if tex_rect and cid != "":
+		tex_rect.texture = CreatureSprites.get_sprite(_bridge, cid)
 
 	var name_label: Label = row.find_child("NameLabel", true, false)
 	if name_label:
@@ -234,15 +239,6 @@ func _update_row(row: HBoxContainer, info: Dictionary) -> void:
 	var activity_label: Label = row.find_child("ActivityLabel", true, false)
 	if activity_label:
 		activity_label.text = ACTIVITY_LABELS.get(task_kind, "Idle")
-
-
-func _get_sprite(creature_id: String, species: String, species_index: int) -> ImageTexture:
-	if _sprite_cache.has(creature_id):
-		return _sprite_cache[creature_id]
-	# Use the per-species index as seed, matching renderers and units_panel.
-	var tex := SpriteGenerator.species_sprite(species, species_index)
-	_sprite_cache[creature_id] = tex
-	return tex
 
 
 func _match_viewport_height() -> void:

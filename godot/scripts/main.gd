@@ -36,8 +36,8 @@
 ## See also: orbital_camera.gd for camera controls, sim_bridge.rs and
 ## elfcyclopedia_server.rs (Rust) for the simulation interface and the embedded
 ## localhost elfcyclopedia HTTP server (started at launch, URL shown via a small
-## book button next to the Menu button), tree_renderer.gd / elf_renderer.gd /
-## capybara_renderer.gd / blueprint_renderer.gd / ladder_renderer.gd /
+## book button next to the Menu button), tree_renderer.gd /
+## creature_renderer.gd / blueprint_renderer.gd / ladder_renderer.gd /
 ## furniture_renderer.gd / ground_pile_renderer.gd / projectile_renderer.gd for rendering,
 ## action_toolbar.gd for the toolbar UI, placement_controller.gd for
 ## click-to-place logic, construction_controller.gd for construction mode
@@ -68,22 +68,8 @@ extends Node3D
 ## until all renderers, controllers, and panels exist.
 signal setup_complete
 
-## Y offsets per species for world-space sprite positions. Must match the
-## values used by elf_renderer.gd, capybara_renderer.gd, and creature_renderer.gd.
-const SPECIES_Y_OFFSETS = {
-	"Elf": 0.48,
-	"Capybara": 0.32,
-	"Boar": 0.38,
-	"Deer": 0.46,
-	"Elephant": 0.8,
-	"Goblin": 0.36,
-	"Monkey": 0.44,
-	"Orc": 0.48,
-	"Squirrel": 0.28,
-	"Troll": 0.8,
-	"Hornet": 0.32,
-	"Wyvern": 0.8,
-}
+## Preloaded creature renderer script for Y-offset access from other scripts.
+const CreatureRenderer = preload("res://scripts/creature_renderer.gd")
 
 ## The simulation seed. Deterministic: same seed = same game.
 ## Overridden by GameSession.sim_seed when launched through the menu flow.
@@ -105,9 +91,9 @@ var _help_panel: ColorRect
 var _camera_pivot: Node3D
 var _construction_controller: Node
 var _placement_controller: Node3D
-## Renderers for new species (Boar, Deer, Monkey, Squirrel). Receive
-## render_tick each frame for smooth creature interpolation.
-var _extra_renderers: Array = []
+## Creature renderer (single instance for all species). Receives render_tick
+## each frame for smooth creature interpolation.
+var _creature_renderer: Node3D
 var _tree_renderer: Node3D
 var _bp_renderer: Node3D
 var _bldg_renderer: Node3D
@@ -221,6 +207,7 @@ func _ready() -> void:
 			bridge.init_sim(sim_seed)
 		print("Elven Canopy: sim initialized (seed=%d)" % sim_seed)
 
+	CreatureSprites.clear()
 	_setup_common(bridge)
 
 	# If start_paused is enabled, pause immediately after setup. The toolbar
@@ -273,33 +260,12 @@ func _setup_common(bridge: SimBridge) -> void:
 	_tree_renderer = $TreeRenderer
 	_tree_renderer.setup(bridge, $CameraPivot/Camera3D, $DirectionalLight3D)
 
-	# Set up elf renderer.
-	var elf_renderer = $ElfRenderer
-	elf_renderer.setup(bridge)
-
-	# Set up capybara renderer (sim-driven).
-	var capybara_renderer = $CapybaraRenderer
-	capybara_renderer.setup(bridge)
-
-	# Set up generic renderers for new species.
-	var renderer_script = load("res://scripts/creature_renderer.gd")
-	for entry in [
-		["Boar", 0.38],
-		["Deer", 0.46],
-		["Elephant", 0.8],
-		["Goblin", 0.36],
-		["Monkey", 0.44],
-		["Orc", 0.48],
-		["Squirrel", 0.28],
-		["Troll", 0.8],
-		["Hornet", 0.32],
-		["Wyvern", 0.8],
-	]:
-		var r := Node3D.new()
-		r.set_script(renderer_script)
-		add_child(r)
-		r.setup(bridge, entry[0], entry[1])
-		_extra_renderers.append(r)
+	# Set up creature renderer (single instance handles all species).
+	var creature_renderer := Node3D.new()
+	creature_renderer.set_script(CreatureRenderer)
+	add_child(creature_renderer)
+	creature_renderer.setup(bridge)
+	_creature_renderer = creature_renderer
 
 	# Set up selection highlight renderer (rings at selected creatures' feet).
 	var highlight_script = load("res://scripts/selection_highlight.gd")
@@ -1039,6 +1005,7 @@ func _try_load_save(bridge: SimBridge, save_path: String) -> bool:
 		_construction_music.stop_all()
 	var ok := bridge.load_game_json(json)
 	if ok:
+		CreatureSprites.clear()
 		print("Elven Canopy: loaded save from %s (tick=%d)" % [save_path, bridge.current_tick()])
 	return ok
 
@@ -1061,10 +1028,8 @@ func _process(delta: float) -> void:
 			print("MP event: %s" % event_json)
 
 	# Distribute render_tick to all consumers that read creature positions.
-	$ElfRenderer.set_render_tick(render_tick)
-	$CapybaraRenderer.set_render_tick(render_tick)
-	for r in _extra_renderers:
-		r.set_render_tick(render_tick)
+	if _creature_renderer:
+		_creature_renderer.set_render_tick(render_tick)
 	if _projectile_renderer:
 		_projectile_renderer.set_render_tick(render_tick)
 	_selector.set_render_tick(render_tick)
@@ -1133,7 +1098,7 @@ func _process(delta: float) -> void:
 	# Refresh units panel while visible.
 	if _units_panel and _units_panel.visible:
 		var creatures := bridge.get_all_creatures_summary()
-		_units_panel.update_creatures(creatures)
+		_units_panel.update_creatures(creatures, bridge)
 
 	# Refresh tree info panel while visible.
 	if _tree_info_panel and _tree_info_panel.visible:
@@ -1302,7 +1267,7 @@ func _get_creature_world_pos_by_id(
 	if info.is_empty():
 		return null
 	var species: String = info.get("species", "")
-	var y_off: float = SPECIES_Y_OFFSETS.get(species, 0.4)
+	var y_off: float = CreatureRenderer.SPECIES_Y_OFFSETS.get(species, 0.4)
 	var x: float = info.get("x", 0.0)
 	var y: float = info.get("y", 0.0)
 	var z: float = info.get("z", 0.0)

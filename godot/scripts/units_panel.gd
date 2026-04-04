@@ -15,8 +15,8 @@
 ## creature_id (UUID string) keys to row nodes, creating/updating/removing
 ## rows as creatures appear and disappear.
 ##
-## Sprites are cached in a dictionary keyed by creature_id and generated
-## via SpriteGenerator on first encounter.
+## Sprites are fetched from the central CreatureSprites cache, which is
+## populated by creature_renderer.gd and falls back to on-demand generation.
 ##
 ## Signals:
 ## - creature_clicked(creature_id) — select and show info for a creature
@@ -68,8 +68,8 @@ const SECTION_TITLES = {
 
 ## Maps creature_id (UUID string) -> HBoxContainer row node.
 var _creature_rows: Dictionary = {}
-## Cached sprite textures keyed by creature_id.
-var _sprite_cache: Dictionary = {}
+## Reference to SimBridge for on-demand sprite generation via CreatureSprites.
+var _bridge: SimBridge
 ## Section containers keyed by species name.
 var _sections: Dictionary = {}
 ## Section headers keyed by species name, for visibility toggling.
@@ -186,7 +186,9 @@ func _unhandled_input(event: InputEvent) -> void:
 
 ## Called each frame by main.gd with the result of bridge.get_all_creatures_summary().
 ## Uses reconciliation: creates new rows, updates existing ones, removes stale.
-func update_creatures(data: Array) -> void:
+func update_creatures(data: Array, bridge: SimBridge = null) -> void:
+	if bridge:
+		_bridge = bridge
 	var seen_keys: Dictionary = {}
 
 	for i in data.size():
@@ -214,7 +216,6 @@ func update_creatures(data: Array) -> void:
 		row.get_parent().remove_child(row)
 		row.queue_free()
 		_creature_rows.erase(key)
-		_sprite_cache.erase(key)
 
 	# Show/hide per-species section headers based on whether they have rows.
 	for sp in _species_order:
@@ -244,7 +245,9 @@ func _create_row(entry: Dictionary) -> HBoxContainer:
 	tex_rect.name = "Sprite"
 	tex_rect.custom_minimum_size = Vector2(32, 32)
 	tex_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	tex_rect.texture = _get_sprite(cid, sp, idx)
+	if _bridge:
+		tex_rect.texture = CreatureSprites.get_sprite(_bridge, cid)
+
 	row.add_child(tex_rect)
 
 	# Name label.
@@ -286,9 +289,15 @@ func _create_row(entry: Dictionary) -> HBoxContainer:
 func _update_row(row: HBoxContainer, entry: Dictionary) -> void:
 	var sp: String = entry.get("species", "")
 	var idx: int = entry.get("index", 0)
+	var cid: String = entry.get("creature_id", "")
 	var creature_name: String = entry.get("name", "")
 	var name_meaning: String = entry.get("name_meaning", "")
 	var task_kind: String = entry.get("task_kind", "")
+
+	# Refresh sprite texture (equipment changes, etc.).
+	var tex_rect: TextureRect = row.find_child("Sprite", false, false)
+	if tex_rect and _bridge and cid != "":
+		tex_rect.texture = CreatureSprites.get_sprite(_bridge, cid)
 
 	var name_label: Label = row.find_child("NameLabel", false, false)
 	if name_label:
@@ -307,11 +316,3 @@ func _update_row(row: HBoxContainer, entry: Dictionary) -> void:
 	var activity_label: Label = row.find_child("ActivityLabel", false, false)
 	if activity_label:
 		activity_label.text = ACTIVITY_LABELS.get(task_kind, "Idle")
-
-
-func _get_sprite(creature_id: String, species: String, index: int) -> ImageTexture:
-	if _sprite_cache.has(creature_id):
-		return _sprite_cache[creature_id]
-	var tex := SpriteGenerator.species_sprite(species, index)
-	_sprite_cache[creature_id] = tex
-	return tex

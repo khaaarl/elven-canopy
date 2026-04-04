@@ -1,10 +1,8 @@
 // Creature species sprite generation — dispatcher and per-species modules.
 //
-// Each species has `params_from_seed` (backward-compatible, seed → visual
-// parameters via Knuth hashing) and `params_from_traits` (preferred path,
-// reads palette indices from a `TraitMap` populated by the sim's
-// `creature_traits` table). The `create_*` functions draw sprites
-// pixel-by-pixel into a `PixelBuffer`.
+// Each species has `params_from_traits`, which reads palette indices from a
+// `TraitMap` populated by the sim's `creature_traits` table. The `create_*`
+// functions draw sprites pixel-by-pixel into a `PixelBuffer`.
 //
 // `TraitMap` is a `BTreeMap<TraitKind, TraitValue>` — the sprite crate's
 // read-only view of a creature's biological traits. `trait_idx` extracts
@@ -61,13 +59,6 @@ pub(crate) fn trait_i64(traits: &TraitMap, kind: TraitKind, default: i64) -> i64
         .unwrap_or(default)
 }
 
-/// Knuth multiplicative hash constant (2654435761), used to spread bits
-/// from integer seeds before modular indexing into palette arrays.
-/// Matches the GDScript `absi(seed * 2654435761)` pattern.
-pub(crate) fn knuth_hash(seed: i64) -> u64 {
-    (seed.wrapping_mul(2_654_435_761)).unsigned_abs()
-}
-
 /// Resolve a hue color from a palette with optional blending. If `blend_target`
 /// is a valid palette index and `blend_weight > 0`, blends between primary
 /// and secondary hue colors before applying VSH adjustments.
@@ -86,8 +77,8 @@ pub(crate) fn resolve_hue(
     }
 }
 
-/// Per-species sprite parameters, produced by `species_params_from_seed`.
-#[derive(Clone, Debug)]
+/// Per-species sprite parameters, produced by `species_params_from_traits`.
+#[derive(Clone, Debug, PartialEq)]
 pub enum SpriteParams {
     Elf(elf::ElfParams),
     Capybara(capybara::CapybaraParams),
@@ -101,24 +92,6 @@ pub enum SpriteParams {
     Troll(troll::TrollParams),
     Hornet(hornet::HornetParams),
     Wyvern(wyvern::WyvernParams),
-}
-
-/// Build a deterministic params from a species and integer seed.
-pub fn species_params_from_seed(species: Species, seed: i64) -> SpriteParams {
-    match species {
-        Species::Elf => SpriteParams::Elf(elf::params_from_seed(seed)),
-        Species::Capybara => SpriteParams::Capybara(capybara::params_from_seed(seed)),
-        Species::Boar => SpriteParams::Boar(boar::params_from_seed(seed)),
-        Species::Deer => SpriteParams::Deer(deer::params_from_seed(seed)),
-        Species::Monkey => SpriteParams::Monkey(monkey::params_from_seed(seed)),
-        Species::Squirrel => SpriteParams::Squirrel(squirrel::params_from_seed(seed)),
-        Species::Elephant => SpriteParams::Elephant(elephant::params_from_seed(seed)),
-        Species::Goblin => SpriteParams::Goblin(goblin::params_from_seed(seed)),
-        Species::Orc => SpriteParams::Orc(orc::params_from_seed(seed)),
-        Species::Troll => SpriteParams::Troll(troll::params_from_seed(seed)),
-        Species::Hornet => SpriteParams::Hornet(hornet::params_from_seed(seed)),
-        Species::Wyvern => SpriteParams::Wyvern(wyvern::params_from_seed(seed)),
-    }
 }
 
 /// Create a sprite for any species. Returns a PixelBuffer of the appropriate
@@ -140,8 +113,24 @@ pub fn create_species_sprite(params: &SpriteParams) -> PixelBuffer {
     }
 }
 
-/// Build species params from biological trait data (the preferred path).
-/// Falls back to default palette indices for missing traits.
+/// Create a fully composited creature sprite: base species sprite plus
+/// equipment overlays for any species that has overlay art. Currently only
+/// elves have equipment overlay drawing; other species ignore the equipment
+/// array. The entry point is species-agnostic — adding equipment art for a
+/// new species is a match arm, not an architectural change.
+pub fn create_sprite_with_equipment(
+    params: &SpriteParams,
+    equipment: &[Option<elf::EquipSlotDrawInfo>; elven_canopy_sim::inventory::EquipSlot::COUNT],
+) -> PixelBuffer {
+    let mut buf = create_species_sprite(params);
+    if let SpriteParams::Elf(_) = params {
+        elf::apply_equipment_overlays(&mut buf, equipment);
+    }
+    buf
+}
+
+/// Build species params from biological trait data. Falls back to default
+/// palette indices for missing traits.
 pub fn species_params_from_traits(species: Species, traits: &TraitMap) -> SpriteParams {
     match species {
         Species::Elf => SpriteParams::Elf(elf::params_from_traits(traits)),
@@ -157,12 +146,6 @@ pub fn species_params_from_traits(species: Species, traits: &TraitMap) -> Sprite
         Species::Hornet => SpriteParams::Hornet(hornet::params_from_traits(traits)),
         Species::Wyvern => SpriteParams::Wyvern(wyvern::params_from_traits(traits)),
     }
-}
-
-/// Create a fully composited elf sprite from a `CreatureDrawInfo`.
-/// Delegates to `elf::create_creature_sprite`.
-pub fn create_creature_sprite(info: &elf::CreatureDrawInfo) -> PixelBuffer {
-    elf::create_creature_sprite(info)
 }
 
 #[cfg(test)]
@@ -203,12 +186,6 @@ mod tests {
         assert_eq!(result, palette[1]);
     }
 
-    #[test]
-    fn knuth_hash_deterministic() {
-        assert_eq!(knuth_hash(42), knuth_hash(42));
-        assert_ne!(knuth_hash(1), knuth_hash(2));
-    }
-
     const ALL_SPECIES: [Species; 12] = [
         Species::Elf,
         Species::Capybara,
@@ -223,49 +200,6 @@ mod tests {
         Species::Troll,
         Species::Wyvern,
     ];
-
-    #[test]
-    fn all_species_produce_nonempty_sprites() {
-        for species in ALL_SPECIES {
-            let params = species_params_from_seed(species, 12345);
-            let buf = create_species_sprite(&params);
-            assert!(buf.width() > 0);
-            assert!(buf.height() > 0);
-            // At least some pixels should be non-transparent.
-            let data = buf.data();
-            let has_opaque = data.chunks(4).any(|px| px[3] > 0);
-            assert!(has_opaque, "{species:?} sprite is completely transparent");
-        }
-    }
-
-    #[test]
-    fn params_from_seed_deterministic() {
-        for species in ALL_SPECIES {
-            let p1 = species_params_from_seed(species, 999);
-            let p2 = species_params_from_seed(species, 999);
-            let b1 = create_species_sprite(&p1);
-            let b2 = create_species_sprite(&p2);
-            assert_eq!(b1.data(), b2.data(), "{species:?} not deterministic");
-        }
-    }
-
-    #[test]
-    fn different_seeds_produce_different_sprites() {
-        // At least some species should produce different sprites for different seeds.
-        let mut any_different = false;
-        for species in ALL_SPECIES {
-            let b1 = create_species_sprite(&species_params_from_seed(species, 1));
-            let b2 = create_species_sprite(&species_params_from_seed(species, 2));
-            if b1.data() != b2.data() {
-                any_different = true;
-                break;
-            }
-        }
-        assert!(
-            any_different,
-            "No species produced different sprites for different seeds"
-        );
-    }
 
     #[test]
     fn all_species_produce_nonempty_sprites_from_traits() {
@@ -332,13 +266,140 @@ mod tests {
             (Species::Hornet, 36, 32),
             (Species::Wyvern, 96, 80),
         ];
+        let traits = TraitMap::new();
         for (species, w, h) in cases {
-            let buf = create_species_sprite(&species_params_from_seed(species, 1));
+            let buf = create_species_sprite(&species_params_from_traits(species, &traits));
             assert_eq!(
                 (buf.width(), buf.height()),
                 (w, h),
                 "{species:?} dimensions wrong"
             );
         }
+    }
+
+    #[test]
+    fn params_from_traits_deterministic() {
+        use elven_canopy_sim::types::{TraitKind, TraitValue};
+
+        for species in ALL_SPECIES {
+            let mut traits = TraitMap::new();
+            traits.insert(TraitKind::BodyColor, TraitValue::Int(2));
+            traits.insert(TraitKind::FurColor, TraitValue::Int(1));
+            traits.insert(TraitKind::SkinColor, TraitValue::Int(1));
+            traits.insert(TraitKind::HairColor, TraitValue::Int(3));
+            traits.insert(TraitKind::EyeColor, TraitValue::Int(1));
+            traits.insert(TraitKind::SkinTone, TraitValue::Int(2));
+            traits.insert(TraitKind::HairStyle, TraitValue::Int(0));
+            traits.insert(TraitKind::Accessory, TraitValue::Int(1));
+            traits.insert(TraitKind::TuskSize, TraitValue::Int(2));
+
+            let p1 = species_params_from_traits(species, &traits);
+            let p2 = species_params_from_traits(species, &traits);
+            assert_eq!(
+                p1, p2,
+                "{species:?}: same traits must produce equal SpriteParams"
+            );
+        }
+    }
+
+    #[test]
+    fn different_traits_produce_different_params() {
+        use elven_canopy_sim::types::{TraitKind, TraitValue};
+
+        // Every species should produce different params when its primary
+        // color trait changes. Each species uses one of HairColor,
+        // BodyColor, FurColor, or SkinColor as its main visual axis.
+        let species_color_trait: [(Species, TraitKind); 12] = [
+            (Species::Elf, TraitKind::HairColor),
+            (Species::Capybara, TraitKind::BodyColor),
+            (Species::Boar, TraitKind::BodyColor),
+            (Species::Deer, TraitKind::BodyColor),
+            (Species::Monkey, TraitKind::FurColor),
+            (Species::Squirrel, TraitKind::FurColor),
+            (Species::Elephant, TraitKind::BodyColor),
+            (Species::Goblin, TraitKind::SkinColor),
+            (Species::Orc, TraitKind::SkinColor),
+            (Species::Troll, TraitKind::SkinColor),
+            (Species::Hornet, TraitKind::BodyColor),
+            (Species::Wyvern, TraitKind::BodyColor),
+        ];
+        for (species, color_kind) in species_color_trait {
+            let mut traits_a = TraitMap::new();
+            let mut traits_b = TraitMap::new();
+            traits_a.insert(color_kind, TraitValue::Int(0));
+            traits_b.insert(color_kind, TraitValue::Int(2));
+            let pa = species_params_from_traits(species, &traits_a);
+            let pb = species_params_from_traits(species, &traits_b);
+            assert_ne!(
+                pa, pb,
+                "{species:?} should produce different params for different {color_kind:?} values"
+            );
+        }
+    }
+
+    #[test]
+    fn create_sprite_with_equipment_non_elf_ignores_equipment() {
+        use elven_canopy_sim::inventory::{EquipSlot, WearCategory};
+        use elven_canopy_sim::types::{TraitKind, TraitValue};
+
+        let fake_equip: [Option<elf::EquipSlotDrawInfo>; EquipSlot::COUNT] = {
+            let mut arr: [Option<elf::EquipSlotDrawInfo>; EquipSlot::COUNT] =
+                std::array::from_fn(|_| None);
+            arr[0] = Some(elf::EquipSlotDrawInfo {
+                kind: elven_canopy_sim::inventory::ItemKind::Tunic,
+                color: crate::Color::from_u8(200, 50, 50, 255),
+                wear: WearCategory::Good,
+            });
+            arr
+        };
+
+        let non_elf_species = [
+            Species::Capybara,
+            Species::Boar,
+            Species::Deer,
+            Species::Monkey,
+            Species::Squirrel,
+            Species::Elephant,
+            Species::Goblin,
+            Species::Orc,
+            Species::Troll,
+            Species::Hornet,
+            Species::Wyvern,
+        ];
+        for species in non_elf_species {
+            let mut traits = TraitMap::new();
+            traits.insert(TraitKind::BodyColor, TraitValue::Int(1));
+            let params = species_params_from_traits(species, &traits);
+            let bare = create_species_sprite(&params);
+            let equipped = create_sprite_with_equipment(&params, &fake_equip);
+            assert_eq!(
+                bare.data(),
+                equipped.data(),
+                "{species:?}: equipment must not affect non-elf sprites"
+            );
+        }
+    }
+
+    #[test]
+    fn create_sprite_with_equipment_elf_applies_overlays() {
+        use elven_canopy_sim::inventory::{EquipSlot, WearCategory};
+
+        let no_equip: [Option<elf::EquipSlotDrawInfo>; EquipSlot::COUNT] =
+            std::array::from_fn(|_| None);
+        let mut with_equip = no_equip.clone();
+        with_equip[0] = Some(elf::EquipSlotDrawInfo {
+            kind: elven_canopy_sim::inventory::ItemKind::Tunic,
+            color: crate::Color::from_u8(200, 50, 50, 255),
+            wear: WearCategory::Good,
+        });
+
+        let params = species_params_from_traits(Species::Elf, &TraitMap::new());
+        let bare = create_sprite_with_equipment(&params, &no_equip);
+        let equipped = create_sprite_with_equipment(&params, &with_equip);
+        assert_ne!(
+            bare.data(),
+            equipped.data(),
+            "Elf sprite with equipment must differ from bare"
+        );
     }
 }

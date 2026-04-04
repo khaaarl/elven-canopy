@@ -319,8 +319,8 @@ impl MaterialFilter {
 /// Durability condition category for an item, derived from its HP ratio
 /// and the game config thresholds (`durability_worn_pct`, `durability_damaged_pct`).
 ///
-/// Used by the sprite system (`CreatureDrawInfo`) to fingerprint equipment
-/// appearance, and by `SimState::condition_label` for display strings.
+/// Used by the sprite system (`SpriteKey` in sim_bridge.rs) to fingerprint
+/// equipment appearance, and by `SimState::condition_label` for display strings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum WearCategory {
     /// HP above the worn threshold (or full/indestructible).
