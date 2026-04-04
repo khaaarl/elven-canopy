@@ -34,7 +34,8 @@
 // `VoxelCoord`) and `VoxelCoord` tiebreaking in the priority queue.
 
 use crate::nav::{EdgeType, HEURISTIC_SCALE, NavGraph};
-use crate::types::{NavEdgeId, NavNodeId, VoxelCoord};
+use crate::types::{FaceData, NavEdgeId, NavNodeId, VoxelCoord};
+use crate::walkability;
 use crate::world::VoxelWorld;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -1425,6 +1426,420 @@ pub fn nearest_fly(
     footprint: [u8; 3],
 ) -> Result<VoxelCoord, PathError> {
     nearest_astar_fly(world, start, candidates, flight_tpv, opts, footprint)
+}
+
+// ---------------------------------------------------------------------------
+// Ground A* (voxel-direct, replacing nav-graph A*)
+// ---------------------------------------------------------------------------
+
+/// Compute the ticks-per-voxel for traversing an edge of the given type.
+/// Returns `None` if the species cannot traverse this edge type (e.g., a
+/// ground-only creature encountering a climb edge with no climb speed).
+fn tpv_for_edge_type(edge_type: EdgeType, speeds: &NavGraphSpeeds) -> Option<u64> {
+    match edge_type {
+        EdgeType::TrunkClimb | EdgeType::GroundToTrunk => speeds.climb_tpv,
+        EdgeType::WoodLadderClimb => speeds.wood_ladder_tpv,
+        EdgeType::RopeLadderClimb => speeds.rope_ladder_tpv,
+        _ => Some(speeds.walk_tpv),
+    }
+}
+
+/// Find the shortest ground path from `start` to `goal` using A* on the voxel
+/// grid with walkability checks.
+///
+/// This is the voxel-direct replacement for `astar_navgraph`. Instead of
+/// searching a pre-computed nav graph, it expands 26-neighbors on the voxel
+/// grid, checking walkability and deriving edge types at search time.
+///
+/// The `footprint` `[width_x, height_y, depth_z]` specifies the creature's
+/// bounding box. For 1×1×1 creatures this is `[1,1,1]`; for 2×2×2 it's
+/// `[2,2,2]`. All voxels in the footprint must be walkable at every position.
+///
+/// Search bounded by `opts` (path length and work budget).
+///
+/// Returns `Err(PathError)` with a structured error if the search fails.
+pub fn astar_ground(
+    world: &VoxelWorld,
+    face_data: &BTreeMap<VoxelCoord, FaceData>,
+    start: VoxelCoord,
+    goal: VoxelCoord,
+    speeds: &NavGraphSpeeds,
+    opts: &PathOpts,
+    footprint: [u8; 3],
+) -> Result<PathResult, PathError> {
+    if !walkability::footprint_walkable(world, face_data, start, footprint) {
+        return Err(PathError::StartNotOnGraph);
+    }
+    if !walkability::footprint_walkable(world, face_data, goal, footprint) {
+        return Err(PathError::TargetNotOnGraph);
+    }
+    if start == goal {
+        return Ok(PathResult {
+            positions: vec![start],
+            nav_nodes: Vec::new(),
+            nav_edges: Vec::new(),
+            total_cost: 0,
+        });
+    }
+
+    let manhattan = start.manhattan_distance(goal);
+    let limits = resolve_limits(opts, manhattan, false, 1);
+
+    let walk_tpv = speeds.walk_tpv;
+
+    let mut g_score: BTreeMap<VoxelCoord, i64> = BTreeMap::new();
+    let mut came_from: BTreeMap<VoxelCoord, VoxelCoord> = BTreeMap::new();
+    let mut depth: BTreeMap<VoxelCoord, u32> = BTreeMap::new();
+    let mut open = BinaryHeap::new();
+
+    g_score.insert(start, 0);
+    depth.insert(start, 0);
+    open.push(FlightOpenEntry {
+        pos: start,
+        f_score: octile_heuristic_3d(start, goal, walk_tpv),
+    });
+
+    let mut expanded: u32 = 0;
+    let mut hit_path_len_limit = false;
+
+    while let Some(FlightOpenEntry { pos, f_score }) = open.pop() {
+        if pos == goal {
+            // Reconstruct path.
+            let mut path = vec![goal];
+            let mut current = goal;
+            while let Some(&prev) = came_from.get(&current) {
+                path.push(prev);
+                current = prev;
+            }
+            path.reverse();
+            let total_cost = g_score[&goal];
+            return Ok(PathResult {
+                positions: path,
+                nav_nodes: Vec::new(),
+                nav_edges: Vec::new(),
+                total_cost,
+            });
+        }
+
+        let current_g = match g_score.get(&pos) {
+            Some(&g) => g,
+            None => continue,
+        };
+
+        // Skip stale entries.
+        let h = octile_heuristic_3d(pos, goal, walk_tpv);
+        if current_g + h < f_score {
+            continue;
+        }
+
+        expanded += 1;
+        if expanded > limits.work {
+            return Err(PathError::ExceededWorkBudget {
+                limit: limits.work,
+                expanded,
+            });
+        }
+
+        let current_depth = depth.get(&pos).copied().unwrap_or(0);
+        if current_depth >= limits.path_len {
+            hit_path_len_limit = true;
+            continue;
+        }
+
+        // Derive surface type at current position for edge-type computation.
+        let from_surface = walkability::derive_surface_type(world, face_data, pos);
+
+        for &(dx, dy, dz, dist_scaled) in &NEIGHBOR_OFFSETS {
+            let neighbor = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
+
+            if !walkability::footprint_walkable(world, face_data, neighbor, footprint) {
+                continue;
+            }
+
+            // Check face-blocking.
+            if walkability::is_edge_blocked_by_faces(face_data, pos, neighbor) {
+                continue;
+            }
+
+            // Derive edge type and compute cost.
+            let to_surface = walkability::derive_surface_type(world, face_data, neighbor);
+            let edge_type = walkability::derive_edge_type(from_surface, to_surface, pos, neighbor);
+
+            // Check allowed edge types.
+            if let Some(allowed) = speeds.allowed_edges
+                && !allowed.contains(&edge_type)
+            {
+                continue;
+            }
+
+            let tpv = match tpv_for_edge_type(edge_type, speeds) {
+                Some(t) => t,
+                None => continue, // species cannot traverse this edge type
+            };
+
+            let move_cost = (dist_scaled * tpv) as i64;
+            let tentative_g = current_g + move_cost;
+
+            if tentative_g < g_score.get(&neighbor).copied().unwrap_or(i64::MAX) {
+                g_score.insert(neighbor, tentative_g);
+                came_from.insert(neighbor, pos);
+                depth.insert(neighbor, current_depth + 1);
+                let h = octile_heuristic_3d(neighbor, goal, walk_tpv);
+                open.push(FlightOpenEntry {
+                    pos: neighbor,
+                    f_score: tentative_g + h,
+                });
+            }
+        }
+    }
+
+    if hit_path_len_limit {
+        Err(PathError::ExceededPathLen {
+            limit: limits.path_len,
+        })
+    } else {
+        Err(PathError::Unreachable)
+    }
+}
+
+/// Find the nearest reachable candidate from `start` using voxel-direct ground
+/// A* with interleaved multi-target search.
+///
+/// This is the voxel-direct replacement for `nearest_astar_navgraph`. Uses the
+/// same interleaved A* algorithm as `nearest_astar_fly` but with ground
+/// walkability checks and edge-type cost differentiation.
+pub fn nearest_astar_ground(
+    world: &VoxelWorld,
+    face_data: &BTreeMap<VoxelCoord, FaceData>,
+    start: VoxelCoord,
+    candidates: &[VoxelCoord],
+    speeds: &NavGraphSpeeds,
+    opts: &PathOpts,
+    footprint: [u8; 3],
+) -> Result<VoxelCoord, PathError> {
+    if candidates.is_empty() {
+        return Err(PathError::NoTargets);
+    }
+
+    if candidates.contains(&start) {
+        return Ok(start);
+    }
+
+    if !walkability::footprint_walkable(world, face_data, start, footprint) {
+        return Err(PathError::StartNotOnGraph);
+    }
+
+    // Pre-filter: only candidates with walkable positions.
+    let walk_tpv = speeds.walk_tpv;
+    let mut candidate_indices: Vec<usize> = (0..candidates.len())
+        .filter(|&i| walkability::footprint_walkable(world, face_data, candidates[i], footprint))
+        .collect();
+    if candidate_indices.is_empty() {
+        return Err(PathError::NoTargets);
+    }
+    candidate_indices.sort_by_key(|&i| octile_heuristic_3d(start, candidates[i], walk_tpv));
+
+    let max_manhattan = candidate_indices
+        .iter()
+        .map(|&i| start.manhattan_distance(candidates[i]))
+        .max()
+        .unwrap_or(0);
+    let limits = resolve_limits(opts, max_manhattan, false, candidate_indices.len() as u32);
+
+    let mut g_score: BTreeMap<VoxelCoord, i64> = BTreeMap::new();
+    let mut depth: BTreeMap<VoxelCoord, u32> = BTreeMap::new();
+    let mut closed: std::collections::BTreeSet<VoxelCoord> = std::collections::BTreeSet::new();
+
+    g_score.insert(start, 0);
+    depth.insert(start, 0);
+
+    let mut open_sets: Vec<BinaryHeap<FlightOpenEntry>> = candidate_indices
+        .iter()
+        .map(|&i| {
+            let mut heap = BinaryHeap::new();
+            let h = octile_heuristic_3d(start, candidates[i], walk_tpv);
+            heap.push(FlightOpenEntry {
+                pos: start,
+                f_score: h,
+            });
+            heap
+        })
+        .collect();
+
+    let mut active: Vec<bool> = vec![true; candidate_indices.len()];
+    let mut best_cost: Option<(VoxelCoord, i64)> = None;
+    let mut expanded: u32 = 0;
+    let mut hit_path_len_limit = false;
+
+    loop {
+        // Find active candidate with globally smallest top-of-heap f.
+        let mut best_ci: Option<usize> = None;
+        let mut best_f = i64::MAX;
+        for (ci, heap) in open_sets.iter().enumerate() {
+            if !active[ci] {
+                continue;
+            }
+            if let Some(top) = heap.peek() {
+                if top.f_score < best_f
+                    || (top.f_score == best_f
+                        && best_ci.is_none_or(|prev| top.pos < open_sets[prev].peek().unwrap().pos))
+                {
+                    best_f = top.f_score;
+                    best_ci = Some(ci);
+                }
+            } else {
+                active[ci] = false;
+            }
+        }
+
+        let ci = match best_ci {
+            Some(ci) => ci,
+            None => break,
+        };
+
+        if let Some((_, cost)) = best_cost
+            && best_f >= cost
+        {
+            break;
+        }
+
+        let entry = open_sets[ci].pop().unwrap();
+        let pos = entry.pos;
+
+        // Check if this node is the candidate for this open set.
+        if !closed.contains(&pos) {
+            let target = candidates[candidate_indices[ci]];
+            if pos == target {
+                let cost = g_score[&pos];
+                match best_cost {
+                    None => best_cost = Some((pos, cost)),
+                    Some((_, prev)) if cost < prev => best_cost = Some((pos, cost)),
+                    _ => {}
+                }
+                active[ci] = false;
+
+                let best_c = best_cost.unwrap().1;
+                for (oci, heap) in open_sets.iter().enumerate() {
+                    if active[oci] {
+                        if let Some(top) = heap.peek() {
+                            if top.f_score >= best_c {
+                                active[oci] = false;
+                            }
+                        } else {
+                            active[oci] = false;
+                        }
+                    }
+                }
+                continue;
+            }
+        }
+
+        if !closed.insert(pos) {
+            continue;
+        }
+
+        expanded += 1;
+        if expanded > limits.work {
+            return Err(PathError::ExceededWorkBudget {
+                limit: limits.work,
+                expanded,
+            });
+        }
+
+        let current_g = match g_score.get(&pos) {
+            Some(&g) => g,
+            None => continue,
+        };
+
+        let current_depth = depth.get(&pos).copied().unwrap_or(0);
+        if current_depth >= limits.path_len {
+            hit_path_len_limit = true;
+            continue;
+        }
+
+        let from_surface = walkability::derive_surface_type(world, face_data, pos);
+
+        for &(dx, dy, dz, dist_scaled) in &NEIGHBOR_OFFSETS {
+            let neighbor = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
+
+            if closed.contains(&neighbor)
+                || !walkability::footprint_walkable(world, face_data, neighbor, footprint)
+            {
+                continue;
+            }
+
+            if walkability::is_edge_blocked_by_faces(face_data, pos, neighbor) {
+                continue;
+            }
+
+            let to_surface = walkability::derive_surface_type(world, face_data, neighbor);
+            let edge_type = walkability::derive_edge_type(from_surface, to_surface, pos, neighbor);
+
+            if let Some(allowed) = speeds.allowed_edges
+                && !allowed.contains(&edge_type)
+            {
+                continue;
+            }
+
+            let tpv = match tpv_for_edge_type(edge_type, speeds) {
+                Some(t) => t,
+                None => continue,
+            };
+
+            let move_cost = (dist_scaled * tpv) as i64;
+            let tentative_g = current_g + move_cost;
+
+            if tentative_g < g_score.get(&neighbor).copied().unwrap_or(i64::MAX) {
+                g_score.insert(neighbor, tentative_g);
+                depth.insert(neighbor, current_depth + 1);
+
+                for (oci, heap) in open_sets.iter_mut().enumerate() {
+                    if !active[oci] {
+                        continue;
+                    }
+                    let h =
+                        octile_heuristic_3d(neighbor, candidates[candidate_indices[oci]], walk_tpv);
+                    let f = tentative_g + h;
+                    if let Some((_, best_c)) = best_cost
+                        && f >= best_c
+                    {
+                        continue;
+                    }
+                    heap.push(FlightOpenEntry {
+                        pos: neighbor,
+                        f_score: f,
+                    });
+                }
+            }
+        }
+    }
+
+    match best_cost {
+        Some((coord, _)) => Ok(coord),
+        None if hit_path_len_limit => Err(PathError::ExceededPathLen {
+            limit: limits.path_len,
+        }),
+        None => Err(PathError::Unreachable),
+    }
+}
+
+/// Find the nearest reachable candidate from `start` by ground travel cost.
+///
+/// **Prefer `SimState::find_nearest()`** unless you need direct control over
+/// ground pathfinding parameters. `find_nearest` handles species dispatch,
+/// speed lookup, footprint lookup, and index mapping automatically.
+///
+/// Delegates to `nearest_astar_ground` (interleaved A*).
+pub fn nearest_ground(
+    world: &VoxelWorld,
+    face_data: &BTreeMap<VoxelCoord, FaceData>,
+    start: VoxelCoord,
+    candidates: &[VoxelCoord],
+    speeds: &NavGraphSpeeds,
+    opts: &PathOpts,
+    footprint: [u8; 3],
+) -> Result<VoxelCoord, PathError> {
+    nearest_astar_ground(world, face_data, start, candidates, speeds, opts, footprint)
 }
 
 #[cfg(test)]
@@ -2959,5 +3374,273 @@ mod tests {
         let opts = PathOpts::default().with_path_len(3).with_work(u32::MAX);
         let result = nearest_astar_fly(&world, start, &[far], 250, &opts, FP1);
         assert_eq!(result, Err(PathError::ExceededPathLen { limit: 3 }));
+    }
+
+    // -----------------------------------------------------------------------
+    // Ground A* tests (voxel-direct)
+    // -----------------------------------------------------------------------
+
+    /// Create a world with a flat dirt floor at y=floor_y. Air above, dirt at
+    /// floor_y, solid below. Walkable positions are at y=floor_y+1.
+    fn ground_world(sx: u32, sy: u32, sz: u32, floor_y: i32) -> VoxelWorld {
+        let mut world = VoxelWorld::new(sx, sy, sz);
+        for x in 0..sx as i32 {
+            for z in 0..sz as i32 {
+                world.set(VoxelCoord::new(x, floor_y, z), VoxelType::Dirt);
+            }
+        }
+        world
+    }
+
+    /// Empty face data (no buildings).
+    fn no_faces() -> BTreeMap<VoxelCoord, crate::types::FaceData> {
+        BTreeMap::new()
+    }
+
+    #[test]
+    fn astar_ground_same_start_and_goal() {
+        let world = ground_world(16, 16, 16, 5);
+        let fd = no_faces();
+        let pos = VoxelCoord::new(5, 6, 5);
+        let result = astar_ground(
+            &world,
+            &fd,
+            pos,
+            pos,
+            &test_speeds(),
+            &PathOpts::default(),
+            FP1,
+        );
+        let path = result.unwrap();
+        assert_eq!(path.positions, vec![pos]);
+        assert!(path.nav_nodes.is_empty());
+        assert!(path.nav_edges.is_empty());
+        assert_eq!(path.total_cost, 0);
+    }
+
+    #[test]
+    fn astar_ground_straight_line_on_flat_dirt() {
+        let world = ground_world(16, 16, 16, 5);
+        let fd = no_faces();
+        let start = VoxelCoord::new(2, 6, 5);
+        let goal = VoxelCoord::new(5, 6, 5);
+        let result = astar_ground(
+            &world,
+            &fd,
+            start,
+            goal,
+            &test_speeds(),
+            &PathOpts::default(),
+            FP1,
+        );
+        let path = result.unwrap();
+        // Path should start at start and end at goal.
+        assert_eq!(*path.positions.first().unwrap(), start);
+        assert_eq!(*path.positions.last().unwrap(), goal);
+        // All positions should be at y=6 (walking on flat ground).
+        assert!(path.positions.iter().all(|p| p.y == 6));
+        assert!(path.total_cost > 0);
+    }
+
+    #[test]
+    fn astar_ground_start_not_walkable() {
+        let world = ground_world(16, 16, 16, 5);
+        let fd = no_faces();
+        // y=5 is dirt (solid) — not walkable.
+        let start = VoxelCoord::new(5, 5, 5);
+        let goal = VoxelCoord::new(8, 6, 5);
+        let result = astar_ground(
+            &world,
+            &fd,
+            start,
+            goal,
+            &test_speeds(),
+            &PathOpts::default(),
+            FP1,
+        );
+        assert_eq!(result, Err(PathError::StartNotOnGraph));
+    }
+
+    #[test]
+    fn astar_ground_goal_not_walkable() {
+        let world = ground_world(16, 16, 16, 5);
+        let fd = no_faces();
+        let start = VoxelCoord::new(5, 6, 5);
+        // y=10 is open air with no adjacent solid — not walkable.
+        let goal = VoxelCoord::new(5, 10, 5);
+        let result = astar_ground(
+            &world,
+            &fd,
+            start,
+            goal,
+            &test_speeds(),
+            &PathOpts::default(),
+            FP1,
+        );
+        assert_eq!(result, Err(PathError::TargetNotOnGraph));
+    }
+
+    #[test]
+    fn astar_ground_diagonal_movement() {
+        let world = ground_world(16, 16, 16, 5);
+        let fd = no_faces();
+        let start = VoxelCoord::new(2, 6, 2);
+        let goal = VoxelCoord::new(5, 6, 5);
+        let result = astar_ground(
+            &world,
+            &fd,
+            start,
+            goal,
+            &test_speeds(),
+            &PathOpts::default(),
+            FP1,
+        );
+        let path = result.unwrap();
+        assert_eq!(*path.positions.first().unwrap(), start);
+        assert_eq!(*path.positions.last().unwrap(), goal);
+        // Diagonal movement should give a shorter path (3 diagonal steps)
+        // than pure cardinal (6 steps).
+        assert!(
+            path.positions.len() <= 5,
+            "diagonal path should be short, got {} steps",
+            path.positions.len()
+        );
+    }
+
+    #[test]
+    fn astar_ground_wall_blocks_path() {
+        // Create a wall that forces a detour.
+        let mut world = ground_world(16, 16, 16, 5);
+        let fd = no_faces();
+        // Build a solid wall at x=5, z=2..8, y=6..8
+        for z in 2..8 {
+            for y in 6..9 {
+                world.set(VoxelCoord::new(5, y, z), VoxelType::Trunk);
+            }
+        }
+        let start = VoxelCoord::new(3, 6, 5);
+        let goal = VoxelCoord::new(7, 6, 5);
+        let result = astar_ground(
+            &world,
+            &fd,
+            start,
+            goal,
+            &test_speeds(),
+            &PathOpts::default(),
+            FP1,
+        );
+        let path = result.unwrap();
+        assert_eq!(*path.positions.first().unwrap(), start);
+        assert_eq!(*path.positions.last().unwrap(), goal);
+        // The path should go around the wall, so it should be longer than 4 steps.
+        assert!(path.positions.len() > 5, "path should detour around wall");
+    }
+
+    #[test]
+    fn astar_ground_climb_via_trunk() {
+        // Create a world with dirt floor at y=5 and trunk surface for climbing.
+        let mut world = ground_world(16, 16, 16, 5);
+        let fd = no_faces();
+        // Place trunk at x=5, y=5..10 to create climbable surface.
+        for y in 5..10 {
+            world.set(VoxelCoord::new(5, y, 5), VoxelType::Trunk);
+        }
+        // Start on the ground, goal above the trunk.
+        let start = VoxelCoord::new(4, 6, 5);
+        // Position at y=9, next to trunk at y=8 — walkable because adjacent to trunk.
+        let goal = VoxelCoord::new(4, 9, 5);
+        let speeds = test_speeds(); // climb_tpv = Some(2)
+        let result = astar_ground(&world, &fd, start, goal, &speeds, &PathOpts::default(), FP1);
+        let path = result.unwrap();
+        assert_eq!(*path.positions.first().unwrap(), start);
+        assert_eq!(*path.positions.last().unwrap(), goal);
+        // Cost should reflect climbing (tpv=2 for climb edges).
+        assert!(path.total_cost > 0);
+    }
+
+    #[test]
+    fn astar_ground_edge_filter_blocks_climb() {
+        // Same setup as climb test, but species cannot climb.
+        let mut world = ground_world(16, 16, 16, 5);
+        let fd = no_faces();
+        for y in 5..10 {
+            world.set(VoxelCoord::new(5, y, 5), VoxelType::Trunk);
+        }
+        let start = VoxelCoord::new(4, 6, 5);
+        let goal = VoxelCoord::new(4, 9, 5);
+        // Only allow Ground and BranchWalk — no climbing.
+        let allowed = [EdgeType::Ground, EdgeType::BranchWalk];
+        let speeds = test_speeds_filtered(&allowed);
+        let result = astar_ground(&world, &fd, start, goal, &speeds, &PathOpts::default(), FP1);
+        // Should fail — no path without climbing.
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn astar_ground_work_budget_exceeded() {
+        let world = ground_world(32, 16, 32, 5);
+        let fd = no_faces();
+        let start = VoxelCoord::new(2, 6, 2);
+        let goal = VoxelCoord::new(28, 6, 28);
+        // Tiny work budget.
+        let opts = PathOpts::default().with_work(10);
+        let result = astar_ground(&world, &fd, start, goal, &test_speeds(), &opts, FP1);
+        match result {
+            Err(PathError::ExceededWorkBudget { .. }) => {} // expected
+            other => panic!("expected ExceededWorkBudget, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn nearest_ground_finds_closest() {
+        let world = ground_world(16, 16, 16, 5);
+        let fd = no_faces();
+        let start = VoxelCoord::new(5, 6, 5);
+        let near = VoxelCoord::new(6, 6, 5);
+        let far = VoxelCoord::new(10, 6, 5);
+        let result = nearest_ground(
+            &world,
+            &fd,
+            start,
+            &[far, near],
+            &test_speeds(),
+            &PathOpts::default(),
+            FP1,
+        );
+        assert_eq!(result.unwrap(), near);
+    }
+
+    #[test]
+    fn nearest_ground_empty_candidates() {
+        let world = ground_world(16, 16, 16, 5);
+        let fd = no_faces();
+        let start = VoxelCoord::new(5, 6, 5);
+        let result = nearest_ground(
+            &world,
+            &fd,
+            start,
+            &[],
+            &test_speeds(),
+            &PathOpts::default(),
+            FP1,
+        );
+        assert_eq!(result, Err(PathError::NoTargets));
+    }
+
+    #[test]
+    fn nearest_ground_start_is_candidate() {
+        let world = ground_world(16, 16, 16, 5);
+        let fd = no_faces();
+        let start = VoxelCoord::new(5, 6, 5);
+        let result = nearest_ground(
+            &world,
+            &fd,
+            start,
+            &[start, VoxelCoord::new(8, 6, 5)],
+            &test_speeds(),
+            &PathOpts::default(),
+            FP1,
+        );
+        assert_eq!(result.unwrap(), start);
     }
 }

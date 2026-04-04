@@ -70,6 +70,7 @@ pub mod structural;
 pub mod task;
 pub mod tree_gen;
 pub mod types;
+pub mod walkability;
 pub mod world;
 pub mod worldgen;
 
