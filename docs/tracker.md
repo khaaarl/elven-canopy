@@ -3916,7 +3916,7 @@ This is the "life decisions" layer: not moment-to-moment task execution, but hig
 
 Foundation for all LLM-driven creature features. Concrete decisions made (see draft for full details):
 
-**Library:** `llama-cpp-2` (only actively maintained Rust llama.cpp binding). **Model:** Qwen 3 1.7B Q5_K_M (Apache 2.0, best structured output at this size). **GPU:** All backends via feature flags (`cuda`, `vulkan`, `rocm`); runtime choice is GPU vs CPU with auto-detection based on available VRAM.
+**Library:** `llama-cpp-2` (only actively maintained Rust llama.cpp binding). **Model:** Qwen 3 1.7B Q5_K_M (Apache 2.0, best structured output at this size). **GPU:** GPU backends via feature flags (`cuda`, `vulkan`, `rocm`); runtime choice is GPU vs CPU with auto-detection based on available VRAM. Base crate (CPU inference) is always compiled — no optional build flag.
 
 **Sim outbox:** The sim emits `OutboundRequest`s into a `Vec` drained after each `step()`. Each request carries preamble sections (well-known string key or literal text), an ephemeral prompt, a JSON schema for grammar-constrained generation, and a deadline tick. Pending requests tracked in a `BTreeMap<u64, PendingLlmRequest>` (serialized for save/load). The sim has NO conditional compilation for LLM — it always emits requests; they expire silently when LLM is unavailable.
 
@@ -3942,7 +3942,7 @@ Foundation for all LLM-driven creature features. Concrete decisions made (see dr
 
 **Remaining work:**
 
-1. **`elven_canopy_llm` crate** — new Rust crate wrapping `llama-cpp-2`. Model loading from filesystem path, inference execution, grammar-constrained generation via JSON schema → GBNF, KV cache save/restore for preamble caching. Optional feature flag (`llm`) so the game compiles without it. GPU backend feature flags (`llm-cuda`, `llm-vulkan`, `llm-rocm`). This is the most uncertain piece — the `llama-cpp-2` API surface and CMake/GPU build system complexity need exploration.
+1. **`elven_canopy_llm` crate** — new Rust crate wrapping `llama-cpp-2`. Always compiled (no optional build flag). Model loading from filesystem path, inference execution, grammar-constrained generation via JSON schema → GBNF, KV cache save/restore for preamble caching. GPU backend feature flags (`cuda`, `vulkan`, `rocm`) for accelerated builds. Build requires CMake, C++ compiler, and `libclang-dev`. This is the most uncertain piece — the `llama-cpp-2` API surface and cross-platform CMake build need validation.
 
 2. **Sim outbox mechanism** — `OutboundRequest` enum, `PendingLlmRequest` tracking in `BTreeMap`, `next_request_id` counter, deadline expiry logic, `SimAction::LlmResult` variant. Pure sim logic. The sim emits requests and consumes results — it never knows how they're fulfilled.
 

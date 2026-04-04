@@ -116,6 +116,9 @@ jobs:
         with:
           key: linux
 
+      - name: Install llama.cpp build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev cmake
+
       - name: Build GDExtension library
         run: cargo build --release -p elven_canopy_gdext
 
@@ -161,6 +164,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: windows
+
+      - name: Install LLVM (for bindgen/libclang)
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "18"
 
       - name: Build GDExtension library
         run: cargo build --release -p elven_canopy_gdext
@@ -273,6 +281,9 @@ jobs:
         with:
           key: android
       - uses: android-actions/setup-android@v3
+
+      - name: Install llama.cpp build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev cmake
 
       - name: Install Android NDK
         run: sdkmanager "ndk;27.0.12077973"

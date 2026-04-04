@@ -77,8 +77,8 @@ tracker for full details.
 ### Crate Structure
 
 - **`elven_canopy_llm`** (new crate): wraps llama.cpp bindings, handles model
-  loading, inference execution, KV cache management. Optional feature flag so
-  the game compiles without it.
+  loading, inference execution, KV cache management. Always compiled — every
+  build includes LLM support.
 - **`elven_canopy_sim`**: does NOT depend on the LLM crate. The sim emits LLM
   requests via an **outbox** mechanism (see "Sim Outbox" below). The sim
   consumes LLM responses as canonical inputs, same as player commands.
@@ -117,12 +117,14 @@ Key capabilities confirmed through research (April 2026):
   load). Each `LlamaContext` must be used from one thread at a time, but
   multiple contexts can share the same model. This fits naturally with the
   existing async mesh worker pattern (worker threads + mpsc channel).
-- **GPU backend feature flags:** `cuda`, `vulkan`, `rocm` as optional Cargo
-  features. The underlying `llama-cpp-sys-2` drives CMake in its `build.rs` and
-  handles cross-platform builds automatically.
+- **GPU backend feature flags:** `cuda`, `vulkan`, `rocm` as Cargo features on
+  `elven_canopy_llm`. The underlying `llama-cpp-sys-2` drives CMake in its
+  `build.rs` and handles cross-platform builds automatically. The base crate
+  (CPU inference) is always compiled; GPU backends are additive.
 
-Build requirements: CMake + C++ compiler (always required). CUDA Toolkit, Vulkan
-SDK, or ROCm are only required for their respective feature flags.
+Build requirements: CMake + C++ compiler + `libclang-dev` (always required for
+bindgen). CUDA Toolkit, Vulkan SDK, or ROCm are only required for their
+respective GPU feature flags.
 
 First build is slow (compiling llama.cpp's C++). Subsequent builds are cached.
 
@@ -134,13 +136,13 @@ since the LLM crate is a controlled internal consumer, not a public API.
 Cargo integration:
 ```toml
 [dependencies]
-llama-cpp-2 = { version = "0.1", optional = true }
+llama-cpp-2 = "0.1"
 
 [features]
-llm = ["dep:llama-cpp-2"]
-llm-cuda = ["llm", "llama-cpp-2/cuda"]
-llm-vulkan = ["llm", "llama-cpp-2/vulkan"]
-llm-rocm = ["llm", "llama-cpp-2/rocm"]
+default = []
+cuda = ["llama-cpp-2/cuda"]
+vulkan = ["llama-cpp-2/vulkan"]
+rocm = ["llama-cpp-2/rocm"]
 ```
 
 ### GPU Backend Selection
@@ -907,20 +909,19 @@ for occasional social interactions but would be problematic at high frequency.
 The existing one-request-at-a-time constraint and PPM-based trigger rate
 naturally limit how often a creature enters this state.
 
-### Feature Flag Boundaries
+### Model-Not-Downloaded Behavior
 
-When the `llm` feature is compiled out (or the model is not downloaded), the sim
-still emits `OutboundRequest`s into the outbox. The hosting layer (gdext) drains
-them and does nothing — no relay routing, no inference. The requests hit their
-deadline and expire silently. The sim's behavior is identical to "LLM is
-available but every request times out."
+When the model is not downloaded, the sim still emits `OutboundRequest`s into
+the outbox. The hosting layer (gdext) drains them and does nothing — no relay
+routing, no inference. The requests hit their deadline and expire silently. The
+sim's behavior is identical to "LLM is available but every request times out."
 
 This means:
-- The sim code has NO conditional compilation around LLM. The outbox, request
+- The sim code has no conditional compilation around LLM. The outbox, request
   emission, response handling, and deadline expiry all exist unconditionally.
-- The only `#[cfg(feature = "llm")]` boundaries are in `elven_canopy_llm` (the
-  crate itself) and in `elven_canopy_gdext` (the code that routes outbox
-  requests to the inference engine).
+- There are no `#[cfg]` boundaries anywhere in the codebase related to LLM.
+  `elven_canopy_llm` is always compiled. GPU backend selection (`cuda`,
+  `vulkan`, `rocm`) is the only feature-flag axis.
 - Unit tests for the sim can test prompt construction and response handling
   without any LLM dependency — they just verify the outbox contents and feed
   synthetic responses back in.
@@ -949,7 +950,7 @@ This means:
 No actual LLM runs in any sim test. The TDD workflow is: write test that checks
 outbox/response behavior → make it pass with sim code → repeat.
 
-**LLM crate tests (optional, not in CI):**
+**LLM crate tests (not in CI):**
 - Integration tests that load a real GGUF model, run inference with a test
   prompt and grammar, and verify the output is valid JSON matching the schema.
   These are slow, require the model on disk, and are for manual validation
