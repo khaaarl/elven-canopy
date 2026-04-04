@@ -106,9 +106,10 @@ pub fn footprint_walkable(
     //   3+ columns with solid at y-1 → supported, OR
     //   1+ column with solid at y-1 AND 2+ columns with solid at y-2 → supported.
     //
-    // Climber rules (any face-adjacent solid — forward-compatible):
-    //   Same 3/1+2 thresholds, but each column checks all 6 face neighbors
-    //   instead of only the voxel directly below.
+    // Climber rules (horizontal face-adjacent solid — used by trolls):
+    //   Body-level adjacency: any footprint voxel horizontally adjacent to solid.
+    //   Below-level face support: same 3/1+2 thresholds with 4 horizontal face
+    //   neighbors (vertical excluded to prevent levitation).
 
     // --- Non-climber: count columns with solid directly at y-1 ---
     let mut direct_support = 0u32;

@@ -40,8 +40,8 @@ impl SimState {
         self.spawn_creature_with_civ(species, position, civ_id, events)
     }
 
-    /// Spawn a creature at the nearest nav node to the given position with an
-    /// explicit civ affiliation. Ground-only species snap to ground nodes;
+    /// Spawn a creature at the nearest walkable position with an
+    /// explicit civ affiliation. Ground-only species snap to ground positions;
     /// others snap to any node.
     pub(crate) fn spawn_creature_with_civ(
         &mut self,
@@ -62,7 +62,7 @@ impl SimState {
         let sex_weights = species_data.sex_weights;
 
         // Flying creatures spawn at the raw position (entire footprint must be
-        // flyable); ground creatures snap to the nearest nav node.
+        // flyable); ground creatures snap to the nearest walkable position.
         let node_pos = if is_flyer {
             let footprint = species_data.footprint;
             if !crate::pathfinding::footprint_flyable(&self.world, position, footprint) {
@@ -703,7 +703,7 @@ impl SimState {
 
     /// Scan downward from a creature's current position to find a valid
     /// landing position. Returns `None` if no valid position exists above
-    /// Y=0 (degenerate case — caller should teleport to nearest nav node).
+    /// Y=0 (degenerate case — caller should teleport to nearest walkable position).
     pub(crate) fn find_creature_landing(
         &self,
         species: Species,
