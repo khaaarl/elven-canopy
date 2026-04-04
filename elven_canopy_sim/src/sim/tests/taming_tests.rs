@@ -147,7 +147,7 @@ fn taming_only_scouts_can_claim() {
 
 #[test]
 fn taming_roll_succeeds_with_high_stats() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = flat_world_sim(fresh_test_seed());
     let capy_id = spawn_creature(&mut sim, Species::Capybara);
     let scout_id = spawn_elf(&mut sim);
     assign_path(&mut sim, scout_id, PathId::Scout);
