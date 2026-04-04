@@ -336,12 +336,18 @@ impl SimState {
             .map(|r| r.coord)
             .collect();
 
-        let mut unclaimed_fruit: Vec<(VoxelCoord, NavNodeId)> = Vec::new();
+        let mut unclaimed_fruit: Vec<VoxelCoord> = Vec::new();
         for tf in self.db.tree_fruits.iter_all() {
             if !claimed_positions.contains(&tf.position.min)
-                && let Some(nav_node) = self.nav_graph.find_nearest_node(tf.position.min, 5)
+                && crate::walkability::find_nearest_walkable(
+                    &self.world,
+                    &self.face_data,
+                    tf.position.min,
+                    5,
+                )
+                .is_some()
             {
-                unclaimed_fruit.push((tf.position.min, nav_node));
+                unclaimed_fruit.push(tf.position.min);
             }
         }
 
@@ -349,7 +355,7 @@ impl SimState {
         let max_tasks = self.config.max_haul_tasks_per_heartbeat;
         let to_create = shortfall.min(unclaimed_fruit.len() as u32).min(max_tasks);
 
-        for &(fruit_pos, _nav_node) in unclaimed_fruit.iter().take(to_create as usize) {
+        for &fruit_pos in unclaimed_fruit.iter().take(to_create as usize) {
             let task_id = TaskId::new(&mut self.rng);
             let new_task = task::Task {
                 id: task_id,
@@ -532,7 +538,15 @@ impl SimState {
         // Phase 1: Check ground piles.
         for pile in self.db.ground_piles.iter_all() {
             let available = self.inv_unreserved_item_count(pile.inventory_id, item_kind, filter);
-            if available > 0 && self.nav_graph.find_nearest_node(pile.position, 5).is_some() {
+            if available > 0
+                && crate::walkability::find_nearest_walkable(
+                    &self.world,
+                    &self.face_data,
+                    pile.position,
+                    5,
+                )
+                .is_some()
+            {
                 return Some((
                     task::HaulSource::GroundPile(pile.position),
                     available.min(needed),
@@ -556,10 +570,13 @@ impl SimState {
             let available =
                 self.inv_unreserved_item_count(structure.inventory_id, item_kind, filter);
             if available > 0
-                && self
-                    .nav_graph
-                    .find_nearest_node(structure.anchor, 5)
-                    .is_some()
+                && crate::walkability::find_nearest_walkable(
+                    &self.world,
+                    &self.face_data,
+                    structure.anchor,
+                    5,
+                )
+                .is_some()
             {
                 return Some((
                     task::HaulSource::Building(sid),
@@ -585,10 +602,13 @@ impl SimState {
             let wanted = self.inv_want_target_total(structure.inventory_id, item_kind);
             let surplus = held.saturating_sub(wanted);
             if surplus > 0
-                && self
-                    .nav_graph
-                    .find_nearest_node(structure.anchor, 5)
-                    .is_some()
+                && crate::walkability::find_nearest_walkable(
+                    &self.world,
+                    &self.face_data,
+                    structure.anchor,
+                    5,
+                )
+                .is_some()
             {
                 return Some((
                     task::HaulSource::Building(sid),
@@ -644,18 +664,22 @@ impl SimState {
         needed: u32,
         owner: CreatureId,
     ) -> Option<(task::HaulSource, u32, VoxelCoord)> {
-        // Check ground piles. Return the nav node position (snapped) so that
-        // find_path (which uses node_at) can resolve the task location exactly.
+        // Check ground piles. Return the nearest walkable position so that
+        // find_path can resolve the task location.
         for pile in self.db.ground_piles.iter_all() {
             let available = self.inv_count_owned_unreserved(pile.inventory_id, kind, filter, owner);
             if available > 0
-                && let Some(node) = self.nav_graph.find_nearest_node(pile.position, 5)
+                && let Some(walkable_pos) = crate::walkability::find_nearest_walkable(
+                    &self.world,
+                    &self.face_data,
+                    pile.position,
+                    5,
+                )
             {
-                let nav_pos = self.nav_graph.node(node).position;
                 return Some((
                     task::HaulSource::GroundPile(pile.position),
                     available.min(needed),
-                    nav_pos,
+                    walkable_pos,
                 ));
             }
         }
@@ -666,13 +690,17 @@ impl SimState {
             let available =
                 self.inv_count_owned_unreserved(structure.inventory_id, kind, filter, owner);
             if available > 0
-                && let Some(node) = self.nav_graph.find_nearest_node(structure.anchor, 5)
+                && let Some(walkable_pos) = crate::walkability::find_nearest_walkable(
+                    &self.world,
+                    &self.face_data,
+                    structure.anchor,
+                    5,
+                )
             {
-                let nav_pos = self.nav_graph.node(node).position;
                 return Some((
                     task::HaulSource::Building(sid),
                     available.min(needed),
-                    nav_pos,
+                    walkable_pos,
                 ));
             }
         }
@@ -696,13 +724,17 @@ impl SimState {
         for pile in self.db.ground_piles.iter_all() {
             let available = self.inv_count_unowned_unreserved(pile.inventory_id, kind, filter);
             if available > 0
-                && let Some(node) = self.nav_graph.find_nearest_node(pile.position, 5)
+                && let Some(walkable_pos) = crate::walkability::find_nearest_walkable(
+                    &self.world,
+                    &self.face_data,
+                    pile.position,
+                    5,
+                )
             {
-                let nav_pos = self.nav_graph.node(node).position;
                 return Some((
                     task::HaulSource::GroundPile(pile.position),
                     available.min(needed),
-                    nav_pos,
+                    walkable_pos,
                 ));
             }
         }
@@ -712,13 +744,17 @@ impl SimState {
             let sid = structure.id;
             let available = self.inv_count_unowned_unreserved(structure.inventory_id, kind, filter);
             if available > 0
-                && let Some(node) = self.nav_graph.find_nearest_node(structure.anchor, 5)
+                && let Some(walkable_pos) = crate::walkability::find_nearest_walkable(
+                    &self.world,
+                    &self.face_data,
+                    structure.anchor,
+                    5,
+                )
             {
-                let nav_pos = self.nav_graph.node(node).position;
                 return Some((
                     task::HaulSource::Building(sid),
                     available.min(needed),
-                    nav_pos,
+                    walkable_pos,
                 ));
             }
         }

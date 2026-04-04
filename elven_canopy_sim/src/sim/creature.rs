@@ -70,14 +70,22 @@ impl SimState {
             }
             position
         } else {
-            let graph = self.graph_for_species(species);
-            let nearest_node = if ground_only {
-                graph.find_nearest_ground_node(position, 10)
+            let nearest = if ground_only {
+                crate::walkability::find_nearest_ground_walkable(
+                    &self.world,
+                    &self.face_data,
+                    position,
+                    10,
+                )
             } else {
-                graph.find_nearest_node(position, 10)
+                crate::walkability::find_nearest_walkable(
+                    &self.world,
+                    &self.face_data,
+                    position,
+                    10,
+                )
             };
-            let nearest_node = nearest_node?;
-            graph.node(nearest_node).position
+            nearest?
         };
         let creature_id = CreatureId::new(&mut self.rng);
 
@@ -629,9 +637,9 @@ impl SimState {
         if species_data.flight_ticks_per_voxel.is_some() {
             return true; // flying creatures are always supported
         }
-        let graph = self.graph_for_species(creature.species);
-        let has_node = graph.node_at(creature.position.min).is_some();
-        if !has_node {
+        let walkable =
+            crate::walkability::is_walkable(&self.world, &self.face_data, creature.position.min);
+        if !walkable {
             return false;
         }
         if species_data.ground_only {
@@ -689,7 +697,7 @@ impl SimState {
                 && surface_y < pos.y
             {
                 let landing = VoxelCoord::new(ax, surface_y, az);
-                if self.large_nav_graph.node_at(landing).is_some() {
+                if crate::walkability::is_walkable(&self.world, &self.face_data, landing) {
                     return Some(landing);
                 }
             }
@@ -697,11 +705,9 @@ impl SimState {
             None
         } else {
             // 1x1: scan downward for a Y that meets support criteria.
-            let graph = self.graph_for_species(species);
             for y in (1..pos.y).rev() {
                 let candidate = VoxelCoord::new(pos.x, y, pos.z);
-                let has_node = graph.node_at(candidate).is_some();
-                if !has_node {
+                if !crate::walkability::is_walkable(&self.world, &self.face_data, candidate) {
                     continue;
                 }
                 if species_data.ground_only {
@@ -751,11 +757,15 @@ impl SimState {
             Some(pos) => pos,
             None => {
                 // Degenerate: no valid landing column. Teleport to nearest
-                // nav node.
-                let graph = self.graph_for_species(species);
-                match graph.find_nearest_node(old_pos, 5) {
-                    Some(n) => graph.node(n).position,
-                    None => return false, // no nav nodes at all — nothing to do
+                // walkable position.
+                match crate::walkability::find_nearest_walkable(
+                    &self.world,
+                    &self.face_data,
+                    old_pos,
+                    5,
+                ) {
+                    Some(pos) => pos,
+                    None => return false, // no walkable positions — nothing to do
                 }
             }
         };

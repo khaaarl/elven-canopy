@@ -1697,7 +1697,7 @@ impl SimState {
                 if should_seek_food
                     && !ate_bread
                     && is_forager
-                    && let Some((fruit_pos, _nav_node)) = self.find_nearest_fruit(creature_id)
+                    && let Some(fruit_pos) = self.find_nearest_fruit(creature_id)
                 {
                     let task_id = TaskId::new(&mut self.rng);
                     let new_task = task::Task {
@@ -1729,7 +1729,7 @@ impl SimState {
                     && !ate_bread
                     && !started_foraging
                     && is_grazer
-                    && let Some((grass_pos, _nav_node)) = self.find_nearest_grass(creature_id)
+                    && let Some(grass_pos) = self.find_nearest_grass(creature_id)
                 {
                     let task_id = TaskId::new(&mut self.rng);
                     let new_task = task::Task {
@@ -1762,7 +1762,7 @@ impl SimState {
                     && !started_grazing
                     && !is_grazer
                     && !is_forager
-                    && let Some((fruit_pos, _nav_node)) = self.find_nearest_fruit(creature_id)
+                    && let Some(fruit_pos) = self.find_nearest_fruit(creature_id)
                 {
                     let task_id = TaskId::new(&mut self.rng);
                     let new_task = task::Task {

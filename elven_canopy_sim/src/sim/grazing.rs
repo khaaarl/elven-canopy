@@ -41,77 +41,76 @@ impl SimState {
     }
 
     /// Find the nearest reachable grassy dirt surface for a creature, using
-    /// Dijkstra over the nav graph. For each nav node visited, checks the
-    /// surface below (the voxel the nav node sits on) for grassiness.
-    /// Returns the grass voxel coordinate and nav node, or `None` if no
-    /// grass is reachable.
+    /// Dijkstra over the walkable voxel grid. For each position visited,
+    /// checks the surface below for grassiness.
+    /// Returns the grass voxel coordinate, or `None` if no grass is reachable.
     ///
     /// This uses a bespoke inline Dijkstra rather than the standard
-    /// `nearest_navgraph` / interleaved-A* API because grass is so
-    /// astronomically numerous (nearly every exposed dirt voxel on the
-    /// ground floor) that enumerating all grass positions into a candidate
-    /// list would itself be prohibitive. Instead, we expand outward from
-    /// the creature and test each visited node on the fly. Since grass is
-    /// almost everywhere, Dijkstra terminates in very few expansions —
-    /// typically the first or second ground-level node is grassy.
-    ///
-    /// TODO: Flying herbivores (F-flying-grazing) would need a flight-grid
-    /// analog of this search — expand through flyable voxels and test the
-    /// ground surface below each position. Not yet implemented because
-    /// flying herbivores don't currently exist in the species table.
-    pub(crate) fn find_nearest_grass(
-        &self,
-        creature_id: CreatureId,
-    ) -> Option<(VoxelCoord, NavNodeId)> {
+    /// `find_nearest` API because grass is so astronomically numerous
+    /// (nearly every exposed dirt voxel on the ground floor) that
+    /// enumerating all grass positions into a candidate list would itself
+    /// be prohibitive. Instead, we expand outward from the creature and
+    /// test each visited position on the fly. Since grass is almost
+    /// everywhere, Dijkstra terminates in very few expansions — typically
+    /// the first or second ground-level position is grassy.
+    pub(crate) fn find_nearest_grass(&self, creature_id: CreatureId) -> Option<VoxelCoord> {
         let creature = self.db.creatures.get(&creature_id)?;
-        let graph = self.graph_for_species(creature.species);
-        let start_node = graph.node_at(creature.position.min)?;
-        let species_data = &self.species_table[&creature.species];
-
-        // Custom Dijkstra that stops at the first grassy node rather than
-        // pre-collecting all targets. This is efficient because grass is
-        // nearly everywhere (most dirt is grassy) — the search terminates
-        // almost immediately.
-        let slot_count = graph.node_slot_count();
-        let mut dist: Vec<u64> = vec![u64::MAX; slot_count];
-        let mut heap = std::collections::BinaryHeap::new();
-
-        let start_idx = start_node.0 as usize;
-        if start_idx >= slot_count {
+        let start = creature.position.min;
+        if !crate::walkability::is_walkable(&self.world, &self.face_data, start) {
             return None;
         }
-        dist[start_idx] = 0;
-        // (Reverse<(cost, node_id)>) — min-heap by cost, then by node ID.
-        heap.push(std::cmp::Reverse((0u64, start_node)));
+        let species_data = &self.species_table[&creature.species];
 
-        while let Some(std::cmp::Reverse((cost, node))) = heap.pop() {
-            let idx = node.0 as usize;
-            if idx >= slot_count || cost > dist[idx] {
+        // Custom Dijkstra over the voxel grid that stops at the first grassy
+        // position. Uses 26-neighbor expansion with walkability and face-
+        // blocking checks.
+        let mut dist: std::collections::BTreeMap<VoxelCoord, u64> =
+            std::collections::BTreeMap::new();
+        let mut heap = std::collections::BinaryHeap::new();
+
+        dist.insert(start, 0);
+        heap.push(std::cmp::Reverse((0u64, start)));
+
+        while let Some(std::cmp::Reverse((cost, pos))) = heap.pop() {
+            if dist.get(&pos).is_some_and(|&d| cost > d) {
                 continue;
             }
 
-            // Check if the surface below this node is grassy dirt.
-            if !graph.is_node_alive(node) {
-                continue;
-            }
-            let node_data = graph.node(node);
-            let node_pos = node_data.position;
-            let surface_below = VoxelCoord::new(node_pos.x, node_pos.y - 1, node_pos.z);
+            // Check if the surface below this position is grassy dirt.
+            let surface_below = VoxelCoord::new(pos.x, pos.y - 1, pos.z);
             if self.is_grassy_dirt(surface_below) {
-                return Some((surface_below, node));
+                return Some(surface_below);
             }
 
-            // Expand neighbors.
-            let edge_ids = graph.neighbors(node);
-            for &edge_id in edge_ids {
-                let edge = graph.edge(edge_id);
+            // Expand 26-neighbors.
+            for &(dx, dy, dz, dist_scaled) in &crate::pathfinding::NEIGHBOR_OFFSETS {
+                let neighbor = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
+                if !self.world.in_bounds(neighbor) {
+                    continue;
+                }
+                if !crate::walkability::is_walkable(&self.world, &self.face_data, neighbor) {
+                    continue;
+                }
+                if crate::walkability::is_edge_blocked_by_faces(&self.face_data, pos, neighbor) {
+                    continue;
+                }
+
+                // Derive edge type to check species restrictions and speed.
+                let from_surface =
+                    crate::walkability::derive_surface_type(&self.world, &self.face_data, pos);
+                let to_surface =
+                    crate::walkability::derive_surface_type(&self.world, &self.face_data, neighbor);
+                let edge_type =
+                    crate::walkability::derive_edge_type(from_surface, to_surface, pos, neighbor);
+
                 // Check edge type allowed.
                 if let Some(allowed) = &species_data.allowed_edge_types
-                    && !allowed.contains(&edge.edge_type)
+                    && !allowed.contains(&edge_type)
                 {
                     continue;
                 }
-                let tpv = match edge.edge_type {
+
+                let tpv = match edge_type {
                     crate::nav::EdgeType::TrunkClimb | crate::nav::EdgeType::GroundToTrunk => {
                         match species_data.climb_ticks_per_voxel {
                             Some(t) => t,
@@ -128,13 +127,11 @@ impl SimState {
                     },
                     _ => species_data.walk_ticks_per_voxel,
                 };
-                let edge_cost = edge.distance as u64 * tpv;
+                let edge_cost = dist_scaled * tpv;
                 let new_cost = cost.saturating_add(edge_cost);
 
-                let neighbor = edge.to;
-                let n_idx = neighbor.0 as usize;
-                if n_idx < slot_count && new_cost < dist[n_idx] {
-                    dist[n_idx] = new_cost;
+                if !dist.contains_key(&neighbor) || new_cost < dist[&neighbor] {
+                    dist.insert(neighbor, new_cost);
                     heap.push(std::cmp::Reverse((new_cost, neighbor)));
                 }
             }

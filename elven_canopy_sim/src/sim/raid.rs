@@ -142,30 +142,42 @@ impl SimState {
         ));
     }
 
-    /// Find ground-level nav node positions at the terrain perimeter in the
+    /// Find ground-level walkable positions at the terrain perimeter in the
     /// given cardinal direction. Returns up to `count` positions clustered
     /// together near a random point along the chosen edge.
     ///
-    /// Computes the actual terrain bounding box from ground nodes, picks a
-    /// random anchor point on the edge, then selects the nearest `count`
-    /// ground nodes to that anchor (sorted by Manhattan distance).
-    ///
-    /// Note: uses `self.nav_graph` (1x1x1 graph). All current raiding species
-    /// (Goblin, Orc, Troll) have 1x1x1 footprints. If a large-footprint species
-    /// ever raids, this should switch to `graph_for_species(species)`.
+    /// Scans all (x, z) at floor_y + 1 for walkable dirt positions to
+    /// compute the terrain bounding box, picks a random anchor point on the
+    /// edge, then selects the nearest `count` positions to that anchor
+    /// (sorted by Manhattan distance).
     fn find_perimeter_positions(&mut self, direction: u8, count: usize) -> Vec<VoxelCoord> {
-        let ground_nodes = self.nav_graph.ground_node_ids();
-        if ground_nodes.is_empty() {
+        let floor_y = self.config.floor_y + 1;
+        let (wx, _wy, wz) = self.config.world_size;
+
+        // Scan all (x, z) at floor level for walkable dirt positions.
+        let mut ground_positions: Vec<VoxelCoord> = Vec::new();
+        for x in 0..wx as i32 {
+            for z in 0..wz as i32 {
+                let pos = VoxelCoord::new(x, floor_y, z);
+                if crate::walkability::is_walkable(&self.world, &self.face_data, pos)
+                    && crate::walkability::derive_surface_type(&self.world, &self.face_data, pos)
+                        == VoxelType::Dirt
+                {
+                    ground_positions.push(pos);
+                }
+            }
+        }
+
+        if ground_positions.is_empty() {
             return Vec::new();
         }
 
-        // Compute the actual terrain bounding box from ground nodes.
+        // Compute the actual terrain bounding box from ground positions.
         let mut min_x = i32::MAX;
         let mut max_x = i32::MIN;
         let mut min_z = i32::MAX;
         let mut max_z = i32::MIN;
-        for &nid in &ground_nodes {
-            let pos = self.nav_graph.node(nid).position;
+        for &pos in &ground_positions {
             min_x = min_x.min(pos.x);
             max_x = max_x.max(pos.x);
             min_z = min_z.min(pos.z);
@@ -198,12 +210,11 @@ impl SimState {
             }
         };
 
-        // Collect all ground node positions with their distance to the anchor
+        // Collect all ground positions with their distance to the anchor
         // (Manhattan distance in XZ only — Y doesn't matter for clustering).
-        let mut scored: Vec<(i32, VoxelCoord)> = ground_nodes
+        let mut scored: Vec<(i32, VoxelCoord)> = ground_positions
             .iter()
-            .map(|&nid| {
-                let pos = self.nav_graph.node(nid).position;
+            .map(|&pos| {
                 let dist = (pos.x - anchor.x).abs() + (pos.z - anchor.z).abs();
                 (dist, pos)
             })
@@ -216,46 +227,74 @@ impl SimState {
         scored.into_iter().map(|(_, pos)| pos).collect()
     }
 
-    /// Find nav node positions adjacent to wood voxels (Trunk, Branch, Root,
-    /// GrownPlatform, GrownWall, Strut). Used as
-    /// attack-move destinations for raiders.
+    /// Find walkable positions adjacent to wood voxels (Trunk, Branch, Root,
+    /// GrownPlatform, GrownWall, Strut). Used as attack-move destinations for
+    /// raiders.
+    ///
+    /// Scans ground-level walkable positions (for ground_only species) or all
+    /// walkable positions in the world. Since raiders primarily target the tree,
+    /// we scan the floor level for ground-only species, and a reasonable Y range
+    /// for climbers.
     fn find_wood_adjacent_nodes(&self, species: Species) -> Vec<VoxelCoord> {
         let ground_only = self.species_table[&species].ground_only;
-        let graph = self.graph_for_species(species);
+        let (wx, wy, wz) = self.config.world_size;
 
         let mut targets = Vec::new();
 
-        for node in graph.live_nodes() {
-            // If species is ground_only, only consider ground (Dirt) nodes.
-            if ground_only && node.surface_type != VoxelType::Dirt {
-                continue;
-            }
+        let y_range: Box<dyn Iterator<Item = i32>> = if ground_only {
+            // Ground-only: only scan floor level.
+            Box::new(std::iter::once(self.config.floor_y + 1))
+        } else {
+            // Climbers: scan all Y levels.
+            Box::new(1..wy as i32)
+        };
 
-            // Check 6-connected neighbors for wood.
-            let pos = node.position;
-            let neighbors = [
-                VoxelCoord::new(pos.x + 1, pos.y, pos.z),
-                VoxelCoord::new(pos.x - 1, pos.y, pos.z),
-                VoxelCoord::new(pos.x, pos.y + 1, pos.z),
-                VoxelCoord::new(pos.x, pos.y - 1, pos.z),
-                VoxelCoord::new(pos.x, pos.y, pos.z + 1),
-                VoxelCoord::new(pos.x, pos.y, pos.z - 1),
-            ];
+        for y in y_range {
+            for x in 0..wx as i32 {
+                for z in 0..wz as i32 {
+                    let pos = VoxelCoord::new(x, y, z);
+                    if !crate::walkability::is_walkable(&self.world, &self.face_data, pos) {
+                        continue;
+                    }
 
-            let near_wood = neighbors.iter().any(|&n| {
-                matches!(
-                    self.world.get(n),
-                    VoxelType::Trunk
-                        | VoxelType::Branch
-                        | VoxelType::Root
-                        | VoxelType::GrownPlatform
-                        | VoxelType::GrownWall
-                        | VoxelType::Strut
-                )
-            });
+                    // If species is ground_only, only consider Dirt surface.
+                    if ground_only {
+                        let surface = crate::walkability::derive_surface_type(
+                            &self.world,
+                            &self.face_data,
+                            pos,
+                        );
+                        if surface != VoxelType::Dirt {
+                            continue;
+                        }
+                    }
 
-            if near_wood {
-                targets.push(pos);
+                    // Check 6-connected neighbors for wood.
+                    let neighbors = [
+                        VoxelCoord::new(pos.x + 1, pos.y, pos.z),
+                        VoxelCoord::new(pos.x - 1, pos.y, pos.z),
+                        VoxelCoord::new(pos.x, pos.y + 1, pos.z),
+                        VoxelCoord::new(pos.x, pos.y - 1, pos.z),
+                        VoxelCoord::new(pos.x, pos.y, pos.z + 1),
+                        VoxelCoord::new(pos.x, pos.y, pos.z - 1),
+                    ];
+
+                    let near_wood = neighbors.iter().any(|&n| {
+                        matches!(
+                            self.world.get(n),
+                            VoxelType::Trunk
+                                | VoxelType::Branch
+                                | VoxelType::Root
+                                | VoxelType::GrownPlatform
+                                | VoxelType::GrownWall
+                                | VoxelType::Strut
+                        )
+                    });
+
+                    if near_wood {
+                        targets.push(pos);
+                    }
+                }
             }
         }
 
