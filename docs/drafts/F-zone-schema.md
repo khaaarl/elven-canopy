@@ -84,7 +84,7 @@ Total: ~12-18 commits. Step 4 is the critical path.
 These are implicit single-zone assumptions discovered in the codebase that must be addressed during or after this work:
 
 - **`TriggerRaid`** (`command.rs`): Computes spawn positions from `config.world_size` and `config.floor_y`, assuming one world. Must use the target zone's `zone_size`/`floor_y` instead. For F-zone-schema (one zone) the behavior is unchanged, but the code path must be updated to read from the Zone row.
-- **`GameConfig` single-zone fields:** `world_size`, `floor_y`, `tree_profile`, `lesser_trees` are top-level and implicitly per-zone. `zone_size` and `floor_y` move to the Zone table in this work. GameConfig keeps `default_zone_size` and `default_floor_y` as defaults for zone creation; callers that currently read `config.world_size`/`config.floor_y` must be migrated to read from the Zone row (via a zone accessor or by looking up the active zone). Tree profile and lesser tree config remain in GameConfig for now (only one zone type exists) but will need per-zone-type config in F-zone-world.
+- **`GameConfig` single-zone fields:** `world_size`, `floor_y`, `tree_profile`, `lesser_trees` are top-level and implicitly per-zone. GameConfig is NOT changed in F-zone-schema. The Zone table stores `zone_size` and `floor_y` per-zone, but these are populated from `config.world_size`/`config.floor_y` at worldgen time. Callers that currently read `config.world_size`/`config.floor_y` must be migrated to read from the Zone row (via a zone accessor or by looking up the active zone). Renaming GameConfig fields and per-zone-type config are deferred to F-zone-world.
 - **Event handlers reference zone-local data:** `GrassRegrowth` iterates `self.grassless`, `LogisticsHeartbeat` iterates all structures, `TreeHeartbeat` piggybacks all fruit-bearing trees. After zone-local data moves into VoxelZone, these handlers must access data through the zone accessor. For F-zone-schema (one zone) the behavior is identical, but the code paths change.
 - **Borrow management in sim_bridge:** Moving `grassless` into VoxelZone means bridge code that needs both `&voxel_zone` and `&mut voxel_zone.grassless` must be careful about mutable borrows. `update_world_mesh()` calls both `drain_dirty_voxels()` (mut) and passes `&zone.grassless` to mesh cache — these cannot overlap.
 - **Initial creature spawning:** `spawn_initial_creatures()` uses config-defined spawn positions (bare VoxelCoord, no zone). Must set `zone_id` to home zone on all spawned creatures.
@@ -104,8 +104,9 @@ These are implicit single-zone assumptions discovered in the codebase that must 
 - **Test helpers:** `test_sim`/`flat_world_sim` produce a single-zone SimState. Add `home_voxel_zone()`/`home_voxel_zone_mut()` accessors so most tests don't need to think about zones. The VoxelWorld→VoxelZone rename is mechanical (~400 occurrences across sim, graphics, gdext).
 - **NavGraph:** Excluded from this design — being removed in parallel (F-remove-navgraph).
 - **`manifest_zone` signature:** Takes `&mut SimDb` directly (it inserts Tree rows, GreatTreeInfo, schedules heartbeats). Internal geometry functions are pure, but manifestation itself mutates DB state.
+- **Per-zone-type config:** `manifest_zone` reads tree profiles, lesser tree config, etc. from GameConfig. GameConfig is not changed in F-zone-schema — per-zone-type config is deferred to F-zone-world.
+- **GreatTreeInfo:** Non-home zones can have great trees, and multiple great trees can exist in the same zone. `manifest_zone` for a `GreatTreeForest` zone creates a GreatTreeInfo for its main tree. Multi-great-tree details are an F-zone-world concern.
 
 ## Open Questions
 
-- Per-zone-type config: how does `manifest_zone` get tree profiles, lesser tree config, etc.? From GameConfig? From the Zone row? From the ZoneType enum?
-- `GreatTreeInfo` creation: currently tied to the home tree specifically. In `manifest_zone`, a `GreatTreeForest` zone creates a GreatTreeInfo for its main tree. Whether non-home zones can have great trees (and thus GreatTreeInfo) is an F-zone-world question.
+None.

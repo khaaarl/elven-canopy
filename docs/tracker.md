@@ -8085,8 +8085,10 @@ The DB-structural part of F-zone-world, extracted so schema changes can be plann
 - **Worldgen/manifestation split:** `run_worldgen` creates civs, diplomacy, fruit species, Zone rows. `manifest_zone` takes `&mut SimDb` and materializes a zone into a playable state (voxels, tree DB rows, fruit assignment, heartbeats).
 - **Active zone:** `SimBridge` owns `active_zone_id` (client-side, not sim state). 13 spatial `SimAction` variants gain `zone_id` field stamped by bridge.
 - **Save format:** Old saves break (no migration, no version field). F-save-stable is blocked by this work.
+- **GameConfig unchanged:** No GameConfig modifications in this feature. Zone table stores `zone_size`/`floor_y` per-zone, populated from existing config fields at worldgen. Per-zone-type config deferred to F-zone-world.
+- **GreatTreeInfo:** Non-home zones can have great trees, and multiple great trees can exist in the same zone. Details deferred to F-zone-world.
 
-Implementation: ~12-18 commits in 6 steps. F-remove-navgraph prerequisite. Step 4 (SimState restructure) is critical path.
+Implementation: ~12-18 commits in 6 steps. F-remove-navgraph prerequisite (done). Step 4 (SimState restructure) is critical path.
 
 **Draft:** `docs/drafts/F-zone-schema.md`
 
