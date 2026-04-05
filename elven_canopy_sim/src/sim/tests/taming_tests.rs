@@ -804,26 +804,7 @@ fn taming_serde_roundtrip_preserves_designations_and_tasks() {
 fn taming_multi_civ_designations_coexist() {
     let mut sim = test_sim(fresh_test_seed());
     let capy_id = spawn_creature(&mut sim, Species::Capybara);
-
-    // Create a second friendly civ.
-    let max_civ = sim
-        .db
-        .civilizations
-        .iter_all()
-        .map(|c| c.id.0)
-        .max()
-        .unwrap_or(0);
-    let civ2_id = CivId(max_civ + 1);
-    sim.db
-        .insert_civilization(Civilization {
-            id: civ2_id,
-            name: "Friendly Elves 2".to_string(),
-            primary_species: CivSpecies::Elf,
-            minority_species: Vec::new(),
-            culture_tag: CultureTag::Woodland,
-            player_controlled: false,
-        })
-        .unwrap();
+    let civ2_id = create_second_civ(&mut sim);
 
     // Player civ designates the capybara.
     designate_tame(&mut sim, capy_id);
@@ -877,25 +858,7 @@ fn taming_success_removes_all_civ_designations() {
     scout.position = capy_pos;
     let _ = sim.db.upsert_creature(scout);
 
-    // Create a second civ.
-    let max_civ = sim
-        .db
-        .civilizations
-        .iter_all()
-        .map(|c| c.id.0)
-        .max()
-        .unwrap_or(0);
-    let civ2_id = CivId(max_civ + 1);
-    sim.db
-        .insert_civilization(Civilization {
-            id: civ2_id,
-            name: "Friendly Elves 2".to_string(),
-            primary_species: CivSpecies::Elf,
-            minority_species: Vec::new(),
-            culture_tag: CultureTag::Woodland,
-            player_controlled: false,
-        })
-        .unwrap();
+    let civ2_id = create_second_civ(&mut sim);
 
     // Both civs designate.
     designate_tame(&mut sim, capy_id);
@@ -929,4 +892,194 @@ fn taming_success_removes_all_civ_designations() {
         "All designations should be removed after taming succeeds, found {}",
         remaining.len()
     );
+}
+
+/// Helper: create a second friendly civ for multi-civ tests.
+fn create_second_civ(sim: &mut SimState) -> CivId {
+    let max_civ = sim
+        .db
+        .civilizations
+        .iter_all()
+        .map(|c| c.id.0)
+        .max()
+        .unwrap_or(0);
+    let civ2_id = CivId(max_civ + 1);
+    sim.db
+        .insert_civilization(Civilization {
+            id: civ2_id,
+            name: "Friendly Elves 2".to_string(),
+            primary_species: CivSpecies::Elf,
+            minority_species: Vec::new(),
+            culture_tag: CultureTag::Woodland,
+            player_controlled: false,
+        })
+        .unwrap();
+    civ2_id
+}
+
+/// When the tame target dies, ALL designations from all civs should be
+/// removed — not just the civ whose scout is pursuing the target.
+#[test]
+fn taming_target_death_removes_all_civ_designations() {
+    let mut sim = test_sim(fresh_test_seed());
+    let capy_id = spawn_creature(&mut sim, Species::Capybara);
+    let civ2_id = create_second_civ(&mut sim);
+
+    // Both civs designate.
+    designate_tame(&mut sim, capy_id);
+    let _ = sim.db.insert_tame_designation(crate::db::TameDesignation {
+        creature_id: capy_id,
+        civ_id: civ2_id,
+        designated_tick: sim.tick,
+    });
+    assert_eq!(sim.db.tame_designations.len(), 2);
+
+    // Kill the capybara.
+    let kill_cmd = SimCommand {
+        player_name: String::new(),
+        tick: sim.tick + 1,
+        action: SimAction::DebugKillCreature {
+            creature_id: capy_id,
+        },
+    };
+    sim.step(&[kill_cmd], sim.tick + 1);
+
+    // Both designations should be removed immediately (via handle_creature_death).
+    assert!(
+        sim.db.tame_designations.is_empty(),
+        "All tame designations should be removed when target dies, found {}",
+        sim.db.tame_designations.len()
+    );
+}
+
+/// When taming succeeds, Tame tasks from OTHER civs targeting the same
+/// creature should also be completed — not left as orphans for scouts to
+/// wastefully pursue.
+#[test]
+fn taming_success_cancels_other_civs_tame_tasks() {
+    let mut sim = test_sim(fresh_test_seed());
+    let capy_id = spawn_creature(&mut sim, Species::Capybara);
+    let scout_id = spawn_elf(&mut sim);
+    assign_path(&mut sim, scout_id, PathId::Scout);
+
+    // Very high stats for guaranteed success.
+    set_trait(&mut sim, scout_id, TraitKind::Willpower, 500);
+    set_trait(&mut sim, scout_id, TraitKind::Charisma, 500);
+    set_trait(&mut sim, scout_id, TraitKind::Beastcraft, 500);
+
+    force_idle(&mut sim, scout_id);
+    let capy_pos = sim.db.creatures.get(&capy_id).unwrap().position;
+    let mut scout = sim.db.creatures.get(&scout_id).unwrap();
+    scout.position = capy_pos;
+    let _ = sim.db.upsert_creature(scout);
+
+    let civ2_id = create_second_civ(&mut sim);
+
+    // Player designates (creates a real task).
+    designate_tame(&mut sim, capy_id);
+
+    // Simulate civ2 also having a task + designation.
+    let _ = sim.db.insert_tame_designation(crate::db::TameDesignation {
+        creature_id: capy_id,
+        civ_id: civ2_id,
+        designated_tick: sim.tick,
+    });
+    let civ2_task = crate::task::Task {
+        id: crate::types::TaskId::new(&mut sim.rng),
+        kind: crate::task::TaskKind::Tame { target: capy_id },
+        state: TaskState::Available,
+        location: capy_pos.min,
+        progress: 0,
+        total_cost: 0,
+        required_species: Some(Species::Elf),
+        origin: crate::task::TaskOrigin::PlayerDirected,
+        target_creature: Some(capy_id),
+        restrict_to_creature_id: None,
+        prerequisite_task_id: None,
+        required_civ_id: Some(civ2_id),
+    };
+    sim.insert_task(civ2_task);
+
+    // Verify two tame tasks exist.
+    let tame_task_count = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Tame)
+        .count();
+    assert_eq!(tame_task_count, 2);
+
+    // Run until tamed.
+    for _ in 0..200 {
+        sim.step(&[], sim.tick + 500);
+        if sim
+            .db
+            .creatures
+            .get(&capy_id)
+            .is_some_and(|c| c.civ_id.is_some())
+        {
+            break;
+        }
+    }
+
+    // ALL tame tasks should be completed.
+    let active_tame_tasks: Vec<_> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.kind_tag == TaskKindTag::Tame && t.state != TaskState::Complete)
+        .collect();
+    assert!(
+        active_tame_tasks.is_empty(),
+        "All civs' tame tasks should be completed after taming succeeds, found {} active",
+        active_tame_tasks.len()
+    );
+}
+
+/// Multi-civ tame designations survive serde roundtrip. Verifies the
+/// composite PK `(creature_id, civ_id)` and `creature_id` index are
+/// correctly rebuilt after deserialization.
+#[test]
+fn taming_multi_civ_serde_roundtrip() {
+    let mut sim = test_sim(fresh_test_seed());
+    let capy_id = spawn_creature(&mut sim, Species::Capybara);
+    let civ2_id = create_second_civ(&mut sim);
+    let pciv = sim.player_civ_id.unwrap();
+
+    // Both civs designate.
+    designate_tame(&mut sim, capy_id);
+    let _ = sim.db.insert_tame_designation(crate::db::TameDesignation {
+        creature_id: capy_id,
+        civ_id: civ2_id,
+        designated_tick: sim.tick,
+    });
+    assert_eq!(sim.db.tame_designations.len(), 2);
+
+    // Roundtrip.
+    let json = serde_json::to_string(&sim).unwrap();
+    let restored: SimState = serde_json::from_str(&json).unwrap();
+
+    // Both designations survive.
+    assert_eq!(restored.db.tame_designations.len(), 2);
+    assert!(
+        restored
+            .db
+            .tame_designations
+            .get(&(capy_id, pciv))
+            .is_some()
+    );
+    assert!(
+        restored
+            .db
+            .tame_designations
+            .get(&(capy_id, civ2_id))
+            .is_some()
+    );
+
+    // Index query works.
+    let by_creature: Vec<_> = restored
+        .db
+        .tame_designations
+        .by_creature_id(&capy_id, tabulosity::QueryOpts::ASC);
+    assert_eq!(by_creature.len(), 2);
 }

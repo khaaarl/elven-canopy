@@ -1378,6 +1378,11 @@ impl SimState {
             }
         }
 
+        // 2b. Clean up any tame designations and tame tasks targeting
+        // this creature. Without this, orphaned designations persist until
+        // a Scout eventually walks to the corpse and discovers it's dead.
+        self.remove_all_tame_designations_for(creature_id);
+
         // 3. Clear assigned_home, set vital_status = Dead, hp = 0.
         if let Some(mut c) = self.db.creatures.get(&creature_id) {
             c.assigned_home = None;

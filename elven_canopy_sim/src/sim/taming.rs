@@ -297,9 +297,10 @@ impl super::SimState {
         }
     }
 
-    /// Remove all `TameDesignation` rows for a creature, regardless of civ.
-    /// Used when the creature dies or is successfully tamed — no civ can tame
-    /// it anymore, so all pending designations are invalid.
+    /// Remove all `TameDesignation` rows for a creature, regardless of civ,
+    /// and complete all `Tame` tasks targeting that creature. Used when the
+    /// creature dies or is successfully tamed — no civ can tame it anymore,
+    /// so all pending designations and tasks are invalid.
     pub(crate) fn remove_all_tame_designations_for(&mut self, creature_id: CreatureId) {
         let keys: Vec<(CreatureId, CivId)> = self
             .db
@@ -310,6 +311,18 @@ impl super::SimState {
             .collect();
         for key in keys {
             let _ = self.db.remove_tame_designation(&key);
+        }
+
+        // Also complete all Tame tasks targeting this creature (from any civ).
+        let task_ids: Vec<crate::types::TaskId> = self
+            .db
+            .task_tame_data
+            .iter_all()
+            .filter(|td| td.target == creature_id)
+            .map(|td| td.task_id)
+            .collect();
+        for tid in task_ids {
+            self.complete_task(tid);
         }
     }
 }

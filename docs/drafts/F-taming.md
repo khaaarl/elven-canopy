@@ -173,18 +173,20 @@ referencing deleted creatures are inert (the creature row still exists with
 `vital_status = Dead`; creature rows are never deleted).
 
 ```rust
-/// Creatures the player has marked for taming via the UI toggle.
-/// Presence in this table = "an open taming task should exist."
-/// No FK to `creatures` — orphaned entries (dead creatures) are harmless
-/// and cleaned up lazily at activation time.
-pub tame_designations: Table<CreatureId, TameDesignation>,
+/// Creatures marked for taming. Composite PK `(creature_id, civ_id)` allows
+/// multiple civilizations to designate the same creature concurrently
+/// (B-tame-civ-id). No FK to `creatures` — orphaned entries are cleaned up
+/// eagerly on death (handle_creature_death) and lazily at activation time.
+pub tame_designations: TameDesignationTable,
 ```
 
 ```rust
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
+#[primary_key("creature_id", "civ_id")]
 pub struct TameDesignation {
-    #[primary_key]
+    #[indexed]
     pub creature_id: CreatureId,
+    pub civ_id: CivId,
     /// Tick when designation was created (for UI display, task ordering).
     pub designated_tick: u64,
 }
@@ -285,8 +287,10 @@ F-tame-aggro will add explicit aggro-on-fail mechanics for this scenario.
 
 Then inserts into `tame_designations` and creates the `TaskKind::Tame` task.
 
-`CancelTameDesignation` removes the designation and cancels any in-progress
-taming task on that creature.
+`CancelTameDesignation` removes only the requesting civ's designation and
+cancels their taming task. Other civs' designations and tasks are unaffected
+(B-tame-civ-id). When taming succeeds or the target dies,
+`remove_all_tame_designations_for` clears all civs' designations and tasks.
 
 ### SimEvent
 
