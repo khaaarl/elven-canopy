@@ -2612,14 +2612,13 @@ fn logistics_heartbeat_triggers_creature_gravity() {
 #[test]
 fn large_creature_falls_when_ground_removed() {
     let mut sim = test_sim(legacy_test_seed());
-    // Elephants use 2x2x2 footprint walkability. Place a 2x2 platform at y=5
-    // and spawn an elephant on it.
+    // Elephants use 2x2x2 footprint walkability. Place a 2x2 dirt platform
+    // at y=5 and spawn an elephant on it. Uses Dirt (not GrownPlatform)
+    // because elephants are ground_only and snap to Dirt-surface positions.
     for dx in 0..2 {
         for dz in 0..2 {
-            sim.world.set(
-                VoxelCoord::new(10 + dx, 5, 10 + dz),
-                VoxelType::GrownPlatform,
-            );
+            sim.world
+                .set(VoxelCoord::new(10 + dx, 5, 10 + dz), VoxelType::Dirt);
         }
     }
     sim.rebuild_transient_state();
