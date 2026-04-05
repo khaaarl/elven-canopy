@@ -73,7 +73,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-fog-billboards       Fog post-process does not obscure billboard sprites
 [ ] B-per-species-iter     Eliminate per-species iteration in selection and tooltip controllers
 [ ] B-relay-stability      Windows TCP connection drops during singleplayer gameplay
-[ ] B-tame-civ-id          TameDesignation missing civ_id (multi-civ taming broken)
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-aggro-fauna          Neutral fauna with aggro triggers
@@ -343,6 +342,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-start-paused-ui      start_paused_on_load UI desync and missing new-game support
 [x] B-tab-serde-tests      Fix tabulosity test compilation under feature unification
 [x] B-tame-already         Taming task doesn't detect already-tamed target
+[x] B-tame-civ-id          TameDesignation missing civ_id (multi-civ taming broken)
 [x] B-task-civ-filter      Tasks lack civilization-level eligibility filtering
 [x] B-unsafe-db-calls      Replace _no_fk and modify_unchecked calls with safe database-level methods
 [x] B-wg-fresh-seed        Worldgen tests use hardcoded seed 42 instead of fresh_test_seed
@@ -2040,7 +2040,7 @@ a civ_id before rolling. If already tamed, complete the task and remove the
 designation.
 
 #### B-tame-civ-id — TameDesignation missing civ_id (multi-civ taming broken)
-**Status:** Todo
+**Status:** Done
 
 TameDesignation (`db.rs`) lacks a `civ_id` field. Currently keyed only by `creature_id`, meaning only one civilization can designate a creature for taming at a time. This is wrong — multiple civs could compete to tame the same creature. `civ_id` should be part of the composite primary key: `#[primary_key("creature_id", "civ_id")]`. Only creatures belonging to that civ should attempt to fulfill the tame designation. The current code likely allows any Scout-path creature to attempt taming regardless of which civ designated it.
 

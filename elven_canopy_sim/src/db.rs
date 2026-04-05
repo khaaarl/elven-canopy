@@ -570,10 +570,15 @@ pub struct CreatureOpinion {
 /// the UI a single O(1) lookup for the toggle button state.
 /// No FK to `creatures` — orphaned entries (dead creatures) are harmless and
 /// cleaned up lazily at activation time.
+///
+/// Composite PK `(creature_id, civ_id)` allows multiple civilizations to
+/// designate the same creature for taming concurrently (B-tame-civ-id).
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
+#[primary_key("creature_id", "civ_id")]
 pub struct TameDesignation {
-    #[primary_key]
+    #[indexed]
     pub creature_id: CreatureId,
+    pub civ_id: CivId,
     /// Tick when designation was created (for UI display, task ordering).
     pub designated_tick: u64,
 }

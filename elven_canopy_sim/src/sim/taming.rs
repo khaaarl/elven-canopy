@@ -6,22 +6,28 @@
 // success. Each attempt rolls `(WIL + CHA + Beastcraft) + quasi_normal(rng, 50)`
 // against the species' `tame_difficulty` threshold.
 //
+// `TameDesignation` uses a composite PK `(creature_id, civ_id)` so multiple
+// civilizations can designate the same creature concurrently (B-tame-civ-id).
+// Cancellation only removes the requesting civ's designation; taming success
+// or target death removes ALL designations for that creature.
+//
 // This module handles:
 // - `SimAction::DesignateTame` and `SimAction::CancelTameDesignation`
 // - Taming task creation and cancellation
 // - Tame task execution at location (start TameAttempt action)
 // - Taming roll resolution (success/fail, skill advancement, civ change, pet naming)
+// - `remove_all_tame_designations_for` cleanup helper
 //
 // See also: `db.rs` for `TameDesignation` / `TaskTameData` / `ActionKind::TameAttempt`,
 // `species.rs` for `tame_difficulty` on `SpeciesData`, `config.rs` for
 // `tame_attempt_ticks` / `tame_skill_advance_probability`, `task.rs` for
-// `TaskKind::Tame`, `activation.rs` for Scout-path claim filter,
-// `paths.rs` for Scout-path gating.
+// `TaskKind::Tame`, `activation.rs` for Scout-path claim filter and dynamic
+// pursuit cleanup, `paths.rs` for Scout-path gating.
 
 use crate::db::{ActionKind, TameDesignation};
 use crate::event::{SimEvent, SimEventKind};
 use crate::task::{self, TaskOrigin, TaskState};
-use crate::types::{CreatureId, Species, TraitKind, VitalStatus};
+use crate::types::{CivId, CreatureId, Species, TraitKind, VitalStatus};
 
 impl super::SimState {
     /// Handle `SimAction::DesignateTame`: validate the target, insert a
@@ -51,14 +57,26 @@ impl super::SimState {
             return;
         }
 
-        // Not already designated.
-        if self.db.tame_designations.get(&target_id).is_some() {
+        // Resolve designating civ (currently always the player civ).
+        let civ_id = match self.player_civ_id {
+            Some(cid) => cid,
+            None => return,
+        };
+
+        // Not already designated by this civ.
+        if self
+            .db
+            .tame_designations
+            .get(&(target_id, civ_id))
+            .is_some()
+        {
             return;
         }
 
         // Insert designation.
         let _ = self.db.insert_tame_designation(TameDesignation {
             creature_id: target_id,
+            civ_id,
             designated_tick: self.tick,
         });
 
@@ -81,18 +99,31 @@ impl super::SimState {
         self.insert_task(task);
     }
 
-    /// Handle `SimAction::CancelTameDesignation`: remove the designation and
-    /// cancel any in-progress taming task on that creature.
+    /// Handle `SimAction::CancelTameDesignation`: remove only the player's
+    /// designation and cancel the corresponding taming task. Other civs'
+    /// designations are left intact (B-tame-civ-id).
     pub(crate) fn handle_cancel_tame_designation(&mut self, target_id: CreatureId) {
-        // Remove designation (if present).
-        let _ = self.db.remove_tame_designation(&target_id);
+        let civ_id = match self.player_civ_id {
+            Some(cid) => cid,
+            None => return,
+        };
 
-        // Find and cancel any Tame task targeting this creature.
+        // Remove only this civ's designation.
+        let _ = self.db.remove_tame_designation(&(target_id, civ_id));
+
+        // Find and cancel the Tame task belonging to this civ.
         let task_id = self
             .db
             .task_tame_data
             .iter_all()
-            .find(|td| td.target == target_id)
+            .find(|td| {
+                td.target == target_id
+                    && self
+                        .db
+                        .tasks
+                        .get(&td.task_id)
+                        .is_some_and(|t| t.required_civ_id == Some(civ_id))
+            })
             .map(|td| td.task_id);
 
         if let Some(tid) = task_id {
@@ -125,8 +156,7 @@ impl super::SimState {
             .get(&target_id)
             .is_some_and(|c| c.vital_status == VitalStatus::Alive);
         if !target_alive {
-            // Clean up designation and complete.
-            let _ = self.db.remove_tame_designation(&target_id);
+            self.remove_all_tame_designations_for(target_id);
             self.complete_task(task_id);
             return;
         }
@@ -134,7 +164,7 @@ impl super::SimState {
         // Re-validate target isn't already tamed (multiplayer race).
         let target_civ = self.db.creatures.get(&target_id).and_then(|c| c.civ_id);
         if target_civ.is_some() {
-            let _ = self.db.remove_tame_designation(&target_id);
+            self.remove_all_tame_designations_for(target_id);
             self.complete_task(task_id);
             return;
         }
@@ -176,7 +206,7 @@ impl super::SimState {
             None => (false, false, Species::Elf),
         };
         if !target_alive || !target_wild {
-            let _ = self.db.remove_tame_designation(&target_id);
+            self.remove_all_tame_designations_for(target_id);
             self.complete_task(task_id);
             return true;
         }
@@ -229,8 +259,8 @@ impl super::SimState {
                 let _ = self.db.update_creature(target);
             }
 
-            // Remove designation and complete task.
-            let _ = self.db.remove_tame_designation(&target_id);
+            // Remove all designations (creature is no longer wild).
+            self.remove_all_tame_designations_for(target_id);
 
             // Create notification.
             let tamer_name = self
@@ -264,6 +294,35 @@ impl super::SimState {
             // re-invoke execute_tame_at_location, which re-checks target
             // status and starts another TameAttempt action.
             false
+        }
+    }
+
+    /// Remove all `TameDesignation` rows for a creature, regardless of civ,
+    /// and complete all `Tame` tasks targeting that creature. Used when the
+    /// creature dies or is successfully tamed — no civ can tame it anymore,
+    /// so all pending designations and tasks are invalid.
+    pub(crate) fn remove_all_tame_designations_for(&mut self, creature_id: CreatureId) {
+        let keys: Vec<(CreatureId, CivId)> = self
+            .db
+            .tame_designations
+            .by_creature_id(&creature_id, tabulosity::QueryOpts::ASC)
+            .into_iter()
+            .map(|d| (d.creature_id, d.civ_id))
+            .collect();
+        for key in keys {
+            let _ = self.db.remove_tame_designation(&key);
+        }
+
+        // Also complete all Tame tasks targeting this creature (from any civ).
+        let task_ids: Vec<crate::types::TaskId> = self
+            .db
+            .task_tame_data
+            .iter_all()
+            .filter(|td| td.target == creature_id)
+            .map(|td| td.task_id)
+            .collect();
+        for tid in task_ids {
+            self.complete_task(tid);
         }
     }
 }

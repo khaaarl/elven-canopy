@@ -375,8 +375,11 @@ fn build_creature_info_dict(
         dict.set("path_name", GString::from(""));
     }
 
-    // Taming info (F-taming).
-    let is_tame_designated = sim.db.tame_designations.get(&c.id).is_some();
+    // Taming info (F-taming). Check if the player's civ has designated this
+    // creature, not just any civ (B-tame-civ-id).
+    let is_tame_designated = sim
+        .player_civ_id
+        .is_some_and(|civ| sim.db.tame_designations.get(&(c.id, civ)).is_some());
     dict.set("tame_designated", is_tame_designated);
     let is_tameable = sim
         .config

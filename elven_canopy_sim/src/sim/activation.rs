@@ -719,7 +719,7 @@ impl SimState {
                     None => true,
                 };
                 if should_complete {
-                    let _ = self.db.remove_tame_designation(&target_id);
+                    self.remove_all_tame_designations_for(target_id);
                     self.complete_task(task_id);
                     return;
                 }
