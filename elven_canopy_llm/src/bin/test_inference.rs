@@ -66,7 +66,10 @@ fn main() {
 
         match serde_json::from_str::<serde_json::Value>(json_str) {
             Ok(val) => {
-                println!("Valid JSON: {}", serde_json::to_string_pretty(&val).unwrap());
+                println!(
+                    "Valid JSON: {}",
+                    serde_json::to_string_pretty(&val).unwrap()
+                );
                 if let Some(choice) = val.get("choice").and_then(|v| v.as_str()) {
                     if ["greet_warmly", "greet_coldly", "ignore"].contains(&choice) {
                         println!("Choice is valid: {choice}");

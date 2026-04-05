@@ -84,8 +84,7 @@ impl LlmEngine {
     /// `n_ctx` is the context window size in tokens. 2048 is generous for our
     /// ~600 token prompts and leaves room for generation.
     pub fn new(model_path: &Path, n_ctx: u32) -> Result<Self, LlmError> {
-        let backend =
-            LlamaBackend::init().map_err(|e| LlmError::BackendInit(e.to_string()))?;
+        let backend = LlamaBackend::init().map_err(|e| LlmError::BackendInit(e.to_string()))?;
 
         let model_params = LlamaModelParams::default();
         let model = LlamaModel::load_from_file(&backend, model_path, &model_params)
@@ -106,9 +105,7 @@ impl LlmEngine {
     }
 
     /// Create a new context (for testing/debugging).
-    pub fn new_context(
-        &self,
-    ) -> Result<llama_cpp_2::context::LlamaContext<'_>, LlmError> {
+    pub fn new_context(&self) -> Result<llama_cpp_2::context::LlamaContext<'_>, LlmError> {
         self.model
             .new_context(&self._backend, self.ctx_params.clone())
             .map_err(|e| LlmError::ContextCreate(e.to_string()))
