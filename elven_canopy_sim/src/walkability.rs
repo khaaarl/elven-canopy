@@ -66,9 +66,9 @@ const CLIMBER_FACE_OFFSETS: [(i32, i32, i32); 4] = [(1, 0, 0), (-1, 0, 0), (0, 0
 /// - 3+ columns have solid at y-1 → walkable, OR
 /// - 1+ column has solid at y-1 AND 2+ columns have solid at y-2 → walkable.
 ///
-/// The 1+2 fallback handles terrain inclines where `large_node_surface_y`
-/// places the anchor at `max_surface + 1` and only the highest column(s)
-/// have solid directly at y-1.
+/// The 1+2 fallback handles terrain inclines where the anchor is placed
+/// at `max_surface + 1` and only the highest column(s) have solid
+/// directly at y-1.
 ///
 /// **Climber support (any face-adjacent solid):**
 /// Large climbers exist (trolls have `climb_ticks_per_voxel`), so the climber
@@ -261,64 +261,11 @@ fn footprint_walkable_1x1(
     })
 }
 
-/// Compute the surface Y (air voxel above ground) for a 2×2 footprint
-/// anchored at `(ax, az)`. Returns `None` if any column lacks solid ground
-/// or if height variation across the 4 columns exceeds 1 voxel.
-///
-/// Used by `ground_neighbors` for large-creature surface snapping and by
-/// `creature.rs` for finding landing positions during gravity.
-pub fn large_node_surface_y(world: &VoxelWorld, ax: i32, az: i32) -> Option<i32> {
-    let mut min_surface = i32::MAX;
-    let mut max_surface = i32::MIN;
-    for dz in 0..2 {
-        for dx in 0..2 {
-            let top_solid = top_solid_y_from_spans(world, (ax + dx) as u32, (az + dz) as u32);
-            match top_solid {
-                Some(y) => {
-                    min_surface = min_surface.min(y as i32);
-                    max_surface = max_surface.max(y as i32);
-                }
-                None => return None,
-            }
-        }
-    }
-    if max_surface - min_surface > 1 {
-        return None;
-    }
-    Some(max_surface + 1)
-}
-
-/// Find the topmost solid Y in a column using RLE spans.
-/// Returns `None` if the column has no solid voxels.
-fn top_solid_y_from_spans(world: &VoxelWorld, x: u32, z: u32) -> Option<u8> {
-    let mut top: Option<u8> = None;
-    for (vt, _y_start, y_end) in world.column_spans(x, z) {
-        if vt.is_solid() {
-            top = Some(y_end);
-        }
-    }
-    top
-}
-
-/// 8 horizontal neighbor offsets for large-creature surface-snap expansion.
-const HORIZONTAL_OFFSETS: [(i32, i32); 8] = [
-    (-1, -1),
-    (0, -1),
-    (1, -1),
-    (-1, 0),
-    (1, 0),
-    (-1, 1),
-    (0, 1),
-    (1, 1),
-];
-
 /// Return all valid neighboring positions for a ground creature with the
-/// given footprint, along with scaled distances. For \[1,1,1\] creatures,
-/// expands 26 neighbors via NEIGHBOR_OFFSETS and checks `footprint_walkable`
-/// and `is_edge_blocked_by_faces`. For larger creatures, additionally tries
-/// surface-snapped Y positions for horizontal neighbors, bridging terrain
-/// inclines where the valid standing Y changes by more than 1 between
-/// adjacent anchors.
+/// given footprint, along with scaled distances. Expands 26 neighbors via
+/// `NEIGHBOR_OFFSETS` and checks `footprint_walkable` and
+/// `is_edge_blocked_by_faces`. Large creatures handle inclines the same
+/// way small ones do, one voxel at a time via the standard ±1 Y steps.
 ///
 /// The returned `Vec<(VoxelCoord, u64)>` pairs each reachable position with
 /// a scaled Euclidean distance suitable for cost computation. Callers derive
@@ -341,47 +288,6 @@ pub fn ground_neighbors(
             continue;
         }
         result.push((neighbor, dist_scaled));
-    }
-
-    // Large creature surface-snap neighbors: for each horizontal (dx,dz)
-    // offset, compute the valid large-creature standing y via
-    // large_node_surface_y and try that position if it differs from the
-    // y values already tried by NEIGHBOR_OFFSETS (±1).
-    let is_large = footprint[0] > 1 || footprint[2] > 1;
-    if is_large {
-        let wx = world.size_x as i32;
-        let wz = world.size_z as i32;
-        for &(dx, dz) in &HORIZONTAL_OFFSETS {
-            let nx = pos.x + dx;
-            let nz = pos.z + dz;
-            // Bounds check: large_node_surface_y accesses (nx..nx+2, nz..nz+2).
-            if nx < 0 || nx + 1 >= wx || nz < 0 || nz + 1 >= wz {
-                continue;
-            }
-            if let Some(sy) = large_node_surface_y(world, nx, nz) {
-                // Skip if already covered by NEIGHBOR_OFFSETS (y within ±1).
-                let dy = sy - pos.y;
-                if (-1..=1).contains(&dy) {
-                    continue;
-                }
-                let neighbor = VoxelCoord::new(nx, sy, nz);
-                if !footprint_walkable(world, face_data, neighbor, footprint) {
-                    continue;
-                }
-                if is_edge_blocked_by_faces(face_data, pos, neighbor) {
-                    continue;
-                }
-                // Approximate 3D octile distance: 1024*max + 424*mid + 318*min.
-                let adx = dx.unsigned_abs() as u64;
-                let adz = dz.unsigned_abs() as u64;
-                let ady = dy.unsigned_abs() as u64;
-                let max_comp = adx.max(adz).max(ady);
-                let min_comp = adx.min(adz).min(ady);
-                let mid_comp = adx + adz + ady - max_comp - min_comp;
-                let dist_scaled = 1024 * max_comp + 424 * mid_comp + 318 * min_comp;
-                result.push((neighbor, dist_scaled));
-            }
-        }
     }
 
     result
@@ -1026,89 +932,8 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // large_node_surface_y tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_large_node_surface_y_flat() {
-        let world = ground_world(16, 16, 16, 5);
-        // Flat dirt floor at y=5. Surface y for a 2x2 at (5,5) should be 6.
-        assert_eq!(large_node_surface_y(&world, 5, 5), Some(6));
-    }
-
-    #[test]
-    fn test_large_node_surface_y_height_variation_exceeds_1() {
-        // One column at height 2, another at height 5 — variation > 1 → None.
-        let mut world = VoxelWorld::new(16, 16, 16);
-        world.set(VoxelCoord::new(5, 2, 5), VoxelType::Dirt);
-        world.set(VoxelCoord::new(6, 2, 5), VoxelType::Dirt);
-        world.set(VoxelCoord::new(5, 5, 6), VoxelType::Dirt);
-        world.set(VoxelCoord::new(6, 5, 6), VoxelType::Dirt);
-        assert_eq!(
-            large_node_surface_y(&world, 5, 5),
-            None,
-            "Height variation of 3 should return None"
-        );
-    }
-
-    #[test]
-    fn test_large_node_surface_y_empty_column() {
-        // One column in the 2x2 has no solid → None.
-        let mut world = VoxelWorld::new(16, 16, 16);
-        world.set(VoxelCoord::new(5, 5, 5), VoxelType::Dirt);
-        world.set(VoxelCoord::new(6, 5, 5), VoxelType::Dirt);
-        world.set(VoxelCoord::new(5, 5, 6), VoxelType::Dirt);
-        // (6, *, 6) has no solid at all.
-        assert_eq!(
-            large_node_surface_y(&world, 5, 5),
-            None,
-            "Empty column should return None"
-        );
-    }
-
-    // -----------------------------------------------------------------------
     // ground_neighbors tests
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_ground_neighbors_large_surface_snap() {
-        // Test ground_neighbors for a [2,2,2] creature on flat terrain.
-        // Verifies that neighbors include positions at the ground surface
-        // level (y=6), all returned neighbors are walkable, and there are
-        // enough neighbors for movement in multiple directions.
-        let world = ground_world(16, 16, 16, 5);
-        let fd = no_faces();
-        let pos = VoxelCoord::new(5, 6, 5);
-        assert!(
-            footprint_walkable(&world, &fd, pos, [2, 2, 2]),
-            "Starting position should be walkable"
-        );
-        let neighbors = ground_neighbors(&world, &fd, pos, [2, 2, 2]);
-        assert!(
-            !neighbors.is_empty(),
-            "2x2x2 creature should have ground neighbors on flat terrain"
-        );
-        // All returned neighbors must be walkable.
-        for (n, _dist) in &neighbors {
-            assert!(
-                footprint_walkable(&world, &fd, *n, [2, 2, 2]),
-                "Neighbor {:?} should be walkable for [2,2,2]",
-                n
-            );
-        }
-        // Should include y=6 neighbors (ground surface level).
-        let ground_level: Vec<_> = neighbors.iter().filter(|(n, _)| n.y == 6).collect();
-        assert!(
-            !ground_level.is_empty(),
-            "Should have neighbors at ground surface level y=6"
-        );
-        // Should have multiple neighbors (at least 4 cardinal directions).
-        assert!(
-            neighbors.len() >= 4,
-            "Should have at least 4 neighbors, got {}",
-            neighbors.len()
-        );
-    }
 
     #[test]
     fn test_ground_neighbors_1x1_basic() {

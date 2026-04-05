@@ -4339,28 +4339,6 @@ fn large_creature_does_not_get_permanently_stuck_on_terrain() {
                 crate::walkability::footprint_walkable(&sim.world, &sim.face_data, pos, footprint);
             eprintln!("  Footprint walkable: {walkable}");
 
-            // Print surrounding terrain heights (6×6 columns around anchor).
-            eprintln!("  Terrain heights (6x6 around anchor):");
-            for dz in -2..=3 {
-                let mut row = String::new();
-                for dx in -2..=3 {
-                    let cx = (pos.x + dx) as u32;
-                    let cz = (pos.z + dz) as u32;
-                    if cx < sim.world.size_x && cz < sim.world.size_z {
-                        let surface_y = crate::walkability::large_node_surface_y(
-                            &sim.world, cx as i32, cz as i32,
-                        );
-                        match surface_y {
-                            Some(y) => row.push_str(&format!("{y:3} ")),
-                            None => row.push_str("  - "),
-                        }
-                    } else {
-                        row.push_str(" OB ");
-                    }
-                }
-                eprintln!("    z={:3}: {row}", pos.z + dz);
-            }
-
             // Check which neighbor anchors have valid walkable positions.
             eprintln!("  Neighbor anchor validity:");
             for &(ndx, ndz) in &[
@@ -4381,10 +4359,8 @@ fn large_creature_does_not_get_permanently_stuck_on_terrain() {
                     VoxelCoord::new(nx, pos.y, nz),
                     footprint,
                 );
-                let surface_y = crate::walkability::large_node_surface_y(&sim.world, nx, nz);
                 eprintln!(
-                    "    ({ndx:+},{ndz:+}): anchor=({nx},{nz}), walkable={neighbor_walkable}, \
-                     surface_y={surface_y:?}"
+                    "    ({ndx:+},{ndz:+}): anchor=({nx},{nz}), walkable={neighbor_walkable}"
                 );
             }
         }
@@ -4407,8 +4383,7 @@ fn large_creature_supported_at_incline_with_mixed_column_heights() {
     let mut sim = test_sim(fresh_test_seed());
 
     // Build a 2×2 footprint with mixed heights: three columns at y=3,
-    // anchor column at y=2. This means large_node_surface_y returns
-    // max(2,3,3,3) + 1 = 4.
+    // anchor column at y=2. The standing Y is max(2,3,3,3) + 1 = 4.
     for dx in 0..2 {
         for dz in 0..2 {
             let height = if dx == 0 && dz == 0 { 2 } else { 3 };
@@ -4709,5 +4684,151 @@ fn test_troll_stays_on_trunk_while_climbing() {
         "Troll should never float in air away from all surfaces, \
          but got {} violations (see stderr for details)",
         violations.len()
+    );
+}
+
+/// Regression test: elephants should not float up to canopy level.
+/// We build a small hill with overhead leaf/branch voxels and verify
+/// elephants stay on the hilltop.
+#[test]
+fn test_elephant_floats_under_tree_foliage_on_hill() {
+    let mut sim = flat_world_sim(fresh_test_seed());
+    let floor_y = sim.config.floor_y;
+
+    // 1. Build a small hill: Dirt at x=12..18, z=12..18, y=floor_y+1..floor_y+3.
+    //    Hilltop walk level should be floor_y+4 (one above the top dirt layer).
+    for x in 12..18 {
+        for z in 12..18 {
+            for y in (floor_y + 1)..=(floor_y + 3) {
+                sim.world.set(VoxelCoord::new(x, y, z), VoxelType::Dirt);
+            }
+        }
+    }
+
+    // 2. Place scattered leaf/branch voxels overhead at y=floor_y+10..floor_y+12.
+    //    This mimics tree canopy above the hill. The top layer uses Dirt so
+    //    that the surface type above it is Dirt → Ground edge type, which
+    //    elephants (ground_only, allowed_edge_types=[Ground]) can traverse.
+    //    Without Dirt on top, the Leaf surface would produce BranchWalk edges
+    //    that elephants reject, masking the canopy teleportation bug.
+    for x in 12..18 {
+        for z in 12..18 {
+            sim.world
+                .set(VoxelCoord::new(x, floor_y + 10, z), VoxelType::Leaf);
+            sim.world
+                .set(VoxelCoord::new(x, floor_y + 11, z), VoxelType::Branch);
+            sim.world
+                .set(VoxelCoord::new(x, floor_y + 12, z), VoxelType::Dirt);
+        }
+    }
+
+    // 3. Rebuild spans so walkability queries see the new voxels.
+    sim.world.repack_all();
+    sim.rebuild_transient_state();
+
+    // 4. Spawn 3 elephants near the hill center.  Force-position them onto
+    //    the hilltop so they start in the danger zone (where ground_neighbors
+    //    can offer the canopy position).
+    let hilltop_y = floor_y + 4;
+    let spawn_pos = VoxelCoord::new(14, hilltop_y, 14);
+    let mut elephant_ids = Vec::new();
+    for _ in 0..3 {
+        let existing: std::collections::BTreeSet<CreatureId> = sim
+            .db
+            .creatures
+            .iter_all()
+            .filter(|c| c.species == Species::Elephant)
+            .map(|c| c.id)
+            .collect();
+        let cmd = SimCommand {
+            player_name: String::new(),
+            tick: sim.tick + 1,
+            action: SimAction::SpawnCreature {
+                species: Species::Elephant,
+                position: spawn_pos,
+            },
+        };
+        sim.step(&[cmd], sim.tick + 2);
+        let new_id = sim
+            .db
+            .creatures
+            .iter_all()
+            .find(|c| c.species == Species::Elephant && !existing.contains(&c.id))
+            .expect("elephant should spawn")
+            .id;
+        elephant_ids.push(new_id);
+    }
+
+    // After each step, force elephants back to hilltop so they keep
+    // rolling the dice on ground_neighbors offering the canopy position.
+    // 5. Record initial y positions.
+    let initial_ys: Vec<(CreatureId, i32)> = elephant_ids
+        .iter()
+        .map(|&id| {
+            let c = sim.db.creatures.get(&id).unwrap();
+            let y = c.position.min.y;
+            eprintln!(
+                "Initial position for {:?}: ({}, {}, {})",
+                id, c.position.min.x, y, c.position.min.z
+            );
+            (id, y)
+        })
+        .collect();
+
+    // 6. Run 100 turns of 500 ticks each, checking for violations after each turn.
+    let max_allowed_y = floor_y + 5; // hilltop + 1 margin
+    let mut violations: Vec<String> = Vec::new();
+
+    for turn in 0..100 {
+        // Force all living elephants back onto the hilltop each turn so
+        // they stay in the zone where the buggy surface-snap can fire.
+        for &id in &elephant_ids {
+            if sim.db.creatures.get(&id).is_some() {
+                force_position(&mut sim, id, VoxelCoord::new(14, hilltop_y, 14));
+            }
+        }
+
+        let end_tick = sim.tick + 500;
+        sim.step(&[], end_tick);
+
+        // 7. Check elephant y positions.
+        for &id in &elephant_ids {
+            if let Some(c) = sim.db.creatures.get(&id) {
+                let y = c.position.min.y;
+                if y > max_allowed_y {
+                    let msg = format!(
+                        "Turn {turn}: elephant {:?} at y={y} (max allowed {max_allowed_y}), \
+                         pos=({}, {}, {})",
+                        id, c.position.min.x, y, c.position.min.z
+                    );
+                    eprintln!("VIOLATION: {msg}");
+                    violations.push(msg);
+                }
+            }
+        }
+    }
+
+    // 8. Print final positions for diagnostics.
+    eprintln!("--- Final elephant positions ---");
+    for &id in &elephant_ids {
+        if let Some(c) = sim.db.creatures.get(&id) {
+            eprintln!(
+                "  {:?}: ({}, {}, {})",
+                id, c.position.min.x, c.position.min.y, c.position.min.z
+            );
+        } else {
+            eprintln!("  {:?}: DEAD/GONE", id);
+        }
+    }
+    for (id, iy) in &initial_ys {
+        eprintln!("  {:?} initial_y={iy}", id);
+    }
+
+    assert!(
+        violations.is_empty(),
+        "Elephants should stay on the hilltop (y <= {max_allowed_y}), \
+         not float up to canopy. Got {} violations:\n{}",
+        violations.len(),
+        violations.join("\n")
     );
 }

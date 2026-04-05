@@ -43,7 +43,3 @@ pub fn scaled_distance(dx: i32, dy: i32, dz: i32) -> u32 {
     let scaled_sq = sq * (DIST_SCALE as u64 * DIST_SCALE as u64);
     scaled_sq.isqrt() as u32
 }
-
-// Large-creature surface helpers have been moved to `walkability.rs`
-// (`large_node_surface_y`, `top_solid_y_from_spans`) where they are used
-// by `ground_neighbors` and `creature.rs`.

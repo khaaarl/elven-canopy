@@ -710,60 +710,31 @@ impl SimState {
         pos: VoxelCoord,
     ) -> Option<VoxelCoord> {
         let species_data = &self.species_table[&species];
-        let is_large = species_data.footprint[0] > 1 || species_data.footprint[2] > 1;
 
-        if is_large {
-            // 2x2x2: large_node_surface_y computes the single valid surface Y
-            // for the 2x2 footprint at this anchor column. If it exists and is
-            // below the creature, that's the landing. No iteration needed.
-            let ax = pos.x;
-            let az = pos.z;
-            let wx = self.world.size_x as i32;
-            let wz = self.world.size_z as i32;
-            // Bounds check: large_node_surface_y accesses (ax..ax+2, az..az+2).
-            if ax < 0 || ax + 1 >= wx || az < 0 || az + 1 >= wz {
-                return None;
+        // Scan downward for the first Y that meets walkability and support
+        // criteria. Works for all footprint sizes.
+        for y in (1..pos.y).rev() {
+            let candidate = VoxelCoord::new(pos.x, y, pos.z);
+            if !crate::walkability::footprint_walkable(
+                &self.world,
+                &self.face_data,
+                candidate,
+                species_data.footprint,
+            ) {
+                continue;
             }
-            if let Some(surface_y) = crate::walkability::large_node_surface_y(&self.world, ax, az)
-                && surface_y < pos.y
-            {
-                let landing = VoxelCoord::new(ax, surface_y, az);
-                if crate::walkability::footprint_walkable(
-                    &self.world,
-                    &self.face_data,
-                    landing,
-                    species_data.footprint,
-                ) {
-                    return Some(landing);
-                }
-            }
-            // No valid large node below — degenerate.
-            None
-        } else {
-            // 1x1: scan downward for a Y that meets support criteria.
-            for y in (1..pos.y).rev() {
-                let candidate = VoxelCoord::new(pos.x, y, pos.z);
-                if !crate::walkability::footprint_walkable(
-                    &self.world,
-                    &self.face_data,
-                    candidate,
-                    species_data.footprint,
-                ) {
-                    continue;
-                }
-                if species_data.ground_only {
-                    // Need solid below.
-                    let below = VoxelCoord::new(pos.x, y - 1, pos.z);
-                    if self.world.get(below).is_solid() {
-                        return Some(candidate);
-                    }
-                } else {
-                    // Climber — nav node is enough.
+            if species_data.ground_only {
+                // Need solid below.
+                let below = VoxelCoord::new(pos.x, y - 1, pos.z);
+                if self.world.get(below).is_solid() {
                     return Some(candidate);
                 }
+            } else {
+                // Climber — nav node is enough.
+                return Some(candidate);
             }
-            None
         }
+        None
     }
 
     /// Apply gravity to a single creature: move it to the landing position,
