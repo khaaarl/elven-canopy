@@ -106,10 +106,15 @@ Key capabilities confirmed through research (April 2026):
   rapidly). Process a shared preamble once, save the KV state, restore it for
   each per-creature query. This directly enables the tiered prompt caching
   design (see "Prompt Caching" below).
-- **Grammar-constrained generation:** `json_schema_to_grammar()` converts a
-  JSON schema string to a GBNF grammar, which is passed to the sampler chain.
-  The model is forced to produce valid JSON matching the schema — no parsing
-  failures, no hallucinated output formats.
+- **Grammar-constrained generation (NOT USED — see below):**
+  `json_schema_to_grammar()` and `LlamaSampler::grammar()` exist but are
+  broken in v0.1.141 — the GBNF grammar sampler crashes (GGML assertion) when
+  grammar stacks empty (either from grammar exhaustion or multi-character token
+  processing at rule boundaries). The `llguidance` feature (`LlamaSampler::
+  llguidance()`) also fails — its tokenizer mapping produces incorrect results,
+  causing it to immediately bail on the first token and fall through to
+  unconstrained generation. We use unconstrained generation with post-hoc
+  validation instead (see "Output Validation" below).
 - **GGUF model loading:** `LlamaModel::load_from_file(path, params)` loads from
   any filesystem path. Models are self-contained GGUF files (weights + tokenizer
   + metadata).
@@ -276,7 +281,9 @@ pub enum OutboundRequest {
         /// The creature-specific ephemeral context (recent thoughts, inbox,
         /// immediate situation). Always processed fresh.
         prompt: String,
-        /// The JSON schema the response must conform to.
+        /// The expected JSON shape description, included in the prompt to
+        /// guide the model's output. Also used by the sim to validate
+        /// responses post-hoc. Not used for grammar-constrained generation.
         response_schema: String,
         /// Tick by which the response is needed. If missed, the request is
         /// treated as a failure (creature keeps current inclinations).
@@ -539,7 +546,7 @@ pub enum SimAction {
     /// Apply an LLM inference result. Delivered by the relay via Turn.
     LlmResult {
         request_id: u64,
-        /// The raw JSON result string (guaranteed valid by grammar constraint).
+        /// The raw result string. Validated post-hoc; may be invalid.
         result_json: String,
         /// Observability metadata.
         metadata: InferenceMetadata,
@@ -565,9 +572,11 @@ Processing in `SimState::apply_command()` for `SimAction::LlmResult`:
 1. Look up `request_id` in the pending requests table.
 2. If not found (expired, cancelled, or duplicate): discard silently.
 3. If found: validate `deadline_tick` hasn't passed. If expired: discard.
-4. Deserialize `result_json` according to the request's `request_kind` (which
-   determines the expected schema — social chat, activity, etc.).
-5. If deserialization fails or the result is semantically invalid: discard
+4. Extract the first balanced `{...}` from `result_json` (the model may produce
+   preamble or trailing text around the JSON). Deserialize according to the
+   request's `request_kind` (which determines the expected schema — social
+   chat, activity, etc.).
+5. If extraction, deserialization, or semantic validation fails: discard
    (log for observability).
 6. Apply the mechanical effects (opinion change, dialogue storage, activity
    creation, etc.) based on the deserialized result.
@@ -590,8 +599,8 @@ Requests are semi-structured:
 
 Responses contain:
 - `request_id: u64` — correlation
-- `result: String` — the LLM's JSON output (guaranteed valid by grammar
-  constraint)
+- `result: String` — the LLM's raw text output (validated post-hoc by the sim;
+  may be invalid and discarded)
 - `metadata: InferenceMetadata` — `{ latency_ms: u32, token_count: u32,
   cache_hit: bool, prefill_tokens: u32, decode_tokens: u32 }` — for
   observability. Same struct used in `SimAction::LlmResult`.
@@ -600,13 +609,31 @@ The envelope is generic enough to serve social chat, activities, diplomacy, and
 inner monologue. The `response_schema` field means different features can
 request different output structures through the same pipeline.
 
+### Output Validation
+
+Grammar-constrained generation is not available (see note under "Inference
+Library" above). Instead, the model generates unconstrained text and the sim
+validates the output post-hoc:
+
+1. Extract the first balanced `{...}` from the raw output (the model may
+   produce preamble text or trailing content after the JSON).
+2. Parse as JSON.
+3. Validate against the expected schema for the request kind (correct fields,
+   enum values in range, etc.).
+4. If any step fails, discard the response — the request expires at its
+   deadline and the creature continues with rules-based behavior. No error,
+   no fallback code path.
+
+This is robust because the sim already handles "no response" gracefully. An
+invalid LLM output is operationally identical to a timeout.
+
 ### Output Schema Design
 
 > **Decision:** Option 3 (minimal enum) for social chat. See "Decision" below.
 
-The `response_schema` field in the wire format specifies the JSON schema that
-grammar-constrained generation enforces. Different features need different output
-structures. The question is how to organize this.
+The prompt instructs the model to produce JSON matching a specific shape.
+Different features need different output structures. The question is how to
+organize this.
 
 #### Option 1: Per-feature schemas, opaque to infrastructure
 

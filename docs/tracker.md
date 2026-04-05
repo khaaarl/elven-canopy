@@ -4037,13 +4037,15 @@ Foundation for all LLM-driven creature features. Concrete decisions made (see dr
 
 **Library:** `llama-cpp-2` (only actively maintained Rust llama.cpp binding). **Model:** Qwen 3 1.7B Q5_K_M (Apache 2.0, best structured output at this size). **GPU:** GPU backends via feature flags (`cuda`, `vulkan`, `rocm`); runtime choice is GPU vs CPU with auto-detection based on available VRAM. Base crate (CPU inference) is always compiled — no optional build flag.
 
-**Sim outbox:** The sim emits `OutboundRequest`s into a `Vec` drained after each `step()`. Each request carries preamble sections (well-known string key or literal text), an ephemeral prompt, a JSON schema for grammar-constrained generation, and a deadline tick. Pending requests tracked in a `BTreeMap<u64, PendingLlmRequest>` (serialized for save/load). The sim has NO conditional compilation for LLM — it always emits requests; they expire silently when LLM is unavailable.
+**No grammar-constrained generation.** Both GBNF (`LlamaSampler::grammar`) and llguidance (`LlamaSampler::llguidance`) are broken in llama-cpp-2 v0.1.141. GBNF crashes with a C++ assertion when grammar stacks empty; llguidance fails tokenizer mapping and silently falls through to unconstrained generation. Instead, the model generates unconstrained text and the sim validates output post-hoc: extract first balanced `{...}`, parse JSON, validate schema, discard on failure. The sim's deadline expiry handles invalid responses naturally.
+
+**Sim outbox:** The sim emits `OutboundRequest`s into a `Vec` drained after each `step()`. Each request carries preamble sections (well-known string key or literal text), an ephemeral prompt, a JSON schema description (for prompt construction and post-hoc validation, not grammar enforcement), and a deadline tick. Pending requests tracked in a `BTreeMap<u64, PendingLlmRequest>` (serialized for save/load). The sim has NO conditional compilation for LLM — it always emits requests; they expire silently when LLM is unavailable.
 
 **Relay routing (Option C — hybrid):** Dedicated protocol messages for dispatch (`ClientMessage::LlmRequest`, `ServerMessage::LlmDispatch`), but results delivered inside Turn messages (`Turn.llm_results`) for simple canonicalization. The relay selects LLM-capable peers (signaled via `llm_capable` field in `Hello`), load-balances, and buffers results until the next turn flush. Payloads are opaque `Vec<u8>` — the relay never inspects prompts or results.
 
 **THE RELAY IS THE ONLY PATH.** All LLM inference — singleplayer AND multiplayer — goes through the relay. The relay is the sole mechanism for dispatch and canonicalization. The code that submits a request and the code that consumes the result are identical regardless of player count. This is enforced at the architectural level (B-local-relay landed — singleplayer now uses the real relay on localhost).
 
-**Response processing:** LLM results enter the sim as `SimAction::LlmResult` via a new `SessionMessage::LlmResult` variant. The sim matches by `request_id`, validates the deadline, deserializes the JSON, and applies mechanical effects. Grammar-constrained generation (GBNF via JSON schema) guarantees valid output format.
+**Response processing:** LLM results enter the sim as `SimAction::LlmResult` via a new `SessionMessage::LlmResult` variant. The sim matches by `request_id`, validates the deadline, extracts and deserializes JSON from raw text, and applies mechanical effects.
 
 **Model download:** User-initiated opt-in (~1.5 GB), background download, checksum verification, platform-conventional storage. Not bundled with the game.
 
@@ -4059,19 +4061,24 @@ Foundation for all LLM-driven creature features. Concrete decisions made (see dr
 - `godot/project.godot` — ModelManager registered as autoload.
 - `godot/test/test_model_manager.gd` — unit tests for format_bytes, SHA-256 computation against known value, state transitions, signal emission, delete behavior, path queries.
 
+**DONE — `elven_canopy_llm` crate (branch `feature/F-llm-creatures-llm-crate`):**
+- New Rust crate wrapping `llama-cpp-2`. Always compiled (no optional build flag). Model loading from filesystem path, unconstrained inference with greedy sampling, post-hoc JSON extraction.
+- Validated on Linux and Windows against Qwen 3 1.7B Q5_K_M: model loads, inference produces valid JSON with correct enum values, first-object extraction works.
+- Build requires CMake, C++ compiler, and libclang (LLVM). CI and build-and-package workflows updated with these dependencies. README dev setup section documents per-platform installation.
+- Test binary (`test_inference`) for manual validation.
+- Puppet bug fixed: ModelManager added to AUTOLOAD_NAMES in puppet_server.gd.
+
 **Remaining work:**
 
-1. **`elven_canopy_llm` crate** — new Rust crate wrapping `llama-cpp-2`. Always compiled (no optional build flag). Model loading from filesystem path, inference execution, grammar-constrained generation via JSON schema → GBNF, KV cache save/restore for preamble caching. GPU backend feature flags (`cuda`, `vulkan`, `rocm`) for accelerated builds. Build requires CMake, C++ compiler, and `libclang-dev`. This is the most uncertain piece — the `llama-cpp-2` API surface and cross-platform CMake build need validation.
+1. **Sim outbox mechanism** — `OutboundRequest` enum, `PendingLlmRequest` tracking in `BTreeMap`, `next_request_id` counter, deadline expiry logic, `SimAction::LlmResult` variant. Pure sim logic. The sim emits requests and consumes results — it never knows how they're fulfilled.
 
-2. **Sim outbox mechanism** — `OutboundRequest` enum, `PendingLlmRequest` tracking in `BTreeMap`, `next_request_id` counter, deadline expiry logic, `SimAction::LlmResult` variant. Pure sim logic. The sim emits requests and consumes results — it never knows how they're fulfilled.
+2. **Protocol message types** — `LlmRequest`, `LlmResponse`, `LlmDispatch`, `LlmResult` structs with serde in `elven_canopy_protocol`. `Turn` struct gets `llm_results: Vec<LlmResult>` field with `#[serde(default)]`. These are just data types.
 
-3. **Protocol message types** — `LlmRequest`, `LlmResponse`, `LlmDispatch`, `LlmResult` structs with serde in `elven_canopy_protocol`. `Turn` struct gets `llm_results: Vec<LlmResult>` field with `#[serde(default)]`. These are just data types.
+3. **Relay dispatch logic** — `Session` gets `pending_llm_results` and `outstanding_dispatches` fields. Peer selection, load balancing, disconnect cleanup, result buffering until turn flush. (B-local-relay is done, so this is unblocked.)
 
-4. **Relay dispatch logic** — `Session` gets `pending_llm_results` and `outstanding_dispatches` fields. Peer selection, load balancing, disconnect cleanup, result buffering until turn flush. (B-local-relay is done, so this is unblocked.)
+4. **gdext integration** — drain sim outbox after `step()`, serialize and send `ClientMessage::LlmRequest` via `NetClient`, receive `ServerMessage::LlmDispatch`, run local inference via `elven_canopy_llm`, send `ClientMessage::LlmResponse` back. This is where the llm crate gets linked into the game.
 
-5. **gdext integration** — drain sim outbox after `step()`, serialize and send `ClientMessage::LlmRequest` via `NetClient`, receive `ServerMessage::LlmDispatch`, run local inference via `elven_canopy_llm`, send `ClientMessage::LlmResponse` back.
-
-6. **Multiplayer capability signaling** — `llm_capable` field in `ClientMessage::Hello`, `ClientMessage::LlmCapabilityChanged` variant, relay-side per-player capability tracking.
+5. **Multiplayer capability signaling** — `llm_capable` field in `ClientMessage::Hello`, `ClientMessage::LlmCapabilityChanged` variant, relay-side per-player capability tracking.
 
 **Blocks:** F-llm-activities, F-llm-diplomacy, F-llm-dl-prompt, F-llm-social-chat
 

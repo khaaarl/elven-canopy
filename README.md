@@ -53,7 +53,53 @@ The Godot binary needs to be on your `PATH` so the build script can find it. It 
 | **macOS** | `brew install --cask godot` puts it on your PATH. Or extract the app and symlink the binary. |
 | **Windows** | The download is a standalone `.exe` with a long name like `Godot_v4.6.1-stable_win64.exe`. Create a directory (e.g., `C:\Tools\Godot`), copy the exe there, rename it to `godot.exe`, and add that directory to your PATH. Alternatively, `scoop install godot` handles all of this automatically. |
 
-### 4. Clone and build
+### 4. C++ build dependencies (for the LLM crate)
+
+The `elven_canopy_llm` crate wraps llama.cpp, which is compiled from C++ source during the Rust build. This requires CMake, a C++ compiler, and LLVM/Clang (for bindgen FFI generation).
+
+**Linux (Debian/Ubuntu):**
+
+```bash
+sudo apt install cmake libclang-dev
+```
+
+A C++ compiler (`g++`) is typically already installed. If not: `sudo apt install build-essential`.
+
+**macOS:**
+
+CMake and Clang are provided by Xcode Command Line Tools, which you likely already have if you've installed Rust or Homebrew. If not:
+
+```bash
+xcode-select --install
+```
+
+If CMake is missing after that: `brew install cmake`.
+
+**Windows:**
+
+Three things are needed:
+
+1. **Visual Studio Build Tools 2022** (provides the MSVC C++ compiler and linker):
+   ```
+   winget install Microsoft.VisualStudio.2022.BuildTools
+   ```
+   When the Visual Studio Installer opens, select the **"Desktop development with C++"** workload. Make sure **"MSVC v143 - VS 2022 C++ x64/x86 build tools"** and a **Windows SDK** are checked within it.
+
+2. **CMake** (usually included with the Build Tools if you selected the C++ workload above). Verify with `cmake --version`. If missing: `winget install Kitware.CMake`.
+
+3. **LLVM** (provides libclang for bindgen):
+   ```
+   winget install LLVM.LLVM
+   ```
+   After installation, set the `LIBCLANG_PATH` environment variable to the LLVM bin directory (typically `C:\Program Files\LLVM\bin`).
+
+**Important:** On Windows, run builds from the **"x64 Native Tools Command Prompt for VS 2022"** (search Start menu) so that the MSVC compiler and linker are on PATH. Building from a regular terminal or PowerShell will fail with `link.exe not found`.
+
+> **Note:** If you previously had Visual Studio 2017 installed, uninstall it — CMake may find the old toolchain first, which lacks C++17 support required by llama.cpp.
+
+The first build compiles llama.cpp from source, which takes several minutes. Subsequent builds are cached.
+
+### 5. Clone and build
 
 ```bash
 git clone https://github.com/khaaarl/elven-canopy.git
@@ -72,7 +118,7 @@ On Windows, use `python` or `py` instead of `python3` if that's how your Python 
 py scripts\build.py run
 ```
 
-The first build compiles the Godot GDExtension bindings, which takes a few minutes. Subsequent builds are incremental and much faster.
+The first build compiles the Godot GDExtension bindings and llama.cpp from C++ source, which takes several minutes. Subsequent builds are incremental and much faster.
 
 ### Build commands
 

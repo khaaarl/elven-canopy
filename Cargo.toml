@@ -13,6 +13,7 @@ members = [
     "tabulosity",
     "tabulosity_derive",
     "elven_canopy_utils",
+    "elven_canopy_llm",
 ]
 resolver = "2"
 
