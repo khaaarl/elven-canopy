@@ -616,7 +616,7 @@ impl SimState {
     /// Check whether a creature is supported at its current position.
     /// Support rules:
     /// - Flying: always supported (exempt from gravity).
-    /// - Climber (`ground_only` = false): supported if the position is walkable.
+    /// - Climber (`can_climb` = true): supported if the position is walkable.
     /// - Ground-only: supported if the position is walkable AND the non-climber
     ///   support rules are met (same thresholds as `footprint_walkable`):
     ///   - 1x1: solid at y-1.

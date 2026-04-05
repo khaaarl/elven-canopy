@@ -987,6 +987,87 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // 2×2×2 non-climber walkability tests (can_climb = false)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_footprint_walkable_2x2x2_non_climber_three_direct() {
+        // 3 of 4 columns have solid at y-1 → walkable even without climbing.
+        let mut world = VoxelWorld::new(16, 16, 16);
+        let fd = no_faces();
+        world.set(VoxelCoord::new(5, 5, 5), VoxelType::Dirt);
+        world.set(VoxelCoord::new(6, 5, 5), VoxelType::Dirt);
+        world.set(VoxelCoord::new(5, 5, 6), VoxelType::Dirt);
+        assert!(
+            footprint_walkable(&world, &fd, VoxelCoord::new(5, 6, 5), [2, 2, 2], false),
+            "3 of 4 columns at y-1 should support non-climber"
+        );
+    }
+
+    #[test]
+    fn test_footprint_walkable_2x2x2_non_climber_one_direct_two_deep() {
+        // 1 column at y-1, 2 columns at y-2 → walkable for non-climber.
+        let mut world = VoxelWorld::new(16, 16, 16);
+        let fd = no_faces();
+        world.set(VoxelCoord::new(5, 5, 5), VoxelType::Dirt);
+        world.set(VoxelCoord::new(6, 4, 5), VoxelType::Dirt);
+        world.set(VoxelCoord::new(5, 4, 6), VoxelType::Dirt);
+        assert!(
+            footprint_walkable(&world, &fd, VoxelCoord::new(5, 6, 5), [2, 2, 2], false),
+            "1 direct + 2 deep should support non-climber"
+        );
+    }
+
+    #[test]
+    fn test_footprint_walkable_2x2x2_non_climber_two_direct_only() {
+        // Only 2 columns at y-1, 0 at y-2 → NOT walkable for non-climber.
+        // (2 < 3 threshold, and deep_support = 0 < 2.)
+        let mut world = VoxelWorld::new(16, 16, 16);
+        let fd = no_faces();
+        world.set(VoxelCoord::new(5, 5, 5), VoxelType::Dirt);
+        world.set(VoxelCoord::new(6, 5, 5), VoxelType::Dirt);
+        assert!(
+            !footprint_walkable(&world, &fd, VoxelCoord::new(5, 6, 5), [2, 2, 2], false),
+            "2 direct + 0 deep should NOT support non-climber"
+        );
+    }
+
+    #[test]
+    fn test_footprint_walkable_2x2x2_non_climber_zero_direct() {
+        // 0 columns at y-1 → NOT walkable for non-climber, even with solid
+        // at y-2 or face-adjacent walls.
+        let mut world = VoxelWorld::new(16, 16, 16);
+        let fd = no_faces();
+        // Solid at y-2 for all columns, but nothing at y-1.
+        for dx in 0..2 {
+            for dz in 0..2 {
+                world.set(VoxelCoord::new(5 + dx, 4, 5 + dz), VoxelType::Dirt);
+            }
+        }
+        // Also put a wall next to the footprint (would help a climber, not a non-climber).
+        world.set(VoxelCoord::new(4, 6, 5), VoxelType::Trunk);
+        assert!(
+            !footprint_walkable(&world, &fd, VoxelCoord::new(5, 6, 5), [2, 2, 2], false),
+            "0 direct support should NOT be walkable for non-climber, even with walls"
+        );
+    }
+
+    #[test]
+    fn test_footprint_walkable_2x2x2_non_climber_ignores_wall_adjacency() {
+        // Non-climber with 0 direct support but wall-adjacent solid.
+        // Should NOT be walkable — only climbers use face adjacency.
+        let mut world = VoxelWorld::new(16, 16, 16);
+        let fd = no_faces();
+        // Trunk right next to the footprint at body level.
+        world.set(VoxelCoord::new(4, 6, 5), VoxelType::Trunk);
+        world.set(VoxelCoord::new(4, 7, 5), VoxelType::Trunk);
+        assert!(
+            !footprint_walkable(&world, &fd, VoxelCoord::new(5, 6, 5), [2, 2, 2], false),
+            "Non-climber should NOT use wall adjacency for support"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // ground_neighbors tests
     // -----------------------------------------------------------------------
 
