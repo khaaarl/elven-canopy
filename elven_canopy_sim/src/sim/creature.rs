@@ -56,7 +56,6 @@ impl SimState {
         let hp_max = species_data.hp_max;
         let mp_max = species_data.mp_max;
         let heartbeat_interval = species_data.heartbeat_interval_ticks;
-        let ground_only = species_data.ground_only;
         let is_flyer = species_data.flight_ticks_per_voxel.is_some();
         let footprint = species_data.footprint;
         let sex_weights = species_data.sex_weights;
@@ -72,24 +71,14 @@ impl SimState {
         } else {
             // Ground creature: find nearest walkable position for this footprint.
             let can_climb = species_data.climb_ticks_per_voxel.is_some();
-            let nearest = if ground_only {
-                crate::walkability::find_nearest_ground_walkable(
-                    &self.world,
-                    &self.face_data,
-                    position,
-                    10,
-                    footprint,
-                )
-            } else {
-                crate::walkability::find_nearest_walkable(
-                    &self.world,
-                    &self.face_data,
-                    position,
-                    10,
-                    footprint,
-                    can_climb,
-                )
-            };
+            let nearest = crate::walkability::find_nearest_walkable(
+                &self.world,
+                &self.face_data,
+                position,
+                10,
+                footprint,
+                can_climb,
+            );
             nearest?
         };
         let creature_id = CreatureId::new(&mut self.rng);
