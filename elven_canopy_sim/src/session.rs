@@ -108,6 +108,13 @@ pub enum SessionMessage {
     Resume { by: SessionPlayerId },
     /// Desync detected by the relay.
     DesyncDetected { tick: u64 },
+    /// An LLM inference result from the relay. Applied as a SimCommand with
+    /// "[LLM]" attribution (no player associated).
+    LlmResult {
+        request_id: u64,
+        result_json: String,
+        metadata: crate::llm::InferenceMetadata,
+    },
 }
 
 /// Events produced by processing a `SessionMessage`. For UI display, logging,
@@ -398,6 +405,29 @@ impl GameSession {
 
             SessionMessage::DesyncDetected { tick } => {
                 events.push(SessionEvent::DesyncDetected { tick });
+            }
+
+            SessionMessage::LlmResult {
+                request_id,
+                result_json,
+                metadata,
+            } => {
+                if let Some(sim) = &mut self.sim {
+                    let cmd = SimCommand {
+                        player_name: "[LLM]".to_string(),
+                        tick: sim.tick,
+                        action: SimAction::LlmResult {
+                            request_id,
+                            result_json,
+                            metadata,
+                        },
+                    };
+                    let mut sim_events = Vec::new();
+                    sim.apply_command(&cmd, &mut sim_events);
+                    for se in sim_events {
+                        events.push(SessionEvent::Sim(se));
+                    }
+                }
             }
         }
         events

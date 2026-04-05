@@ -358,6 +358,23 @@ pub struct SimState {
     #[serde(default)]
     pub next_structure_id: u64,
 
+    /// Counter for the next LLM request ID (monotonically increasing).
+    /// Each `OutboundRequest::LlmInference` gets a unique ID from this counter.
+    #[serde(default)]
+    pub next_request_id: u64,
+
+    /// Pending LLM requests awaiting responses. Keyed by `request_id` for
+    /// O(1) lookup when results arrive. `BTreeMap` for deterministic iteration
+    /// (deadline expiry scan, save/load). Serialized as part of sim state.
+    #[serde(default)]
+    pub pending_llm_requests: BTreeMap<u64, crate::llm::PendingLlmRequest>,
+
+    /// Outbound requests emitted during the current step. Drained by the
+    /// hosting layer (gdext) after each `step()` call and routed through
+    /// the relay. Transient — not serialized.
+    #[serde(skip)]
+    pub outbound_requests: Vec<crate::llm::OutboundRequest>,
+
     /// The player's tree ID.
     pub player_tree_id: TreeId,
 
@@ -422,6 +439,10 @@ pub struct CreaturePath {
 pub struct StepResult {
     /// Narrative events emitted during this step, for the UI / event log.
     pub events: Vec<SimEvent>,
+    /// Outbound requests emitted during this step. The hosting layer (gdext)
+    /// should drain these and route them through the relay for external
+    /// resolution (currently LLM inference only).
+    pub outbound_requests: Vec<crate::llm::OutboundRequest>,
 }
 
 /// Check whether two creatures' footprints are within melee range.
@@ -719,6 +740,9 @@ impl SimState {
             ladder_orientations_list: Vec::new(),
             ladder_orientations: BTreeMap::new(),
             next_structure_id: 0,
+            next_request_id: 0,
+            pending_llm_requests: BTreeMap::new(),
+            outbound_requests: Vec::new(),
             player_tree_id,
             player_civ_id: Some(wg.player_civ_id),
             world: wg.world,
@@ -961,11 +985,18 @@ impl SimState {
             for creature_id in ready {
                 self.process_creature_activation(creature_id, &mut events);
             }
+
+            // Expire LLM requests whose deadline has passed.
+            self.expire_llm_requests();
         }
 
         self.tick = target_tick;
         self.world.sim_tick = self.tick;
-        StepResult { events }
+        let outbound_requests = std::mem::take(&mut self.outbound_requests);
+        StepResult {
+            events,
+            outbound_requests,
+        }
     }
 
     /// Apply a single command to the simulation.
@@ -1314,7 +1345,43 @@ impl SimState {
             SimAction::CancelTameDesignation { target_id } => {
                 self.handle_cancel_tame_designation(*target_id);
             }
+
+            // --- LLM inference results ---
+            SimAction::LlmResult {
+                request_id,
+                result_json: _,
+                metadata: _,
+            } => {
+                self.handle_llm_result(*request_id);
+            }
         }
+    }
+
+    /// Process an LLM inference result. Looks up the pending request by ID,
+    /// validates the deadline, and removes it from the pending map. Actual
+    /// JSON parsing and mechanical effect application are deferred to
+    /// feature-specific handlers (F-llm-social-chat, etc.).
+    fn handle_llm_result(&mut self, request_id: u64) {
+        let pending = match self.pending_llm_requests.remove(&request_id) {
+            Some(p) => p,
+            None => return, // Unknown or already-expired request — discard.
+        };
+        if pending.deadline_tick <= self.tick {
+            // Deadline already passed — discard. (The expiry sweep may not
+            // have run yet for this exact tick, so check here too.)
+        } else {
+            // Request is valid and within deadline. Future feature handlers
+            // will deserialize result_json according to pending.request_kind
+            // and apply mechanical effects here.
+            let _ = pending;
+        }
+    }
+
+    /// Expire pending LLM requests whose deadline has passed. Called once per
+    /// tick in the main simulation loop.
+    fn expire_llm_requests(&mut self) {
+        self.pending_llm_requests
+            .retain(|_, req| req.deadline_tick > self.tick);
     }
 
     /// Process a single scheduled event.

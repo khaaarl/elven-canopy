@@ -398,6 +398,7 @@ fn handshake_thread(stream: TcpStream, tx: Sender<InternalEvent>, keep_running: 
                 sim_version_hash,
                 config_hash,
                 session_password,
+                llm_capable: _,
             } => {
                 // Forward the join request to the main thread.
                 let write_stream = match stream.try_clone() {
@@ -649,6 +650,21 @@ fn handle_message(session: &mut Session, player_id: RelayPlayerId, message: Clie
         }
         ClientMessage::SnapshotResponse { data } => {
             session.handle_snapshot_response(player_id, data);
+        }
+        ClientMessage::LlmRequest {
+            request_id,
+            payload,
+        } => {
+            session.handle_llm_request(player_id, request_id, payload);
+        }
+        ClientMessage::LlmResponse {
+            request_id,
+            payload,
+        } => {
+            session.handle_llm_response(player_id, request_id, payload);
+        }
+        ClientMessage::LlmCapabilityChanged { llm_capable } => {
+            session.handle_llm_capability_changed(player_id, llm_capable);
         }
         ClientMessage::Hello { .. }
         | ClientMessage::Goodbye

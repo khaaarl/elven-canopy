@@ -424,6 +424,19 @@ pub enum SimAction {
     /// Cancel a tame designation. Removes the `TameDesignation` entry and
     /// cancels any in-progress taming task on that creature.
     CancelTameDesignation { target_id: CreatureId },
+
+    // --- LLM inference results (F-llm-creatures) ---
+    /// Apply an LLM inference result. Delivered by the relay via Turn.
+    /// The sim matches by `request_id`, validates the deadline, and applies
+    /// mechanical effects based on the request kind.
+    LlmResult {
+        request_id: u64,
+        /// The raw result string from the LLM. Validated post-hoc; may be
+        /// invalid JSON or fail schema validation.
+        result_json: String,
+        /// Observability metadata (latency, token counts, cache status).
+        metadata: crate::llm::InferenceMetadata,
+    },
 }
 
 #[cfg(test)]

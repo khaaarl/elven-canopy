@@ -120,6 +120,7 @@ impl RelayConnection {
             sim_version_hash,
             config_hash,
             session_password: password,
+            llm_capable: false,
         };
         send_client_msg(&self.stream, &hello)?;
 
@@ -275,6 +276,24 @@ impl NetClient {
     pub fn send_set_speed(&mut self, ticks_per_turn: u32) -> Result<(), String> {
         let msg = ClientMessage::SetSpeed { ticks_per_turn };
         send_msg(&mut self.writer, &msg).map_err(|e| format!("send SetSpeed failed: {e}"))
+    }
+
+    /// Send an LLM inference request to the relay for dispatch to a capable peer.
+    pub fn send_llm_request(&mut self, request_id: u64, payload: Vec<u8>) -> Result<(), String> {
+        let msg = ClientMessage::LlmRequest {
+            request_id,
+            payload,
+        };
+        send_msg(&mut self.writer, &msg).map_err(|e| format!("send LlmRequest failed: {e}"))
+    }
+
+    /// Send an LLM inference result back to the relay (we ran inference).
+    pub fn send_llm_response(&mut self, request_id: u64, payload: Vec<u8>) -> Result<(), String> {
+        let msg = ClientMessage::LlmResponse {
+            request_id,
+            payload,
+        };
+        send_msg(&mut self.writer, &msg).map_err(|e| format!("send LlmResponse failed: {e}"))
     }
 
     /// Send Goodbye and close the connection.

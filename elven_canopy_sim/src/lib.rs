@@ -54,6 +54,7 @@ pub mod event;
 pub mod fruit;
 pub mod genome;
 pub mod inventory;
+pub mod llm;
 pub mod lookup_map;
 pub mod nav;
 pub mod pathfinding;

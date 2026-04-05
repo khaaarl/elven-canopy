@@ -94,6 +94,7 @@ impl TestConn {
                 sim_version_hash: 0xABCD,
                 config_hash: 0x1234,
                 session_password: password.map(String::from),
+                llm_capable: false,
             },
         );
 
@@ -150,6 +151,7 @@ fn wait_for_turn_with_commands(
             turn_number,
             sim_tick_target,
             commands,
+            ..
         } = msg
             && !commands.is_empty()
         {
@@ -498,6 +500,7 @@ fn dedicated_session_password_enforcement() {
         sim_version_hash: 0xABCD,
         config_hash: 0x1234,
         session_password: Some("wrong".into()),
+        llm_capable: false,
     });
     let msg = conn_bad.recv_msg();
     assert!(
@@ -514,6 +517,7 @@ fn dedicated_session_password_enforcement() {
         sim_version_hash: 0xABCD,
         config_hash: 0x1234,
         session_password: None,
+        llm_capable: false,
     });
     let msg = conn_no_pw.recv_msg();
     assert!(
@@ -540,6 +544,7 @@ fn dedicated_join_nonexistent_session() {
         sim_version_hash: 0xABCD,
         config_hash: 0x1234,
         session_password: None,
+        llm_capable: false,
     });
     let msg = conn.recv_msg();
     assert!(
@@ -727,6 +732,7 @@ fn dedicated_session_full_rejection() {
         sim_version_hash: 0xABCD,
         config_hash: 0x1234,
         session_password: None,
+        llm_capable: false,
     });
     let msg = conn2.recv_msg();
     assert!(
@@ -755,6 +761,7 @@ fn dedicated_version_mismatch_rejection() {
         sim_version_hash: 0xDEAD, // different from 0xABCD
         config_hash: 0x1234,
         session_password: None,
+        llm_capable: false,
     });
     let msg = conn_bad.recv_msg();
     assert!(
@@ -1298,6 +1305,7 @@ fn dedicated_config_hash_mismatch_rejected() {
         sim_version_hash: 0xABCD,
         config_hash: 0x9999, // different from 0x1234
         session_password: None,
+        llm_capable: false,
     });
     let msg = conn_bad.recv_msg();
     assert!(
@@ -1329,6 +1337,7 @@ fn dedicated_welcome_contains_full_player_list() {
         sim_version_hash: 0xABCD,
         config_hash: 0x1234,
         session_password: None,
+        llm_capable: false,
     });
     let msg = conn3.recv_msg();
     match msg {

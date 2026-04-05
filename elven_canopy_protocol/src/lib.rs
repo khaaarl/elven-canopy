@@ -25,7 +25,7 @@ pub mod message;
 pub mod types;
 
 pub use framing::{MAX_MESSAGE_SIZE, read_message, write_message};
-pub use message::{ClientMessage, PlayerInfo, ServerMessage, SessionInfo, TurnCommand};
+pub use message::{ClientMessage, LlmResult, PlayerInfo, ServerMessage, SessionInfo, TurnCommand};
 pub use types::{ActionSequence, RelayPlayerId, SessionId, TurnNumber};
 
 #[cfg(test)]
@@ -92,6 +92,7 @@ mod tests {
             sim_version_hash: 0xDEAD_BEEF,
             config_hash: 0xCAFE_BABE,
             session_password: Some("secret".into()),
+            llm_capable: false,
         });
     }
 
@@ -104,6 +105,7 @@ mod tests {
             sim_version_hash: 0xDEAD_BEEF,
             config_hash: 0xCAFE_BABE,
             session_password: None,
+            llm_capable: true,
         });
     }
 
@@ -263,6 +265,7 @@ mod tests {
                     payload: vec![30],
                 },
             ],
+            llm_results: vec![],
         });
     }
 
@@ -272,6 +275,7 @@ mod tests {
             turn_number: TurnNumber(99),
             sim_tick_target: 4950,
             commands: vec![],
+            llm_results: vec![],
         });
     }
 
@@ -364,5 +368,97 @@ mod tests {
         server_roundtrip(&ServerMessage::SessionResumed {
             starting_tick: 10000,
         });
+    }
+
+    // --- LLM message roundtrips ---
+
+    #[test]
+    fn roundtrip_llm_request() {
+        client_roundtrip(&ClientMessage::LlmRequest {
+            request_id: 42,
+            payload: vec![1, 2, 3],
+        });
+    }
+
+    #[test]
+    fn roundtrip_llm_response() {
+        client_roundtrip(&ClientMessage::LlmResponse {
+            request_id: 42,
+            payload: vec![4, 5, 6],
+        });
+    }
+
+    #[test]
+    fn roundtrip_llm_capability_changed() {
+        client_roundtrip(&ClientMessage::LlmCapabilityChanged { llm_capable: true });
+        client_roundtrip(&ClientMessage::LlmCapabilityChanged { llm_capable: false });
+    }
+
+    #[test]
+    fn roundtrip_llm_dispatch() {
+        server_roundtrip(&ServerMessage::LlmDispatch {
+            request_id: 99,
+            payload: vec![7, 8, 9],
+        });
+    }
+
+    #[test]
+    fn roundtrip_turn_with_llm_results() {
+        server_roundtrip(&ServerMessage::Turn {
+            turn_number: TurnNumber(5),
+            sim_tick_target: 250,
+            commands: vec![],
+            llm_results: vec![
+                message::LlmResult {
+                    request_id: 10,
+                    payload: vec![1, 2],
+                },
+                message::LlmResult {
+                    request_id: 11,
+                    payload: vec![3, 4],
+                },
+            ],
+        });
+    }
+
+    #[test]
+    fn turn_without_llm_results_deserializes_with_empty_vec() {
+        // Simulate an old-format Turn message without llm_results field.
+        let json = serde_json::json!({
+            "Turn": {
+                "turn_number": 1,
+                "sim_tick_target": 50,
+                "commands": []
+            }
+        });
+        let msg: ServerMessage = serde_json::from_value(json).unwrap();
+        match msg {
+            ServerMessage::Turn { llm_results, .. } => {
+                assert!(llm_results.is_empty());
+            }
+            _ => panic!("expected Turn"),
+        }
+    }
+
+    #[test]
+    fn hello_without_llm_capable_defaults_to_false() {
+        // Simulate an old-format Hello without llm_capable field.
+        let json = serde_json::json!({
+            "Hello": {
+                "protocol_version": 1,
+                "session_id": 0,
+                "player_name": "OldClient",
+                "sim_version_hash": 123,
+                "config_hash": 456,
+                "session_password": null
+            }
+        });
+        let msg: ClientMessage = serde_json::from_value(json).unwrap();
+        match msg {
+            ClientMessage::Hello { llm_capable, .. } => {
+                assert!(!llm_capable);
+            }
+            _ => panic!("expected Hello"),
+        }
     }
 }

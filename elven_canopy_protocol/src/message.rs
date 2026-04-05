@@ -48,6 +48,10 @@ pub enum ClientMessage {
         sim_version_hash: u64,
         config_hash: u64,
         session_password: Option<String>,
+        /// Whether this client can run LLM inference. Defaults to false for
+        /// backward compatibility with older clients.
+        #[serde(default)]
+        llm_capable: bool,
     },
     /// A sim command (opaque payload).
     Command {
@@ -81,6 +85,16 @@ pub enum ClientMessage {
     ResumeSession { starting_tick: u64 },
     /// Player is leaving gracefully.
     Goodbye,
+
+    // --- LLM inference (F-llm-creatures) ---
+    /// Submit an LLM inference request. The relay dispatches to a capable peer.
+    /// Payload is opaque (serialized preambles + prompt + schema).
+    LlmRequest { request_id: u64, payload: Vec<u8> },
+    /// Return an LLM inference result (sent by the peer that ran inference).
+    /// Payload is opaque (serialized result JSON + metadata).
+    LlmResponse { request_id: u64, payload: Vec<u8> },
+    /// Notify the relay that this client's LLM capability has changed.
+    LlmCapabilityChanged { llm_capable: bool },
 }
 
 /// Messages sent by the relay to a client.
@@ -104,6 +118,11 @@ pub enum ServerMessage {
         turn_number: TurnNumber,
         sim_tick_target: u64,
         commands: Vec<TurnCommand>,
+        /// LLM results that completed since the last turn. Applied at the
+        /// same tick as the turn's commands. Default empty for backward
+        /// compatibility with older clients.
+        #[serde(default)]
+        llm_results: Vec<LlmResult>,
     },
     /// A player connected.
     PlayerJoined { player: PlayerInfo },
@@ -141,6 +160,11 @@ pub enum ServerMessage {
     /// Relay acknowledged ResumeSession — turn flushing has begun from the
     /// given tick. Clients that already loaded the sim treat this as a no-op.
     SessionResumed { starting_tick: u64 },
+
+    // --- LLM inference (F-llm-creatures) ---
+    /// Dispatch an inference request to this peer (relay chose you to run it).
+    /// Payload is the original request payload, forwarded verbatim.
+    LlmDispatch { request_id: u64, payload: Vec<u8> },
 }
 
 /// A single command within a turn, tagged with the originating player.
@@ -156,6 +180,14 @@ pub struct TurnCommand {
 pub struct PlayerInfo {
     pub id: RelayPlayerId,
     pub name: String,
+}
+
+/// An LLM inference result included in a Turn. The payload is opaque to the
+/// relay — deserialized by the sim layer into result JSON + metadata.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LlmResult {
+    pub request_id: u64,
+    pub payload: Vec<u8>,
 }
 
 /// Summary of a session, returned in `SessionList`.

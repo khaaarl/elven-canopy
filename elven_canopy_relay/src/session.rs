@@ -29,7 +29,7 @@ use std::io::BufWriter;
 use std::net::TcpStream;
 
 use elven_canopy_protocol::framing::write_message;
-use elven_canopy_protocol::message::{PlayerInfo, ServerMessage, TurnCommand};
+use elven_canopy_protocol::message::{LlmResult, PlayerInfo, ServerMessage, TurnCommand};
 use elven_canopy_protocol::types::{RelayPlayerId, TurnNumber};
 
 /// Relay session managing a single multiplayer game.
@@ -62,6 +62,11 @@ pub struct Session {
     // snapshot from the host and forward it to the joiner. Turn flushing is
     // paused while a snapshot is pending to ensure consistency.
     snapshot_pending: Option<SnapshotPending>,
+
+    // LLM inference dispatch: buffered results awaiting the next turn flush,
+    // and outstanding request-to-peer mapping for cleanup on disconnect.
+    pending_llm_results: Vec<LlmResult>,
+    outstanding_dispatches: BTreeMap<u64, RelayPlayerId>,
 }
 
 /// Tracks a pending mid-game join snapshot transfer.
@@ -73,6 +78,8 @@ struct SnapshotPending {
 struct PlayerState {
     name: String,
     writer: BufWriter<TcpStream>,
+    /// Whether this player can run LLM inference.
+    llm_capable: bool,
 }
 
 impl Session {
@@ -99,6 +106,8 @@ impl Session {
             config_hash: None,
             game_started: false,
             snapshot_pending: None,
+            pending_llm_results: Vec::new(),
+            outstanding_dispatches: BTreeMap::new(),
         }
     }
 
@@ -193,6 +202,7 @@ impl Session {
             PlayerState {
                 name: player_name,
                 writer,
+                llm_capable: false,
             },
         );
 
@@ -238,6 +248,72 @@ impl Session {
             {
                 self.snapshot_pending = None;
             }
+
+            // Remove outstanding LLM dispatches for this player. The requests
+            // will expire at their deadline in the sim.
+            self.outstanding_dispatches
+                .retain(|_, peer| *peer != player_id);
+        }
+    }
+
+    // --- LLM inference dispatch (F-llm-creatures) ---
+
+    /// Handle an LLM inference request from a client. Select the capable peer
+    /// with the fewest outstanding dispatches and forward the request. If no
+    /// capable peer is available, drop the request (sim deadline will expire).
+    pub fn handle_llm_request(&mut self, _from: RelayPlayerId, request_id: u64, payload: Vec<u8>) {
+        // Find the capable peer with the fewest outstanding dispatches.
+        let mut best: Option<(RelayPlayerId, usize)> = None;
+        for (&pid, ps) in &self.players {
+            if !ps.llm_capable {
+                continue;
+            }
+            let count = self
+                .outstanding_dispatches
+                .values()
+                .filter(|&&p| p == pid)
+                .count();
+            if best.is_none() || count < best.unwrap().1 {
+                best = Some((pid, count));
+            }
+        }
+
+        let Some((target_peer, _)) = best else {
+            // No capable peer — drop. Sim deadline will expire the request.
+            return;
+        };
+
+        self.send_to(
+            target_peer,
+            &ServerMessage::LlmDispatch {
+                request_id,
+                payload,
+            },
+        );
+        self.outstanding_dispatches.insert(request_id, target_peer);
+    }
+
+    /// Handle an LLM inference result from the peer that ran inference.
+    /// Validates the dispatch exists for this peer, then buffers the result
+    /// for the next turn flush.
+    pub fn handle_llm_response(&mut self, from: RelayPlayerId, request_id: u64, payload: Vec<u8>) {
+        // Validate this response matches an outstanding dispatch to this peer.
+        match self.outstanding_dispatches.get(&request_id) {
+            Some(&peer) if peer == from => {
+                self.outstanding_dispatches.remove(&request_id);
+            }
+            _ => return, // Unknown or mismatched — discard.
+        }
+        self.pending_llm_results.push(LlmResult {
+            request_id,
+            payload,
+        });
+    }
+
+    /// Update a player's LLM capability flag.
+    pub fn handle_llm_capability_changed(&mut self, player_id: RelayPlayerId, llm_capable: bool) {
+        if let Some(ps) = self.players.get_mut(&player_id) {
+            ps.llm_capable = llm_capable;
         }
     }
 
@@ -265,6 +341,7 @@ impl Session {
             turn_number: self.current_turn,
             sim_tick_target: self.current_tick,
             commands: std::mem::take(&mut self.pending_commands),
+            llm_results: std::mem::take(&mut self.pending_llm_results),
         };
         self.broadcast(&turn_msg);
     }
@@ -736,6 +813,7 @@ mod tests {
                 turn_number,
                 sim_tick_target,
                 commands,
+                ..
             } => {
                 assert_eq!(turn_number, TurnNumber(1));
                 assert_eq!(sim_tick_target, 50);
@@ -1634,5 +1712,180 @@ mod tests {
         // StartGame should be rejected — game already started via resume.
         session.handle_start_game(RelayPlayerId(0), 99, "{}".into(), None);
         assert_eq!(session.current_tick(), 5000);
+    }
+
+    // --- LLM dispatch tests ---
+
+    /// Create a session with two players. Returns (session, host_reader, guest_reader).
+    fn two_player_session() -> (Session, BufReader<TcpStream>, BufReader<TcpStream>) {
+        let (client1, server1) = tcp_pair();
+        let (client2, server2) = tcp_pair();
+        let mut session = Session::new("test".into(), None, 50, 4);
+        session
+            .add_player("Host".into(), 100, 200, None, server1)
+            .unwrap();
+        session
+            .add_player("Guest".into(), 100, 200, None, server2)
+            .unwrap();
+        let reader1 = BufReader::new(client1);
+        let reader2 = BufReader::new(client2);
+        (session, reader1, reader2)
+    }
+
+    /// Drain all pending messages from a reader (non-blocking).
+    fn drain_messages(reader: &mut BufReader<TcpStream>) -> Vec<ServerMessage> {
+        let mut msgs = Vec::new();
+        // Set a short timeout to avoid blocking indefinitely.
+        reader
+            .get_ref()
+            .set_read_timeout(Some(std::time::Duration::from_millis(50)))
+            .unwrap();
+        loop {
+            match read_message(reader) {
+                Ok(bytes) => {
+                    if let Ok(msg) = serde_json::from_slice::<ServerMessage>(&bytes) {
+                        msgs.push(msg);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        reader.get_ref().set_read_timeout(None).unwrap();
+        msgs
+    }
+
+    #[test]
+    fn llm_request_dispatched_to_capable_peer() {
+        let (mut session, _reader_host, mut reader_guest) = two_player_session();
+        // Mark guest as LLM-capable.
+        session.handle_llm_capability_changed(RelayPlayerId(1), true);
+
+        // Drain Welcome + PlayerJoined from guest's reader.
+        drain_messages(&mut reader_guest);
+
+        // Host submits an LLM request.
+        session.handle_llm_request(RelayPlayerId(0), 42, vec![1, 2, 3]);
+
+        // Guest should receive LlmDispatch.
+        let msgs = drain_messages(&mut reader_guest);
+        assert!(
+            msgs.iter()
+                .any(|m| matches!(m, ServerMessage::LlmDispatch { request_id: 42, .. })),
+            "expected LlmDispatch, got {msgs:?}"
+        );
+
+        // Outstanding dispatch should be tracked.
+        assert_eq!(session.outstanding_dispatches.len(), 1);
+        assert_eq!(
+            session.outstanding_dispatches.get(&42),
+            Some(&RelayPlayerId(1))
+        );
+    }
+
+    #[test]
+    fn llm_request_dropped_when_no_capable_peer() {
+        let (mut session, _reader_host, mut reader_guest) = two_player_session();
+        // Neither player is LLM-capable (default).
+
+        drain_messages(&mut reader_guest);
+
+        session.handle_llm_request(RelayPlayerId(0), 42, vec![1, 2, 3]);
+
+        // No dispatch should be sent.
+        let msgs = drain_messages(&mut reader_guest);
+        assert!(
+            !msgs
+                .iter()
+                .any(|m| matches!(m, ServerMessage::LlmDispatch { .. })),
+            "should not dispatch without capable peer"
+        );
+        assert!(session.outstanding_dispatches.is_empty());
+    }
+
+    #[test]
+    fn llm_response_buffered_and_flushed_in_turn() {
+        let (mut session, mut reader_host, _reader_guest) = two_player_session();
+        session.handle_llm_capability_changed(RelayPlayerId(1), true);
+        session.handle_start_game(RelayPlayerId(0), 42, "{}".into(), None);
+
+        // Dispatch a request, then respond.
+        session.handle_llm_request(RelayPlayerId(0), 10, vec![1]);
+        session.handle_llm_response(RelayPlayerId(1), 10, vec![2, 3]);
+
+        // Result should be buffered.
+        assert_eq!(session.pending_llm_results.len(), 1);
+        assert!(session.outstanding_dispatches.is_empty());
+
+        // Drain pre-flush messages (Welcome, PlayerJoined, GameStart).
+        drain_messages(&mut reader_host);
+
+        // Flush turn — results should be included.
+        session.flush_turn();
+
+        let msgs = drain_messages(&mut reader_host);
+        let turn = msgs
+            .iter()
+            .find(|m| matches!(m, ServerMessage::Turn { .. }));
+        assert!(turn.is_some(), "expected Turn message, got {msgs:?}");
+        if let Some(ServerMessage::Turn { llm_results, .. }) = turn {
+            assert_eq!(llm_results.len(), 1);
+            assert_eq!(llm_results[0].request_id, 10);
+            assert_eq!(llm_results[0].payload, vec![2, 3]);
+        }
+
+        // Buffer should be empty after flush.
+        assert!(session.pending_llm_results.is_empty());
+    }
+
+    #[test]
+    fn llm_response_from_wrong_peer_discarded() {
+        let (mut session, _reader_host, _reader_guest) = two_player_session();
+        session.handle_llm_capability_changed(RelayPlayerId(1), true);
+
+        session.handle_llm_request(RelayPlayerId(0), 42, vec![1]);
+        // Host (wrong peer) tries to respond — should be discarded.
+        session.handle_llm_response(RelayPlayerId(0), 42, vec![9, 9]);
+
+        assert!(session.pending_llm_results.is_empty());
+        // Outstanding dispatch should still be tracked (not cleared).
+        assert_eq!(session.outstanding_dispatches.len(), 1);
+    }
+
+    #[test]
+    fn llm_disconnect_cleans_up_outstanding_dispatches() {
+        let (mut session, _reader_host, _reader_guest) = two_player_session();
+        session.handle_llm_capability_changed(RelayPlayerId(1), true);
+
+        session.handle_llm_request(RelayPlayerId(0), 42, vec![1]);
+        assert_eq!(session.outstanding_dispatches.len(), 1);
+
+        // Guest disconnects.
+        session.remove_player(RelayPlayerId(1));
+
+        // Outstanding dispatches for that peer should be cleaned up.
+        assert!(session.outstanding_dispatches.is_empty());
+    }
+
+    #[test]
+    fn llm_load_balances_across_capable_peers() {
+        let (client3, server3) = tcp_pair();
+        let (mut session, _reader_host, _reader_guest) = two_player_session();
+        session
+            .add_player("Third".into(), 100, 200, None, server3)
+            .unwrap();
+        let mut _reader3 = BufReader::new(client3);
+
+        // Both guest and third player are LLM-capable.
+        session.handle_llm_capability_changed(RelayPlayerId(1), true);
+        session.handle_llm_capability_changed(RelayPlayerId(2), true);
+
+        // Send two requests — should be distributed across the two peers.
+        session.handle_llm_request(RelayPlayerId(0), 1, vec![1]);
+        session.handle_llm_request(RelayPlayerId(0), 2, vec![2]);
+
+        let dispatched_peers: std::collections::BTreeSet<_> =
+            session.outstanding_dispatches.values().collect();
+        // Both capable peers should have received one dispatch each.
+        assert_eq!(dispatched_peers.len(), 2);
     }
 }

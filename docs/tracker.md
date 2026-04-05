@@ -4097,30 +4097,31 @@ Foundation for all LLM-driven creature features. Concrete decisions made (see dr
 
 **Progress:**
 
-**DONE — Model download manager (branch `feature/F-llm-creatures-download`):**
-- `godot/scripts/model_manager.gd` — autoload singleton managing the full download lifecycle. Downloads Qwen 3 1.7B Q5_K_M (~1.17 GB) from HuggingFace (`unsloth/Qwen3-1.7B-GGUF` repo, publicly accessible, no auth required). State machine: NOT_DOWNLOADED → DOWNLOADING → VERIFYING → READY (or FAILED). Downloads to `.part` file first, renames atomically on success. Size verification on startup detects corrupt/partial files. SHA-256 verification scaffolded (hash constant is empty — fill in after first verified download). Uses Godot's `HTTPRequest` with `use_threads = true` for background download. Stores in `user://models/` (Godot's platform-conventional user data dir). `get_model_path()` returns the path for future LLM crate consumption.
-- `godot/scripts/settings_panel.gd` — new "AI" section with "Creature Personalities" row. Shows download status, live progress (percentage + bytes), and action button (Download/Cancel/Delete/Retry depending on state). Connects to ModelManager's `state_changed` signal + polls progress in `_process` during downloads.
-- `godot/project.godot` — ModelManager registered as autoload.
-- `godot/test/test_model_manager.gd` — unit tests for format_bytes, SHA-256 computation against known value, state transitions, signal emission, delete behavior, path queries.
+**DONE — Model download manager:**
+- `godot/scripts/model_manager.gd` — autoload singleton managing the full download lifecycle. Downloads Qwen 3 1.7B Q5_K_M (~1.17 GB) from HuggingFace. State machine: NOT_DOWNLOADED → DOWNLOADING → VERIFYING → READY (or FAILED). Downloads to `.part` file first, renames atomically on success. Size verification on startup detects corrupt/partial files.
+- `godot/scripts/settings_panel.gd` — new "AI" section with "Creature Personalities" row. Shows download status, live progress, and action button.
+- `godot/test/test_model_manager.gd` — unit tests for format_bytes, SHA-256, state transitions, signal emission, delete behavior.
 
-**DONE — `elven_canopy_llm` crate (branch `feature/F-llm-creatures-llm-crate`):**
-- New Rust crate wrapping `llama-cpp-2`. Always compiled (no optional build flag). Model loading from filesystem path, unconstrained inference with greedy sampling, post-hoc JSON extraction.
-- Validated on Linux and Windows against Qwen 3 1.7B Q5_K_M: model loads, inference produces valid JSON with correct enum values, first-object extraction works.
-- Build requires CMake, C++ compiler, and libclang (LLVM). CI and build-and-package workflows updated with these dependencies. README dev setup section documents per-platform installation.
-- Test binary (`test_inference`) for manual validation.
-- Puppet bug fixed: ModelManager added to AUTOLOAD_NAMES in puppet_server.gd.
+**DONE — `elven_canopy_llm` crate:**
+- New Rust crate wrapping `llama-cpp-2`. Always compiled. Model loading, unconstrained inference with greedy sampling, post-hoc JSON extraction.
+- Validated on Linux and Windows against Qwen 3 1.7B Q5_K_M.
+- Build requires CMake, C++ compiler, and libclang (LLVM). CI and build-and-package workflows updated.
+
+**DONE — Sim outbox + protocol + relay dispatch + gdext wiring:**
+- `elven_canopy_sim/src/llm.rs` — `OutboundRequest`, `PreambleSection`, `PendingLlmRequest`, `LlmRequestKind`, `InferenceMetadata` types. `SimState` gains `next_request_id`, `pending_llm_requests` (serialized), `outbound_requests` (transient, drained into `StepResult`). `SimAction::LlmResult` with deadline validation. Expiry sweep each tick. 13 tests.
+- `elven_canopy_protocol` — `ClientMessage::LlmRequest`, `LlmResponse`, `LlmCapabilityChanged`; `ServerMessage::LlmDispatch`; `Turn.llm_results` (`#[serde(default)]` for backward compat); `Hello.llm_capable`. 7 new tests including backward-compat deserialization.
+- `elven_canopy_relay` — `Session` tracks `pending_llm_results` and `outstanding_dispatches`. Dispatch selects capable peer with fewest outstanding (load balance). Response buffered until turn flush. Disconnect cleanup. `PlayerState.llm_capable`. 6 new tests.
+- `elven_canopy_sim/src/session.rs` — `SessionMessage::LlmResult` routes through `apply_command` with `[LLM]` attribution. 1 new test.
+- `elven_canopy_gdext/src/sim_bridge.rs` — Turn handler processes `llm_results` before `AdvanceTo`, drains sim outbox after step and sends `LlmRequest`s to relay. `LlmDispatch` handler stubbed (logs only). Wire-format payload structs (`LlmRequestPayload`, `LlmResponsePayload`).
+- `elven_canopy_relay/src/client.rs` — `send_llm_request` and `send_llm_response` convenience methods on `NetClient`.
 
 **Remaining work:**
 
-1. **Sim outbox mechanism** — `OutboundRequest` enum, `PendingLlmRequest` tracking in `BTreeMap`, `next_request_id` counter, deadline expiry logic, `SimAction::LlmResult` variant. Pure sim logic. The sim emits requests and consumes results — it never knows how they're fulfilled.
+1. **gdext inference execution** — The `LlmDispatch` handler in `sim_bridge.rs` is stubbed (logs only). Needs an async worker thread that loads the model via `elven_canopy_llm`, runs inference on the dispatched prompt, and sends `ClientMessage::LlmResponse` back. This is the last piece before the pipeline produces results end-to-end. Pattern: similar to the existing async mesh worker (long-lived thread + mpsc channel).
 
-2. **Protocol message types** — `LlmRequest`, `LlmResponse`, `LlmDispatch`, `LlmResult` structs with serde in `elven_canopy_protocol`. `Turn` struct gets `llm_results: Vec<LlmResult>` field with `#[serde(default)]`. These are just data types.
+2. **Capability signaling at connect time** — `Hello.llm_capable` is in the protocol but the client doesn't yet set it based on model availability. Trivial once inference is wired: check `ModelManager.get_state() == READY` at connect time, send `LlmCapabilityChanged` when model is downloaded/deleted.
 
-3. **Relay dispatch logic** — `Session` gets `pending_llm_results` and `outstanding_dispatches` fields. Peer selection, load balancing, disconnect cleanup, result buffering until turn flush. (B-local-relay is done, so this is unblocked.)
-
-4. **gdext integration** — drain sim outbox after `step()`, serialize and send `ClientMessage::LlmRequest` via `NetClient`, receive `ServerMessage::LlmDispatch`, run local inference via `elven_canopy_llm`, send `ClientMessage::LlmResponse` back. This is where the llm crate gets linked into the game.
-
-5. **Multiplayer capability signaling** — `llm_capable` field in `ClientMessage::Hello`, `ClientMessage::LlmCapabilityChanged` variant, relay-side per-player capability tracking.
+3. **Observability** — Toggleable debug logging of prompts, raw responses, latency, cache hits. The `InferenceMetadata` struct is plumbed through but nothing logs it yet.
 
 **Blocks:** F-llm-activities, F-llm-diplomacy, F-llm-dl-prompt, F-llm-social-chat
 

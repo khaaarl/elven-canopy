@@ -40,6 +40,7 @@ mod grazing_tests;
 mod greenhouse_tests;
 mod hp_tests;
 mod inventory_tests;
+mod llm_tests;
 mod logistics_tests;
 mod mana_tests;
 mod mood_tests;

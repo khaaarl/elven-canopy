@@ -192,6 +192,26 @@ use elven_canopy_relay::client::{NetClient, RelayConnection};
 use crate::mesh_cache::MeshCache;
 use crate::sprite_bridge::pixel_buffer_to_texture;
 
+/// Wire format for an LLM request payload (sim → relay → inference peer).
+/// Serialized as JSON into the opaque `Vec<u8>` in `ClientMessage::LlmRequest`.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct LlmRequestPayload {
+    creature_id: String,
+    preambles: Vec<elven_canopy_sim::llm::PreambleSection>,
+    prompt: String,
+    response_schema: String,
+    deadline_tick: u64,
+    max_tokens: u32,
+}
+
+/// Wire format for an LLM response payload (inference peer → relay → all clients).
+/// Serialized as JSON into the opaque `Vec<u8>` in `LlmResult.payload`.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct LlmResponsePayload {
+    result_json: String,
+    metadata: elven_canopy_sim::llm::InferenceMetadata,
+}
+
 /// Compile-time version hash. Bump when making breaking protocol changes.
 const SIM_VERSION_HASH: u64 = 1;
 
@@ -6435,9 +6455,10 @@ impl SimBridge {
                 ServerMessage::Turn {
                     sim_tick_target,
                     commands,
+                    llm_results,
                     ..
                 } => {
-                    // Route each command through session, then advance.
+                    // Route each command through session.
                     for tc in &commands {
                         if let Ok(action) = serde_json::from_slice::<SimAction>(&tc.payload) {
                             self.session.process(SessionMessage::SimCommand {
@@ -6446,9 +6467,52 @@ impl SimBridge {
                             });
                         }
                     }
+                    // Route LLM results before advancing.
+                    for lr in llm_results {
+                        if let Ok(payload) =
+                            serde_json::from_slice::<LlmResponsePayload>(&lr.payload)
+                        {
+                            self.session.process(SessionMessage::LlmResult {
+                                request_id: lr.request_id,
+                                result_json: payload.result_json,
+                                metadata: payload.metadata,
+                            });
+                        }
+                    }
+                    // Advance the sim.
                     self.session.process(SessionMessage::AdvanceTo {
                         tick: sim_tick_target,
                     });
+                    // Drain outbound requests and send to relay.
+                    if let Some(sim) = &mut self.session.sim {
+                        for req in sim.outbound_requests.drain(..) {
+                            if let Some(client) = &mut self.net_client {
+                                match req {
+                                    elven_canopy_sim::llm::OutboundRequest::LlmInference {
+                                        request_id,
+                                        preambles,
+                                        prompt,
+                                        response_schema,
+                                        deadline_tick,
+                                        max_tokens,
+                                        creature_id,
+                                    } => {
+                                        let payload = LlmRequestPayload {
+                                            creature_id: format!("{creature_id}"),
+                                            preambles,
+                                            prompt,
+                                            response_schema,
+                                            deadline_tick,
+                                            max_tokens,
+                                        };
+                                        if let Ok(bytes) = serde_json::to_vec(&payload) {
+                                            let _ = client.send_llm_request(request_id, bytes);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     turns_applied += 1;
                 }
                 ServerMessage::PlayerJoined { player } => {
@@ -6564,6 +6628,17 @@ impl SimBridge {
                         _ => SessionSpeed::VeryFast,
                     };
                     self.session.process(SessionMessage::SetSpeed { speed });
+                }
+                ServerMessage::LlmDispatch {
+                    request_id,
+                    payload: _,
+                } => {
+                    // TODO(F-llm-creatures): run local inference via
+                    // elven_canopy_llm on a worker thread and send
+                    // ClientMessage::LlmResponse back to the relay.
+                    godot_print!(
+                        "SimBridge: received LlmDispatch for request {request_id} (inference not yet wired)"
+                    );
                 }
                 _ => {}
             }
