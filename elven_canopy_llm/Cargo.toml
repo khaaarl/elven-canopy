@@ -11,6 +11,10 @@ llama-cpp-2 = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+[[bin]]
+name = "test_inference"
+path = "src/bin/test_inference.rs"
+
 [features]
 default = []
 cuda = ["llama-cpp-2/cuda"]

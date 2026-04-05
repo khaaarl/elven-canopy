@@ -1,9 +1,14 @@
 //! Core inference engine wrapping llama-cpp-2.
 //!
 //! Provides `LlmEngine` for model loading and `InferenceRequest`/`InferenceResult`
-//! for running grammar-constrained generation. The engine is designed to live on
-//! a dedicated worker thread — `LlamaContext` is `!Send`, so the model and context
-//! must be created and used on the same thread.
+//! for running text generation. The engine is designed to live on a dedicated
+//! worker thread — `LlamaContext` is `!Send`, so the model and context must be
+//! created and used on the same thread.
+//!
+//! Grammar-constrained generation (GBNF/llguidance) is not used due to bugs in
+//! llama-cpp-2 v0.1.141 (GBNF crashes on grammar exhaustion; llguidance fails
+//! tokenizer mapping). Instead, the caller validates output post-hoc — malformed
+//! responses are discarded and the sim's deadline expiry handles the fallback.
 
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
@@ -25,19 +30,18 @@ pub struct InferenceMetadata {
     pub completion_tokens: u32,
 }
 
-/// A request for grammar-constrained inference.
+/// A request for text generation.
 pub struct InferenceRequest {
     /// The full prompt text (preambles + ephemeral context concatenated).
     pub prompt: String,
-    /// JSON schema the output must conform to.
-    pub response_schema: String,
     /// Maximum tokens to generate.
     pub max_tokens: u32,
 }
 
 /// The result of a successful inference.
 pub struct InferenceResult {
-    /// The generated text (guaranteed valid JSON per the schema).
+    /// The generated text. The caller is responsible for parsing and validating
+    /// this — it is not guaranteed to be valid JSON or match any schema.
     pub text: String,
     /// Observability metadata.
     pub metadata: InferenceMetadata,
@@ -49,7 +53,6 @@ pub enum LlmError {
     BackendInit(String),
     ModelLoad(String),
     ContextCreate(String),
-    Grammar(String),
     Inference(String),
 }
 
@@ -59,7 +62,6 @@ impl std::fmt::Display for LlmError {
             LlmError::BackendInit(e) => write!(f, "backend init failed: {e}"),
             LlmError::ModelLoad(e) => write!(f, "model load failed: {e}"),
             LlmError::ContextCreate(e) => write!(f, "context creation failed: {e}"),
-            LlmError::Grammar(e) => write!(f, "grammar error: {e}"),
             LlmError::Inference(e) => write!(f, "inference failed: {e}"),
         }
     }
@@ -67,7 +69,7 @@ impl std::fmt::Display for LlmError {
 
 impl std::error::Error for LlmError {}
 
-/// The LLM inference engine. Owns the backend, model, and context.
+/// The LLM inference engine. Owns the backend, model, and context params.
 ///
 /// Must be created and used on the same thread (`LlamaContext` is `!Send`).
 pub struct LlmEngine {
@@ -98,11 +100,25 @@ impl LlmEngine {
         })
     }
 
-    /// Run grammar-constrained inference on the given request.
+    /// Access the underlying model (for testing/debugging).
+    pub fn model(&self) -> &LlamaModel {
+        &self.model
+    }
+
+    /// Create a new context (for testing/debugging).
+    pub fn new_context(
+        &self,
+    ) -> Result<llama_cpp_2::context::LlamaContext<'_>, LlmError> {
+        self.model
+            .new_context(&self._backend, self.ctx_params.clone())
+            .map_err(|e| LlmError::ContextCreate(e.to_string()))
+    }
+
+    /// Run inference on the given request.
     ///
-    /// Converts the JSON schema to a GBNF grammar, tokenizes the prompt,
-    /// processes it through the model, and samples tokens until EOS or
-    /// `max_tokens`.
+    /// Tokenizes the prompt, processes it through the model, and greedily
+    /// samples tokens until EOS or `max_tokens`. The caller is responsible for
+    /// validating the output (e.g., parsing JSON, checking enum values).
     pub fn infer(&mut self, request: &InferenceRequest) -> Result<InferenceResult, LlmError> {
         let start = Instant::now();
 
@@ -113,16 +129,7 @@ impl LlmEngine {
             .new_context(&self._backend, self.ctx_params.clone())
             .map_err(|e| LlmError::ContextCreate(e.to_string()))?;
 
-        // Convert JSON schema to GBNF grammar for constrained generation.
-        let grammar_str =
-            llama_cpp_2::json_schema_to_grammar(&request.response_schema)
-                .map_err(|e| LlmError::Grammar(e.to_string()))?;
-
-        // Build sampler chain with grammar constraint and greedy sampling.
-        let grammar_sampler = LlamaSampler::grammar(&self.model, &grammar_str, "root")
-            .map_err(|e| LlmError::Grammar(e.to_string()))?;
-        let mut sampler =
-            LlamaSampler::chain_simple([grammar_sampler, LlamaSampler::greedy()]);
+        let mut sampler = LlamaSampler::chain_simple([LlamaSampler::greedy()]);
 
         // Tokenize the prompt.
         let tokens = self
@@ -152,14 +159,12 @@ impl LlmEngine {
             let token = sampler.sample(&ctx, -1);
             sampler.accept(token);
 
-            // Check for end of generation.
             if self.model.is_eog_token(token) {
                 break;
             }
 
             output_tokens.push(token);
 
-            // Prepare next batch with just this token.
             batch.clear();
             batch
                 .add(token, n_cur, &[0], true)
@@ -171,8 +176,6 @@ impl LlmEngine {
         }
 
         // Detokenize the output.
-        // Uses the deprecated token_to_str for simplicity; migrate to
-        // token_to_piece (which requires an encoding_rs::Decoder) later.
         #[allow(deprecated)]
         let text = {
             let mut s = String::new();
