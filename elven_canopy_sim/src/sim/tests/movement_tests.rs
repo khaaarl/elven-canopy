@@ -275,7 +275,13 @@ fn walk_toward_dead_task_node_does_not_panic() {
     sim.rebuild_transient_state();
 
     assert!(
-        !crate::walkability::footprint_walkable(&sim.world, &sim.face_data, task_pos, [1, 1, 1]),
+        !crate::walkability::footprint_walkable(
+            &sim.world,
+            &sim.face_data,
+            task_pos,
+            [1, 1, 1],
+            true
+        ),
         "Task position should be unwalkable",
     );
 
@@ -588,7 +594,13 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
     let elf_id = elf.id;
     let elf_pos = elf.position.min;
     assert!(
-        crate::walkability::footprint_walkable(&sim.world, &sim.face_data, elf_pos, [1, 1, 1]),
+        crate::walkability::footprint_walkable(
+            &sim.world,
+            &sim.face_data,
+            elf_pos,
+            [1, 1, 1],
+            true
+        ),
         "elf should be at a walkable position"
     );
 
@@ -598,11 +610,23 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
     let near_pos = VoxelCoord::new(elf_pos.x + 2, floor_y, elf_pos.z);
     let far_pos = VoxelCoord::new(elf_pos.x + 15, floor_y, elf_pos.z);
     assert!(
-        crate::walkability::footprint_walkable(&sim.world, &sim.face_data, near_pos, [1, 1, 1]),
+        crate::walkability::footprint_walkable(
+            &sim.world,
+            &sim.face_data,
+            near_pos,
+            [1, 1, 1],
+            true
+        ),
         "near_pos should be walkable"
     );
     assert!(
-        crate::walkability::footprint_walkable(&sim.world, &sim.face_data, far_pos, [1, 1, 1]),
+        crate::walkability::footprint_walkable(
+            &sim.world,
+            &sim.face_data,
+            far_pos,
+            [1, 1, 1],
+            true
+        ),
         "far_pos should be walkable"
     );
 
@@ -1080,7 +1104,7 @@ fn voxel_exclusion_flee_cornered_still_moves() {
         .iter()
         .map(|&(dx, dy, dz, _)| VoxelCoord::new(elf_pos.x + dx, elf_pos.y + dy, elf_pos.z + dz))
         .filter(|&pos| {
-            crate::walkability::footprint_walkable(&sim.world, &sim.face_data, pos, [1, 1, 1])
+            crate::walkability::footprint_walkable(&sim.world, &sim.face_data, pos, [1, 1, 1], true)
         })
         .collect();
 
@@ -1808,13 +1832,15 @@ fn cached_path_reroutes_when_nav_node_destroyed() {
         &sim.world,
         &sim.face_data,
         bogus_a,
-        [1, 1, 1]
+        [1, 1, 1],
+        true,
     ));
     assert!(!crate::walkability::footprint_walkable(
         &sim.world,
         &sim.face_data,
         bogus_b,
-        [1, 1, 1]
+        [1, 1, 1],
+        true,
     ));
 
     {
@@ -2368,7 +2394,13 @@ fn climber_on_trunk_does_not_fall() {
     // Find a walkable position adjacent to the trunk (on the trunk surface).
     // Trunk climb positions are adjacent to solid trunk voxels.
     let trunk_adj = VoxelCoord::new(16, 3, 15); // east of trunk
-    if !crate::walkability::footprint_walkable(&sim.world, &sim.face_data, trunk_adj, [1, 1, 1]) {
+    if !crate::walkability::footprint_walkable(
+        &sim.world,
+        &sim.face_data,
+        trunk_adj,
+        [1, 1, 1],
+        true,
+    ) {
         // Not walkable here — skip test (topology dependent).
         return;
     }
@@ -2668,6 +2700,7 @@ fn degenerate_landing_teleports_to_nearest_node() {
         &sim.face_data,
         capy.position.min,
         [1, 1, 1],
+        true,
     );
     let has_solid_below = sim
         .world
@@ -2700,7 +2733,13 @@ fn ground_only_with_nav_node_but_no_solid_below_falls() {
     let standing_pos = VoxelCoord::new(10, 4, 10);
     // Verify position is walkable above platform.
     assert!(
-        crate::walkability::footprint_walkable(&sim.world, &sim.face_data, standing_pos, [1, 1, 1]),
+        crate::walkability::footprint_walkable(
+            &sim.world,
+            &sim.face_data,
+            standing_pos,
+            [1, 1, 1],
+            true
+        ),
         "position should be walkable above platform"
     );
 
@@ -3334,7 +3373,8 @@ fn capybara_wanders_on_ground() {
             &sim.world,
             &sim.face_data,
             capybara.position.min,
-            [1, 1, 1]
+            [1, 1, 1],
+            true,
         ),
         "capybara should be at a walkable position"
     );
@@ -3429,7 +3469,8 @@ fn wandering_creature_stays_on_walkable_position() {
                 &sim.world,
                 &sim.face_data,
                 elf.position.min,
-                [1, 1, 1]
+                [1, 1, 1],
+                true,
             ),
             "Elf should always be at a walkable position (tick {target}, pos {:?})",
             elf.position.min
@@ -3604,7 +3645,8 @@ fn monkey_can_climb() {
             &sim.world,
             &sim.face_data,
             monkey.position.min,
-            [1, 1, 1]
+            [1, 1, 1],
+            true,
         ),
         "monkey should be at a walkable position"
     );
@@ -3638,7 +3680,8 @@ fn squirrel_can_climb() {
             &sim.world,
             &sim.face_data,
             squirrel.position.min,
-            [1, 1, 1]
+            [1, 1, 1],
+            true,
         ),
         "squirrel should be at a walkable position"
     );
@@ -4152,7 +4195,13 @@ fn path_resolution_nav_node_destroyed_no_panic() {
     // Use a coordinate far from the world (no node will exist there).
     let bogus_pos = VoxelCoord::new(63, 63, 63);
     assert!(
-        !crate::walkability::footprint_walkable(&sim.world, &sim.face_data, bogus_pos, [1, 1, 1]),
+        !crate::walkability::footprint_walkable(
+            &sim.world,
+            &sim.face_data,
+            bogus_pos,
+            [1, 1, 1],
+            true
+        ),
         "Test setup: bogus position should not be walkable"
     );
 
@@ -4335,8 +4384,16 @@ fn large_creature_does_not_get_permanently_stuck_on_terrain() {
 
             // Check walkability at this position.
             let footprint = sim.species_table[&Species::Elephant].footprint;
-            let walkable =
-                crate::walkability::footprint_walkable(&sim.world, &sim.face_data, pos, footprint);
+            let can_climb = sim.species_table[&Species::Elephant]
+                .climb_ticks_per_voxel
+                .is_some();
+            let walkable = crate::walkability::footprint_walkable(
+                &sim.world,
+                &sim.face_data,
+                pos,
+                footprint,
+                can_climb,
+            );
             eprintln!("  Footprint walkable: {walkable}");
 
             // Check which neighbor anchors have valid walkable positions.
@@ -4358,6 +4415,7 @@ fn large_creature_does_not_get_permanently_stuck_on_terrain() {
                     &sim.face_data,
                     VoxelCoord::new(nx, pos.y, nz),
                     footprint,
+                    can_climb,
                 );
                 eprintln!(
                     "    ({ndx:+},{ndz:+}): anchor=({nx},{nz}), walkable={neighbor_walkable}"
@@ -4403,7 +4461,8 @@ fn large_creature_supported_at_incline_with_mixed_column_heights() {
             &sim.world,
             &sim.face_data,
             standing_pos,
-            elephant_fp
+            elephant_fp,
+            false, // elephants can't climb
         ),
         "position should be walkable for elephant at y=4 above mixed-height terrain"
     );
@@ -4457,7 +4516,8 @@ fn large_creature_unsupported_when_no_footprint_column_has_solid_below() {
             &sim.world,
             &sim.face_data,
             standing_pos,
-            elephant_fp
+            elephant_fp,
+            false, // elephants can't climb
         ),
         "position should be walkable for elephant at y=6 above platform"
     );
@@ -4830,5 +4890,192 @@ fn test_elephant_floats_under_tree_foliage_on_hill() {
          not float up to canopy. Got {} violations:\n{}",
         violations.len(),
         violations.join("\n")
+    );
+}
+
+/// Reproduce bug: elephants (non-climbers) take fall damage near concave
+/// overhangs. The overhang has surfaces a climber could cling to, but a
+/// ground-only creature like an elephant shouldn't attempt to path there.
+/// A deer (small, ground-only) is a control, and a troll (climber) is
+/// included for comparison.
+#[test]
+fn test_elephant_no_fall_damage_near_overhang() {
+    let mut sim = flat_world_sim(fresh_test_seed());
+    let floor_y = sim.config.floor_y;
+    let walking_y = floor_y + 1;
+
+    // Build a concave overhang structure out of Trunk voxels.
+    //
+    // Side view (x cross-section at z=15):
+    //
+    // y=floor_y+5:          TTT      (overhang extends out, x=17)
+    // y=floor_y+4:         TT        (overhang step 2, x=18)
+    // y=floor_y+3:        TT         (overhang step 1, x=19)
+    // y=floor_y+2:       TT          (vertical wall continues, x=20)
+    // y=floor_y+1:      TT           (base of wall at walking level, x=20)
+    // y=floor_y:   DDDDDDDDDDDDD    (dirt floor — already present)
+    //
+    // Vertical wall at x=20, z=13..18, y=floor_y..floor_y+3
+    for z in 13..18 {
+        for y in floor_y..floor_y + 4 {
+            sim.world.set(VoxelCoord::new(20, y, z), VoxelType::Trunk);
+        }
+    }
+    // Overhang step 1: x=19, z=13..18, y=floor_y+3..floor_y+4
+    for z in 13..18 {
+        for y in floor_y + 3..floor_y + 5 {
+            sim.world.set(VoxelCoord::new(19, y, z), VoxelType::Trunk);
+        }
+    }
+    // Overhang step 2: x=18, z=13..18, y=floor_y+4..floor_y+5
+    for z in 13..18 {
+        for y in floor_y + 4..floor_y + 6 {
+            sim.world.set(VoxelCoord::new(18, y, z), VoxelType::Trunk);
+        }
+    }
+    // Overhang extends further: x=17, z=13..18, y=floor_y+5..floor_y+6
+    for z in 13..18 {
+        for y in floor_y + 5..floor_y + 7 {
+            sim.world.set(VoxelCoord::new(17, y, z), VoxelType::Trunk);
+        }
+    }
+
+    sim.rebuild_transient_state();
+
+    // Spawn creatures near the overhang on the ground.
+    let mut events = Vec::new();
+    let mut elephants = Vec::new();
+    for i in 0..3 {
+        let spawn_pos = VoxelCoord::new(17 + i, walking_y, 15);
+        if let Some(id) = sim.spawn_creature(Species::Elephant, spawn_pos, &mut events) {
+            elephants.push(id);
+        }
+    }
+    let deer_id = sim
+        .spawn_creature(
+            Species::Deer,
+            VoxelCoord::new(16, walking_y, 15),
+            &mut events,
+        )
+        .expect("should spawn deer");
+    let troll_id = sim
+        .spawn_creature(
+            Species::Troll,
+            VoxelCoord::new(15, walking_y, 15),
+            &mut events,
+        )
+        .expect("should spawn troll");
+
+    assert!(
+        !elephants.is_empty(),
+        "should spawn at least one elephant near overhang"
+    );
+
+    // Record initial HP for all creatures.
+    let mut initial_hp: std::collections::BTreeMap<CreatureId, (i64, &str)> =
+        std::collections::BTreeMap::new();
+    for &id in &elephants {
+        let c = sim.db.creatures.get(&id).unwrap();
+        initial_hp.insert(id, (c.hp, "Elephant"));
+    }
+    initial_hp.insert(
+        deer_id,
+        (sim.db.creatures.get(&deer_id).unwrap().hp, "Deer"),
+    );
+    initial_hp.insert(
+        troll_id,
+        (sim.db.creatures.get(&troll_id).unwrap().hp, "Troll"),
+    );
+
+    let mut hp_violations: Vec<String> = Vec::new();
+    let mut position_violations: Vec<String> = Vec::new();
+    let mut troll_notes: Vec<String> = Vec::new();
+
+    // Run 200 turns of 500 ticks each (100k total ticks).
+    let ticks_per_turn = 500;
+    let num_turns = 200;
+    for turn in 0..num_turns {
+        let start_tick = sim.tick + 1;
+        let end_tick = start_tick + ticks_per_turn;
+        sim.step(&[], end_tick);
+
+        // Check each creature after this turn.
+        for (&id, &(init_hp, species_name)) in &initial_hp {
+            if let Some(creature) = sim.db.creatures.get(&id) {
+                let pos = creature.position.min;
+                let current_hp = creature.hp;
+
+                if current_hp < init_hp {
+                    let msg = format!(
+                        "  {} {:?}: HP dropped {}->{} at tick ~{}, pos=({},{},{})",
+                        species_name, id, init_hp, current_hp, end_tick, pos.x, pos.y, pos.z,
+                    );
+                    if species_name == "Troll" {
+                        troll_notes.push(msg);
+                    } else {
+                        hp_violations.push(msg);
+                    }
+                }
+
+                // For elephants, also check if they're above floor_y + 2.
+                if species_name == "Elephant" && pos.y > floor_y + 2 {
+                    position_violations.push(format!(
+                        "  Elephant {:?}: y={} (> floor_y+2={}) at tick ~{}, pos=({},{},{})",
+                        id,
+                        pos.y,
+                        floor_y + 2,
+                        end_tick,
+                        pos.x,
+                        pos.y,
+                        pos.z,
+                    ));
+                }
+            }
+        }
+    }
+
+    // Print all findings.
+    if !hp_violations.is_empty() {
+        eprintln!(
+            "HP-loss violations ({}):\n{}",
+            hp_violations.len(),
+            hp_violations.join("\n")
+        );
+    }
+    if !position_violations.is_empty() {
+        eprintln!(
+            "Elephant position violations ({}):\n{}",
+            position_violations.len(),
+            position_violations.join("\n")
+        );
+    }
+    if !troll_notes.is_empty() {
+        eprintln!(
+            "Troll notes (not asserted, {} entries):\n{}",
+            troll_notes.len(),
+            troll_notes.join("\n")
+        );
+    }
+
+    // Print final positions for all creatures.
+    eprintln!("Final creature positions:");
+    for (&id, &(init_hp, species_name)) in &initial_hp {
+        if let Some(creature) = sim.db.creatures.get(&id) {
+            let pos = creature.position.min;
+            eprintln!(
+                "  {} {:?}: pos=({},{},{}) hp={}/{}",
+                species_name, id, pos.x, pos.y, pos.z, creature.hp, init_hp
+            );
+        } else {
+            eprintln!("  {} {:?}: DEAD/GONE", species_name, id);
+        }
+    }
+
+    assert!(
+        hp_violations.is_empty(),
+        "Elephants and deer should not take fall damage near overhang. \
+         Got {} HP-loss violations:\n{}",
+        hp_violations.len(),
+        hp_violations.join("\n")
     );
 }

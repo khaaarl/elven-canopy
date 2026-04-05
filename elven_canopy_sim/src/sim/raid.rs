@@ -164,6 +164,8 @@ impl SimState {
                     &self.face_data,
                     pos,
                     [1, 1, 1],
+                    // Ground-level dirt always has solid below; can_climb irrelevant.
+                    true,
                 ) && crate::walkability::derive_surface_type(&self.world, &self.face_data, pos)
                     == VoxelType::Dirt
                 {
@@ -243,6 +245,7 @@ impl SimState {
         let species_data = &self.species_table[&species];
         let ground_only = species_data.ground_only;
         let footprint = species_data.footprint;
+        let can_climb = species_data.climb_ticks_per_voxel.is_some();
         let (wx, wy, wz) = self.config.world_size;
 
         let mut targets = Vec::new();
@@ -264,6 +267,7 @@ impl SimState {
                         &self.face_data,
                         pos,
                         footprint,
+                        can_climb,
                     ) {
                         continue;
                     }

@@ -345,6 +345,7 @@ impl SimState {
                     tf.position.min,
                     5,
                     [1, 1, 1],
+                    true, // elves can climb
                 )
                 .is_some()
             {
@@ -546,6 +547,7 @@ impl SimState {
                     pile.position,
                     5,
                     [1, 1, 1],
+                    true, // elves can climb
                 )
                 .is_some()
             {
@@ -578,6 +580,7 @@ impl SimState {
                     structure.anchor,
                     5,
                     [1, 1, 1],
+                    true, // elves can climb
                 )
                 .is_some()
             {
@@ -611,6 +614,7 @@ impl SimState {
                     structure.anchor,
                     5,
                     [1, 1, 1],
+                    true, // elves can climb
                 )
                 .is_some()
             {
@@ -679,6 +683,7 @@ impl SimState {
                     pile.position,
                     5,
                     [1, 1, 1],
+                    true, // elves can climb
                 )
             {
                 return Some((
@@ -701,6 +706,7 @@ impl SimState {
                     structure.anchor,
                     5,
                     [1, 1, 1],
+                    true, // elves can climb
                 )
             {
                 return Some((
@@ -736,6 +742,7 @@ impl SimState {
                     pile.position,
                     5,
                     [1, 1, 1],
+                    true, // elves can climb
                 )
             {
                 return Some((
@@ -757,6 +764,7 @@ impl SimState {
                     structure.anchor,
                     5,
                     [1, 1, 1],
+                    true, // elves can climb
                 )
             {
                 return Some((

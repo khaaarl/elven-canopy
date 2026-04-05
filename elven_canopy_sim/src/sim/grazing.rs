@@ -58,7 +58,14 @@ impl SimState {
         let start = creature.position.min;
         let species_data = &self.species_table[&creature.species];
         let footprint = species_data.footprint;
-        if !crate::walkability::footprint_walkable(&self.world, &self.face_data, start, footprint) {
+        let can_climb = species_data.climb_ticks_per_voxel.is_some();
+        if !crate::walkability::footprint_walkable(
+            &self.world,
+            &self.face_data,
+            start,
+            footprint,
+            can_climb,
+        ) {
             return None;
         }
 
@@ -85,9 +92,13 @@ impl SimState {
 
             // Expand neighbors via ground_neighbors (handles walkability,
             // face-blocking, and large-creature surface snapping).
-            for (neighbor, dist_scaled) in
-                crate::walkability::ground_neighbors(&self.world, &self.face_data, pos, footprint)
-            {
+            for (neighbor, dist_scaled) in crate::walkability::ground_neighbors(
+                &self.world,
+                &self.face_data,
+                pos,
+                footprint,
+                can_climb,
+            ) {
                 // Derive edge type to check species restrictions and speed.
                 let from_surface =
                     crate::walkability::derive_surface_type(&self.world, &self.face_data, pos);

@@ -71,6 +71,7 @@ impl SimState {
             position
         } else {
             // Ground creature: find nearest walkable position for this footprint.
+            let can_climb = species_data.climb_ticks_per_voxel.is_some();
             let nearest = if ground_only {
                 crate::walkability::find_nearest_ground_walkable(
                     &self.world,
@@ -86,6 +87,7 @@ impl SimState {
                     position,
                     10,
                     footprint,
+                    can_climb,
                 )
             };
             nearest?
@@ -639,66 +641,14 @@ impl SimState {
         if species_data.flight_ticks_per_voxel.is_some() {
             return true; // flying creatures are always supported
         }
-        let walkable = crate::walkability::footprint_walkable(
+        let can_climb = species_data.climb_ticks_per_voxel.is_some();
+        crate::walkability::footprint_walkable(
             &self.world,
             &self.face_data,
             creature.position.min,
             species_data.footprint,
-        );
-        if !walkable {
-            return false;
-        }
-        if species_data.ground_only {
-            // Ground-only creatures need solid below (non-climber support).
-            // Uses the same 3-of-4 / 1+2 thresholds as footprint_walkable.
-            let anchor = creature.position.min;
-            let fx = species_data.footprint[0] as i32;
-            let fz = species_data.footprint[2] as i32;
-
-            // Count columns with solid directly at y-1.
-            let mut direct_support = 0u32;
-            for dz in 0..fz {
-                for dx in 0..fx {
-                    if self
-                        .world
-                        .get(VoxelCoord::new(anchor.x + dx, anchor.y - 1, anchor.z + dz))
-                        .is_solid()
-                    {
-                        direct_support += 1;
-                    }
-                }
-            }
-            let total_columns = (fx * fz) as u32;
-            if total_columns <= 1 {
-                // 1x1: need solid directly below.
-                return direct_support >= 1;
-            }
-            // Large footprint: 3+ columns at y-1, or 1+ at y-1 and 2+ at y-2.
-            if direct_support >= 3 {
-                return true;
-            }
-            if direct_support >= 1 {
-                let mut deep_support = 0u32;
-                for dz in 0..fz {
-                    for dx in 0..fx {
-                        if self
-                            .world
-                            .get(VoxelCoord::new(anchor.x + dx, anchor.y - 2, anchor.z + dz))
-                            .is_solid()
-                        {
-                            deep_support += 1;
-                        }
-                    }
-                }
-                if deep_support >= 2 {
-                    return true;
-                }
-            }
-            false
-        } else {
-            // Climber with a walkable position — supported.
-            true
-        }
+            can_climb,
+        )
     }
 
     /// Scan downward from a creature's current position to find a valid
@@ -710,27 +660,20 @@ impl SimState {
         pos: VoxelCoord,
     ) -> Option<VoxelCoord> {
         let species_data = &self.species_table[&species];
+        let can_climb = species_data.climb_ticks_per_voxel.is_some();
 
         // Scan downward for the first Y that meets walkability and support
-        // criteria. Works for all footprint sizes.
+        // criteria. Works for all footprint sizes. The `can_climb` parameter
+        // ensures non-climbers only land on positions with solid below.
         for y in (1..pos.y).rev() {
             let candidate = VoxelCoord::new(pos.x, y, pos.z);
-            if !crate::walkability::footprint_walkable(
+            if crate::walkability::footprint_walkable(
                 &self.world,
                 &self.face_data,
                 candidate,
                 species_data.footprint,
+                can_climb,
             ) {
-                continue;
-            }
-            if species_data.ground_only {
-                // Need solid below.
-                let below = VoxelCoord::new(pos.x, y - 1, pos.z);
-                if self.world.get(below).is_solid() {
-                    return Some(candidate);
-                }
-            } else {
-                // Climber — nav node is enough.
                 return Some(candidate);
             }
         }
@@ -770,13 +713,16 @@ impl SimState {
             None => {
                 // Degenerate: no valid landing column. Teleport to nearest
                 // footprint-walkable position.
-                let fp = self.species_table[&species].footprint;
+                let sp = &self.species_table[&species];
+                let fp = sp.footprint;
+                let cc = sp.climb_ticks_per_voxel.is_some();
                 match crate::walkability::find_nearest_walkable(
                     &self.world,
                     &self.face_data,
                     old_pos,
                     5,
                     fp,
+                    cc,
                 ) {
                     Some(pos) => pos,
                     None => return false, // no walkable positions — nothing to do

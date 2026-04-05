@@ -33,6 +33,7 @@ impl SimState {
                 tf.position.min,
                 5,
                 [1, 1, 1],
+                true, // elves can climb
             ) {
                 fruit_candidates.push((tf.position.min, walkable_pos));
             }
@@ -533,6 +534,7 @@ impl SimState {
             bed.coord,
             5,
             [1, 1, 1],
+            true, // elves can climb
         )?;
         Some((bed.coord, walkable_pos, home_id))
     }
@@ -600,6 +602,7 @@ impl SimState {
             bed_pos,
             5,
             [1, 1, 1],
+            true, // elves can climb
         )?;
 
         Some((bed_pos, walkable_pos, structure_id))
@@ -689,6 +692,7 @@ impl SimState {
             table_coord,
             5,
             [1, 1, 1],
+            true, // elves can climb
         )?;
 
         Some((table_coord, walkable_pos, structure_id))

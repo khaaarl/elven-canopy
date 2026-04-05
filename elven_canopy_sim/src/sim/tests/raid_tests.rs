@@ -420,7 +420,13 @@ fn trigger_raid_spawns_at_perimeter() {
     for x in 0..ws_x as i32 {
         for z in 0..ws_z as i32 {
             let pos = VoxelCoord::new(x, floor_y, z);
-            if crate::walkability::footprint_walkable(&sim.world, &sim.face_data, pos, [1, 1, 1]) {
+            if crate::walkability::footprint_walkable(
+                &sim.world,
+                &sim.face_data,
+                pos,
+                [1, 1, 1],
+                true,
+            ) {
                 min_x = min_x.min(pos.x);
                 max_x = max_x.max(pos.x);
                 min_z = min_z.min(pos.z);

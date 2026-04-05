@@ -529,6 +529,7 @@ impl SimState {
                 interior_pos,
                 5,
                 [1, 1, 1],
+                true, // elves can climb
             )
             .is_none()
             {

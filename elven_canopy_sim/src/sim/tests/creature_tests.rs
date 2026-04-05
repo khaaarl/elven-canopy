@@ -1134,7 +1134,8 @@ fn hornet_spawns_at_air_position_not_nav_node() {
         &sim.world,
         &sim.face_data,
         air_pos,
-        [1, 1, 1]
+        [1, 1, 1],
+        true,
     ));
 }
 
@@ -1417,7 +1418,8 @@ fn spawn_capybara_command() {
         &sim.world,
         &sim.face_data,
         capybara.position.min,
-        [1, 1, 1]
+        [1, 1, 1],
+        true,
     ));
 }
 
@@ -1493,7 +1495,8 @@ fn elephant_spawns_on_walkable_ground() {
             &sim.world,
             &sim.face_data,
             elephant.position.min,
-            [1, 1, 1]
+            [1, 1, 1],
+            true,
         ),
         "Elephant position should be walkable",
     );
@@ -1520,7 +1523,8 @@ fn troll_spawns_on_walkable_ground() {
             &sim.world,
             &sim.face_data,
             troll.position.min,
-            [1, 1, 1]
+            [1, 1, 1],
+            true,
         ),
         "Troll position should be walkable",
     );
@@ -1740,7 +1744,8 @@ fn all_small_species_spawn_and_coexist() {
                 &sim.world,
                 &sim.face_data,
                 creature.position.min,
-                [1, 1, 1]
+                [1, 1, 1],
+                true,
             ),
             "{:?} has no walkable position at {:?}",
             creature.species,

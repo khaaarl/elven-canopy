@@ -1317,6 +1317,7 @@ impl SimBridge {
                 air_pos,
                 5,
                 footprint,
+                true, // non-ground-only creatures can climb
             )
         };
 

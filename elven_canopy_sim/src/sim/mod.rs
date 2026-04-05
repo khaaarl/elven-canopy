@@ -1782,6 +1782,7 @@ impl SimState {
                                 &self.face_data,
                                 creature.position.min,
                                 self.species_table[&creature.species].footprint,
+                                true, // elves can climb
                             )
                         {
                             (

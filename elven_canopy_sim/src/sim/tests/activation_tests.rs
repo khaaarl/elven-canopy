@@ -42,7 +42,8 @@ fn elf_wanders_after_spawn() {
             &sim.world,
             &sim.face_data,
             elf.position.min,
-            [1, 1, 1]
+            [1, 1, 1],
+            true,
         ),
         "Elf should be at a walkable position"
     );
@@ -2681,7 +2682,8 @@ fn creature_wanders_via_activation_chain() {
             &sim.world,
             &sim.face_data,
             elf.position.min,
-            [1, 1, 1]
+            [1, 1, 1],
+            true,
         ),
         "Elf should be at a walkable position"
     );

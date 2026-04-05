@@ -779,7 +779,13 @@ fn build_displaces_creature_on_occupied_voxel() {
     let elf_id = spawn_elf(&mut sim);
 
     // Check if air_coord is walkable; if so, place the elf there.
-    if crate::walkability::footprint_walkable(&sim.world, &sim.face_data, air_coord, [1, 1, 1]) {
+    if crate::walkability::footprint_walkable(
+        &sim.world,
+        &sim.face_data,
+        air_coord,
+        [1, 1, 1],
+        true,
+    ) {
         let mut elf = sim.db.creatures.get(&elf_id).unwrap().clone();
         elf.position = VoxelBox::point(air_coord);
         sim.db.update_creature(elf).unwrap();
@@ -828,7 +834,8 @@ fn build_displaces_creature_on_occupied_voxel() {
         &sim.world,
         &sim.face_data,
         elf.position.min,
-        [1, 1, 1]
+        [1, 1, 1],
+        true,
     ));
 }
 
@@ -1031,7 +1038,13 @@ fn building_materialization_creates_nav_node() {
 
     let placed_coord = sim.placed_voxels[0].0;
     assert!(
-        crate::walkability::footprint_walkable(&sim.world, &sim.face_data, placed_coord, [1, 1, 1]),
+        crate::walkability::footprint_walkable(
+            &sim.world,
+            &sim.face_data,
+            placed_coord,
+            [1, 1, 1],
+            true
+        ),
         "BuildingInterior voxel should be walkable",
     );
 }
@@ -1140,7 +1153,8 @@ fn save_load_preserves_building() {
                     &restored.world,
                     &restored.face_data,
                     coord,
-                    [1, 1, 1]
+                    [1, 1, 1],
+                    true,
                 ),
                 "Restored world should have walkable position at {coord}",
             );
@@ -2131,7 +2145,8 @@ fn test_carve_task_location_uses_nav_node() {
             &sim.world,
             &sim.face_data,
             task.location,
-            [1, 1, 1]
+            [1, 1, 1],
+            true,
         ),
         "Task location {:?} should be a walkable position",
         task.location,
@@ -2315,7 +2330,13 @@ fn test_carve_updates_walkability() {
     assert_eq!(sim.world.get(solid), VoxelType::Air);
     if sim.world.has_solid_face_neighbor(solid) {
         assert!(
-            crate::walkability::footprint_walkable(&sim.world, &sim.face_data, solid, [1, 1, 1]),
+            crate::walkability::footprint_walkable(
+                &sim.world,
+                &sim.face_data,
+                solid,
+                [1, 1, 1],
+                true
+            ),
             "Carved voxel with solid neighbor should be walkable"
         );
     }

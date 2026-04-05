@@ -98,13 +98,16 @@ impl SimState {
             .is_some();
         if !attacker_is_flying && !target_is_flying {
             // Both ground: target must be in a walkable position.
-            let attacker_footprint = self.species_table[&attacker.species].footprint;
+            let attacker_species_data = &self.species_table[&attacker.species];
+            let attacker_footprint = attacker_species_data.footprint;
+            let attacker_can_climb = attacker_species_data.climb_ticks_per_voxel.is_some();
             if crate::walkability::find_nearest_walkable(
                 &self.world,
                 &self.face_data,
                 target.position.min,
                 5,
                 attacker_footprint,
+                attacker_can_climb,
             )
             .is_none()
             {
@@ -225,10 +228,10 @@ impl SimState {
         // Ground creatures need a reachable nav node at the destination.
         // Snap to nav node position so find_path can resolve it exactly.
         let species = creature.species;
-        let is_flying = self.species_table[&species]
-            .flight_ticks_per_voxel
-            .is_some();
-        let footprint = self.species_table[&species].footprint;
+        let species_data = &self.species_table[&species];
+        let is_flying = species_data.flight_ticks_per_voxel.is_some();
+        let footprint = species_data.footprint;
+        let can_climb = species_data.climb_ticks_per_voxel.is_some();
         let destination = if is_flying {
             destination
         } else {
@@ -238,6 +241,7 @@ impl SimState {
                 destination,
                 5,
                 footprint,
+                can_climb,
             ) {
                 Some(pos) => pos,
                 None => return,
@@ -402,6 +406,9 @@ impl SimState {
         let footprint = creature_species
             .map(|s| self.species_table[&s].footprint)
             .unwrap_or([1, 1, 1]);
+        let can_climb = creature_species
+            .map(|s| self.species_table[&s].climb_ticks_per_voxel.is_some())
+            .unwrap_or(false);
 
         // Ground creatures: resolve destination to walkable position for location checks.
         // Flying creatures use VoxelCoord directly.
@@ -412,6 +419,7 @@ impl SimState {
                 destination,
                 5,
                 footprint,
+                can_climb,
             ) {
                 Some(p) => Some(p),
                 None => {
@@ -464,6 +472,7 @@ impl SimState {
                         task_location_coord,
                         5,
                         footprint,
+                        can_climb,
                     )
                 } else {
                     None
@@ -636,7 +645,9 @@ impl SimState {
         }
 
         // Ground creatures need a reachable walkable position at the destination.
-        let chase_footprint = self.species_table[&species].footprint;
+        let chase_species_data = &self.species_table[&species];
+        let chase_footprint = chase_species_data.footprint;
+        let chase_can_climb = chase_species_data.climb_ticks_per_voxel.is_some();
         if !is_flying
             && crate::walkability::find_nearest_walkable(
                 &self.world,
@@ -644,6 +655,7 @@ impl SimState {
                 origin_voxel,
                 20,
                 chase_footprint,
+                chase_can_climb,
             )
             .is_none()
         {
@@ -749,7 +761,9 @@ impl SimState {
 
         // Check for cached path.
         let creature = self.db.creatures.get(&creature_id).unwrap();
-        let footprint = self.species_table[&species].footprint;
+        let species_data_am = &self.species_table[&species];
+        let footprint = species_data_am.footprint;
+        let can_climb = species_data_am.climb_ticks_per_voxel.is_some();
         let next_pos = if let Some(ref path) = creature.path {
             if let Some(&next) = path.remaining_positions.first() {
                 if crate::walkability::footprint_walkable(
@@ -757,6 +771,7 @@ impl SimState {
                     &self.face_data,
                     next,
                     footprint,
+                    can_climb,
                 ) {
                     Some(next)
                 } else {
@@ -1111,6 +1126,8 @@ impl SimState {
         }
 
         // Ground creatures: voxel-direct pathfinding.
+        let species_data_gt = &self.species_table[&species];
+        let can_climb = species_data_gt.climb_ticks_per_voxel.is_some();
         let current_pos = match current_node {
             Some(n) => n,
             None => return,
@@ -1118,7 +1135,7 @@ impl SimState {
 
         // Check for cached path.
         let creature = self.db.creatures.get(&creature_id).unwrap();
-        let footprint = self.species_table[&species].footprint;
+        let footprint = species_data_gt.footprint;
         let next_pos = if let Some(ref path) = creature.path {
             if let Some(&next) = path.remaining_positions.first() {
                 if crate::walkability::footprint_walkable(
@@ -1126,6 +1143,7 @@ impl SimState {
                     &self.face_data,
                     next,
                     footprint,
+                    can_climb,
                 ) {
                     Some(next)
                 } else {
@@ -2974,6 +2992,7 @@ impl SimState {
         // nearest threat. Ties broken by VoxelCoord for determinism.
         let species_data = &self.species_table[&species];
         let footprint = species_data.footprint;
+        let can_climb = species_data.climb_ticks_per_voxel.is_some();
         let from_surface =
             crate::walkability::derive_surface_type(&self.world, &self.face_data, current_pos);
 
@@ -2983,6 +3002,7 @@ impl SimState {
             &self.face_data,
             current_pos,
             footprint,
+            can_climb,
         ) {
             let to_surface =
                 crate::walkability::derive_surface_type(&self.world, &self.face_data, neighbor);
@@ -3823,13 +3843,16 @@ impl SimState {
 
         let creature = self.db.creatures.get(&creature_id)?;
         let species = creature.species;
-        let footprint = self.species_table[&species].footprint;
+        let species_data_rp = &self.species_table[&species];
+        let footprint = species_data_rp.footprint;
+        let can_climb = species_data_rp.climb_ticks_per_voxel.is_some();
         let current_pos = creature.position.min;
         if !crate::walkability::footprint_walkable(
             &self.world,
             &self.face_data,
             current_pos,
             footprint,
+            can_climb,
         ) {
             return None;
         }
@@ -3854,6 +3877,7 @@ impl SimState {
             &self.face_data,
             current_pos,
             footprint,
+            can_climb,
         ) {
             let blocks_others = self.position_blocks_friendly_archers(creature_id, neighbor_pos);
 

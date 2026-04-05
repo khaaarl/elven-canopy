@@ -238,6 +238,10 @@ pub struct GroundSpeeds<'a> {
     pub wood_ladder_tpv: Option<u64>,
     pub rope_ladder_tpv: Option<u64>,
     pub allowed_edges: Option<&'a [EdgeType]>,
+    /// Whether this creature can climb (derived from `climb_tpv.is_some()`).
+    /// Passed through to `footprint_walkable` to restrict non-climbers to
+    /// positions with solid directly below.
+    pub can_climb: bool,
 }
 
 impl<'a> GroundSpeeds<'a> {
@@ -249,6 +253,7 @@ impl<'a> GroundSpeeds<'a> {
             wood_ladder_tpv: species_data.wood_ladder_tpv,
             rope_ladder_tpv: species_data.rope_ladder_tpv,
             allowed_edges: species_data.allowed_edge_types.as_deref(),
+            can_climb: species_data.climb_ticks_per_voxel.is_some(),
         }
     }
 
@@ -263,6 +268,7 @@ impl<'a> GroundSpeeds<'a> {
             wood_ladder_tpv: speeds.wood_ladder_tpv,
             rope_ladder_tpv: speeds.rope_ladder_tpv,
             allowed_edges,
+            can_climb: speeds.climb_tpv.is_some(),
         }
     }
 }
@@ -782,10 +788,10 @@ pub fn astar_ground(
     opts: &PathOpts,
     footprint: [u8; 3],
 ) -> Result<PathResult, PathError> {
-    if !walkability::footprint_walkable(world, face_data, start, footprint) {
+    if !walkability::footprint_walkable(world, face_data, start, footprint, speeds.can_climb) {
         return Err(PathError::StartNotOnGraph);
     }
-    if !walkability::footprint_walkable(world, face_data, goal, footprint) {
+    if !walkability::footprint_walkable(world, face_data, goal, footprint, speeds.can_climb) {
         return Err(PathError::TargetNotOnGraph);
     }
     if start == goal {
@@ -862,7 +868,7 @@ pub fn astar_ground(
 
         // Expand all valid neighbors (including surface-snap for large creatures).
         for (neighbor, dist_scaled) in
-            walkability::ground_neighbors(world, face_data, pos, footprint)
+            walkability::ground_neighbors(world, face_data, pos, footprint, speeds.can_climb)
         {
             // Derive edge type and compute cost.
             let to_surface = walkability::derive_surface_type(world, face_data, neighbor);
@@ -928,14 +934,22 @@ pub fn nearest_astar_ground(
         return Ok(start);
     }
 
-    if !walkability::footprint_walkable(world, face_data, start, footprint) {
+    if !walkability::footprint_walkable(world, face_data, start, footprint, speeds.can_climb) {
         return Err(PathError::StartNotOnGraph);
     }
 
     // Pre-filter: only candidates with walkable positions.
     let walk_tpv = speeds.walk_tpv;
     let mut candidate_indices: Vec<usize> = (0..candidates.len())
-        .filter(|&i| walkability::footprint_walkable(world, face_data, candidates[i], footprint))
+        .filter(|&i| {
+            walkability::footprint_walkable(
+                world,
+                face_data,
+                candidates[i],
+                footprint,
+                speeds.can_climb,
+            )
+        })
         .collect();
     if candidate_indices.is_empty() {
         return Err(PathError::NoTargets);
@@ -1063,7 +1077,7 @@ pub fn nearest_astar_ground(
         let from_surface = walkability::derive_surface_type(world, face_data, pos);
 
         for (neighbor, dist_scaled) in
-            walkability::ground_neighbors(world, face_data, pos, footprint)
+            walkability::ground_neighbors(world, face_data, pos, footprint, speeds.can_climb)
         {
             if closed.contains(&neighbor) {
                 continue;
@@ -1153,6 +1167,7 @@ mod tests {
             wood_ladder_tpv: None,
             rope_ladder_tpv: None,
             allowed_edges: None,
+            can_climb: true,
         }
     }
 
@@ -1164,6 +1179,7 @@ mod tests {
             wood_ladder_tpv: None,
             rope_ladder_tpv: None,
             allowed_edges: Some(allowed),
+            can_climb: true,
         }
     }
 

@@ -227,6 +227,7 @@ impl SimState {
             build_voxels[0],
             5,
             [1, 1, 1],
+            true, // elves can climb
         ) {
             Some(pos) => pos,
             None => return,
@@ -409,6 +410,7 @@ impl SimState {
             voxels[0],
             5,
             [1, 1, 1],
+            true, // elves can climb
         )
         .is_none()
         {
@@ -584,6 +586,7 @@ impl SimState {
             build_voxels[0],
             5,
             [1, 1, 1],
+            true, // elves can climb
         )
         .is_none()
         {
@@ -727,6 +730,7 @@ impl SimState {
             carve_voxels[0],
             5,
             [1, 1, 1],
+            true, // elves can climb
         ) {
             Some(pos) => pos,
             None => return,
@@ -910,6 +914,7 @@ impl SimState {
             position,
             5,
             [1, 1, 1],
+            true, // elves can climb
         ) {
             Some(pos) => pos,
             None => return,
@@ -1443,6 +1448,7 @@ impl SimState {
             task_pos,
             5,
             [1, 1, 1],
+            true, // elves can climb
         )
         .is_none()
         {
@@ -1615,13 +1621,16 @@ impl SimState {
         for (cid, species, old_pos) in creature_info {
             // Generous limit: resnap happens after major graph rebuilds where
             // creatures may be far from any surviving walkable position.
-            let footprint = self.species_table[&species].footprint;
+            let species_data = &self.species_table[&species];
+            let footprint = species_data.footprint;
+            let can_climb = species_data.climb_ticks_per_voxel.is_some();
             let new_pos = crate::walkability::find_nearest_walkable(
                 &self.world,
                 &self.face_data,
                 old_pos,
                 20,
                 footprint,
+                can_climb,
             );
             if let Some(mut creature) = self.db.creatures.get(&cid) {
                 creature.path = None;

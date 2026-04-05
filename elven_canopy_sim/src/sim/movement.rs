@@ -33,10 +33,10 @@ impl SimState {
         // find_path can resolve it exactly.
         // Flying creatures can go anywhere in open air.
         let species = creature.species;
-        let is_flying = self.species_table[&species]
-            .flight_ticks_per_voxel
-            .is_some();
-        let footprint = self.species_table[&species].footprint;
+        let species_data_mv = &self.species_table[&species];
+        let is_flying = species_data_mv.flight_ticks_per_voxel.is_some();
+        let footprint = species_data_mv.footprint;
+        let can_climb = species_data_mv.climb_ticks_per_voxel.is_some();
         let task_location = if is_flying {
             position
         } else {
@@ -46,6 +46,7 @@ impl SimState {
                 position,
                 5,
                 footprint,
+                can_climb,
             ) {
                 Some(pos) => pos,
                 None => return,
@@ -241,13 +242,18 @@ impl SimState {
         // Use the first alive creature's footprint for walkability checks.
         // All creatures in a group move share the same footprint (elf groups
         // are all [1,1,1]; large creatures don't participate in group moves).
-        let first_footprint = creature_ids
+        let first_species_data = creature_ids
             .iter()
             .filter_map(|&cid| self.db.creatures.get(&cid))
             .filter(|c| c.vital_status == VitalStatus::Alive)
-            .map(|c| self.species_table[&c.species].footprint)
-            .next()
+            .map(|c| &self.species_table[&c.species])
+            .next();
+        let first_footprint = first_species_data
+            .map(|sd| sd.footprint)
             .unwrap_or([1, 1, 1]);
+        let first_can_climb = first_species_data
+            .map(|sd| sd.climb_ticks_per_voxel.is_some())
+            .unwrap_or(false);
 
         let center = match crate::walkability::find_nearest_walkable(
             &self.world,
@@ -255,6 +261,7 @@ impl SimState {
             target,
             5,
             first_footprint,
+            first_can_climb,
         ) {
             Some(p) => p,
             None => return Vec::new(),
@@ -283,6 +290,7 @@ impl SimState {
             center,
             creatures.len(),
             first_footprint,
+            first_can_climb,
         );
         let dest_positions: Vec<(usize, VoxelCoord)> = dest_coords
             .iter()
@@ -363,7 +371,9 @@ impl SimState {
 
         // Check if we already have a cached path with a walkable next step.
         let creature = self.db.creatures.get(&creature_id).unwrap();
-        let footprint = self.species_table[&species].footprint;
+        let species_data_goto = &self.species_table[&species];
+        let footprint = species_data_goto.footprint;
+        let can_climb = species_data_goto.climb_ticks_per_voxel.is_some();
         let next_pos = if let Some(ref path) = creature.path {
             if let Some(&next) = path.remaining_positions.first() {
                 // Validate: next position must still be walkable.
@@ -372,6 +382,7 @@ impl SimState {
                     &self.face_data,
                     next,
                     footprint,
+                    can_climb,
                 ) {
                     Some(next)
                 } else {
@@ -611,6 +622,7 @@ impl SimState {
     ) {
         let species_data = &self.species_table[&species];
         let footprint = species_data.footprint;
+        let can_climb = species_data.climb_ticks_per_voxel.is_some();
 
         // Collect walkable neighbors via ground_neighbors, respecting edge-type filtering.
         let from_surface =
@@ -621,6 +633,7 @@ impl SimState {
             &self.face_data,
             current_pos,
             footprint,
+            can_climb,
         ) {
             // Check edge type allowed.
             let to_surface =

@@ -250,9 +250,17 @@ impl SimState {
 
         // Guard: creature on non-walkable position (ground creatures only).
         // Snap to nearest walkable position if the world changed under them.
-        let footprint = self.species_table[&species].footprint;
+        let species_data_act = &self.species_table[&species];
+        let footprint = species_data_act.footprint;
+        let can_climb = species_data_act.climb_ticks_per_voxel.is_some();
         if let Some(pos) = current_node
-            && !crate::walkability::footprint_walkable(&self.world, &self.face_data, pos, footprint)
+            && !crate::walkability::footprint_walkable(
+                &self.world,
+                &self.face_data,
+                pos,
+                footprint,
+                can_climb,
+            )
         {
             self.abort_current_action(creature_id);
             let new_pos = match crate::walkability::find_nearest_walkable(
@@ -261,6 +269,7 @@ impl SimState {
                 pos,
                 5,
                 footprint,
+                can_climb,
             ) {
                 Some(p) => p,
                 None => return,
@@ -679,6 +688,9 @@ impl SimState {
         let footprint = creature_species
             .map(|s| self.species_table[&s].footprint)
             .unwrap_or([1, 1, 1]);
+        let can_climb = creature_species
+            .map(|s| self.species_table[&s].climb_ticks_per_voxel.is_some())
+            .unwrap_or(false);
 
         let (mut task_location_coord, target_creature, task_kind_tag) =
             match self.db.tasks.get(&task_id) {
@@ -748,6 +760,7 @@ impl SimState {
                 task_location_coord,
                 5,
                 footprint,
+                can_climb,
             ) {
                 Some(p) => {
                     task_location_coord = p;
