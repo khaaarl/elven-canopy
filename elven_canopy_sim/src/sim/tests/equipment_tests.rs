@@ -154,8 +154,7 @@ fn acquire_item_auto_equips_one_from_multi_qty() {
     }
 
     // Position elf at the pile.
-    let pile_nav = sim.nav_graph.find_nearest_node(pile_pos, 10).unwrap();
-    let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
+    let pile_nav_pos = find_walkable(&sim, pile_pos, 10).unwrap();
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.position = VoxelBox::point(pile_nav_pos);
@@ -173,7 +172,7 @@ fn acquire_item_auto_equips_one_from_multi_qty() {
             quantity: 3,
         },
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(pile_nav).position,
+        location: pile_nav_pos,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -342,8 +341,7 @@ fn acquire_item_preserves_material() {
     }
 
     // Position elf at the pile.
-    let pile_nav = sim.nav_graph.find_nearest_node(pile_pos, 10).unwrap();
-    let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
+    let pile_nav_pos = find_walkable(&sim, pile_pos, 10).unwrap();
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.position = VoxelBox::point(pile_nav_pos);
@@ -361,7 +359,7 @@ fn acquire_item_preserves_material() {
             quantity: 1,
         },
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(pile_nav).position,
+        location: pile_nav_pos,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -425,8 +423,7 @@ fn acquire_item_auto_equips_clothing() {
     }
 
     // Position elf at the pile.
-    let pile_nav = sim.nav_graph.find_nearest_node(pile_pos, 10).unwrap();
-    let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
+    let pile_nav_pos = find_walkable(&sim, pile_pos, 10).unwrap();
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.position = VoxelBox::point(pile_nav_pos);
@@ -444,7 +441,7 @@ fn acquire_item_auto_equips_clothing() {
             quantity: 1,
         },
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(pile_nav).position,
+        location: pile_nav_pos,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -515,8 +512,7 @@ fn acquire_item_does_not_equip_if_slot_occupied() {
     }
 
     // Position elf at the pile.
-    let pile_nav = sim.nav_graph.find_nearest_node(pile_pos, 10).unwrap();
-    let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
+    let pile_nav_pos = find_walkable(&sim, pile_pos, 10).unwrap();
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.position = VoxelBox::point(pile_nav_pos);
@@ -534,7 +530,7 @@ fn acquire_item_does_not_equip_if_slot_occupied() {
             quantity: 1,
         },
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(pile_nav).position,
+        location: pile_nav_pos,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -802,8 +798,7 @@ fn soldier_acquires_military_equipment_no_ownership_change() {
     let elf_id = spawn_elf(&mut sim);
     let soldiers = soldiers_group(&sim);
     set_military_group(&mut sim, elf_id, Some(soldiers.id));
-    let pile_nav = sim.nav_graph.find_nearest_node(pile_pos, 10).unwrap();
-    let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
+    let pile_nav_pos = find_walkable(&sim, pile_pos, 10).unwrap();
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.position = VoxelBox::point(pile_nav_pos);
@@ -821,7 +816,7 @@ fn soldier_acquires_military_equipment_no_ownership_change() {
             quantity: 1,
         },
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(pile_nav).position,
+        location: pile_nav_pos,
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -1564,8 +1559,8 @@ fn check_military_equipment_wants_overwrites_task_on_non_idle_elf() {
     set_military_group(&mut sim, elf_id, Some(soldiers.id));
 
     // Give elf a GoTo task (non-idle).
-    let pile_nav = sim.nav_graph.find_nearest_node(pile_pos, 10).unwrap();
-    let goto_task_id = insert_goto_task(&mut sim, pile_nav);
+    let pile_walkable = find_walkable(&sim, pile_pos, 10).unwrap();
+    let goto_task_id = insert_goto_task(&mut sim, pile_walkable);
     let mut creature = sim.db.creatures.get(&elf_id).unwrap();
     creature.current_task = Some(goto_task_id);
     sim.db.update_creature(creature).unwrap();
@@ -1957,8 +1952,7 @@ fn military_equipment_auto_equips_wearable_on_pickup() {
     let elf_id = spawn_elf(&mut sim);
     let soldiers = soldiers_group(&sim);
     set_military_group(&mut sim, elf_id, Some(soldiers.id));
-    let pile_nav = sim.nav_graph.find_nearest_node(pile_pos, 10).unwrap();
-    let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
+    let pile_nav_pos = find_walkable(&sim, pile_pos, 10).unwrap();
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.position = VoxelBox::point(pile_nav_pos);
@@ -1975,7 +1969,7 @@ fn military_equipment_auto_equips_wearable_on_pickup() {
             quantity: 1,
         },
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(pile_nav).position,
+        location: pile_nav_pos,
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -2077,8 +2071,7 @@ fn military_equipment_auto_equip_displaces_existing_clothing() {
     // Assign to soldiers, position at pile.
     let soldiers = soldiers_group(&sim);
     set_military_group(&mut sim, elf_id, Some(soldiers.id));
-    let pile_nav = sim.nav_graph.find_nearest_node(pile_pos, 10).unwrap();
-    let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
+    let pile_nav_pos = find_walkable(&sim, pile_pos, 10).unwrap();
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.position = VoxelBox::point(pile_nav_pos);
@@ -2095,7 +2088,7 @@ fn military_equipment_auto_equip_displaces_existing_clothing() {
             quantity: 1,
         },
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(pile_nav).position,
+        location: pile_nav_pos,
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -2180,8 +2173,7 @@ fn military_equipment_non_wearable_not_equipped() {
     let elf_id = spawn_elf(&mut sim);
     let soldiers = soldiers_group(&sim);
     set_military_group(&mut sim, elf_id, Some(soldiers.id));
-    let pile_nav = sim.nav_graph.find_nearest_node(pile_pos, 10).unwrap();
-    let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
+    let pile_nav_pos = find_walkable(&sim, pile_pos, 10).unwrap();
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.position = VoxelBox::point(pile_nav_pos);
@@ -2213,7 +2205,7 @@ fn military_equipment_non_wearable_not_equipped() {
             quantity: 1,
         },
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(pile_nav).position,
+        location: pile_nav_pos,
         progress: 0,
         total_cost: 0,
         required_species: None,

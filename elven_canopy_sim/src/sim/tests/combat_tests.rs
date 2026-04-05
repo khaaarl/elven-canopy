@@ -2950,14 +2950,14 @@ fn position_blocks_friendly_archer_on_line() {
     arm_with_bow_and_arrows(&mut sim, archer, 5);
 
     // Give archer an attack task targeting the goblin.
-    let goblin_node = sim.nav_graph.find_nearest_node(goblin_pos, 10);
-    if let Some(node) = goblin_node {
+    let goblin_walkable = find_walkable(&sim, goblin_pos, 10);
+    if let Some(walkable_pos) = goblin_walkable {
         let task_id = TaskId::new(&mut sim.rng);
         let task = Task {
             id: task_id,
             kind: TaskKind::AttackTarget { target: goblin },
             state: TaskState::InProgress,
-            location: sim.nav_graph.node(node).position,
+            location: walkable_pos,
             progress: 0,
             total_cost: 0,
             required_species: Some(Species::Elf),
@@ -5506,13 +5506,9 @@ fn hostile_creature_wanders_without_elves() {
         .rest_decay_per_tick = 0;
     let goblin_id = spawn_species(&mut sim, Species::Goblin);
 
-    // Place goblin on a nav node with neighbors so it can wander.
-    let walkable = sim
-        .nav_graph
-        .live_nodes()
-        .find(|n| !n.edge_indices.is_empty())
-        .map(|n| n.position)
-        .expect("should have a walkable nav node with neighbors");
+    // Place goblin on a walkable position so it can wander.
+    let walkable = find_walkable(&sim, VoxelCoord::new(32, 1, 32), 30)
+        .expect("should have a walkable position");
     force_position(&mut sim, goblin_id, walkable);
     force_idle(&mut sim, goblin_id);
 
@@ -6072,22 +6068,17 @@ fn all_hostile_species_pursue_elves() {
         let elf_id = spawn_species(&mut sim, Species::Elf);
         let hostile_id = spawn_species(&mut sim, hostile_species);
 
-        // Find two nav nodes that are a few voxels apart so the hostile
+        // Find two walkable positions that are a few voxels apart so the hostile
         // has room to pursue without the elf immediately fleeing to safety.
-        let positions: Vec<_> = sim
-            .nav_graph
-            .live_nodes()
-            .filter(|n| !n.edge_indices.is_empty())
-            .map(|n| n.position)
-            .collect();
-        let (pos_a, pos_b) = positions
-            .iter()
-            .flat_map(|a| positions.iter().map(move |b| (*a, *b)))
-            .find(|(a, b)| {
-                let d = a.manhattan_distance(*b);
-                (3..=6).contains(&d)
-            })
-            .expect("should have nav nodes 3-6 apart");
+        let floor_y = sim.config.floor_y + 1;
+        let pos_a = find_walkable(&sim, VoxelCoord::new(20, floor_y, 20), 10)
+            .expect("should have a walkable position");
+        let pos_b = find_walkable(&sim, VoxelCoord::new(24, floor_y, 20), 10)
+            .expect("should have a second walkable position");
+        assert!(
+            (3..=6).contains(&pos_a.manhattan_distance(pos_b)),
+            "positions should be 3-6 apart"
+        );
         force_position(&mut sim, elf_id, pos_a);
         force_idle(&mut sim, elf_id);
         force_position(&mut sim, hostile_id, pos_b);
@@ -6399,8 +6390,9 @@ fn attack_target_preempts_lower_priority_task() {
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
     // Give elf a GoTo task (PlayerDirected level 2).
-    let far_node = sim.nav_graph.live_nodes().last().map(|n| n.id).unwrap();
-    let goto_task_id = insert_goto_task(&mut sim, far_node);
+    let elf_pos = creature_pos(&sim, elf);
+    let far_pos = find_far_walkable(&sim, elf_pos, 10);
+    let goto_task_id = insert_goto_task(&mut sim, far_pos);
     sim.claim_task(elf, goto_task_id);
 
     let tick = sim.tick;
@@ -7217,14 +7209,7 @@ fn attack_move_traversal_delay_uses_creature_stats() {
 
     // Find a ground node far from the elf to attack-move toward.
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
-    let graph = sim.graph_for_species(Species::Elf);
-    let distant_node = graph
-        .ground_node_ids()
-        .iter()
-        .map(|&nid| graph.node(nid).position)
-        .filter(|&p| p.manhattan_distance(elf_pos) > 5)
-        .next()
-        .expect("need a distant ground node");
+    let distant_node = find_far_walkable(&sim, elf_pos, 5);
 
     // Issue attack-move command.
     let tick = sim.tick;
@@ -7341,7 +7326,7 @@ fn ground_creature_pursues_target_at_different_elevation() {
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
 
-    // Force elf to y=2 (off the nav graph in a flat world).
+    // Force elf to y=2 (not walkable in a flat world).
     force_position(&mut sim, elf, VoxelCoord::new(37, 2, 32));
     force_position(&mut sim, goblin, VoxelCoord::new(34, 1, 32));
     force_guaranteed_hits(&mut sim, goblin);

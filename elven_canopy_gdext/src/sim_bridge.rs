@@ -68,10 +68,9 @@
 //   ID, kind, state, origin (PlayerDirected/Autonomous/Automated),
 //   progress/total_cost, location coordinates, and an assignees array with
 //   creature_id, species, and name. Used by `task_panel.gd`.
-// - **Nav nodes:** `get_all_nav_nodes()`, `get_ground_nav_nodes()` — for
-//   debug visualization. `snap_placement_to_ray(origin, dir, ground_only,
+// - **Placement:** `snap_placement_to_ray(origin, dir, ground_only,
 //   large)` — casts `raycast_solid` along the mouse ray to find solid
-//   geometry, then snaps to the nearest nav node via `find_nearest_node`.
+//   geometry, then snaps to the nearest walkable position.
 // - **Commands:** `spawn_creature(species_name, x,y,z)` — generic creature
 //   spawner. Also `create_goto_task(x,y,z)`, `designate_build(x,y,z)`,
 //   `designate_build_rect(x,y,z,width,depth)`, etc. Commands are sent to
@@ -1256,52 +1255,15 @@ impl SimBridge {
         self.creature_count_by_name(GString::from("Capybara"))
     }
 
-    /// Return all nav node positions as a PackedVector3Array.
-    #[func]
-    fn get_all_nav_nodes(&self) -> PackedVector3Array {
-        let Some(sim) = &self.session.sim else {
-            return PackedVector3Array::new();
-        };
-        let mut arr = PackedVector3Array::new();
-        for node in sim.nav_graph.live_nodes() {
-            arr.push(Vector3::new(
-                node.position.x as f32,
-                node.position.y as f32,
-                node.position.z as f32,
-            ));
-        }
-        arr
-    }
-
-    /// Return ground-level (Dirt surface type) nav node positions as a
-    /// PackedVector3Array.
-    #[func]
-    fn get_ground_nav_nodes(&self) -> PackedVector3Array {
-        let Some(sim) = &self.session.sim else {
-            return PackedVector3Array::new();
-        };
-        let mut arr = PackedVector3Array::new();
-        for id in sim.nav_graph.ground_node_ids() {
-            let node = sim.nav_graph.node(id);
-            arr.push(Vector3::new(
-                node.position.x as f32,
-                node.position.y as f32,
-                node.position.z as f32,
-            ));
-        }
-        arr
-    }
-
-    /// Snap the mouse ray to the nearest nav node for placement.
+    /// Snap the mouse ray to the nearest walkable position for placement.
     ///
     /// Casts `raycast_solid` along the ray to find where it hits geometry,
-    /// computes the air voxel on the entry face, then uses the nav graph's
-    /// `find_nearest_node` (or `find_nearest_ground_node`) to snap to the
-    /// closest walkable position. Returns `{hit: true, position: Vector3}`
-    /// or `{hit: false}`.
+    /// computes the air voxel on the entry face, then snaps to the closest
+    /// walkable position. Returns `{hit: true, position: Vector3}` or
+    /// `{hit: false}`.
     ///
-    /// `ground_only`: restrict to ground (Dirt) nodes (for ground-only species).
-    /// `large`: use the large (2x2x2) nav graph instead of the standard one.
+    /// `ground_only`: restrict to ground (Dirt) positions (for ground-only species).
+    /// `large`: use the 2x2x2 footprint walkability check.
     #[func]
     fn snap_placement_to_ray(
         &self,
@@ -1342,21 +1304,28 @@ impl SimBridge {
             solid_coord.z + offset.2,
         );
 
-        let graph = if large {
-            &sim.large_nav_graph
-        } else {
-            &sim.nav_graph
-        };
-
+        let footprint: [u8; 3] = if large { [2, 2, 2] } else { [1, 1, 1] };
         let nearest = if ground_only {
-            graph.find_nearest_ground_node(air_pos, 5)
+            elven_canopy_sim::walkability::find_nearest_ground_walkable(
+                &sim.world,
+                &sim.face_data,
+                air_pos,
+                5,
+                footprint,
+            )
         } else {
-            graph.find_nearest_node(air_pos, 5)
+            elven_canopy_sim::walkability::find_nearest_walkable(
+                &sim.world,
+                &sim.face_data,
+                air_pos,
+                5,
+                footprint,
+                true, // non-ground-only creatures can climb
+            )
         };
 
         match nearest {
-            Some(id) => {
-                let p = graph.node(id).position;
+            Some(p) => {
                 dict.set("hit", true);
                 dict.set("position", Vector3::new(p.x as f32, p.y as f32, p.z as f32));
             }

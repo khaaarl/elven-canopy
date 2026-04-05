@@ -71,6 +71,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-fast-checksum        Incremental state checksum for desync detection (replace full-state JSON serialization)
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fog-billboards       Fog post-process does not obscure billboard sprites
+[ ] B-large-fall-deflect   Large creatures may land at invalid positions during gravity fall
 [ ] B-per-species-iter     Eliminate per-species iteration in selection and tooltip controllers
 [ ] B-relay-stability      Windows TCP connection drops during singleplayer gameplay
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
@@ -191,6 +192,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mobile-support       Mobile/touch platform support
 [ ] F-modding              Scripting layer for modding support
 [ ] F-modifier-keybinds    Modifier key combinations in bindings
+[ ] F-move-categories      Simplify pathfinding to 3 movement categories for cacheability
 [ ] F-mp-chat              Multiplayer in-game chat
 [ ] F-mp-reconnect         Multiplayer reconnection after disconnect
 [ ] F-multi-tree           NPC trees with personalities
@@ -199,6 +201,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-night-predators      Nocturnal predators
 [ ] F-pack-animals         Beast-of-burden hauling for heavy loads and caravans
 [ ] F-partial-struct       Structural checks on incomplete builds
+[ ] F-path-cache           Explore pathfinding caching (snippet cache, chunk precomputation)
 [ ] F-path-civil           Civil path definitions and organic self-assignment
 [ ] F-path-combat          Combat path definitions and player assignment
 [ ] F-path-residue         Skill residue from past paths
@@ -216,7 +219,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-raid-polish          Raid polish: military groups, provisions for long treks
 [ ] F-random-seeds         Parameterized random-seed testing for hardened sim tests
 [ ] F-recipe-any-mat       Any-material recipe parameter support
-[ ] F-remove-navgraph      Remove NavGraph, replace with voxel-direct A*
 [ ] F-rescue               Rescue and stabilize incapacitated creatures
 [ ] F-retire-events        Retire event queue: poll-based heartbeats and periodic systems
 [ ] F-romance              Romantic relationships and courtship
@@ -284,6 +286,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-two-click-build      Two-click construction designation (click start, click end)
 [ ] F-undo-designate       Undo last construction designation
 [ ] F-unfurnish            Unfurnish/refurnish a building
+[ ] F-unify-pathfinding    Investigate unifying ground and flying A* pathfinding
 [ ] F-uplift-tree          Uplift lesser tree into bonded great tree
 [ ] F-vaelith-expand       Expand Vaelith language for runtime use
 [ ] F-vertical-garden      Vertical gardens on the tree
@@ -506,6 +509,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-recipes              Recipe system for crafting/cooking
 [x] F-relay-multi-game     Relay server supports multiple simultaneous games
 [x] F-relay-release        Standalone relay server release build
+[x] F-remove-navgraph      Remove NavGraph, replace with voxel-direct A*
 [x] F-rle-voxels           RLE column-based voxel storage
 [x] F-rm-floor-extent      Remove floor_extent and ForestFloor layer
 [x] F-roof-click-select    Roof click selects building, not elf underneath
@@ -1774,6 +1778,24 @@ Nodes only where a 2x2x2 volume is clear and all 4 ground cells are solid.
 Includes `Species::Elephant`, `graph_for_species()` dispatch, incremental
 updates, SimBridge queries, GDScript spawn/render/placement, and sprite.
 
+#### F-move-categories — Simplify pathfinding to 3 movement categories for cacheability
+**Status:** Todo
+
+Currently each species has its own GroundSpeeds (walk_tpv, climb_tpv, wood_ladder_tpv, rope_ladder_tpv, etc.), meaning pathfinding costs vary per species even among creatures that share the same movement mode. For example, elves and trolls are both climbers but may have different climb-to-walk speed ratios. This makes any future pathfinding caching scheme (e.g., precomputed flowfields or cached paths within chunk regions) much harder, because cached paths would need to be species-specific rather than shared across all creatures with the same movement mode.
+
+Consider simplifying to exactly 3 movement style categories for pathfinding purposes:
+1. **Walking-only** (elephants, capybaras, etc.) — no climb edges, ground movement only.
+2. **Walking-and-climbing** (elves, trolls, goblins, etc.) — ground + climb edges, with a fixed cost ratio between walking and climbing that is the same for all climbers regardless of species.
+3. **Flying** (hornets, wyverns) — 3D voxel grid movement.
+
+Within each category, all species would use identical edge-type cost ratios. Species could still differ in *absolute* speed (an elf walks faster than a goblin), but the *ratio* between walk/climb/ladder costs would be uniform within the category. This means a cached "cheapest path from A to B for a climber" would be valid for any climbing species — only the total time scales by the species' base speed.
+
+This is a forward-looking simplification to enable future pathfinding optimizations. The current per-species speed system works correctly; the issue is purely about cacheability. The feature should evaluate whether any current species actually needs a different climb/walk ratio, and whether the gameplay cost of uniform ratios is acceptable.
+
+Relevant code: GroundSpeeds struct in pathfinding.rs, tpv_for_edge_type() in walkability.rs, per-species speed config in species.rs/config.
+
+**Related:** F-path-cache
+
 #### F-nav-gen-opt — RLE-aware nav graph generation
 **Status:** Done
 
@@ -1807,6 +1829,29 @@ voxel adjacent to solid. Duplicate edges avoided via 13-offset trick.
 voxel placement instead of full graph rebuild. Returns removed NodeIds for
 creature resnapping.
 
+#### F-path-cache — Explore pathfinding caching (snippet cache, chunk precomputation)
+**Status:** Todo
+
+Explore caching schemes for ground pathfinding to reduce repeated A* computation. Currently every path request runs a fresh A* search from scratch. In a busy sim with many creatures, this is a significant CPU cost. Caching partial or complete path results could reduce redundant work.
+
+One promising approach is the Factorio-style "path snippet cache": precompute and cache short path segments between key waypoints (e.g., chunk boundaries or high-traffic nodes), then stitch them together for longer paths. This amortizes the cost of A* over many creatures that traverse similar routes.
+
+Other approaches to explore:
+- **Chunk-level precomputation**: for each column chunk, precompute internal connectivity and border-to-border paths. Path queries that cross chunks only need to A* at the chunk graph level, then look up intra-chunk segments.
+- **Hierarchical pathfinding (HPA*)**: abstract the voxel grid into a coarser graph of chunk regions, pathfind on the abstract graph, then refine each segment.
+- **Flowfields**: for common destinations (e.g., dining hall, stockpile), precompute a flowfield that all creatures heading to that destination can follow without individual A*.
+
+Key constraints:
+- Determinism: any caching scheme must produce deterministic results. Cache invalidation on world mutation (voxel changes) must be correct.
+- The voxel world is 3D and mutable (construction, tree growth, terrain destruction), so cache invalidation is non-trivial.
+- F-move-categories (uniform cost ratios within movement categories) would make caching much more practical — only 3 cache variants needed instead of per-species caches.
+
+Reference: Factorio Friday Facts on pathfinding optimization (snippet caching approach).
+
+Relevant code: astar_ground() and nearest_astar_ground() in pathfinding.rs, ground_neighbors() in walkability.rs.
+
+**Related:** F-move-categories
+
 #### F-pathfinding — A* pathfinding over nav graph
 **Status:** Done · **Phase:** 1 · **Refs:** §10
 
@@ -1814,7 +1859,7 @@ A* search with euclidean heuristic over the nav graph. Movement cost
 computed from edge distance and per-species speed config.
 
 #### F-remove-navgraph — Remove NavGraph, replace with voxel-direct A*
-**Status:** Todo
+**Status:** Done
 
 Remove the NavGraph abstraction from elven_canopy_sim and replace ground-creature pathfinding with voxel-direct A*, matching the pattern already used by flying creatures (`astar_fly`).
 
@@ -1967,6 +2012,22 @@ travel mode.
 **Unblocked:** F-interleaved-astar
 **Related:** B-dijkstra-perf, B-dining-perf, F-bounded-pathlen
 
+#### F-unify-pathfinding — Investigate unifying ground and flying A* pathfinding
+**Status:** Todo
+
+Ground and flying A* pathfinding are currently separate implementations in pathfinding.rs: astar_ground() and astar_fly(), plus their nearest_astar variants. They share types (OpenEntry, PathResult, PathError, PathOpts, reconstruct_path) and have the same overall algorithm shape, but differ in neighbor expansion and cost logic:
+
+- Ground: uses ground_neighbors() from walkability.rs (walkability predicates, edge-type-based costs via tpv_for_edge_type, 26-neighbor expansion with varying speeds per edge type).
+- Flying: uses a simpler 26-neighbor grid expansion with uniform cost and footprint clearance checks (non-solid voxels only, passthrough for leaves/fruit/ladders).
+
+Investigate whether these can be unified into a single generic A* function parameterized by a neighbor-expansion strategy (e.g., a trait or closure that provides neighbors + costs). This would reduce code duplication and make it easier to add new movement modes in the future. The dispatch currently happens in SimState::find_path() and SimState::find_nearest() based on species_data.is_flying.
+
+Key considerations:
+- The ground neighbor expansion is significantly more complex (edge types, surface types, can_climb, species-specific allowed_edge_types filtering).
+- Performance: ground pathfinding is called much more frequently; any abstraction overhead needs to be negligible.
+- The shared OpenEntry, PathOpts, and reconstruct_path infrastructure already exists and would remain.
+- May not be worth it if the abstraction cost outweighs the duplication cost — the two implementations are stable and well-tested.
+
 ### Creatures & Needs
 
 #### B-flying-tasks — Flying creatures skip task system entirely
@@ -1984,6 +2045,23 @@ task-driven system (player commands, construction, hauling, etc.).
 
 **Unblocked:** B-flying-arrow-chase, F-winged-elf
 **Related:** F-arrow-chase
+
+#### B-large-fall-deflect — Large creatures may land at invalid positions during gravity fall
+**Status:** Todo
+
+When a large (2x2x2 footprint) ground creature like an elephant loses support and gravity kicks in, `find_creature_landing` only checks the creature's current anchor column `(ax, az)` via `large_node_surface_y`. If that specific 2x2 anchor position doesn't have valid ground below (e.g., the creature was knocked off a platform onto a narrow column, or terrain was destroyed beneath it), the function returns `None`.
+
+The fallback in `apply_single_creature_gravity` calls `find_nearest_walkable` with `max_distance=5`, which searches a Manhattan-distance-5 sphere around the creature's **current floating position**. If the ground is more than 5 voxels below and there are no platforms nearby, this also returns `None`.
+
+When both fail, `apply_single_creature_gravity` returns `false` — the creature stays at its current unsupported position. On the next tick, `creature_is_supported` returns false again, the same lookup fails again, and the creature is stuck hovering forever.
+
+**Current behavior:** Large creature gets permanently stuck floating at an invalid position.
+
+**Expected behavior:** The creature should fall to the ground. Two possible fixes:
+1. In `find_creature_landing`'s large-creature path, if the current anchor column fails, try nearby anchor columns at each Y level scanning downward (similar to how the 1x1 path scans downward).
+2. Increase the `find_nearest_walkable` fallback search radius, or make the fallback scan downward iteratively (search radius 5 at current Y, then radius 5 at Y-5, etc.) until ground is found.
+
+**Relevant code:** `find_creature_landing` and `apply_single_creature_gravity` in `elven_canopy_sim/src/sim/creature.rs` (lines ~689-790), `large_node_surface_y` in `elven_canopy_sim/src/walkability.rs` (line ~162).
 
 #### B-sprite-shuffle — Non-elf creature sprites shuffle appearance when population changes
 **Status:** Done

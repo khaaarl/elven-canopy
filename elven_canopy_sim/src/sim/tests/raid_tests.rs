@@ -92,17 +92,16 @@ fn test_attack_move_engages_hostile() {
 
     // Use connected nav nodes to ensure valid positions.
     let (node_a, node_b) = find_connected_pair(&sim);
-    force_to_node(&mut sim, elf, node_a);
-    force_to_node(&mut sim, goblin, node_b);
+    force_position(&mut sim, elf, node_a);
+    force_position(&mut sim, goblin, node_b);
     force_idle(&mut sim, elf);
     force_guaranteed_hits(&mut sim, elf);
     suppress_activation(&mut sim, elf);
     suppress_activation(&mut sim, goblin);
 
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
-    // Use a far node on the nav graph as the destination.
-    let dest_node = sim.nav_graph.live_nodes().last().map(|n| n.id).unwrap();
-    let dest = sim.nav_graph.node(dest_node).position;
+    // Use a far walkable position as the destination.
+    let dest = find_far_walkable(&sim, elf_pos, 10);
 
     let tick = sim.tick;
     let cmd = SimCommand {
@@ -229,8 +228,9 @@ fn test_attack_move_preempts_lower_priority() {
     let elf = spawn_elf(&mut sim);
 
     // Give elf a GoTo task (PlayerDirected level 2).
-    let far_node = sim.nav_graph.live_nodes().last().map(|n| n.id).unwrap();
-    let goto_task_id = insert_goto_task(&mut sim, far_node);
+    let elf_pos = creature_pos(&sim, elf);
+    let far_pos = find_far_walkable(&sim, elf_pos, 10);
+    let goto_task_id = insert_goto_task(&mut sim, far_pos);
     sim.claim_task(elf, goto_task_id);
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -410,18 +410,29 @@ fn trigger_raid_spawns_at_perimeter() {
     let mut sim = test_sim(legacy_test_seed());
     let hostile_civ = ensure_hostile_civ(&mut sim);
 
-    // Compute the actual terrain bounding box from ground nodes.
-    let ground_nodes = sim.nav_graph.ground_node_ids();
+    // Compute the actual terrain bounding box from walkable ground positions.
+    let floor_y = sim.config.floor_y + 1;
+    let (ws_x, _, ws_z) = sim.config.world_size;
     let mut min_x = i32::MAX;
     let mut max_x = i32::MIN;
     let mut min_z = i32::MAX;
     let mut max_z = i32::MIN;
-    for &nid in &ground_nodes {
-        let pos = sim.nav_graph.node(nid).position;
-        min_x = min_x.min(pos.x);
-        max_x = max_x.max(pos.x);
-        min_z = min_z.min(pos.z);
-        max_z = max_z.max(pos.z);
+    for x in 0..ws_x as i32 {
+        for z in 0..ws_z as i32 {
+            let pos = VoxelCoord::new(x, floor_y, z);
+            if crate::walkability::footprint_walkable(
+                &sim.world,
+                &sim.face_data,
+                pos,
+                [1, 1, 1],
+                true,
+            ) {
+                min_x = min_x.min(pos.x);
+                max_x = max_x.max(pos.x);
+                min_z = min_z.min(pos.z);
+                max_z = max_z.max(pos.z);
+            }
+        }
     }
 
     let mut events = Vec::new();

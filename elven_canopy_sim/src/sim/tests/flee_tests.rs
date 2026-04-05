@@ -105,13 +105,10 @@ fn flee_interrupts_current_task() {
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
 
     // Give the elf a GoTo task to somewhere.
-    let elf_node = creature_node(&sim, elf);
-    let graph = sim.graph_for_species(Species::Elf);
-    let neighbors = graph.neighbors(elf_node);
-    assert!(!neighbors.is_empty(), "Need at least one neighbor node");
-    let goto_node = graph.edge(neighbors[0]).to;
+    let elf_node = creature_pos(&sim, elf);
+    let goto_pos = find_different_walkable(&sim, elf_node);
 
-    let task_id = insert_goto_task(&mut sim, goto_node);
+    let task_id = insert_goto_task(&mut sim, goto_pos);
     // Force-assign the task to the elf.
     if let Some(mut t) = sim.db.tasks.get(&task_id) {
         t.state = TaskState::InProgress;
@@ -153,7 +150,7 @@ fn elf_resumes_normal_behavior_after_threat_leaves() {
     let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
-    let elf_node = creature_node(&sim, elf);
+    let elf_node = creature_pos(&sim, elf);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
     // Place goblin adjacent to elf.
@@ -187,7 +184,7 @@ fn elf_resumes_normal_behavior_after_threat_leaves() {
     // ground_flee_step should return false (no living threats detected).
     force_position(&mut sim, elf, elf_pos);
     force_idle(&mut sim, elf);
-    let elf_node = creature_node(&sim, elf);
+    let elf_node = creature_pos(&sim, elf);
     assert!(
         !sim.ground_flee_step(elf, elf_node, Species::Elf),
         "Elf should not flee from a dead goblin"
@@ -265,7 +262,7 @@ fn flee_step_returns_true_when_threat_detected() {
     let mut sim = test_sim(legacy_test_seed());
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
-    let elf_node = creature_node(&sim, elf);
+    let elf_node = creature_pos(&sim, elf);
 
     // Place goblin adjacent.
     let goblin = spawn_species(&mut sim, Species::Goblin);
@@ -565,7 +562,7 @@ fn defensive_creature_does_not_chase_far() {
     // Place goblin at a known position so creature_node lookup succeeds.
     let goblin_pos = VoxelCoord::new(32, 1, 32);
     force_position(&mut sim, goblin, goblin_pos);
-    let goblin_node = creature_node(&sim, goblin);
+    let goblin_node = creature_pos(&sim, goblin);
     force_idle_and_cancel_activations(&mut sim, goblin);
 
     // Spawn elf far away (10 voxels = 100 sq distance, well beyond 9).
@@ -653,7 +650,7 @@ fn ammo_exhausted_flee_disengages() {
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
-    let goblin_node = creature_node(&sim, goblin);
+    let goblin_node = creature_pos(&sim, goblin);
 
     // Give goblin a bow but NO arrows.
     let inv_id = sim.db.creatures.get(&goblin).unwrap().inventory_id;
@@ -695,7 +692,7 @@ fn ammo_exhausted_switch_to_melee_pursues() {
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
-    let goblin_node = creature_node(&sim, goblin);
+    let goblin_node = creature_pos(&sim, goblin);
 
     // Give goblin a bow but NO arrows.
     let inv_id = sim.db.creatures.get(&goblin).unwrap().inventory_id;
@@ -739,7 +736,7 @@ fn prefer_melee_closes_distance_before_shooting() {
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
-    let goblin_node = creature_node(&sim, goblin);
+    let goblin_node = creature_pos(&sim, goblin);
 
     // Give goblin bow + arrows.
     arm_with_bow_and_arrows(&mut sim, goblin, 10);
@@ -763,8 +760,8 @@ fn prefer_melee_closes_distance_before_shooting() {
         "PreferMelee creature should close distance, not shoot, when path exists"
     );
 
-    // Goblin should have moved (taken a step along the nav graph toward target).
-    // Note: the nav graph may route around terrain, so Manhattan distance can
+    // Goblin should have moved (taken a step toward target).
+    // Note: A* may route around terrain, so Manhattan distance can
     // temporarily increase. The key assertion is no projectile + movement.
     let new_goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
     assert_ne!(
@@ -793,7 +790,7 @@ fn prefer_ranged_shoots_before_closing() {
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
-    let goblin_node = creature_node(&sim, goblin);
+    let goblin_node = creature_pos(&sim, goblin);
 
     // Give goblin bow + arrows.
     arm_with_bow_and_arrows(&mut sim, goblin, 10);
@@ -998,7 +995,7 @@ fn defensive_creature_flees_far_threat_but_does_not_pursue() {
 
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
-    let goblin_node = creature_node(&sim, goblin);
+    let goblin_node = creature_pos(&sim, goblin);
     force_idle(&mut sim, goblin);
 
     // Spawn elf at 8 voxels (sq=64, within detection=225 but far beyond pursuit=9).
@@ -1115,7 +1112,7 @@ fn aggressive_soldier_interrupts_low_priority_task_to_fight() {
     // The task is at a distant location so the elf would be walking to it.
     let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     let far_pos = VoxelCoord::new(elf_pos.x + 20, elf_pos.y, elf_pos.z);
-    let task_nav = sim.nav_graph.find_nearest_node(far_pos, 10).unwrap();
+    let task_loc = find_walkable(&sim, far_pos, 10).unwrap();
     let task_id = TaskId::new(&mut sim.rng);
     let acquire_task = task::Task {
         id: task_id,
@@ -1125,7 +1122,7 @@ fn aggressive_soldier_interrupts_low_priority_task_to_fight() {
             quantity: 2,
         },
         state: task::TaskState::InProgress,
-        location: sim.nav_graph.node(task_nav).position,
+        location: task_loc,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -1203,7 +1200,7 @@ fn creature_does_not_freeze_after_combat_preempts_task() {
     // Give elf a low-priority task.
     let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     let far_pos = VoxelCoord::new(elf_pos.x + 20, elf_pos.y, elf_pos.z);
-    let task_nav = sim.nav_graph.find_nearest_node(far_pos, 10).unwrap();
+    let task_loc = find_walkable(&sim, far_pos, 10).unwrap();
     let task_id = TaskId::new(&mut sim.rng);
     let acquire_task = task::Task {
         id: task_id,
@@ -1213,7 +1210,7 @@ fn creature_does_not_freeze_after_combat_preempts_task() {
             quantity: 2,
         },
         state: task::TaskState::InProgress,
-        location: sim.nav_graph.node(task_nav).position,
+        location: task_loc,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -1322,13 +1319,13 @@ fn defensive_elf_fights_instead_of_claiming_non_preemptable_task() {
     // autonomous combat). This is the trap: without the fix, the elf claims
     // this and walks away instead of fighting.
     let far_pos = VoxelCoord::new(elf_pos.x + 30, elf_pos.y, elf_pos.z);
-    let far_node = sim.nav_graph.find_nearest_node(far_pos, 10).unwrap();
+    let far_loc = find_walkable(&sim, far_pos, 10).unwrap();
     let goto_task_id = TaskId::new(&mut sim.rng);
     let goto_task = task::Task {
         id: goto_task_id,
         kind: task::TaskKind::GoTo,
         state: task::TaskState::Available,
-        location: sim.nav_graph.node(far_node).position,
+        location: far_loc,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -1511,7 +1508,7 @@ fn civilian_elf_flees_instead_of_fighting() {
         "Civilian elf should flee, not fight — all 20 arrows should remain"
     );
 
-    // Elf should have moved (fled from goblin). The nav graph may route
+    // Elf should have moved (fled from goblin). A* may route
     // around terrain so we can't guarantee distance increased, but the elf
     // should not be standing still.
     let elf_new_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
@@ -1852,7 +1849,7 @@ fn defensive_elf_with_task_interrupts_to_shoot_troll_at_10_voxels() {
 
     // Give elf a low-priority Autonomous task (walking far away).
     let far_pos = VoxelCoord::new(elf_pos.x + 30, elf_pos.y, elf_pos.z);
-    let task_nav = sim.nav_graph.find_nearest_node(far_pos, 10).unwrap();
+    let task_loc = find_walkable(&sim, far_pos, 10).unwrap();
     let task_id = TaskId::new(&mut sim.rng);
     let acquire_task = task::Task {
         id: task_id,
@@ -1862,7 +1859,7 @@ fn defensive_elf_with_task_interrupts_to_shoot_troll_at_10_voxels() {
             quantity: 2,
         },
         state: task::TaskState::InProgress,
-        location: sim.nav_graph.node(task_nav).position,
+        location: task_loc,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),

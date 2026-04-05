@@ -523,7 +523,16 @@ impl SimState {
             };
 
             let interior_pos = self.db.structures.get(&sid).unwrap().anchor;
-            if self.nav_graph.find_nearest_node(interior_pos, 5).is_none() {
+            if crate::walkability::find_nearest_walkable(
+                &self.world,
+                &self.face_data,
+                interior_pos,
+                5,
+                [1, 1, 1],
+                true, // elves can climb
+            )
+            .is_none()
+            {
                 continue;
             }
             let location = interior_pos;

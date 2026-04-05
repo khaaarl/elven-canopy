@@ -1,6 +1,6 @@
 // Creature lifecycle — spawning, surface placement, pile management, gravity, and task cleanup.
 //
-// Handles creature spawning (with species-specific nav graph snapping),
+// Handles creature spawning (with species-specific walkability snapping),
 // biological trait rolling (hair/eye/skin/body colors etc. stored in the
 // `creature_traits` table), surface position finding, ground pile creation
 // and gravity (both pile and creature), and the task interruption/preemption/
@@ -21,8 +21,8 @@ use crate::inventory;
 use crate::task;
 
 impl SimState {
-    /// Spawn a creature at the nearest nav node to the given position.
-    /// Ground-only species snap to ground nodes; others snap to any node.
+    /// Spawn a creature at the nearest walkable position to the given position.
+    /// Ground-only species snap to ground-level walkable voxels.
     /// Elves are automatically affiliated with the player's civ; other species
     /// are unaffiliated. Use `spawn_creature_with_civ()` for explicit civ control.
     pub(crate) fn spawn_creature(
@@ -40,8 +40,8 @@ impl SimState {
         self.spawn_creature_with_civ(species, position, civ_id, events)
     }
 
-    /// Spawn a creature at the nearest nav node to the given position with an
-    /// explicit civ affiliation. Ground-only species snap to ground nodes;
+    /// Spawn a creature at the nearest walkable position with an
+    /// explicit civ affiliation. Ground-only species snap to ground positions;
     /// others snap to any node.
     pub(crate) fn spawn_creature_with_civ(
         &mut self,
@@ -56,13 +56,12 @@ impl SimState {
         let hp_max = species_data.hp_max;
         let mp_max = species_data.mp_max;
         let heartbeat_interval = species_data.heartbeat_interval_ticks;
-        let ground_only = species_data.ground_only;
         let is_flyer = species_data.flight_ticks_per_voxel.is_some();
         let footprint = species_data.footprint;
         let sex_weights = species_data.sex_weights;
 
         // Flying creatures spawn at the raw position (entire footprint must be
-        // flyable); ground creatures snap to the nearest nav node.
+        // flyable); ground creatures snap to the nearest walkable position.
         let node_pos = if is_flyer {
             let footprint = species_data.footprint;
             if !crate::pathfinding::footprint_flyable(&self.world, position, footprint) {
@@ -70,14 +69,17 @@ impl SimState {
             }
             position
         } else {
-            let graph = self.graph_for_species(species);
-            let nearest_node = if ground_only {
-                graph.find_nearest_ground_node(position, 10)
-            } else {
-                graph.find_nearest_node(position, 10)
-            };
-            let nearest_node = nearest_node?;
-            graph.node(nearest_node).position
+            // Ground creature: find nearest walkable position for this footprint.
+            let can_climb = species_data.climb_ticks_per_voxel.is_some();
+            let nearest = crate::walkability::find_nearest_walkable(
+                &self.world,
+                &self.face_data,
+                position,
+                10,
+                footprint,
+                can_climb,
+            );
+            nearest?
         };
         let creature_id = CreatureId::new(&mut self.rng);
 
@@ -614,12 +616,11 @@ impl SimState {
     /// Check whether a creature is supported at its current position.
     /// Support rules:
     /// - Flying: always supported (exempt from gravity).
-    /// - 1x1 climber (`ground_only` = false): supported if a valid nav node
-    ///   exists at the creature's position.
-    /// - 1x1 ground-only (`ground_only` = true): supported if a valid nav node
-    ///   exists AND the voxel below is solid.
-    /// - 2x2x2 ground-only: supported if a valid nav node exists in the large
-    ///   nav graph AND at least one column in the footprint has solid at y−1.
+    /// - Climber (`can_climb` = true): supported if the position is walkable.
+    /// - Ground-only: supported if the position is walkable AND the non-climber
+    ///   support rules are met (same thresholds as `footprint_walkable`):
+    ///   - 1x1: solid at y-1.
+    ///   - 2x2x2: 3+ columns with solid at y-1, OR 1+ at y-1 and 2+ at y-2.
     pub(crate) fn creature_is_supported(&self, creature_id: CreatureId) -> bool {
         let creature = match self.db.creatures.get(&creature_id) {
             Some(c) if c.vital_status == VitalStatus::Alive => c,
@@ -629,94 +630,43 @@ impl SimState {
         if species_data.flight_ticks_per_voxel.is_some() {
             return true; // flying creatures are always supported
         }
-        let graph = self.graph_for_species(creature.species);
-        let has_node = graph.node_at(creature.position.min).is_some();
-        if !has_node {
-            return false;
-        }
-        if species_data.ground_only {
-            // Ground-only creatures also need solid below. For large creatures
-            // (2×2 footprint), the nav node y is `max_surface + 1` across all
-            // 4 columns, so the anchor column may have a lower surface than
-            // y−1. Check whether ANY column in the footprint has solid at y−1
-            // (B-large-stuck).
-            let y_below = creature.position.min.y - 1;
-            let fx = species_data.footprint[0] as i32;
-            let fz = species_data.footprint[2] as i32;
-            let ax = creature.position.min.x;
-            let az = creature.position.min.z;
-            let mut any_solid = false;
-            for dz in 0..fz {
-                for dx in 0..fx {
-                    if self
-                        .world
-                        .get(VoxelCoord::new(ax + dx, y_below, az + dz))
-                        .is_solid()
-                    {
-                        any_solid = true;
-                        break;
-                    }
-                }
-                if any_solid {
-                    break;
-                }
-            }
-            any_solid
-        } else {
-            // Climber with a valid nav node — supported.
-            true
-        }
+        let can_climb = species_data.climb_ticks_per_voxel.is_some();
+        crate::walkability::footprint_walkable(
+            &self.world,
+            &self.face_data,
+            creature.position.min,
+            species_data.footprint,
+            can_climb,
+        )
     }
 
     /// Scan downward from a creature's current position to find a valid
     /// landing position. Returns `None` if no valid position exists above
-    /// Y=0 (degenerate case — caller should teleport to nearest nav node).
+    /// Y=0 (degenerate case — caller should teleport to nearest walkable position).
     pub(crate) fn find_creature_landing(
         &self,
         species: Species,
         pos: VoxelCoord,
     ) -> Option<VoxelCoord> {
         let species_data = &self.species_table[&species];
-        let is_large = species_data.footprint[0] > 1 || species_data.footprint[2] > 1;
+        let can_climb = species_data.climb_ticks_per_voxel.is_some();
 
-        if is_large {
-            // 2x2x2: large_node_surface_y computes the single valid surface Y
-            // for the 2x2 footprint at this anchor column. If it exists and is
-            // below the creature, that's the landing. No iteration needed.
-            let ax = pos.x;
-            let az = pos.z;
-            if let Some(surface_y) = crate::nav::large_node_surface_y(&self.world, ax, az)
-                && surface_y < pos.y
-            {
-                let landing = VoxelCoord::new(ax, surface_y, az);
-                if self.large_nav_graph.node_at(landing).is_some() {
-                    return Some(landing);
-                }
+        // Scan downward for the first Y that meets walkability and support
+        // criteria. Works for all footprint sizes. The `can_climb` parameter
+        // ensures non-climbers only land on positions with solid below.
+        for y in (1..pos.y).rev() {
+            let candidate = VoxelCoord::new(pos.x, y, pos.z);
+            if crate::walkability::footprint_walkable(
+                &self.world,
+                &self.face_data,
+                candidate,
+                species_data.footprint,
+                can_climb,
+            ) {
+                return Some(candidate);
             }
-            // No valid large node below — degenerate.
-            None
-        } else {
-            // 1x1: scan downward for a Y that meets support criteria.
-            let graph = self.graph_for_species(species);
-            for y in (1..pos.y).rev() {
-                let candidate = VoxelCoord::new(pos.x, y, pos.z);
-                let has_node = graph.node_at(candidate).is_some();
-                if !has_node {
-                    continue;
-                }
-                if species_data.ground_only {
-                    // Need solid below.
-                    let below = VoxelCoord::new(pos.x, y - 1, pos.z);
-                    if self.world.get(below).is_solid() {
-                        return Some(candidate);
-                    }
-                } else {
-                    // Climber — nav node is enough.
-                    return Some(candidate);
-                }
-            }
-            None
         }
+        None
     }
 
     /// Apply gravity to a single creature: move it to the landing position,
@@ -751,11 +701,20 @@ impl SimState {
             Some(pos) => pos,
             None => {
                 // Degenerate: no valid landing column. Teleport to nearest
-                // nav node.
-                let graph = self.graph_for_species(species);
-                match graph.find_nearest_node(old_pos, 5) {
-                    Some(n) => graph.node(n).position,
-                    None => return false, // no nav nodes at all — nothing to do
+                // footprint-walkable position.
+                let sp = &self.species_table[&species];
+                let fp = sp.footprint;
+                let cc = sp.climb_ticks_per_voxel.is_some();
+                match crate::walkability::find_nearest_walkable(
+                    &self.world,
+                    &self.face_data,
+                    old_pos,
+                    5,
+                    fp,
+                    cc,
+                ) {
+                    Some(pos) => pos,
+                    None => return false, // no walkable positions — nothing to do
                 }
             }
         };

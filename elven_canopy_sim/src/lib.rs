@@ -11,8 +11,8 @@
 //                     greenhouse, inventory_mgmt, logistics, movement, needs, task_helpers).
 // - `world.rs`:       RLE column-based voxel grid (the world's spatial truth, Y-up).
 // - `tree_gen.rs`:    Energy-based recursive tree generation (trunk, branches, roots, leaves).
-// - `nav.rs`:         Navigation graph structures + construction from tree geometry.
-// - `pathfinding.rs`: Unified pathfinding for ground (nav graph) and flying (voxel grid) creatures.
+// - `nav.rs`:         Navigation constants — edge types and distance helpers.
+// - `pathfinding.rs`: Unified pathfinding for ground (voxel-direct A*) and flying (voxel grid) creatures.
 // - `preemption.rs`:  Task priority levels and preemption rules (Mood vs Survival, PlayerDirected override, etc.).
 // - `projectile.rs`:  Integer-only ballistic trajectory math (sub-voxel coords, aim solver).
 // - `command.rs`:     SimCommand / SimAction — all sim mutations.
@@ -70,6 +70,7 @@ pub mod structural;
 pub mod task;
 pub mod tree_gen;
 pub mod types;
+pub mod walkability;
 pub mod world;
 pub mod worldgen;
 

@@ -36,11 +36,17 @@ fn elf_wanders_after_spawn() {
         .iter_all()
         .find(|c| c.species == Species::Elf)
         .unwrap();
-    let elf_nav = sim.nav_graph.node_at(elf.position.min);
-    assert!(elf_nav.is_some());
-    // Verify position matches current node.
-    let node_pos = sim.nav_graph.node(elf_nav.unwrap()).position;
-    assert_eq!(elf.position.min, node_pos);
+    // Verify elf is at a walkable position.
+    assert!(
+        crate::walkability::footprint_walkable(
+            &sim.world,
+            &sim.face_data,
+            elf.position.min,
+            [1, 1, 1],
+            true,
+        ),
+        "Elf should be at a walkable position"
+    );
 }
 
 #[test]
@@ -85,8 +91,8 @@ fn creature_claims_available_task() {
     // Far ground-level location — elf spawns near (32,1,32), this is ~20
     // voxels away so it won't arrive within the tick budget.
     let task_pos = VoxelCoord::new(10, 1, 10);
-    let task_node = sim.nav_graph.find_nearest_node(task_pos, 10).unwrap();
-    let task_id = insert_goto_task(&mut sim, task_node);
+    let task_coord = find_walkable(&sim, task_pos, 10).unwrap();
+    let task_id = insert_goto_task(&mut sim, task_coord);
 
     // Tick enough for the elf to claim but not finish (~500 ticks per edge
     // at walk_ticks_per_voxel=500, ~20 edges to walk).
@@ -109,9 +115,8 @@ fn creature_walks_to_task_location() {
 
     // Far ground-level location so the elf has a long walk.
     let task_coord = VoxelCoord::new(10, 1, 10);
-    let far_node = sim.nav_graph.find_nearest_node(task_coord, 10).unwrap();
-    let task_location = sim.nav_graph.node(far_node).position;
-    let _task_id = insert_goto_task(&mut sim, far_node);
+    let task_location = find_walkable(&sim, task_coord, 10).unwrap();
+    let _task_id = insert_goto_task(&mut sim, task_location);
 
     let initial_dist = sim
         .db
@@ -450,7 +455,7 @@ fn sleep_adaptive_completion_rest_full_exits_early() {
     }
 
     // Create a ground sleep task at elf's location.
-    let elf_node = creature_node(&sim, elf_id);
+    let elf_node = creature_pos(&sim, elf_id);
     let task_id = TaskId::new(&mut sim.rng);
     let sleep_task = task::Task {
         id: task_id,
@@ -459,7 +464,7 @@ fn sleep_adaptive_completion_rest_full_exits_early() {
             location: task::SleepLocation::Ground,
         },
         state: task::TaskState::InProgress,
-        location: sim.nav_graph.node(elf_node).position,
+        location: elf_node,
         progress: 0,
         total_cost: (sim.config.sleep_ticks_ground / sim.config.sleep_action_ticks) as i64,
         required_species: None,
@@ -597,13 +602,13 @@ fn eat_action_ticks_controls_timing() {
         .id;
 
     // Create an EatBread task at the elf's location.
-    let elf_node = creature_node(&sim, elf_id);
+    let elf_node = creature_pos(&sim, elf_id);
     let task_id = TaskId::new(&mut sim.rng);
     let eat_task = task::Task {
         id: task_id,
         kind: task::TaskKind::EatBread,
         state: task::TaskState::InProgress,
-        location: sim.nav_graph.node(elf_node).position,
+        location: elf_node,
         progress: 0,
         total_cost: 1,
         required_species: None,
@@ -786,14 +791,13 @@ fn interrupt_goto_completes_task_and_clears_creature() {
     let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
 
-    let nav_count = sim.nav_graph.node_count();
-    let far_node = NavNodeId((nav_count / 2) as u32);
+    let far_pos = find_different_walkable(&sim, creature_pos(&sim, elf_id));
     let task_id = TaskId::new(&mut sim.rng);
     let goto_task = Task {
         id: task_id,
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(far_node).position,
+        location: far_pos,
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -971,7 +975,7 @@ fn interrupt_sleep_completes_task() {
     let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
 
-    let current_node = creature_node(&sim, elf_id);
+    let current_node = creature_pos(&sim, elf_id);
     let task_id = TaskId::new(&mut sim.rng);
     let sleep_task = Task {
         id: task_id,
@@ -980,7 +984,7 @@ fn interrupt_sleep_completes_task() {
             location: task::SleepLocation::Ground,
         },
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(current_node).position,
+        location: current_node,
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -1030,7 +1034,7 @@ fn interrupt_clears_move_action() {
     let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
 
-    let current_node = creature_node(&sim, elf_id);
+    let current_node = creature_pos(&sim, elf_id);
 
     // Put the elf in a Move action.
     let pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
@@ -1055,7 +1059,7 @@ fn interrupt_clears_move_action() {
         id: task_id,
         kind: TaskKind::GoTo,
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(current_node).position,
+        location: current_node,
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -1115,12 +1119,7 @@ fn find_available_task_respects_civ_filter() {
         sim.db.update_creature(c).unwrap();
     }
 
-    let task_node = sim
-        .nav_graph
-        .live_nodes()
-        .next()
-        .expect("should have nodes")
-        .id;
+    let task_pos = find_walkable(&sim, tree_pos, 10).expect("should have walkable pos");
 
     // Create a task restricted to the player's civ — hostile goblin should NOT see it.
     let task_id = TaskId::new(&mut sim.rng);
@@ -1128,7 +1127,7 @@ fn find_available_task_respects_civ_filter() {
         id: task_id,
         kind_tag: TaskKindTag::GoTo,
         state: TaskState::Available,
-        location: sim.nav_graph.node(task_node).position,
+        location: task_pos,
         progress: 0,
         total_cost: 1,
         required_species: None, // no species filter — only civ filter
@@ -1199,12 +1198,8 @@ fn find_available_task_unaffiliated_creature_blocked_by_civ_filter() {
         sim.db.update_creature(c).unwrap();
     }
 
-    let task_node = sim
-        .nav_graph
-        .live_nodes()
-        .next()
-        .expect("should have nodes")
-        .id;
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    let task_pos = find_walkable(&sim, tree_pos, 10).expect("should have walkable pos");
 
     // Create a player-civ task — unaffiliated capybara should NOT see it.
     let task_id = TaskId::new(&mut sim.rng);
@@ -1212,7 +1207,7 @@ fn find_available_task_unaffiliated_creature_blocked_by_civ_filter() {
         id: task_id,
         kind_tag: TaskKindTag::GoTo,
         state: TaskState::Available,
-        location: sim.nav_graph.node(task_node).position,
+        location: task_pos,
         progress: 0,
         total_cost: 1,
         required_species: None,
@@ -1280,12 +1275,7 @@ fn find_available_task_no_civ_filter_allows_any() {
         sim.db.update_creature(c).unwrap();
     }
 
-    let task_node = sim
-        .nav_graph
-        .live_nodes()
-        .next()
-        .expect("should have nodes")
-        .id;
+    let task_pos = find_walkable(&sim, tree_pos, 10).expect("should have walkable pos");
 
     // Task with no civ restriction.
     let task_id = TaskId::new(&mut sim.rng);
@@ -1293,7 +1283,7 @@ fn find_available_task_no_civ_filter_allows_any() {
         id: task_id,
         kind_tag: TaskKindTag::GoTo,
         state: TaskState::Available,
-        location: sim.nav_graph.node(task_node).position,
+        location: task_pos,
         progress: 0,
         total_cost: 1,
         required_species: None,
@@ -1328,7 +1318,7 @@ fn directed_goto_on_wandering_creature_does_not_schedule_extra_activation() {
     force_idle_and_cancel_activations(&mut sim, elf);
 
     // Put the elf into a wander state: no task, mid-Move.
-    let elf_node = creature_node(&sim, elf);
+    let elf_node = creature_pos(&sim, elf);
     let mut events = Vec::new();
     sim.ground_wander(elf, elf_node, &mut events);
 
@@ -1380,7 +1370,7 @@ fn directed_goto_on_wandering_creature_preserves_move_action() {
     force_idle_and_cancel_activations(&mut sim, elf);
 
     // Put the elf into a wander state.
-    let elf_node = creature_node(&sim, elf);
+    let elf_node = creature_pos(&sim, elf);
     let mut events = Vec::new();
     sim.ground_wander(elf, elf_node, &mut events);
 
@@ -1538,7 +1528,7 @@ fn attack_move_on_wandering_creature_does_not_schedule_extra_activation() {
     let elf = spawn_elf(&mut sim);
     force_idle_and_cancel_activations(&mut sim, elf);
 
-    let elf_node = creature_node(&sim, elf);
+    let elf_node = creature_pos(&sim, elf);
     let mut events = Vec::new();
     sim.ground_wander(elf, elf_node, &mut events);
 
@@ -1834,12 +1824,8 @@ fn queue_directed_goto_creates_linked_task() {
     let task_b = &queued[0];
     assert_eq!(task_b.prerequisite_task_id, Some(task_a));
     assert_eq!(task_b.state, TaskState::Available);
-    // Location is snapped to the nearest nav node by command_directed_goto.
-    let expected_b = sim
-        .nav_graph
-        .find_nearest_node(pos_b, 10)
-        .map(|n| sim.nav_graph.node(n).position)
-        .unwrap();
+    // Location is snapped to the nearest walkable position by command_directed_goto.
+    let expected_b = find_walkable(&sim, pos_b, 10).unwrap();
     assert_eq!(task_b.location, expected_b);
 }
 
@@ -1965,11 +1951,7 @@ fn find_queue_tail_follows_chain() {
     // nearest nav node by command_directed_goto).
     let tail_id = sim.find_queue_tail(elf).unwrap();
     let tail_task = sim.db.tasks.get(&tail_id).unwrap();
-    let expected_c = sim
-        .nav_graph
-        .find_nearest_node(pos_c, 10)
-        .map(|n| sim.nav_graph.node(n).position)
-        .unwrap();
+    let expected_c = find_walkable(&sim, pos_c, 10).unwrap();
     assert_eq!(
         tail_task.location, expected_c,
         "Tail should be the last queued task"
@@ -2676,7 +2658,6 @@ fn creature_wanders_via_activation_chain() {
         .iter_all()
         .find(|c| c.species == Species::Elf)
         .unwrap();
-    let initial_node = sim.nav_graph.node_at(elf.position.min).unwrap();
     let initial_pos = elf.position;
 
     // Step enough for many activations (each moves 1 edge; ground edges
@@ -2689,16 +2670,23 @@ fn creature_wanders_via_activation_chain() {
         .iter_all()
         .find(|c| c.species == Species::Elf)
         .unwrap();
-    let final_node = sim.nav_graph.node_at(elf.position.min).unwrap();
 
     // After many activations, creature should have moved.
     assert_ne!(
-        initial_node, final_node,
+        initial_pos.min, elf.position.min,
         "Elf should have moved after activation chain"
     );
-    // Position should match current node.
-    let node_pos = sim.nav_graph.node(final_node).position;
-    assert_eq!(elf.position.min, node_pos);
+    // Position should be walkable.
+    assert!(
+        crate::walkability::footprint_walkable(
+            &sim.world,
+            &sim.face_data,
+            elf.position.min,
+            [1, 1, 1],
+            true,
+        ),
+        "Elf should be at a walkable position"
+    );
     // Creature should not have a stored path (wandering doesn't use paths).
     assert!(
         elf.path.is_none(),
@@ -2713,7 +2701,7 @@ fn goto_task_completes_on_arrival() {
     let elf_id = spawn_elf(&mut sim);
 
     // Put the task at the elf's current location for instant completion.
-    let elf_node = creature_node(&sim, elf_id);
+    let elf_node = creature_pos(&sim, elf_id);
     let task_id = insert_goto_task(&mut sim, elf_node);
 
     // One activation should be enough: elf claims task, is already there, completes.
@@ -2738,7 +2726,7 @@ fn completed_task_creature_resumes_wandering() {
     let elf_id = spawn_elf(&mut sim);
 
     // Put the task at the elf's current location for instant completion.
-    let elf_node = creature_node(&sim, elf_id);
+    let elf_node = creature_pos(&sim, elf_id);
     let _task_id = insert_goto_task(&mut sim, elf_node);
 
     // Complete the task.
@@ -2866,9 +2854,9 @@ fn only_one_creature_claims_goto_task() {
         sim.step(&[cmd], sim.tick + 2);
     }
 
-    // Create an elf-only GoTo task.
-    let far_node = NavNodeId((sim.nav_graph.node_count() - 1) as u32);
-    let task_id = insert_goto_task(&mut sim, far_node);
+    // Create an elf-only GoTo task at a distant walkable position.
+    let far_pos = find_different_walkable(&sim, tree_pos);
+    let task_id = insert_goto_task(&mut sim, far_pos);
 
     // Tick enough for a creature to claim the task. The elf may or may
     // not have arrived yet (GoTo completes on arrival, clearing

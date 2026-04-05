@@ -298,9 +298,6 @@ pub struct Task {
     pub kind: TaskKind,
     pub state: TaskState,
     /// The voxel coordinate where creatures go to work on this task.
-    /// Resolved to a NavNodeId at runtime via the nav graph spatial index
-    /// or find_nearest_node. Stored as VoxelCoord because NavNodeId indices
-    /// can change when the nav graph is rebuilt (on load, after construction).
     pub location: VoxelCoord,
     /// Current progress toward completion (integer work units).
     pub progress: i64,

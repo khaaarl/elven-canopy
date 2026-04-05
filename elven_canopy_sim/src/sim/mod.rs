@@ -3,17 +3,14 @@
 // `SimState` is the single source of truth for the entire game world. Entity
 // data (creatures, tasks, blueprints, structures, ground piles, trees) lives in
 // `SimState.db` (a tabulosity `SimDb`). The sim also owns the voxel world,
-// the nav graph, the event queue, the PRNG, and the game config.
+// the event queue, the PRNG, and the game config.
 // The sim is a pure function:
 // `(state, commands) -> (new_state, events)`.
 //
 // On construction (`new()`/`with_config()`), the sim delegates world creation
 // to `worldgen.rs`, which runs generators in order (tree → fruits → civs →
 // knowledge) using a dedicated worldgen PRNG. The runtime PRNG is derived from
-// the worldgen PRNG's final state. Two nav graphs are maintained: the standard
-// graph for 1x1x1 creatures and a large graph for 2x2x2 creatures (elephants).
-// `graph_for_species()` dispatches to the correct graph based on the species'
-// `footprint` field from `species.rs`. Creature spawning and movement are
+// the worldgen PRNG's final state. Creature spawning and movement are
 // handled through the command/event system. Initial creature populations are
 // spawned by `spawn_initial_creatures()`, called from `session.rs` during
 // `StartGame` processing — it reads `config.initial_creatures` and
@@ -24,16 +21,16 @@
 // Creature behavior uses **poll-based activation**: each tick, all living
 // creatures whose `next_available_tick <= current_tick` are activated in
 // deterministic CreatureId order. Each activation performs one action (walk
-// 1 nav edge or do 1 unit of task work) and sets `next_available_tick` for
-// the next poll. The sim runs at **1000 ticks per simulated second**
-// (`tick_duration_ms = 1`). Edge traversal time is computed as
-// `ceil(edge.distance * species_ticks_per_voxel)` where ticks_per_voxel is
+// one voxel step or do 1 unit of task work) and sets `next_available_tick`
+// for the next poll. The sim runs at **1000 ticks per simulated second**
+// (`tick_duration_ms = 1`). Step traversal time is computed as
+// `ceil(distance * species_ticks_per_voxel)` where ticks_per_voxel is
 // `walk_ticks_per_voxel` for flat edges or `climb_ticks_per_voxel` for
 // TrunkClimb/GroundToTrunk edges (from `species.rs`).
 //
 // ## Movement interpolation
 //
-// When a creature starts traversing a nav edge, a `MoveAction` row is
+// When a creature starts traversing a voxel step, a `MoveAction` row is
 // inserted into the `move_actions` table with `move_from`, `move_to`, and
 // `move_start_tick`. The end tick is the creature's `next_available_tick`.
 // `interpolated_position(render_tick, move_action)` lerps between them,
@@ -67,12 +64,13 @@
 //      should flee (based on `engagement_style` disengage threshold) and detects
 //      a hostile within its effective detection range (base `hostile_detection_range_sq`
 //      scaled by Perception via `effective_detection_range_sq()`), interrupt any current task
-//      and perform a greedy retreat step (pick the nav neighbor that maximizes
-//      squared distance from the nearest threat). Ties broken by `NavNodeId`.
+//      and perform a greedy retreat step (pick the walkable neighbor that
+//      maximizes squared distance from the nearest threat). Ties broken by
+//      `VoxelCoord` for determinism.
 //   1. If the creature has no task (`current_task == None`), check for an
 //      available task to claim. If none found, **wander**: pick a random
-//      adjacent nav node, move there, and schedule the next activation at
-//      `now + ceil(edge.distance * ticks_per_voxel)`.
+//      adjacent walkable voxel, move there, and schedule the next activation at
+//      `now + ceil(distance * ticks_per_voxel)`.
 //   2. If the creature has a task, run its **behavior script** (see below).
 //
 // Wandering is intentionally local and aimless — no pathfinding, just 1 random
@@ -115,7 +113,7 @@
 //   `EatFruit`, `Sleep`, `Furnish`, `Haul`, `Cook`, `Harvest`, `AcquireItem`,
 //   `Mope`, `Craft`, `AttackTarget`, `AttackMove`).
 // - `state: TaskState` — lifecycle: `Available` → `InProgress` → `Complete`.
-// - `location: NavNodeId` — where creatures go to work on the task.
+// - `location: VoxelCoord` — where creatures go to work on the task.
 // - Assignment tracked via `creature.current_task` FK.
 // - `progress: i64` and `total_cost: i64` — for tasks that require work units
 //   (0 total_cost means instant completion, e.g. GoTo).
@@ -127,9 +125,9 @@
 // 1. A `CreateTask` command (from the UI via `sim_bridge.rs`) creates a task
 //    in `Available` state, snapped to the nearest nav node.
 // 2. On its next activation, an idle creature whose species matches calls
-//    `find_available_task`, which uses Dijkstra search on the nav graph to
-//    find the nearest `Available` task by travel cost. The creature calls
-//    `claim_task`, which sets the task to `InProgress`, sets the creature's
+//    `find_available_task`, which uses A* search to find the nearest
+//    `Available` task by travel cost. The creature calls `claim_task`,
+//    which sets the task to `InProgress`, sets the creature's
 //    `current_task`, and computes an A* path to `task.location`.
 // 3. Each subsequent activation runs the task's behavior script (see below).
 // 4. On completion, `complete_task` sets the task to `Complete` and clears
@@ -207,9 +205,8 @@
 //
 // `find_available_task` filters by: (1) `TaskState::Available`, (2) species
 // compatibility (`required_species` is `None` or matches the creature's
-// species). Among candidates it picks the nearest by Dijkstra nav-graph
-// distance (actual travel cost), falling back to arbitrary order only for
-// tasks at the same nav node.
+// species). Among candidates it picks the nearest by A* travel cost,
+// falling back to arbitrary order only for tasks at the same position.
 //
 // Task checking happens on every activation of an idle creature. This is
 // simple and correct; optimization (checking less frequently) is deferred.
@@ -247,8 +244,8 @@
 //
 // `SimState` derives `Serialize`/`Deserialize` via serde. The voxel world is
 // serialized directly using a compact binary pack format (see `world.rs`).
-// Several transient fields (`nav_graph`, `large_nav_graph`, `species_table`,
-// `lexicon`, `face_data`, `ladder_orientations`, `structure_voxels`) are
+// Several transient fields (`species_table`, `lexicon`, `face_data`,
+// `ladder_orientations`, `structure_voxels`) are
 // `#[serde(skip)]` and must be rebuilt after deserialization via
 // `rebuild_transient_state()`. Convenience methods `to_json()` and
 // `from_json()` handle the full serialize/deserialize + rebuild cycle.
@@ -288,7 +285,6 @@ use crate::config::GameConfig;
 use crate::db::{ActionKind, SimDb};
 use crate::event::{EventQueue, ScheduledEventKind, SimEvent};
 use crate::inventory;
-use crate::nav::{self, NavGraph};
 use crate::prng::GameRng;
 use crate::species::SpeciesData;
 use crate::structural;
@@ -372,15 +368,6 @@ pub struct SimState {
     /// The 3D voxel world grid. Serialized compactly as packed binary data.
     pub world: VoxelWorld,
 
-    /// The navigation graph built from tree geometry. Regenerated from seed, not serialized.
-    #[serde(skip)]
-    pub nav_graph: NavGraph,
-
-    /// Navigation graph for large (2x2x2 footprint) creatures. Only contains
-    /// ground-level nodes where a 2x2x2 volume is clear. Regenerated, not serialized.
-    #[serde(skip)]
-    pub large_nav_graph: NavGraph,
-
     /// Species data table built from config. Not serialized (rebuilt from config).
     #[serde(skip)]
     pub species_table: BTreeMap<Species, SpeciesData>,
@@ -422,11 +409,9 @@ pub struct SimState {
     pub grassless: BTreeSet<VoxelCoord>,
 }
 
-/// A creature's current path through the nav graph.
+/// A creature's current path through the voxel world.
 ///
-/// Stores positions (`VoxelCoord`) instead of `NavNodeId`s so that paths are
-/// independent of nav-graph node ID assignment. At each step the sim resolves
-/// the next position to a `NavNodeId` via the graph's spatial index.
+/// Stores a sequence of `VoxelCoord` positions to visit.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CreaturePath {
     /// Remaining positions to visit (next position is index 0).
@@ -552,32 +537,20 @@ impl SimState {
         Self::with_config(seed, GameConfig::default())
     }
 
-    /// Return the appropriate nav graph for a species based on its footprint.
-    /// Species with a footprint wider than 1 in x or z use the large nav graph;
-    /// all others use the standard graph.
-    pub fn graph_for_species(&self, species: Species) -> &NavGraph {
-        let data = &self.species_table[&species];
-        if data.footprint[0] > 1 || data.footprint[2] > 1 {
-            &self.large_nav_graph
-        } else {
-            &self.nav_graph
-        }
-    }
-
     /// Find a path from a creature's current position to `goal`.
     ///
-    /// Dispatches to nav-graph A* (ground creatures) or flight A* (flying
+    /// Dispatches to voxel-direct A* (ground creatures) or flight A* (flying
     /// creatures) based on species. Uses stat-modified movement speeds.
     /// Search is bounded by `opts` (path length limit and work budget).
     ///
     /// Returns `Err(PathError)` with a structured error on failure:
     /// `StartNotOnGraph` if the creature doesn't exist or its position isn't
-    /// on the nav graph, `TargetNotOnGraph` if the goal isn't on the graph,
+    /// walkable, `TargetNotOnGraph` if the goal isn't walkable,
     /// `Unreachable` / `ExceededPathLen` / `ExceededWorkBudget` for search
     /// failures.
     ///
-    /// For ground creatures, the returned `PathResult` has `nav_nodes` and
-    /// `nav_edges` populated. For flyers, those fields are empty.
+    /// For ground creatures, the returned `PathResult` has positions and
+    /// edge types populated. For flyers, edge types are empty.
     ///
     /// Named `find_path` rather than `creature_path` to avoid collision with
     /// the elf life-path method in `paths.rs`.
@@ -602,32 +575,32 @@ impl SimState {
             let footprint = species_data.footprint;
             crate::pathfinding::astar_fly(&self.world, position, goal, flight_tpv, opts, footprint)
         } else {
-            // Ground creature: A* on nav graph with stat-modified speeds.
-            let graph = self.graph_for_species(species);
-            let start_node = match graph.node_at(position) {
-                Some(n) => n,
-                None => return Err(PathError::StartNotOnGraph),
-            };
-            let goal_node = match graph.node_at(goal) {
-                Some(n) => n,
-                None => return Err(PathError::TargetNotOnGraph),
-            };
+            // Ground creature: voxel-direct A* with stat-modified speeds.
+            let footprint = species_data.footprint;
             let agility = self.trait_int(creature_id, TraitKind::Agility, 0);
             let strength = self.trait_int(creature_id, TraitKind::Strength, 0);
             let move_speeds =
                 crate::stats::CreatureMoveSpeeds::new(species_data, agility, strength);
-            let nav_speeds = crate::pathfinding::NavGraphSpeeds::from_move_speeds(
+            let nav_speeds = crate::pathfinding::GroundSpeeds::from_move_speeds(
                 &move_speeds,
                 species_data.allowed_edge_types.as_deref(),
             );
-            crate::pathfinding::astar_navgraph(graph, start_node, goal_node, &nav_speeds, opts)
+            crate::pathfinding::astar_ground(
+                &self.world,
+                &self.face_data,
+                position,
+                goal,
+                &nav_speeds,
+                opts,
+                footprint,
+            )
         }
     }
 
     /// Find the nearest reachable candidate from a creature's current position.
     ///
-    /// Dispatches to interleaved A* on the nav graph (ground creatures) or
-    /// voxel grid (flying creatures) based on species. Uses stat-modified
+    /// Dispatches to interleaved A* on the voxel grid for both ground and
+    /// flying creatures based on species. Uses stat-modified
     /// movement speeds and the species' edge-type filter. Search is bounded
     /// by `opts` (path length limit and work budget).
     ///
@@ -670,49 +643,30 @@ impl SimState {
                 .position(|&c| c == nearest_coord)
                 .ok_or(PathError::Unreachable)
         } else {
-            // Ground creature: interleaved A* on nav graph.
-            let graph = self.graph_for_species(species);
-            let start_node = match graph.node_at(position) {
-                Some(n) => n,
-                None => return Err(PathError::StartNotOnGraph),
-            };
-
-            // Convert candidate VoxelCoords to NavNodeIds, tracking the mapping.
-            let mut target_nodes = Vec::with_capacity(candidates.len());
-            let mut index_map = Vec::with_capacity(candidates.len());
-            for (i, &coord) in candidates.iter().enumerate() {
-                if let Some(nav_node) = graph.node_at(coord) {
-                    target_nodes.push(nav_node);
-                    index_map.push(i);
-                }
-            }
-            if target_nodes.is_empty() {
-                return Err(PathError::NoTargets);
-            }
-
+            // Ground creature: voxel-direct interleaved A*.
+            let footprint = species_data.footprint;
             let agility = self.trait_int(creature_id, TraitKind::Agility, 0);
             let strength = self.trait_int(creature_id, TraitKind::Strength, 0);
             let move_speeds =
                 crate::stats::CreatureMoveSpeeds::new(species_data, agility, strength);
-            let nav_speeds = crate::pathfinding::NavGraphSpeeds::from_move_speeds(
+            let nav_speeds = crate::pathfinding::GroundSpeeds::from_move_speeds(
                 &move_speeds,
                 species_data.allowed_edge_types.as_deref(),
             );
 
-            let nearest_node = crate::pathfinding::nearest_navgraph(
-                graph,
-                start_node,
-                &target_nodes,
+            let nearest_coord = crate::pathfinding::nearest_ground(
+                &self.world,
+                &self.face_data,
+                position,
+                candidates,
                 &nav_speeds,
                 opts,
+                footprint,
             )?;
-
-            // Map the NavNodeId back to the original candidate index.
-            let target_idx = target_nodes
+            candidates
                 .iter()
-                .position(|&n| n == nearest_node)
-                .ok_or(PathError::Unreachable)?;
-            Ok(index_map[target_idx])
+                .position(|&c| c == nearest_coord)
+                .ok_or(PathError::Unreachable)
         }
     }
 
@@ -772,8 +726,6 @@ impl SimState {
             player_tree_id,
             player_civ_id: Some(wg.player_civ_id),
             world: wg.world,
-            nav_graph: wg.nav_graph,
-            large_nav_graph: wg.large_nav_graph,
             species_table,
             lexicon: Some(elven_canopy_lang::default_lexicon()),
             last_build_message: None,
@@ -1716,7 +1668,7 @@ impl SimState {
                 if should_seek_food
                     && !ate_bread
                     && is_forager
-                    && let Some((fruit_pos, _nav_node)) = self.find_nearest_fruit(creature_id)
+                    && let Some(fruit_pos) = self.find_nearest_fruit(creature_id)
                 {
                     let task_id = TaskId::new(&mut self.rng);
                     let new_task = task::Task {
@@ -1748,7 +1700,7 @@ impl SimState {
                     && !ate_bread
                     && !started_foraging
                     && is_grazer
-                    && let Some((grass_pos, _nav_node)) = self.find_nearest_grass(creature_id)
+                    && let Some(grass_pos) = self.find_nearest_grass(creature_id)
                 {
                     let task_id = TaskId::new(&mut self.rng);
                     let new_task = task::Task {
@@ -1781,7 +1733,7 @@ impl SimState {
                     && !started_grazing
                     && !is_grazer
                     && !is_forager
-                    && let Some((fruit_pos, _nav_node)) = self.find_nearest_fruit(creature_id)
+                    && let Some(fruit_pos) = self.find_nearest_fruit(creature_id)
                 {
                     let task_id = TaskId::new(&mut self.rng);
                     let new_task = task::Task {
@@ -1825,10 +1777,13 @@ impl SimState {
                                 task::SleepLocation::Dormitory(sid),
                             )
                         } else if let Some(creature) = self.db.creatures.get(&creature_id)
-                            && self
-                                .graph_for_species(creature.species)
-                                .node_at(creature.position.min)
-                                .is_some()
+                            && crate::walkability::footprint_walkable(
+                                &self.world,
+                                &self.face_data,
+                                creature.position.min,
+                                self.species_table[&creature.species].footprint,
+                                true, // elves can climb
+                            )
                         {
                             (
                                 None,
@@ -2350,14 +2305,12 @@ impl SimState {
     /// Rebuild all transient (`#[serde(skip)]`) fields after deserialization.
     ///
     /// The voxel world is now serialized directly, so only derived data
-    /// structures need rebuilding: `nav_graph` (from world geometry),
-    /// `species_table` (from config), `lexicon` (from embedded JSON),
-    /// `structure_voxels` (from completed blueprints + structures).
+    /// structures need rebuilding: `species_table` (from config), `lexicon`
+    /// (from embedded JSON), `structure_voxels` (from completed blueprints +
+    /// structures).
     pub fn rebuild_transient_state(&mut self) {
         self.face_data = self.face_data_list.iter().cloned().collect();
         self.ladder_orientations = self.ladder_orientations_list.iter().cloned().collect();
-        self.nav_graph = nav::build_nav_graph(&self.world, &self.face_data);
-        self.large_nav_graph = nav::build_large_nav_graph(&self.world);
         self.species_table = self.config.species.clone();
         self.lexicon = Some(elven_canopy_lang::default_lexicon());
 
@@ -2437,7 +2390,7 @@ impl SimState {
     }
 
     /// Deserialize a simulation state from a JSON string and rebuild
-    /// transient fields (world, nav_graph, species_table, lexicon).
+    /// transient fields (world, species_table, lexicon, face_data).
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         let mut state: SimState = serde_json::from_str(json)?;
         state.rebuild_transient_state();

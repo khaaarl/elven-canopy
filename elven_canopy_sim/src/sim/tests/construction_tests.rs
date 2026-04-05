@@ -778,16 +778,17 @@ fn build_displaces_creature_on_occupied_voxel() {
     // Spawn an elf, then manually place it at the blueprint voxel.
     let elf_id = spawn_elf(&mut sim);
 
-    // Find the nav node at air_coord (if one exists).
-    let node_at_build = sim.nav_graph.find_nearest_node(air_coord, 10);
-    if let Some(node_id) = node_at_build {
-        let node_pos = sim.nav_graph.node(node_id).position;
-        if node_pos == air_coord {
-            // Move the elf there.
-            let mut elf = sim.db.creatures.get(&elf_id).unwrap().clone();
-            elf.position = VoxelBox::point(air_coord);
-            sim.db.update_creature(elf).unwrap();
-        }
+    // Check if air_coord is walkable; if so, place the elf there.
+    if crate::walkability::footprint_walkable(
+        &sim.world,
+        &sim.face_data,
+        air_coord,
+        [1, 1, 1],
+        true,
+    ) {
+        let mut elf = sim.db.creatures.get(&elf_id).unwrap().clone();
+        elf.position = VoxelBox::point(air_coord);
+        sim.db.update_creature(elf).unwrap();
     }
 
     // Spawn a SECOND elf to do the building (the first one is standing
@@ -828,8 +829,14 @@ fn build_displaces_creature_on_occupied_voxel() {
         elf.position.min, air_coord,
         "Elf should have been displaced from the now-solid voxel"
     );
-    // It should still have a valid nav node.
-    assert!(sim.nav_graph.node_at(elf.position.min).is_some());
+    // It should still be at a walkable position.
+    assert!(crate::walkability::footprint_walkable(
+        &sim.world,
+        &sim.face_data,
+        elf.position.min,
+        [1, 1, 1],
+        true,
+    ));
 }
 
 #[test]
@@ -1031,8 +1038,14 @@ fn building_materialization_creates_nav_node() {
 
     let placed_coord = sim.placed_voxels[0].0;
     assert!(
-        sim.nav_graph.has_node_at(placed_coord),
-        "BuildingInterior voxel should be a nav node",
+        crate::walkability::footprint_walkable(
+            &sim.world,
+            &sim.face_data,
+            placed_coord,
+            [1, 1, 1],
+            true
+        ),
+        "BuildingInterior voxel should be walkable",
     );
 }
 
@@ -1132,12 +1145,18 @@ fn save_load_preserves_building() {
         assert_eq!(restored.world.get(coord), vt);
     }
 
-    // Check nav graph has nodes at building voxels.
+    // Check walkability at building voxels.
     for &(coord, vt) in &sim.placed_voxels {
         if vt == VoxelType::BuildingInterior {
             assert!(
-                restored.nav_graph.has_node_at(coord),
-                "Restored nav graph should have node at {coord}",
+                crate::walkability::footprint_walkable(
+                    &restored.world,
+                    &restored.face_data,
+                    coord,
+                    [1, 1, 1],
+                    true,
+                ),
+                "Restored world should have walkable position at {coord}",
             );
         }
     }
@@ -2120,10 +2139,16 @@ fn test_carve_task_location_uses_nav_node() {
         .find(|t| t.kind_tag == crate::db::TaskKindTag::Build)
         .expect("Carve task should exist");
 
-    // Task location should be at a nav node, not the underground dirt voxel.
+    // Task location should be at a walkable position, not the underground dirt voxel.
     assert!(
-        sim.nav_graph.node_at(task.location).is_some(),
-        "Task location {:?} should be a valid nav node",
+        crate::walkability::footprint_walkable(
+            &sim.world,
+            &sim.face_data,
+            task.location,
+            [1, 1, 1],
+            true,
+        ),
+        "Task location {:?} should be a walkable position",
         task.location,
     );
 }
@@ -2256,7 +2281,7 @@ fn test_cancel_carve_restores_originals() {
 }
 
 #[test]
-fn test_carve_nav_graph_update() {
+fn test_carve_updates_walkability() {
     let mut config = test_config();
     config.carve_work_ticks_per_voxel = 1;
     let mut sim = SimState::with_config(legacy_test_seed(), config);
@@ -2304,10 +2329,15 @@ fn test_carve_nav_graph_update() {
     // it should now be a nav node.
     assert_eq!(sim.world.get(solid), VoxelType::Air);
     if sim.world.has_solid_face_neighbor(solid) {
-        let node = sim.nav_graph.find_nearest_node(solid, 10);
         assert!(
-            node.is_some(),
-            "Carved voxel with solid neighbor should be a nav node"
+            crate::walkability::footprint_walkable(
+                &sim.world,
+                &sim.face_data,
+                solid,
+                [1, 1, 1],
+                true
+            ),
+            "Carved voxel with solid neighbor should be walkable"
         );
     }
 }

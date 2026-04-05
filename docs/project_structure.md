@@ -39,8 +39,9 @@ elven-canopy/
 │       │   ├── task_helpers.rs #   Task extension table accessors, insert_task
 │       │   └── tests/           #   Per-domain test modules (split from monolithic tests.rs)
 │       ├── db.rs               # SimDb — tabulosity relational store (45 tables, all entities)
-│       ├── nav.rs              # NavGraph, NavNode, NavEdge, graph construction
-│       ├── pathfinding.rs      # Unified pathfinding for ground (nav graph) and flying (voxel grid) creatures
+│       ├── nav.rs              # EdgeType enum and distance constants (formerly full nav graph)
+│       ├── pathfinding.rs      # Unified voxel-direct A* for ground and flying creatures
+│       ├── walkability.rs      # Walkability predicates, ground neighbor expansion, surface queries
 │       ├── projectile.rs       # Integer-only ballistic trajectories, aim solver
 │       ├── tree_gen.rs         # Procedural tree generation (trunk + branches)
 │       ├── world.rs            # RLE column-based voxel grid

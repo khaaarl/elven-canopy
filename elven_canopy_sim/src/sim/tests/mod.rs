@@ -54,7 +54,7 @@ mod taming_tests;
 mod worldgen_tests;
 
 // =========================================================================
-// Core tests: basic sim setup, determinism, serialization, tree, nav graph
+// Core tests: basic sim setup, determinism, serialization, tree
 // =========================================================================
 
 #[test]
@@ -297,15 +297,6 @@ fn new_sim_has_tree_voxels() {
     );
 }
 
-#[test]
-fn new_sim_has_nav_graph() {
-    let sim = test_sim(legacy_test_seed());
-    assert!(
-        sim.nav_graph.node_count() > 0,
-        "Nav graph should have nodes"
-    );
-}
-
 // =========================================================================
 // Flat world (treeless) helper tests
 // =========================================================================
@@ -320,15 +311,6 @@ fn flat_world_has_home_tree_row() {
     assert!(tree.trunk_voxels.is_empty());
     assert!(tree.branch_voxels.is_empty());
     assert!(tree.leaf_voxels.is_empty());
-}
-
-#[test]
-fn flat_world_has_nav_graph() {
-    let sim = flat_world_sim(legacy_test_seed());
-    assert!(
-        sim.nav_graph.node_count() > 0,
-        "Flat world should have nav nodes on the ground"
-    );
 }
 
 #[test]
@@ -394,8 +376,6 @@ fn flat_world_different_seeds_same_geometry() {
             "Voxel at y={y} should be identical across seeds"
         );
     }
-    // Nav graph should have the same topology.
-    assert_eq!(sim_a.nav_graph.node_count(), sim_b.nav_graph.node_count());
 }
 
 #[test]
@@ -923,45 +903,6 @@ fn save_load_preserves_world_voxels() {
         restored.world.get(first_trunk),
         VoxelType::Trunk,
         "First trunk voxel should be present after roundtrip"
-    );
-}
-
-#[test]
-fn rebuild_transient_state_restores_nav_graph() {
-    let sim = test_sim(legacy_test_seed());
-    let json = sim.to_json().unwrap();
-
-    // Deserialize — world is preserved but transient fields are default.
-    let mut restored: SimState = serde_json::from_str(&json).unwrap();
-    assert_eq!(
-        restored.nav_graph.node_count(),
-        0,
-        "Before rebuild, nav_graph should be empty"
-    );
-    // World is now serialized, so it should be present after deserialization.
-    assert_eq!(
-        restored.world.size_x, sim.world.size_x,
-        "After deserialization, world should be present"
-    );
-
-    // Rebuild transient state.
-    restored.rebuild_transient_state();
-    assert!(
-        restored.nav_graph.node_count() > 0,
-        "After rebuild, nav_graph should have nodes"
-    );
-    // Node count may differ very slightly because fruit voxels are placed
-    // after the initial nav graph build but before serialization, so the
-    // rebuilt world includes fruit while the original nav graph was built
-    // without them. Allow a small tolerance.
-    let diff =
-        (restored.nav_graph.node_count() as i64 - sim.nav_graph.node_count() as i64).unsigned_abs();
-    assert!(
-        diff <= 5,
-        "Rebuilt nav_graph node count ({}) should be close to original ({}), diff={}",
-        restored.nav_graph.node_count(),
-        sim.nav_graph.node_count(),
-        diff,
     );
 }
 

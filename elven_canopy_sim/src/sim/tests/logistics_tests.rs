@@ -436,11 +436,8 @@ fn harvest_task_creates_ground_pile() {
     // Spawn an elf near the fruit.
     let elf_id = spawn_elf(&mut sim);
 
-    // Find the nav node nearest to the fruit.
-    let fruit_nav = sim.nav_graph.find_nearest_node(fruit_pos, 10).unwrap();
-
-    // Place the elf at the fruit nav node.
-    let elf_pos = sim.nav_graph.node(fruit_nav).position;
+    // Find the walkable position nearest to the fruit.
+    let elf_pos = find_walkable(&sim, fruit_pos, 10).unwrap();
     {
         let mut elf = sim.db.creatures.get(&elf_id).unwrap();
         elf.position = VoxelBox::point(elf_pos);
@@ -453,7 +450,7 @@ fn harvest_task_creates_ground_pile() {
         id: task_id,
         kind: TaskKind::Harvest { fruit_pos },
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(fruit_nav).position,
+        location: elf_pos,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -591,8 +588,7 @@ fn haul_source_empty_cancels() {
     // Create a haul task with source pointing to a non-existent ground pile.
     let source_pos = VoxelCoord::new(tree_pos.x, tree_pos.y, tree_pos.z);
     let task_id = TaskId::new(&mut sim.rng);
-    let source_nav = sim.nav_graph.find_nearest_node(source_pos, 10).unwrap();
-    let dest_nav = sim.nav_graph.find_nearest_node(anchor, 10).unwrap();
+    let source_walkable = find_walkable(&sim, source_pos, 10).unwrap();
 
     let haul_task = Task {
         id: task_id,
@@ -605,7 +601,7 @@ fn haul_source_empty_cancels() {
             destination_coord: anchor,
         },
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(source_nav).position,
+        location: source_walkable,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),
@@ -624,7 +620,7 @@ fn haul_source_empty_cancels() {
         c.current_task = Some(task_id);
         sim.db.update_creature(c).unwrap();
     }
-    let source_pos = sim.nav_graph.node(source_nav).position;
+    let source_pos = source_walkable;
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.position = VoxelBox::point(source_pos);
@@ -3811,8 +3807,7 @@ fn acquire_item_picks_up_and_owns() {
 
     // Spawn elf, position at pile.
     let elf_id = spawn_elf(&mut sim);
-    let pile_nav = sim.nav_graph.find_nearest_node(pile_pos, 10).unwrap();
-    let pile_nav_pos = sim.nav_graph.node(pile_nav).position;
+    let pile_nav_pos = find_walkable(&sim, pile_pos, 10).unwrap();
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.position = VoxelBox::point(pile_nav_pos);
@@ -3830,7 +3825,7 @@ fn acquire_item_picks_up_and_owns() {
             quantity: 2,
         },
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(pile_nav).position,
+        location: pile_nav_pos,
         progress: 0,
         total_cost: 0,
         required_species: Some(Species::Elf),

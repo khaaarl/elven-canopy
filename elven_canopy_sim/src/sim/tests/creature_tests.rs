@@ -1129,8 +1129,14 @@ fn hornet_spawns_at_air_position_not_nav_node() {
     let creature = sim.db.creatures.get(&id).unwrap();
     // Hornet should be at the exact air position, not snapped to a nav node.
     assert_eq!(creature.position.min, air_pos);
-    // Should be in the air — verify there's no nav node here.
-    assert!(sim.nav_graph.node_at(air_pos).is_none());
+    // Should be in the air — verify it's not walkable ground.
+    assert!(!crate::walkability::footprint_walkable(
+        &sim.world,
+        &sim.face_data,
+        air_pos,
+        [1, 1, 1],
+        true,
+    ));
 }
 
 #[test]
@@ -1347,7 +1353,7 @@ fn wyvern_serde_roundtrip() {
 
 #[test]
 fn wyvern_is_hostile_to_elves() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = flat_world_sim(legacy_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
 
@@ -1408,7 +1414,13 @@ fn spawn_capybara_command() {
         .find(|c| c.species == Species::Capybara)
         .unwrap();
     assert_eq!(capybara.position.min.y, 1);
-    assert!(sim.nav_graph.node_at(capybara.position.min).is_some());
+    assert!(crate::walkability::footprint_walkable(
+        &sim.world,
+        &sim.face_data,
+        capybara.position.min,
+        [1, 1, 1],
+        true,
+    ));
 }
 
 #[test]
@@ -1458,38 +1470,17 @@ fn species_data_loaded_from_config() {
     assert_eq!(elf_data.ticks_per_hp_regen, 0);
 }
 
-#[test]
-fn graph_for_species_dispatch() {
-    let sim = test_sim(legacy_test_seed());
-
-    // Elf (1x1x1) → standard graph.
-    let elf_graph = sim.graph_for_species(Species::Elf) as *const _;
-    let standard = &sim.nav_graph as *const _;
-    assert_eq!(elf_graph, standard, "Elf should use standard nav graph");
-
-    // Elephant (2x2x2) → large graph.
-    let elephant_graph = sim.graph_for_species(Species::Elephant) as *const _;
-    let large = &sim.large_nav_graph as *const _;
-    assert_eq!(elephant_graph, large, "Elephant should use large nav graph");
-}
+// Tests for graph_for_species_dispatch, new_sim_has_large_nav_graph,
+// elephant_spawns_on_large_graph, and troll_spawns_on_large_graph removed:
+// NavGraph no longer exists; walkability is derived from voxel geometry.
 
 #[test]
-fn new_sim_has_large_nav_graph() {
-    let sim = test_sim(legacy_test_seed());
-    assert!(
-        sim.large_nav_graph.live_nodes().count() > 0,
-        "Large nav graph should have nodes after construction",
-    );
-}
-
-#[test]
-fn elephant_spawns_on_large_graph() {
+fn elephant_spawns_on_walkable_ground() {
     let mut sim = test_sim(legacy_test_seed());
     let mut events = Vec::new();
     let spawn_pos = VoxelCoord::new(10, 1, 10);
     sim.spawn_creature(Species::Elephant, spawn_pos, &mut events);
 
-    // There should be exactly one elephant.
     let elephants: Vec<&crate::db::Creature> = sim
         .db
         .creatures
@@ -1498,21 +1489,21 @@ fn elephant_spawns_on_large_graph() {
         .collect();
     assert_eq!(elephants.len(), 1, "Should have spawned one elephant");
 
-    // Its position should map to a node in the large nav graph.
     let elephant = elephants[0];
-    let node_id = sim
-        .large_nav_graph
-        .node_at(elephant.position.min)
-        .expect("Elephant should have a nav node in the large graph");
-    let node = sim.large_nav_graph.node(node_id);
-    assert_eq!(
-        node.position, elephant.position.min,
-        "Elephant position should match its large graph node",
+    assert!(
+        crate::walkability::footprint_walkable(
+            &sim.world,
+            &sim.face_data,
+            elephant.position.min,
+            [1, 1, 1],
+            true,
+        ),
+        "Elephant position should be walkable",
     );
 }
 
 #[test]
-fn troll_spawns_on_large_graph() {
+fn troll_spawns_on_walkable_ground() {
     let mut sim = test_sim(legacy_test_seed());
     let mut events = Vec::new();
     let spawn_pos = VoxelCoord::new(10, 1, 10);
@@ -1527,14 +1518,15 @@ fn troll_spawns_on_large_graph() {
     assert_eq!(trolls.len(), 1, "Should have spawned one troll");
 
     let troll = trolls[0];
-    let node_id = sim
-        .large_nav_graph
-        .node_at(troll.position.min)
-        .expect("Troll should have a nav node in the large graph");
-    let node = sim.large_nav_graph.node(node_id);
-    assert_eq!(
-        node.position, troll.position.min,
-        "Troll position should match its large graph node",
+    assert!(
+        crate::walkability::footprint_walkable(
+            &sim.world,
+            &sim.face_data,
+            troll.position.min,
+            [1, 1, 1],
+            true,
+        ),
+        "Troll position should be walkable",
     );
 }
 
@@ -1748,11 +1740,16 @@ fn all_small_species_spawn_and_coexist() {
     assert_eq!(sim.db.creatures.len(), 6);
     for creature in sim.db.creatures.iter_all() {
         assert!(
-            sim.graph_for_species(creature.species)
-                .node_at(creature.position.min)
-                .is_some(),
-            "{:?} has no nav node at its position",
-            creature.species
+            crate::walkability::footprint_walkable(
+                &sim.world,
+                &sim.face_data,
+                creature.position.min,
+                [1, 1, 1],
+                true,
+            ),
+            "{:?} has no walkable position at {:?}",
+            creature.species,
+            creature.position.min,
         );
     }
 }
@@ -2383,5 +2380,54 @@ fn spawned_capybara_has_blend_traits() {
         blend_weight,
         i64::MIN,
         "capybara should have BodyBlendWeight trait"
+    );
+}
+
+#[test]
+fn test_large_creature_landing_near_world_edge() {
+    let mut sim = flat_world_sim(fresh_test_seed());
+    let (ws_x, _, _) = sim.config.world_size;
+    let floor_y = sim.config.floor_y;
+
+    // Spawn an elephant.
+    let mut events = Vec::new();
+    let elephant_id = sim
+        .spawn_creature(
+            Species::Elephant,
+            VoxelCoord::new(ws_x as i32 / 2, floor_y + 1, ws_x as i32 / 2),
+            &mut events,
+        )
+        .expect("should spawn elephant");
+
+    // Teleport elephant to near the world edge (x = world_size_x - 2).
+    let edge_x = ws_x as i32 - 2;
+    let edge_pos = VoxelCoord::new(edge_x, floor_y + 3, 10);
+    {
+        let mut c = sim.db.creatures.get(&elephant_id).unwrap();
+        c.position = VoxelBox::point(edge_pos);
+        sim.db.update_creature(c).unwrap();
+    }
+
+    // Remove ground below the elephant to trigger gravity.
+    for dx in 0..2 {
+        for dz in 0..2 {
+            sim.world.set(
+                VoxelCoord::new(edge_x + dx, floor_y, 10 + dz),
+                VoxelType::Air,
+            );
+        }
+    }
+    sim.rebuild_transient_state();
+
+    // Apply gravity — should not panic even near world edge.
+    events.clear();
+    let _fell = sim.apply_single_creature_gravity(elephant_id, &mut events);
+
+    // Verify no panic occurred. The creature either landed somewhere or
+    // remains (if no valid landing position exists near the edge).
+    // If we got here without panic, the bounds check works. Verify creature still exists.
+    assert!(
+        sim.db.creatures.get(&elephant_id).is_some(),
+        "Creature should still exist after gravity near world edge"
     );
 }

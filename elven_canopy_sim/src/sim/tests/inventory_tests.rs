@@ -3476,8 +3476,7 @@ fn harvest_fruit_carries_species_material() {
     let tree_species = tree.fruit_species_id.unwrap();
 
     // Spawn an elf near the fruit.
-    let elf_nav = sim.nav_graph.find_nearest_node(fruit_pos, 10).unwrap();
-    let elf_pos = sim.nav_graph.node(elf_nav).position;
+    let elf_pos = find_walkable(&sim, fruit_pos, 10).unwrap();
     let mut events = Vec::new();
     let elf_id = sim
         .spawn_creature(Species::Elf, elf_pos, &mut events)

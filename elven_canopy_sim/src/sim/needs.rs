@@ -16,26 +16,26 @@ use crate::inventory;
 use crate::task;
 
 impl SimState {
-    /// Find the nearest reachable fruit for a creature, using Dijkstra over the
-    /// nav graph with the creature's species-specific speeds and edge restrictions.
+    /// Find the nearest reachable fruit for a creature, using the unified
+    /// `find_nearest` dispatch with walkability-snapped positions.
     ///
-    /// Returns the fruit voxel coordinate and its nearest nav node, or `None`
-    /// if no fruit exists or none is reachable by this creature.
-    pub(crate) fn find_nearest_fruit(
-        &self,
-        creature_id: CreatureId,
-    ) -> Option<(VoxelCoord, NavNodeId)> {
-        let creature = self.db.creatures.get(&creature_id)?;
-        let graph = self.graph_for_species(creature.species);
-
-        // Resolve fruit positions to nav node positions. Fruit may not sit
-        // exactly on a nav node, so use find_nearest_node here (before
-        // passing to find_nearest which expects nav-node-exact coords).
-        let mut fruit_candidates: Vec<(VoxelCoord, NavNodeId, VoxelCoord)> = Vec::new();
+    /// Returns the fruit voxel coordinate, or `None` if no fruit exists or
+    /// none is reachable by this creature.
+    pub(crate) fn find_nearest_fruit(&self, creature_id: CreatureId) -> Option<VoxelCoord> {
+        // Resolve fruit positions to walkable positions. Fruit may not sit
+        // exactly on a walkable voxel, so snap here before passing to
+        // find_nearest.
+        let mut fruit_candidates: Vec<(VoxelCoord, VoxelCoord)> = Vec::new();
         for tf in self.db.tree_fruits.iter_all() {
-            if let Some(nav_node) = graph.find_nearest_node(tf.position.min, 5) {
-                let nav_pos = graph.node(nav_node).position;
-                fruit_candidates.push((tf.position.min, nav_node, nav_pos));
+            if let Some(walkable_pos) = crate::walkability::find_nearest_walkable(
+                &self.world,
+                &self.face_data,
+                tf.position.min,
+                5,
+                [1, 1, 1],
+                true, // elves can climb
+            ) {
+                fruit_candidates.push((tf.position.min, walkable_pos));
             }
         }
 
@@ -43,18 +43,18 @@ impl SimState {
             return None;
         }
 
-        let nav_positions: Vec<VoxelCoord> =
-            fruit_candidates.iter().map(|&(_, _, np)| np).collect();
+        let walkable_positions: Vec<VoxelCoord> =
+            fruit_candidates.iter().map(|&(_, wp)| wp).collect();
         let idx = self
             .find_nearest(
                 creature_id,
-                &nav_positions,
+                &walkable_positions,
                 &crate::pathfinding::PathOpts::default(),
             )
             .ok()?;
-        let (fruit_pos, nav_node, _) = fruit_candidates[idx];
+        let (fruit_pos, _) = fruit_candidates[idx];
 
-        Some((fruit_pos, nav_node))
+        Some(fruit_pos)
     }
 
     /// Resolve a completed Eat action for fruit: restore food, remove fruit
@@ -511,11 +511,11 @@ impl SimState {
     /// Returns `None` if the creature has no assigned home, the home isn't a
     /// Home, or the home has no placed furniture (bed not yet built). Does NOT
     /// check occupied-bed exclusion — it's the elf's personal bed.
-    /// Returns `(bed_pos, nav_node, structure_id)`.
+    /// Returns `(bed_pos, walkable_pos, structure_id)`.
     pub(crate) fn find_assigned_home_bed(
         &self,
         creature_id: CreatureId,
-    ) -> Option<(VoxelCoord, NavNodeId, StructureId)> {
+    ) -> Option<(VoxelCoord, VoxelCoord, StructureId)> {
         let creature = self.db.creatures.get(&creature_id)?;
         let home_id = creature.assigned_home?;
         let structure = self.db.structures.get(&home_id)?;
@@ -528,24 +528,27 @@ impl SimState {
             .by_structure_id(&home_id, tabulosity::QueryOpts::ASC)
             .into_iter()
             .find(|f| f.placed)?;
-        let graph = self.graph_for_species(creature.species);
-        let nav_node = graph.find_nearest_node(bed.coord, 5)?;
-        Some((bed.coord, nav_node, home_id))
+        let walkable_pos = crate::walkability::find_nearest_walkable(
+            &self.world,
+            &self.face_data,
+            bed.coord,
+            5,
+            [1, 1, 1],
+            true, // elves can climb
+        )?;
+        Some((bed.coord, walkable_pos, home_id))
     }
 
-    /// Find the nearest reachable dormitory bed for a creature, using Dijkstra
-    /// over the nav graph with species-specific speeds and edge restrictions.
+    /// Find the nearest reachable dormitory bed for a creature, using the
+    /// unified `find_nearest` dispatch with walkability checks.
     ///
     /// Excludes beds already occupied by an active Sleep task. Returns the bed
-    /// position, its nearest nav node, and the structure ID, or `None` if no
-    /// unoccupied beds exist or none are reachable.
+    /// position, its nearest walkable position, and the structure ID, or `None`
+    /// if no unoccupied beds exist or none are reachable.
     pub(crate) fn find_nearest_bed(
         &self,
         creature_id: CreatureId,
-    ) -> Option<(VoxelCoord, NavNodeId, StructureId)> {
-        let creature = self.db.creatures.get(&creature_id)?;
-        let graph = self.graph_for_species(creature.species);
-
+    ) -> Option<(VoxelCoord, VoxelCoord, StructureId)> {
         // Step 1: Collect occupied beds (active Sleep tasks).
         let occupied_beds: Vec<VoxelCoord> = self
             .db
@@ -592,14 +595,21 @@ impl SimState {
             )
             .ok()?;
         let (bed_pos, structure_id) = bed_candidates[idx];
-        // Beds are placed on nav nodes, so node_at is correct here.
-        let nav_node = graph.node_at(bed_pos)?;
+        // Beds are placed on walkable positions.
+        let walkable_pos = crate::walkability::find_nearest_walkable(
+            &self.world,
+            &self.face_data,
+            bed_pos,
+            5,
+            [1, 1, 1],
+            true, // elves can climb
+        )?;
 
-        Some((bed_pos, nav_node, structure_id))
+        Some((bed_pos, walkable_pos, structure_id))
     }
 
     /// Find the nearest dining hall with at least one free seat and one
-    /// unreserved edible food item. Returns `(table_coord, nav_node,
+    /// unreserved edible food item. Returns `(table_coord, walkable_pos,
     /// structure_id)` or `None` if no valid dining hall is reachable.
     ///
     /// Uses the unified `find_nearest` dispatch to find the closest
@@ -609,9 +619,7 @@ impl SimState {
     pub(crate) fn find_nearest_dining_hall(
         &self,
         creature_id: CreatureId,
-    ) -> Option<(VoxelCoord, NavNodeId, StructureId)> {
-        let creature = self.db.creatures.get(&creature_id)?;
-        let graph = self.graph_for_species(creature.species);
+    ) -> Option<(VoxelCoord, VoxelCoord, StructureId)> {
         let seats_per_table = self.config.dining_seats_per_table;
 
         // Step 1: Count occupied dining seats.
@@ -677,10 +685,17 @@ impl SimState {
             )
             .ok()?;
         let (table_coord, structure_id) = table_candidates[idx];
-        // Tables are placed on nav nodes, so node_at is correct here.
-        let nav_node = graph.node_at(table_coord)?;
+        // Tables are placed on walkable positions.
+        let walkable_pos = crate::walkability::find_nearest_walkable(
+            &self.world,
+            &self.face_data,
+            table_coord,
+            5,
+            [1, 1, 1],
+            true, // elves can climb
+        )?;
 
-        Some((table_coord, nav_node, structure_id))
+        Some((table_coord, walkable_pos, structure_id))
     }
 
     /// Start a Sleep action: set action kind and schedule next activation

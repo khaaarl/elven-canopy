@@ -102,13 +102,7 @@ fn busy_tired_elf_does_not_create_sleep_task() {
     // Give the elf a GoTo task so it's busy. Use a valid nav node position
     // so the elf doesn't immediately fail pathfinding and drop the task.
     let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
-    let goto_target = sim
-        .nav_graph
-        .ground_node_ids()
-        .iter()
-        .map(|&nid| sim.nav_graph.node(nid).position)
-        .find(|&p| p != elf_pos)
-        .expect("need a distant ground nav node");
+    let goto_target = find_different_walkable(&sim, elf_pos);
     let task_id = TaskId::new(&mut sim.rng);
     let goto_task = Task {
         id: task_id,
@@ -276,9 +270,7 @@ fn find_nearest_bed_excludes_occupied() {
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
     // Find a valid nav node near tree for the bed position.
-    let graph = sim.graph_for_species(Species::Elf);
-    let bed_node = graph.find_nearest_node(tree_pos, 10).unwrap();
-    let bed_pos = graph.node(bed_node).position;
+    let bed_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
     // Add a dormitory structure with exactly one bed.
     let structure_id = StructureId(999);
@@ -399,9 +391,7 @@ fn tired_elf_sleeps_and_rest_increases() {
     let rest_max = sim.species_table[&Species::Elf].rest_max;
 
     // Add a dormitory with beds near the tree.
-    let graph = sim.graph_for_species(Species::Elf);
-    let bed_node = graph.find_nearest_node(tree_pos, 10).unwrap();
-    let bed_pos = graph.node(bed_node).position;
+    let bed_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
     let structure_id = StructureId(999);
     let project_id = ProjectId::new(&mut sim.rng);
@@ -510,13 +500,13 @@ fn find_nearest_fruit_returns_reachable() {
         .unwrap()
         .id;
 
-    // find_nearest_fruit should return a fruit reachable via nav graph.
+    // find_nearest_fruit should return a fruit reachable via A* pathfinding.
     let result = sim.find_nearest_fruit(elf_id);
     assert!(
         result.is_some(),
         "Elf near tree should find reachable fruit"
     );
-    let (fruit_pos, nav_node) = result.unwrap();
+    let fruit_pos = result.unwrap();
 
     // The fruit_pos should have a TreeFruit row.
     let has_row = !sim
@@ -525,9 +515,6 @@ fn find_nearest_fruit_returns_reachable() {
         .by_position(&VoxelBox::point(fruit_pos), tabulosity::QueryOpts::ASC)
         .is_empty();
     assert!(has_row, "Returned fruit should have a TreeFruit row");
-
-    // The nav node should be valid.
-    let _node = sim.nav_graph.node(nav_node);
 }
 
 #[test]
@@ -555,7 +542,7 @@ fn eat_fruit_task_restores_food_on_arrival() {
         .find(|c| c.species == Species::Elf)
         .unwrap()
         .id;
-    let elf_node = creature_node(&sim, elf_id);
+    let elf_node = creature_pos(&sim, elf_id);
 
     // Set elf food low.
     {
@@ -572,7 +559,7 @@ fn eat_fruit_task_restores_food_on_arrival() {
         id: task_id,
         kind: TaskKind::EatFruit { fruit_pos },
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(elf_node).position,
+        location: elf_node,
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -728,13 +715,7 @@ fn busy_hungry_elf_does_not_create_eat_fruit_task() {
     // Give the elf a GoTo task so it's busy. Use a valid nav node position
     // so the elf doesn't immediately fail pathfinding and drop the task.
     let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
-    let goto_target = sim
-        .nav_graph
-        .ground_node_ids()
-        .iter()
-        .map(|&nid| sim.nav_graph.node(nid).position)
-        .find(|&p| p != elf_pos)
-        .expect("need a distant ground nav node");
+    let goto_target = find_different_walkable(&sim, elf_pos);
     let task_id = TaskId::new(&mut sim.rng);
     let goto_task = Task {
         id: task_id,
@@ -947,7 +928,7 @@ fn eat_bread_restores_food_and_removes_bread() {
         .find(|c| c.species == Species::Elf)
         .unwrap()
         .id;
-    let elf_node = creature_node(&sim, elf_id);
+    let elf_node = creature_pos(&sim, elf_id);
 
     // Give the elf owned bread.
     sim.inv_add_simple_item(
@@ -972,7 +953,7 @@ fn eat_bread_restores_food_and_removes_bread() {
         id: task_id,
         kind: TaskKind::EatBread,
         state: TaskState::InProgress,
-        location: sim.nav_graph.node(elf_node).position,
+        location: elf_node,
         progress: 0,
         total_cost: 0,
         required_species: None,
@@ -1785,9 +1766,7 @@ fn death_clears_assigned_home() {
 fn find_nearest_dining_hall_returns_hall_with_food() {
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
-    let table_pos = graph.node(table_node).position;
+    let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     create_dining_hall(&mut sim, table_pos, 3);
@@ -1803,9 +1782,7 @@ fn find_nearest_dining_hall_returns_hall_with_food() {
 fn find_nearest_dining_hall_returns_none_when_no_food() {
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
-    let table_pos = graph.node(table_node).position;
+    let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     create_dining_hall(&mut sim, table_pos, 0);
@@ -1818,9 +1795,7 @@ fn find_nearest_dining_hall_returns_none_when_no_food() {
 fn find_nearest_dining_hall_returns_none_when_seats_full() {
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
-    let table_pos = graph.node(table_node).position;
+    let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     create_dining_hall(&mut sim, table_pos, 10);
@@ -1869,9 +1844,7 @@ fn find_nearest_dining_hall_returns_none_when_seats_full() {
 fn elf_seeks_dining_hall_at_dining_threshold() {
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
-    let table_pos = graph.node(table_node).position;
+    let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
     let food_max = sim.species_table[&Species::Elf].food_max;
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
@@ -1980,9 +1953,7 @@ fn elf_stays_idle_at_dining_threshold_without_hall() {
 fn dine_at_hall_reserves_seat_and_food() {
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
-    let table_pos = graph.node(table_node).position;
+    let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
     let food_max = sim.species_table[&Species::Elf].food_max;
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
@@ -2043,9 +2014,7 @@ fn dine_at_hall_reserves_seat_and_food() {
 fn dine_at_hall_completion_restores_food_and_generates_thought() {
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
-    let table_pos = graph.node(table_node).position;
+    let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
     let food_max = sim.species_table[&Species::Elf].food_max;
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
@@ -2104,9 +2073,7 @@ fn dine_at_hall_completion_restores_food_and_generates_thought() {
 fn dine_at_hall_cleanup_releases_reservations() {
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
-    let table_pos = graph.node(table_node).position;
+    let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
     let food_max = sim.species_table[&Species::Elf].food_max;
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
@@ -2226,9 +2193,7 @@ fn old_save_thought_config_missing_ate_alone_fields() {
 fn dining_hall_with_fruit_only() {
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
-    let table_pos = graph.node(table_node).position;
+    let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
@@ -2279,9 +2244,7 @@ fn dine_at_hall_instant_on_arrival() {
     // Verify dining resolves instantly on arrival (no animation delay).
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
-    let table_pos = graph.node(table_node).position;
+    let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
     let food_max = sim.species_table[&Species::Elf].food_max;
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
@@ -2397,9 +2360,7 @@ fn dining_preempts_autonomous_task() {
     // dining hunger band.
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
-    let table_pos = graph.node(table_node).position;
+    let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
     let food_max = sim.species_table[&Species::Elf].food_max;
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
@@ -2465,7 +2426,7 @@ fn dining_preempts_autonomous_task() {
 
 #[test]
 fn find_dining_hall_with_realistic_building() {
-    // Use the real building pipeline (voxels + nav graph rebuild + furnish
+    // Use the real building pipeline (voxels + walkability rebuild + furnish
     // command) to verify find_nearest_dining_hall works with a properly
     // constructed building, not just manually inserted DB rows.
     let mut sim = test_sim(legacy_test_seed());
@@ -2605,12 +2566,17 @@ fn end_to_end_dining_hall() {
         );
     }
 
-    // 4. Elf is at a valid nav node.
+    // 4. Elf is at a walkable position.
     let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
-    let graph = sim.graph_for_species(Species::Elf);
     assert!(
-        graph.node_at(elf_pos).is_some(),
-        "Elf must be at a valid nav node, pos={elf_pos:?}"
+        crate::walkability::footprint_walkable(
+            &sim.world,
+            &sim.face_data,
+            elf_pos,
+            [1, 1, 1],
+            true
+        ),
+        "Elf must be at a walkable position, pos={elf_pos:?}"
     );
 
     // 5. Verify the dining threshold math.
@@ -2718,9 +2684,7 @@ fn dine_at_hall_no_task_when_food_unavailable() {
     // rows.
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
-    let table_pos = graph.node(table_node).position;
+    let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
     let food_max = sim.species_table[&Species::Elf].food_max;
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
@@ -2799,9 +2763,7 @@ fn two_elves_one_food_only_one_gets_dine_task() {
     // other stays idle. No orphaned tasks should remain.
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let graph = sim.graph_for_species(Species::Elf);
-    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
-    let table_pos = graph.node(table_node).position;
+    let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
     let food_max = sim.species_table[&Species::Elf].food_max;
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
@@ -3324,34 +3286,29 @@ fn find_nearest_dining_hall_picks_closer_of_two() {
     // nearest-selection logic is correct regardless of pathfinding strategy
     // (Dijkstra vs per-candidate A*).
     let mut sim = test_sim(legacy_test_seed());
-    let graph = sim.graph_for_species(Species::Elf);
 
-    // Find two distinct nav nodes — the creature starts at tree_pos, so
-    // pick nodes at varying distances from it.
+    // Find two distinct walkable positions at different distances from
+    // the elf spawn (near tree_pos).
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let elf_node = graph.find_nearest_node(tree_pos, 10).unwrap();
-    let elf_pos = graph.node(elf_node).position;
+    let elf_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
-    // Collect all nav nodes sorted by distance from elf_pos.
-    let mut nodes: Vec<_> = (0..graph.node_slot_count())
-        .filter_map(|i| {
-            let nid = NavNodeId(i as u32);
-            if !graph.is_node_alive(nid) {
-                return None;
-            }
-            let pos = graph.node(nid).position;
-            let dist = pos.manhattan_distance(elf_pos);
-            Some((dist, nid, pos))
+    // Collect walkable positions sorted by distance from elf_pos.
+    let floor_y = sim.config.floor_y + 1;
+    let (ws_x, _, ws_z) = sim.config.world_size;
+    let mut positions: Vec<_> = (1..ws_x as i32 - 1)
+        .flat_map(|x| (1..ws_z as i32 - 1).map(move |z| VoxelCoord::new(x, floor_y, z)))
+        .filter(|&pos| {
+            crate::walkability::footprint_walkable(&sim.world, &sim.face_data, pos, [1, 1, 1], true)
         })
+        .map(|pos| (pos.manhattan_distance(elf_pos), pos))
         .collect();
-    nodes.sort_by_key(|(d, _, _)| *d);
+    positions.sort_by_key(|(d, _)| *d);
 
-    // Pick a close node and a far node (skip index 0 which is elf_pos itself).
-    // We need nodes that are far enough apart that distance ordering is unambiguous.
-    let close = nodes.iter().find(|(d, _, _)| *d >= 2).unwrap();
-    let far = nodes.iter().find(|(d, _, _)| *d >= close.0 + 5).unwrap();
-    let close_pos = close.2;
-    let far_pos = far.2;
+    // Pick a close and a far walkable position with enough separation.
+    let close = positions.iter().find(|(d, _)| *d >= 2).unwrap();
+    let far = positions.iter().find(|(d, _)| *d >= close.0 + 5).unwrap();
+    let close_pos = close.1;
+    let far_pos = far.1;
 
     // Create two dining halls — the far one first to ensure ordering isn't
     // just "first found wins".
@@ -3376,30 +3333,27 @@ fn find_nearest_dining_hall_skips_closer_hall_without_food() {
     // The closer hall has no food, the farther hall does.
     // Should return the farther hall.
     let mut sim = test_sim(legacy_test_seed());
-    let graph = sim.graph_for_species(Species::Elf);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let elf_node = graph.find_nearest_node(tree_pos, 10).unwrap();
-    let elf_pos = graph.node(elf_node).position;
+    let elf_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
-    let mut nodes: Vec<_> = (0..graph.node_slot_count())
-        .filter_map(|i| {
-            let nid = NavNodeId(i as u32);
-            if !graph.is_node_alive(nid) {
-                return None;
-            }
-            let pos = graph.node(nid).position;
-            let dist = pos.manhattan_distance(elf_pos);
-            Some((dist, nid, pos))
+    // Collect walkable positions sorted by distance from elf_pos.
+    let floor_y = sim.config.floor_y + 1;
+    let (ws_x, _, ws_z) = sim.config.world_size;
+    let mut positions: Vec<_> = (1..ws_x as i32 - 1)
+        .flat_map(|x| (1..ws_z as i32 - 1).map(move |z| VoxelCoord::new(x, floor_y, z)))
+        .filter(|&pos| {
+            crate::walkability::footprint_walkable(&sim.world, &sim.face_data, pos, [1, 1, 1], true)
         })
+        .map(|pos| (pos.manhattan_distance(elf_pos), pos))
         .collect();
-    nodes.sort_by_key(|(d, _, _)| *d);
+    positions.sort_by_key(|(d, _)| *d);
 
-    let close = nodes.iter().find(|(d, _, _)| *d >= 2).unwrap();
-    let far = nodes.iter().find(|(d, _, _)| *d >= close.0 + 5).unwrap();
+    let close = positions.iter().find(|(d, _)| *d >= 2).unwrap();
+    let far = positions.iter().find(|(d, _)| *d >= close.0 + 5).unwrap();
 
     // Close hall: no food. Far hall: has food.
-    create_dining_hall_with_id(&mut sim, close.2, 0, StructureId(901));
-    create_dining_hall_with_id(&mut sim, far.2, 3, StructureId(902));
+    create_dining_hall_with_id(&mut sim, close.1, 0, StructureId(901));
+    create_dining_hall_with_id(&mut sim, far.1, 3, StructureId(902));
 
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
@@ -3421,28 +3375,25 @@ fn find_nearest_dining_hall_skips_closer_full_table() {
     // Two halls with food, but the closer one has all seats occupied.
     // Should pick the farther hall.
     let mut sim = test_sim(legacy_test_seed());
-    let graph = sim.graph_for_species(Species::Elf);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let elf_node = graph.find_nearest_node(tree_pos, 10).unwrap();
-    let elf_pos = graph.node(elf_node).position;
+    let elf_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
-    let mut nodes: Vec<_> = (0..graph.node_slot_count())
-        .filter_map(|i| {
-            let nid = NavNodeId(i as u32);
-            if !graph.is_node_alive(nid) {
-                return None;
-            }
-            let pos = graph.node(nid).position;
-            let dist = pos.manhattan_distance(elf_pos);
-            Some((dist, nid, pos))
+    // Collect walkable positions sorted by distance from elf_pos.
+    let floor_y = sim.config.floor_y + 1;
+    let (ws_x, _, ws_z) = sim.config.world_size;
+    let mut positions: Vec<_> = (1..ws_x as i32 - 1)
+        .flat_map(|x| (1..ws_z as i32 - 1).map(move |z| VoxelCoord::new(x, floor_y, z)))
+        .filter(|&pos| {
+            crate::walkability::footprint_walkable(&sim.world, &sim.face_data, pos, [1, 1, 1], true)
         })
+        .map(|pos| (pos.manhattan_distance(elf_pos), pos))
         .collect();
-    nodes.sort_by_key(|(d, _, _)| *d);
+    positions.sort_by_key(|(d, _)| *d);
 
-    let close = nodes.iter().find(|(d, _, _)| *d >= 2).unwrap();
-    let far = nodes.iter().find(|(d, _, _)| *d >= close.0 + 5).unwrap();
-    let close_pos = close.2;
-    let far_pos = far.2;
+    let close = positions.iter().find(|(d, _)| *d >= 2).unwrap();
+    let far = positions.iter().find(|(d, _)| *d >= close.0 + 5).unwrap();
+    let close_pos = close.1;
+    let far_pos = far.1;
 
     create_dining_hall_with_id(&mut sim, close_pos, 5, StructureId(901));
     create_dining_hall_with_id(&mut sim, far_pos, 5, StructureId(902));
@@ -3507,10 +3458,8 @@ fn find_nearest_dining_hall_returns_none_when_no_halls_exist() {
 fn find_nearest_dining_hall_unplaced_table_ignored() {
     // A dining hall with food but its only table is unplaced.
     let mut sim = test_sim(legacy_test_seed());
-    let graph = sim.graph_for_species(Species::Elf);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
-    let table_pos = graph.node(table_node).position;
+    let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
     let structure_id = StructureId(900);
     let project_id = ProjectId::new(&mut sim.rng);
@@ -3563,9 +3512,7 @@ fn wild_creature_does_not_seek_dining_hall() {
     // hungry and a stocked dining hall exists.
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let graph = sim.graph_for_species(Species::Squirrel);
-    let table_node = graph.find_nearest_node(tree_pos, 10).unwrap();
-    let table_pos = graph.node(table_node).position;
+    let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
     let food_max = sim.species_table[&Species::Squirrel].food_max;
     let heartbeat = sim.species_table[&Species::Squirrel].heartbeat_interval_ticks;

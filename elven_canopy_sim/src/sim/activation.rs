@@ -231,7 +231,7 @@ impl SimState {
             return;
         }
 
-        // Nav-node lookup: ground creatures get a NavNodeId, flyers get None.
+        // Position lookup: ground creatures get Some(VoxelCoord), flyers get None.
         let (mut current_node, action_kind) = if is_flying {
             let action_kind = self
                 .db
@@ -245,30 +245,35 @@ impl SimState {
                 Some(c) if c.vital_status == VitalStatus::Alive => c,
                 _ => return,
             };
-            let node = self
-                .graph_for_species(creature.species)
-                .node_at(creature.position.min)
-                .unwrap(); // safe: creature_is_supported passed
-            (Some(node), creature.action_kind)
+            (Some(creature.position.min), creature.action_kind)
         };
 
-        // Guard: dead nav node resnap (ground creatures only).
-        if let Some(cn) = current_node
-            && !self.graph_for_species(species).is_node_alive(cn)
+        // Guard: creature on non-walkable position (ground creatures only).
+        // Snap to nearest walkable position if the world changed under them.
+        let species_data_act = &self.species_table[&species];
+        let footprint = species_data_act.footprint;
+        let can_climb = species_data_act.climb_ticks_per_voxel.is_some();
+        if let Some(pos) = current_node
+            && !crate::walkability::footprint_walkable(
+                &self.world,
+                &self.face_data,
+                pos,
+                footprint,
+                can_climb,
+            )
         {
             self.abort_current_action(creature_id);
-            let pos = self
-                .db
-                .creatures
-                .get(&creature_id)
-                .map(|c| c.position.min)
-                .unwrap();
-            let graph = self.graph_for_species(species);
-            let new_node = match graph.find_nearest_node(pos, 5) {
-                Some(n) => n,
+            let new_pos = match crate::walkability::find_nearest_walkable(
+                &self.world,
+                &self.face_data,
+                pos,
+                5,
+                footprint,
+                can_climb,
+            ) {
+                Some(p) => p,
                 None => return,
             };
-            let new_pos = graph.node(new_node).position;
             if let Some(mut c) = self.db.creatures.get(&creature_id) {
                 c.position = c.position.with_anchor(new_pos);
                 c.path = None;
@@ -296,11 +301,7 @@ impl SimState {
             let completed = self.resolve_build_action(creature_id);
             // Re-read current_node for ground creatures.
             if !is_flying {
-                current_node = self
-                    .db
-                    .creatures
-                    .get(&creature_id)
-                    .and_then(|c| self.graph_for_species(c.species).node_at(c.position.min));
+                current_node = self.db.creatures.get(&creature_id).map(|c| c.position.min);
                 if current_node.is_none() {
                     return;
                 }
@@ -376,7 +377,7 @@ impl SimState {
         }
 
         // --- Flee check ---
-        // Dispatch: ground uses nav-graph edges (ground_flee_step),
+        // Dispatch: ground uses walkable neighbors (ground_flee_step),
         // flying uses fly_wander (B-flying-flee tracks proper directional flee).
         if self.should_flee(creature_id, species) {
             if let Some(cn) = current_node {
@@ -563,8 +564,8 @@ impl SimState {
     }
 
     /// Find the nearest available task this creature can work on.
-    /// Uses Dijkstra search on the nav graph to prefer tasks closest by
-    /// actual travel cost, not just insertion order. Respects species
+    /// Uses A* search to prefer tasks closest by actual travel cost, not
+    /// just insertion order. Respects species
     /// and civilization restrictions: tasks with `required_species` or
     /// `required_civ_id` are only visible to matching creatures.
     pub(crate) fn find_available_task(&self, creature_id: CreatureId) -> Option<TaskId> {
@@ -677,18 +678,18 @@ impl SimState {
         &mut self,
         creature_id: CreatureId,
         task_id: TaskId,
-        current_node: Option<NavNodeId>,
+        current_node: Option<VoxelCoord>,
         events: &mut Vec<SimEvent>,
     ) {
-        let is_flying = self
-            .db
-            .creatures
-            .get(&creature_id)
-            .map(|c| {
-                self.species_table[&c.species]
-                    .flight_ticks_per_voxel
-                    .is_some()
-            })
+        let creature_species = self.db.creatures.get(&creature_id).map(|c| c.species);
+        let is_flying = creature_species
+            .map(|s| self.species_table[&s].flight_ticks_per_voxel.is_some())
+            .unwrap_or(false);
+        let footprint = creature_species
+            .map(|s| self.species_table[&s].footprint)
+            .unwrap_or([1, 1, 1]);
+        let can_climb = creature_species
+            .map(|s| self.species_table[&s].climb_ticks_per_voxel.is_some())
             .unwrap_or(false);
 
         let (mut task_location_coord, target_creature, task_kind_tag) =
@@ -750,60 +751,36 @@ impl SimState {
             }
         }
 
-        let species = self
-            .db
-            .creatures
-            .get(&creature_id)
-            .map(|c| c.species)
-            .unwrap_or(Species::Elf);
-
-        // Ground creatures: resolve task location to nav node and check liveness.
-        // Flying creatures skip nav-node resolution entirely.
-        // For ground creatures, snap task_location_coord to the nav node
-        // position so that find_path (which uses node_at) can resolve it.
-        let task_location_node: Option<NavNodeId> = if !is_flying {
-            let graph = self.graph_for_species(species);
-            match graph.find_nearest_node(task_location_coord, 5) {
-                Some(n) => {
-                    task_location_coord = graph.node(n).position;
-                    Some(n)
+        // Ground creatures: snap task location to nearest walkable position.
+        // Flying creatures skip this.
+        if !is_flying {
+            match crate::walkability::find_nearest_walkable(
+                &self.world,
+                &self.face_data,
+                task_location_coord,
+                5,
+                footprint,
+                can_climb,
+            ) {
+                Some(p) => {
+                    task_location_coord = p;
                 }
                 None => {
-                    // No reachable nav node for the task location — abandon.
+                    // No walkable position near the task — abandon.
                     self.interrupt_task(creature_id, task_id);
-                    if let Some(c) = self.db.creatures.get(&creature_id) {
-                        let old_pos = c.position.min;
-                        let graph = self.graph_for_species(species);
-                        if let Some(new_node) = graph.find_nearest_node(old_pos, 5) {
-                            self.ground_wander(creature_id, new_node, events);
-                        }
+                    if let Some(cn) = current_node {
+                        self.ground_wander(creature_id, cn, events);
                     }
                     return;
                 }
             }
+        }
+
+        let task_location_node: Option<VoxelCoord> = if !is_flying {
+            Some(task_location_coord)
         } else {
             None
         };
-
-        // Ground creatures: check that both current_node and task_location are
-        // still alive in the nav graph. Flying creatures skip this check.
-        if let (Some(cn), Some(tl)) = (current_node, task_location_node) {
-            let graph = self.graph_for_species(species);
-            if !graph.is_node_alive(cn) || !graph.is_node_alive(tl) {
-                self.interrupt_task(creature_id, task_id);
-                let graph = self.graph_for_species(species);
-                if let Some(mut c) = self.db.creatures.get(&creature_id) {
-                    let old_pos = c.position.min;
-                    if let Some(new_node) = graph.find_nearest_node(old_pos, 5) {
-                        let new_pos = graph.node(new_node).position;
-                        c.position = c.position.with_anchor(new_pos);
-                        let _ = self.db.update_creature(c);
-                        self.ground_wander(creature_id, new_node, events);
-                    }
-                }
-                return;
-            }
-        }
 
         // AttackTarget tasks: check combat range before walking.
         let task_kind_tag = self
@@ -879,15 +856,15 @@ impl SimState {
     }
 
     /// Check if a creature is at the task location. Ground creatures compare
-    /// nav node IDs; flying creatures compare position proximity (within 1 voxel).
+    /// positions directly; flying creatures compare position proximity (within 1 voxel).
     pub(crate) fn at_task_location(
         &self,
         creature_id: CreatureId,
-        current_node: Option<NavNodeId>,
-        task_location_node: Option<NavNodeId>,
+        current_node: Option<VoxelCoord>,
+        task_location_node: Option<VoxelCoord>,
         task_location_coord: VoxelCoord,
     ) -> bool {
-        // Ground creatures: compare nav node IDs.
+        // Ground creatures: compare positions.
         if let (Some(cn), Some(tl)) = (current_node, task_location_node) {
             return cn == tl;
         }
@@ -906,7 +883,7 @@ impl SimState {
     fn wander_dispatch(
         &mut self,
         creature_id: CreatureId,
-        current_node: Option<NavNodeId>,
+        current_node: Option<VoxelCoord>,
         events: &mut Vec<SimEvent>,
     ) {
         if let Some(cn) = current_node {

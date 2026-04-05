@@ -2,7 +2,7 @@
 //
 // Handles the full lifecycle of player-designated construction: validation,
 // blueprint creation, voxel materialization (one voxel per build action),
-// structure completion, furnishing, and nav graph updates. Also includes
+// structure completion, furnishing, and walkability updates. Also includes
 // raycasting for structure identification and home assignment.
 //
 // See also: `blueprint.rs` (blueprint data model), `building.rs` (building
@@ -13,7 +13,6 @@ use crate::building;
 use crate::db::ActionKind;
 use crate::event::{SimEvent, SimEventKind};
 use crate::inventory;
-use crate::nav::{self};
 use crate::structural;
 use crate::task;
 use std::collections::BTreeMap;
@@ -221,11 +220,16 @@ impl SimState {
 
         let project_id = ProjectId::new(&mut self.rng);
 
-        // Create a Build task at the nearest nav node to the blueprint.
-        // Snap the task location to the nav node position so that find_path
-        // (which uses node_at) can resolve it exactly.
-        let task_location = match self.nav_graph.find_nearest_node(build_voxels[0], 5) {
-            Some(node) => self.nav_graph.node(node).position,
+        // Create a Build task at the nearest walkable position to the blueprint.
+        let task_location = match crate::walkability::find_nearest_walkable(
+            &self.world,
+            &self.face_data,
+            build_voxels[0],
+            5,
+            [1, 1, 1],
+            true, // elves can climb
+        ) {
+            Some(pos) => pos,
             None => return,
         };
         let task_id = TaskId::new(&mut self.rng);
@@ -399,8 +403,17 @@ impl SimState {
 
         let project_id = ProjectId::new(&mut self.rng);
 
-        // Create a Build task at the nearest nav node.
-        if self.nav_graph.find_nearest_node(voxels[0], 5).is_none() {
+        // Create a Build task at the nearest walkable position.
+        if crate::walkability::find_nearest_walkable(
+            &self.world,
+            &self.face_data,
+            voxels[0],
+            5,
+            [1, 1, 1],
+            true, // elves can climb
+        )
+        .is_none()
+        {
             return;
         }
         let task_id = TaskId::new(&mut self.rng);
@@ -566,11 +579,16 @@ impl SimState {
 
         let project_id = ProjectId::new(&mut self.rng);
 
-        // Create a Build task at the nearest nav node to the bottom of the ladder.
-        if self
-            .nav_graph
-            .find_nearest_node(build_voxels[0], 5)
-            .is_none()
+        // Create a Build task at the nearest walkable position to the bottom of the ladder.
+        if crate::walkability::find_nearest_walkable(
+            &self.world,
+            &self.face_data,
+            build_voxels[0],
+            5,
+            [1, 1, 1],
+            true, // elves can climb
+        )
+        .is_none()
         {
             return;
         }
@@ -702,17 +720,23 @@ impl SimState {
 
         let project_id = ProjectId::new(&mut self.rng);
 
-        // Create a Build task at the nearest nav node to the carve site.
-        // Use the nav node's position as the task location so that
+        // Create a Build task at the nearest walkable position to the carve site.
+        // Use the walkable position as the task location so that
         // find_available_task's expanding-box search resolves instantly
         // instead of scanning the entire world from underground dirt.
-        let nav_node = match self.nav_graph.find_nearest_node(carve_voxels[0], 5) {
-            Some(n) => n,
+        let task_location = match crate::walkability::find_nearest_walkable(
+            &self.world,
+            &self.face_data,
+            carve_voxels[0],
+            5,
+            [1, 1, 1],
+            true, // elves can climb
+        ) {
+            Some(pos) => pos,
             None => return,
         };
         let task_id = TaskId::new(&mut self.rng);
         let num_voxels = carve_voxels.len() as u64;
-        let task_location = self.nav_graph.node(nav_node).position;
 
         // Insert blueprint before task — task_blueprint_ref has FK to blueprints.
         let bp = Blueprint {
@@ -758,7 +782,7 @@ impl SimState {
 
     /// Cancel a blueprint by ProjectId. Removes the associated Build task,
     /// unassigns any workers, reverts materialized voxels to Air, and rebuilds
-    /// the nav graph. Emits `BuildCancelled` if found.
+    /// walkability data. Emits `BuildCancelled` if found.
     /// Silent no-op if the ProjectId doesn't exist (idempotent for multiplayer).
     pub(crate) fn cancel_build(&mut self, project_id: ProjectId, events: &mut Vec<SimEvent>) {
         let bp = match self.db.blueprints.get(&project_id) {
@@ -863,9 +887,7 @@ impl SimState {
                 .retain(|(coord, _)| !bp_voxels.contains(coord));
         }
 
-        // Rebuild nav graph if geometry changed.
         if any_reverted {
-            self.nav_graph = nav::build_nav_graph(&self.world, &self.face_data);
             self.resnap_creature_nodes();
             // Reverted voxels may have been supporting ground piles.
             self.apply_pile_gravity();
@@ -884,10 +906,17 @@ impl SimState {
         position: VoxelCoord,
         required_species: Option<Species>,
     ) {
-        // Snap task location to the nearest nav node position so that
-        // find_path (which uses node_at) can resolve it exactly.
-        let task_location = match self.nav_graph.find_nearest_node(position, 5) {
-            Some(node) => self.nav_graph.node(node).position,
+        // Snap task location to the nearest walkable position so that
+        // find_path can resolve it.
+        let task_location = match crate::walkability::find_nearest_walkable(
+            &self.world,
+            &self.face_data,
+            position,
+            5,
+            [1, 1, 1],
+            true, // elves can climb
+        ) {
+            Some(pos) => pos,
             None => return,
         };
         let task_id = TaskId::new(&mut self.rng);
@@ -1219,33 +1248,6 @@ impl SimState {
                     }
                 }
             }
-            let removed = self.nav_graph.update_after_building_voxel_set(
-                &self.world,
-                &self.face_data,
-                chosen,
-            );
-            let large_removed = nav::update_large_after_voxel_solidified(
-                &mut self.large_nav_graph,
-                &self.world,
-                chosen,
-            );
-            let mut all_removed = removed;
-            all_removed.extend(large_removed);
-            self.resnap_removed_nodes(&all_removed);
-        } else {
-            // Incrementally update nav graph (touches only ~7 affected positions
-            // instead of scanning the entire world) and resnap displaced creatures.
-            let removed =
-                self.nav_graph
-                    .update_after_voxel_solidified(&self.world, &self.face_data, chosen);
-            let large_removed = nav::update_large_after_voxel_solidified(
-                &mut self.large_nav_graph,
-                &self.world,
-                chosen,
-            );
-            let mut all_removed = removed;
-            all_removed.extend(large_removed);
-            self.resnap_removed_nodes(&all_removed);
         }
     }
 
@@ -1277,20 +1279,6 @@ impl SimState {
         // Set to Air.
         self.set_voxel(chosen, VoxelType::Air);
         self.carved_voxels.push(chosen);
-
-        // Nav update: the algorithm is state-based and works for both
-        // solidifying and clearing voxels.
-        let removed =
-            self.nav_graph
-                .update_after_voxel_solidified(&self.world, &self.face_data, chosen);
-        let large_removed = nav::update_large_after_voxel_solidified(
-            &mut self.large_nav_graph,
-            &self.world,
-            chosen,
-        );
-        let mut all_removed = removed;
-        all_removed.extend(large_removed);
-        self.resnap_removed_nodes(&all_removed);
 
         // A carved voxel may have been supporting a ground pile above it.
         self.apply_pile_gravity();
@@ -1454,7 +1442,16 @@ impl SimState {
         let _ = self.db.update_structure(structure);
         self.set_inv_wants(inv_id, &default_wants);
 
-        if self.nav_graph.find_nearest_node(task_pos, 5).is_none() {
+        if crate::walkability::find_nearest_walkable(
+            &self.world,
+            &self.face_data,
+            task_pos,
+            5,
+            [1, 1, 1],
+            true, // elves can climb
+        )
+        .is_none()
+        {
             return;
         }
 
@@ -1610,9 +1607,9 @@ impl SimState {
         false
     }
 
-    /// After a nav graph rebuild, re-resolve every creature's position
-    /// by finding the nearest node to its current position. Clears stored paths
-    /// since NavNodeIds change when the graph is rebuilt.
+    /// After a voxel change that affects walkability, re-resolve every
+    /// creature's position by finding the nearest walkable voxel. Clears
+    /// stored paths since walkability may have changed.
     pub(crate) fn resnap_creature_nodes(&mut self) {
         let creature_info: Vec<(CreatureId, Species, VoxelCoord)> = self
             .db
@@ -1622,52 +1619,19 @@ impl SimState {
             .map(|c| (c.id, c.species, c.position.min))
             .collect();
         for (cid, species, old_pos) in creature_info {
-            let graph = self.graph_for_species(species);
             // Generous limit: resnap happens after major graph rebuilds where
-            // creatures may be far from any surviving node.
-            let new_node = graph.find_nearest_node(old_pos, 20);
-            let new_pos = new_node.map(|nid| graph.node(nid).position);
-            if let Some(mut creature) = self.db.creatures.get(&cid) {
-                creature.path = None;
-                if let Some(p) = new_pos {
-                    creature.position = creature.position.with_anchor(p);
-                }
-                let _ = self.db.update_creature(creature);
-            }
-        }
-    }
-
-    /// Resnap only creatures whose position's nav node was among the removed IDs.
-    /// Used after incremental nav graph updates where most creatures are
-    /// unaffected — much cheaper than resnapping all creatures.
-    pub(crate) fn resnap_removed_nodes(&mut self, removed: &[NavNodeId]) {
-        if removed.is_empty() {
-            return;
-        }
-        // Collect candidate creatures first, then filter by nav node membership.
-        // We can't call graph_for_species inside the iter_all closure because
-        // it borrows self, so we collect first and filter after.
-        let candidates: Vec<(CreatureId, Species, VoxelCoord)> = self
-            .db
-            .creatures
-            .iter_all()
-            .filter(|c| c.vital_status == VitalStatus::Alive)
-            .map(|c| (c.id, c.species, c.position.min))
-            .collect();
-        let to_resnap: Vec<(CreatureId, Species, VoxelCoord)> = candidates
-            .into_iter()
-            .filter(|&(_, species, pos)| {
-                self.graph_for_species(species)
-                    .node_at(pos)
-                    .is_none_or(|nid| removed.contains(&nid))
-            })
-            .collect();
-        for (cid, species, old_pos) in to_resnap {
-            let graph = self.graph_for_species(species);
-            // Generous limit: resnap happens after incremental graph updates
-            // where the nearest surviving node may be far away.
-            let new_node = graph.find_nearest_node(old_pos, 20);
-            let new_pos = new_node.map(|nid| graph.node(nid).position);
+            // creatures may be far from any surviving walkable position.
+            let species_data = &self.species_table[&species];
+            let footprint = species_data.footprint;
+            let can_climb = species_data.climb_ticks_per_voxel.is_some();
+            let new_pos = crate::walkability::find_nearest_walkable(
+                &self.world,
+                &self.face_data,
+                old_pos,
+                20,
+                footprint,
+                can_climb,
+            );
             if let Some(mut creature) = self.db.creatures.get(&cid) {
                 creature.path = None;
                 if let Some(p) = new_pos {
