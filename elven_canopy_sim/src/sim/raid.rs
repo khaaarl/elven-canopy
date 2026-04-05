@@ -245,7 +245,7 @@ impl SimState {
         let species_data = &self.species_table[&species];
         let ground_only = species_data.ground_only;
         let footprint = species_data.footprint;
-        let can_climb = species_data.climb_ticks_per_voxel.is_some();
+        let can_climb = species_data.movement_category.can_climb();
         let (wx, wy, wz) = self.config.world_size;
 
         let mut targets = Vec::new();

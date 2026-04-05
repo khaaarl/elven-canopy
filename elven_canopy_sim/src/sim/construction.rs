@@ -1611,19 +1611,25 @@ impl SimState {
     /// creature's position by finding the nearest walkable voxel. Clears
     /// stored paths since walkability may have changed.
     pub(crate) fn resnap_creature_nodes(&mut self) {
-        let creature_info: Vec<(CreatureId, Species, VoxelCoord)> = self
+        let creature_info: Vec<(CreatureId, Species, VoxelCoord, bool)> = self
             .db
             .creatures
             .iter_all()
             .filter(|c| c.vital_status == VitalStatus::Alive)
-            .map(|c| (c.id, c.species, c.position.min))
+            .map(|c| {
+                (
+                    c.id,
+                    c.species,
+                    c.position.min,
+                    c.movement_category.can_climb(),
+                )
+            })
             .collect();
-        for (cid, species, old_pos) in creature_info {
+        for (cid, species, old_pos, can_climb) in creature_info {
             // Generous limit: resnap happens after major graph rebuilds where
             // creatures may be far from any surviving walkable position.
             let species_data = &self.species_table[&species];
             let footprint = species_data.footprint;
-            let can_climb = species_data.climb_ticks_per_voxel.is_some();
             let new_pos = crate::walkability::find_nearest_walkable(
                 &self.world,
                 &self.face_data,

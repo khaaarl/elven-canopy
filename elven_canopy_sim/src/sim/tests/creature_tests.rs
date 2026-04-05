@@ -2,6 +2,7 @@
 //! and flying creature (hornet/wyvern) spawning. Corresponds to `sim/creature.rs`.
 
 use super::*;
+use crate::nav::MovementCategory;
 
 // -----------------------------------------------------------------------
 // Spawn / name tests
@@ -772,17 +773,20 @@ fn troll_spawn_hp_approximately_400() {
 
 #[test]
 fn uniform_base_stats_all_species() {
-    // All species should share the same base hp_max and walk_ticks_per_voxel.
+    // All species should share the same base hp_max. Non-flyers share
+    // move_ticks_per_voxel=500; flyers have species-specific values.
     let config = GameConfig::default();
     for (&species, data) in &config.species {
         assert_eq!(
             data.hp_max, 100,
             "{species:?} should have uniform base hp_max=100"
         );
-        assert_eq!(
-            data.walk_ticks_per_voxel, 500,
-            "{species:?} should have uniform base walk_ticks_per_voxel=500"
-        );
+        if !data.movement_category.is_flyer() {
+            assert_eq!(
+                data.move_ticks_per_voxel, 500,
+                "{species:?} should have uniform base move_ticks_per_voxel=500"
+            );
+        }
     }
 }
 
@@ -1086,7 +1090,8 @@ fn hornet_species_in_config() {
     let config = GameConfig::default();
     assert!(config.species.contains_key(&Species::Hornet));
     let data = &config.species[&Species::Hornet];
-    assert_eq!(data.flight_ticks_per_voxel, Some(250));
+    assert_eq!(data.movement_category, MovementCategory::Flyer);
+    assert_eq!(data.move_ticks_per_voxel, 250);
     assert_eq!(data.footprint, [1, 1, 1]);
     assert!(data.melee_damage > 0);
 }
@@ -1179,17 +1184,13 @@ fn hornet_is_hostile_to_elves() {
 fn hornet_is_flyer() {
     let config = GameConfig::default();
     let data = &config.species[&Species::Hornet];
-    assert!(data.flight_ticks_per_voxel.is_some());
-    // Non-flyers should have None.
+    assert!(data.movement_category.is_flyer());
+    // Non-flyers should not be Flyer.
+    assert!(!config.species[&Species::Elf].movement_category.is_flyer());
     assert!(
-        config.species[&Species::Elf]
-            .flight_ticks_per_voxel
-            .is_none()
-    );
-    assert!(
-        config.species[&Species::Goblin]
-            .flight_ticks_per_voxel
-            .is_none()
+        !config.species[&Species::Goblin]
+            .movement_category
+            .is_flyer()
     );
 }
 
@@ -1305,7 +1306,8 @@ fn wyvern_species_in_config() {
     let config = GameConfig::default();
     assert!(config.species.contains_key(&Species::Wyvern));
     let data = &config.species[&Species::Wyvern];
-    assert_eq!(data.flight_ticks_per_voxel, Some(200));
+    assert_eq!(data.movement_category, MovementCategory::Flyer);
+    assert_eq!(data.move_ticks_per_voxel, 200);
     assert_eq!(data.footprint, [2, 2, 2]);
     assert!(data.melee_damage > 0);
     assert_eq!(data.hp_max, 100); // uniform base; CON stat provides toughness
@@ -1442,32 +1444,49 @@ fn species_data_loaded_from_config() {
 
     let elf_data = &sim.species_table[&Species::Elf];
     assert!(!elf_data.ground_only);
-    assert!(elf_data.allowed_edge_types.is_none());
+    assert_eq!(elf_data.movement_category, MovementCategory::Climber);
 
     let capy_data = &sim.species_table[&Species::Capybara];
     assert!(capy_data.ground_only);
-    assert!(capy_data.allowed_edge_types.is_some());
+    assert_eq!(capy_data.movement_category, MovementCategory::WalkOnly);
 
     let boar_data = &sim.species_table[&Species::Boar];
     assert!(boar_data.ground_only);
-    assert_eq!(boar_data.walk_ticks_per_voxel, 500); // uniform base
+    assert_eq!(boar_data.movement_category, MovementCategory::WalkOnly);
 
     let deer_data = &sim.species_table[&Species::Deer];
     assert!(deer_data.ground_only);
-    assert_eq!(deer_data.walk_ticks_per_voxel, 500); // uniform base
+    assert_eq!(deer_data.movement_category, MovementCategory::WalkOnly);
+
+    let elephant_data = &sim.species_table[&Species::Elephant];
+    assert!(elephant_data.ground_only);
+    assert_eq!(elephant_data.movement_category, MovementCategory::WalkOnly);
 
     let monkey_data = &sim.species_table[&Species::Monkey];
     assert!(!monkey_data.ground_only);
-    assert_eq!(monkey_data.climb_ticks_per_voxel, Some(800));
+    assert_eq!(monkey_data.movement_category, MovementCategory::Climber);
 
     let squirrel_data = &sim.species_table[&Species::Squirrel];
     assert!(!squirrel_data.ground_only);
-    assert_eq!(squirrel_data.climb_ticks_per_voxel, Some(600));
+    assert_eq!(squirrel_data.movement_category, MovementCategory::Climber);
+
+    let goblin_data = &sim.species_table[&Species::Goblin];
+    assert_eq!(goblin_data.movement_category, MovementCategory::Climber);
 
     // Troll has HP regeneration; most species default to 0.
     let troll_data = &sim.species_table[&Species::Troll];
     assert_eq!(troll_data.ticks_per_hp_regen, 500);
     assert_eq!(elf_data.ticks_per_hp_regen, 0);
+    assert_eq!(troll_data.movement_category, MovementCategory::Climber);
+
+    let orc_data = &sim.species_table[&Species::Orc];
+    assert_eq!(orc_data.movement_category, MovementCategory::WalkOrLadder);
+
+    let hornet_data = &sim.species_table[&Species::Hornet];
+    assert_eq!(hornet_data.movement_category, MovementCategory::Flyer);
+
+    let wyvern_data = &sim.species_table[&Species::Wyvern];
+    assert_eq!(wyvern_data.movement_category, MovementCategory::Flyer);
 }
 
 // Tests for graph_for_species_dispatch, new_sim_has_large_nav_graph,
@@ -2429,5 +2448,46 @@ fn test_large_creature_landing_near_world_edge() {
     assert!(
         sim.db.creatures.get(&elephant_id).is_some(),
         "Creature should still exist after gravity near world edge"
+    );
+}
+
+#[test]
+fn spawned_creature_gets_movement_category_from_species() {
+    let mut sim = flat_world_sim(fresh_test_seed());
+
+    // Elf → Climber
+    let elf_id = spawn_species(&mut sim, Species::Elf);
+    assert_eq!(
+        sim.db.creatures.get(&elf_id).unwrap().movement_category,
+        MovementCategory::Climber,
+        "Elf should be Climber"
+    );
+
+    // Capybara → WalkOnly
+    let capy_id = spawn_species(&mut sim, Species::Capybara);
+    assert_eq!(
+        sim.db.creatures.get(&capy_id).unwrap().movement_category,
+        MovementCategory::WalkOnly,
+        "Capybara should be WalkOnly"
+    );
+
+    // Orc → WalkOrLadder
+    let orc_id = spawn_species(&mut sim, Species::Orc);
+    assert_eq!(
+        sim.db.creatures.get(&orc_id).unwrap().movement_category,
+        MovementCategory::WalkOrLadder,
+        "Orc should be WalkOrLadder"
+    );
+
+    // Hornet → Flyer (spawn in air since flyers can't use ground spawn)
+    let air_pos = VoxelCoord::new(32, 20, 32);
+    let mut events = Vec::new();
+    let hornet_id = sim
+        .spawn_creature(Species::Hornet, air_pos, &mut events)
+        .expect("hornet should spawn in air");
+    assert_eq!(
+        sim.db.creatures.get(&hornet_id).unwrap().movement_category,
+        MovementCategory::Flyer,
+        "Hornet should be Flyer"
     );
 }

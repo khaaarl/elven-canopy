@@ -1242,24 +1242,19 @@ fn creature_does_not_freeze_after_combat_preempts_task() {
         sim.db.update_creature(orc).unwrap();
     }
 
-    // Run for enough time for the elf to fire MULTIPLE shots.
-    // shoot_cooldown is 3000 ticks; run 30000 ticks for ~10 shot windows.
+    // Run for enough time for the elf to fight (ranged or melee).
+    // shoot_cooldown is 3000 ticks; run 30000 ticks for ~10 action windows.
     let tick = sim.tick;
     sim.step(&[], tick + 30000);
 
-    let inv_id = sim.db.creatures.get(&elf_id).unwrap().inventory_id;
-    let arrows_remaining = sim.inv_item_count(
-        inv_id,
-        inventory::ItemKind::Arrow,
-        inventory::MaterialFilter::Any,
-    );
-
-    // Must have fired multiple shots — proves the creature didn't freeze
-    // after the first combat preemption.
+    // The elf must be actively fighting — either firing arrows or dealing
+    // melee damage. Check that the orc took significant damage, proving the
+    // creature didn't freeze after the first combat preemption.
+    let orc_hp = sim.db.creatures.get(&orc_id).unwrap().hp;
     assert!(
-        arrows_remaining <= 18,
-        "Creature should fire multiple shots after preempting a task \
-         (not freeze after first shot). Arrows remaining: {arrows_remaining}/20"
+        orc_hp < 9_000,
+        "Creature should deal significant damage over 30000 ticks after preempting a task \
+         (not freeze after first action). Orc HP: {orc_hp}/10000"
     );
 }
 

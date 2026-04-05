@@ -4402,8 +4402,8 @@ fn arrow_chase_flying_creature_gets_chase_task() {
 
     assert!(
         sim.species_table[&Species::Hornet]
-            .flight_ticks_per_voxel
-            .is_some(),
+            .movement_category
+            .is_flyer(),
         "Hornet should be a flying species"
     );
 
@@ -7186,7 +7186,7 @@ fn military_group_command_serde_roundtrip() {
 #[test]
 fn attack_move_traversal_delay_uses_creature_stats() {
     // An elf with very high agility should move faster during attack-move
-    // than the base species walk_ticks_per_voxel would give.
+    // than the base species move_ticks_per_voxel would give.
     let mut sim = flat_world_sim(legacy_test_seed());
     sim.species_table
         .get_mut(&Species::Elf)
@@ -7243,28 +7243,23 @@ fn attack_move_traversal_delay_uses_creature_stats() {
     // delay with agility 200 is strictly less than with agility 0, proving
     // that creature stats are applied to combat movement timing.
     let species_data = &sim.species_table[&Species::Elf];
-    let base_speeds = crate::stats::CreatureMoveSpeeds::new(species_data, 0, 0);
-    let stat_speeds = crate::stats::CreatureMoveSpeeds::new(species_data, 200, 0);
+    let base_tpv = crate::stats::creature_base_tpv(species_data.move_ticks_per_voxel, 0);
+    let stat_tpv = crate::stats::creature_base_tpv(species_data.move_ticks_per_voxel, 200);
 
-    // Check that stat-modified speeds ARE actually faster for walk edges.
+    // Check that stat-modified speeds ARE actually faster.
     assert!(
-        stat_speeds.walk_tpv < base_speeds.walk_tpv,
-        "Stat-modified walk TPV ({}) should be less than base ({})",
-        stat_speeds.walk_tpv,
-        base_speeds.walk_tpv,
+        stat_tpv < base_tpv,
+        "Stat-modified TPV ({}) should be less than base ({})",
+        stat_tpv,
+        base_tpv,
     );
 
     // The delay we observed should be less than what base speeds would give
     // on the same edge. We don't know the exact edge, but we know the
     // maximum possible base delay for any edge: the longest edge (corner
-    // diagonal, distance 1773) at the slowest TPV (climb).
-    let max_base_tpv = base_speeds.walk_tpv.max(
-        base_speeds
-            .climb_tpv
-            .unwrap_or(0)
-            .max(base_speeds.wood_ladder_tpv.unwrap_or(0))
-            .max(base_speeds.rope_ladder_tpv.unwrap_or(0)),
-    );
+    // diagonal, distance 1773) at the slowest TPV. For WalkOrLadder, the
+    // slowest edge is ladders at 2x base.
+    let max_base_tpv = base_tpv * 2;
     let max_base_delay = (1773u64 * max_base_tpv)
         .div_ceil(crate::nav::DIST_SCALE as u64)
         .max(1);

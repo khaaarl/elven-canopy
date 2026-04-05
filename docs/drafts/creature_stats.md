@@ -178,10 +178,11 @@ effective_ticks = base_ticks * (1 << 20) / stat_multiplier(agility)
 
 AGI +10 halves the tick cost (twice as fast). AGI -10 doubles it (half speed).
 
-Climb speed uses a blend: `(agility + strength) / 2` fed into the same
-formula, applied to `climb_ticks_per_voxel`. Because the stat-to-multiplier
-mapping is exponential, this averaging produces a geometric-mean blend of the
-two stats' effects (intentional — climbing requires both muscle and nimbleness).
+All movement (walking, climbing, ladders, flight) uses the same AGI-only
+scaling via `creature_base_tpv(move_ticks_per_voxel, agility)`. Edge costs
+for climbing/ladders are fixed ratios of this base speed, determined by the
+creature's `MovementCategory`. The old AGI+STR blend for climbing was removed
+to enable pathfinding cache sharing across creatures in the same category.
 
 ### Constitution -> HP Max
 

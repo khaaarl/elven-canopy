@@ -26,7 +26,7 @@ fn elf_wanders_after_spawn() {
     sim.step(&[spawn_cmd], 2);
 
     // Step far enough for many activations (each ground edge costs ~500
-    // ticks at walk_ticks_per_voxel=500).
+    // ticks at move_ticks_per_voxel=500).
     sim.step(&[], 50000);
 
     assert_eq!(sim.creature_count(Species::Elf), 1);
@@ -95,7 +95,7 @@ fn creature_claims_available_task() {
     let task_id = insert_goto_task(&mut sim, task_coord);
 
     // Tick enough for the elf to claim but not finish (~500 ticks per edge
-    // at walk_ticks_per_voxel=500, ~20 edges to walk).
+    // at move_ticks_per_voxel=500, ~20 edges to walk).
     sim.step(&[], sim.tick + 5000);
 
     let elf = sim.db.creatures.get(&elf_id).unwrap();
@@ -2661,7 +2661,7 @@ fn creature_wanders_via_activation_chain() {
     let initial_pos = elf.position;
 
     // Step enough for many activations (each moves 1 edge; ground edges
-    // cost ~500 ticks at walk_ticks_per_voxel=500).
+    // cost ~500 ticks at move_ticks_per_voxel=500).
     sim.step(&[], 50000);
 
     let elf = sim

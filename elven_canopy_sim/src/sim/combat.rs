@@ -90,17 +90,13 @@ impl SimState {
         // Ground attackers need a reachable position to walk toward; for flying
         // targets, pursue_closest_target enumerates strike positions within
         // melee range and lets find_nearest filter to nav-node positions.
-        let attacker_is_flying = self.species_table[&attacker.species]
-            .flight_ticks_per_voxel
-            .is_some();
-        let target_is_flying = self.species_table[&target.species]
-            .flight_ticks_per_voxel
-            .is_some();
+        let attacker_is_flying = attacker.movement_category.is_flyer();
+        let target_is_flying = target.movement_category.is_flyer();
         if !attacker_is_flying && !target_is_flying {
             // Both ground: target must be in a walkable position.
             let attacker_species_data = &self.species_table[&attacker.species];
             let attacker_footprint = attacker_species_data.footprint;
-            let attacker_can_climb = attacker_species_data.climb_ticks_per_voxel.is_some();
+            let attacker_can_climb = attacker.movement_category.can_climb();
             if crate::walkability::find_nearest_walkable(
                 &self.world,
                 &self.face_data,
@@ -229,9 +225,9 @@ impl SimState {
         // Snap to nav node position so find_path can resolve it exactly.
         let species = creature.species;
         let species_data = &self.species_table[&species];
-        let is_flying = species_data.flight_ticks_per_voxel.is_some();
+        let is_flying = creature.movement_category.is_flyer();
         let footprint = species_data.footprint;
-        let can_climb = species_data.climb_ticks_per_voxel.is_some();
+        let can_climb = creature.movement_category.can_climb();
         let destination = if is_flying {
             destination
         } else {
@@ -399,15 +395,18 @@ impl SimState {
         };
         let destination = move_data.destination;
 
-        let creature_species = self.db.creatures.get(&creature_id).map(|c| c.species);
-        let is_flying = creature_species
-            .map(|s| self.species_table[&s].flight_ticks_per_voxel.is_some())
+        let creature_ref = self.db.creatures.get(&creature_id);
+        let creature_species = creature_ref.as_ref().map(|c| c.species);
+        let is_flying = creature_ref
+            .as_ref()
+            .map(|c| c.movement_category.is_flyer())
             .unwrap_or(false);
         let footprint = creature_species
             .map(|s| self.species_table[&s].footprint)
             .unwrap_or([1, 1, 1]);
-        let can_climb = creature_species
-            .map(|s| self.species_table[&s].climb_ticks_per_voxel.is_some())
+        let can_climb = creature_ref
+            .as_ref()
+            .map(|c| c.movement_category.can_climb())
             .unwrap_or(false);
 
         // Ground creatures: resolve destination to walkable position for location checks.
@@ -602,9 +601,7 @@ impl SimState {
             return;
         }
 
-        let is_flying = self.species_table[&species]
-            .flight_ticks_per_voxel
-            .is_some();
+        let is_flying = creature.movement_category.is_flyer();
 
         // Check if the origin is already within detection range — if so,
         // normal hostile_pursue will handle engagement on the next activation.
@@ -647,7 +644,7 @@ impl SimState {
         // Ground creatures need a reachable walkable position at the destination.
         let chase_species_data = &self.species_table[&species];
         let chase_footprint = chase_species_data.footprint;
-        let chase_can_climb = chase_species_data.climb_ticks_per_voxel.is_some();
+        let chase_can_climb = creature.movement_category.can_climb();
         if !is_flying
             && crate::walkability::find_nearest_walkable(
                 &self.world,
@@ -742,10 +739,7 @@ impl SimState {
         let species = creature.species;
 
         // Flying creatures: delegate to fly_toward_target.
-        if self.species_table[&species]
-            .flight_ticks_per_voxel
-            .is_some()
-        {
+        if creature.movement_category.is_flyer() {
             if !self.fly_toward_target(creature_id, task_location_coord, events) {
                 // Flight pathfinding failed — disengage from engagement target.
                 self.disengage_attack_move(task_id, destination, creature_id, dest_nav_node);
@@ -763,7 +757,7 @@ impl SimState {
         let creature = self.db.creatures.get(&creature_id).unwrap();
         let species_data_am = &self.species_table[&species];
         let footprint = species_data_am.footprint;
-        let can_climb = species_data_am.climb_ticks_per_voxel.is_some();
+        let can_climb = creature.movement_category.can_climb();
         let next_pos = if let Some(ref path) = creature.path {
             if let Some(&next) = path.remaining_positions.first() {
                 if crate::walkability::footprint_walkable(
@@ -839,10 +833,13 @@ impl SimState {
             crate::walkability::derive_edge_type(from_surface, to_surface, old_pos, dest_pos);
 
         let species_data = &self.species_table[&species];
+        let creature_ref = self.db.creatures.get(&creature_id).unwrap();
         let agility = self.trait_int(creature_id, TraitKind::Agility, 0);
-        let strength = self.trait_int(creature_id, TraitKind::Strength, 0);
-        let tpv = crate::stats::CreatureMoveSpeeds::new(species_data, agility, strength)
-            .tpv_for_edge(edge_type);
+        let base_tpv = crate::stats::creature_base_tpv(species_data.move_ticks_per_voxel, agility);
+        let tpv = creature_ref
+            .movement_category
+            .tpv_for_edge_type(edge_type, base_tpv)
+            .unwrap_or(base_tpv);
         let dx = dest_pos.x - old_pos.x;
         let dy = dest_pos.y - old_pos.y;
         let dz = dest_pos.z - old_pos.z;
@@ -1095,10 +1092,7 @@ impl SimState {
         let species = creature.species;
 
         // Flying creatures: delegate to fly_toward_target with failure tracking.
-        if self.species_table[&species]
-            .flight_ticks_per_voxel
-            .is_some()
-        {
+        if creature.movement_category.is_flyer() {
             if self.fly_toward_target(creature_id, task_location_coord, events) {
                 // Reset failure counter on successful flight step.
                 if let Some(mut data) = self.task_attack_target_data(task_id)
@@ -1127,7 +1121,7 @@ impl SimState {
 
         // Ground creatures: voxel-direct pathfinding.
         let species_data_gt = &self.species_table[&species];
-        let can_climb = species_data_gt.climb_ticks_per_voxel.is_some();
+        let can_climb = creature.movement_category.can_climb();
         let current_pos = match current_node {
             Some(n) => n,
             None => return,
@@ -1240,10 +1234,13 @@ impl SimState {
             crate::walkability::derive_edge_type(from_surface, to_surface, old_pos, dest_pos);
 
         let species_data = &self.species_table[&species];
+        let creature_ref = self.db.creatures.get(&creature_id).unwrap();
         let agility = self.trait_int(creature_id, TraitKind::Agility, 0);
-        let strength = self.trait_int(creature_id, TraitKind::Strength, 0);
-        let tpv = crate::stats::CreatureMoveSpeeds::new(species_data, agility, strength)
-            .tpv_for_edge(edge_type);
+        let base_tpv = crate::stats::creature_base_tpv(species_data.move_ticks_per_voxel, agility);
+        let tpv = creature_ref
+            .movement_category
+            .tpv_for_edge_type(edge_type, base_tpv)
+            .unwrap_or(base_tpv);
         let dx = dest_pos.x - old_pos.x;
         let dy = dest_pos.y - old_pos.y;
         let dz = dest_pos.z - old_pos.z;
@@ -2995,9 +2992,11 @@ impl SimState {
 
         // Greedy retreat: pick the walkable neighbor maximizing distance from the
         // nearest threat. Ties broken by VoxelCoord for determinism.
+        let creature_ref = self.db.creatures.get(&creature_id).unwrap();
+        let category = creature_ref.movement_category;
         let species_data = &self.species_table[&species];
         let footprint = species_data.footprint;
-        let can_climb = species_data.climb_ticks_per_voxel.is_some();
+        let can_climb = category.can_climb();
         let from_surface =
             crate::walkability::derive_surface_type(&self.world, &self.face_data, current_pos);
 
@@ -3017,9 +3016,7 @@ impl SimState {
                 current_pos,
                 neighbor,
             );
-            if let Some(ref allowed) = species_data.allowed_edge_types
-                && !allowed.contains(&edge_type)
-            {
+            if category.tpv_for_edge_type(edge_type, 1).is_none() {
                 continue;
             }
             eligible.push(neighbor);
@@ -3315,14 +3312,17 @@ impl SimState {
             Err(_) => return false,
         };
 
-        let is_flyer = self.species_table[&species]
-            .flight_ticks_per_voxel
-            .is_some();
+        let creature_ref = self.db.creatures.get(&creature_id).unwrap();
+        let is_flyer = creature_ref.movement_category.is_flyer();
         if is_flyer {
             if path.positions.len() < 2 {
                 return false;
             }
-            let flight_tpv = self.species_table[&species].flight_ticks_per_voxel.unwrap();
+            let agility = self.trait_int(creature_id, TraitKind::Agility, 0);
+            let flight_tpv = crate::stats::creature_base_tpv(
+                self.species_table[&species].move_ticks_per_voxel,
+                agility,
+            );
             self.fly_one_step(creature_id, species, path.positions[1], flight_tpv, events)
         } else {
             if path.positions.len() < 2 {
@@ -3850,7 +3850,7 @@ impl SimState {
         let species = creature.species;
         let species_data_rp = &self.species_table[&species];
         let footprint = species_data_rp.footprint;
-        let can_climb = species_data_rp.climb_ticks_per_voxel.is_some();
+        let can_climb = creature.movement_category.can_climb();
         let current_pos = creature.position.min;
         if !crate::walkability::footprint_walkable(
             &self.world,

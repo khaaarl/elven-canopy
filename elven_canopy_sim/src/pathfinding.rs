@@ -1,7 +1,7 @@
 // Unified pathfinding for ground and flying creatures on the voxel grid.
 //
 // Ground creatures use A* on the voxel grid (`astar_ground`) with walkability
-// checks, edge-type filtering, and species-specific traversal costs. Flying
+// checks, edge-type filtering, and category-based traversal costs. Flying
 // creatures use A* on the 3D voxel grid (`astar_fly`) with footprint clearance
 // checks. Both return the same `PathResult` type.
 //
@@ -31,7 +31,6 @@
 // `BTreeMap` for visited sets (ordered by `VoxelCoord`) and `VoxelCoord`
 // tiebreaking in the priority queue.
 
-use crate::nav::EdgeType;
 use crate::types::{FaceData, VoxelCoord};
 use crate::walkability;
 use crate::world::VoxelWorld;
@@ -229,47 +228,22 @@ pub struct PathResult {
 
 /// Bundled speed parameters for ground pathfinding.
 ///
-/// Combines the four per-species ticks-per-voxel values and the optional
-/// edge-type filter into a single struct to reduce argument lists. Construct
-/// from `SpeciesData` (raw speeds) or `CreatureMoveSpeeds` (stat-modified).
-pub struct GroundSpeeds<'a> {
-    pub walk_tpv: u64,
-    pub climb_tpv: Option<u64>,
-    pub wood_ladder_tpv: Option<u64>,
-    pub rope_ladder_tpv: Option<u64>,
-    pub allowed_edges: Option<&'a [EdgeType]>,
-    /// Whether this creature can climb (derived from `climb_tpv.is_some()`).
-    /// Passed through to `footprint_walkable` to restrict non-climbers to
-    /// positions with solid directly below.
-    pub can_climb: bool,
+/// Combines a stat-modified base ticks-per-voxel with a `MovementCategory`
+/// that determines which edges are traversable and at what cost ratio.
+/// All creatures in the same category use identical cost ratios, enabling
+/// path caching per (category, footprint_size).
+pub struct GroundSpeeds {
+    /// Stat-modified base ticks-per-voxel (after AGI scaling).
+    pub base_tpv: u64,
+    /// Movement mode — determines edge traversability and cost multipliers.
+    pub category: crate::nav::MovementCategory,
 }
 
-impl<'a> GroundSpeeds<'a> {
-    /// Build from raw species data fields.
-    pub fn from_species(species_data: &'a crate::species::SpeciesData) -> Self {
-        Self {
-            walk_tpv: species_data.walk_ticks_per_voxel,
-            climb_tpv: species_data.climb_ticks_per_voxel,
-            wood_ladder_tpv: species_data.wood_ladder_tpv,
-            rope_ladder_tpv: species_data.rope_ladder_tpv,
-            allowed_edges: species_data.allowed_edge_types.as_deref(),
-            can_climb: species_data.climb_ticks_per_voxel.is_some(),
-        }
-    }
-
-    /// Build from stat-modified creature move speeds plus an edge filter.
-    pub fn from_move_speeds(
-        speeds: &crate::stats::CreatureMoveSpeeds,
-        allowed_edges: Option<&'a [EdgeType]>,
-    ) -> Self {
-        Self {
-            walk_tpv: speeds.walk_tpv,
-            climb_tpv: speeds.climb_tpv,
-            wood_ladder_tpv: speeds.wood_ladder_tpv,
-            rope_ladder_tpv: speeds.rope_ladder_tpv,
-            allowed_edges,
-            can_climb: speeds.climb_tpv.is_some(),
-        }
+impl GroundSpeeds {
+    /// Whether this creature can climb (used for walkability checks —
+    /// non-climbers require solid ground directly below).
+    pub fn can_climb(&self) -> bool {
+        self.category.can_climb()
     }
 }
 
@@ -753,18 +727,6 @@ pub fn nearest_fly(
 // Ground A* (voxel-direct, replacing nav-graph A*)
 // ---------------------------------------------------------------------------
 
-/// Compute the ticks-per-voxel for traversing an edge of the given type.
-/// Returns `None` if the species cannot traverse this edge type (e.g., a
-/// ground-only creature encountering a climb edge with no climb speed).
-fn tpv_for_edge_type(edge_type: EdgeType, speeds: &GroundSpeeds) -> Option<u64> {
-    match edge_type {
-        EdgeType::TrunkClimb | EdgeType::GroundToTrunk => speeds.climb_tpv,
-        EdgeType::WoodLadderClimb => speeds.wood_ladder_tpv,
-        EdgeType::RopeLadderClimb => speeds.rope_ladder_tpv,
-        _ => Some(speeds.walk_tpv),
-    }
-}
-
 /// Find the shortest ground path from `start` to `goal` using A* on the voxel
 /// grid with walkability checks.
 ///
@@ -788,10 +750,11 @@ pub fn astar_ground(
     opts: &PathOpts,
     footprint: [u8; 3],
 ) -> Result<PathResult, PathError> {
-    if !walkability::footprint_walkable(world, face_data, start, footprint, speeds.can_climb) {
+    let can_climb = speeds.can_climb();
+    if !walkability::footprint_walkable(world, face_data, start, footprint, can_climb) {
         return Err(PathError::StartNotOnGraph);
     }
-    if !walkability::footprint_walkable(world, face_data, goal, footprint, speeds.can_climb) {
+    if !walkability::footprint_walkable(world, face_data, goal, footprint, can_climb) {
         return Err(PathError::TargetNotOnGraph);
     }
     if start == goal {
@@ -804,7 +767,8 @@ pub fn astar_ground(
     let manhattan = start.manhattan_distance(goal);
     let limits = resolve_limits(opts, manhattan, false, 1);
 
-    let walk_tpv = speeds.walk_tpv;
+    let base_tpv = speeds.base_tpv;
+    let category = speeds.category;
 
     let mut g_score: BTreeMap<VoxelCoord, i64> = BTreeMap::new();
     let mut came_from: BTreeMap<VoxelCoord, VoxelCoord> = BTreeMap::new();
@@ -815,7 +779,7 @@ pub fn astar_ground(
     depth.insert(start, 0);
     open.push(OpenEntry {
         pos: start,
-        f_score: octile_heuristic_3d(start, goal, walk_tpv),
+        f_score: octile_heuristic_3d(start, goal, base_tpv),
     });
 
     let mut expanded: u32 = 0;
@@ -844,7 +808,7 @@ pub fn astar_ground(
         };
 
         // Skip stale entries.
-        let h = octile_heuristic_3d(pos, goal, walk_tpv);
+        let h = octile_heuristic_3d(pos, goal, base_tpv);
         if current_g + h < f_score {
             continue;
         }
@@ -868,22 +832,15 @@ pub fn astar_ground(
 
         // Expand all valid neighbors (including surface-snap for large creatures).
         for (neighbor, dist_scaled) in
-            walkability::ground_neighbors(world, face_data, pos, footprint, speeds.can_climb)
+            walkability::ground_neighbors(world, face_data, pos, footprint, can_climb)
         {
             // Derive edge type and compute cost.
             let to_surface = walkability::derive_surface_type(world, face_data, neighbor);
             let edge_type = walkability::derive_edge_type(from_surface, to_surface, pos, neighbor);
 
-            // Check allowed edge types.
-            if let Some(allowed) = speeds.allowed_edges
-                && !allowed.contains(&edge_type)
-            {
-                continue;
-            }
-
-            let tpv = match tpv_for_edge_type(edge_type, speeds) {
+            let tpv = match category.tpv_for_edge_type(edge_type, base_tpv) {
                 Some(t) => t,
-                None => continue, // species cannot traverse this edge type
+                None => continue, // category cannot traverse this edge type
             };
 
             let move_cost = (dist_scaled * tpv) as i64;
@@ -893,7 +850,7 @@ pub fn astar_ground(
                 g_score.insert(neighbor, tentative_g);
                 came_from.insert(neighbor, pos);
                 depth.insert(neighbor, current_depth + 1);
-                let h = octile_heuristic_3d(neighbor, goal, walk_tpv);
+                let h = octile_heuristic_3d(neighbor, goal, base_tpv);
                 open.push(OpenEntry {
                     pos: neighbor,
                     f_score: tentative_g + h,
@@ -934,27 +891,23 @@ pub fn nearest_astar_ground(
         return Ok(start);
     }
 
-    if !walkability::footprint_walkable(world, face_data, start, footprint, speeds.can_climb) {
+    if !walkability::footprint_walkable(world, face_data, start, footprint, speeds.can_climb()) {
         return Err(PathError::StartNotOnGraph);
     }
 
     // Pre-filter: only candidates with walkable positions.
-    let walk_tpv = speeds.walk_tpv;
+    let base_tpv = speeds.base_tpv;
+    let category = speeds.category;
+    let can_climb = speeds.can_climb();
     let mut candidate_indices: Vec<usize> = (0..candidates.len())
         .filter(|&i| {
-            walkability::footprint_walkable(
-                world,
-                face_data,
-                candidates[i],
-                footprint,
-                speeds.can_climb,
-            )
+            walkability::footprint_walkable(world, face_data, candidates[i], footprint, can_climb)
         })
         .collect();
     if candidate_indices.is_empty() {
         return Err(PathError::NoTargets);
     }
-    candidate_indices.sort_by_key(|&i| octile_heuristic_3d(start, candidates[i], walk_tpv));
+    candidate_indices.sort_by_key(|&i| octile_heuristic_3d(start, candidates[i], base_tpv));
 
     let max_manhattan = candidate_indices
         .iter()
@@ -974,7 +927,7 @@ pub fn nearest_astar_ground(
         .iter()
         .map(|&i| {
             let mut heap = BinaryHeap::new();
-            let h = octile_heuristic_3d(start, candidates[i], walk_tpv);
+            let h = octile_heuristic_3d(start, candidates[i], base_tpv);
             heap.push(OpenEntry {
                 pos: start,
                 f_score: h,
@@ -1077,7 +1030,7 @@ pub fn nearest_astar_ground(
         let from_surface = walkability::derive_surface_type(world, face_data, pos);
 
         for (neighbor, dist_scaled) in
-            walkability::ground_neighbors(world, face_data, pos, footprint, speeds.can_climb)
+            walkability::ground_neighbors(world, face_data, pos, footprint, can_climb)
         {
             if closed.contains(&neighbor) {
                 continue;
@@ -1086,13 +1039,7 @@ pub fn nearest_astar_ground(
             let to_surface = walkability::derive_surface_type(world, face_data, neighbor);
             let edge_type = walkability::derive_edge_type(from_surface, to_surface, pos, neighbor);
 
-            if let Some(allowed) = speeds.allowed_edges
-                && !allowed.contains(&edge_type)
-            {
-                continue;
-            }
-
-            let tpv = match tpv_for_edge_type(edge_type, speeds) {
+            let tpv = match category.tpv_for_edge_type(edge_type, base_tpv) {
                 Some(t) => t,
                 None => continue,
             };
@@ -1109,7 +1056,7 @@ pub fn nearest_astar_ground(
                         continue;
                     }
                     let h =
-                        octile_heuristic_3d(neighbor, candidates[candidate_indices[oci]], walk_tpv);
+                        octile_heuristic_3d(neighbor, candidates[candidate_indices[oci]], base_tpv);
                     let f = tentative_g + h;
                     if let Some((_, best_c)) = best_cost
                         && f >= best_c
@@ -1155,31 +1102,23 @@ pub fn nearest_ground(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nav::EdgeType;
+    use crate::nav::{EdgeType, MovementCategory};
     use crate::types::{VoxelCoord, VoxelType};
     use crate::world::VoxelWorld;
 
-    /// Default speeds for tests: walk_tpv=1, climb_tpv=2, no ladders, all edges.
-    fn test_speeds() -> GroundSpeeds<'static> {
+    /// Default speeds for tests: base_tpv=1, Climber category.
+    fn test_speeds() -> GroundSpeeds {
         GroundSpeeds {
-            walk_tpv: 1,
-            climb_tpv: Some(2),
-            wood_ladder_tpv: None,
-            rope_ladder_tpv: None,
-            allowed_edges: None,
-            can_climb: true,
+            base_tpv: 1,
+            category: MovementCategory::Climber,
         }
     }
 
-    /// Speeds with an edge filter.
-    fn test_speeds_filtered(allowed: &[EdgeType]) -> GroundSpeeds<'_> {
+    /// Speeds with a specific movement category for filtering tests.
+    fn test_speeds_category(category: MovementCategory) -> GroundSpeeds {
         GroundSpeeds {
-            walk_tpv: 1,
-            climb_tpv: Some(2),
-            wood_ladder_tpv: None,
-            rope_ladder_tpv: None,
-            allowed_edges: Some(allowed),
-            can_climb: true,
+            base_tpv: 1,
+            category,
         }
     }
 
@@ -2085,9 +2024,8 @@ mod tests {
         }
         let start = VoxelCoord::new(4, 6, 5);
         let goal = VoxelCoord::new(4, 9, 5);
-        // Only allow Ground and BranchWalk — no climbing.
-        let allowed = [EdgeType::Ground, EdgeType::BranchWalk];
-        let speeds = test_speeds_filtered(&allowed);
+        // WalkOnly category — no climbing.
+        let speeds = test_speeds_category(MovementCategory::WalkOnly);
         let result = astar_ground(&world, &fd, start, goal, &speeds, &PathOpts::default(), FP1);
         // Should fail — no path without climbing.
         assert!(result.is_err());

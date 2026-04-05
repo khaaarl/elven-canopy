@@ -221,9 +221,7 @@ impl SimState {
 
         let creature = self.db.creatures.get(&creature_id).unwrap();
         let species = creature.species;
-        let is_flying = self.species_table[&species]
-            .flight_ticks_per_voxel
-            .is_some();
+        let is_flying = creature.movement_category.is_flyer();
 
         // Gravity check: ground creatures only.
         if !is_flying && !self.creature_is_supported(creature_id) {
@@ -252,7 +250,7 @@ impl SimState {
         // Snap to nearest walkable position if the world changed under them.
         let species_data_act = &self.species_table[&species];
         let footprint = species_data_act.footprint;
-        let can_climb = species_data_act.climb_ticks_per_voxel.is_some();
+        let can_climb = creature.movement_category.can_climb();
         if let Some(pos) = current_node
             && !crate::walkability::footprint_walkable(
                 &self.world,
@@ -681,15 +679,18 @@ impl SimState {
         current_node: Option<VoxelCoord>,
         events: &mut Vec<SimEvent>,
     ) {
-        let creature_species = self.db.creatures.get(&creature_id).map(|c| c.species);
-        let is_flying = creature_species
-            .map(|s| self.species_table[&s].flight_ticks_per_voxel.is_some())
+        let creature_ref = self.db.creatures.get(&creature_id);
+        let creature_species = creature_ref.as_ref().map(|c| c.species);
+        let is_flying = creature_ref
+            .as_ref()
+            .map(|c| c.movement_category.is_flyer())
             .unwrap_or(false);
         let footprint = creature_species
             .map(|s| self.species_table[&s].footprint)
             .unwrap_or([1, 1, 1]);
-        let can_climb = creature_species
-            .map(|s| self.species_table[&s].climb_ticks_per_voxel.is_some())
+        let can_climb = creature_ref
+            .as_ref()
+            .map(|c| c.movement_category.can_climb())
             .unwrap_or(false);
 
         let (mut task_location_coord, target_creature, task_kind_tag) =

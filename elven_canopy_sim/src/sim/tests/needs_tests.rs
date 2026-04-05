@@ -2264,7 +2264,7 @@ fn dine_at_hall_instant_on_arrival() {
     // that completion happens WITHOUT needing eat_action_ticks of delay.
     // With the old (non-instant) flow, the task would still be active at
     // heartbeat + walk_time + 500 because eat_action_ticks = 1500.
-    let walk_tpv = sim.species_table[&Species::Elf].walk_ticks_per_voxel as u64;
+    let walk_tpv = sim.species_table[&Species::Elf].move_ticks_per_voxel as u64;
     sim.step(&[], 1 + heartbeat + walk_tpv * 10 + 500);
 
     // Task should be complete well before eat_action_ticks would have elapsed.

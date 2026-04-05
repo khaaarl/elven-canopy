@@ -56,7 +56,8 @@ impl SimState {
         let hp_max = species_data.hp_max;
         let mp_max = species_data.mp_max;
         let heartbeat_interval = species_data.heartbeat_interval_ticks;
-        let is_flyer = species_data.flight_ticks_per_voxel.is_some();
+        let movement_category = species_data.movement_category;
+        let is_flyer = movement_category.is_flyer();
         let footprint = species_data.footprint;
         let sex_weights = species_data.sex_weights;
 
@@ -70,7 +71,7 @@ impl SimState {
             position
         } else {
             // Ground creature: find nearest walkable position for this footprint.
-            let can_climb = species_data.climb_ticks_per_voxel.is_some();
+            let can_climb = movement_category.can_climb();
             let nearest = crate::walkability::find_nearest_walkable(
                 &self.world,
                 &self.face_data,
@@ -137,6 +138,7 @@ impl SimState {
             last_dance_tick: 0,
             last_dinner_party_tick: 0,
             sex,
+            movement_category,
         };
 
         self.db.insert_creature(creature).unwrap();
@@ -627,10 +629,10 @@ impl SimState {
             _ => return true, // dead or missing — not our problem
         };
         let species_data = &self.species_table[&creature.species];
-        if species_data.flight_ticks_per_voxel.is_some() {
+        if creature.movement_category.is_flyer() {
             return true; // flying creatures are always supported
         }
-        let can_climb = species_data.climb_ticks_per_voxel.is_some();
+        let can_climb = creature.movement_category.can_climb();
         crate::walkability::footprint_walkable(
             &self.world,
             &self.face_data,
@@ -646,10 +648,11 @@ impl SimState {
     pub(crate) fn find_creature_landing(
         &self,
         species: Species,
+        movement_category: crate::nav::MovementCategory,
         pos: VoxelCoord,
     ) -> Option<VoxelCoord> {
         let species_data = &self.species_table[&species];
-        let can_climb = species_data.climb_ticks_per_voxel.is_some();
+        let can_climb = movement_category.can_climb();
 
         // Scan downward for the first Y that meets walkability and support
         // criteria. Works for all footprint sizes. The `can_climb` parameter
@@ -682,13 +685,11 @@ impl SimState {
             _ => return false,
         };
         let species = creature.species;
+        let movement_category = creature.movement_category;
         let old_pos = creature.position.min;
 
         // Flying creatures are exempt.
-        if self.species_table[&species]
-            .flight_ticks_per_voxel
-            .is_some()
-        {
+        if movement_category.is_flyer() {
             return false;
         }
 
@@ -697,14 +698,14 @@ impl SimState {
         }
 
         // Find a landing position.
-        let landing = match self.find_creature_landing(species, old_pos) {
+        let landing = match self.find_creature_landing(species, movement_category, old_pos) {
             Some(pos) => pos,
             None => {
                 // Degenerate: no valid landing column. Teleport to nearest
                 // footprint-walkable position.
                 let sp = &self.species_table[&species];
                 let fp = sp.footprint;
-                let cc = sp.climb_ticks_per_voxel.is_some();
+                let cc = movement_category.can_climb();
                 match crate::walkability::find_nearest_walkable(
                     &self.world,
                     &self.face_data,
@@ -789,12 +790,7 @@ impl SimState {
             .db
             .creatures
             .iter_all()
-            .filter(|c| {
-                c.vital_status == VitalStatus::Alive
-                    && self.species_table[&c.species]
-                        .flight_ticks_per_voxel
-                        .is_none()
-            })
+            .filter(|c| c.vital_status == VitalStatus::Alive && !c.movement_category.is_flyer())
             .map(|c| c.id)
             .collect();
 

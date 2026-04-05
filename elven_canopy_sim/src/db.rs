@@ -470,6 +470,10 @@ pub struct Creature {
     /// Old saves without this field deserialize as `CreatureSex::None`.
     #[serde(default)]
     pub sex: crate::types::CreatureSex,
+    /// Movement mode — determines pathfinding edge costs and flight/ground
+    /// dispatch. Initially copied from species at spawn; stored per-creature
+    /// to support future modality changes (e.g., learning to climb).
+    pub movement_category: crate::nav::MovementCategory,
 }
 
 /// A timestamped thought belonging to a creature.

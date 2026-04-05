@@ -56,9 +56,10 @@ impl SimState {
     pub(crate) fn find_nearest_grass(&self, creature_id: CreatureId) -> Option<VoxelCoord> {
         let creature = self.db.creatures.get(&creature_id)?;
         let start = creature.position.min;
+        let category = creature.movement_category;
         let species_data = &self.species_table[&creature.species];
         let footprint = species_data.footprint;
-        let can_climb = species_data.climb_ticks_per_voxel.is_some();
+        let can_climb = category.can_climb();
         if !crate::walkability::footprint_walkable(
             &self.world,
             &self.face_data,
@@ -107,29 +108,11 @@ impl SimState {
                 let edge_type =
                     crate::walkability::derive_edge_type(from_surface, to_surface, pos, neighbor);
 
-                // Check edge type allowed.
-                if let Some(allowed) = &species_data.allowed_edge_types
-                    && !allowed.contains(&edge_type)
+                let tpv = match category
+                    .tpv_for_edge_type(edge_type, species_data.move_ticks_per_voxel)
                 {
-                    continue;
-                }
-
-                let tpv = match edge_type {
-                    crate::nav::EdgeType::TrunkClimb | crate::nav::EdgeType::GroundToTrunk => {
-                        match species_data.climb_ticks_per_voxel {
-                            Some(t) => t,
-                            None => continue,
-                        }
-                    }
-                    crate::nav::EdgeType::WoodLadderClimb => match species_data.wood_ladder_tpv {
-                        Some(t) => t,
-                        None => continue,
-                    },
-                    crate::nav::EdgeType::RopeLadderClimb => match species_data.rope_ladder_tpv {
-                        Some(t) => t,
-                        None => continue,
-                    },
-                    _ => species_data.walk_ticks_per_voxel,
+                    Some(t) => t,
+                    None => continue, // can't traverse this edge
                 };
                 let edge_cost = dist_scaled * tpv;
                 let new_cost = cost.saturating_add(edge_cost);

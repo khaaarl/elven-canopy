@@ -30,7 +30,7 @@
 // results.
 
 use crate::inventory::{ItemColor, ItemKind, Material, MaterialFilter};
-use crate::nav::EdgeType;
+use crate::nav::MovementCategory;
 use crate::species::{
     AmmoExhaustedBehavior, EngagementInitiative, EngagementStyle, PersonalityAxis, SnpKind,
     SnpRegion, SpeciesData, SpeciesGenomeConfig, StatDistribution, WeaponPreference,
@@ -3585,11 +3585,9 @@ impl Default for GameConfig {
         species.insert(
             Species::Elf,
             SpeciesData {
-                walk_ticks_per_voxel: 500,
-                climb_ticks_per_voxel: Some(1250),
-                flight_ticks_per_voxel: None,
+                move_ticks_per_voxel: 500,
+                movement_category: MovementCategory::Climber,
                 heartbeat_interval_ticks: 3000,
-                allowed_edge_types: None, // elves can traverse all edges
                 ground_only: false,
                 hp_max: 100,
                 ticks_per_hp_regen: 0,
@@ -3602,8 +3600,6 @@ impl Default for GameConfig {
                 food_restore_pct: 40,
                 bread_restore_pct: 30,
                 footprint: [1, 1, 1],
-                wood_ladder_tpv: Some(750),
-                rope_ladder_tpv: Some(900),
                 rest_max: 1_000_000_000_000_000,
                 rest_decay_per_tick: 333_333_333,
                 rest_tired_threshold_pct: 50,
@@ -3651,11 +3647,9 @@ impl Default for GameConfig {
         species.insert(
             Species::Capybara,
             SpeciesData {
-                walk_ticks_per_voxel: 500,
-                climb_ticks_per_voxel: None,
-                flight_ticks_per_voxel: None,
+                move_ticks_per_voxel: 500,
+                movement_category: MovementCategory::WalkOnly,
                 heartbeat_interval_ticks: 4000,
-                allowed_edge_types: Some(vec![EdgeType::Ground]),
                 ground_only: true,
                 hp_max: 100,
                 ticks_per_hp_regen: 0,
@@ -3668,8 +3662,6 @@ impl Default for GameConfig {
                 food_restore_pct: 40,
                 bread_restore_pct: 30,
                 footprint: [1, 1, 1],
-                wood_ladder_tpv: None,
-                rope_ladder_tpv: None,
                 rest_max: 1_000_000_000_000_000,
                 rest_decay_per_tick: 0,
                 rest_tired_threshold_pct: 50,
@@ -3709,11 +3701,9 @@ impl Default for GameConfig {
         species.insert(
             Species::Boar,
             SpeciesData {
-                walk_ticks_per_voxel: 500,
-                climb_ticks_per_voxel: None,
-                flight_ticks_per_voxel: None,
+                move_ticks_per_voxel: 500,
+                movement_category: MovementCategory::WalkOnly,
                 heartbeat_interval_ticks: 4000,
-                allowed_edge_types: Some(vec![EdgeType::Ground]),
                 ground_only: true,
                 hp_max: 100,
                 ticks_per_hp_regen: 0,
@@ -3726,8 +3716,6 @@ impl Default for GameConfig {
                 food_restore_pct: 40,
                 bread_restore_pct: 30,
                 footprint: [1, 1, 1],
-                wood_ladder_tpv: None,
-                rope_ladder_tpv: None,
                 rest_max: 1_000_000_000_000_000,
                 rest_decay_per_tick: 0,
                 rest_tired_threshold_pct: 50,
@@ -3767,11 +3755,9 @@ impl Default for GameConfig {
         species.insert(
             Species::Deer,
             SpeciesData {
-                walk_ticks_per_voxel: 500,
-                climb_ticks_per_voxel: None,
-                flight_ticks_per_voxel: None,
+                move_ticks_per_voxel: 500,
+                movement_category: MovementCategory::WalkOnly,
                 heartbeat_interval_ticks: 3500,
-                allowed_edge_types: Some(vec![EdgeType::Ground]),
                 ground_only: true,
                 hp_max: 100,
                 ticks_per_hp_regen: 0,
@@ -3784,8 +3770,6 @@ impl Default for GameConfig {
                 food_restore_pct: 40,
                 bread_restore_pct: 30,
                 footprint: [1, 1, 1],
-                wood_ladder_tpv: None,
-                rope_ladder_tpv: None,
                 rest_max: 1_000_000_000_000_000,
                 rest_decay_per_tick: 0,
                 rest_tired_threshold_pct: 50,
@@ -3825,11 +3809,9 @@ impl Default for GameConfig {
         species.insert(
             Species::Elephant,
             SpeciesData {
-                walk_ticks_per_voxel: 500,
-                climb_ticks_per_voxel: None,
-                flight_ticks_per_voxel: None,
+                move_ticks_per_voxel: 500,
+                movement_category: MovementCategory::WalkOnly,
                 heartbeat_interval_ticks: 5000,
-                allowed_edge_types: Some(vec![EdgeType::Ground]),
                 ground_only: true,
                 hp_max: 100,
                 ticks_per_hp_regen: 0,
@@ -3842,8 +3824,6 @@ impl Default for GameConfig {
                 food_restore_pct: 40,
                 bread_restore_pct: 30,
                 footprint: [2, 2, 2],
-                wood_ladder_tpv: None,
-                rope_ladder_tpv: None,
                 rest_max: 1_000_000_000_000_000,
                 rest_decay_per_tick: 0,
                 rest_tired_threshold_pct: 50,
@@ -3883,11 +3863,9 @@ impl Default for GameConfig {
         species.insert(
             Species::Goblin,
             SpeciesData {
-                walk_ticks_per_voxel: 500,
-                climb_ticks_per_voxel: Some(2500), // 2x slower than elf
-                flight_ticks_per_voxel: None,
+                move_ticks_per_voxel: 500,
+                movement_category: MovementCategory::Climber,
                 heartbeat_interval_ticks: 3000,
-                allowed_edge_types: None,
                 ground_only: false,
                 hp_max: 100,
                 ticks_per_hp_regen: 0,
@@ -3900,8 +3878,6 @@ impl Default for GameConfig {
                 food_restore_pct: 40,
                 bread_restore_pct: 30,
                 footprint: [1, 1, 1],
-                wood_ladder_tpv: Some(800),
-                rope_ladder_tpv: Some(950),
                 rest_max: 1_000_000_000_000_000,
                 rest_decay_per_tick: 0,
                 rest_tired_threshold_pct: 50,
@@ -3953,11 +3929,9 @@ impl Default for GameConfig {
         species.insert(
             Species::Monkey,
             SpeciesData {
-                walk_ticks_per_voxel: 500,
-                climb_ticks_per_voxel: Some(800),
-                flight_ticks_per_voxel: None,
+                move_ticks_per_voxel: 500,
+                movement_category: MovementCategory::Climber,
                 heartbeat_interval_ticks: 3000,
-                allowed_edge_types: None,
                 ground_only: false,
                 hp_max: 100,
                 ticks_per_hp_regen: 0,
@@ -3970,8 +3944,6 @@ impl Default for GameConfig {
                 food_restore_pct: 40,
                 bread_restore_pct: 30,
                 footprint: [1, 1, 1],
-                wood_ladder_tpv: Some(600),
-                rope_ladder_tpv: Some(700),
                 rest_max: 1_000_000_000_000_000,
                 rest_decay_per_tick: 0,
                 rest_tired_threshold_pct: 50,
@@ -4011,11 +3983,9 @@ impl Default for GameConfig {
         species.insert(
             Species::Orc,
             SpeciesData {
-                walk_ticks_per_voxel: 500,
-                climb_ticks_per_voxel: Some(5000), // 2x slower than goblin
-                flight_ticks_per_voxel: None,
+                move_ticks_per_voxel: 500,
+                movement_category: MovementCategory::WalkOrLadder,
                 heartbeat_interval_ticks: 3000,
-                allowed_edge_types: None,
                 ground_only: false,
                 hp_max: 100,
                 ticks_per_hp_regen: 0,
@@ -4028,8 +3998,6 @@ impl Default for GameConfig {
                 food_restore_pct: 40,
                 bread_restore_pct: 30,
                 footprint: [1, 1, 1],
-                wood_ladder_tpv: Some(800),
-                rope_ladder_tpv: Some(950),
                 rest_max: 1_000_000_000_000_000,
                 rest_decay_per_tick: 0,
                 rest_tired_threshold_pct: 50,
@@ -4081,11 +4049,9 @@ impl Default for GameConfig {
         species.insert(
             Species::Squirrel,
             SpeciesData {
-                walk_ticks_per_voxel: 500,
-                climb_ticks_per_voxel: Some(600),
-                flight_ticks_per_voxel: None,
+                move_ticks_per_voxel: 500,
+                movement_category: MovementCategory::Climber,
                 heartbeat_interval_ticks: 2500,
-                allowed_edge_types: None,
                 ground_only: false,
                 hp_max: 100,
                 ticks_per_hp_regen: 0,
@@ -4098,8 +4064,6 @@ impl Default for GameConfig {
                 food_restore_pct: 40,
                 bread_restore_pct: 30,
                 footprint: [1, 1, 1],
-                wood_ladder_tpv: Some(500),
-                rope_ladder_tpv: Some(600),
                 rest_max: 1_000_000_000_000_000,
                 rest_decay_per_tick: 0,
                 rest_tired_threshold_pct: 50,
@@ -4139,11 +4103,9 @@ impl Default for GameConfig {
         species.insert(
             Species::Troll,
             SpeciesData {
-                walk_ticks_per_voxel: 500,
-                climb_ticks_per_voxel: Some(5000),
-                flight_ticks_per_voxel: None,
+                move_ticks_per_voxel: 500,
+                movement_category: MovementCategory::Climber,
                 heartbeat_interval_ticks: 5000,
-                allowed_edge_types: None,
                 ground_only: false,
                 hp_max: 100,
                 ticks_per_hp_regen: 500, // 2 HP/sec at 1000 ticks/sec
@@ -4156,8 +4118,6 @@ impl Default for GameConfig {
                 food_restore_pct: 0, // don't eat fruit
                 bread_restore_pct: 0,
                 footprint: [2, 2, 2],
-                wood_ladder_tpv: Some(3000), // slow on ladders
-                rope_ladder_tpv: Some(3500),
                 rest_max: 1_000_000_000_000_000,
                 rest_decay_per_tick: 0,
                 rest_tired_threshold_pct: 50,
@@ -4202,11 +4162,9 @@ impl Default for GameConfig {
         species.insert(
             Species::Hornet,
             SpeciesData {
-                walk_ticks_per_voxel: 500,
-                climb_ticks_per_voxel: None,
-                flight_ticks_per_voxel: Some(250), // fast flyer: 4 voxels/sec
+                move_ticks_per_voxel: 250, // fast flyer: 4 voxels/sec
+                movement_category: MovementCategory::Flyer,
                 heartbeat_interval_ticks: 2000,
-                allowed_edge_types: None,
                 ground_only: false,
                 hp_max: 100,
                 ticks_per_hp_regen: 0,
@@ -4219,8 +4177,6 @@ impl Default for GameConfig {
                 food_restore_pct: 0,
                 bread_restore_pct: 0,
                 footprint: [1, 1, 1],
-                wood_ladder_tpv: None,
-                rope_ladder_tpv: None,
                 rest_max: 1_000_000_000_000_000,
                 rest_decay_per_tick: 0,
                 rest_tired_threshold_pct: 50,
@@ -4265,11 +4221,9 @@ impl Default for GameConfig {
         species.insert(
             Species::Wyvern,
             SpeciesData {
-                walk_ticks_per_voxel: 500,
-                climb_ticks_per_voxel: None,
-                flight_ticks_per_voxel: Some(200), // faster than hornet
+                move_ticks_per_voxel: 200, // faster than hornet
+                movement_category: MovementCategory::Flyer,
                 heartbeat_interval_ticks: 4000,
-                allowed_edge_types: None,
                 ground_only: false,
                 hp_max: 100,
                 ticks_per_hp_regen: 0,
@@ -4282,8 +4236,6 @@ impl Default for GameConfig {
                 food_restore_pct: 0,
                 bread_restore_pct: 0,
                 footprint: [2, 2, 2],
-                wood_ladder_tpv: None,
-                rope_ladder_tpv: None,
                 rest_max: 1_000_000_000_000_000,
                 rest_decay_per_tick: 0,
                 rest_tired_threshold_pct: 50,
@@ -4773,17 +4725,15 @@ mod tests {
             },
             "species": {
                 "Elf": {
-                    "walk_ticks_per_voxel": 500,
-                    "climb_ticks_per_voxel": 1250,
+                    "move_ticks_per_voxel": 500,
+                    "movement_category": "Climber",
                     "heartbeat_interval_ticks": 3000,
-                    "allowed_edge_types": null,
                     "ground_only": false
                 },
                 "Capybara": {
-                    "walk_ticks_per_voxel": 800,
-                    "climb_ticks_per_voxel": null,
+                    "move_ticks_per_voxel": 800,
+                    "movement_category": "WalkOnly",
                     "heartbeat_interval_ticks": 4000,
-                    "allowed_edge_types": ["Ground"],
                     "ground_only": true
                 }
             }
@@ -4802,10 +4752,9 @@ mod tests {
     fn species_data_hunger_fields_default_from_json() {
         // Old-format JSON without hunger fields — serde defaults must apply.
         let json = r#"{
-            "walk_ticks_per_voxel": 500,
-            "climb_ticks_per_voxel": 1250,
+            "move_ticks_per_voxel": 500,
+            "movement_category": "Climber",
             "heartbeat_interval_ticks": 3000,
-            "allowed_edge_types": null,
             "ground_only": false,
             "food_max": 1000000000000000,
             "food_decay_per_tick": 3333333333
@@ -4822,10 +4771,9 @@ mod tests {
     fn footprint_defaults_from_old_json() {
         // Old JSON without footprint field — serde default must apply [1,1,1].
         let json = r#"{
-            "walk_ticks_per_voxel": 500,
-            "climb_ticks_per_voxel": 1250,
+            "move_ticks_per_voxel": 500,
+            "movement_category": "Climber",
             "heartbeat_interval_ticks": 3000,
-            "allowed_edge_types": null,
             "ground_only": false,
             "food_max": 1000000000000000,
             "food_decay_per_tick": 3333333333

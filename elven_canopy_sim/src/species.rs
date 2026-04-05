@@ -7,21 +7,16 @@
 // behavior and `hostile_detection_range_sq` for detection range.
 //
 // Current parameters:
-// - `walk_ticks_per_voxel` — ticks to traverse 1.0 units of euclidean distance
-//   on flat ground. Higher = slower. At 1000 ticks/sec, a value of 500 means
-//   the creature walks 2 voxels per second.
-// - `climb_ticks_per_voxel` — ticks per 1.0 units on TrunkClimb/GroundToTrunk
-//   edges. `None` means the species cannot climb (e.g. capybara). At 1000
-//   ticks/sec, a value of 1250 means 0.8 voxels per second climbing.
-// - `flight_ticks_per_voxel` — ticks per 1.0 units of 3D flight. `None`
-//   means the species cannot fly. Flying creatures use vanilla A* on the
-//   voxel grid (`pathfinding.rs`) instead of ground A*.
+// - `move_ticks_per_voxel` — base ticks to traverse 1.0 units of euclidean
+//   distance. Higher = slower. For flyers, this is the flight speed. Edge
+//   costs for climbing/ladders are fixed ratios determined by `movement_category`.
+// - `movement_category` — `MovementCategory` enum (WalkOnly, WalkOrLadder,
+//   Climber, Flyer) determining which edges the species can traverse and at
+//   what cost relative to `move_ticks_per_voxel`. Copied to the Creature DB
+//   row at spawn so individual creatures can change modality in the future.
 // - `heartbeat_interval_ticks` — interval for `CreatureHeartbeat` events.
 //   Note: heartbeats do NOT drive movement (that's the activation chain in
 //   `sim/activation.rs`); they handle periodic non-movement checks like mood and mana.
-// - `allowed_edge_types` — restricts which edge types the species can
-//   traverse. `None` = all types (elves can climb trunks and walk branches).
-//   `Some(vec)` = only listed types (capybaras are ground-only).
 // - `ground_only` — if true, spawning and wandering are restricted to
 //   ground-level nav nodes (`Dirt` surface type).
 // - `food_max` — maximum (and starting) food level. Large i64 to avoid
@@ -86,7 +81,7 @@
 // **Critical constraint: determinism.** Species data is part of the game
 // config and must be identical across all clients.
 
-use crate::nav::EdgeType;
+use crate::nav::MovementCategory;
 use crate::types::TraitKind;
 use serde::{Deserialize, Serialize};
 
@@ -159,28 +154,20 @@ impl Default for EngagementStyle {
 /// Data-driven behavioral parameters for a creature species.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SpeciesData {
-    /// Ticks to traverse 1.0 units of euclidean distance on flat ground.
-    /// Higher = slower. At 1000 ticks/sec, 500 = 2 voxels/sec.
-    pub walk_ticks_per_voxel: u64,
+    /// Base ticks to traverse 1.0 units of euclidean distance. Higher = slower.
+    /// At 1000 ticks/sec, 500 = 2 voxels/sec. For flyers, this is the flight
+    /// speed. Edge costs for non-base movement (climbing, ladders) are fixed
+    /// ratios of this value determined by `movement_category`.
+    pub move_ticks_per_voxel: u64,
 
-    /// Ticks per 1.0 units on TrunkClimb/GroundToTrunk edges. `None` means
-    /// the species cannot climb (e.g. capybara). At 1000 ticks/sec, 1250 =
-    /// 0.8 voxels/sec climbing.
-    pub climb_ticks_per_voxel: Option<u64>,
-
-    /// Ticks per 1.0 units of 3D flight movement. `None` means the species
-    /// cannot fly. Flying creatures use vanilla A* on the voxel grid instead
-    /// of ground A*. At 1000 ticks/sec, 250 = 4 voxels/sec flying.
-    #[serde(default)]
-    pub flight_ticks_per_voxel: Option<u64>,
+    /// Movement mode — determines which edges the species can traverse and
+    /// at what cost relative to `move_ticks_per_voxel`. Copied to the
+    /// Creature DB row at spawn (per-creature, to support future modality
+    /// changes). See `nav.rs` for cost ratios.
+    pub movement_category: MovementCategory,
 
     /// Ticks between heartbeat events (mood, mana, need updates — NOT movement).
     pub heartbeat_interval_ticks: u64,
-
-    /// Edge types this species can traverse. `None` means all edges (e.g.
-    /// elves can climb). `Some(vec)` restricts pathfinding to listed types
-    /// (e.g. capybaras only walk on forest floor).
-    pub allowed_edge_types: Option<Vec<EdgeType>>,
 
     /// If true, spawn at ground-level nodes and only pick ground destinations.
     pub ground_only: bool,
@@ -237,16 +224,6 @@ pub struct SpeciesData {
     /// volume must be clear and all ground cells below must be solid.
     #[serde(default = "default_footprint")]
     pub footprint: [u8; 3],
-
-    /// Ticks per 1.0 units on WoodLadderClimb edges. `None` means the species
-    /// cannot use wood ladders (e.g. capybara, elephant).
-    #[serde(default)]
-    pub wood_ladder_tpv: Option<u64>,
-
-    /// Ticks per 1.0 units on RopeLadderClimb edges. `None` means the species
-    /// cannot use rope ladders.
-    #[serde(default)]
-    pub rope_ladder_tpv: Option<u64>,
 
     /// Maximum (and starting) hit points. Creature dies when HP reaches 0.
     #[serde(default = "default_hp_max")]

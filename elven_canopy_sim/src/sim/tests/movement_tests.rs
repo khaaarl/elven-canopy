@@ -106,6 +106,7 @@ fn make_interp_creature(
         wasted_action_count: 0,
         last_dance_tick: 0,
         last_dinner_party_tick: 0,
+        movement_category: crate::nav::MovementCategory::WalkOrLadder,
         sex: CreatureSex::None,
     }
 }
@@ -2465,9 +2466,9 @@ fn flying_creature_does_not_fall() {
         .spawn_creature(Species::Hornet, VoxelCoord::new(20, 20, 20), &mut events)
         .expect("should spawn hornet");
 
-    // Hornet has flight_ticks_per_voxel, so it's flying.
+    // Hornet has MovementCategory::Flyer, so it's flying.
     let species_data = &sim.species_table[&Species::Hornet];
-    assert!(species_data.flight_ticks_per_voxel.is_some());
+    assert!(species_data.movement_category.is_flyer());
 
     // Should be supported (flying creatures are always exempt).
     assert!(sim.creature_is_supported(hornet_id));
@@ -4385,8 +4386,8 @@ fn large_creature_does_not_get_permanently_stuck_on_terrain() {
             // Check walkability at this position.
             let footprint = sim.species_table[&Species::Elephant].footprint;
             let can_climb = sim.species_table[&Species::Elephant]
-                .climb_ticks_per_voxel
-                .is_some();
+                .movement_category
+                .can_climb();
             let walkable = crate::walkability::footprint_walkable(
                 &sim.world,
                 &sim.face_data,
@@ -4768,7 +4769,7 @@ fn test_elephant_floats_under_tree_foliage_on_hill() {
     // 2. Place scattered leaf/branch voxels overhead at y=floor_y+10..floor_y+12.
     //    This mimics tree canopy above the hill. The top layer uses Dirt so
     //    that the surface type above it is Dirt → Ground edge type, which
-    //    elephants (ground_only, allowed_edge_types=[Ground]) can traverse.
+    //    elephants (ground_only, MovementCategory::WalkOnly) can traverse.
     //    Without Dirt on top, the Leaf surface would produce BranchWalk edges
     //    that elephants reject, masking the canopy teleportation bug.
     for x in 12..18 {

@@ -164,45 +164,12 @@ pub const SKILL_TRAIT_KINDS: [crate::types::TraitKind; 17] = {
     ]
 };
 
-/// Stat-modified movement speeds for a creature. Precomputed from species
-/// base values and the creature's Agility and Strength stats.
-pub struct CreatureMoveSpeeds {
-    pub walk_tpv: u64,
-    pub climb_tpv: Option<u64>,
-    pub wood_ladder_tpv: Option<u64>,
-    pub rope_ladder_tpv: Option<u64>,
-}
-
-impl CreatureMoveSpeeds {
-    /// Compute stat-modified movement speeds from species data and creature stats.
-    pub fn new(species_data: &crate::species::SpeciesData, agility: i64, strength: i64) -> Self {
-        let climb_stat = (agility + strength) / 2; // geometric-mean blend
-        Self {
-            walk_tpv: apply_stat_divisor(species_data.walk_ticks_per_voxel as i64, agility) as u64,
-            climb_tpv: species_data
-                .climb_ticks_per_voxel
-                .map(|t| apply_stat_divisor(t as i64, climb_stat) as u64),
-            wood_ladder_tpv: species_data
-                .wood_ladder_tpv
-                .map(|t| apply_stat_divisor(t as i64, climb_stat) as u64),
-            rope_ladder_tpv: species_data
-                .rope_ladder_tpv
-                .map(|t| apply_stat_divisor(t as i64, climb_stat) as u64),
-        }
-    }
-
-    /// Resolve the appropriate tpv for a given edge type.
-    pub fn tpv_for_edge(&self, edge_type: crate::nav::EdgeType) -> u64 {
-        use crate::nav::EdgeType;
-        match edge_type {
-            EdgeType::TrunkClimb | EdgeType::GroundToTrunk => {
-                self.climb_tpv.unwrap_or(self.walk_tpv)
-            }
-            EdgeType::WoodLadderClimb => self.wood_ladder_tpv.unwrap_or(self.walk_tpv),
-            EdgeType::RopeLadderClimb => self.rope_ladder_tpv.unwrap_or(self.walk_tpv),
-            _ => self.walk_tpv,
-        }
-    }
+/// Compute the stat-modified base movement speed (ticks-per-voxel) for a
+/// creature. Applies Agility scaling to the species' `move_ticks_per_voxel`.
+/// Edge costs for climbing/ladders are fixed ratios of this value, determined
+/// by the creature's `MovementCategory`.
+pub fn creature_base_tpv(move_ticks_per_voxel: u64, agility: i64) -> u64 {
+    apply_stat_divisor(move_ticks_per_voxel as i64, agility) as u64
 }
 
 /// Apply dexterity-based angular deviation to a projectile aim velocity.
@@ -547,6 +514,22 @@ mod tests {
         for &tk in &SKILL_TRAIT_KINDS {
             assert!(seen.insert(tk), "duplicate in SKILL_TRAIT_KINDS: {tk:?}");
         }
+    }
+
+    #[test]
+    fn test_creature_base_tpv() {
+        // No AGI scaling: base tpv returned as-is.
+        assert_eq!(creature_base_tpv(500, 0), 500);
+        // Positive AGI = faster = lower tpv.
+        assert!(
+            creature_base_tpv(500, 100) < 500,
+            "Positive AGI should reduce tpv"
+        );
+        // Negative AGI = slower = higher tpv.
+        assert!(
+            creature_base_tpv(500, -100) > 500,
+            "Negative AGI should increase tpv"
+        );
     }
 
     #[test]

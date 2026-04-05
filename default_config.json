@@ -73,10 +73,9 @@
   },
   "species": {
     "Elf": {
-      "walk_ticks_per_voxel": 500,
-      "climb_ticks_per_voxel": 1250,
+      "move_ticks_per_voxel": 500,
+      "movement_category": "Climber",
       "heartbeat_interval_ticks": 3000,
-      "allowed_edge_types": null,
       "ground_only": false,
       "hp_max": 100,
       "melee_damage": 10,
@@ -110,12 +109,9 @@
       "ticks_per_mp_regen": 2000
     },
     "Capybara": {
-      "walk_ticks_per_voxel": 800,
-      "climb_ticks_per_voxel": null,
+      "move_ticks_per_voxel": 800,
+      "movement_category": "WalkOnly",
       "heartbeat_interval_ticks": 4000,
-      "allowed_edge_types": [
-        "Ground"
-      ],
       "ground_only": true,
       "hp_max": 60,
       "food_max": 1000000000000000,
@@ -141,12 +137,9 @@
       "hostile_detection_range_sq": 0
     },
     "Boar": {
-      "walk_ticks_per_voxel": 600,
-      "climb_ticks_per_voxel": null,
+      "move_ticks_per_voxel": 600,
+      "movement_category": "WalkOnly",
       "heartbeat_interval_ticks": 4000,
-      "allowed_edge_types": [
-        "Ground"
-      ],
       "ground_only": true,
       "hp_max": 80,
       "food_max": 1000000000000000,
@@ -172,12 +165,9 @@
       "hostile_detection_range_sq": 0
     },
     "Deer": {
-      "walk_ticks_per_voxel": 400,
-      "climb_ticks_per_voxel": null,
+      "move_ticks_per_voxel": 400,
+      "movement_category": "WalkOnly",
       "heartbeat_interval_ticks": 3500,
-      "allowed_edge_types": [
-        "Ground"
-      ],
       "ground_only": true,
       "hp_max": 50,
       "food_max": 1000000000000000,
@@ -203,12 +193,9 @@
       "hostile_detection_range_sq": 0
     },
     "Elephant": {
-      "walk_ticks_per_voxel": 700,
-      "climb_ticks_per_voxel": null,
+      "move_ticks_per_voxel": 700,
+      "movement_category": "WalkOnly",
       "heartbeat_interval_ticks": 5000,
-      "allowed_edge_types": [
-        "Ground"
-      ],
       "ground_only": true,
       "hp_max": 300,
       "food_max": 1000000000000000,
@@ -234,10 +221,9 @@
       "hostile_detection_range_sq": 0
     },
     "Goblin": {
-      "walk_ticks_per_voxel": 450,
-      "climb_ticks_per_voxel": 2500,
+      "move_ticks_per_voxel": 450,
+      "movement_category": "Climber",
       "heartbeat_interval_ticks": 3000,
-      "allowed_edge_types": null,
       "ground_only": false,
       "hp_max": 80,
       "melee_damage": 15,
@@ -269,10 +255,9 @@
       "hostile_detection_range_sq": 225
     },
     "Monkey": {
-      "walk_ticks_per_voxel": 550,
-      "climb_ticks_per_voxel": 800,
+      "move_ticks_per_voxel": 550,
+      "movement_category": "Climber",
       "heartbeat_interval_ticks": 3000,
-      "allowed_edge_types": null,
       "ground_only": false,
       "hp_max": 40,
       "melee_damage": 0,
@@ -298,10 +283,9 @@
       "hostile_detection_range_sq": 0
     },
     "Orc": {
-      "walk_ticks_per_voxel": 600,
-      "climb_ticks_per_voxel": 5000,
+      "move_ticks_per_voxel": 600,
+      "movement_category": "WalkOrLadder",
       "heartbeat_interval_ticks": 3000,
-      "allowed_edge_types": null,
       "ground_only": false,
       "hp_max": 150,
       "melee_damage": 25,
@@ -333,10 +317,9 @@
       "hostile_detection_range_sq": 400
     },
     "Squirrel": {
-      "walk_ticks_per_voxel": 700,
-      "climb_ticks_per_voxel": 600,
+      "move_ticks_per_voxel": 700,
+      "movement_category": "Climber",
       "heartbeat_interval_ticks": 2500,
-      "allowed_edge_types": null,
       "ground_only": false,
       "hp_max": 20,
       "melee_damage": 0,
@@ -362,10 +345,9 @@
       "hostile_detection_range_sq": 0
     },
     "Troll": {
-      "walk_ticks_per_voxel": 600,
-      "climb_ticks_per_voxel": 5000,
+      "move_ticks_per_voxel": 600,
+      "movement_category": "Climber",
       "heartbeat_interval_ticks": 5000,
-      "allowed_edge_types": null,
       "ground_only": false,
       "hp_max": 400,
       "ticks_per_hp_regen": 500,
@@ -398,10 +380,9 @@
       "hostile_detection_range_sq": 144
     },
     "Hornet": {
-      "walk_ticks_per_voxel": 600,
-      "flight_ticks_per_voxel": 250,
+      "move_ticks_per_voxel": 250,
+      "movement_category": "Flyer",
       "heartbeat_interval_ticks": 2000,
-      "allowed_edge_types": null,
       "ground_only": false,
       "hp_max": 60,
       "melee_damage": 20,
@@ -429,10 +410,9 @@
       "hostile_detection_range_sq": 196
     },
     "Wyvern": {
-      "walk_ticks_per_voxel": 800,
-      "flight_ticks_per_voxel": 200,
+      "move_ticks_per_voxel": 200,
+      "movement_category": "Flyer",
       "heartbeat_interval_ticks": 4000,
-      "allowed_edge_types": null,
       "ground_only": false,
       "hp_max": 300,
       "melee_damage": 40,

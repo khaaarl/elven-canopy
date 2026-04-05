@@ -71,10 +71,11 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-fast-checksum        Incremental state checksum for desync detection (replace full-state JSON serialization)
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fog-billboards       Fog post-process does not obscure billboard sprites
+[ ] B-ground-only          Remove ground_only field; use MovementCategory for all movement constraints
 [ ] B-large-fall-deflect   Large creatures may land at invalid positions during gravity fall
 [ ] B-per-species-iter     Eliminate per-species iteration in selection and tooltip controllers
 [ ] B-relay-stability      Windows TCP connection drops during singleplayer gameplay
-[ ] B-trunk-circ-speed     TrunkCircumference edges use walk speed instead of climb speed
+[ ] B-stale-path           Creatures can traverse forbidden edges when cached path becomes stale
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-aggro-fauna          Neutral fauna with aggro triggers
@@ -193,7 +194,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mobile-support       Mobile/touch platform support
 [ ] F-modding              Scripting layer for modding support
 [ ] F-modifier-keybinds    Modifier key combinations in bindings
-[ ] F-move-categories      Simplify to 4 movement categories with per-creature modality for cacheability
 [ ] F-mp-chat              Multiplayer in-game chat
 [ ] F-mp-reconnect         Multiplayer reconnection after disconnect
 [ ] F-multi-tree           NPC trees with personalities
@@ -348,6 +348,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-tame-already         Taming task doesn't detect already-tamed target
 [x] B-tame-civ-id          TameDesignation missing civ_id (multi-civ taming broken)
 [x] B-task-civ-filter      Tasks lack civilization-level eligibility filtering
+[x] B-trunk-circ-speed     TrunkCircumference edges use walk speed instead of climb speed
 [x] B-unsafe-db-calls      Replace _no_fk and modify_unchecked calls with safe database-level methods
 [x] B-wg-fresh-seed        Worldgen tests use hardcoded seed 42 instead of fresh_test_seed
 [x] B-win-freeze           Periodic ~3s freezes on Windows (debug build)
@@ -479,6 +480,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-mmb-pan              Ctrl+MMB drag to pan camera horizontally
 [x] F-mood-system          Mood with escalating consequences
 [x] F-mouse-elevation      Ctrl+mouse wheel to move camera elevation
+[x] F-move-categories      Simplify to 4 movement categories with per-creature modality for cacheability
 [x] F-move-interp          Smooth creature movement interpolation
 [x] F-move-spread          Spread destinations for multi-creature move commands
 [x] F-mp-checksums         Multiplayer state checksums for desync detection
@@ -1513,6 +1515,26 @@ would also confirm the fix.
 
 After issuing move commands (select creatures, right-click a destination), creature movement becomes erratic and possibly faster than intended. Repro: select one or more creatures, right-click to move them, observe movement behavior.
 
+#### B-ground-only — Remove ground_only field; use MovementCategory for all movement constraints
+**Status:** Todo
+
+The `ground_only` field on `SpeciesData` artificially restricts spawning and wander destinations to ground-level positions with Dirt surface type. Now that `MovementCategory` fully determines which edges a creature can traverse, `ground_only` is redundant and overly restrictive.
+
+A WalkOnly capybara should be allowed to:
+- Spawn on a platform (e.g., a GrownPlatform built on flat dirt that doesn't require climbing or ladders to reach)
+- Wander onto any walkable position it can pathfind to, regardless of surface type (wood, branch, platform, etc.)
+
+There should be no special logic around dirt vs non-dirt surfaces for movement or destination selection. Walkability and edge traversability (as determined by MovementCategory) are the only constraints. If a creature can pathfind to a position, it should be allowed to go there.
+
+Locations that check `ground_only`:
+- `sim/creature.rs` — spawn position selection
+- `sim/movement.rs` — wander destination selection (restricts to Dirt surface)
+- `sim/raid.rs` — raid entry point selection
+
+The fix is to remove the `ground_only` field from `SpeciesData` entirely and delete all code that checks it. Spawning and wandering should use only walkability checks with the creature's MovementCategory (via `can_climb()` for the walkability `solid_below` requirement). Raid entry point selection should similarly rely on MovementCategory.
+
+This is a breaking change to SpeciesData (field removal) but NOT a breaking change to the Creature DB row (ground_only was never stored per-creature).
+
 #### B-large-stuck — Large creatures (elephants) get permanently stuck at terrain inclines
 **Status:** Done
 
@@ -1524,8 +1546,28 @@ Large (2x2x2) creatures like elephants can get permanently stuck at certain terr
 
 **Original (incorrect) hypothesis, preserved for posterity:** The original theory was that `is_large_edge_valid()` was rejecting all outgoing edges due to the larger union-footprint height check (3x2, 2x3, or 3x3 region), leaving the creature at a node with zero valid edges and stuck in `ground_random_wander`'s 1000-tick retry loop. Investigation showed this was wrong — stuck elephants had 8 valid edges. The actual failure happened earlier in the activation pipeline, before edge selection was ever attempted. A good reminder that bugs often have surprising root causes.
 
+#### B-stale-path — Creatures can traverse forbidden edges when cached path becomes stale
+**Status:** Todo
+
+When a creature is mid-path and the world changes underneath it (e.g., a ladder is destroyed, a platform is removed, or a creature's MovementCategory changes after the path was computed), the movement code currently falls back silently to base speed via `unwrap_or(base_tpv)` rather than detecting the invalid edge and recalculating. This means a creature can traverse an edge its category forbids — a WalkOnly creature sliding across a climb edge, for example.
+
+Flagged during F-move-categories once-over at 4 specific call sites:
+- `sim/movement.rs:457` — `ground_move_one_step_inner` traversal delay
+- `sim/movement.rs:586` — same function, different path
+- `sim/combat.rs:842` — combat approach step delay
+- `sim/combat.rs:1243` — combat chase step delay
+
+But the issue is broader than these 4 sites. A full audit should cover:
+1. What happens when a cached `CreaturePath` becomes invalid mid-traversal (world edit, structure removal, ladder destruction)?
+2. Are there other places where movement assumes a previously-valid path is still valid?
+3. What should the correct behavior be? Likely: detect the invalid edge, clear the cached path, and force a re-pathfind on the next activation tick. The creature should get stuck (retry next tick) rather than make an illegal move.
+4. Does `ground_random_wander` have the same issue? It computes neighbors fresh each tick so probably not, but should be verified.
+5. Does flee/retreat have the same issue? It uses greedy single-step movement, so probably not, but should be verified.
+
+The preferred fix is: replace `unwrap_or(base_tpv)` with a check that clears the path and returns early (creature idles for one tick, re-pathfinds next activation). This is safe because activation will re-trigger pathfinding on the next tick.
+
 #### B-trunk-circ-speed — TrunkCircumference edges use walk speed instead of climb speed
-**Status:** Todo · **Refs:** §2
+**Status:** Done · **Refs:** §2
 
 TrunkCircumference edges (horizontal movement around the trunk at one Y-level) currently use walk_tpv, the same cost as flat ground. This is wrong — circumferential movement on a trunk surface should cost like climbing, not walking. The bug is in tpv_for_edge_type() in pathfinding.rs, where TrunkCircumference falls through to the _ => Some(speeds.walk_tpv) default arm. It should use climb_tpv instead.
 
@@ -1789,7 +1831,7 @@ Includes `Species::Elephant`, `graph_for_species()` dispatch, incremental
 updates, SimBridge queries, GDScript spawn/render/placement, and sprite.
 
 #### F-move-categories — Simplify to 4 movement categories with per-creature modality for cacheability
-**Status:** Todo
+**Status:** Done
 
 Replace the per-species speed fields (walk_tpv, climb_tpv, wood_ladder_tpv, rope_ladder_tpv, flight_tpv) and allowed_edge_types with a single base speed per species (`move_ticks_per_voxel`) plus a MovementCategory enum. All edge costs become fixed ratios of base speed, so cached paths are valid for any creature in the same category — only total traversal time scales by the creature's base speed.
 
@@ -1804,7 +1846,7 @@ Replace the per-species speed fields (walk_tpv, climb_tpv, wood_ladder_tpv, rope
 **Species assignments:**
 - WalkOnly: capybara, elephant, deer, boar
 - WalkOrLadder: orc
-- Climber: elf, troll, goblin, monkey
+- Climber: elf, troll, goblin, monkey, squirrel
 - Flyer: hornet, wyvern
 
 **Per-creature MovementCategory column:** The Creature database row gets a MovementCategory field, initially populated from the creature's species at spawn. This enables future mechanics where creatures change movement modality (e.g., learning to climb). Pathfinding and movement code must read MovementCategory and footprint from the creature row, NOT from species data.
@@ -1828,7 +1870,7 @@ Replace the per-species speed fields (walk_tpv, climb_tpv, wood_ladder_tpv, rope
 
 Relevant code: GroundSpeeds struct in pathfinding.rs, `tpv_for_edge_type()` in pathfinding.rs, CreatureMoveSpeeds in stats.rs, per-species speed config in species.rs/config.rs, `find_path()` dispatcher in sim/mod.rs, `walk_toward_task()`/`fly_toward_target()` in sim/movement.rs, `ground_random_wander()` in sim/movement.rs, grazing edge-type checks in sim/grazing.rs, combat movement in sim/combat.rs, default_config.json.
 
-**Blocks:** F-save-stable
+**Unblocked:** F-save-stable
 **Related:** B-trunk-circ-speed, F-path-cache
 
 #### F-nav-gen-opt — RLE-aware nav graph generation
@@ -8029,7 +8071,8 @@ Gate item: declare save format backward-compatibility and document the contract.
 3. **Document the stability contract:** old saves will always load into newer versions. New features get default values via `#[serde(default)]` and tabulosity's empty-table deserialization. The `schema_version` number is bumped with each release that adds schema.
 4. **No more structural changes** to existing tables without a migration path. New columns (with defaults) and new tables are fine.
 
-**Blocked by:** F-move-categories, F-multi-tree-schema, F-zone-schema
+**Blocked by:** F-multi-tree-schema, F-zone-schema
+**Unblocked by:** F-move-categories
 **Related:** F-save-load, F-tab-schema-evol, F-tab-schema-ver
 
 #### F-serde — Serialization for all sim types

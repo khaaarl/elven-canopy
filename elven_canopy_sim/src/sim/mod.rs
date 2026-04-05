@@ -24,9 +24,9 @@
 // one voxel step or do 1 unit of task work) and sets `next_available_tick`
 // for the next poll. The sim runs at **1000 ticks per simulated second**
 // (`tick_duration_ms = 1`). Step traversal time is computed as
-// `ceil(distance * species_ticks_per_voxel)` where ticks_per_voxel is
-// `walk_ticks_per_voxel` for flat edges or `climb_ticks_per_voxel` for
-// TrunkClimb/GroundToTrunk edges (from `species.rs`).
+// `ceil(distance * tpv)` where tpv is determined by the creature's
+// `MovementCategory` via `tpv_for_edge_type()` (from `nav.rs`), using
+// the stat-scaled `move_ticks_per_voxel` as the base value.
 //
 // ## Movement interpolation
 //
@@ -566,25 +566,23 @@ impl SimState {
             Some(c) => c,
             None => return Err(PathError::StartNotOnGraph),
         };
-        let species = creature.species;
-        let species_data = &self.species_table[&species];
+        let species_data = &self.species_table[&creature.species];
         let position = creature.position.min;
+        let footprint = creature.position.footprint_size();
+        let category = creature.movement_category;
 
-        if let Some(flight_tpv) = species_data.flight_ticks_per_voxel {
+        if category.is_flyer() {
             // Flying creature: A* on voxel grid.
-            let footprint = species_data.footprint;
-            crate::pathfinding::astar_fly(&self.world, position, goal, flight_tpv, opts, footprint)
+            let agility = self.trait_int(creature_id, TraitKind::Agility, 0);
+            let base_tpv =
+                crate::stats::creature_base_tpv(species_data.move_ticks_per_voxel, agility);
+            crate::pathfinding::astar_fly(&self.world, position, goal, base_tpv, opts, footprint)
         } else {
             // Ground creature: voxel-direct A* with stat-modified speeds.
-            let footprint = species_data.footprint;
             let agility = self.trait_int(creature_id, TraitKind::Agility, 0);
-            let strength = self.trait_int(creature_id, TraitKind::Strength, 0);
-            let move_speeds =
-                crate::stats::CreatureMoveSpeeds::new(species_data, agility, strength);
-            let nav_speeds = crate::pathfinding::GroundSpeeds::from_move_speeds(
-                &move_speeds,
-                species_data.allowed_edge_types.as_deref(),
-            );
+            let base_tpv =
+                crate::stats::creature_base_tpv(species_data.move_ticks_per_voxel, agility);
+            let nav_speeds = crate::pathfinding::GroundSpeeds { base_tpv, category };
             crate::pathfinding::astar_ground(
                 &self.world,
                 &self.face_data,
@@ -600,9 +598,9 @@ impl SimState {
     /// Find the nearest reachable candidate from a creature's current position.
     ///
     /// Dispatches to interleaved A* on the voxel grid for both ground and
-    /// flying creatures based on species. Uses stat-modified
-    /// movement speeds and the species' edge-type filter. Search is bounded
-    /// by `opts` (path length limit and work budget).
+    /// flying creatures based on the creature's `MovementCategory`. Uses
+    /// stat-modified movement speeds. Search is bounded by `opts` (path
+    /// length limit and work budget).
     ///
     /// Returns the *index* into `candidates` of the nearest reachable one,
     /// or `Err(PathError)` on failure (`NoTargets`, `StartNotOnGraph`,
@@ -623,18 +621,21 @@ impl SimState {
             Some(c) => c,
             None => return Err(PathError::StartNotOnGraph),
         };
-        let species = creature.species;
-        let species_data = &self.species_table[&species];
+        let species_data = &self.species_table[&creature.species];
         let position = creature.position.min;
+        let footprint = creature.position.footprint_size();
+        let category = creature.movement_category;
 
-        if let Some(flight_tpv) = species_data.flight_ticks_per_voxel {
+        if category.is_flyer() {
             // Flying creature: interleaved A* across candidates.
-            let footprint = species_data.footprint;
+            let agility = self.trait_int(creature_id, TraitKind::Agility, 0);
+            let base_tpv =
+                crate::stats::creature_base_tpv(species_data.move_ticks_per_voxel, agility);
             let nearest_coord = crate::pathfinding::nearest_fly(
                 &self.world,
                 position,
                 candidates,
-                flight_tpv,
+                base_tpv,
                 opts,
                 footprint,
             )?;
@@ -644,15 +645,10 @@ impl SimState {
                 .ok_or(PathError::Unreachable)
         } else {
             // Ground creature: voxel-direct interleaved A*.
-            let footprint = species_data.footprint;
             let agility = self.trait_int(creature_id, TraitKind::Agility, 0);
-            let strength = self.trait_int(creature_id, TraitKind::Strength, 0);
-            let move_speeds =
-                crate::stats::CreatureMoveSpeeds::new(species_data, agility, strength);
-            let nav_speeds = crate::pathfinding::GroundSpeeds::from_move_speeds(
-                &move_speeds,
-                species_data.allowed_edge_types.as_deref(),
-            );
+            let base_tpv =
+                crate::stats::creature_base_tpv(species_data.move_ticks_per_voxel, agility);
+            let nav_speeds = crate::pathfinding::GroundSpeeds { base_tpv, category };
 
             let nearest_coord = crate::pathfinding::nearest_ground(
                 &self.world,
