@@ -61,6 +61,7 @@ This reduces merge conflicts when parallel work streams add items.
 [~] F-parallel-dedup       Radix-partitioned parallel dedup (elven_canopy_utils)
 [~] F-path-ui              Path management UI and notifications
 [~] F-ssao                 Screen-space ambient occlusion toggle
+[~] F-zone-schema          Zone ID on all spatial tables
 ```
 
 ### Todo
@@ -72,6 +73,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-fog-billboards       Fog post-process does not obscure billboard sprites
 [ ] B-per-species-iter     Eliminate per-species iteration in selection and tooltip controllers
 [ ] B-relay-stability      Windows TCP connection drops during singleplayer gameplay
+[ ] B-tame-civ-id          TameDesignation missing civ_id (multi-civ taming broken)
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-aggro-fauna          Neutral fauna with aggro triggers
@@ -297,7 +299,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-wood-stats           Wood-type material variation for crafted items
 [ ] F-world-boundary       World boundary visualization
 [ ] F-world-map            World map view
-[ ] F-zone-schema          Zone ID on all spatial tables
 [ ] F-zone-world           Zone-based world with fidelity partitioning
 [ ] R-panel-dedup          Extract shared helpers from duplicated info panel code
 ```
@@ -2037,6 +2038,11 @@ happened to work around the bug.
 Fix: in the taming activation code, check if the target creature already has
 a civ_id before rolling. If already tamed, complete the task and remove the
 designation.
+
+#### B-tame-civ-id — TameDesignation missing civ_id (multi-civ taming broken)
+**Status:** Todo
+
+TameDesignation (`db.rs`) lacks a `civ_id` field. Currently keyed only by `creature_id`, meaning only one civilization can designate a creature for taming at a time. This is wrong — multiple civs could compete to tame the same creature. `civ_id` should be part of the composite primary key: `#[primary_key("creature_id", "civ_id")]`. Only creatures belonging to that civ should attempt to fulfill the tame designation. The current code likely allows any Scout-path creature to attempt taming regardless of which civ designated it.
 
 #### F-aggro-fauna — Neutral fauna with aggro triggers
 **Status:** Todo
@@ -7989,16 +7995,22 @@ different params. Cross-section bridging ensures 6-connectivity. Voxel
 type priority prevents overwrites.
 
 #### F-zone-schema — Zone ID on all spatial tables
-**Status:** Todo
+**Status:** In Progress
 
 The DB-structural part of F-zone-world, extracted so schema changes can be planned and reviewed independently of zone simulation logic. Adds:
 
-- **Zone table** in SimDb: `zone_id`, `zone_state`, `world_map_pos`, `terrain_type`, `owning_civ`, `seed`, etc.
-- **`zone_id` FK column** on all spatially-located tables: creatures, structures, blueprints, ground piles, trees, tree fruits, projectiles, and any others identified during implementation.
-- **Compound spatial indexes** keyed by `(zone_id, spatial_box)` so spatial queries are scoped per-zone.
-- **Migration from implicit single zone:** all existing rows get `zone_id = 0`, positions unchanged.
+- **Zone table** in SimDb: `zone_id`, `seed`, `zone_type: ZoneType` enum, `zone_size`, `floor_y`. Current `config.world_size` is misnamed (it's zone size) and `floor_y` is per-zone.
+- **`zone_id: ZoneId`** (required) FK on all spatially-located tables except Creature: Tree, TreeFruit, Blueprint, CompletedStructure, GroundPile, Projectile, Task, Strut, Furniture, Activity.
+- **`zone_id: Option<ZoneId>`** on Creature only (deliberate: avoids breaking migration when inter-zone transit arrives).
+- **Compound spatial indexes:** Creature's R\*-tree becomes compound `(zone_id, position)` partial index. TreeFruit/GroundPile unique indexes become compound `(zone_id, position)`. Non-spatial index scoping deferred to F-zone-world.
+- **Rename `VoxelWorld` → `VoxelZone`** and move zone-local state onto it. `SimState` gets private `voxel_zones: BTreeMap<ZoneId, VoxelZone>` with accessor methods.
+- **Worldgen/manifestation split:** `run_worldgen` creates civs, diplomacy, fruit species, Zone rows. `manifest_zone` takes `&mut SimDb` and materializes a zone into a playable state (voxels, tree DB rows, fruit assignment, heartbeats).
+- **Active zone:** `SimBridge` owns `active_zone_id` (client-side, not sim state). 13 spatial `SimAction` variants gain `zone_id` field stamped by bridge.
+- **Save format:** Old saves break (no migration, no version field). F-save-stable is blocked by this work.
 
-This is the largest structural schema change remaining before save format stability. F-zone-world retains all simulation logic (zone state transitions, fidelity partitioning, inter-zone travel, background heartbeats).
+Implementation: ~12-18 commits in 6 steps. F-remove-navgraph prerequisite. Step 4 (SimState restructure) is critical path.
+
+**Draft:** `docs/drafts/F-zone-schema.md`
 
 **Blocks:** F-save-stable, F-zone-world
 **Unblocked by:** F-tab-spatial-2
