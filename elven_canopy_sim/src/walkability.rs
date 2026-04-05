@@ -72,11 +72,18 @@ const CLIMBER_FACE_OFFSETS: [(i32, i32, i32); 4] = [(1, 0, 0), (-1, 0, 0), (0, 0
 /// at `max_surface + 1` and only the highest column(s) have solid
 /// directly at y-1.
 ///
-/// **Climber support (any face-adjacent solid, `can_climb = true` only):**
-/// Large climbers exist (trolls have `climb_ticks_per_voxel`), so the climber
-/// support rules are actively used. The same 3-of-4 / 1+2 thresholds apply,
-/// but each column counts as supported if ANY of its horizontal face neighbors
-/// at the check depth is solid. When `can_climb` is false, only the non-climber
+/// **Climber support (`can_climb = true` only):**
+/// Large climbers (trolls) use a simplified "any body contact" rule instead
+/// of extrapolating the 3+/1+2 thresholds to face-adjacent solids. If *any*
+/// voxel in the 2×2×2 body has a horizontal face-adjacent solid, the position
+/// is walkable — this is the "clinging to a surface" check. This is more
+/// permissive than applying thresholds to face-adjacent solids (which the
+/// original spec suggested), but is simpler and faster, and produces
+/// reasonable climbing behavior in practice.
+///
+/// A secondary below-level face support check (with 3+/1+2 thresholds on
+/// horizontal face-adjacent solids at y-1/y-2) handles partial-surface cases
+/// like platform edges. When `can_climb` is false, only the non-climber
 /// rules above apply — the climber section is skipped entirely.
 pub fn footprint_walkable(
     world: &VoxelWorld,
@@ -103,18 +110,37 @@ pub fn footprint_walkable(
         }
     }
 
-    // Support check across the 4 ground-plane columns.
+    // --- Climber fast path: body-level horizontal adjacency ---
+    // Checked first because it's the cheapest early-out for climbers: a single
+    // solid face neighbor anywhere on the body is enough. Bottom voxels (dy=0)
+    // are checked first since they're most likely to have contact with terrain.
+    // Uses CLIMBER_FACE_OFFSETS (horizontal only) to prevent levitation — see
+    // the constant's doc comment for why vertical offsets are excluded.
+    if can_climb {
+        for dy in 0..footprint[1] as i32 {
+            for dx in 0..footprint[0] as i32 {
+                for dz in 0..footprint[2] as i32 {
+                    let body = VoxelCoord::new(anchor.x + dx, anchor.y + dy, anchor.z + dz);
+                    if CLIMBER_FACE_OFFSETS.iter().any(|&(fx, fy, fz)| {
+                        world
+                            .get(VoxelCoord::new(body.x + fx, body.y + fy, body.z + fz))
+                            .is_solid()
+                    }) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Ground support: count columns with solid directly at y-1 ---
     //
     // Non-climber rules (solid directly below):
     //   3+ columns with solid at y-1 → supported, OR
     //   1+ column with solid at y-1 AND 2+ columns with solid at y-2 → supported.
     //
-    // Climber rules (horizontal face-adjacent solid — used by trolls):
-    //   Body-level adjacency: any footprint voxel horizontally adjacent to solid.
-    //   Below-level face support: same 3/1+2 thresholds with 4 horizontal face
-    //   neighbors (vertical excluded to prevent levitation).
-
-    // --- Non-climber: count columns with solid directly at y-1 ---
+    // These rules also apply to climbers as a fallback when no body-level
+    // adjacency was found above.
     let mut direct_support = 0u32;
     for dx in 0..footprint[0] as i32 {
         for dz in 0..footprint[2] as i32 {
@@ -146,54 +172,19 @@ pub fn footprint_walkable(
         }
     }
 
-    // Non-climbers: if the non-climber support rules above didn't pass, the
-    // position is not walkable. Skip the climber checks entirely.
+    // Non-climbers: if neither ground support rule passed, the position is
+    // not walkable. Skip the below-level face support check.
     if !can_climb {
         return false;
     }
 
-    // --- Climber support: body-level adjacency OR below-level face support ---
-    // Large climbers exist (trolls have climb_ticks_per_voxel), so this path
-    // is actively used.
-    //
-    // Two independent checks, either of which grants walkability:
-    //
-    // 1. Body-level adjacency: any footprint voxel with a horizontal face-
-    //    adjacent solid. This is the core "clinging to a surface" check for
-    //    climbing creatures — the creature's body touches a wall, trunk, or
-    //    branch. Uses CLIMBER_FACE_OFFSETS (horizontal only) because:
-    //    - (0,-1,0) from body voxels can reach below the footprint, finding
-    //      the floor even when the creature is far above it (levitation bug).
-    //    - (0,1,0) from the top row reaches above the footprint, not useful
-    //      for support.
-    //
-    // 2. Below-level face support (y-1, y-2) with direct_support >= 1 gate:
-    //    handles positions on partial surfaces like platform edges where not
-    //    all 4 columns have ground directly below, but horizontally adjacent
-    //    columns do. The direct_support >= 1 gate ensures there's at least one
-    //    actual ground column — without it, face support from structures that
-    //    are entirely below the creature (e.g., branch tips at y-1/y-2 with no
-    //    solid at foot level) would allow floating.
-
-    // Check 1: body-level horizontal adjacency.
-    for dy in 0..footprint[1] as i32 {
-        for dx in 0..footprint[0] as i32 {
-            for dz in 0..footprint[2] as i32 {
-                let body = VoxelCoord::new(anchor.x + dx, anchor.y + dy, anchor.z + dz);
-                if CLIMBER_FACE_OFFSETS.iter().any(|&(fx, fy, fz)| {
-                    world
-                        .get(VoxelCoord::new(body.x + fx, body.y + fy, body.z + fz))
-                        .is_solid()
-                }) {
-                    return true;
-                }
-            }
-        }
-    }
-
-    // Check 2: below-level face support, gated on at least 1 column having
-    // solid directly at y-1. Uses CLIMBER_FACE_OFFSETS (horizontal only) to
-    // avoid the (0,-1,0) offset from y-1 reaching y-2 (the levitation bug).
+    // --- Climber fallback: below-level face support ---
+    // Handles partial-surface cases like platform edges where not all 4
+    // columns have ground directly below, but horizontally adjacent columns
+    // do. The direct_support >= 1 gate ensures at least one actual ground
+    // column — without it, face support from structures entirely below the
+    // creature (e.g., branch tips at y-1/y-2 with no solid at foot level)
+    // would allow floating.
     if direct_support >= 1 {
         let mut face_support = 0u32;
         for dx in 0..footprint[0] as i32 {
