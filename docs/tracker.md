@@ -74,6 +74,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-large-fall-deflect   Large creatures may land at invalid positions during gravity fall
 [ ] B-per-species-iter     Eliminate per-species iteration in selection and tooltip controllers
 [ ] B-relay-stability      Windows TCP connection drops during singleplayer gameplay
+[ ] B-trunk-circ-speed     TrunkCircumference edges use walk speed instead of climb speed
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-aggro-fauna          Neutral fauna with aggro triggers
@@ -192,7 +193,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-mobile-support       Mobile/touch platform support
 [ ] F-modding              Scripting layer for modding support
 [ ] F-modifier-keybinds    Modifier key combinations in bindings
-[ ] F-move-categories      Simplify pathfinding to 3 movement categories for cacheability
+[ ] F-move-categories      Simplify to 4 movement categories with per-creature modality for cacheability
 [ ] F-mp-chat              Multiplayer in-game chat
 [ ] F-mp-reconnect         Multiplayer reconnection after disconnect
 [ ] F-multi-tree           NPC trees with personalities
@@ -1523,6 +1524,15 @@ Large (2x2x2) creatures like elephants can get permanently stuck at certain terr
 
 **Original (incorrect) hypothesis, preserved for posterity:** The original theory was that `is_large_edge_valid()` was rejecting all outgoing edges due to the larger union-footprint height check (3x2, 2x3, or 3x3 region), leaving the creature at a node with zero valid edges and stuck in `ground_random_wander`'s 1000-tick retry loop. Investigation showed this was wrong — stuck elephants had 8 valid edges. The actual failure happened earlier in the activation pipeline, before edge selection was ever attempted. A good reminder that bugs often have surprising root causes.
 
+#### B-trunk-circ-speed — TrunkCircumference edges use walk speed instead of climb speed
+**Status:** Todo · **Refs:** §2
+
+TrunkCircumference edges (horizontal movement around the trunk at one Y-level) currently use walk_tpv, the same cost as flat ground. This is wrong — circumferential movement on a trunk surface should cost like climbing, not walking. The bug is in tpv_for_edge_type() in pathfinding.rs, where TrunkCircumference falls through to the _ => Some(speeds.walk_tpv) default arm. It should use climb_tpv instead.
+
+Note: this will be naturally fixed by F-move-categories, which replaces per-species speed fields with fixed ratios from a movement category enum. Under that scheme, TrunkCircumference would be classified as a climb-cost edge. However, the bug exists independently and predates that feature.
+
+**Related:** F-move-categories
+
 #### F-bounded-pathlen — Bounded max_path_len for all pathfinding call sites
 **Status:** Done
 
@@ -1778,23 +1788,48 @@ Nodes only where a 2x2x2 volume is clear and all 4 ground cells are solid.
 Includes `Species::Elephant`, `graph_for_species()` dispatch, incremental
 updates, SimBridge queries, GDScript spawn/render/placement, and sprite.
 
-#### F-move-categories — Simplify pathfinding to 3 movement categories for cacheability
+#### F-move-categories — Simplify to 4 movement categories with per-creature modality for cacheability
 **Status:** Todo
 
-Currently each species has its own GroundSpeeds (walk_tpv, climb_tpv, wood_ladder_tpv, rope_ladder_tpv, etc.), meaning pathfinding costs vary per species even among creatures that share the same movement mode. For example, elves and trolls are both climbers but may have different climb-to-walk speed ratios. This makes any future pathfinding caching scheme (e.g., precomputed flowfields or cached paths within chunk regions) much harder, because cached paths would need to be species-specific rather than shared across all creatures with the same movement mode.
+Replace the per-species speed fields (walk_tpv, climb_tpv, wood_ladder_tpv, rope_ladder_tpv, flight_tpv) and allowed_edge_types with a single base speed per species (`move_ticks_per_voxel`) plus a MovementCategory enum. All edge costs become fixed ratios of base speed, so cached paths are valid for any creature in the same category — only total traversal time scales by the creature's base speed.
 
-Consider simplifying to exactly 3 movement style categories for pathfinding purposes:
-1. **Walking-only** (elephants, capybaras, etc.) — no climb edges, ground movement only.
-2. **Walking-and-climbing** (elves, trolls, goblins, etc.) — ground + climb edges, with a fixed cost ratio between walking and climbing that is the same for all climbers regardless of species.
-3. **Flying** (hornets, wyverns) — 3D voxel grid movement.
+**THIS IS A BREAKING CHANGE TO THE DATABASE SCHEMA (Creature table gets a new MovementCategory column, multiple SpeciesData fields are removed/replaced). Old saves will not load. This is intentional and accepted.**
 
-Within each category, all species would use identical edge-type cost ratios. Species could still differ in *absolute* speed (an elf walks faster than a goblin), but the *ratio* between walk/climb/ladder costs would be uniform within the category. This means a cached "cheapest path from A to B for a climber" would be valid for any climbing species — only the total time scales by the species' base speed.
+**MovementCategory enum** (`#[repr(u8)]` with explicit discriminants for serialization):
+- `WalkOnly = 0` — ground edges only. No ladders, no climbing.
+- `WalkOrLadder = 1` — ground at 1x move cost + ladders at 2x move cost. No climbing.
+- `Climber = 2` — ground at 1x + ladders at 1x + climbing (including TrunkCircumference) at 2x move cost.
+- `Flyer = 3` — 3D flight at base speed. Uses the flight A* path, not ground A*.
 
-This is a forward-looking simplification to enable future pathfinding optimizations. The current per-species speed system works correctly; the issue is purely about cacheability. The feature should evaluate whether any current species actually needs a different climb/walk ratio, and whether the gameplay cost of uniform ratios is acceptable.
+**Species assignments:**
+- WalkOnly: capybara, elephant, deer, boar
+- WalkOrLadder: orc
+- Climber: elf, troll, goblin, monkey
+- Flyer: hornet, wyvern
 
-Relevant code: GroundSpeeds struct in pathfinding.rs, tpv_for_edge_type() in walkability.rs, per-species speed config in species.rs/config.
+**Per-creature MovementCategory column:** The Creature database row gets a MovementCategory field, initially populated from the creature's species at spawn. This enables future mechanics where creatures change movement modality (e.g., learning to climb). Pathfinding and movement code must read MovementCategory and footprint from the creature row, NOT from species data.
 
-**Related:** F-path-cache
+**Speed and stat changes:**
+- Rename `walk_ticks_per_voxel` to `move_ticks_per_voxel` throughout. This is the single base speed for all species regardless of movement mode.
+- For flyers, `move_ticks_per_voxel` should be set to their current `flight_ticks_per_voxel` value (hornet: 250, wyvern: 200), since that's the speed they actually move at. Their old `walk_ticks_per_voxel` was vestigial.
+- Speed is modified by Agility only (single scalar via `apply_stat_divisor`). The current `(AGI+STR)/2` blend for climbing is removed — since edge costs are fixed ratios, any per-edge stat blend would break cacheability.
+- `CreatureMoveSpeeds` struct in stats.rs is removed. With one base speed + one category, stat-modified speed is just a single `u64`: `apply_stat_divisor(move_tpv, agility)`. The `GroundSpeeds` pathfinding struct takes that `u64` + the `MovementCategory`.
+
+**Fields removed from SpeciesData:** `walk_ticks_per_voxel`, `climb_ticks_per_voxel`, `wood_ladder_tpv`, `rope_ladder_tpv`, `flight_ticks_per_voxel`, `allowed_edge_types`. Replaced by: `move_ticks_per_voxel` (u64) and `movement_category` (MovementCategory enum).
+
+**Pathfinding changes:**
+- GroundSpeeds struct simplified: just base_tpv + MovementCategory (from which can_climb, allowed edges, and per-edge costs are all derived).
+- `tpv_for_edge_type()` becomes a method on MovementCategory that returns a multiplier, applied to base_tpv.
+- `astar_ground` and `astar_fly` dispatch based on creature row's MovementCategory, not species flight_tpv.
+- Footprint/dimensions read from creature's position box, not species data.
+- TrunkCircumference edges classified as climb-cost (fixes B-trunk-circ-speed).
+
+**Cacheability payoff:** Paths only need to be computed per (MovementCategory, footprint_size) pair, not per species. A cached "cheapest path from A to B for a Climber with 1x1x1 footprint" is valid for every such creature.
+
+Relevant code: GroundSpeeds struct in pathfinding.rs, `tpv_for_edge_type()` in pathfinding.rs, CreatureMoveSpeeds in stats.rs, per-species speed config in species.rs/config.rs, `find_path()` dispatcher in sim/mod.rs, `walk_toward_task()`/`fly_toward_target()` in sim/movement.rs, `ground_random_wander()` in sim/movement.rs, grazing edge-type checks in sim/grazing.rs, combat movement in sim/combat.rs, default_config.json.
+
+**Blocks:** F-save-stable
+**Related:** B-trunk-circ-speed, F-path-cache
 
 #### F-nav-gen-opt — RLE-aware nav graph generation
 **Status:** Done
@@ -7987,7 +8022,7 @@ Gate item: declare save format backward-compatibility and document the contract.
 3. **Document the stability contract:** old saves will always load into newer versions. New features get default values via `#[serde(default)]` and tabulosity's empty-table deserialization. The `schema_version` number is bumped with each release that adds schema.
 4. **No more structural changes** to existing tables without a migration path. New columns (with defaults) and new tables are fine.
 
-**Blocked by:** F-multi-tree-schema, F-zone-schema
+**Blocked by:** F-move-categories, F-multi-tree-schema, F-zone-schema
 **Related:** F-save-load, F-tab-schema-evol, F-tab-schema-ver
 
 #### F-serde — Serialization for all sim types
