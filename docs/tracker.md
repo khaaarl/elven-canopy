@@ -270,7 +270,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tab-indexmap-fork    Forked IndexMap with tombstone compaction (alternative to F-tab-ordered-idx)
 [ ] F-tab-joins            Join iterators across tables
 [ ] F-tab-nested-idx       Tabulosity general nested multi-kind compound indexes
-[ ] F-tab-row-crc          Per-row CRC with XOR table aggregation for incremental checksums
+[ ] F-tab-row-crc          Per-row CRC with CrcFeed trait, RowEntry wrapper, and XOR table aggregation
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
 [ ] F-tab-spatial-3        Tabulosity spatial index — range, KNN, and None-set queries
 [ ] F-tame-aggro           Taming failure can aggro the target animal
@@ -8625,40 +8625,104 @@ combinators (`.take(n)`).
 
 **Related:** F-sim-db-impl, F-tab-modify-unchk
 
-#### F-tab-row-crc — Per-row CRC with XOR table aggregation for incremental checksums
+#### F-tab-row-crc — Per-row CRC with CrcFeed trait, RowEntry wrapper, and XOR table aggregation
 **Status:** Todo
 
 Add per-row incremental CRC support to tabulosity tables, with table-level XOR
-aggregation for cheap whole-table checksumming.
+aggregation for cheap whole-table checksumming. Scope is tabulosity only —
+wiring into SimDb is part of B-fast-checksum.
 
-**Mechanism:**
+**Table opt-in:** Tables opt in to CRC tracking via a `#[table(checksummed)]`
+attribute on the `#[derive(Table)]` struct. Tables without this attribute have
+no CRC overhead — no CRC field in the row entry, no bookkeeping fields on the
+table.
 
-Each row stores an `Option<u32>` CRC of its serialized content. Each table maintains
-a running XOR of all its row CRCs, also as `Option<u32>`. Both start as `None` —
-the system is inert until the first checksum is requested.
+**Row storage — per-table `RowEntry`:** The derive macro generates a per-table
+`{Name}RowEntry` struct (e.g., `CreatureRowEntry`) that wraps the row. All
+tables use their `RowEntry` in primary storage (`BTreeMap<PK, RowEntry>`).
 
-**Initial state (no checksum requested yet):** All row CRCs are `None`, the table
-running XOR is `None`, and the dirty `Vec<PK>` is empty. No CRC work happens during
-normal gameplay until the first checksum request triggers a full initial computation.
+- **Non-checksummed tables:** `RowEntry` contains only `row: Row`. The compiler
+  optimizes this to zero overhead — identical layout and access cost to storing
+  `Row` directly.
+- **Checksummed tables:** `RowEntry` contains `row: Row, crc: Option<u32>`.
+
+This universal wrapper means codegen follows one path regardless of CRC opt-in,
+and `RowEntry` can grow additional per-row metadata in the future (e.g.,
+last-modified tick, version counter) without restructuring.
+
+All public accessors (get, get_ref, iter_all, etc.) transparently unwrap
+through `entry.row` so users never see the `RowEntry`. The CRC field is
+excluded from serde serialization — it's purely transient in-memory state.
+On deserialization, all entries start with `crc: None`, `_crc_xor: None`,
+and dirty vec empty — the natural inert state.
+
+**CRC computation — `CrcFeed` trait:** The `CrcFeed` trait and `Crc32State`
+hasher live in the `tabulosity` crate (runtime). `#[derive(CrcFeed)]` lives in
+`tabulosity_derive`.
+
+Trait signature: `Crc32State` holds running CRC32 state. `CrcFeed` has a single
+method `fn crc_feed(&self, state: &mut Crc32State)`.
+
+`CrcFeed` feeds a value's bytes into the hasher in a deterministic,
+non-allocating way. Each field is fed in declaration order. Primitives use
+`to_le_bytes()`. Strings use length-prefix + UTF-8 bytes. `Option<T>` uses a
+tag byte + inner. `Vec<T>` uses length-prefix + elements. Newtypes recurse into
+the inner type. Enums use discriminant + variant fields.
+
+`#[derive(CrcFeed)]` auto-implements the trait for user structs and enums.
+Blanket impls cover common stdlib types (primitives, String, Option, Vec, bool,
+tuples, arrays). Row types on checksummed tables must derive `CrcFeed`:
+`#[derive(Table, CrcFeed, Clone, Debug)]`.
+
+**CRC algorithm:** Dedicated CRC32 (IEEE polynomial), hand-rolled with a lookup
+table. No external crate dependency. Fast, well-understood, sufficient for
+desync detection.
+
+**Table-level bookkeeping:** Each checksummed table maintains:
+- `_crc_xor: Option<u32>` — running XOR of all row CRCs.
+- `_crc_dirty: Vec<PK>` — rows needing CRC recomputation.
+
+Both start as `None`/empty. The system is inert until the first checksum request.
 
 **Steady-state mutation flow:**
 
-1. Row is modified. If `row.crc` is `Some(old)`, XOR `old` out of the table's running
-   hash and push the row's PK onto the table's dirty `Vec<PK>`. Set `row.crc = None`.
-2. If `row.crc` is already `None`, the row is already dirty — no-op (no duplicate
-   pushed to the dirty Vec, no XOR adjustment needed).
+Each mutation path (insert, update, upsert, remove, modify_unchecked) must
+maintain CRC bookkeeping. The details vary by operation:
+
+*Update / upsert (existing row) / modify_unchecked:*
+1. If the row entry's `crc` is `Some(old)`, XOR `old` out of `_crc_xor` and
+   push the PK onto the dirty Vec. Set `crc = None`.
+2. If `crc` is already `None`, the row is already dirty — no-op (no duplicate
+   push, no XOR adjustment).
+3. For `modify_unchecked`, this check happens after the closure returns. Cost is
+   a single branch on data already in cache (co-located with the row in
+   `RowEntry`). Already-dirty rows (the common case) are just a branch.
+
+*Insert (new row):*
+1. The new row entry starts with `crc: None`.
+2. If `_crc_xor` is `Some` (system is active), push the PK onto the dirty Vec
+   so the next checksum request picks it up.
+3. If `_crc_xor` is `None` (system never activated), no-op.
+
+*Remove:*
+1. If the row entry's `crc` is `Some(old)`, XOR `old` out of `_crc_xor`. The
+   row's contribution is fully removed — do not push to dirty Vec.
+2. If `crc` is `None` (row was dirty), the PK is already in the dirty Vec. It
+   will be skipped during drain (see checksum request flow below).
 
 **Checksum request flow:**
 
-1. If the table running XOR is `None` (first checksum ever): compute CRC for every row,
-   store in `row.crc`, XOR them all together into the running hash, clear dirty Vec.
-2. Otherwise: drain the dirty `Vec<PK>`, recompute CRC for each referenced row, XOR
-   new values into the running hash. The Vec is small — proportional to rows changed
-   since last checkpoint.
+Public API: `table.checksum() -> Option<u32>` (takes `&mut self`).
 
-The dirty Vec uses `Vec<PK>` rather than a `HashSet`/`BTreeSet` — cheaper (no hashing
-or tree balancing), and duplicates cannot occur because the `Option<u32>` check in step
-1 prevents pushing a PK that's already dirty.
+On non-checksummed tables, this method is not generated.
+
+1. If `_crc_xor` is `None` (first checksum ever): compute CRC for every row,
+   store in each `RowEntry.crc`, XOR them all together into `_crc_xor`, clear
+   dirty Vec. Return `_crc_xor`.
+2. Otherwise: drain the dirty Vec, look up each PK. If the row exists,
+   recompute its CRC, store in `RowEntry.crc`, XOR the new value into
+   `_crc_xor`. If the row was removed (PK not found), skip it — its old CRC
+   was already XORed out during removal. Return `_crc_xor`.
 
 **XOR properties and tradeoffs:**
 
@@ -8669,18 +8733,13 @@ or tree balancing), and duplicates cannot occur because the `Option<u32>` check 
 - Table-level XOR enables O(1) table hash retrieval at checksum time for clean
   tables, and O(changed_rows) for tables with mutations.
 
-**Diagnostic value:** When a desync is detected, the table-level hashes immediately
-narrow down which table(s) diverged. Row-level CRCs can then pinpoint the exact
-divergent row(s) without transmitting full state.
+**Diagnostic value:** When a desync is detected, the table-level hashes
+immediately narrow down which table(s) diverged. Row-level CRCs can then
+pinpoint the exact divergent row(s) without transmitting full state.
 
-**Open questions:**
-- CRC width: 32-bit is cheap and sufficient for XOR aggregation, but 16-bit per row
-  would halve storage overhead at the cost of higher collision risk.
-- Integration with tabulosity's derive macro — the CRC and XOR bookkeeping should be
-  automatic, not hand-rolled per table.
-- Compound PK tables pay a clone cost per dirty-Vec push. Likely negligible since
-  high-churn tables (creatures, items, tasks) have simple integer PKs, and compound-PK
-  tables (opinions, relationships) change less frequently per row.
+**Future optimization (deferred):** CRC31 packing — use 1 bit for the
+Some/None discriminant and 31 bits for the CRC value, halving the
+`Option<u32>` storage cost. Pure in-memory optimization, no API change.
 
 **Blocks:** B-fast-checksum
 **Related:** F-mp-checksums
