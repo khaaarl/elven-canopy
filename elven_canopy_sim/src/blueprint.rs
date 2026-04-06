@@ -45,6 +45,7 @@ pub enum BlueprintState {
 mod tests {
     use super::*;
     use crate::prng::GameRng;
+    use crate::types::ZoneId;
     use crate::types::{BuildType, Priority, ProjectId, VoxelCoord, VoxelType};
     use std::collections::BTreeMap;
 
@@ -54,6 +55,7 @@ mod tests {
         let id = ProjectId::new(&mut rng);
         let bp = Blueprint {
             id,
+            zone_id: ZoneId(0),
             build_type: BuildType::Platform,
             voxels: vec![VoxelCoord::new(5, 1, 5), VoxelCoord::new(6, 1, 5)],
             priority: Priority::Normal,
@@ -84,6 +86,7 @@ mod tests {
         let task_id = crate::types::TaskId::new(&mut rng);
         let bp = Blueprint {
             id,
+            zone_id: ZoneId(0),
             build_type: BuildType::Platform,
             voxels: vec![VoxelCoord::new(5, 1, 5)],
             priority: Priority::Normal,
@@ -107,6 +110,7 @@ mod tests {
         let id = ProjectId::new(&mut rng);
         let bp = Blueprint {
             id,
+            zone_id: ZoneId(0),
             build_type: BuildType::Platform,
             voxels: vec![VoxelCoord::new(10, 1, 10)],
             priority: Priority::High,
@@ -137,6 +141,7 @@ mod tests {
         ];
         let bp = Blueprint {
             id,
+            zone_id: ZoneId(0),
             build_type: BuildType::Platform,
             voxels: vec![VoxelCoord::new(10, 1, 10), VoxelCoord::new(11, 1, 10)],
             priority: Priority::Normal,

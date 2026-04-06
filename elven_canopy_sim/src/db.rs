@@ -71,7 +71,7 @@ use crate::types::{
     ItemStackId, MilitaryGroupId, NotificationId, OpinionKind, ParticipantRole, ParticipantStatus,
     PathId, ProjectId, ProjectileId, RecruitmentMode, SelectionGroupId, Species, StructureId,
     StrutId, TaskId, ThoughtKind, TraitKind, TraitValue, TreeFruitId, TreeId, VitalStatus,
-    VoxelBox, VoxelCoord,
+    VoxelBox, VoxelCoord, ZoneId, ZoneType,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -289,6 +289,9 @@ pub enum InventoryOwnerKind {
 pub struct Tree {
     #[primary_key]
     pub id: TreeId,
+    /// Zone this entity belongs to.
+    #[indexed]
+    pub zone_id: ZoneId,
     pub position: VoxelCoord,
     pub health: i64,
     pub growth_level: u32,
@@ -320,15 +323,21 @@ pub struct Tree {
 /// See also: `greenhouse.rs` (fruit spawning), `needs.rs` (eating/harvesting),
 /// `logistics.rs` (harvest task creation).
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
+#[index(name = "zone_position", fields("zone_id", "position"), unique)]
 pub struct TreeFruit {
     #[primary_key(auto_increment)]
     pub id: TreeFruitId,
+    /// Zone this entity belongs to.
+    #[indexed]
+    pub zone_id: ZoneId,
     /// The tree this fruit hangs from.
     #[indexed]
     pub tree_id: TreeId,
     /// Voxel position of this fruit (set to VoxelType::Fruit in the world grid).
-    /// Always a 1×1×1 `VoxelBox` (fruit occupies one voxel).
-    #[indexed(unique)]
+    /// Always a 1×1×1 `VoxelBox` (fruit occupies one voxel). Indexed for
+    /// single-field lookups; the compound `zone_position` index enforces
+    /// cross-zone uniqueness.
+    #[indexed]
     pub position: VoxelBox,
     /// The species of this fruit.
     #[indexed]
@@ -376,13 +385,15 @@ pub struct GreatTreeInfo {
 )]
 #[index(
     name = "creature_spatial",
-    fields("position"),
-    kind = "spatial",
+    fields("zone_id", "position" spatial),
     filter = "Creature::is_spatially_present"
 )]
 pub struct Creature {
     #[primary_key]
     pub id: CreatureId,
+    /// Zone this creature belongs to (None = not yet assigned).
+    #[indexed]
+    pub zone_id: Option<ZoneId>,
     #[indexed]
     pub species: Species,
     pub position: VoxelBox,
@@ -652,6 +663,9 @@ pub struct MusicComposition {
 pub struct Task {
     #[primary_key]
     pub id: TaskId,
+    /// Zone this entity belongs to.
+    #[indexed]
+    pub zone_id: ZoneId,
     #[indexed]
     pub kind_tag: TaskKindTag,
     #[indexed]
@@ -771,6 +785,9 @@ pub struct TaskAcquireData {
 pub struct Blueprint {
     #[primary_key]
     pub id: ProjectId,
+    /// Zone this entity belongs to.
+    #[indexed]
+    pub zone_id: ZoneId,
     pub build_type: BuildType,
     pub voxels: Vec<VoxelCoord>,
     pub priority: Priority,
@@ -835,10 +852,11 @@ impl Creature {
     }
 
     /// Filter predicate for the `creature_spatial` index. Returns `true` for
-    /// creatures that should be spatially indexed (alive or incapacitated).
-    /// Dead creatures are excluded so they don't appear in spatial queries.
+    /// creatures that should be spatially indexed: must have a zone assignment
+    /// and not be dead. Dead creatures and zone-less (in-transit) creatures are
+    /// excluded so they don't appear in spatial queries.
     fn is_spatially_present(&self) -> bool {
-        self.vital_status != VitalStatus::Dead
+        self.zone_id.is_some() && self.vital_status != VitalStatus::Dead
     }
 }
 
@@ -861,6 +879,9 @@ impl Blueprint {
 pub struct CompletedStructure {
     #[primary_key]
     pub id: StructureId,
+    /// Zone this entity belongs to.
+    #[indexed]
+    pub zone_id: ZoneId,
     #[indexed]
     pub project_id: ProjectId,
     pub build_type: BuildType,
@@ -907,10 +928,12 @@ impl CompletedStructure {
         blueprint: &crate::blueprint::Blueprint,
         completed_tick: u64,
         inventory_id: InventoryId,
+        zone_id: ZoneId,
     ) -> Self {
         let (anchor, width, depth, height) = Self::compute_bounding_box(&blueprint.voxels);
         Self {
             id,
+            zone_id,
             project_id: blueprint.id,
             build_type: blueprint.build_type,
             anchor,
@@ -1084,6 +1107,9 @@ impl CompletedStructure {
 pub struct Strut {
     #[primary_key(auto_increment)]
     pub id: StrutId,
+    /// Zone this entity belongs to.
+    #[indexed]
+    pub zone_id: ZoneId,
     pub endpoint_a: VoxelCoord,
     pub endpoint_b: VoxelCoord,
     #[indexed]
@@ -1161,10 +1187,16 @@ pub struct ItemStack {
 ///
 /// Items are stored in the `item_stacks` table via the `inventory_id` FK.
 #[derive(Table, Clone, Debug, Serialize, Deserialize)]
+#[index(name = "zone_position", fields("zone_id", "position"), unique)]
 pub struct GroundPile {
     #[primary_key(auto_increment)]
     pub id: GroundPileId,
-    #[indexed(unique)]
+    /// Zone this entity belongs to.
+    #[indexed]
+    pub zone_id: ZoneId,
+    /// Indexed for single-field lookups; the compound `zone_position` index
+    /// enforces cross-zone uniqueness.
+    #[indexed]
     pub position: VoxelCoord,
     pub inventory_id: InventoryId,
 }
@@ -1250,6 +1282,10 @@ pub struct TaskCraftData {
 pub struct Activity {
     #[primary_key]
     pub id: ActivityId,
+
+    /// Zone this entity belongs to.
+    #[indexed]
+    pub zone_id: ZoneId,
 
     /// What kind of group activity this is.
     #[indexed]
@@ -1490,6 +1526,9 @@ pub struct TaskAttackMoveData {
 pub struct Furniture {
     #[primary_key(auto_increment)]
     pub id: FurnitureId,
+    /// Zone this entity belongs to.
+    #[indexed]
+    pub zone_id: ZoneId,
     #[indexed]
     pub structure_id: StructureId,
     pub coord: VoxelCoord,
@@ -1534,6 +1573,30 @@ pub struct SelectionGroup {
     pub group_number: u8,
     pub creature_ids: Vec<CreatureId>,
     pub structure_ids: Vec<StructureId>,
+}
+
+// ---------------------------------------------------------------------------
+// Zone tables
+// ---------------------------------------------------------------------------
+
+/// A spatial zone in the world. Each zone is a bounded voxel grid with its
+/// own terrain, trees, and entities. Created during worldgen; only materialized
+/// into a playable `VoxelZone` when activated.
+///
+/// Primary key is auto-incremented `ZoneId(u32)`.
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct Zone {
+    #[primary_key(auto_increment)]
+    pub id: ZoneId,
+    /// Seed for zone-specific PRNG (terrain shape, tree placement, etc.).
+    /// Drawn from the world PRNG during worldgen before any zone is manifested.
+    pub seed: u64,
+    /// Determines which generation logic `manifest_zone` uses.
+    pub zone_type: ZoneType,
+    /// Voxel dimensions (x, y, z) of this zone. Y must be in [1, 255].
+    pub zone_size: (u32, u32, u32),
+    /// Y coordinate of the terrain floor in this zone.
+    pub floor_y: i32,
 }
 
 // ---------------------------------------------------------------------------
@@ -1629,6 +1692,9 @@ pub struct CivRelationship {
 pub struct Projectile {
     #[primary_key(auto_increment)]
     pub id: ProjectileId,
+    /// Zone this entity belongs to.
+    #[indexed]
+    pub zone_id: ZoneId,
     /// Creature that fired this projectile. FK nullify — used for kill credit.
     #[serde(default)]
     #[indexed]
@@ -1704,14 +1770,19 @@ pub struct SimDb {
     #[table(singular = "fruit_species")]
     pub fruit_species: FruitSpeciesTable,
 
+    #[table(singular = "zone", auto)]
+    pub zones: ZoneTable,
+
     #[table(singular = "tree",
-            fks(owner? = "civilizations" on_delete nullify,
+            fks(zone_id = "zones",
+                owner? = "civilizations" on_delete nullify,
                 fruit_species_id? = "fruit_species"))]
     pub trees: TreeTable,
 
     #[table(singular = "tree_fruit",
             auto,
-            fks(tree_id = "trees" on_delete cascade,
+            fks(zone_id = "zones",
+                tree_id = "trees" on_delete cascade,
                 species_id = "fruit_species"))]
     pub tree_fruits: TreeFruitTable,
 
@@ -1730,7 +1801,8 @@ pub struct SimDb {
     pub civ_relationships: CivRelationshipTable,
 
     #[table(singular = "creature",
-            fks(current_task? = "tasks",
+            fks(zone_id? = "zones",
+                current_task? = "tasks",
                 current_activity? = "activities" on_delete nullify,
                 assigned_home? = "structures",
                 civ_id? = "civilizations" on_delete nullify,
@@ -1764,7 +1836,8 @@ pub struct SimDb {
     pub creature_opinions: CreatureOpinionTable,
 
     #[table(singular = "task",
-            fks(target_creature? = "creatures"))]
+            fks(zone_id = "zones",
+                target_creature? = "creatures"))]
     pub tasks: TaskTable,
 
     #[table(singular = "task_blueprint_ref",
@@ -1823,7 +1896,7 @@ pub struct SimDb {
     #[table(singular = "tame_designation")]
     pub tame_designations: TameDesignationTable,
 
-    #[table(singular = "activity")]
+    #[table(singular = "activity", fks(zone_id = "zones"))]
     pub activities: ActivityTable,
 
     #[table(singular = "activity_participant",
@@ -1844,11 +1917,15 @@ pub struct SimDb {
     pub music_compositions: MusicCompositionTable,
 
     #[table(singular = "blueprint",
-            fks(task_id? = "tasks",
+            fks(zone_id = "zones",
+                task_id? = "tasks",
                 composition_id? = "music_compositions"))]
     pub blueprints: BlueprintTable,
 
-    #[table(singular = "structure", fks(project_id = "blueprints"))]
+    #[table(
+        singular = "structure",
+        fks(zone_id = "zones", project_id = "blueprints")
+    )]
     pub structures: CompletedStructureTable,
 
     #[table(singular = "inventory", auto)]
@@ -1875,7 +1952,7 @@ pub struct SimDb {
             fks(enchantment_id = "item_enchantments" on_delete cascade))]
     pub enchantment_effects: EnchantmentEffectTable,
 
-    #[table(singular = "ground_pile", auto)]
+    #[table(singular = "ground_pile", auto, fks(zone_id = "zones"))]
     pub ground_piles: GroundPileTable,
 
     #[table(
@@ -1885,7 +1962,11 @@ pub struct SimDb {
     )]
     pub logistics_want_rows: LogisticsWantRowTable,
 
-    #[table(singular = "furniture", auto, fks(structure_id = "structures"))]
+    #[table(
+        singular = "furniture",
+        auto,
+        fks(zone_id = "zones", structure_id = "structures")
+    )]
     pub furniture: FurnitureTable,
 
     #[table(singular = "notification", auto)]
@@ -1893,13 +1974,15 @@ pub struct SimDb {
 
     #[table(singular = "strut",
             auto,
-            fks(blueprint_id? = "blueprints" on_delete cascade,
+            fks(zone_id = "zones",
+                blueprint_id? = "blueprints" on_delete cascade,
                 structure_id? = "structures" on_delete nullify))]
     pub struts: StrutTable,
 
     #[table(singular = "projectile",
             auto,
-            fks(shooter? = "creatures" on_delete nullify,
+            fks(zone_id = "zones",
+                shooter? = "creatures" on_delete nullify,
                 inventory_id = "inventories"))]
     pub projectiles: ProjectileTable,
 }

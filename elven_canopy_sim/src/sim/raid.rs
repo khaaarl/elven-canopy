@@ -84,8 +84,12 @@ impl SimState {
         // Pick a random cardinal direction (0=North, 1=South, 2=East, 3=West).
         let direction = (self.rng.next_u64() % 4) as u8;
 
+        // Derive zone_id from the player's tree.
+        let raid_zone_id = self.db.trees.get(&self.player_tree_id).unwrap().zone_id;
+
         // Find perimeter spawn positions.
-        let spawn_positions = self.find_perimeter_positions(direction, raid_size as usize);
+        let spawn_positions =
+            self.find_perimeter_positions(direction, raid_size as usize, raid_zone_id);
 
         if spawn_positions.is_empty() {
             self.add_notification(
@@ -95,14 +99,18 @@ impl SimState {
         }
 
         // Find attack-move targets near wood.
-        let attack_targets = self.find_wood_adjacent_nodes(species);
+        let attack_targets = self.find_wood_adjacent_nodes(species, raid_zone_id);
 
         // Spawn raiders.
         let mut raider_ids = Vec::new();
         for &spawn_pos in &spawn_positions {
-            if let Some(creature_id) =
-                self.spawn_creature_with_civ(species, spawn_pos, Some(raiding_civ_id), events)
-            {
+            if let Some(creature_id) = self.spawn_creature_with_civ(
+                species,
+                spawn_pos,
+                Some(raiding_civ_id),
+                raid_zone_id,
+                events,
+            ) {
                 raider_ids.push(creature_id);
             }
         }
@@ -113,12 +121,15 @@ impl SimState {
         }
 
         // Assign attack-move to each raider.
+        let home_zone = self.db.zones.get(&raid_zone_id).expect("home zone row");
+        let home_zone_size = home_zone.zone_size;
+        let home_floor_y = home_zone.floor_y;
         for &raider_id in &raider_ids {
             let target = if attack_targets.is_empty() {
-                // Fallback: attack-move toward world center at ground level.
-                let cx = self.config.world_size.0 as i32 / 2;
-                let cz = self.config.world_size.2 as i32 / 2;
-                VoxelCoord::new(cx, self.config.floor_y + 1, cz)
+                // Fallback: attack-move toward zone center at ground level.
+                let cx = home_zone_size.0 as i32 / 2;
+                let cz = home_zone_size.2 as i32 / 2;
+                VoxelCoord::new(cx, home_floor_y + 1, cz)
             } else {
                 let target_idx = (self.rng.next_u64() % attack_targets.len() as u64) as usize;
                 attack_targets[target_idx]
@@ -150,26 +161,35 @@ impl SimState {
     /// compute the terrain bounding box, picks a random anchor point on the
     /// edge, then selects the nearest `count` positions to that anchor
     /// (sorted by Manhattan distance).
-    fn find_perimeter_positions(&mut self, direction: u8, count: usize) -> Vec<VoxelCoord> {
-        let floor_y = self.config.floor_y + 1;
-        let (wx, _wy, wz) = self.config.world_size;
+    fn find_perimeter_positions(
+        &mut self,
+        direction: u8,
+        count: usize,
+        zone_id: ZoneId,
+    ) -> Vec<VoxelCoord> {
+        let home_zone = self.db.zones.get(&zone_id).expect("home zone row");
+        let floor_y = home_zone.floor_y + 1;
+        let (wx, _wy, wz) = home_zone.zone_size;
 
         // Scan all (x, z) at floor level for walkable dirt positions.
         let mut ground_positions: Vec<VoxelCoord> = Vec::new();
-        for x in 0..wx as i32 {
-            for z in 0..wz as i32 {
-                let pos = VoxelCoord::new(x, floor_y, z);
-                if crate::walkability::footprint_walkable(
-                    &self.world,
-                    &self.face_data,
-                    pos,
-                    [1, 1, 1],
-                    // Ground-level dirt always has solid below; can_climb irrelevant.
-                    true,
-                ) && crate::walkability::derive_surface_type(&self.world, &self.face_data, pos)
-                    == VoxelType::Dirt
-                {
-                    ground_positions.push(pos);
+        {
+            let zone = self.voxel_zone(zone_id).unwrap();
+            for x in 0..wx as i32 {
+                for z in 0..wz as i32 {
+                    let pos = VoxelCoord::new(x, floor_y, z);
+                    if crate::walkability::footprint_walkable(
+                        zone,
+                        &zone.face_data,
+                        pos,
+                        [1, 1, 1],
+                        // Ground-level dirt always has solid below; can_climb irrelevant.
+                        true,
+                    ) && crate::walkability::derive_surface_type(zone, &zone.face_data, pos)
+                        == VoxelType::Dirt
+                    {
+                        ground_positions.push(pos);
+                    }
                 }
             }
         }
@@ -241,30 +261,33 @@ impl SimState {
     /// walkable positions in the world. Since raiders primarily target the tree,
     /// we scan the floor level for ground-only species, and a reasonable Y range
     /// for climbers.
-    fn find_wood_adjacent_nodes(&self, species: Species) -> Vec<VoxelCoord> {
+    fn find_wood_adjacent_nodes(&self, species: Species, zone_id: ZoneId) -> Vec<VoxelCoord> {
         let species_data = &self.species_table[&species];
         let ground_only = species_data.ground_only;
         let footprint = species_data.footprint;
         let can_climb = species_data.movement_category.can_climb();
-        let (wx, wy, wz) = self.config.world_size;
+        let home_zone = self.db.zones.get(&zone_id).expect("home zone row");
+        let (wx, wy, wz) = home_zone.zone_size;
+        let zone_floor_y = home_zone.floor_y;
 
         let mut targets = Vec::new();
 
         let y_range: Box<dyn Iterator<Item = i32>> = if ground_only {
             // Ground-only: only scan floor level.
-            Box::new(std::iter::once(self.config.floor_y + 1))
+            Box::new(std::iter::once(zone_floor_y + 1))
         } else {
             // Climbers: scan all Y levels.
             Box::new(1..wy as i32)
         };
 
+        let zone = self.voxel_zone(zone_id).unwrap();
         for y in y_range {
             for x in 0..wx as i32 {
                 for z in 0..wz as i32 {
                     let pos = VoxelCoord::new(x, y, z);
                     if !crate::walkability::footprint_walkable(
-                        &self.world,
-                        &self.face_data,
+                        zone,
+                        &zone.face_data,
                         pos,
                         footprint,
                         can_climb,
@@ -274,11 +297,8 @@ impl SimState {
 
                     // If species is ground_only, only consider Dirt surface.
                     if ground_only {
-                        let surface = crate::walkability::derive_surface_type(
-                            &self.world,
-                            &self.face_data,
-                            pos,
-                        );
+                        let surface =
+                            crate::walkability::derive_surface_type(zone, &zone.face_data, pos);
                         if surface != VoxelType::Dirt {
                             continue;
                         }
@@ -296,7 +316,7 @@ impl SimState {
 
                     let near_wood = neighbors.iter().any(|&n| {
                         matches!(
-                            self.world.get(n),
+                            zone.get(n),
                             VoxelType::Trunk
                                 | VoxelType::Branch
                                 | VoxelType::Root

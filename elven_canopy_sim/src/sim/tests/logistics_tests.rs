@@ -12,7 +12,7 @@ fn logistics_heartbeat_creates_haul_tasks() {
     // Place a ground pile with bread.
     let pile_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(
             pile.inventory_id,
@@ -79,7 +79,7 @@ fn logistics_respects_priority() {
     // Place bread on the ground.
     let pile_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(
             pile.inventory_id,
@@ -152,7 +152,7 @@ fn logistics_skips_reserved_items() {
     let pile_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let task_id = TaskId::new(&mut sim.rng);
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(
             pile.inventory_id,
@@ -206,7 +206,7 @@ fn logistics_counts_in_transit() {
     // Place 10 bread on ground.
     let pile_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(
             pile.inventory_id,
@@ -252,7 +252,7 @@ fn logistics_counts_in_transit() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(existing_haul);
+    sim.insert_task(sim.home_zone_id(), existing_haul);
 
     sim.process_logistics_heartbeat();
 
@@ -391,7 +391,7 @@ fn logistics_caps_tasks_per_heartbeat() {
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     {
-        let pile_id = sim.ensure_ground_pile(tree_pos);
+        let pile_id = sim.ensure_ground_pile(tree_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(
             pile.inventory_id,
@@ -460,7 +460,7 @@ fn harvest_task_creates_ground_pile() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(harvest_task);
+    sim.insert_task(sim.home_zone_id(), harvest_task);
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
@@ -472,7 +472,7 @@ fn harvest_task_creates_ground_pile() {
 
     // Assert: fruit voxel removed from world.
     assert_eq!(
-        sim.world.get(fruit_pos),
+        sim.voxel_zone(sim.home_zone_id()).unwrap().get(fruit_pos),
         VoxelType::Air,
         "Fruit voxel should be removed"
     );
@@ -567,7 +567,7 @@ fn logistics_heartbeat_creates_harvest_tasks() {
             .task_voxel_ref(task.id, crate::db::TaskVoxelRole::FruitTarget)
             .expect("Harvest task should have a FruitTarget voxel ref");
         assert_eq!(
-            sim.world.get(fruit_pos),
+            sim.voxel_zone(sim.home_zone_id()).unwrap().get(fruit_pos),
             VoxelType::Fruit,
             "Harvest task should target an actual fruit voxel"
         );
@@ -611,7 +611,7 @@ fn haul_source_empty_cancels() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(haul_task);
+    sim.insert_task(sim.home_zone_id(), haul_task);
 
     // Spawn an elf and manually assign it to the haul task at the source.
     let elf_id = spawn_elf(&mut sim);
@@ -655,7 +655,7 @@ fn logistics_ignores_owned_items_in_ground_pile() {
 
     // Place 5 owned bread (owned by elf) in a ground pile.
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(
             pile.inventory_id,
@@ -705,7 +705,7 @@ fn logistics_hauls_unowned_but_skips_owned_in_same_pile() {
     let elf_id = spawn_elf(&mut sim);
 
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         // 3 owned bread.
         sim.inv_add_simple_item(
@@ -900,7 +900,7 @@ fn logistics_current_inventory_excludes_owned_items() {
     // Place unowned bread in a ground pile as a source.
     let pile_pos = tree_pos;
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(
             pile.inventory_id,
@@ -938,7 +938,7 @@ fn logistics_reserve_haul_items_skips_owned_stacks() {
     let pile_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = spawn_elf(&mut sim);
 
-    let pile_id = sim.ensure_ground_pile(pile_pos);
+    let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
     let pile = sim.db.ground_piles.get(&pile_id).unwrap();
     // 3 owned + 5 unowned.
     sim.inv_add_simple_item(
@@ -1077,7 +1077,7 @@ fn personal_acquisition_prefers_owned_items_in_ground_pile() {
     // Pile A: 2 bread owned by this elf.
     let owned_pile_pos = VoxelCoord::new(tree_pos.x, tree_pos.y, tree_pos.z);
     {
-        let pile_id = sim.ensure_ground_pile(owned_pile_pos);
+        let pile_id = sim.ensure_ground_pile(owned_pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(
             pile.inventory_id,
@@ -1091,7 +1091,7 @@ fn personal_acquisition_prefers_owned_items_in_ground_pile() {
     // Pile B: 5 unowned bread at a different location.
     let unowned_pile_pos = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
     {
-        let pile_id = sim.ensure_ground_pile(unowned_pile_pos);
+        let pile_id = sim.ensure_ground_pile(unowned_pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Bread, 5, None, None);
     }
@@ -1183,7 +1183,7 @@ fn personal_acquisition_falls_back_to_unowned() {
     // Only unowned bread available.
     let pile_pos = VoxelCoord::new(tree_pos.x, tree_pos.y, tree_pos.z);
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Bread, 5, None, None);
     }
@@ -1229,7 +1229,7 @@ fn personal_acquisition_skips_other_creatures_owned_items() {
     // Pile has bread owned by elf A — no unowned bread anywhere.
     let pile_pos = VoxelCoord::new(tree_pos.x, tree_pos.y, tree_pos.z);
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(
             pile.inventory_id,
@@ -1300,7 +1300,7 @@ fn military_acquisition_prefers_owned_items() {
     // Pile A: 1 bow owned by this elf.
     let owned_pile_pos = VoxelCoord::new(tree_pos.x, tree_pos.y, tree_pos.z);
     {
-        let pile_id = sim.ensure_ground_pile(owned_pile_pos);
+        let pile_id = sim.ensure_ground_pile(owned_pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(
             pile.inventory_id,
@@ -1314,7 +1314,7 @@ fn military_acquisition_prefers_owned_items() {
     // Pile B: 1 unowned bow.
     let unowned_pile_pos = VoxelCoord::new(tree_pos.x + 3, tree_pos.y, tree_pos.z);
     {
-        let pile_id = sim.ensure_ground_pile(unowned_pile_pos);
+        let pile_id = sim.ensure_ground_pile(unowned_pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Bow, 1, None, None);
     }
@@ -1434,7 +1434,7 @@ fn military_acquisition_suppressed_during_combat() {
     // Place an unowned bow in a ground pile (elf could acquire it).
     let pile_pos = VoxelCoord::new(tree_pos.x, tree_pos.y, tree_pos.z);
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Bow, 1, None, None);
     }
@@ -1443,7 +1443,7 @@ fn military_acquisition_suppressed_during_combat() {
     let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     let mut events = Vec::new();
     let troll_pos = VoxelCoord::new(elf_pos.x + 5, elf_pos.y, elf_pos.z);
-    sim.spawn_creature(Species::Troll, troll_pos, &mut events);
+    sim.spawn_creature(Species::Troll, troll_pos, sim.home_zone_id(), &mut events);
 
     // Call check_military_equipment_wants — should do nothing due to hostiles.
     sim.check_military_equipment_wants(elf_id);
@@ -1498,7 +1498,7 @@ fn military_acquisition_falls_back_to_unowned() {
     // Only unowned bow available.
     let pile_pos = VoxelCoord::new(tree_pos.x, tree_pos.y, tree_pos.z);
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Bow, 1, None, None);
     }
@@ -1555,7 +1555,7 @@ fn military_acquisition_skips_other_creatures_owned_items() {
     // Only elf_a's owned bow exists — no unowned bows.
     let pile_pos = VoxelCoord::new(tree_pos.x, tree_pos.y, tree_pos.z);
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(
             pile.inventory_id,
@@ -1584,7 +1584,7 @@ fn find_owned_item_source_skips_reserved_owned_items() {
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let pile_pos = VoxelCoord::new(tree_pos.x, tree_pos.y, tree_pos.z);
-    let pile_id = sim.ensure_ground_pile(pile_pos);
+    let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
     let pile = sim.db.ground_piles.get(&pile_id).unwrap();
     sim.inv_add_simple_item(
         pile.inventory_id,
@@ -1628,7 +1628,7 @@ fn inv_reserve_owned_items_splits_stack_preserving_owner() {
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let pile_pos = VoxelCoord::new(tree_pos.x, tree_pos.y, tree_pos.z);
-    let pile_id = sim.ensure_ground_pile(pile_pos);
+    let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
     let pile = sim.db.ground_piles.get(&pile_id).unwrap();
     sim.inv_add_simple_item(
         pile.inventory_id,
@@ -2484,7 +2484,7 @@ fn logistics_heartbeat_specific_filter_hauls_correct_species() {
     // Place a ground pile with mixed fruit.
     let pile_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_item(
             pile.inventory_id,
@@ -2575,7 +2575,7 @@ fn in_transit_counting_uses_hauled_material() {
     // Place ground piles with species A and B.
     let pile_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_item(
             pile.inventory_id,
@@ -2679,7 +2679,7 @@ fn haul_preserves_material_through_pickup_and_dropoff() {
 
     // Place a ground pile with fruit that has a species material.
     let pile_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    let pile_id = sim.ensure_ground_pile(pile_pos);
+    let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
     let pile = sim.db.ground_piles.get(&pile_id).unwrap();
     sim.inv_add_item(
         pile.inventory_id,
@@ -2722,7 +2722,12 @@ fn haul_preserves_material_through_pickup_and_dropoff() {
     assert_eq!(haul_data.hauled_material, Some(species_a));
 
     // Spawn an elf and fast-forward to let it complete the haul.
-    let _elf_id = sim.spawn_creature(crate::types::Species::Elf, pile_pos, &mut Vec::new());
+    let _elf_id = sim.spawn_creature(
+        crate::types::Species::Elf,
+        pile_pos,
+        sim.home_zone_id(),
+        &mut Vec::new(),
+    );
     for _ in 0..500 {
         sim.step(&[], sim.tick + 100);
     }
@@ -2767,7 +2772,7 @@ fn elf_wanting_shoes_ignores_boots() {
     // Place armor boots on the ground near the tree.
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x + 1, 1, tree_pos.z);
-    let pile_id = sim.ensure_ground_pile(pile_pos);
+    let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
     let pile_inv = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
     sim.inv_add_item(
         pile_inv,
@@ -2808,7 +2813,7 @@ fn elf_acquires_shoes_as_clothing() {
     // Place shoes on the ground.
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x + 1, 1, tree_pos.z);
-    let pile_id = sim.ensure_ground_pile(pile_pos);
+    let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
     let pile_inv = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
     let fruit_mat = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(0));
     sim.inv_add_item(
@@ -2942,7 +2947,7 @@ fn haul_dropoff_does_not_move_owned_bread_into_building() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(haul_task);
+    sim.insert_task(sim.home_zone_id(), haul_task);
     // Fix phase to GoingToDestination (insert_task sets from the kind).
     {
         let mut h = sim.db.task_haul_data.get(&task_id).unwrap();
@@ -3031,7 +3036,7 @@ fn haul_pickup_preserves_reservation_on_carried_items() {
 
     // Ground pile with 5 bread reserved by the haul task.
     let pile_pos = tree_pos;
-    let pile_id = sim.ensure_ground_pile(pile_pos);
+    let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
     let pile_inv = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
 
     // Create the haul task before adding reserved items so the task row
@@ -3060,7 +3065,7 @@ fn haul_pickup_preserves_reservation_on_carried_items() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(haul_task);
+    sim.insert_task(sim.home_zone_id(), haul_task);
 
     sim.inv_add_simple_item(
         pile_inv,
@@ -3142,7 +3147,7 @@ fn haul_cleanup_going_to_dest_drops_only_reserved_items() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(haul_task);
+    sim.insert_task(sim.home_zone_id(), haul_task);
     {
         let mut h = sim.db.task_haul_data.get(&task_id).unwrap();
         h.phase = crate::task::HaulPhase::GoingToDestination;
@@ -3231,7 +3236,7 @@ fn haul_cleanup_going_to_source_clears_reservation_at_source() {
 
     // Ground pile with 5 bread, to be reserved by the haul task.
     let pile_pos = tree_pos;
-    let pile_id = sim.ensure_ground_pile(pile_pos);
+    let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
     let pile_inv = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
 
     // Create haul task before adding reserved items so the task row
@@ -3260,7 +3265,7 @@ fn haul_cleanup_going_to_source_clears_reservation_at_source() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(haul_task);
+    sim.insert_task(sim.home_zone_id(), haul_task);
 
     sim.inv_add_simple_item(
         pile_inv,
@@ -3422,7 +3427,7 @@ fn two_concurrent_haul_tasks_dropoff_only_moves_own_reserved_items() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(haul_a);
+    sim.insert_task(sim.home_zone_id(), haul_a);
     {
         let mut h = sim.db.task_haul_data.get(&task_a).unwrap();
         h.phase = crate::task::HaulPhase::GoingToDestination;
@@ -3464,7 +3469,7 @@ fn two_concurrent_haul_tasks_dropoff_only_moves_own_reserved_items() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(haul_b);
+    sim.insert_task(sim.home_zone_id(), haul_b);
     {
         let mut h = sim.db.task_haul_data.get(&task_b).unwrap();
         h.phase = crate::task::HaulPhase::GoingToDestination;
@@ -3561,7 +3566,7 @@ fn death_during_haul_drops_all_items_unreserved_and_unowned() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(haul_task);
+    sim.insert_task(sim.home_zone_id(), haul_task);
     {
         let mut h = sim.db.task_haul_data.get(&task_id).unwrap();
         h.phase = crate::task::HaulPhase::GoingToDestination;
@@ -3672,7 +3677,7 @@ fn haul_dropoff_does_not_affect_other_item_kinds_in_inventory() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(haul_task);
+    sim.insert_task(sim.home_zone_id(), haul_task);
     {
         let mut h = sim.db.task_haul_data.get(&task_id).unwrap();
         h.phase = crate::task::HaulPhase::GoingToDestination;
@@ -3749,7 +3754,7 @@ fn haul_dropoff_does_not_affect_other_item_kinds_in_inventory() {
 fn logistics_want_row_remove_and_reinsert_with_compound_pk() {
     let mut sim = test_sim(legacy_test_seed());
     let pos = VoxelCoord::new(10, 1, 20);
-    let pile_id = sim.ensure_ground_pile(pos);
+    let pile_id = sim.ensure_ground_pile(pos, sim.home_zone_id());
     let inv_id = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
 
     // Set initial wants.
@@ -3800,7 +3805,7 @@ fn acquire_item_picks_up_and_owns() {
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Bread, 3, None, None);
     }
@@ -3835,7 +3840,7 @@ fn acquire_item_picks_up_and_owns() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(acquire_task);
+    sim.insert_task(sim.home_zone_id(), acquire_task);
     {
         let pile = sim
             .db
@@ -3936,7 +3941,7 @@ fn idle_elf_below_want_target_acquires_item() {
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Bread, 5, None, None);
     }
@@ -3996,7 +4001,7 @@ fn acquire_item_reserves_prevent_double_claim() {
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Bread, 2, None, None);
     }
@@ -4008,6 +4013,7 @@ fn acquire_item_reserves_prevent_double_claim() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: spawn_pos,
         },
@@ -4074,7 +4080,7 @@ fn elf_at_want_target_does_not_acquire() {
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(
             pile.inventory_id,

@@ -90,7 +90,7 @@ pub(super) fn setup_aggressive_elf(sim: &mut SimState) -> (CreatureId, VoxelCoor
 pub(super) fn setup_frozen_hornet(sim: &mut SimState, pos: VoxelCoord) -> CreatureId {
     let mut events = Vec::new();
     let hornet_id = sim
-        .spawn_creature(Species::Hornet, pos, &mut events)
+        .spawn_creature(Species::Hornet, pos, sim.home_zone_id(), &mut events)
         .expect("hornet should spawn");
     zero_creature_stats(sim, hornet_id);
     force_idle_and_cancel_activations(sim, hornet_id);
@@ -145,7 +145,7 @@ fn fire_arrow_at_goblin_with_hp(seed: u64, arrow_hp: i32) -> i64 {
     sim.config.evasion_crit_threshold = 100_000;
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
     let origin = VoxelCoord::new(goblin_pos.x - 10, goblin_pos.y, goblin_pos.z);
-    sim.spawn_projectile(origin, goblin_pos, None);
+    sim.spawn_projectile(origin, goblin_pos, None, sim.home_zone_id());
 
     // Modify the arrow's HP in the projectile inventory before it flies.
     if arrow_hp < 3 {
@@ -1017,7 +1017,7 @@ fn armor_reduces_projectile_damage() {
     sim.config.arrow_gravity = 0;
     sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
     let origin = VoxelCoord::new(elf_pos.x - 10, elf_pos.y, elf_pos.z);
-    sim.spawn_projectile(origin, elf_pos, None);
+    sim.spawn_projectile(origin, elf_pos, None, sim.home_zone_id());
 
     // Run until resolved.
     let mut hit_damage: Option<i64> = None;
@@ -1747,7 +1747,7 @@ fn armor_projectile_degrades_equipment() {
             .current_hp;
 
         let origin = VoxelCoord::new(elf_pos.x - 10, elf_pos.y, elf_pos.z);
-        sim.spawn_projectile(origin, elf_pos, None);
+        sim.spawn_projectile(origin, elf_pos, None, sim.home_zone_id());
 
         for _ in 0..500 {
             if sim.db.projectiles.is_empty() {
@@ -2311,7 +2311,7 @@ fn test_shoot_arrow_blocked_los_fails() {
     arm_with_bow_and_arrows(&mut sim, elf, 5);
 
     // Place a solid wall between them.
-    sim.world.set(
+    sim.voxel_zone_mut(sim.home_zone_id()).unwrap().set(
         VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z),
         VoxelType::Trunk,
     );
@@ -2347,7 +2347,7 @@ fn test_shoot_arrow_leaf_does_not_block_los() {
     arm_with_bow_and_arrows(&mut sim, elf, 5);
 
     // Place a leaf between them — should NOT block LOS.
-    sim.world.set(
+    sim.voxel_zone_mut(sim.home_zone_id()).unwrap().set(
         VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z),
         VoxelType::Leaf,
     );
@@ -2967,7 +2967,7 @@ fn position_blocks_friendly_archer_on_line() {
             prerequisite_task_id: None,
             required_civ_id: None,
         };
-        sim.insert_task(task);
+        sim.insert_task(sim.home_zone_id(), task);
         if let Some(mut c) = sim.db.creatures.get(&archer) {
             c.current_task = Some(task_id);
             sim.db.update_creature(c).unwrap();
@@ -3121,7 +3121,7 @@ fn indestructible_arrow_deals_full_damage() {
     sim.config.evasion_crit_threshold = 100_000;
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
     let origin = VoxelCoord::new(goblin_pos.x - 10, goblin_pos.y, goblin_pos.z);
-    sim.spawn_projectile(origin, goblin_pos, None);
+    sim.spawn_projectile(origin, goblin_pos, None, sim.home_zone_id());
 
     let mut damage_dealt: i64 = 0;
     for _ in 0..500 {
@@ -4354,7 +4354,7 @@ fn arrow_chase_integration_projectile_triggers_chase() {
 
     sim.config.arrow_gravity = 0;
     sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
-    sim.spawn_projectile(origin, goblin_pos, None);
+    sim.spawn_projectile(origin, goblin_pos, None, sim.home_zone_id());
 
     // Run until the projectile resolves.
     let mut hit = false;
@@ -4458,7 +4458,7 @@ fn arrow_chase_preempts_autonomous_task() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(goto_task);
+    sim.insert_task(sim.home_zone_id(), goto_task);
     if let Some(mut c) = sim.db.creatures.get(&goblin) {
         c.current_task = Some(task_id);
         c.next_available_tick = Some(u64::MAX);
@@ -4936,7 +4936,7 @@ fn test_projectile_evaded_by_high_agi_target() {
     sim.config.arrow_gravity = 0;
     sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
     let origin = VoxelCoord::new(elf_pos.x - 10, elf_pos.y, elf_pos.z);
-    sim.spawn_projectile(origin, elf_pos, None);
+    sim.spawn_projectile(origin, elf_pos, None, sim.home_zone_id());
 
     let mut evaded = false;
     let mut hit = false;
@@ -4999,7 +4999,7 @@ fn test_projectile_crit_doubles_damage() {
     sim.config.arrow_gravity = 0;
     sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
     let origin = VoxelCoord::new(elf_pos.x - 10, elf_pos.y, elf_pos.z);
-    sim.spawn_projectile(origin, elf_pos, Some(shooter));
+    sim.spawn_projectile(origin, elf_pos, Some(shooter), sim.home_zone_id());
 
     let mut got_crit = false;
     let mut hit_damage: Option<i64> = None;
@@ -5082,7 +5082,7 @@ fn test_projectile_evasion_with_shooter_stats() {
     let total = 200;
     for _ in 0..total {
         let origin = VoxelCoord::new(target_pos.x - 10, target_pos.y, target_pos.z);
-        sim.spawn_projectile(origin, target_pos, Some(shooter));
+        sim.spawn_projectile(origin, target_pos, Some(shooter), sim.home_zone_id());
         for _ in 0..500 {
             if sim.db.projectiles.is_empty() {
                 break;
@@ -5197,7 +5197,7 @@ fn test_ranged_evasion_skill_advances_on_projectile_dodge() {
 
     for _ in 0..100 {
         let origin = VoxelCoord::new(elf_pos.x - 10, elf_pos.y, elf_pos.z);
-        sim.spawn_projectile(origin, elf_pos, None);
+        sim.spawn_projectile(origin, elf_pos, None, sim.home_zone_id());
         for _ in 0..500 {
             if sim.db.projectiles.is_empty() {
                 break;
@@ -5257,7 +5257,7 @@ fn test_evaded_arrow_still_triggers_chase() {
 
     sim.config.arrow_gravity = 0;
     sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
-    sim.spawn_projectile(origin, goblin_pos, None);
+    sim.spawn_projectile(origin, goblin_pos, None, sim.home_zone_id());
 
     let mut evaded = false;
     for _ in 0..1000 {
@@ -5566,7 +5566,7 @@ fn spawn_projectile_creates_entity_and_inventory() {
     let origin = VoxelCoord::new(40, 5, 40);
     let target = VoxelCoord::new(50, 5, 40);
 
-    sim.spawn_projectile(origin, target, None);
+    sim.spawn_projectile(origin, target, None, sim.home_zone_id());
 
     assert_eq!(sim.db.projectiles.len(), 1);
     let proj = sim.db.projectiles.iter_all().next().unwrap();
@@ -5586,7 +5586,12 @@ fn spawn_projectile_creates_entity_and_inventory() {
 fn spawn_projectile_schedules_tick_event() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let initial_events = sim.event_queue.len();
-    sim.spawn_projectile(VoxelCoord::new(40, 5, 40), VoxelCoord::new(50, 5, 40), None);
+    sim.spawn_projectile(
+        VoxelCoord::new(40, 5, 40),
+        VoxelCoord::new(50, 5, 40),
+        None,
+        sim.home_zone_id(),
+    );
     // Should have scheduled exactly one ProjectileTick.
     assert_eq!(sim.event_queue.len(), initial_events + 1);
 }
@@ -5595,8 +5600,18 @@ fn spawn_projectile_schedules_tick_event() {
 fn second_spawn_does_not_duplicate_tick_event() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let initial_events = sim.event_queue.len();
-    sim.spawn_projectile(VoxelCoord::new(40, 5, 40), VoxelCoord::new(50, 5, 40), None);
-    sim.spawn_projectile(VoxelCoord::new(40, 5, 40), VoxelCoord::new(45, 5, 40), None);
+    sim.spawn_projectile(
+        VoxelCoord::new(40, 5, 40),
+        VoxelCoord::new(50, 5, 40),
+        None,
+        sim.home_zone_id(),
+    );
+    sim.spawn_projectile(
+        VoxelCoord::new(40, 5, 40),
+        VoxelCoord::new(45, 5, 40),
+        None,
+        sim.home_zone_id(),
+    );
     // Only one extra event (from first spawn), not two.
     assert_eq!(sim.event_queue.len(), initial_events + 1);
 }
@@ -5606,7 +5621,8 @@ fn projectile_hits_solid_voxel_and_creates_ground_pile() {
     let mut sim = flat_world_sim(legacy_test_seed());
     // Place a solid wall at x=45.
     for y in 1..=5 {
-        sim.world
+        sim.voxel_zone_mut(sim.home_zone_id())
+            .unwrap()
             .set(VoxelCoord::new(45, y, 40), VoxelType::GrownPlatform);
     }
 
@@ -5617,7 +5633,12 @@ fn projectile_hits_solid_voxel_and_creates_ground_pile() {
     sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
     sim.config.arrow_impact_damage_min = 0;
     sim.config.arrow_impact_damage_max = 0;
-    sim.spawn_projectile(VoxelCoord::new(40, 3, 40), VoxelCoord::new(45, 3, 40), None);
+    sim.spawn_projectile(
+        VoxelCoord::new(40, 3, 40),
+        VoxelCoord::new(45, 3, 40),
+        None,
+        sim.home_zone_id(),
+    );
 
     // Run until the projectile resolves (max 500 ticks).
     for _ in 0..500 {
@@ -5682,7 +5703,7 @@ fn projectile_hits_creature_and_deals_damage() {
     sim.config.arrow_gravity = 0;
     sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
     let origin = VoxelCoord::new(goblin_pos.x - 10, goblin_pos.y, goblin_pos.z);
-    sim.spawn_projectile(origin, goblin_pos, None);
+    sim.spawn_projectile(origin, goblin_pos, None, sim.home_zone_id());
 
     // Run until resolved.
     let mut hit_events = Vec::new();
@@ -5725,6 +5746,7 @@ fn projectile_out_of_bounds_despawns_silently() {
         VoxelCoord::new(250, 5, 128),
         VoxelCoord::new(260, 5, 128), // target is beyond world bounds
         None,
+        sim.home_zone_id(),
     );
 
     // Run until resolved.
@@ -5771,6 +5793,7 @@ fn projectile_does_not_hit_shooter() {
         elf_pos,
         VoxelCoord::new(elf_pos.x + 20, elf_pos.y, elf_pos.z),
         Some(elf),
+        sim.home_zone_id(),
     );
 
     // Run a few ticks — the projectile should pass through the shooter.
@@ -5855,6 +5878,7 @@ fn projectile_skips_origin_voxel_creatures() {
         shooter_pos,
         VoxelCoord::new(shooter_pos.x + 20, shooter_pos.y, shooter_pos.z),
         Some(shooter),
+        sim.home_zone_id(),
     );
 
     // Run ticks until projectile is consumed or max iterations.
@@ -6141,7 +6165,7 @@ fn projectile_hits_creature_beyond_origin_voxel() {
     sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
 
     // Shoot from origin toward the target (no shooter creature).
-    sim.spawn_projectile(origin, target_pos, None);
+    sim.spawn_projectile(origin, target_pos, None, sim.home_zone_id());
 
     // Run ticks.
     let mut hit = false;
@@ -6178,7 +6202,12 @@ fn projectile_hits_creature_beyond_origin_voxel() {
 #[test]
 fn projectile_cleanup_removes_inventory() {
     let mut sim = flat_world_sim(legacy_test_seed());
-    sim.spawn_projectile(VoxelCoord::new(40, 5, 40), VoxelCoord::new(50, 5, 40), None);
+    sim.spawn_projectile(
+        VoxelCoord::new(40, 5, 40),
+        VoxelCoord::new(50, 5, 40),
+        None,
+        sim.home_zone_id(),
+    );
     let proj = sim.db.projectiles.iter_all().next().unwrap();
     let inv_id = proj.inventory_id;
     let proj_id = proj.id;
@@ -6202,7 +6231,12 @@ fn projectile_cleanup_removes_inventory() {
 #[test]
 fn projectile_serde_roundtrip() {
     let mut sim = flat_world_sim(legacy_test_seed());
-    sim.spawn_projectile(VoxelCoord::new(40, 5, 40), VoxelCoord::new(50, 5, 40), None);
+    sim.spawn_projectile(
+        VoxelCoord::new(40, 5, 40),
+        VoxelCoord::new(50, 5, 40),
+        None,
+        sim.home_zone_id(),
+    );
 
     let json = sim.to_json().unwrap();
     let sim2 = SimState::from_json(&json).unwrap();
@@ -6229,6 +6263,7 @@ fn debug_spawn_projectile_command() {
             player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DebugSpawnProjectile {
+                zone_id: sim.home_zone_id(),
                 origin,
                 target,
                 shooter_id: None,
@@ -6636,7 +6671,7 @@ fn creature_reassignment_to_group_and_back() {
     // Spawn an elf.
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("should spawn elf");
 
     let elf = sim.db.creatures.get(&elf_id).unwrap();
@@ -6683,7 +6718,7 @@ fn reassign_between_non_civilian_groups() {
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("should spawn elf");
 
     // Create a second group.
@@ -6744,7 +6779,7 @@ fn delete_military_group_nullifies_members() {
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("should spawn elf");
 
     // Create a new group and assign the elf to it.
@@ -6843,10 +6878,10 @@ fn dead_creature_not_counted_in_member_count() {
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_a = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("spawn elf a");
     let elf_b = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("spawn elf b");
 
     // Assign both to soldiers.
@@ -6907,7 +6942,7 @@ fn cross_civ_reassignment_rejected() {
     // Spawn an elf (player civ).
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("spawn elf");
 
     // Try to assign elf to AI civ's group — should be rejected.
@@ -6935,7 +6970,7 @@ fn non_civ_creature_reassignment_rejected() {
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let goblin_id = sim
-        .spawn_creature(Species::Goblin, tree_pos, &mut events)
+        .spawn_creature(Species::Goblin, tree_pos, sim.home_zone_id(), &mut events)
         .expect("spawn goblin");
 
     let soldiers = soldiers_group(&sim);
@@ -7055,7 +7090,7 @@ fn aggressive_group_civ_creature_auto_engages() {
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("spawn elf");
 
     // Assign to soldiers (Aggressive).
@@ -7078,7 +7113,7 @@ fn resolve_engagement_style_implicit_civilian() {
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("spawn elf");
 
     // Implicit civilian (military_group = None, civ_id = Some).
@@ -7096,7 +7131,7 @@ fn resolve_engagement_style_non_civ_creature() {
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let goblin_id = sim
-        .spawn_creature(Species::Goblin, tree_pos, &mut events)
+        .spawn_creature(Species::Goblin, tree_pos, sim.home_zone_id(), &mut events)
         .expect("spawn goblin");
 
     // Non-civ creature → species default (Aggressive for goblins).
@@ -7217,6 +7252,7 @@ fn attack_move_traversal_delay_uses_creature_stats() {
         player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackMove {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             destination: distant_node,
             queue: false,

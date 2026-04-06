@@ -23,7 +23,7 @@
 // expensive" from "truly unreachable."
 //
 // See also: `nav.rs` for edge type constants, `walkability.rs` for walkable
-// position queries, `world.rs` for the `VoxelWorld`, `sim/movement.rs` which
+// position queries, `world.rs` for the `VoxelZone`, `sim/movement.rs` which
 // consumes path results for step-by-step movement.
 //
 // **Critical constraint: determinism.** All functions are pure functions of
@@ -33,7 +33,7 @@
 
 use crate::types::{FaceData, VoxelCoord};
 use crate::walkability;
-use crate::world::VoxelWorld;
+use crate::world::VoxelZone;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::BinaryHeap;
@@ -353,7 +353,7 @@ fn octile_heuristic_3d(a: VoxelCoord, b: VoxelCoord, flight_tpv: u64) -> i64 {
 
 /// Check whether all voxels in a footprint anchored at `anchor` are flyable.
 /// The anchor is the min-corner (smallest x, y, z) of the bounding box.
-pub fn footprint_flyable(world: &VoxelWorld, anchor: VoxelCoord, footprint: [u8; 3]) -> bool {
+pub fn footprint_flyable(world: &VoxelZone, anchor: VoxelCoord, footprint: [u8; 3]) -> bool {
     for dx in 0..footprint[0] as i32 {
         for dy in 0..footprint[1] as i32 {
             for dz in 0..footprint[2] as i32 {
@@ -381,7 +381,7 @@ pub fn footprint_flyable(world: &VoxelWorld, anchor: VoxelCoord, footprint: [u8;
 ///
 /// Returns `Err(PathError)` with a structured error if the search fails.
 pub fn astar_fly(
-    world: &VoxelWorld,
+    world: &VoxelZone,
     start: VoxelCoord,
     goal: VoxelCoord,
     flight_tpv: u64,
@@ -512,7 +512,7 @@ pub fn astar_fly(
 ///
 /// Returns `Err(PathError)` if no candidate is reachable.
 pub fn nearest_astar_fly(
-    world: &VoxelWorld,
+    world: &VoxelZone,
     start: VoxelCoord,
     candidates: &[VoxelCoord],
     flight_tpv: u64,
@@ -713,7 +713,7 @@ pub fn nearest_astar_fly(
 ///
 /// Returns `None` if no candidate is reachable.
 pub fn nearest_fly(
-    world: &VoxelWorld,
+    world: &VoxelZone,
     start: VoxelCoord,
     candidates: &[VoxelCoord],
     flight_tpv: u64,
@@ -742,7 +742,7 @@ pub fn nearest_fly(
 ///
 /// Returns `Err(PathError)` with a structured error if the search fails.
 pub fn astar_ground(
-    world: &VoxelWorld,
+    world: &VoxelZone,
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     start: VoxelCoord,
     goal: VoxelCoord,
@@ -875,7 +875,7 @@ pub fn astar_ground(
 /// same interleaved A* algorithm as `nearest_astar_fly` but with ground
 /// walkability checks and edge-type cost differentiation.
 pub fn nearest_astar_ground(
-    world: &VoxelWorld,
+    world: &VoxelZone,
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     start: VoxelCoord,
     candidates: &[VoxelCoord],
@@ -1089,7 +1089,7 @@ pub fn nearest_astar_ground(
 ///
 /// Delegates to `nearest_astar_ground` (interleaved A*).
 pub fn nearest_ground(
-    world: &VoxelWorld,
+    world: &VoxelZone,
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     start: VoxelCoord,
     candidates: &[VoxelCoord],
@@ -1104,7 +1104,7 @@ mod tests {
     use super::*;
     use crate::nav::{EdgeType, MovementCategory};
     use crate::types::{VoxelCoord, VoxelType};
-    use crate::world::VoxelWorld;
+    use crate::world::VoxelZone;
 
     /// Default speeds for tests: base_tpv=1, Climber category.
     fn test_speeds() -> GroundSpeeds {
@@ -1208,8 +1208,8 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Create a small empty world (all air) for testing.
-    fn empty_world(sx: u32, sy: u32, sz: u32) -> VoxelWorld {
-        VoxelWorld::new(sx, sy, sz)
+    fn empty_world(sx: u32, sy: u32, sz: u32) -> VoxelZone {
+        VoxelZone::new(sx, sy, sz)
     }
 
     const FP1: [u8; 3] = [1, 1, 1];
@@ -1840,8 +1840,8 @@ mod tests {
 
     /// Create a world with a flat dirt floor at y=floor_y. Air above, dirt at
     /// floor_y, solid below. Walkable positions are at y=floor_y+1.
-    fn ground_world(sx: u32, sy: u32, sz: u32, floor_y: i32) -> VoxelWorld {
-        let mut world = VoxelWorld::new(sx, sy, sz);
+    fn ground_world(sx: u32, sy: u32, sz: u32, floor_y: i32) -> VoxelZone {
+        let mut world = VoxelZone::new(sx, sy, sz);
         for x in 0..sx as i32 {
             for z in 0..sz as i32 {
                 world.set(VoxelCoord::new(x, floor_y, z), VoxelType::Dirt);

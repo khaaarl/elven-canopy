@@ -2384,9 +2384,9 @@ mod tests {
         // Generate hilly terrain spanning two chunks. Independently smooth
         // each chunk and verify that shared boundary vertices match.
         use crate::mesh_gen::ChunkCoord;
-        use elven_canopy_sim::world::VoxelWorld;
+        use elven_canopy_sim::world::VoxelZone;
 
-        let mut world = VoxelWorld::new(32, 16, 16);
+        let mut world = VoxelZone::new(32, 16, 16);
         // Create hilly terrain: varying heights across the chunk boundary.
         for x in 0..32 {
             let height = 3 + (x % 3); // Heights: 3, 4, 5, 3, 4, 5, ...
@@ -2442,9 +2442,9 @@ mod tests {
         // border by increasing iteration count until boundary vertices diverge.
         // This empirically validates the information-causality analysis.
         use crate::mesh_gen::ChunkCoord;
-        use elven_canopy_sim::world::VoxelWorld;
+        use elven_canopy_sim::world::VoxelZone;
 
-        let mut world = VoxelWorld::new(32, 16, 16);
+        let mut world = VoxelZone::new(32, 16, 16);
         for x in 0..32 {
             let height = 3 + (x % 3);
             for y in 0..height {
@@ -2676,9 +2676,9 @@ mod tests {
         // Integration test: a solid voxel next to a BuildingInterior should
         // have its adjacent face fully anchored.
         use crate::mesh_gen::ChunkCoord;
-        use elven_canopy_sim::world::VoxelWorld;
+        use elven_canopy_sim::world::VoxelZone;
 
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         world.set(
             elven_canopy_sim::types::VoxelCoord::new(8, 8, 8),
             VoxelType::Trunk,
@@ -2718,7 +2718,7 @@ mod tests {
     /// Build a smooth mesh for a single chunk with the given border radius.
     /// Uses the default 3 smoothing iterations.
     fn build_smooth_chunk(
-        world: &elven_canopy_sim::world::VoxelWorld,
+        world: &elven_canopy_sim::world::VoxelZone,
         chunk: crate::mesh_gen::ChunkCoord,
         border: i32,
     ) -> SmoothMesh {
@@ -2729,7 +2729,7 @@ mod tests {
     /// count. Used by `chunk_boundary_iteration_limit` to test how many
     /// iterations are safe for a given border radius.
     fn build_smooth_chunk_n(
-        world: &elven_canopy_sim::world::VoxelWorld,
+        world: &elven_canopy_sim::world::VoxelZone,
         chunk: crate::mesh_gen::ChunkCoord,
         border: i32,
         iterations: usize,

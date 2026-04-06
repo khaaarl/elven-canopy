@@ -85,27 +85,4 @@ impl super::SimState {
             },
         });
     }
-
-    /// Ensure all living elves have a path assignment. Called on load to
-    /// backfill old saves where path assignments didn't exist.
-    pub(crate) fn backfill_outcast_paths(&mut self) {
-        let unpathed: Vec<CreatureId> = self
-            .db
-            .creatures
-            .iter_all()
-            .filter(|c| {
-                c.species == Species::Elf
-                    && c.vital_status != crate::types::VitalStatus::Dead
-                    && self.db.path_assignments.get(&c.id).is_none()
-            })
-            .map(|c| c.id)
-            .collect();
-
-        for creature_id in unpathed {
-            let _ = self.db.insert_path_assignment(PathAssignment {
-                creature_id,
-                path_id: PathId::Outcast,
-            });
-        }
-    }
 }

@@ -9,12 +9,14 @@ use super::*;
 fn create_dining_hall(sim: &mut SimState, pos: VoxelCoord, food_count: u32) -> StructureId {
     let structure_id = StructureId(sim.next_structure_id);
     sim.next_structure_id += 1;
+    let hz = sim.home_zone_id();
     let project_id = ProjectId::new(&mut sim.rng);
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     insert_stub_blueprint(sim, project_id);
     sim.db
         .insert_structure(CompletedStructure {
             id: structure_id,
+            zone_id: hz,
             project_id,
             build_type: BuildType::Building,
             anchor: pos,
@@ -38,6 +40,7 @@ fn create_dining_hall(sim: &mut SimState, pos: VoxelCoord, food_count: u32) -> S
     sim.db
         .insert_furniture_auto(|id| crate::db::Furniture {
             id,
+            zone_id: hz,
             structure_id,
             coord: pos,
             placed: true,

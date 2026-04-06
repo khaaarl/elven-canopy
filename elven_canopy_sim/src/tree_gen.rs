@@ -68,7 +68,7 @@
 use crate::config::{GameConfig, LeafShape, TreeProfile};
 use crate::prng::GameRng;
 use crate::types::{VoxelCoord, VoxelType};
-use crate::world::VoxelWorld;
+use crate::world::VoxelZone;
 
 use std::collections::{HashSet, VecDeque};
 
@@ -319,7 +319,7 @@ fn voxel_priority(vt: VoxelType) -> u8 {
 /// Try to place a voxel, respecting priority (won't overwrite higher-priority types).
 /// Returns true if the voxel was placed. Silently skips out-of-bounds coordinates.
 fn try_place_voxel(
-    world: &mut VoxelWorld,
+    world: &mut VoxelZone,
     coord: VoxelCoord,
     vtype: VoxelType,
     voxel_list: &mut Vec<VoxelCoord>,
@@ -440,9 +440,9 @@ fn compute_terrain_heights(
 /// then optionally extend columns upward with noise-based hills. Uses rayon
 /// to initialize column groups in parallel.
 ///
-/// Must be called on a fresh `VoxelWorld` before `generate_tree`. Consumes
+/// Must be called on a fresh `VoxelZone` before `generate_tree`. Consumes
 /// PRNG draws for the noise grid, so call order matters for determinism.
-pub fn generate_terrain(world: &mut VoxelWorld, config: &GameConfig, rng: &mut GameRng) {
+pub fn generate_terrain(world: &mut VoxelZone, config: &GameConfig, rng: &mut GameRng) {
     let size_x = world.size_x;
     let size_z = world.size_z;
     let floor_y = config.floor_y;
@@ -471,7 +471,7 @@ pub fn generate_terrain(world: &mut VoxelWorld, config: &GameConfig, rng: &mut G
 /// (stops and returns the last terrain Y). Returns `floor_y` if the scan
 /// finds Air immediately above `floor_y`.
 pub fn terrain_surface_y(
-    world: &VoxelWorld,
+    world: &VoxelZone,
     floor_y: i32,
     terrain_max_height: i32,
     x: i32,
@@ -502,7 +502,7 @@ pub fn terrain_surface_y(
 /// calling this function. The PRNG must be in the state left by
 /// `generate_terrain` for deterministic results.
 pub fn generate_tree(
-    world: &mut VoxelWorld,
+    world: &mut VoxelZone,
     config: &GameConfig,
     rng: &mut GameRng,
     log: &dyn Fn(&str),
@@ -545,7 +545,7 @@ pub fn generate_tree(
 /// Callers typically pass a value sunk below the terrain surface so the trunk
 /// base is buried in the dirt (e.g., `surface_y - 5` for the main tree).
 pub fn generate_tree_at(
-    world: &mut VoxelWorld,
+    world: &mut VoxelZone,
     profile: &TreeProfile,
     floor_y: i32,
     base_x: i32,
@@ -673,7 +673,7 @@ pub fn generate_tree_at(
 #[allow(clippy::too_many_arguments)]
 fn grow_segment(
     mut job: SegmentJob,
-    world: &mut VoxelWorld,
+    world: &mut VoxelZone,
     profile: &TreeProfile,
     rng: &mut GameRng,
     trunk_voxels: &mut Vec<VoxelCoord>,
@@ -884,7 +884,7 @@ fn round_to_voxel(pos: Vec3) -> VoxelCoord {
 /// voxel centers. This fills gaps when a growth step moves diagonally across
 /// 2 or 3 axes, which would otherwise leave only corner/edge connections.
 fn bridge_cross_sections(
-    world: &mut VoxelWorld,
+    world: &mut VoxelZone,
     from: VoxelCoord,
     to: VoxelCoord,
     radius_fp: i64,
@@ -922,7 +922,7 @@ fn bridge_cross_sections(
 
 /// Place a filled circle of voxels perpendicular to the growth direction.
 fn place_cross_section(
-    world: &mut VoxelWorld,
+    world: &mut VoxelZone,
     center: Vec3,
     radius_fp: i64,
     vtype: VoxelType,
@@ -957,7 +957,7 @@ fn place_cross_section(
 /// Generate leaf blob voxels at branch terminal positions.
 fn generate_leaf_blobs(
     blob_centers: &[LeafBlobCenter],
-    world: &mut VoxelWorld,
+    world: &mut VoxelZone,
     profile: &TreeProfile,
     rng: &mut GameRng,
 ) -> Vec<VoxelCoord> {
@@ -1047,7 +1047,7 @@ const FACE_OFFSETS: [(i32, i32, i32); 6] = [
 fn connect_leaf_voxels(
     leaf_voxels: Vec<VoxelCoord>,
     wood_set: &HashSet<VoxelCoord>,
-    world: &mut VoxelWorld,
+    world: &mut VoxelZone,
 ) -> Vec<VoxelCoord> {
     if leaf_voxels.is_empty() {
         return leaf_voxels;
@@ -1211,7 +1211,7 @@ mod tests {
     /// Generate terrain + tree together — convenience wrapper for tests that
     /// need both (mirrors the old `generate_tree` which included terrain).
     fn generate_terrain_and_tree(
-        world: &mut VoxelWorld,
+        world: &mut VoxelZone,
         config: &GameConfig,
         rng: &mut GameRng,
     ) -> TreeGenResult {
@@ -1230,7 +1230,7 @@ mod tests {
     #[test]
     fn generates_trunk_voxels() {
         let config = test_config_no_roots();
-        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut world = VoxelZone::new(64, 64, 64);
         let mut rng = GameRng::new(42);
         let result = generate_terrain_and_tree(&mut world, &config, &mut rng);
 
@@ -1244,11 +1244,11 @@ mod tests {
     fn deterministic_generation() {
         let config = test_config();
 
-        let mut world_a = VoxelWorld::new(64, 64, 64);
+        let mut world_a = VoxelZone::new(64, 64, 64);
         let mut rng_a = GameRng::new(42);
         let result_a = generate_terrain_and_tree(&mut world_a, &config, &mut rng_a);
 
-        let mut world_b = VoxelWorld::new(64, 64, 64);
+        let mut world_b = VoxelZone::new(64, 64, 64);
         let mut rng_b = GameRng::new(42);
         let result_b = generate_terrain_and_tree(&mut world_b, &config, &mut rng_b);
 
@@ -1262,11 +1262,11 @@ mod tests {
     fn different_seeds_produce_different_trees() {
         let config = test_config_no_roots();
 
-        let mut world_a = VoxelWorld::new(64, 64, 64);
+        let mut world_a = VoxelZone::new(64, 64, 64);
         let mut rng_a = GameRng::new(42);
         let result_a = generate_terrain_and_tree(&mut world_a, &config, &mut rng_a);
 
-        let mut world_b = VoxelWorld::new(64, 64, 64);
+        let mut world_b = VoxelZone::new(64, 64, 64);
         let mut rng_b = GameRng::new(999);
         let result_b = generate_terrain_and_tree(&mut world_b, &config, &mut rng_b);
 
@@ -1280,7 +1280,7 @@ mod tests {
     #[test]
     fn trunk_tapers() {
         let config = test_config_no_roots();
-        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut world = VoxelZone::new(64, 64, 64);
         let mut rng = GameRng::new(42);
         let result = generate_terrain_and_tree(&mut world, &config, &mut rng);
 
@@ -1305,7 +1305,7 @@ mod tests {
     #[test]
     fn generates_dirt_terrain() {
         let config = test_config();
-        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut world = VoxelZone::new(64, 64, 64);
         let mut rng = GameRng::new(42);
         generate_terrain_and_tree(&mut world, &config, &mut rng);
 
@@ -1321,7 +1321,7 @@ mod tests {
         config.tree_profile.split.split_chance_base = 1.0;
         config.tree_profile.split.min_progress_for_split = 0.05;
 
-        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut world = VoxelZone::new(64, 64, 64);
         let mut rng = GameRng::new(42);
         let result = generate_terrain_and_tree(&mut world, &config, &mut rng);
 
@@ -1340,7 +1340,7 @@ mod tests {
         config.tree_profile.roots.root_energy_fraction = 0.3;
         config.tree_profile.roots.root_initial_count = 3;
 
-        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut world = VoxelZone::new(64, 64, 64);
         let mut rng = GameRng::new(42);
         let result = generate_terrain_and_tree(&mut world, &config, &mut rng);
 
@@ -1363,7 +1363,7 @@ mod tests {
         config.tree_profile.roots.root_gravitropism = 0.02;
         config.tree_profile.roots.root_initial_angle = 0.1;
 
-        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut world = VoxelZone::new(64, 64, 64);
         let mut rng = GameRng::new(42);
         let result = generate_terrain_and_tree(&mut world, &config, &mut rng);
 
@@ -1398,7 +1398,7 @@ mod tests {
         config.tree_profile.leaves.canopy_density = 1.0;
         config.tree_profile.leaves.leaf_size = 3;
 
-        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut world = VoxelZone::new(64, 64, 64);
         let mut rng = GameRng::new(42);
         let result = generate_terrain_and_tree(&mut world, &config, &mut rng);
 
@@ -1414,7 +1414,7 @@ mod tests {
     #[test]
     fn leaves_do_not_overwrite_wood() {
         let config = test_config();
-        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut world = VoxelZone::new(64, 64, 64);
         let mut rng = GameRng::new(42);
         let result = generate_terrain_and_tree(&mut world, &config, &mut rng);
 
@@ -1446,7 +1446,7 @@ mod tests {
         let mut config = test_config_no_roots();
         config.tree_profile.leaves.canopy_density = 0.0;
 
-        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut world = VoxelZone::new(64, 64, 64);
         let mut rng = GameRng::new(42);
         let result = generate_terrain_and_tree(&mut world, &config, &mut rng);
 
@@ -1465,11 +1465,11 @@ mod tests {
         let mut config_flare = test_config_no_roots();
         config_flare.tree_profile.trunk.base_flare = 1.0;
 
-        let mut world_nf = VoxelWorld::new(64, 64, 64);
+        let mut world_nf = VoxelZone::new(64, 64, 64);
         let mut rng_nf = GameRng::new(42);
         let result_nf = generate_terrain_and_tree(&mut world_nf, &config_no_flare, &mut rng_nf);
 
-        let mut world_f = VoxelWorld::new(64, 64, 64);
+        let mut world_f = VoxelZone::new(64, 64, 64);
         let mut rng_f = GameRng::new(42);
         let result_f = generate_terrain_and_tree(&mut world_f, &config_flare, &mut rng_f);
 
@@ -1490,11 +1490,11 @@ mod tests {
         config.tree_profile.roots.root_energy_fraction = 0.15;
         config.tree_profile.roots.root_initial_count = 4;
 
-        let mut world_a = VoxelWorld::new(64, 64, 64);
+        let mut world_a = VoxelZone::new(64, 64, 64);
         let mut rng_a = GameRng::new(99);
         let result_a = generate_terrain_and_tree(&mut world_a, &config, &mut rng_a);
 
-        let mut world_b = VoxelWorld::new(64, 64, 64);
+        let mut world_b = VoxelZone::new(64, 64, 64);
         let mut rng_b = GameRng::new(99);
         let result_b = generate_terrain_and_tree(&mut world_b, &config, &mut rng_b);
 
@@ -1518,7 +1518,7 @@ mod tests {
         config.tree_profile.growth.energy_to_radius = 0.0001;
         config.tree_profile.trunk.base_flare = 0.0;
 
-        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut world = VoxelZone::new(64, 64, 64);
         let mut rng = GameRng::new(42);
         let result = generate_terrain_and_tree(&mut world, &config, &mut rng);
 
@@ -1562,7 +1562,7 @@ mod tests {
     #[test]
     fn face_connectivity_with_splits_and_roots() {
         let config = test_config();
-        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut world = VoxelZone::new(64, 64, 64);
         let mut rng = GameRng::new(42);
         let result = generate_terrain_and_tree(&mut world, &config, &mut rng);
 
@@ -1601,7 +1601,7 @@ mod tests {
     #[test]
     fn preset_fantasy_mega_valid() {
         let config = test_config();
-        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut world = VoxelZone::new(64, 64, 64);
         let mut rng = GameRng::new(42);
         let result = generate_terrain_and_tree(&mut world, &config, &mut rng);
 
@@ -1623,7 +1623,7 @@ mod tests {
     #[test]
     fn leaf_voxels_all_connected_to_wood() {
         let config = test_config();
-        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut world = VoxelZone::new(64, 64, 64);
         let mut rng = GameRng::new(42);
         let result = generate_terrain_and_tree(&mut world, &config, &mut rng);
 
@@ -1652,8 +1652,8 @@ mod tests {
     fn connect_test_setup(
         wood_coords: &[VoxelCoord],
         leaf_coords: &[VoxelCoord],
-    ) -> (VoxelWorld, HashSet<VoxelCoord>, Vec<VoxelCoord>) {
-        let mut world = VoxelWorld::new(16, 16, 16);
+    ) -> (VoxelZone, HashSet<VoxelCoord>, Vec<VoxelCoord>) {
+        let mut world = VoxelZone::new(16, 16, 16);
         let mut wood_set = HashSet::new();
         for &c in wood_coords {
             world.set(c, VoxelType::Branch);
@@ -1936,11 +1936,11 @@ mod tests {
     fn terrain_deterministic() {
         let config = terrain_config();
 
-        let mut world_a = VoxelWorld::new(64, 64, 64);
+        let mut world_a = VoxelZone::new(64, 64, 64);
         let mut rng_a = GameRng::new(42);
         generate_terrain(&mut world_a, &config, &mut rng_a);
 
-        let mut world_b = VoxelWorld::new(64, 64, 64);
+        let mut world_b = VoxelZone::new(64, 64, 64);
         let mut rng_b = GameRng::new(42);
         generate_terrain(&mut world_b, &config, &mut rng_b);
 
@@ -1951,7 +1951,7 @@ mod tests {
     #[test]
     fn terrain_has_height_variation() {
         let config = terrain_config();
-        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut world = VoxelZone::new(64, 64, 64);
         let mut rng = GameRng::new(42);
         generate_terrain(&mut world, &config, &mut rng);
 
@@ -1968,7 +1968,7 @@ mod tests {
     #[test]
     fn terrain_respects_max_height() {
         let config = terrain_config();
-        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut world = VoxelZone::new(64, 64, 64);
         let mut rng = GameRng::new(42);
         generate_terrain(&mut world, &config, &mut rng);
 
@@ -1990,7 +1990,7 @@ mod tests {
     #[test]
     fn terrain_minimum_one_thick() {
         let config = terrain_config();
-        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut world = VoxelZone::new(64, 64, 64);
         let mut rng = GameRng::new(42);
         generate_terrain(&mut world, &config, &mut rng);
 
@@ -2012,7 +2012,7 @@ mod tests {
     fn terrain_disabled_with_zero_max_height() {
         let mut config = terrain_config();
         config.terrain_max_height = 0;
-        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut world = VoxelZone::new(64, 64, 64);
         let mut rng = GameRng::new(42);
         generate_terrain(&mut world, &config, &mut rng);
 
@@ -2027,7 +2027,7 @@ mod tests {
     fn terrain_corners_have_height_variation() {
         // Verify terrain has real hills — no tree needed, just terrain.
         let config = terrain_config();
-        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut world = VoxelZone::new(64, 64, 64);
         let mut rng = GameRng::new(42);
         generate_terrain(&mut world, &config, &mut rng);
 
@@ -2127,7 +2127,7 @@ mod tests {
     fn generates_tree_at_nonzero_floor_y() {
         let mut config = test_config();
         config.floor_y = 10;
-        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut world = VoxelZone::new(64, 64, 64);
         let mut rng = GameRng::new(42);
         let result = generate_terrain_and_tree(&mut world, &config, &mut rng);
 
@@ -2178,7 +2178,7 @@ mod tests {
     fn generate_tree_at_places_trunk_at_specified_position() {
         let config = test_config_no_roots();
         let profile = &config.tree_profile;
-        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut world = VoxelZone::new(64, 64, 64);
         let mut rng = GameRng::new(42);
         generate_terrain(&mut world, &config, &mut rng);
 
@@ -2200,12 +2200,12 @@ mod tests {
         let config = test_config_no_roots();
         let profile = &config.tree_profile;
 
-        let mut world_a = VoxelWorld::new(64, 64, 64);
+        let mut world_a = VoxelZone::new(64, 64, 64);
         let mut rng_a = GameRng::new(42);
         generate_terrain(&mut world_a, &config, &mut rng_a);
         let result_a = generate_tree_at(&mut world_a, profile, 0, 10, 10, &mut rng_a, &|_| {});
 
-        let mut world_b = VoxelWorld::new(64, 64, 64);
+        let mut world_b = VoxelZone::new(64, 64, 64);
         let mut rng_b = GameRng::new(42);
         generate_terrain(&mut world_b, &config, &mut rng_b);
         let result_b = generate_tree_at(&mut world_b, profile, 0, 50, 50, &mut rng_b, &|_| {});
@@ -2221,7 +2221,7 @@ mod tests {
     fn lesser_deciduous_profile_produces_small_tree() {
         use crate::config::TreeProfile;
         let profile = TreeProfile::lesser_deciduous();
-        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut world = VoxelZone::new(64, 64, 64);
         let mut rng = GameRng::new(42);
 
         let result = generate_tree_at(&mut world, &profile, 0, 32, 32, &mut rng, &|_| {});
@@ -2248,7 +2248,7 @@ mod tests {
     fn lesser_conifer_profile_produces_small_tree() {
         use crate::config::TreeProfile;
         let profile = TreeProfile::lesser_conifer();
-        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut world = VoxelZone::new(64, 64, 64);
         let mut rng = GameRng::new(42);
 
         let result = generate_tree_at(&mut world, &profile, 0, 32, 32, &mut rng, &|_| {});
@@ -2285,7 +2285,7 @@ mod tests {
             ("thicket", TreeProfile::lesser_thicket()),
         ];
         for (name, profile) in &profiles {
-            let mut world = VoxelWorld::new(64, 64, 64);
+            let mut world = VoxelZone::new(64, 64, 64);
             let mut rng = GameRng::new(42);
             let result = generate_tree_at(&mut world, profile, 0, 32, 32, &mut rng, &|_| {});
             assert!(
@@ -2299,7 +2299,7 @@ mod tests {
 
     #[test]
     fn terrain_surface_y_flat_world() {
-        let mut world = VoxelWorld::new(16, 64, 16);
+        let mut world = VoxelZone::new(16, 64, 16);
         // Place a flat Dirt layer at y=10.
         world.set(VoxelCoord::new(5, 10, 5), VoxelType::Dirt);
         let y = terrain_surface_y(&world, 10, 4, 5, 5);
@@ -2308,7 +2308,7 @@ mod tests {
 
     #[test]
     fn terrain_surface_y_hilly_terrain() {
-        let mut world = VoxelWorld::new(16, 64, 16);
+        let mut world = VoxelZone::new(16, 64, 16);
         // Stack Dirt from y=10 to y=13 (4 layers).
         for y in 10..=13 {
             world.set(VoxelCoord::new(5, y, 5), VoxelType::Dirt);
@@ -2319,7 +2319,7 @@ mod tests {
 
     #[test]
     fn terrain_surface_y_stops_at_tree_material() {
-        let mut world = VoxelWorld::new(16, 64, 16);
+        let mut world = VoxelZone::new(16, 64, 16);
         world.set(VoxelCoord::new(5, 10, 5), VoxelType::Dirt);
         world.set(VoxelCoord::new(5, 11, 5), VoxelType::Trunk);
         let y = terrain_surface_y(&world, 10, 4, 5, 5);
@@ -2328,7 +2328,7 @@ mod tests {
 
     #[test]
     fn terrain_surface_y_no_terrain_returns_floor_y() {
-        let world = VoxelWorld::new(16, 64, 16);
+        let world = VoxelZone::new(16, 64, 16);
         // Empty world — everything is Air.
         let y = terrain_surface_y(&world, 10, 4, 5, 5);
         assert_eq!(y, 10, "Empty world: should return floor_y");
@@ -2336,7 +2336,7 @@ mod tests {
 
     #[test]
     fn terrain_surface_y_zero_max_height() {
-        let mut world = VoxelWorld::new(16, 64, 16);
+        let mut world = VoxelZone::new(16, 64, 16);
         world.set(VoxelCoord::new(5, 10, 5), VoxelType::Dirt);
         let y = terrain_surface_y(&world, 10, 0, 5, 5);
         assert_eq!(y, 10, "With max_height=0, should return floor_y");
@@ -2347,7 +2347,7 @@ mod tests {
         let mut config = test_config();
         config.terrain_max_height = 4;
         config.tree_profile.growth.initial_energy = 50.0;
-        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut world = VoxelZone::new(64, 64, 64);
         let mut rng = GameRng::new(42);
         generate_terrain(&mut world, &config, &mut rng);
 

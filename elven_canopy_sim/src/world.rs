@@ -28,9 +28,8 @@
 // creates a zero-sized empty world; `SimState::new()` constructs the real one
 // from `config.world_size`.
 //
-// See also: `tree_gen.rs` for populating the world with tree geometry,
-// `nav.rs` for the navigation graph built on top of the voxel data,
-// `sim/mod.rs` which owns the `VoxelWorld` as part of `SimState`,
+// See also: `tree_gen.rs` for populating the zone with tree geometry,
+// `sim/mod.rs` which owns the `VoxelZone` as part of `SimState`,
 // `docs/drafts/rle_voxels.md` for the full design document.
 //
 // **Critical constraint: determinism.** All world modifications must go
@@ -39,8 +38,9 @@
 
 use std::collections::BTreeSet;
 
-use crate::types::{VoxelCoord, VoxelType};
+use crate::types::{FaceData, FaceDirection, StructureId, VoxelCoord, VoxelType};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::collections::BTreeMap;
 
 /// Column group size in the XZ plane (must be a power of 2).
 const GROUP_SIZE: u32 = 16;
@@ -540,7 +540,7 @@ impl ColumnGroup {
 
 /// Iterator over the spans of a single column, yielding `(VoxelType, y_start, y_end)`
 /// triples that fully tile `[0, max_y]`. The implicit trailing Air span (not stored
-/// internally) is synthesized by this iterator. See `VoxelWorld::column_spans()`.
+/// internally) is synthesized by this iterator. See `VoxelZone::column_spans()`.
 pub struct ColumnSpanIter<'a> {
     spans: &'a [Span],
     pos: usize,
@@ -570,9 +570,9 @@ impl Iterator for ColumnSpanIter<'_> {
     }
 }
 
-/// RLE column-based 3D voxel grid.
+/// RLE column-based 3D voxel grid representing a single zone's terrain.
 #[derive(Clone, Debug, Default)]
-pub struct VoxelWorld {
+pub struct VoxelZone {
     pub size_x: u32,
     pub size_y: u32,
     pub size_z: u32,
@@ -596,10 +596,63 @@ pub struct VoxelWorld {
     /// serialization (reset to 0 on load; the mesh cache does a full rebuild).
     /// Set by `SimState::step()` after advancing.
     pub sim_tick: u64,
+
+    // -------------------------------------------------------------------
+    // Zone-local simulation state (moved from SimState for multi-zone)
+    // -------------------------------------------------------------------
+    /// Voxels placed by construction (persisted for save/load).
+    /// Each entry is `(coord, voxel_type)`. On world rebuild, these are
+    /// placed after tree voxels to restore construction progress.
+    pub placed_voxels: Vec<(VoxelCoord, VoxelType)>,
+
+    /// Voxels carved (removed to Air) by the carve system. Persisted for
+    /// save/load — on world rebuild, these are set to Air after tree voxels.
+    pub carved_voxels: Vec<VoxelCoord>,
+
+    /// Per-face data for `BuildingInterior` and ladder voxels. Persisted as a
+    /// flat list of (coord, face_data) pairs since `VoxelCoord` can't be a
+    /// JSON map key. At runtime, `face_data` (transient BTreeMap) is the
+    /// primary lookup.
+    pub face_data_list: Vec<(VoxelCoord, FaceData)>,
+
+    /// Per-face data indexed by coordinate for O(1) lookup at runtime
+    /// (buildings and ladders). Rebuilt from `face_data_list` after
+    /// deserialization.
+    pub face_data: BTreeMap<VoxelCoord, FaceData>,
+
+    /// Ladder orientation data. Persisted as a flat list of (coord, face_direction)
+    /// pairs since `VoxelCoord` can't be a JSON map key. Records which face
+    /// each ladder panel is on (needed for rendering and validation).
+    pub ladder_orientations_list: Vec<(VoxelCoord, FaceDirection)>,
+
+    /// Ladder orientations indexed by coordinate for O(1) lookup at runtime.
+    /// Rebuilt from `ladder_orientations_list` after deserialization.
+    pub ladder_orientations: BTreeMap<VoxelCoord, FaceDirection>,
+
+    /// Maps each voxel coordinate belonging to a completed structure back to
+    /// its `StructureId`. Transient — rebuilt from completed blueprints in
+    /// `rebuild_transient_state()`. Used by `raycast_structure()` to identify
+    /// which structure the player clicked on.
+    pub structure_voxels: BTreeMap<VoxelCoord, StructureId>,
+
+    /// Positions where mana-wasted work actions occurred during the current
+    /// step. Cleared at the start of each `step()` call. Read by the GDScript
+    /// VFX layer via `sim_bridge.rs::get_mana_wasted_positions()` to spawn
+    /// floating blue swirl sprites.
+    pub mana_wasted_positions: Vec<VoxelCoord>,
+
+    /// Set of dirt voxel coordinates that are NOT grassy. By default, any
+    /// exposed dirt voxel is considered grassy. This set stores the exceptions.
+    /// Dirt becomes grassless when: (1) a creature grazes on it, or (2) a voxel
+    /// change freshly exposes dirt. Grassless dirt regrows periodically via the
+    /// `GrassRegrowth` scheduled event. Used by mesh generation to color
+    /// grassless dirt brown instead of green. `BTreeSet` for deterministic
+    /// iteration (regrowth sweep).
+    pub grassless: BTreeSet<VoxelCoord>,
 }
 
-impl VoxelWorld {
-    /// Create a new world filled with `Air`.
+impl VoxelZone {
+    /// Create a new zone filled with `Air`.
     pub fn new(size_x: u32, size_y: u32, size_z: u32) -> Self {
         assert!(
             (1..=255).contains(&size_y),
@@ -618,6 +671,15 @@ impl VoxelWorld {
             dirty_voxels: Vec::new(),
             dirty_heightmap_tiles: BTreeSet::new(),
             sim_tick: 0,
+            placed_voxels: Vec::new(),
+            carved_voxels: Vec::new(),
+            face_data_list: Vec::new(),
+            face_data: BTreeMap::new(),
+            ladder_orientations_list: Vec::new(),
+            ladder_orientations: BTreeMap::new(),
+            structure_voxels: BTreeMap::new(),
+            mana_wasted_positions: Vec::new(),
+            grassless: BTreeSet::new(),
         }
     }
 
@@ -935,25 +997,67 @@ impl VoxelWorld {
             dirty_voxels: Vec::new(),
             dirty_heightmap_tiles: BTreeSet::new(),
             sim_tick: 0,
+            placed_voxels: Vec::new(),
+            carved_voxels: Vec::new(),
+            face_data_list: Vec::new(),
+            face_data: BTreeMap::new(),
+            ladder_orientations_list: Vec::new(),
+            ladder_orientations: BTreeMap::new(),
+            structure_voxels: BTreeMap::new(),
+            mana_wasted_positions: Vec::new(),
+            grassless: BTreeSet::new(),
         })
     }
 }
 
-impl Serialize for VoxelWorld {
+/// Serde helper struct for `VoxelZone`. Serializes the RLE grid as packed binary
+/// alongside zone-local simulation state. This format replaces the old
+/// bytes-only format (old saves are incompatible).
+#[derive(Serialize, Deserialize)]
+struct VoxelZoneSerde {
+    grid: Vec<u8>,
+    #[serde(default)]
+    placed_voxels: Vec<(VoxelCoord, VoxelType)>,
+    #[serde(default)]
+    carved_voxels: Vec<VoxelCoord>,
+    #[serde(default)]
+    face_data_list: Vec<(VoxelCoord, FaceData)>,
+    #[serde(default)]
+    ladder_orientations_list: Vec<(VoxelCoord, FaceDirection)>,
+    #[serde(default)]
+    grassless: BTreeSet<VoxelCoord>,
+}
+
+impl Serialize for VoxelZone {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let bytes = self.pack();
-        serializer.serialize_bytes(&bytes)
+        let helper = VoxelZoneSerde {
+            grid: self.pack(),
+            placed_voxels: self.placed_voxels.clone(),
+            carved_voxels: self.carved_voxels.clone(),
+            face_data_list: self.face_data_list.clone(),
+            ladder_orientations_list: self.ladder_orientations_list.clone(),
+            grassless: self.grassless.clone(),
+        };
+        helper.serialize(serializer)
     }
 }
 
-impl<'de> Deserialize<'de> for VoxelWorld {
+impl<'de> Deserialize<'de> for VoxelZone {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let bytes: Vec<u8> = serde::de::Deserialize::deserialize(deserializer)?;
-        Self::unpack(&bytes).map_err(serde::de::Error::custom)
+        let helper = VoxelZoneSerde::deserialize(deserializer)?;
+        let mut zone = Self::unpack(&helper.grid).map_err(serde::de::Error::custom)?;
+        zone.placed_voxels = helper.placed_voxels;
+        zone.carved_voxels = helper.carved_voxels;
+        zone.face_data_list = helper.face_data_list.clone();
+        zone.face_data = helper.face_data_list.into_iter().collect();
+        zone.ladder_orientations_list = helper.ladder_orientations_list.clone();
+        zone.ladder_orientations = helper.ladder_orientations_list.into_iter().collect();
+        zone.grassless = helper.grassless;
+        Ok(zone)
     }
 }
 
-impl VoxelWorld {
+impl VoxelZone {
     /// Compute a top-down heightmap: for each (x, z) column, find the maximum
     /// Y with a solid voxel. Returns a flat `Vec<u8>` of `size_x * size_z`
     /// entries in row-major order (X varies fastest, then Z). A value of 0
@@ -1216,7 +1320,7 @@ mod tests {
 
     #[test]
     fn new_world_is_all_air() {
-        let world = VoxelWorld::new(4, 4, 4);
+        let world = VoxelZone::new(4, 4, 4);
         for x in 0..4 {
             for y in 0..4 {
                 for z in 0..4 {
@@ -1228,7 +1332,7 @@ mod tests {
 
     #[test]
     fn set_and_get() {
-        let mut world = VoxelWorld::new(8, 8, 8);
+        let mut world = VoxelZone::new(8, 8, 8);
         let coord = VoxelCoord::new(3, 5, 2);
         world.set(coord, VoxelType::Trunk);
         assert_eq!(world.get(coord), VoxelType::Trunk);
@@ -1238,7 +1342,7 @@ mod tests {
 
     #[test]
     fn out_of_bounds_read_returns_air() {
-        let world = VoxelWorld::new(4, 4, 4);
+        let world = VoxelZone::new(4, 4, 4);
         assert_eq!(world.get(VoxelCoord::new(-1, 0, 0)), VoxelType::Air);
         assert_eq!(world.get(VoxelCoord::new(0, -1, 0)), VoxelType::Air);
         assert_eq!(world.get(VoxelCoord::new(4, 0, 0)), VoxelType::Air);
@@ -1248,7 +1352,7 @@ mod tests {
 
     #[test]
     fn out_of_bounds_write_is_noop() {
-        let mut world = VoxelWorld::new(4, 4, 4);
+        let mut world = VoxelZone::new(4, 4, 4);
         // Should not panic.
         world.set(VoxelCoord::new(-1, 0, 0), VoxelType::Trunk);
         world.set(VoxelCoord::new(100, 0, 0), VoxelType::Trunk);
@@ -1256,7 +1360,7 @@ mod tests {
 
     #[test]
     fn default_world_is_empty() {
-        let world = VoxelWorld::default();
+        let world = VoxelZone::default();
         assert_eq!(world.size_x, 0);
         assert_eq!(world.size_y, 0);
         assert_eq!(world.size_z, 0);
@@ -1266,7 +1370,7 @@ mod tests {
 
     #[test]
     fn raycast_hits_solid_voxel() {
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         world.set(VoxelCoord::new(8, 4, 8), VoxelType::Trunk);
 
         // Ray from outside, through the solid voxel, to the other side.
@@ -1277,7 +1381,7 @@ mod tests {
 
     #[test]
     fn raycast_does_not_self_occlude_destination() {
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         // Place a solid voxel at the destination — should not count as occluded.
         world.set(VoxelCoord::new(8, 4, 8), VoxelType::Trunk);
         assert!(!world.raycast_hits_solid([0.5, 4.5, 0.5], [8.5, 4.5, 8.5]));
@@ -1285,7 +1389,7 @@ mod tests {
 
     #[test]
     fn raycast_blocked_before_destination() {
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         // Blocker in the middle, destination beyond it.
         world.set(VoxelCoord::new(5, 4, 8), VoxelType::Trunk);
         assert!(world.raycast_hits_solid([0.5, 4.5, 8.5], [10.5, 4.5, 8.5]));
@@ -1293,7 +1397,7 @@ mod tests {
 
     #[test]
     fn indexing_is_correct() {
-        let mut world = VoxelWorld::new(10, 8, 6);
+        let mut world = VoxelZone::new(10, 8, 6);
         // Set a voxel and verify only that exact coord is affected.
         let coord = VoxelCoord::new(5, 3, 4);
         world.set(coord, VoxelType::Branch);
@@ -1306,7 +1410,7 @@ mod tests {
 
     #[test]
     fn set_tracks_dirty_voxels() {
-        let mut world = VoxelWorld::new(8, 8, 8);
+        let mut world = VoxelZone::new(8, 8, 8);
         assert!(world.drain_dirty_voxels().is_empty());
 
         world.set(VoxelCoord::new(1, 2, 3), VoxelType::Trunk);
@@ -1321,7 +1425,7 @@ mod tests {
 
     #[test]
     fn clear_dirty_voxels_discards_entries() {
-        let mut world = VoxelWorld::new(8, 8, 8);
+        let mut world = VoxelZone::new(8, 8, 8);
         world.set(VoxelCoord::new(1, 2, 3), VoxelType::Trunk);
         assert!(!world.drain_dirty_voxels().is_empty());
 
@@ -1332,7 +1436,7 @@ mod tests {
 
     #[test]
     fn out_of_bounds_set_does_not_dirty() {
-        let mut world = VoxelWorld::new(4, 4, 4);
+        let mut world = VoxelZone::new(4, 4, 4);
         world.set(VoxelCoord::new(-1, 0, 0), VoxelType::Trunk);
         world.set(VoxelCoord::new(100, 0, 0), VoxelType::Trunk);
         assert!(world.drain_dirty_voxels().is_empty());
@@ -1340,7 +1444,7 @@ mod tests {
 
     #[test]
     fn has_solid_face_neighbor_true_when_adjacent() {
-        let mut world = VoxelWorld::new(8, 8, 8);
+        let mut world = VoxelZone::new(8, 8, 8);
         world.set(VoxelCoord::new(4, 3, 4), VoxelType::Trunk);
         // Air voxel directly above the trunk.
         assert!(world.has_solid_face_neighbor(VoxelCoord::new(4, 4, 4)));
@@ -1352,14 +1456,14 @@ mod tests {
 
     #[test]
     fn has_solid_face_neighbor_false_when_isolated() {
-        let world = VoxelWorld::new(8, 8, 8);
+        let world = VoxelZone::new(8, 8, 8);
         // All-air world — no face neighbor is solid.
         assert!(!world.has_solid_face_neighbor(VoxelCoord::new(4, 4, 4)));
     }
 
     #[test]
     fn has_solid_face_neighbor_at_boundary() {
-        let mut world = VoxelWorld::new(8, 8, 8);
+        let mut world = VoxelZone::new(8, 8, 8);
         // Place solid at the edge of the world.
         world.set(VoxelCoord::new(0, 0, 0), VoxelType::Dirt);
         // Neighbor at (1,0,0) should detect the solid.
@@ -1375,7 +1479,7 @@ mod tests {
 
     #[test]
     fn los_clear_path() {
-        let world = VoxelWorld::new(16, 16, 16);
+        let world = VoxelZone::new(16, 16, 16);
         let a = VoxelCoord::new(2, 4, 8);
         let b = VoxelCoord::new(10, 4, 8);
         assert!(world.has_los(a, b));
@@ -1384,14 +1488,14 @@ mod tests {
 
     #[test]
     fn los_same_voxel() {
-        let world = VoxelWorld::new(8, 8, 8);
+        let world = VoxelZone::new(8, 8, 8);
         let v = VoxelCoord::new(3, 3, 3);
         assert!(world.has_los(v, v));
     }
 
     #[test]
     fn los_blocked_by_trunk() {
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         world.set(VoxelCoord::new(5, 4, 8), VoxelType::Trunk);
         let a = VoxelCoord::new(2, 4, 8);
         let b = VoxelCoord::new(10, 4, 8);
@@ -1400,7 +1504,7 @@ mod tests {
 
     #[test]
     fn los_leaf_transparent() {
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         world.set(VoxelCoord::new(5, 4, 8), VoxelType::Leaf);
         let a = VoxelCoord::new(2, 4, 8);
         let b = VoxelCoord::new(10, 4, 8);
@@ -1409,7 +1513,7 @@ mod tests {
 
     #[test]
     fn los_fruit_transparent() {
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         world.set(VoxelCoord::new(5, 4, 8), VoxelType::Fruit);
         let a = VoxelCoord::new(2, 4, 8);
         let b = VoxelCoord::new(10, 4, 8);
@@ -1418,7 +1522,7 @@ mod tests {
 
     #[test]
     fn los_origin_and_dest_not_self_occluding() {
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         // Even if the destination voxel is solid, it shouldn't block LOS.
         world.set(VoxelCoord::new(10, 4, 8), VoxelType::Trunk);
         let a = VoxelCoord::new(2, 4, 8);
@@ -1428,7 +1532,7 @@ mod tests {
 
     #[test]
     fn los_adjacent_voxels() {
-        let mut world = VoxelWorld::new(8, 8, 8);
+        let mut world = VoxelZone::new(8, 8, 8);
         // Adjacent voxels should always have LOS.
         let a = VoxelCoord::new(3, 3, 3);
         let b = VoxelCoord::new(4, 3, 3);
@@ -1444,7 +1548,7 @@ mod tests {
 
     #[test]
     fn los_diagonal_path() {
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         let a = VoxelCoord::new(2, 4, 2);
         let b = VoxelCoord::new(10, 4, 10);
         assert!(world.has_los(a, b));
@@ -1458,7 +1562,7 @@ mod tests {
 
     #[test]
     fn heightmap_empty_world() {
-        let world = VoxelWorld::new(4, 8, 4);
+        let world = VoxelZone::new(4, 8, 4);
         let hm = world.heightmap();
         assert_eq!(hm.len(), 16); // 4 * 4
         assert!(hm.iter().all(|&v| v == 0));
@@ -1466,7 +1570,7 @@ mod tests {
 
     #[test]
     fn heightmap_returns_max_solid_y() {
-        let mut world = VoxelWorld::new(4, 16, 4);
+        let mut world = VoxelZone::new(4, 16, 4);
         // Place solids at different heights in the same column (x=1, z=2).
         world.set(VoxelCoord::new(1, 3, 2), VoxelType::Dirt);
         world.set(VoxelCoord::new(1, 7, 2), VoxelType::Trunk);
@@ -1482,7 +1586,7 @@ mod tests {
 
     #[test]
     fn heightmap_non_solid_types_ignored() {
-        let mut world = VoxelWorld::new(4, 8, 4);
+        let mut world = VoxelZone::new(4, 8, 4);
         // BuildingInterior is non-solid — should not appear in heightmap.
         world.set(VoxelCoord::new(2, 5, 1), VoxelType::BuildingInterior);
         // But a lower solid should still be picked up.
@@ -1497,7 +1601,7 @@ mod tests {
     #[test]
     fn span_split_middle() {
         // Setting a voxel in the middle of a span splits into 3.
-        let mut world = VoxelWorld::new(4, 16, 4);
+        let mut world = VoxelZone::new(4, 16, 4);
         // Fill y=0..5 with Dirt.
         for y in 0..6 {
             world.set(VoxelCoord::new(0, y, 0), VoxelType::Dirt);
@@ -1511,7 +1615,7 @@ mod tests {
 
     #[test]
     fn span_split_bottom() {
-        let mut world = VoxelWorld::new(4, 8, 4);
+        let mut world = VoxelZone::new(4, 8, 4);
         for y in 0..4 {
             world.set(VoxelCoord::new(0, y, 0), VoxelType::Dirt);
         }
@@ -1522,7 +1626,7 @@ mod tests {
 
     #[test]
     fn span_split_top() {
-        let mut world = VoxelWorld::new(4, 8, 4);
+        let mut world = VoxelZone::new(4, 8, 4);
         for y in 0..4 {
             world.set(VoxelCoord::new(0, y, 0), VoxelType::Dirt);
         }
@@ -1534,7 +1638,7 @@ mod tests {
 
     #[test]
     fn span_replace_single() {
-        let mut world = VoxelWorld::new(4, 8, 4);
+        let mut world = VoxelZone::new(4, 8, 4);
         world.set(VoxelCoord::new(0, 3, 0), VoxelType::Dirt);
         assert_eq!(world.get(VoxelCoord::new(0, 3, 0)), VoxelType::Dirt);
         world.set(VoxelCoord::new(0, 3, 0), VoxelType::Trunk);
@@ -1543,7 +1647,7 @@ mod tests {
 
     #[test]
     fn span_merge_down() {
-        let mut world = VoxelWorld::new(4, 8, 4);
+        let mut world = VoxelZone::new(4, 8, 4);
         world.set(VoxelCoord::new(0, 0, 0), VoxelType::Dirt);
         world.set(VoxelCoord::new(0, 1, 0), VoxelType::Trunk);
         // Now set y=1 to Dirt — should merge with y=0.
@@ -1557,7 +1661,7 @@ mod tests {
 
     #[test]
     fn span_merge_up() {
-        let mut world = VoxelWorld::new(4, 8, 4);
+        let mut world = VoxelZone::new(4, 8, 4);
         world.set(VoxelCoord::new(0, 0, 0), VoxelType::Trunk);
         world.set(VoxelCoord::new(0, 1, 0), VoxelType::Dirt);
         // Now set y=0 to Dirt — should merge with y=1.
@@ -1570,7 +1674,7 @@ mod tests {
 
     #[test]
     fn span_merge_three() {
-        let mut world = VoxelWorld::new(4, 8, 4);
+        let mut world = VoxelZone::new(4, 8, 4);
         world.set(VoxelCoord::new(0, 0, 0), VoxelType::Dirt);
         world.set(VoxelCoord::new(0, 1, 0), VoxelType::Trunk);
         world.set(VoxelCoord::new(0, 2, 0), VoxelType::Dirt);
@@ -1585,7 +1689,7 @@ mod tests {
 
     #[test]
     fn trailing_air_trim() {
-        let mut world = VoxelWorld::new(4, 8, 4);
+        let mut world = VoxelZone::new(4, 8, 4);
         world.set(VoxelCoord::new(0, 5, 0), VoxelType::Trunk);
         // Setting it back to Air should result in 0 spans.
         world.set(VoxelCoord::new(0, 5, 0), VoxelType::Air);
@@ -1595,7 +1699,7 @@ mod tests {
 
     #[test]
     fn set_air_in_implicit_air_is_noop() {
-        let mut world = VoxelWorld::new(4, 8, 4);
+        let mut world = VoxelZone::new(4, 8, 4);
         world.set(VoxelCoord::new(0, 5, 0), VoxelType::Air);
         // Should not dirty anything.
         assert!(world.drain_dirty_voxels().is_empty());
@@ -1603,7 +1707,7 @@ mod tests {
 
     #[test]
     fn set_same_value_is_noop() {
-        let mut world = VoxelWorld::new(4, 8, 4);
+        let mut world = VoxelZone::new(4, 8, 4);
         world.set(VoxelCoord::new(0, 0, 0), VoxelType::Dirt);
         world.drain_dirty_voxels();
         // Setting same value again should not dirty.
@@ -1613,7 +1717,7 @@ mod tests {
 
     #[test]
     fn roundtrip_all_voxel_types() {
-        let mut world = VoxelWorld::new(32, 32, 4);
+        let mut world = VoxelZone::new(32, 32, 4);
         let types = [
             VoxelType::Air,
             VoxelType::Trunk,
@@ -1638,7 +1742,7 @@ mod tests {
 
     #[test]
     fn repack_all_preserves_data() {
-        let mut world = VoxelWorld::new(32, 16, 32);
+        let mut world = VoxelZone::new(32, 16, 32);
         // Set a bunch of voxels.
         for x in 0..10 {
             for y in 0..5 {
@@ -1676,7 +1780,7 @@ mod tests {
     #[test]
     fn world_non_power_of_two_size() {
         // Ensure worlds whose dimensions aren't multiples of 16 work correctly.
-        let mut world = VoxelWorld::new(10, 8, 6);
+        let mut world = VoxelZone::new(10, 8, 6);
         let coord = VoxelCoord::new(9, 7, 5);
         world.set(coord, VoxelType::Branch);
         assert_eq!(world.get(coord), VoxelType::Branch);
@@ -1691,7 +1795,7 @@ mod tests {
         let sx = 20u32;
         let sy = 16u32;
         let sz = 20u32;
-        let mut world = VoxelWorld::new(sx, sy, sz);
+        let mut world = VoxelZone::new(sx, sy, sz);
         let mut flat = vec![VoxelType::Air; (sx * sy * sz) as usize];
         let mut rng = GameRng::new(42);
 
@@ -1781,7 +1885,7 @@ mod tests {
     #[test]
     fn set_at_y0_empty_column() {
         // Tests the special y=0 path in compute_new_spans for empty columns.
-        let mut world = VoxelWorld::new(4, 8, 4);
+        let mut world = VoxelZone::new(4, 8, 4);
         world.set(VoxelCoord::new(0, 0, 0), VoxelType::Dirt);
         assert_eq!(world.get(VoxelCoord::new(0, 0, 0)), VoxelType::Dirt);
         assert_eq!(world.get(VoxelCoord::new(0, 1, 0)), VoxelType::Air);
@@ -1793,7 +1897,7 @@ mod tests {
     #[test]
     fn set_above_all_spans_with_gap() {
         // Tests the gap-bridging Air span in the !handled path.
-        let mut world = VoxelWorld::new(4, 16, 4);
+        let mut world = VoxelZone::new(4, 16, 4);
         world.set(VoxelCoord::new(0, 0, 0), VoxelType::Dirt);
         // Set at y=5, creating a gap at y=1..4.
         world.set(VoxelCoord::new(0, 5, 0), VoxelType::Trunk);
@@ -1806,7 +1910,7 @@ mod tests {
     #[test]
     fn set_above_all_spans_adjacent() {
         // Tests extending above last span without a gap, triggering merge.
-        let mut world = VoxelWorld::new(4, 8, 4);
+        let mut world = VoxelZone::new(4, 8, 4);
         world.set(VoxelCoord::new(0, 0, 0), VoxelType::Dirt);
         world.set(VoxelCoord::new(0, 1, 0), VoxelType::Dirt);
         // Set y=2 to same type — should merge into one span.
@@ -1819,7 +1923,7 @@ mod tests {
     #[test]
     fn set_at_max_y() {
         // Tests setting a voxel at the world ceiling.
-        let mut world = VoxelWorld::new(4, 128, 4);
+        let mut world = VoxelZone::new(4, 128, 4);
         world.set(VoxelCoord::new(0, 127, 0), VoxelType::Trunk);
         assert_eq!(world.get(VoxelCoord::new(0, 127, 0)), VoxelType::Trunk);
         assert_eq!(world.get(VoxelCoord::new(0, 126, 0)), VoxelType::Air);
@@ -1832,7 +1936,7 @@ mod tests {
     #[test]
     fn set_at_max_y_255() {
         // Tests size_y=255 (the maximum). Ensures y=254 works at the ceiling.
-        let mut world = VoxelWorld::new(4, 255, 4);
+        let mut world = VoxelZone::new(4, 255, 4);
         world.set(VoxelCoord::new(0, 254, 0), VoxelType::Trunk);
         assert_eq!(world.get(VoxelCoord::new(0, 254, 0)), VoxelType::Trunk);
         world.set(VoxelCoord::new(0, 0, 0), VoxelType::Dirt);
@@ -1843,19 +1947,19 @@ mod tests {
     #[test]
     #[should_panic(expected = "World height must be in [1, 255]")]
     fn new_world_rejects_size_y_256() {
-        VoxelWorld::new(4, 256, 4);
+        VoxelZone::new(4, 256, 4);
     }
 
     #[test]
     #[should_panic(expected = "World height must be in [1, 255]")]
     fn new_world_rejects_size_y_0() {
-        VoxelWorld::new(4, 0, 4);
+        VoxelZone::new(4, 0, 4);
     }
 
     #[test]
     fn binary_search_path() {
         // Create a column with >6 spans to exercise the binary search in get().
-        let mut world = VoxelWorld::new(4, 32, 4);
+        let mut world = VoxelZone::new(4, 32, 4);
         // Alternating types: Dirt at even Y, Trunk at odd Y, for 16 layers.
         for y in 0..16 {
             let vt = if y % 2 == 0 {
@@ -1889,7 +1993,7 @@ mod tests {
     fn set_air_in_middle_of_solid_run() {
         // Setting Air in the middle of a solid span creates a gap without
         // spurious merging or trailing trim.
-        let mut world = VoxelWorld::new(4, 8, 4);
+        let mut world = VoxelZone::new(4, 8, 4);
         for y in 0..5 {
             world.set(VoxelCoord::new(0, y, 0), VoxelType::Dirt);
         }
@@ -1902,7 +2006,7 @@ mod tests {
     #[test]
     fn size_y_1() {
         // World with only one Y layer.
-        let mut world = VoxelWorld::new(4, 1, 4);
+        let mut world = VoxelZone::new(4, 1, 4);
         assert_eq!(world.get(VoxelCoord::new(0, 0, 0)), VoxelType::Air);
         world.set(VoxelCoord::new(0, 0, 0), VoxelType::Dirt);
         assert_eq!(world.get(VoxelCoord::new(0, 0, 0)), VoxelType::Dirt);
@@ -1915,7 +2019,7 @@ mod tests {
     fn multiple_columns_same_group_independent() {
         // Verify that writes to different columns in the same 16x16 group
         // don't corrupt each other, including after relocation.
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         // Write to three columns in the same group.
         for y in 0..8 {
             world.set(VoxelCoord::new(0, y, 0), VoxelType::Dirt);
@@ -1969,7 +2073,7 @@ mod tests {
     fn set_above_last_span_no_gap_different_type() {
         // Setting a different type immediately above the last span should NOT
         // insert a bridging Air span.
-        let mut world = VoxelWorld::new(4, 8, 4);
+        let mut world = VoxelZone::new(4, 8, 4);
         world.set(VoxelCoord::new(0, 0, 0), VoxelType::Dirt);
         world.set(VoxelCoord::new(0, 1, 0), VoxelType::Dirt);
         // Set y=2 to Trunk (different type, immediately adjacent).
@@ -1987,7 +2091,7 @@ mod tests {
         // Setting y=0 to Air when there's solid above should leave the solid
         // intact and make y=0 Air (leading Air is stored explicitly, unlike
         // trailing Air which is implicit).
-        let mut world = VoxelWorld::new(4, 8, 4);
+        let mut world = VoxelZone::new(4, 8, 4);
         for y in 0..5 {
             world.set(VoxelCoord::new(0, y, 0), VoxelType::Dirt);
         }
@@ -2004,14 +2108,14 @@ mod tests {
 
     #[test]
     fn column_spans_empty_column_is_single_air() {
-        let world = VoxelWorld::new(4, 8, 4);
+        let world = VoxelZone::new(4, 8, 4);
         let spans: Vec<_> = world.column_spans(0, 0).collect();
         assert_eq!(spans, vec![(VoxelType::Air, 0, 7)]);
     }
 
     #[test]
     fn column_spans_single_voxel_at_bottom() {
-        let mut world = VoxelWorld::new(4, 8, 4);
+        let mut world = VoxelZone::new(4, 8, 4);
         world.set(VoxelCoord::new(0, 0, 0), VoxelType::Trunk);
         let spans: Vec<_> = world.column_spans(0, 0).collect();
         assert_eq!(
@@ -2022,7 +2126,7 @@ mod tests {
 
     #[test]
     fn column_spans_solid_fills_entire_height() {
-        let mut world = VoxelWorld::new(4, 4, 4);
+        let mut world = VoxelZone::new(4, 4, 4);
         for y in 0..4 {
             world.set(VoxelCoord::new(0, y, 0), VoxelType::Dirt);
         }
@@ -2033,7 +2137,7 @@ mod tests {
 
     #[test]
     fn column_spans_mixed_types() {
-        let mut world = VoxelWorld::new(4, 10, 4);
+        let mut world = VoxelZone::new(4, 10, 4);
         // y=0..2 Dirt, y=3..5 Trunk, y=6..9 Air
         for y in 0..3 {
             world.set(VoxelCoord::new(1, y, 1), VoxelType::Dirt);
@@ -2054,7 +2158,7 @@ mod tests {
 
     #[test]
     fn column_spans_height_1_world() {
-        let mut world = VoxelWorld::new(4, 1, 4);
+        let mut world = VoxelZone::new(4, 1, 4);
         world.set(VoxelCoord::new(0, 0, 0), VoxelType::Trunk);
         let spans: Vec<_> = world.column_spans(0, 0).collect();
         // Single voxel, solid — no trailing Air (top_y == max_y).
@@ -2065,7 +2169,7 @@ mod tests {
     fn column_spans_agrees_with_get() {
         // Build a column with varied content and verify span iteration
         // agrees with per-voxel get().
-        let mut world = VoxelWorld::new(4, 32, 4);
+        let mut world = VoxelZone::new(4, 32, 4);
         world.set(VoxelCoord::new(2, 0, 2), VoxelType::Dirt);
         for y in 1..5 {
             world.set(VoxelCoord::new(2, y, 2), VoxelType::Trunk);
@@ -2098,7 +2202,7 @@ mod tests {
         // Max world height (255), solid column reaching the top.
         // Tests the saturating_add boundary: top_y=254, next_y_start saturates
         // to 255 which is > max_y(254), so no trailing Air is emitted.
-        let mut world = VoxelWorld::new(4, 255, 4);
+        let mut world = VoxelZone::new(4, 255, 4);
         for y in 0..255 {
             world.set(VoxelCoord::new(0, y, 0), VoxelType::Trunk);
         }
@@ -2110,7 +2214,7 @@ mod tests {
     fn column_spans_max_height_with_trailing_air() {
         // Max world height (255), solid column not reaching the top.
         // Ensures trailing Air is emitted correctly at y=254.
-        let mut world = VoxelWorld::new(4, 255, 4);
+        let mut world = VoxelZone::new(4, 255, 4);
         for y in 0..200 {
             world.set(VoxelCoord::new(0, y, 0), VoxelType::Trunk);
         }
@@ -2123,7 +2227,7 @@ mod tests {
 
     #[test]
     fn serde_roundtrip_preserves_voxels() {
-        let mut world = VoxelWorld::new(32, 64, 32);
+        let mut world = VoxelZone::new(32, 64, 32);
         world.set(VoxelCoord::new(0, 0, 0), VoxelType::Dirt);
         world.set(VoxelCoord::new(1, 0, 0), VoxelType::Dirt);
         world.set(VoxelCoord::new(16, 30, 16), VoxelType::Trunk);
@@ -2132,7 +2236,7 @@ mod tests {
         world.repack_all();
 
         let packed = world.pack();
-        let restored = VoxelWorld::unpack(&packed).unwrap();
+        let restored = VoxelZone::unpack(&packed).unwrap();
 
         assert_eq!(restored.size_x, 32);
         assert_eq!(restored.size_y, 64);
@@ -2147,9 +2251,9 @@ mod tests {
 
     #[test]
     fn serde_roundtrip_empty_world() {
-        let world = VoxelWorld::new(16, 32, 16);
+        let world = VoxelZone::new(16, 32, 16);
         let packed = world.pack();
-        let restored = VoxelWorld::unpack(&packed).unwrap();
+        let restored = VoxelZone::unpack(&packed).unwrap();
         assert_eq!(restored.size_x, 16);
         assert_eq!(restored.size_y, 32);
         assert_eq!(restored.size_z, 16);
@@ -2159,7 +2263,7 @@ mod tests {
     #[test]
     fn unpack_rejects_invalid_size_y() {
         // Create a valid packed world.
-        let world = VoxelWorld::new(16, 32, 16);
+        let world = VoxelZone::new(16, 32, 16);
         let mut packed = world.pack();
 
         // Overwrite size_y bytes (offset 4..8) with 0.
@@ -2167,7 +2271,7 @@ mod tests {
         packed[5] = 0;
         packed[6] = 0;
         packed[7] = 0;
-        let result = VoxelWorld::unpack(&packed);
+        let result = VoxelZone::unpack(&packed);
         assert!(result.is_err(), "size_y=0 should be rejected");
         assert!(
             result.unwrap_err().contains("size_y"),
@@ -2179,7 +2283,7 @@ mod tests {
         packed[5] = 1; // 256 = 0x100
         packed[6] = 0;
         packed[7] = 0;
-        let result = VoxelWorld::unpack(&packed);
+        let result = VoxelZone::unpack(&packed);
         assert!(result.is_err(), "size_y=256 should be rejected");
         assert!(
             result.unwrap_err().contains("size_y"),
@@ -2189,18 +2293,18 @@ mod tests {
 
     #[test]
     fn unpack_empty_data_returns_error() {
-        let result = VoxelWorld::unpack(&[]);
+        let result = VoxelZone::unpack(&[]);
         assert!(result.is_err(), "empty data should return Err");
     }
 
     #[test]
     fn unpack_truncated_group_returns_error() {
         // Valid header but truncated group data.
-        let world = VoxelWorld::new(16, 32, 16);
+        let world = VoxelZone::new(16, 32, 16);
         let packed = world.pack();
         // Keep just the header (12 bytes) plus a few bytes — not enough for a full group.
         let truncated = &packed[..14.min(packed.len())];
-        let result = VoxelWorld::unpack(truncated);
+        let result = VoxelZone::unpack(truncated);
         assert!(result.is_err(), "truncated group data should return Err");
     }
 
@@ -2208,7 +2312,7 @@ mod tests {
     fn init_terrain_parallel_varying_heights() {
         let sx = 32u32;
         let sz = 32u32;
-        let mut world = VoxelWorld::new(sx, 255, sz);
+        let mut world = VoxelZone::new(sx, 255, sz);
         let mut heights = vec![0i32; (sx * sz) as usize];
         // Create varying heights: each column gets a different height.
         for z in 0..sz {
@@ -2251,7 +2355,7 @@ mod tests {
         // World size not a multiple of 16.
         let sx = 19u32;
         let sz = 23u32;
-        let mut world = VoxelWorld::new(sx, 64, sz);
+        let mut world = VoxelZone::new(sx, 64, sz);
         let height = 5i32;
         let heights = vec![height; (sx * sz) as usize];
         world.init_terrain_parallel(&heights);
@@ -2287,14 +2391,14 @@ mod tests {
 
     #[test]
     fn heightmap_tile_empty_world() {
-        let world = VoxelWorld::new(32, 16, 32);
+        let world = VoxelZone::new(32, 16, 32);
         let tile = world.heightmap_tile(0, 0);
         assert!(tile.iter().all(|&b| b == 0));
     }
 
     #[test]
     fn heightmap_tile_known_voxels() {
-        let mut world = VoxelWorld::new(32, 16, 32);
+        let mut world = VoxelZone::new(32, 16, 32);
         world.set(VoxelCoord::new(0, 5, 0), VoxelType::Dirt);
         world.set(VoxelCoord::new(3, 10, 7), VoxelType::Trunk);
         world.set(VoxelCoord::new(15, 2, 15), VoxelType::Branch);
@@ -2312,7 +2416,7 @@ mod tests {
 
     #[test]
     fn heightmap_tile_different_chunk_columns() {
-        let mut world = VoxelWorld::new(48, 16, 48);
+        let mut world = VoxelZone::new(48, 16, 48);
         world.set(VoxelCoord::new(20, 8, 35), VoxelType::Trunk);
         let tile = world.heightmap_tile(1, 2);
         assert_eq!(tile_height(&tile, 4, 3), 8);
@@ -2323,7 +2427,7 @@ mod tests {
 
     #[test]
     fn heightmap_tile_returns_highest_solid() {
-        let mut world = VoxelWorld::new(32, 64, 32);
+        let mut world = VoxelZone::new(32, 64, 32);
         world.set(VoxelCoord::new(5, 3, 5), VoxelType::Dirt);
         world.set(VoxelCoord::new(5, 10, 5), VoxelType::Trunk);
         world.set(VoxelCoord::new(5, 40, 5), VoxelType::Branch);
@@ -2334,7 +2438,7 @@ mod tests {
 
     #[test]
     fn heightmap_tiles_batch_concatenates() {
-        let mut world = VoxelWorld::new(48, 16, 48);
+        let mut world = VoxelZone::new(48, 16, 48);
         world.set(VoxelCoord::new(5, 7, 5), VoxelType::Trunk);
         world.set(VoxelCoord::new(20, 3, 35), VoxelType::Dirt);
         let result = world.heightmap_tiles_batch(&[(0, 0), (1, 2)]);
@@ -2349,14 +2453,14 @@ mod tests {
 
     #[test]
     fn heightmap_tiles_batch_empty_coords() {
-        let world = VoxelWorld::new(32, 16, 32);
+        let world = VoxelZone::new(32, 16, 32);
         let result = world.heightmap_tiles_batch(&[]);
         assert!(result.is_empty());
     }
 
     #[test]
     fn drain_dirty_heightmap_tiles_tracks_set() {
-        let mut world = VoxelWorld::new(48, 16, 48);
+        let mut world = VoxelZone::new(48, 16, 48);
         assert!(world.drain_dirty_heightmap_tiles().is_empty());
 
         // Two voxels in the same chunk-column (0, 0).
@@ -2376,7 +2480,7 @@ mod tests {
 
     #[test]
     fn drain_dirty_heightmap_tiles_not_dirtied_by_noop_set() {
-        let mut world = VoxelWorld::new(32, 16, 32);
+        let mut world = VoxelZone::new(32, 16, 32);
         world.set(VoxelCoord::new(0, 0, 0), VoxelType::Dirt);
         world.drain_dirty_heightmap_tiles();
         // Setting same value again — no-op, should not dirty.
@@ -2386,7 +2490,7 @@ mod tests {
 
     #[test]
     fn clear_dirty_voxels_also_clears_dirty_heightmap_tiles() {
-        let mut world = VoxelWorld::new(32, 16, 32);
+        let mut world = VoxelZone::new(32, 16, 32);
         world.set(VoxelCoord::new(5, 5, 5), VoxelType::Trunk);
         assert!(!world.drain_dirty_heightmap_tiles().is_empty());
 
@@ -2397,7 +2501,7 @@ mod tests {
 
     #[test]
     fn heightmap_tile_reflects_voxel_changes() {
-        let mut world = VoxelWorld::new(32, 32, 32);
+        let mut world = VoxelZone::new(32, 32, 32);
         world.set(VoxelCoord::new(5, 10, 5), VoxelType::Trunk);
         let tile = world.heightmap_tile(0, 0);
         assert_eq!(tile_height(&tile, 5, 5), 10);
@@ -2418,7 +2522,7 @@ mod tests {
 
     #[test]
     fn heightmap_tile_ignores_non_solid_voxels() {
-        let mut world = VoxelWorld::new(32, 32, 32);
+        let mut world = VoxelZone::new(32, 32, 32);
         world.set(VoxelCoord::new(3, 5, 3), VoxelType::Trunk);
         world.set(VoxelCoord::new(3, 10, 3), VoxelType::WoodLadder);
         world.set(VoxelCoord::new(3, 15, 3), VoxelType::RopeLadder);
@@ -2430,7 +2534,7 @@ mod tests {
 
     #[test]
     fn heightmap_tile_out_of_bounds_chunk() {
-        let world = VoxelWorld::new(32, 16, 32);
+        let world = VoxelZone::new(32, 16, 32);
         let tile_neg = world.heightmap_tile(-1, 0);
         assert!(tile_neg.iter().all(|&b| b == 0));
         let tile_far = world.heightmap_tile(100, 100);
@@ -2439,7 +2543,7 @@ mod tests {
 
     #[test]
     fn heightmap_tile_partial_edge_chunk() {
-        let mut world = VoxelWorld::new(20, 16, 20);
+        let mut world = VoxelZone::new(20, 16, 20);
         world.set(VoxelCoord::new(18, 7, 18), VoxelType::Dirt);
         let tile = world.heightmap_tile(1, 1);
         assert_eq!(tile_height(&tile, 2, 2), 7);
@@ -2450,7 +2554,7 @@ mod tests {
 
     #[test]
     fn heightmap_tiles_batch_duplicate_coords() {
-        let mut world = VoxelWorld::new(32, 16, 32);
+        let mut world = VoxelZone::new(32, 16, 32);
         world.set(VoxelCoord::new(5, 7, 5), VoxelType::Trunk);
         let result = world.heightmap_tiles_batch(&[(0, 0), (0, 0)]);
         assert_eq!(result.len(), 1024);
@@ -2460,14 +2564,14 @@ mod tests {
 
     #[test]
     fn init_terrain_column_does_not_dirty_heightmap_tiles() {
-        let mut world = VoxelWorld::new(32, 16, 32);
+        let mut world = VoxelZone::new(32, 16, 32);
         world.init_terrain_column(5, 5, 3);
         assert!(world.drain_dirty_heightmap_tiles().is_empty());
     }
 
     #[test]
     fn heightmap_tile_agrees_with_full_heightmap() {
-        let mut world = VoxelWorld::new(48, 32, 48);
+        let mut world = VoxelZone::new(48, 32, 48);
         world.set(VoxelCoord::new(5, 10, 5), VoxelType::Trunk);
         world.set(VoxelCoord::new(20, 15, 35), VoxelType::Branch);
         world.set(VoxelCoord::new(40, 3, 10), VoxelType::Dirt);
@@ -2501,7 +2605,7 @@ mod tests {
 
     #[test]
     fn heightmap_tile_leaf_and_fruit_report_correct_type() {
-        let mut world = VoxelWorld::new(32, 32, 32);
+        let mut world = VoxelZone::new(32, 32, 32);
         world.set(VoxelCoord::new(2, 15, 3), VoxelType::Leaf);
         world.set(VoxelCoord::new(7, 10, 8), VoxelType::Fruit);
         let tile = world.heightmap_tile(0, 0);
@@ -2529,7 +2633,7 @@ mod tests {
 
     #[test]
     fn init_terrain_parallel_does_not_dirty_heightmap_tiles() {
-        let mut world = VoxelWorld::new(32, 16, 32);
+        let mut world = VoxelZone::new(32, 16, 32);
         let heights: Vec<i32> = (0..32 * 32).map(|i| (i % 5) as i32).collect();
         world.init_terrain_parallel(&heights);
         assert!(world.drain_dirty_heightmap_tiles().is_empty());

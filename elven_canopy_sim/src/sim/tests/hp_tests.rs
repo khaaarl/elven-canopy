@@ -1015,7 +1015,7 @@ fn incapacitated_creature_not_assigned_available_tasks() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(go_task);
+    sim.insert_task(sim.home_zone_id(), go_task);
 
     // Run a few heartbeats — the task should remain unassigned.
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
@@ -1046,6 +1046,7 @@ fn starvation_still_kills_directly() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -1181,7 +1182,8 @@ fn incapacitated_creature_in_spatial_index_after_save_load() {
 
     // Verify creature is in spatial index before save.
     assert!(
-        sim.creatures_at_voxel(elf_pos).contains(&elf),
+        sim.creatures_at_voxel(sim.home_zone_id(), elf_pos)
+            .contains(&elf),
         "Incapacitated creature should be in spatial index before save"
     );
 
@@ -1192,7 +1194,9 @@ fn incapacitated_creature_in_spatial_index_after_save_load() {
 
     // Verify creature is still in spatial index after load.
     assert!(
-        restored.creatures_at_voxel(elf_pos).contains(&elf),
+        restored
+            .creatures_at_voxel(restored.home_zone_id(), elf_pos)
+            .contains(&elf),
         "Incapacitated creature should be in spatial index after save/load"
     );
 }
@@ -1481,6 +1485,7 @@ fn dead_creature_not_assigned_tasks() {
             player_name: String::new(),
             tick: tick2 + 1,
             action: SimAction::CreateTask {
+                zone_id: sim.home_zone_id(),
                 kind: TaskKind::GoTo,
                 position: pos,
                 required_species: Some(Species::Elf),
@@ -1585,6 +1590,7 @@ fn death_interrupts_current_task() {
             player_name: String::new(),
             tick: tick + 1,
             action: SimAction::CreateTask {
+                zone_id: sim.home_zone_id(),
                 kind: TaskKind::GoTo,
                 position: pos,
                 required_species: Some(Species::Elf),
@@ -1654,7 +1660,8 @@ fn death_removes_from_spatial_index() {
 
     // Elf should be in the spatial index before death.
     assert!(
-        sim.creatures_at_voxel(pos).contains(&elf_id),
+        sim.creatures_at_voxel(sim.home_zone_id(), pos)
+            .contains(&elf_id),
         "living elf should be in spatial index"
     );
 
@@ -1673,7 +1680,8 @@ fn death_removes_from_spatial_index() {
 
     // Elf should no longer be in the spatial index (filter excludes dead).
     assert!(
-        !sim.creatures_at_voxel(pos).contains(&elf_id),
+        !sim.creatures_at_voxel(sim.home_zone_id(), pos)
+            .contains(&elf_id),
         "dead elf should be removed from spatial index"
     );
 }

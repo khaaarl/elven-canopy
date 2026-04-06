@@ -14,7 +14,10 @@ fn is_grassy_dirt_returns_true_for_exposed_dirt() {
     // Test world has dirt at y=0, air at y=1 (floor_y=0, terrain_max_height=0).
     // Find a dirt voxel that's not under the tree trunk.
     let coord = VoxelCoord::new(10, 0, 10);
-    assert_eq!(sim.world.get(coord), VoxelType::Dirt);
+    assert_eq!(
+        sim.voxel_zone(sim.home_zone_id()).unwrap().get(coord),
+        VoxelType::Dirt
+    );
     assert!(sim.is_grassy_dirt(coord));
 }
 
@@ -30,7 +33,10 @@ fn is_grassy_dirt_returns_false_for_grassless_dirt() {
     let mut sim = test_sim(legacy_test_seed());
     let coord = VoxelCoord::new(10, 0, 10);
     assert!(sim.is_grassy_dirt(coord));
-    sim.grassless.insert(coord);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .grassless
+        .insert(coord);
     assert!(!sim.is_grassy_dirt(coord));
 }
 
@@ -40,7 +46,9 @@ fn is_grassy_dirt_returns_false_for_covered_dirt() {
     // Place a solid voxel above dirt to cover it.
     let dirt = VoxelCoord::new(5, 0, 5);
     let above = VoxelCoord::new(5, 1, 5);
-    sim.world.set(above, VoxelType::Dirt);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(above, VoxelType::Dirt);
     assert!(!sim.is_grassy_dirt(dirt));
 }
 
@@ -75,7 +83,10 @@ fn find_nearest_grass_avoids_grassless() {
     // Mark a huge radius of dirt as grassless.
     for x in 0..64 {
         for z in 0..64 {
-            sim.grassless.insert(VoxelCoord::new(x, 0, z));
+            sim.voxel_zone_mut(sim.home_zone_id())
+                .unwrap()
+                .grassless
+                .insert(VoxelCoord::new(x, 0, z));
         }
     }
     let result = sim.find_nearest_grass(capybara_id);
@@ -104,7 +115,7 @@ fn resolve_graze_action_restores_food() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(new_task);
+    sim.insert_task(sim.home_zone_id(), new_task);
 
     if let Some(mut c) = sim.db.creatures.get(&capybara_id) {
         c.food = 100;
@@ -124,7 +135,12 @@ fn resolve_graze_action_restores_food() {
     );
 
     // Check the grass_pos is now grassless.
-    assert!(sim.grassless.contains(&grass_pos));
+    assert!(
+        sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .grassless
+            .contains(&grass_pos)
+    );
 }
 
 #[test]
@@ -133,7 +149,12 @@ fn resolve_graze_action_marks_voxel_grassless() {
     let capybara_id = spawn_creature(&mut sim, Species::Capybara);
 
     let grass_pos = VoxelCoord::new(8, 0, 8);
-    assert!(!sim.grassless.contains(&grass_pos));
+    assert!(
+        !sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .grassless
+            .contains(&grass_pos)
+    );
 
     let task_id = crate::types::TaskId::new(&mut sim.rng);
     let new_task = Task {
@@ -150,11 +171,16 @@ fn resolve_graze_action_marks_voxel_grassless() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(new_task);
+    sim.insert_task(sim.home_zone_id(), new_task);
 
     sim.resolve_graze_action(capybara_id, task_id, grass_pos);
 
-    assert!(sim.grassless.contains(&grass_pos));
+    assert!(
+        sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .grassless
+            .contains(&grass_pos)
+    );
     assert!(!sim.is_grassy_dirt(grass_pos));
 }
 
@@ -163,14 +189,23 @@ fn grass_regrowth_removes_from_grassless() {
     let mut sim = test_sim(legacy_test_seed());
     // Insert a grassless voxel.
     let coord = VoxelCoord::new(10, 0, 10);
-    sim.grassless.insert(coord);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .grassless
+        .insert(coord);
     assert!(!sim.is_grassy_dirt(coord));
 
     // Set 100% regrowth chance for deterministic test.
     sim.config.grass_regrowth_chance_pct = 100;
     sim.process_grass_regrowth();
 
-    assert!(!sim.grassless.contains(&coord), "100% chance should regrow");
+    assert!(
+        !sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .grassless
+            .contains(&coord),
+        "100% chance should regrow"
+    );
     assert!(sim.is_grassy_dirt(coord));
 }
 
@@ -178,12 +213,20 @@ fn grass_regrowth_removes_from_grassless() {
 fn grass_regrowth_zero_chance_does_nothing() {
     let mut sim = test_sim(legacy_test_seed());
     let coord = VoxelCoord::new(10, 0, 10);
-    sim.grassless.insert(coord);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .grassless
+        .insert(coord);
 
     sim.config.grass_regrowth_chance_pct = 0;
     sim.process_grass_regrowth();
 
-    assert!(sim.grassless.contains(&coord));
+    assert!(
+        sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .grassless
+            .contains(&coord)
+    );
 }
 
 #[test]
@@ -283,15 +326,40 @@ fn graze_task_serde_roundtrip() {
 fn grassless_set_serde_roundtrip() {
     let mut sim = test_sim(legacy_test_seed());
     // Add some grassless entries.
-    sim.grassless.insert(VoxelCoord::new(10, 0, 10));
-    sim.grassless.insert(VoxelCoord::new(20, 0, 20));
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .grassless
+        .insert(VoxelCoord::new(10, 0, 10));
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .grassless
+        .insert(VoxelCoord::new(20, 0, 20));
 
     let json = sim.to_json().unwrap();
     let restored = SimState::from_json(&json).unwrap();
 
-    assert!(restored.grassless.contains(&VoxelCoord::new(10, 0, 10)));
-    assert!(restored.grassless.contains(&VoxelCoord::new(20, 0, 20)));
-    assert_eq!(restored.grassless.len(), 2);
+    assert!(
+        restored
+            .voxel_zone(restored.home_zone_id())
+            .unwrap()
+            .grassless
+            .contains(&VoxelCoord::new(10, 0, 10))
+    );
+    assert!(
+        restored
+            .voxel_zone(restored.home_zone_id())
+            .unwrap()
+            .grassless
+            .contains(&VoxelCoord::new(20, 0, 20))
+    );
+    assert_eq!(
+        restored
+            .voxel_zone(restored.home_zone_id())
+            .unwrap()
+            .grassless
+            .len(),
+        2
+    );
 }
 
 #[test]
@@ -332,7 +400,7 @@ fn resolve_graze_food_capped_at_food_max() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(new_task);
+    sim.insert_task(sim.home_zone_id(), new_task);
 
     sim.resolve_graze_action(capybara_id, task_id, grass_pos);
 
@@ -351,7 +419,10 @@ fn herbivore_does_not_fall_back_to_fruit() {
     // Deplete all grass in the world.
     for x in 0..64 {
         for z in 0..64 {
-            sim.grassless.insert(VoxelCoord::new(x, 0, z));
+            sim.voxel_zone_mut(sim.home_zone_id())
+                .unwrap()
+                .grassless
+                .insert(VoxelCoord::new(x, 0, z));
         }
     }
 
@@ -386,7 +457,10 @@ fn grass_regrowth_event_fires_via_sim_step() {
 
     // Add a grassless entry.
     let coord = VoxelCoord::new(10, 0, 10);
-    sim.grassless.insert(coord);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .grassless
+        .insert(coord);
     sim.config.grass_regrowth_chance_pct = 100;
 
     // Step past the regrowth interval.
@@ -394,18 +468,27 @@ fn grass_regrowth_event_fires_via_sim_step() {
     sim.step(&[], target_tick);
 
     assert!(
-        !sim.grassless.contains(&coord),
+        !sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .grassless
+            .contains(&coord),
         "GrassRegrowth event should have removed the coord"
     );
 
     // Verify self-reschedule: add another entry and step again.
     let coord2 = VoxelCoord::new(20, 0, 20);
-    sim.grassless.insert(coord2);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .grassless
+        .insert(coord2);
     let target_tick2 = target_tick + sim.config.grass_regrowth_interval_ticks + 1;
     sim.step(&[], target_tick2);
 
     assert!(
-        !sim.grassless.contains(&coord2),
+        !sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .grassless
+            .contains(&coord2),
         "Second GrassRegrowth sweep should fire after self-reschedule"
     );
 }
@@ -436,7 +519,7 @@ fn two_herbivores_graze_same_tile() {
             prerequisite_task_id: None,
             required_civ_id: None,
         };
-        sim.insert_task(new_task);
+        sim.insert_task(sim.home_zone_id(), new_task);
         if let Some(mut c) = sim.db.creatures.get(&cid) {
             c.food = 100;
             c.current_task = Some(tid);
@@ -448,7 +531,12 @@ fn two_herbivores_graze_same_tile() {
     sim.resolve_graze_action(cap1, tid1, grass_pos);
     sim.resolve_graze_action(cap2, tid2, grass_pos);
 
-    assert!(sim.grassless.contains(&grass_pos));
+    assert!(
+        sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .grassless
+            .contains(&grass_pos)
+    );
     // Both creatures should have increased food.
     let food1 = sim.db.creatures.get(&cap1).unwrap().food;
     let food2 = sim.db.creatures.get(&cap2).unwrap().food;
@@ -490,20 +578,6 @@ fn all_grazer_species_flagged_correctly() {
 }
 
 #[test]
-fn backfill_grass_regrowth_event_on_load() {
-    let mut sim = test_sim(legacy_test_seed());
-    let json = sim.to_json().unwrap();
-    let restored = SimState::from_json(&json).unwrap();
-
-    // The event queue should contain a GrassRegrowth event.
-    let has_regrowth = restored
-        .event_queue
-        .iter()
-        .any(|e| matches!(e.kind, crate::event::ScheduledEventKind::GrassRegrowth));
-    assert!(has_regrowth, "Loaded sim should have GrassRegrowth event");
-}
-
-#[test]
 fn set_voxel_exposes_dirt_marks_grassless() {
     let mut sim = test_sim(legacy_test_seed());
     let dirt = VoxelCoord::new(10, 0, 10);
@@ -514,12 +588,20 @@ fn set_voxel_exposes_dirt_marks_grassless() {
     // Dirt is now covered — not grassy.
     assert!(!sim.is_grassy_dirt(dirt));
     // Covered dirt should not be in grassless (it's invisible anyway).
-    assert!(!sim.grassless.contains(&dirt));
+    assert!(
+        !sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .grassless
+            .contains(&dirt)
+    );
 
     // Remove the platform — exposes the dirt, which starts grassless.
     sim.set_voxel(above, VoxelType::Air);
     assert!(
-        sim.grassless.contains(&dirt),
+        sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .grassless
+            .contains(&dirt),
         "Freshly exposed dirt should be grassless"
     );
     assert!(
@@ -535,13 +617,24 @@ fn set_voxel_covering_dirt_removes_from_grassless() {
     let above = VoxelCoord::new(10, 1, 10);
 
     // Mark the dirt as grassless (e.g., from grazing).
-    sim.grassless.insert(dirt);
-    assert!(sim.grassless.contains(&dirt));
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .grassless
+        .insert(dirt);
+    assert!(
+        sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .grassless
+            .contains(&dirt)
+    );
 
     // Place a solid voxel above — dirt is now covered, removed from grassless.
     sim.set_voxel(above, VoxelType::GrownPlatform);
     assert!(
-        !sim.grassless.contains(&dirt),
+        !sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .grassless
+            .contains(&dirt),
         "Covered dirt should be removed from grassless"
     );
 }
@@ -551,9 +644,16 @@ fn set_voxel_non_dirt_below_no_effect() {
     let mut sim = test_sim(legacy_test_seed());
     // Place trunk at y=0, then remove solid above at y=1.
     let coord = VoxelCoord::new(10, 1, 10);
-    sim.world.set(VoxelCoord::new(10, 0, 10), VoxelType::Trunk);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(VoxelCoord::new(10, 0, 10), VoxelType::Trunk);
     sim.set_voxel(coord, VoxelType::GrownPlatform);
     sim.set_voxel(coord, VoxelType::Air);
     // Trunk below should NOT be added to grassless.
-    assert!(!sim.grassless.contains(&VoxelCoord::new(10, 0, 10)));
+    assert!(
+        !sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .grassless
+            .contains(&VoxelCoord::new(10, 0, 10))
+    );
 }

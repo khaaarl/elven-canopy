@@ -739,6 +739,7 @@ fn resolve_craft_via_unified_catalog_path() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: structure.anchor,
         },
@@ -945,7 +946,7 @@ fn extraction_produces_correct_component_items() {
     let anchor = sim.db.structures.get(&structure_id).unwrap().anchor;
     let mut events = Vec::new();
     let elf_id = sim
-        .spawn_creature(Species::Elf, anchor, &mut events)
+        .spawn_creature(Species::Elf, anchor, sim.home_zone_id(), &mut events)
         .expect("spawn elf");
     // Make elf not hungry/sleepy so they'll pick up the task.
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -1224,7 +1225,7 @@ fn end_to_end_extract_produces_components() {
     // Spawn an elf near the building.
     let anchor = sim.db.structures.get(&structure_id).unwrap().anchor;
     let mut events = Vec::new();
-    sim.spawn_creature(Species::Elf, anchor, &mut events);
+    sim.spawn_creature(Species::Elf, anchor, sim.home_zone_id(), &mut events);
 
     // Run enough ticks for at least one extraction cycle.
     sim.step(&[], sim.tick + 20_000);
@@ -1273,7 +1274,7 @@ fn end_to_end_mill_flour_from_pulp() {
 
     let anchor = sim.db.structures.get(&structure_id).unwrap().anchor;
     let mut events = Vec::new();
-    sim.spawn_creature(Species::Elf, anchor, &mut events);
+    sim.spawn_creature(Species::Elf, anchor, sim.home_zone_id(), &mut events);
 
     sim.step(&[], sim.tick + 30_000);
 
@@ -1301,7 +1302,7 @@ fn end_to_end_grow_arrow_no_input() {
     // GrowArrow has zero inputs — no stocking needed.
     let anchor = sim.db.structures.get(&structure_id).unwrap().anchor;
     let mut events = Vec::new();
-    sim.spawn_creature(Species::Elf, anchor, &mut events);
+    sim.spawn_creature(Species::Elf, anchor, sim.home_zone_id(), &mut events);
 
     sim.step(&[], sim.tick + 20_000);
 
@@ -1333,7 +1334,7 @@ fn end_to_end_grow_bow_consumes_bowstring() {
 
     let anchor = sim.db.structures.get(&structure_id).unwrap().anchor;
     let mut events = Vec::new();
-    sim.spawn_creature(Species::Elf, anchor, &mut events);
+    sim.spawn_creature(Species::Elf, anchor, sim.home_zone_id(), &mut events);
 
     sim.step(&[], sim.tick + 50_000);
 
@@ -1425,7 +1426,7 @@ fn recipe_removal_during_inflight_task() {
     // Spawn an elf to start working on the recipe.
     let anchor = sim.db.structures.get(&structure_id).unwrap().anchor;
     let mut events = Vec::new();
-    sim.spawn_creature(Species::Elf, anchor, &mut events);
+    sim.spawn_creature(Species::Elf, anchor, sim.home_zone_id(), &mut events);
 
     // Run a few ticks to start a craft task.
     sim.step(&[], sim.tick + 5_000);
@@ -1795,7 +1796,7 @@ fn craft_output_gets_rolled_quality() {
     // and high stats so it reliably produces Superior items.
     let anchor = sim.db.structures.get(&structure_id).unwrap().anchor;
     let mut events = Vec::new();
-    sim.spawn_creature(Species::Elf, anchor, &mut events);
+    sim.spawn_creature(Species::Elf, anchor, sim.home_zone_id(), &mut events);
     let elf_id = sim
         .db
         .creatures
@@ -1956,7 +1957,7 @@ fn subcomponent_records_inherit_parent_quality() {
     // Spawn a high-skill elf to ensure Superior output.
     let anchor = sim.db.structures.get(&structure_id).unwrap().anchor;
     let mut events = Vec::new();
-    sim.spawn_creature(Species::Elf, anchor, &mut events);
+    sim.spawn_creature(Species::Elf, anchor, sim.home_zone_id(), &mut events);
     let elf_id = sim
         .db
         .creatures

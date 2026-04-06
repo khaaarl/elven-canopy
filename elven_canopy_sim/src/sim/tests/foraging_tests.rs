@@ -146,8 +146,10 @@ fn eat_fruit_restores_food_using_forage_pct_for_monkey() {
     let tree_id = sim.player_tree_id;
     let species_id = insert_test_fruit_species(&mut sim);
     sim.set_voxel(fruit_pos, VoxelType::Fruit);
+    let hz = sim.home_zone_id();
     let _ = sim.db.insert_tree_fruit_auto(|id| crate::db::TreeFruit {
         id,
+        zone_id: hz,
         tree_id,
         position: VoxelBox::point(fruit_pos),
         species_id,
@@ -177,7 +179,7 @@ fn eat_fruit_restores_food_using_forage_pct_for_monkey() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(new_task);
+    sim.insert_task(sim.home_zone_id(), new_task);
     {
         let mut c = sim.db.creatures.get(&monkey_id).unwrap();
         c.current_task = Some(task_id);
@@ -206,7 +208,10 @@ fn hungry_capybara_does_not_create_eat_fruit_from_forager_path() {
     // Deplete all grass so the capybara can't graze.
     for x in 0..sim.config.world_size.0 as i32 {
         for z in 0..sim.config.world_size.2 as i32 {
-            sim.grassless.insert(VoxelCoord::new(x, 0, z));
+            sim.voxel_zone_mut(sim.home_zone_id())
+                .unwrap()
+                .grassless
+                .insert(VoxelCoord::new(x, 0, z));
         }
     }
 
@@ -299,8 +304,10 @@ fn eat_fruit_restores_food_using_forage_pct_for_squirrel() {
     let tree_id = sim.player_tree_id;
     let species_id = insert_test_fruit_species(&mut sim);
     sim.set_voxel(fruit_pos, VoxelType::Fruit);
+    let hz = sim.home_zone_id();
     let _ = sim.db.insert_tree_fruit_auto(|id| crate::db::TreeFruit {
         id,
+        zone_id: hz,
         tree_id,
         position: VoxelBox::point(fruit_pos),
         species_id,
@@ -328,7 +335,7 @@ fn eat_fruit_restores_food_using_forage_pct_for_squirrel() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(new_task);
+    sim.insert_task(sim.home_zone_id(), new_task);
     {
         let mut c = sim.db.creatures.get(&squirrel_id).unwrap();
         c.current_task = Some(task_id);

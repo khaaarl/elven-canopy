@@ -27,6 +27,7 @@ impl SimState {
             Some(c) if c.vital_status == VitalStatus::Alive => c,
             _ => return,
         };
+        let zone_id = creature.zone_id.unwrap();
 
         // Ground creatures need a walkable position at the destination.
         // Snap the task location to the nearest walkable voxel so that
@@ -40,9 +41,10 @@ impl SimState {
         let task_location = if is_flying {
             position
         } else {
+            let zone = self.voxel_zone(zone_id).unwrap();
             match crate::walkability::find_nearest_walkable(
-                &self.world,
-                &self.face_data,
+                zone,
+                &zone.face_data,
                 position,
                 5,
                 footprint,
@@ -70,7 +72,8 @@ impl SimState {
                 prerequisite_task_id: Some(tail_id),
                 required_civ_id: None,
             };
-            self.insert_task(new_task);
+            // TODO(F-zone-world): derive zone from creature/entity context
+            self.insert_task(self.home_zone_id(), new_task);
             return;
         }
         // Queue mode with no current task falls through to non-queue behavior.
@@ -126,7 +129,8 @@ impl SimState {
             prerequisite_task_id: None,
             required_civ_id: None,
         };
-        self.insert_task(new_task);
+        // TODO(F-zone-world): derive zone from creature/entity context
+        self.insert_task(self.home_zone_id(), new_task);
         if let Some(mut c) = self.db.creatures.get(&creature_id) {
             c.current_task = Some(task_id);
             c.path = None;
@@ -255,9 +259,17 @@ impl SimState {
             .map(|c| c.movement_category.can_climb())
             .unwrap_or(false);
 
+        let zone_id = creature_ids
+            .iter()
+            .filter_map(|&cid| self.db.creatures.get(&cid))
+            .filter(|c| c.vital_status == VitalStatus::Alive)
+            .filter_map(|c| c.zone_id)
+            .next()
+            .unwrap_or_else(|| self.home_zone_id()); // TODO(F-zone-world): derive from entity context
+        let zone = self.voxel_zone(zone_id).unwrap();
         let center = match crate::walkability::find_nearest_walkable(
-            &self.world,
-            &self.face_data,
+            zone,
+            &zone.face_data,
             target,
             5,
             first_footprint,
@@ -285,8 +297,8 @@ impl SimState {
 
         // Get spread destinations via BFS on walkable voxel grid.
         let dest_coords = crate::walkability::spread_destinations(
-            &self.world,
-            &self.face_data,
+            zone,
+            &zone.face_data,
             center,
             creatures.len(),
             first_footprint,
@@ -348,6 +360,7 @@ impl SimState {
             Some(c) => c,
             None => return,
         };
+        let zone_id = creature.zone_id.unwrap();
         let species = creature.species;
 
         // Flying creatures: delegate to flight pathfinding.
@@ -374,13 +387,15 @@ impl SimState {
         let next_pos = if let Some(ref path) = creature.path {
             if let Some(&next) = path.remaining_positions.first() {
                 // Validate: next position must still be walkable.
-                if crate::walkability::footprint_walkable(
-                    &self.world,
-                    &self.face_data,
+                let zone = self.voxel_zone(zone_id).unwrap();
+                let walkable = crate::walkability::footprint_walkable(
+                    zone,
+                    &zone.face_data,
                     next,
                     footprint,
                     can_climb,
-                ) {
+                );
+                if walkable {
                     Some(next)
                 } else {
                     None // world changed; repath
@@ -440,10 +455,14 @@ impl SimState {
 
         // Derive edge type for speed computation and compute traversal delay.
         let old_pos = self.db.creatures.get(&creature_id).unwrap().position.min;
-        let from_surface =
-            crate::walkability::derive_surface_type(&self.world, &self.face_data, old_pos);
-        let to_surface =
-            crate::walkability::derive_surface_type(&self.world, &self.face_data, dest_pos);
+        let from_surface = {
+            let zone = self.voxel_zone(zone_id).unwrap();
+            crate::walkability::derive_surface_type(zone, &zone.face_data, old_pos)
+        };
+        let to_surface = {
+            let zone = self.voxel_zone(zone_id).unwrap();
+            crate::walkability::derive_surface_type(zone, &zone.face_data, dest_pos)
+        };
         let edge_type =
             crate::walkability::derive_edge_type(from_surface, to_surface, old_pos, dest_pos);
 
@@ -568,11 +587,17 @@ impl SimState {
         }
 
         // Derive edge type from voxel surfaces for speed computation.
-        let old_pos = self.db.creatures.get(&creature_id).unwrap().position.min;
-        let from_surface =
-            crate::walkability::derive_surface_type(&self.world, &self.face_data, old_pos);
-        let to_surface =
-            crate::walkability::derive_surface_type(&self.world, &self.face_data, dest_pos);
+        let creature_row = self.db.creatures.get(&creature_id).unwrap();
+        let old_pos = creature_row.position.min;
+        let zone_id = creature_row.zone_id.unwrap();
+        let from_surface = {
+            let zone = self.voxel_zone(zone_id).unwrap();
+            crate::walkability::derive_surface_type(zone, &zone.face_data, old_pos)
+        };
+        let to_surface = {
+            let zone = self.voxel_zone(zone_id).unwrap();
+            crate::walkability::derive_surface_type(zone, &zone.face_data, dest_pos)
+        };
         let edge_type =
             crate::walkability::derive_edge_type(from_surface, to_surface, old_pos, dest_pos);
 
@@ -628,21 +653,36 @@ impl SimState {
         let species_data = &self.species_table[&species];
         let footprint = species_data.footprint;
         let can_climb = category.can_climb();
+        let zone_id = self
+            .db
+            .creatures
+            .get(&creature_id)
+            .unwrap()
+            .zone_id
+            .unwrap();
 
         // Collect walkable neighbors via ground_neighbors, respecting edge-type filtering.
-        let from_surface =
-            crate::walkability::derive_surface_type(&self.world, &self.face_data, current_pos);
+        let from_surface = {
+            let zone = self.voxel_zone(zone_id).unwrap();
+            crate::walkability::derive_surface_type(zone, &zone.face_data, current_pos)
+        };
         let mut eligible: Vec<VoxelCoord> = Vec::new();
-        for (neighbor, _dist) in crate::walkability::ground_neighbors(
-            &self.world,
-            &self.face_data,
-            current_pos,
-            footprint,
-            can_climb,
-        ) {
+        let neighbors: Vec<_> = {
+            let zone = self.voxel_zone(zone_id).unwrap();
+            crate::walkability::ground_neighbors(
+                zone,
+                &zone.face_data,
+                current_pos,
+                footprint,
+                can_climb,
+            )
+        };
+        for (neighbor, _dist) in neighbors {
             // Check edge type allowed via movement category.
-            let to_surface =
-                crate::walkability::derive_surface_type(&self.world, &self.face_data, neighbor);
+            let to_surface = {
+                let zone = self.voxel_zone(zone_id).unwrap();
+                crate::walkability::derive_surface_type(zone, &zone.face_data, neighbor)
+            };
             let edge_type = crate::walkability::derive_edge_type(
                 from_surface,
                 to_surface,
@@ -700,6 +740,7 @@ impl SimState {
             Some(c) => c,
             None => return false,
         };
+        let zone_id = creature.zone_id.unwrap();
         let species = creature.species;
         if !creature.movement_category.is_flyer() {
             return false;
@@ -714,7 +755,11 @@ impl SimState {
             if let Some(&next) = path.remaining_positions.first() {
                 // Validate that the next position is still flyable (full footprint).
                 let footprint = self.species_table[&species].footprint;
-                if !crate::pathfinding::footprint_flyable(&self.world, next, footprint) {
+                if !crate::pathfinding::footprint_flyable(
+                    self.voxel_zone(zone_id).unwrap(),
+                    next,
+                    footprint,
+                ) {
                     None // obstacle appeared; repath
                 } else {
                     Some(next)
@@ -828,6 +873,7 @@ impl SimState {
             Some(c) => c,
             None => return,
         };
+        let zone_id = creature.zone_id.unwrap();
         let species = creature.species;
         if !creature.movement_category.is_flyer() {
             return;
@@ -852,7 +898,11 @@ impl SimState {
         let mut candidates: Vec<VoxelCoord> = Vec::new();
         for &(dx, dy, dz) in &offsets {
             let neighbor = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
-            if crate::pathfinding::footprint_flyable(&self.world, neighbor, footprint) {
+            if crate::pathfinding::footprint_flyable(
+                self.voxel_zone(zone_id).unwrap(),
+                neighbor,
+                footprint,
+            ) {
                 candidates.push(neighbor);
             }
         }

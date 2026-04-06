@@ -13,12 +13,14 @@ fn create_dining_hall_with_id(
     food_count: u32,
     structure_id: StructureId,
 ) -> StructureId {
+    let hz = sim.home_zone_id();
     let project_id = ProjectId::new(&mut sim.rng);
     let inv_id = sim.create_inventory(crate::db::InventoryOwnerKind::Structure);
     insert_stub_blueprint(sim, project_id);
     sim.db
         .insert_structure(CompletedStructure {
             id: structure_id,
+            zone_id: hz,
             project_id,
             build_type: BuildType::Building,
             anchor: pos,
@@ -42,6 +44,7 @@ fn create_dining_hall_with_id(
     sim.db
         .insert_furniture_auto(|id| crate::db::Furniture {
             id,
+            zone_id: hz,
             structure_id,
             coord: pos,
             placed: true,
@@ -76,6 +79,7 @@ fn busy_tired_elf_does_not_create_sleep_task() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -118,7 +122,7 @@ fn busy_tired_elf_does_not_create_sleep_task() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(goto_task);
+    sim.insert_task(sim.home_zone_id(), goto_task);
     let mut c = sim.db.creatures.get(&elf_id).unwrap();
     c.current_task = Some(task_id);
     sim.db.update_creature(c).unwrap();
@@ -164,6 +168,7 @@ fn hungry_takes_priority_over_tired() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -217,6 +222,7 @@ fn ground_sleep_fallback_when_no_beds() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -280,6 +286,7 @@ fn find_nearest_bed_excludes_occupied() {
     sim.db
         .insert_structure(CompletedStructure {
             id: structure_id,
+            zone_id: sim.home_zone_id(),
             project_id,
             build_type: BuildType::Building,
             anchor: bed_pos,
@@ -299,9 +306,11 @@ fn find_nearest_bed_excludes_occupied() {
             last_dinner_party_completed_tick: 0,
         })
         .unwrap();
+    let hz = sim.home_zone_id();
     sim.db
         .insert_furniture_auto(|id| crate::db::Furniture {
             id,
+            zone_id: hz,
             structure_id,
             coord: bed_pos,
             placed: true,
@@ -314,6 +323,7 @@ fn find_nearest_bed_excludes_occupied() {
             player_name: String::new(),
             tick: 1,
             action: SimAction::SpawnCreature {
+                zone_id: sim.home_zone_id(),
                 species: Species::Elf,
                 position: tree_pos,
             },
@@ -322,6 +332,7 @@ fn find_nearest_bed_excludes_occupied() {
             player_name: String::new(),
             tick: 1,
             action: SimAction::SpawnCreature {
+                zone_id: sim.home_zone_id(),
                 species: Species::Elf,
                 position: tree_pos,
             },
@@ -400,6 +411,7 @@ fn tired_elf_sleeps_and_rest_increases() {
     sim.db
         .insert_structure(CompletedStructure {
             id: structure_id,
+            zone_id: sim.home_zone_id(),
             project_id,
             build_type: BuildType::Building,
             anchor: bed_pos,
@@ -419,9 +431,11 @@ fn tired_elf_sleeps_and_rest_increases() {
             last_dinner_party_completed_tick: 0,
         })
         .unwrap();
+    let hz = sim.home_zone_id();
     sim.db
         .insert_furniture_auto(|id| crate::db::Furniture {
             id,
+            zone_id: hz,
             structure_id,
             coord: bed_pos,
             placed: true,
@@ -433,6 +447,7 @@ fn tired_elf_sleeps_and_rest_increases() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -486,6 +501,7 @@ fn find_nearest_fruit_returns_reachable() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -529,6 +545,7 @@ fn eat_fruit_task_restores_food_on_arrival() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -569,7 +586,7 @@ fn eat_fruit_task_restores_food_on_arrival() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(eat_task);
+    sim.insert_task(sim.home_zone_id(), eat_task);
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
@@ -607,6 +624,7 @@ fn hungry_idle_elf_creates_eat_fruit_task() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -657,6 +675,7 @@ fn well_fed_elf_does_not_create_eat_fruit_task() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -691,6 +710,7 @@ fn busy_hungry_elf_does_not_create_eat_fruit_task() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -731,7 +751,7 @@ fn busy_hungry_elf_does_not_create_eat_fruit_task() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(goto_task);
+    sim.insert_task(sim.home_zone_id(), goto_task);
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
@@ -777,6 +797,7 @@ fn hungry_elf_eats_fruit_and_food_increases() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -795,7 +816,9 @@ fn hungry_elf_eats_fruit_and_food_increases() {
     // Place a fruit voxel at the elf's position (or very close).
     // This guarantees the fruit is reachable — the elf is already there.
     let fruit_pos = elf_pos;
-    sim.world.set(fruit_pos, VoxelType::Fruit);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(fruit_pos, VoxelType::Fruit);
     let tree_id = sim.player_tree_id;
     let species_id = sim
         .db
@@ -810,8 +833,10 @@ fn hungry_elf_eats_fruit_and_food_increases() {
             sim.db.update_tree(t).unwrap();
             id
         });
+    let hz = sim.home_zone_id();
     let _ = sim.db.insert_tree_fruit_auto(|id| crate::db::TreeFruit {
         id,
+        zone_id: hz,
         tree_id,
         position: VoxelBox::point(fruit_pos),
         species_id,
@@ -854,6 +879,7 @@ fn hungry_elf_with_bread_creates_eat_bread_task() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -915,6 +941,7 @@ fn eat_bread_restores_food_and_removes_bread() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -963,7 +990,7 @@ fn eat_bread_restores_food_and_removes_bread() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(eat_task);
+    sim.insert_task(sim.home_zone_id(), eat_task);
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
@@ -1006,6 +1033,7 @@ fn hungry_elf_without_bread_still_seeks_fruit() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -1060,6 +1088,7 @@ fn hungry_elf_with_unowned_bread_seeks_fruit() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -1120,6 +1149,7 @@ fn assign_home_sets_bidirectional_refs() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -1171,6 +1201,7 @@ fn assign_home_unassign() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -1234,6 +1265,7 @@ fn assign_home_replaces_old_assignment() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -1310,6 +1342,7 @@ fn assign_home_evicts_previous_occupant() {
             player_name: String::new(),
             tick: 1,
             action: SimAction::SpawnCreature {
+                zone_id: sim.home_zone_id(),
                 species: Species::Elf,
                 position: tree_pos,
             },
@@ -1318,6 +1351,7 @@ fn assign_home_evicts_previous_occupant() {
             player_name: String::new(),
             tick: 1,
             action: SimAction::SpawnCreature {
+                zone_id: sim.home_zone_id(),
                 species: Species::Elf,
                 position: tree_pos,
             },
@@ -1403,6 +1437,7 @@ fn assign_home_rejects_non_home() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -1450,6 +1485,7 @@ fn assign_home_rejects_non_elf() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Capybara,
             position: tree_pos,
         },
@@ -1509,6 +1545,7 @@ fn tired_elf_sleeps_in_assigned_home() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -1581,9 +1618,11 @@ fn tired_elf_without_home_uses_dormitory() {
     let mut structure = sim.db.structures.get(&structure_id).unwrap();
     structure.furnishing = Some(FurnishingType::Dormitory);
     sim.db.update_structure(structure).unwrap();
+    let hz = sim.home_zone_id();
     sim.db
         .insert_furniture_auto(|id| crate::db::Furniture {
             id,
+            zone_id: hz,
             structure_id,
             coord: bed_pos,
             placed: true,
@@ -1595,6 +1634,7 @@ fn tired_elf_without_home_uses_dormitory() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -1652,6 +1692,7 @@ fn assigned_home_unfurnished_falls_back() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -1821,7 +1862,7 @@ fn find_nearest_dining_hall_returns_none_when_seats_full() {
             prerequisite_task_id: None,
             required_civ_id: None,
         };
-        sim.insert_task(fake_task);
+        sim.insert_task(sim.home_zone_id(), fake_task);
         let seq = sim.db.task_voxel_refs.next_seq();
         sim.db
             .insert_task_voxel_ref(crate::db::TaskVoxelRef {
@@ -2205,6 +2246,7 @@ fn dining_hall_with_fruit_only() {
     sim.db
         .insert_structure(CompletedStructure {
             id: structure_id,
+            zone_id: sim.home_zone_id(),
             project_id,
             build_type: BuildType::Building,
             anchor: table_pos,
@@ -2224,9 +2266,11 @@ fn dining_hall_with_fruit_only() {
             last_dinner_party_completed_tick: 0,
         })
         .unwrap();
+    let hz = sim.home_zone_id();
     sim.db
         .insert_furniture_auto(|id| crate::db::Furniture {
             id,
+            zone_id: hz,
             structure_id,
             coord: table_pos,
             placed: true,
@@ -2309,6 +2353,7 @@ fn furnish_dining_hall_enables_logistics() {
     sim.db
         .insert_structure(CompletedStructure {
             id: structure_id,
+            zone_id: sim.home_zone_id(),
             project_id,
             build_type: BuildType::Building,
             anchor: tree_pos,
@@ -2384,7 +2429,7 @@ fn dining_preempts_autonomous_task() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(haul_task);
+    sim.insert_task(sim.home_zone_id(), haul_task);
     // Set food into the solo dining band (30–40%).
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
@@ -2570,8 +2615,8 @@ fn end_to_end_dining_hall() {
     let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     assert!(
         crate::walkability::footprint_walkable(
-            &sim.world,
-            &sim.face_data,
+            sim.voxel_zone(sim.home_zone_id()).unwrap(),
+            &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
             elf_pos,
             [1, 1, 1],
             true
@@ -2838,6 +2883,7 @@ fn food_decreases_over_heartbeats() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -2884,6 +2930,7 @@ fn food_does_not_go_below_zero() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -2921,6 +2968,7 @@ fn creature_dies_when_food_reaches_zero() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -2971,6 +3019,7 @@ fn starvation_death_notification_mentions_starvation() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -3010,6 +3059,7 @@ fn no_heartbeat_after_starvation_death() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -3045,6 +3095,7 @@ fn creature_with_food_remaining_does_not_starve() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -3087,6 +3138,7 @@ fn rest_decreases_over_heartbeats() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -3129,6 +3181,7 @@ fn rest_does_not_go_below_zero() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -3160,6 +3213,7 @@ fn tired_idle_elf_creates_sleep_task() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -3212,6 +3266,7 @@ fn rested_elf_does_not_create_sleep_task() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -3298,7 +3353,13 @@ fn find_nearest_dining_hall_picks_closer_of_two() {
     let mut positions: Vec<_> = (1..ws_x as i32 - 1)
         .flat_map(|x| (1..ws_z as i32 - 1).map(move |z| VoxelCoord::new(x, floor_y, z)))
         .filter(|&pos| {
-            crate::walkability::footprint_walkable(&sim.world, &sim.face_data, pos, [1, 1, 1], true)
+            crate::walkability::footprint_walkable(
+                sim.voxel_zone(sim.home_zone_id()).unwrap(),
+                &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
+                pos,
+                [1, 1, 1],
+                true,
+            )
         })
         .map(|pos| (pos.manhattan_distance(elf_pos), pos))
         .collect();
@@ -3342,7 +3403,13 @@ fn find_nearest_dining_hall_skips_closer_hall_without_food() {
     let mut positions: Vec<_> = (1..ws_x as i32 - 1)
         .flat_map(|x| (1..ws_z as i32 - 1).map(move |z| VoxelCoord::new(x, floor_y, z)))
         .filter(|&pos| {
-            crate::walkability::footprint_walkable(&sim.world, &sim.face_data, pos, [1, 1, 1], true)
+            crate::walkability::footprint_walkable(
+                sim.voxel_zone(sim.home_zone_id()).unwrap(),
+                &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
+                pos,
+                [1, 1, 1],
+                true,
+            )
         })
         .map(|pos| (pos.manhattan_distance(elf_pos), pos))
         .collect();
@@ -3384,7 +3451,13 @@ fn find_nearest_dining_hall_skips_closer_full_table() {
     let mut positions: Vec<_> = (1..ws_x as i32 - 1)
         .flat_map(|x| (1..ws_z as i32 - 1).map(move |z| VoxelCoord::new(x, floor_y, z)))
         .filter(|&pos| {
-            crate::walkability::footprint_walkable(&sim.world, &sim.face_data, pos, [1, 1, 1], true)
+            crate::walkability::footprint_walkable(
+                sim.voxel_zone(sim.home_zone_id()).unwrap(),
+                &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
+                pos,
+                [1, 1, 1],
+                true,
+            )
         })
         .map(|pos| (pos.manhattan_distance(elf_pos), pos))
         .collect();
@@ -3418,7 +3491,7 @@ fn find_nearest_dining_hall_skips_closer_full_table() {
             prerequisite_task_id: None,
             required_civ_id: None,
         };
-        sim.insert_task(fake_task);
+        sim.insert_task(sim.home_zone_id(), fake_task);
         let seq = sim.db.task_voxel_refs.next_seq();
         sim.db
             .insert_task_voxel_ref(crate::db::TaskVoxelRef {
@@ -3468,6 +3541,7 @@ fn find_nearest_dining_hall_unplaced_table_ignored() {
     sim.db
         .insert_structure(CompletedStructure {
             id: structure_id,
+            zone_id: sim.home_zone_id(),
             project_id,
             build_type: BuildType::Building,
             anchor: table_pos,
@@ -3488,9 +3562,11 @@ fn find_nearest_dining_hall_unplaced_table_ignored() {
         })
         .unwrap();
     // Insert one table with placed=false.
+    let hz = sim.home_zone_id();
     sim.db
         .insert_furniture_auto(|id| crate::db::Furniture {
             id,
+            zone_id: hz,
             structure_id,
             coord: table_pos,
             placed: false,

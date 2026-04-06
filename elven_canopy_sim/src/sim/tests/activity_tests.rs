@@ -17,6 +17,7 @@ fn create_debug_dance(sim: &mut SimState, location: VoxelCoord) -> crate::types:
         Some(3),
         Some(3),
         TaskOrigin::PlayerDirected,
+        sim.home_zone_id(),
         &mut events,
     );
     sim.db
@@ -167,6 +168,7 @@ fn quorum_prunes_busy_volunteers() {
     // We need to create an actual task for the FK to work.
     let task = crate::db::Task {
         id: fake_task_id,
+        zone_id: sim.home_zone_id(),
         kind_tag: TaskKindTag::GoTo,
         state: TaskState::InProgress,
         origin: TaskOrigin::Automated,
@@ -533,6 +535,7 @@ fn departure_cancel_on_departure_cancels_activity() {
         Some(3),
         Some(3),
         TaskOrigin::Automated,
+        sim.home_zone_id(),
         &mut events,
     );
     let activity_id = sim.db.activities.iter_all().next().unwrap().id;
@@ -587,6 +590,7 @@ fn departure_pause_and_wait_pauses_activity() {
         Some(3),
         Some(3),
         TaskOrigin::Automated,
+        sim.home_zone_id(),
         &mut events,
     );
     let activity_id = sim.db.activities.iter_all().next().unwrap().id;
@@ -629,6 +633,7 @@ fn pause_timeout_cancels_activity() {
         Some(3),
         Some(3),
         TaskOrigin::Automated,
+        sim.home_zone_id(),
         &mut events,
     );
     let activity_id = sim.db.activities.iter_all().next().unwrap().id;
@@ -675,6 +680,7 @@ fn directed_recruitment_assigns_and_creates_goto() {
         Some(3),
         Some(3),
         TaskOrigin::Automated,
+        sim.home_zone_id(),
         &mut events,
     );
     let activity_id = sim.db.activities.iter_all().next().unwrap().id;
@@ -804,6 +810,7 @@ fn end_to_end_dance_via_command_and_activation() {
         player_name: String::new(),
         tick: sim.tick,
         action: SimAction::CreateActivity {
+            zone_id: sim.home_zone_id(),
             kind: ActivityKind::Dance,
             location,
             min_count: Some(3),
@@ -891,6 +898,7 @@ fn assign_to_activity_rejects_dead_creature() {
         Some(3),
         Some(3),
         TaskOrigin::Automated,
+        sim.home_zone_id(),
         &mut events,
     );
     let activity_id = sim.db.activities.iter_all().next().unwrap().id;
@@ -932,6 +940,7 @@ fn assign_to_activity_rejects_creature_already_in_activity() {
         Some(3),
         Some(3),
         TaskOrigin::Automated,
+        sim.home_zone_id(),
         &mut events,
     );
     let activity1 = sim
@@ -964,6 +973,7 @@ fn assign_to_activity_rejects_creature_already_in_activity() {
         Some(3),
         Some(3),
         TaskOrigin::Automated,
+        sim.home_zone_id(),
         &mut events,
     );
     let activity2 = sim
@@ -997,6 +1007,7 @@ fn volunteer_rejects_directed_recruitment_activity() {
         Some(3),
         Some(3),
         TaskOrigin::Automated,
+        sim.home_zone_id(),
         &mut events,
     );
     let activity_id = sim.db.activities.iter_all().next().unwrap().id;
@@ -1059,6 +1070,7 @@ fn creature_death_with_cancel_on_departure_cancels_activity() {
         Some(3),
         Some(3),
         TaskOrigin::Automated,
+        sim.home_zone_id(),
         &mut events,
     );
     let activity_id = sim.db.activities.iter_all().next().unwrap().id;
@@ -1095,6 +1107,7 @@ fn resume_activity_from_paused() {
         Some(3),
         Some(3),
         TaskOrigin::Automated,
+        sim.home_zone_id(),
         &mut events,
     );
     let activity_id = sim.db.activities.iter_all().next().unwrap().id;
@@ -1335,6 +1348,7 @@ fn busy_creatures_dont_volunteer() {
     let task_id = TaskId::new(&mut sim.rng);
     let task = crate::db::Task {
         id: task_id,
+        zone_id: sim.home_zone_id(),
         kind_tag: TaskKindTag::GoTo,
         state: TaskState::InProgress,
         origin: TaskOrigin::Automated,
@@ -1384,6 +1398,7 @@ fn recruiting_activity_reference_cleared_on_activation() {
     sim.db
         .insert_activity(crate::db::Activity {
             id: activity_id,
+            zone_id: sim.home_zone_id(),
             kind: ActivityKind::Dance,
             phase: ActivityPhase::Recruiting,
             location: VoxelCoord::new(0, 0, 0),
@@ -1471,6 +1486,7 @@ fn activity_with_all_elves_busy_stays_recruiting() {
     for (eid, task_id) in elves.iter().zip(task_ids.iter()) {
         let task = crate::db::Task {
             id: *task_id,
+            zone_id: sim.home_zone_id(),
             kind_tag: TaskKindTag::GoTo,
             state: TaskState::InProgress,
             origin: TaskOrigin::Automated,
@@ -1692,6 +1708,7 @@ fn cannot_assign_to_activity_while_volunteered_for_another() {
         Some(3),
         Some(3),
         TaskOrigin::Automated,
+        sim.home_zone_id(),
         &mut events,
     );
     let activity_b = sim
@@ -1749,6 +1766,7 @@ fn volunteering_for_second_activity_replaces_first() {
         Some(3),
         Some(3),
         TaskOrigin::PlayerDirected,
+        sim.home_zone_id(),
         &mut events,
     );
     let activity_b = sim
@@ -1793,6 +1811,7 @@ fn committed_creature_cannot_volunteer_for_another() {
         Some(3),
         Some(3),
         TaskOrigin::Automated,
+        sim.home_zone_id(),
         &mut events,
     );
     let activity_a = sim.db.activities.iter_all().next().unwrap().id;
@@ -1839,6 +1858,7 @@ fn activity_with_min_count_none_starts_on_first_volunteer() {
         None,
         None,
         TaskOrigin::PlayerDirected,
+        sim.home_zone_id(),
         &mut events,
     );
     let activity_id = sim.db.activities.iter_all().next().unwrap().id;
@@ -1909,6 +1929,7 @@ fn stale_volunteer_row_cleared_so_creature_can_revolunteer() {
     let task_id = TaskId::new(&mut sim.rng);
     let task = crate::db::Task {
         id: task_id,
+        zone_id: sim.home_zone_id(),
         kind_tag: TaskKindTag::EatBread,
         state: TaskState::InProgress,
         origin: TaskOrigin::Autonomous,
@@ -1971,6 +1992,7 @@ fn recruiting_stall_resolved_by_revolunteering() {
     for (i, tid) in task_ids.iter().enumerate() {
         let task = crate::db::Task {
             id: *tid,
+            zone_id: sim.home_zone_id(),
             kind_tag: TaskKindTag::EatBread,
             state: TaskState::InProgress,
             origin: TaskOrigin::Autonomous,
@@ -2079,6 +2101,7 @@ fn last_participant_removed_from_paused_activity_cancels_it() {
         Some(2),
         Some(2),
         TaskOrigin::Automated,
+        sim.home_zone_id(),
         &mut events,
     );
     let activity_id = sim
@@ -2168,6 +2191,7 @@ fn two_creatures_arrive_same_tick() {
         Some(2),
         Some(3),
         TaskOrigin::PlayerDirected,
+        sim.home_zone_id(),
         &mut events,
     );
     let activity_id = sim
@@ -2211,6 +2235,7 @@ fn pause_timeout_not_expired_keeps_activity() {
         Some(3),
         Some(3),
         TaskOrigin::Automated,
+        sim.home_zone_id(),
         &mut events,
     );
     let activity_id = sim
@@ -2456,6 +2481,7 @@ fn desired_count_caps_volunteer_discovery() {
     let fake_task_id = TaskId::new(&mut sim.rng);
     let task = crate::db::Task {
         id: fake_task_id,
+        zone_id: sim.home_zone_id(),
         kind_tag: TaskKindTag::GoTo,
         state: TaskState::InProgress,
         origin: TaskOrigin::Automated,
@@ -2567,6 +2593,7 @@ fn directed_recruitment_three_assigned_transitions_to_assembling() {
         Some(3),
         Some(3),
         TaskOrigin::Automated,
+        sim.home_zone_id(),
         &mut events,
     );
     let activity_id = sim.db.activities.iter_all().next().unwrap().id;
@@ -2621,7 +2648,7 @@ fn wild_capybara_cannot_volunteer_for_dance() {
     // Spawn a wild capybara (no civ) at the activity location.
     let mut events = Vec::new();
     let capybara_id = sim
-        .spawn_creature(Species::Capybara, tree_pos, &mut events)
+        .spawn_creature(Species::Capybara, tree_pos, sim.home_zone_id(), &mut events)
         .expect("should spawn capybara");
     let mut c = sim.db.creatures.get(&capybara_id).unwrap();
     c.current_task = None;
@@ -2648,7 +2675,13 @@ fn other_civ_elf_cannot_volunteer_for_dance() {
     let hostile_civ = ensure_hostile_civ(&mut sim);
     let mut events = Vec::new();
     let foreign_elf_id = sim
-        .spawn_creature_with_civ(Species::Elf, tree_pos, Some(hostile_civ), &mut events)
+        .spawn_creature_with_civ(
+            Species::Elf,
+            tree_pos,
+            Some(hostile_civ),
+            sim.home_zone_id(),
+            &mut events,
+        )
         .expect("should spawn foreign elf");
     let mut c = sim.db.creatures.get(&foreign_elf_id).unwrap();
     c.current_task = None;
@@ -2675,7 +2708,13 @@ fn same_civ_capybara_cannot_volunteer_for_dance() {
     let player_civ = sim.player_civ_id;
     let mut events = Vec::new();
     let capybara_id = sim
-        .spawn_creature_with_civ(Species::Capybara, tree_pos, player_civ, &mut events)
+        .spawn_creature_with_civ(
+            Species::Capybara,
+            tree_pos,
+            player_civ,
+            sim.home_zone_id(),
+            &mut events,
+        )
         .expect("should spawn same-civ capybara");
     let mut c = sim.db.creatures.get(&capybara_id).unwrap();
     c.current_task = None;
@@ -2701,7 +2740,7 @@ fn find_open_activity_ignores_wrong_species() {
     // Spawn a capybara at the activity location.
     let mut events = Vec::new();
     let capybara_id = sim
-        .spawn_creature(Species::Capybara, tree_pos, &mut events)
+        .spawn_creature(Species::Capybara, tree_pos, sim.home_zone_id(), &mut events)
         .expect("should spawn capybara");
     let mut c = sim.db.creatures.get(&capybara_id).unwrap();
     c.current_task = None;
@@ -2722,7 +2761,13 @@ fn find_open_activity_ignores_wrong_civ() {
     let hostile_civ = ensure_hostile_civ(&mut sim);
     let mut events = Vec::new();
     let foreign_elf_id = sim
-        .spawn_creature_with_civ(Species::Elf, tree_pos, Some(hostile_civ), &mut events)
+        .spawn_creature_with_civ(
+            Species::Elf,
+            tree_pos,
+            Some(hostile_civ),
+            sim.home_zone_id(),
+            &mut events,
+        )
         .expect("should spawn foreign elf");
     let mut c = sim.db.creatures.get(&foreign_elf_id).unwrap();
     c.current_task = None;
@@ -2763,7 +2808,13 @@ fn directed_assign_rejects_wrong_species() {
     let player_civ = sim.player_civ_id;
     let mut events = Vec::new();
     let capybara_id = sim
-        .spawn_creature_with_civ(Species::Capybara, tree_pos, player_civ, &mut events)
+        .spawn_creature_with_civ(
+            Species::Capybara,
+            tree_pos,
+            player_civ,
+            sim.home_zone_id(),
+            &mut events,
+        )
         .expect("should spawn capybara");
     let mut c = sim.db.creatures.get(&capybara_id).unwrap();
     c.current_task = None;
@@ -2789,7 +2840,13 @@ fn directed_assign_rejects_wrong_civ() {
     let hostile_civ = ensure_hostile_civ(&mut sim);
     let mut events = Vec::new();
     let foreign_elf_id = sim
-        .spawn_creature_with_civ(Species::Elf, tree_pos, Some(hostile_civ), &mut events)
+        .spawn_creature_with_civ(
+            Species::Elf,
+            tree_pos,
+            Some(hostile_civ),
+            sim.home_zone_id(),
+            &mut events,
+        )
         .expect("should spawn foreign elf");
     let mut c = sim.db.creatures.get(&foreign_elf_id).unwrap();
     c.current_task = None;
@@ -3224,7 +3281,7 @@ fn idle_elf_near_dance_hall_organizes_spontaneous_dance() {
     let elf_pos = hall.anchor;
     let mut events = Vec::new();
     let elf_id = sim
-        .spawn_creature(Species::Elf, elf_pos, &mut events)
+        .spawn_creature(Species::Elf, elf_pos, sim.home_zone_id(), &mut events)
         .unwrap();
 
     // Make the elf idle (no task, no activity).
@@ -3275,7 +3332,7 @@ fn hall_cooldown_prevents_spontaneous_dance() {
     let hall = sim.db.structures.get(&structure_id).unwrap().clone();
     let mut events = Vec::new();
     let elf_id = sim
-        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .spawn_creature(Species::Elf, hall.anchor, sim.home_zone_id(), &mut events)
         .unwrap();
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = None;
@@ -3302,7 +3359,7 @@ fn elf_cooldown_prevents_spontaneous_dance() {
     let hall = sim.db.structures.iter_all().next().unwrap().clone();
     let mut events = Vec::new();
     let elf_id = sim
-        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .spawn_creature(Species::Elf, hall.anchor, sim.home_zone_id(), &mut events)
         .unwrap();
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = None;
@@ -3334,7 +3391,7 @@ fn first_dance_nudge_skips_hall_cooldown() {
 
     let mut events = Vec::new();
     let elf_id = sim
-        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .spawn_creature(Species::Elf, hall.anchor, sim.home_zone_id(), &mut events)
         .unwrap();
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = None;
@@ -3374,7 +3431,7 @@ fn venue_exclusivity_blocks_spontaneous_dance() {
     let hall = sim.db.structures.get(&structure_id).unwrap().clone();
     let mut events = Vec::new();
     let elf_id = sim
-        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .spawn_creature(Species::Elf, hall.anchor, sim.home_zone_id(), &mut events)
         .unwrap();
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = None;
@@ -3479,7 +3536,7 @@ fn zero_chance_prevents_spontaneous_dance() {
     let hall = sim.db.structures.iter_all().next().unwrap().clone();
     let mut events = Vec::new();
     let elf_id = sim
-        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .spawn_creature(Species::Elf, hall.anchor, sim.home_zone_id(), &mut events)
         .unwrap();
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = None;
@@ -3514,7 +3571,12 @@ fn non_elf_cannot_organize_spontaneous_dance() {
     let mut events = Vec::new();
     // Spawn a capybara instead of an elf.
     let capybara_id = sim
-        .spawn_creature(Species::Capybara, hall.anchor, &mut events)
+        .spawn_creature(
+            Species::Capybara,
+            hall.anchor,
+            sim.home_zone_id(),
+            &mut events,
+        )
         .unwrap();
     if let Some(mut c) = sim.db.creatures.get(&capybara_id) {
         c.current_task = None;
@@ -3538,7 +3600,7 @@ fn busy_elf_cannot_organize_spontaneous_dance() {
     let hall = sim.db.structures.iter_all().next().unwrap().clone();
     let mut events = Vec::new();
     let elf_id = sim
-        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .spawn_creature(Species::Elf, hall.anchor, sim.home_zone_id(), &mut events)
         .unwrap();
 
     // Elf has a task — should not organize.
@@ -3617,7 +3679,7 @@ fn organizer_retains_role_after_reactivation() {
     let hall = sim.db.structures.get(&structure_id).unwrap().clone();
     let mut events = Vec::new();
     let elf_id = sim
-        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .spawn_creature(Species::Elf, hall.anchor, sim.home_zone_id(), &mut events)
         .unwrap();
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = None;
@@ -3664,7 +3726,7 @@ fn dead_elf_cannot_organize_spontaneous_dance() {
     let hall = sim.db.structures.iter_all().next().unwrap().clone();
     let mut events = Vec::new();
     let elf_id = sim
-        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .spawn_creature(Species::Elf, hall.anchor, sim.home_zone_id(), &mut events)
         .unwrap();
 
     // Kill the elf.
@@ -3691,7 +3753,7 @@ fn elf_with_current_activity_cannot_organize() {
     let hall = sim.db.structures.get(&structure_id).unwrap().clone();
     let mut events = Vec::new();
     let elf_id = sim
-        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .spawn_creature(Species::Elf, hall.anchor, sim.home_zone_id(), &mut events)
         .unwrap();
 
     // Elf is committed to some activity.
@@ -3699,6 +3761,7 @@ fn elf_with_current_activity_cannot_organize() {
     sim.db
         .insert_activity(crate::db::Activity {
             id: dummy_activity_id,
+            zone_id: sim.home_zone_id(),
             kind: ActivityKind::Dance,
             phase: ActivityPhase::Recruiting,
             location: VoxelCoord::new(0, 0, 0),
@@ -3743,7 +3806,7 @@ fn elf_already_volunteer_cannot_organize() {
     let location = hall.anchor;
     let mut events = Vec::new();
     let elf_id = sim
-        .spawn_creature(Species::Elf, location, &mut events)
+        .spawn_creature(Species::Elf, location, sim.home_zone_id(), &mut events)
         .unwrap();
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = None;
@@ -3758,6 +3821,7 @@ fn elf_already_volunteer_cannot_organize() {
         Some(3),
         Some(6),
         TaskOrigin::PlayerDirected,
+        sim.home_zone_id(),
         &mut events,
     );
     let participant = crate::db::ActivityParticipant {
@@ -3795,7 +3859,7 @@ fn dance_hall_out_of_range_prevents_organizing() {
     let hall = sim.db.structures.iter_all().next().unwrap().clone();
     let mut events = Vec::new();
     let elf_id = sim
-        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .spawn_creature(Species::Elf, hall.anchor, sim.home_zone_id(), &mut events)
         .unwrap();
     // Teleport elf far from the hall (beyond search radius).
     let far_pos = VoxelCoord::new(hall.anchor.x + 100, hall.anchor.y, hall.anchor.z + 100);
@@ -3831,12 +3895,13 @@ fn elf_cooldown_prevents_volunteering_for_dance() {
         Some(3),
         Some(6),
         TaskOrigin::PlayerDirected,
+        sim.home_zone_id(),
         &mut events,
     );
 
     // Spawn elf nearby who recently danced.
     let elf_id = sim
-        .spawn_creature(Species::Elf, location, &mut events)
+        .spawn_creature(Species::Elf, location, sim.home_zone_id(), &mut events)
         .unwrap();
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = None;
@@ -3874,7 +3939,7 @@ fn organizer_survives_quorum_prune_when_busy() {
     let hall = sim.db.structures.get(&structure_id).unwrap().clone();
     let mut events = Vec::new();
     let organizer_id = sim
-        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .spawn_creature(Species::Elf, hall.anchor, sim.home_zone_id(), &mut events)
         .unwrap();
     if let Some(mut c) = sim.db.creatures.get(&organizer_id) {
         c.current_task = None;
@@ -3904,7 +3969,7 @@ fn organizer_survives_quorum_prune_when_busy() {
 
     // Another elf volunteers, triggering quorum check.
     let other_elf = sim
-        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .spawn_creature(Species::Elf, hall.anchor, sim.home_zone_id(), &mut events)
         .unwrap();
     if let Some(mut c) = sim.db.creatures.get(&other_elf) {
         c.current_task = None;
@@ -3942,7 +4007,7 @@ fn hall_cooldown_expires_allows_new_dance() {
     let hall = sim.db.structures.get(&structure_id).unwrap().clone();
     let mut events = Vec::new();
     let elf_id = sim
-        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .spawn_creature(Species::Elf, hall.anchor, sim.home_zone_id(), &mut events)
         .unwrap();
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = None;
@@ -3977,7 +4042,7 @@ fn elf_cooldown_expires_allows_organizing() {
     let hall = sim.db.structures.iter_all().next().unwrap().clone();
     let mut events = Vec::new();
     let elf_id = sim
-        .spawn_creature(Species::Elf, hall.anchor, &mut events)
+        .spawn_creature(Species::Elf, hall.anchor, sim.home_zone_id(), &mut events)
         .unwrap();
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = None;
@@ -4100,6 +4165,7 @@ fn assembly_timeout_starts_at_min_count_kicks_stragglers() {
         Some(3),
         Some(4),
         TaskOrigin::PlayerDirected,
+        sim.home_zone_id(),
         &mut Vec::new(),
     );
     assert!(
@@ -4178,6 +4244,7 @@ fn assembly_timeout_keeps_travelers_when_late_join_allowed() {
         Some(3),
         Some(5),
         TaskOrigin::PlayerDirected,
+        sim.home_zone_id(),
         &mut Vec::new(),
     );
     assert!(
@@ -4338,6 +4405,7 @@ fn assembly_timeout_sets_execution_start_tick() {
         Some(3),
         Some(5),
         TaskOrigin::PlayerDirected,
+        sim.home_zone_id(),
         &mut Vec::new(),
     );
 
@@ -4427,6 +4495,7 @@ fn assembly_timeout_generates_dance_plan() {
         Some(3),
         Some(5),
         TaskOrigin::PlayerDirected,
+        sim.home_zone_id(),
         &mut Vec::new(),
     );
 
@@ -4534,6 +4603,7 @@ fn assembly_timeout_start_no_double_reactivation() {
         Some(3),
         Some(5),
         TaskOrigin::PlayerDirected,
+        sim.home_zone_id(),
         &mut Vec::new(),
     );
 
@@ -4600,6 +4670,7 @@ fn pause_timeout_cancel_no_double_reactivation() {
         Some(3),
         Some(3),
         TaskOrigin::Automated,
+        sim.home_zone_id(),
         &mut events,
     );
     let activity_id = sim.db.activities.iter_all().next().unwrap().id;

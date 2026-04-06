@@ -23,6 +23,7 @@ fn test_attack_move_creates_task() {
         player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackMove {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             destination: dest,
             queue: false,
@@ -58,6 +59,7 @@ fn test_attack_move_walks_to_destination() {
         player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackMove {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             destination: dest,
             queue: false,
@@ -108,6 +110,7 @@ fn test_attack_move_engages_hostile() {
         player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackMove {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             destination: dest,
             queue: false,
@@ -145,6 +148,7 @@ fn test_attack_move_resumes_after_kill() {
         player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackMove {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             destination: dest,
             queue: false,
@@ -199,6 +203,7 @@ fn test_attack_move_nearest_target() {
         player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackMove {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             destination: dest,
             queue: false,
@@ -241,6 +246,7 @@ fn test_attack_move_preempts_lower_priority() {
         player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackMove {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             destination: dest,
             queue: false,
@@ -270,7 +276,7 @@ fn test_attack_move_flee_exempt() {
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("should spawn elf");
 
     // Elf is in Flee group (civilian) — should flee by default.
@@ -283,6 +289,7 @@ fn test_attack_move_flee_exempt() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::AttackMove {
+            zone_id: sim.home_zone_id(),
             creature_id: elf_id,
             destination: dest,
             queue: false,
@@ -421,8 +428,8 @@ fn trigger_raid_spawns_at_perimeter() {
         for z in 0..ws_z as i32 {
             let pos = VoxelCoord::new(x, floor_y, z);
             if crate::walkability::footprint_walkable(
-                &sim.world,
-                &sim.face_data,
+                sim.voxel_zone(sim.home_zone_id()).unwrap(),
+                &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
                 pos,
                 [1, 1, 1],
                 true,
@@ -981,6 +988,7 @@ fn group_attack_move_spreads_creatures() {
             player_name: String::new(),
             tick: tick + 1,
             action: SimAction::GroupAttackMove {
+                zone_id: sim.home_zone_id(),
                 creature_ids: vec![elf_a, elf_b],
                 destination: dest,
                 queue: false,
@@ -1013,10 +1021,12 @@ fn group_attack_move_spreads_creatures() {
 #[test]
 fn group_attack_move_serialization_roundtrip() {
     let mut rng = crate::prng::GameRng::new(42);
+    let test_zone_id = ZoneId(42);
     let cmd = SimCommand {
         player_name: "test_player".to_string(),
         tick: 100,
         action: SimAction::GroupAttackMove {
+            zone_id: test_zone_id,
             creature_ids: vec![CreatureId::new(&mut rng), CreatureId::new(&mut rng)],
             destination: VoxelCoord::new(10, 1, 5),
             queue: false,

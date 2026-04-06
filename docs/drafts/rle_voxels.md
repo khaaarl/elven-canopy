@@ -152,12 +152,12 @@ configurable fraction of the `spans` vec, trigger a compaction repack. The
 threshold is a `GameConfig` parameter (default 50%, tunable via JSON).
 In practice it's rarely hit because most groups are stable terrain.
 
-## VoxelWorld API
+## VoxelZone API
 
 The public API remains unchanged:
 
 ```rust
-impl VoxelWorld {
+impl VoxelZone {
     pub fn new(size_x: u32, size_y: u32, size_z: u32) -> Self;
     pub fn in_bounds(&self, coord: VoxelCoord) -> bool;
     pub fn get(&self, coord: VoxelCoord) -> VoxelType;
@@ -293,7 +293,7 @@ For consumers that iterate large regions (mesh generation, heightmap, initial
 nav graph build), add span-level iteration to avoid per-voxel `get` overhead:
 
 ```rust
-impl VoxelWorld {
+impl VoxelZone {
     /// Iterate the spans of a single column. Returns (VoxelType, y_start, y_end)
     /// triples covering [0, size_y). The implicit trailing Air span IS included
     /// in the iteration.
@@ -321,7 +321,7 @@ The heightmap becomes trivial: the last non-Air span's `top_y` is the answer.
 ## Internal Layout
 
 ```rust
-pub struct VoxelWorld {
+pub struct VoxelZone {
     size_x: u32,
     size_y: u32,
     size_z: u32,
@@ -361,9 +361,9 @@ alongside or shortly after F-rle-voxels before increasing world size.
 
 ## Migration Strategy
 
-### Phase 1: New VoxelWorld, Same API
+### Phase 1: New VoxelZone, Same API
 
-Replace `VoxelWorld` internals. All existing code continues to call `get`/`set`.
+Replace `VoxelZone` internals. All existing code continues to call `get`/`set`.
 Add `repack_all()` calls after worldgen and save-load (in `SimState::new()`
 and the load path) to compact groups after bulk writes.
 Run the full test suite — every existing test should pass without modification
@@ -448,7 +448,7 @@ The span split/merge logic in `set` is the highest-risk area. Required tests:
    rarely exceed 10–20 spans. Dead space from moves is reclaimed on repack
    before the Vec grows large enough to overflow the index.
 
-3. **`Default` impl.** `VoxelWorld::default()` creates a world with 0 groups
+3. **`Default` impl.** `VoxelZone::default()` creates a world with 0 groups
    and dimensions (0, 0, 0). `get()` returns Air for all coords. Matches
    current behavior.
 
@@ -458,7 +458,7 @@ The span split/merge logic in `set` is the highest-risk area. Required tests:
   (immutable `Vec` contents), same as the current flat array. Relevant
   for future multithreaded mesh gen.
 
-- **Save/load:** VoxelWorld is `#[serde(skip)]` on SimState (rebuilt from
+- **Save/load:** VoxelZone is `#[serde(skip)]` on SimState (rebuilt from
   seed). If persistence is ever needed, use proper serde derives on Span
   fields — do not rely on `repr(C)` memory layout for serialization.
 

@@ -55,13 +55,14 @@
 use crate::event::SimEvent;
 use crate::types::{
     ActivityId, ActivityKind, ActivityPhase, CreatureId, DeparturePolicy, ParticipantRole,
-    ParticipantStatus, RecruitmentMode, Species, VitalStatus, VoxelCoord,
+    ParticipantStatus, RecruitmentMode, Species, VitalStatus, VoxelCoord, ZoneId,
 };
 
 use super::SimState;
 
 impl SimState {
     /// Handle `SimAction::CreateActivity` — create a new group activity.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn handle_create_activity(
         &mut self,
         kind: ActivityKind,
@@ -69,6 +70,7 @@ impl SimState {
         min_count: Option<u16>,
         desired_count: Option<u16>,
         origin: crate::task::TaskOrigin,
+        zone_id: ZoneId,
         _events: &mut Vec<SimEvent>,
     ) -> ActivityId {
         let activity_id = ActivityId::new(&mut self.rng);
@@ -89,6 +91,7 @@ impl SimState {
 
         let activity = crate::db::Activity {
             id: activity_id,
+            zone_id,
             kind,
             phase: ActivityPhase::Recruiting,
             location,
@@ -134,6 +137,7 @@ impl SimState {
             Some(3),
             Some(6),
             crate::task::TaskOrigin::PlayerDirected,
+            structure.zone_id,
             events,
         );
 
@@ -1047,9 +1051,16 @@ impl SimState {
         use crate::task::TaskState;
         use crate::types::TaskId;
 
+        let zone_id = self
+            .db
+            .activities
+            .get(&activity_id)
+            .map(|a| a.zone_id)
+            .unwrap_or_else(|| self.home_zone_id()); // TODO(F-zone-world): derive from entity context
         let task_id = TaskId::new(&mut self.rng);
         let task = crate::db::Task {
             id: task_id,
+            zone_id,
             kind_tag: TaskKindTag::GoTo,
             state: TaskState::InProgress,
             origin,
@@ -1484,6 +1495,7 @@ impl SimState {
             Some(3),
             Some(6),
             crate::task::TaskOrigin::Autonomous,
+            structure.zone_id,
             events,
         );
 
@@ -1987,6 +1999,7 @@ impl SimState {
             Some(self.config.activity.dinner_party_min_count as u16),
             Some(self.config.activity.dinner_party_desired_count as u16),
             crate::task::TaskOrigin::Autonomous,
+            structure.zone_id,
             events,
         );
 

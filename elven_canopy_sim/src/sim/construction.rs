@@ -32,6 +32,7 @@ impl SimState {
     /// - At least one voxel must have a solid face neighbor (considering overlay).
     pub(crate) fn designate_build(
         &mut self,
+        zone_id: ZoneId,
         build_type: BuildType,
         voxels: &[VoxelCoord],
         priority: Priority,
@@ -44,7 +45,7 @@ impl SimState {
             return;
         }
         for &coord in voxels {
-            if !self.world.in_bounds(coord) {
+            if !self.voxel_zone(zone_id).unwrap().in_bounds(coord) {
                 self.last_build_message = Some("Build position is out of bounds.".to_string());
                 return;
             }
@@ -75,9 +76,6 @@ impl SimState {
             return;
         }
 
-        let effective_type =
-            |coord: VoxelCoord| -> VoxelType { overlay.effective_type(&self.world, coord) };
-
         // Branch validation: struts use custom replacement rules, overlap-enabled
         // types classify voxels, and the default requires all Air.
         let build_voxels: Vec<VoxelCoord>;
@@ -103,7 +101,7 @@ impl SimState {
             // Replacement validation: check each voxel is a replaceable type.
             let mut ov = Vec::new();
             for &coord in voxels {
-                let eff = effective_type(coord);
+                let eff = overlay.effective_type(self.voxel_zone(zone_id).unwrap(), coord);
                 match eff {
                     VoxelType::Air => {}
                     VoxelType::Leaf
@@ -112,13 +110,13 @@ impl SimState {
                     | VoxelType::Trunk
                     | VoxelType::Branch
                     | VoxelType::Root => {
-                        ov.push((coord, self.world.get(coord)));
+                        ov.push((coord, self.voxel_zone(zone_id).unwrap().get(coord)));
                     }
                     VoxelType::Strut | VoxelType::GrownPlatform => {
                         // Struts can pass through platforms and existing
                         // struts. Record the original type for restoration
                         // on cancel.
-                        ov.push((coord, self.world.get(coord)));
+                        ov.push((coord, self.voxel_zone(zone_id).unwrap().get(coord)));
                     }
                     VoxelType::GrownWall
                     | VoxelType::BuildingInterior
@@ -137,12 +135,15 @@ impl SimState {
             let mut bv = Vec::new();
             let mut ov = Vec::new();
             for &coord in voxels {
-                match effective_type(coord).classify_for_overlap() {
+                match overlay
+                    .effective_type(self.voxel_zone(zone_id).unwrap(), coord)
+                    .classify_for_overlap()
+                {
                     OverlapClassification::Exterior => {
                         bv.push(coord);
                     }
                     OverlapClassification::Convertible => {
-                        ov.push((coord, self.world.get(coord)));
+                        ov.push((coord, self.voxel_zone(zone_id).unwrap().get(coord)));
                         bv.push(coord);
                     }
                     OverlapClassification::AlreadyWood => {
@@ -163,7 +164,9 @@ impl SimState {
             original_voxels = ov;
         } else {
             for &coord in voxels {
-                if effective_type(coord) != VoxelType::Air {
+                if overlay.effective_type(self.voxel_zone(zone_id).unwrap(), coord)
+                    != VoxelType::Air
+                {
                     self.last_build_message = Some("Build position is not empty.".to_string());
                     return;
                 }
@@ -181,7 +184,9 @@ impl SimState {
             build_voxels.clone()
         };
         let any_adjacent = adjacency_voxels.iter().any(|&coord| {
-            self.world.has_solid_face_neighbor(coord)
+            self.voxel_zone(zone_id)
+                .unwrap()
+                .has_solid_face_neighbor(coord)
                 || FaceDirection::ALL.iter().any(|&dir| {
                     let (dx, dy, dz) = dir.to_offset();
                     let neighbor = VoxelCoord::new(coord.x + dx, coord.y + dy, coord.z + dz);
@@ -199,38 +204,45 @@ impl SimState {
 
         // Structural validation: fast BFS + weight-flow check (no full solver).
         let struts: Vec<_> = self.db.struts.iter_all().cloned().collect();
-        let validation = structural::validate_blueprint_fast(
-            &self.world,
-            &self.face_data,
-            &build_voxels,
-            build_type.to_voxel_type(),
-            &BTreeMap::new(),
-            &self.config,
-            &overlay,
-            &struts,
-        );
-        if matches!(validation.tier, structural::ValidationTier::Blocked) {
-            self.last_build_message = Some(validation.message);
-            return;
-        }
-        let stress_warning = matches!(validation.tier, structural::ValidationTier::Warning);
-        if stress_warning {
-            self.last_build_message = Some(validation.message);
+        let stress_warning;
+        {
+            let zone = self.voxel_zone(zone_id).unwrap();
+            let validation = structural::validate_blueprint_fast(
+                zone,
+                &zone.face_data,
+                &build_voxels,
+                build_type.to_voxel_type(),
+                &BTreeMap::new(),
+                &self.config,
+                &overlay,
+                &struts,
+            );
+            if matches!(validation.tier, structural::ValidationTier::Blocked) {
+                self.last_build_message = Some(validation.message);
+                return;
+            }
+            stress_warning = matches!(validation.tier, structural::ValidationTier::Warning);
+            if stress_warning {
+                self.last_build_message = Some(validation.message);
+            }
         }
 
         let project_id = ProjectId::new(&mut self.rng);
 
         // Create a Build task at the nearest walkable position to the blueprint.
-        let task_location = match crate::walkability::find_nearest_walkable(
-            &self.world,
-            &self.face_data,
-            build_voxels[0],
-            5,
-            [1, 1, 1],
-            true, // elves can climb
-        ) {
-            Some(pos) => pos,
-            None => return,
+        let task_location = {
+            let zone = self.voxel_zone(zone_id).unwrap();
+            match crate::walkability::find_nearest_walkable(
+                zone,
+                &zone.face_data,
+                build_voxels[0],
+                5,
+                [1, 1, 1],
+                true, // elves can climb
+            ) {
+                Some(pos) => pos,
+                None => return,
+            }
         };
         let task_id = TaskId::new(&mut self.rng);
         let num_voxels = build_voxels.len() as u64;
@@ -248,6 +260,7 @@ impl SimState {
 
         let bp = Blueprint {
             id: project_id,
+            zone_id,
             build_type,
             voxels: build_voxels,
             priority,
@@ -265,6 +278,7 @@ impl SimState {
             self.db
                 .insert_strut_auto(|id| crate::db::Strut {
                     id,
+                    zone_id,
                     endpoint_a,
                     endpoint_b,
                     blueprint_id: Some(project_id),
@@ -287,7 +301,7 @@ impl SimState {
             prerequisite_task_id: None,
             required_civ_id: self.player_civ_id,
         };
-        self.insert_task(build_task);
+        self.insert_task(zone_id, build_task);
 
         // Update blueprint with the task_id now that the task exists.
         if let Some(mut bp) = self.db.blueprints.get(&project_id) {
@@ -313,8 +327,10 @@ impl SimState {
     /// - All interior voxels (above foundation) must be Air (considering overlay)
     /// - All interior voxels must be in-bounds
     /// - No interior voxel may belong to an existing designated blueprint (F-no-bp-overlap)
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn designate_building(
         &mut self,
+        zone_id: ZoneId,
         anchor: VoxelCoord,
         width: i32,
         depth: i32,
@@ -330,8 +346,6 @@ impl SimState {
         }
 
         let overlay = self.blueprint_overlay();
-        let effective_type =
-            |coord: VoxelCoord| -> VoxelType { overlay.effective_type(&self.world, coord) };
 
         // F-no-bp-overlap: reject if any interior voxel belongs to an
         // existing designated blueprint. Checked early (before foundation/
@@ -353,7 +367,11 @@ impl SimState {
         for x in anchor.x..anchor.x + width {
             for z in anchor.z..anchor.z + depth {
                 let coord = VoxelCoord::new(x, anchor.y, z);
-                if !self.world.in_bounds(coord) || !effective_type(coord).is_solid() {
+                if !self.voxel_zone(zone_id).unwrap().in_bounds(coord)
+                    || !overlay
+                        .effective_type(self.voxel_zone(zone_id).unwrap(), coord)
+                        .is_solid()
+                {
                     self.last_build_message =
                         Some("Foundation must be on solid ground.".to_string());
                     return;
@@ -366,7 +384,10 @@ impl SimState {
             for x in anchor.x..anchor.x + width {
                 for z in anchor.z..anchor.z + depth {
                     let coord = VoxelCoord::new(x, y, z);
-                    if !self.world.in_bounds(coord) || effective_type(coord) != VoxelType::Air {
+                    if !self.voxel_zone(zone_id).unwrap().in_bounds(coord)
+                        || overlay.effective_type(self.voxel_zone(zone_id).unwrap(), coord)
+                            != VoxelType::Air
+                    {
                         self.last_build_message =
                             Some("Building interior must be clear.".to_string());
                         return;
@@ -382,39 +403,46 @@ impl SimState {
 
         // Structural validation: fast BFS + weight-flow check (no full solver).
         let struts: Vec<_> = self.db.struts.iter_all().cloned().collect();
-        let validation = structural::validate_blueprint_fast(
-            &self.world,
-            &self.face_data,
-            &voxels,
-            VoxelType::BuildingInterior,
-            &face_layout,
-            &self.config,
-            &overlay,
-            &struts,
-        );
-        if matches!(validation.tier, structural::ValidationTier::Blocked) {
-            self.last_build_message = Some(validation.message);
-            return;
-        }
-        let stress_warning = matches!(validation.tier, structural::ValidationTier::Warning);
-        if stress_warning {
-            self.last_build_message = Some(validation.message);
+        let stress_warning;
+        {
+            let zone = self.voxel_zone(zone_id).unwrap();
+            let validation = structural::validate_blueprint_fast(
+                zone,
+                &zone.face_data,
+                &voxels,
+                VoxelType::BuildingInterior,
+                &face_layout,
+                &self.config,
+                &overlay,
+                &struts,
+            );
+            if matches!(validation.tier, structural::ValidationTier::Blocked) {
+                self.last_build_message = Some(validation.message);
+                return;
+            }
+            stress_warning = matches!(validation.tier, structural::ValidationTier::Warning);
+            if stress_warning {
+                self.last_build_message = Some(validation.message);
+            }
         }
 
         let project_id = ProjectId::new(&mut self.rng);
 
         // Create a Build task at the nearest walkable position.
-        if crate::walkability::find_nearest_walkable(
-            &self.world,
-            &self.face_data,
-            voxels[0],
-            5,
-            [1, 1, 1],
-            true, // elves can climb
-        )
-        .is_none()
         {
-            return;
+            let zone = self.voxel_zone(zone_id).unwrap();
+            if crate::walkability::find_nearest_walkable(
+                zone,
+                &zone.face_data,
+                voxels[0],
+                5,
+                [1, 1, 1],
+                true, // elves can climb
+            )
+            .is_none()
+            {
+                return;
+            }
         }
         let task_id = TaskId::new(&mut self.rng);
         let num_voxels = voxels.len() as u64;
@@ -424,6 +452,7 @@ impl SimState {
         let composition_id = Some(self.create_composition(voxels.len()));
         let bp = Blueprint {
             id: project_id,
+            zone_id,
             build_type: BuildType::Building,
             voxels,
             priority,
@@ -450,7 +479,7 @@ impl SimState {
             prerequisite_task_id: None,
             required_civ_id: self.player_civ_id,
         };
-        self.insert_task(build_task);
+        self.insert_task(zone_id, build_task);
 
         // Update blueprint with the task_id now that the task exists.
         if let Some(mut bp) = self.db.blueprints.get(&project_id) {
@@ -476,8 +505,10 @@ impl SimState {
     /// - All column voxels must be Air or Convertible (considering overlay)
     /// - Wood: at least one voxel's ladder face is adjacent to solid (considering overlay)
     /// - Rope: topmost voxel's ladder face is adjacent to solid (considering overlay)
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn designate_ladder(
         &mut self,
+        zone_id: ZoneId,
         anchor: VoxelCoord,
         height: i32,
         orientation: FaceDirection,
@@ -501,8 +532,6 @@ impl SimState {
 
         // Build overlay from existing designated blueprints.
         let overlay = self.blueprint_overlay();
-        let effective_type =
-            |coord: VoxelCoord| -> VoxelType { overlay.effective_type(&self.world, coord) };
 
         // F-no-bp-overlap: reject if any ladder voxel belongs to an
         // existing designated blueprint.
@@ -524,16 +553,19 @@ impl SimState {
         let mut original_voxels = Vec::new();
         for dy in 0..height {
             let coord = VoxelCoord::new(anchor.x, anchor.y + dy, anchor.z);
-            if !self.world.in_bounds(coord) {
+            if !self.voxel_zone(zone_id).unwrap().in_bounds(coord) {
                 self.last_build_message = Some("Ladder extends out of bounds.".to_string());
                 return;
             }
-            match effective_type(coord).classify_for_overlap() {
+            match overlay
+                .effective_type(self.voxel_zone(zone_id).unwrap(), coord)
+                .classify_for_overlap()
+            {
                 OverlapClassification::Exterior => {
                     build_voxels.push(coord);
                 }
                 OverlapClassification::Convertible => {
-                    original_voxels.push((coord, self.world.get(coord)));
+                    original_voxels.push((coord, self.voxel_zone(zone_id).unwrap().get(coord)));
                     build_voxels.push(coord);
                 }
                 OverlapClassification::AlreadyWood => {
@@ -558,7 +590,9 @@ impl SimState {
                 // At least one voxel's ladder face must be adjacent to solid.
                 let any_anchored = build_voxels.iter().any(|&coord| {
                     let neighbor = VoxelCoord::new(coord.x + odx, coord.y, coord.z + odz);
-                    effective_type(neighbor).is_solid()
+                    overlay
+                        .effective_type(self.voxel_zone(zone_id).unwrap(), neighbor)
+                        .is_solid()
                 });
                 if !any_anchored {
                     self.last_build_message =
@@ -569,7 +603,10 @@ impl SimState {
             LadderKind::Rope => {
                 // Topmost voxel's ladder face must be adjacent to solid.
                 let top = VoxelCoord::new(anchor.x + odx, anchor.y + height - 1, anchor.z + odz);
-                if !effective_type(top).is_solid() {
+                if !overlay
+                    .effective_type(self.voxel_zone(zone_id).unwrap(), top)
+                    .is_solid()
+                {
                     self.last_build_message =
                         Some("Rope ladder must hang from a solid surface at the top.".to_string());
                     return;
@@ -580,17 +617,20 @@ impl SimState {
         let project_id = ProjectId::new(&mut self.rng);
 
         // Create a Build task at the nearest walkable position to the bottom of the ladder.
-        if crate::walkability::find_nearest_walkable(
-            &self.world,
-            &self.face_data,
-            build_voxels[0],
-            5,
-            [1, 1, 1],
-            true, // elves can climb
-        )
-        .is_none()
         {
-            return;
+            let zone = self.voxel_zone(zone_id).unwrap();
+            if crate::walkability::find_nearest_walkable(
+                zone,
+                &zone.face_data,
+                build_voxels[0],
+                5,
+                [1, 1, 1],
+                true, // elves can climb
+            )
+            .is_none()
+            {
+                return;
+            }
         }
         let task_id = TaskId::new(&mut self.rng);
         let num_voxels = build_voxels.len() as u64;
@@ -606,6 +646,7 @@ impl SimState {
         let composition_id = Some(self.create_composition(build_voxels.len()));
         let bp = Blueprint {
             id: project_id,
+            zone_id,
             build_type,
             voxels: build_voxels,
             priority,
@@ -632,7 +673,7 @@ impl SimState {
             prerequisite_task_id: None,
             required_civ_id: self.player_civ_id,
         };
-        self.insert_task(build_task);
+        self.insert_task(zone_id, build_task);
 
         // Update blueprint with the task_id now that the task exists.
         if let Some(mut bp) = self.db.blueprints.get(&project_id) {
@@ -659,6 +700,7 @@ impl SimState {
     /// original voxel types for cancel restoration.
     pub(crate) fn designate_carve(
         &mut self,
+        zone_id: ZoneId,
         voxels: &[VoxelCoord],
         priority: Priority,
         events: &mut Vec<SimEvent>,
@@ -670,15 +712,13 @@ impl SimState {
             return;
         }
         for &coord in voxels {
-            if !self.world.in_bounds(coord) {
+            if !self.voxel_zone(zone_id).unwrap().in_bounds(coord) {
                 self.last_build_message = Some("Carve position is out of bounds.".to_string());
                 return;
             }
         }
 
         let overlay = self.blueprint_overlay();
-        let effective_type =
-            |coord: VoxelCoord| -> VoxelType { overlay.effective_type(&self.world, coord) };
 
         // Filter to only carvable voxels: solid, not at the bedrock layer
         // (y=0), and not already claimed by an existing blueprint
@@ -689,10 +729,10 @@ impl SimState {
             if overlay.voxels.contains_key(&coord) {
                 continue;
             }
-            let vt = effective_type(coord);
+            let vt = overlay.effective_type(self.voxel_zone(zone_id).unwrap(), coord);
             if vt.is_solid() && coord.y > 0 {
                 carve_voxels.push(coord);
-                original_voxels.push((coord, self.world.get(coord)));
+                original_voxels.push((coord, self.voxel_zone(zone_id).unwrap().get(coord)));
             }
         }
 
@@ -701,21 +741,25 @@ impl SimState {
             return;
         }
         let struts: Vec<_> = self.db.struts.iter_all().cloned().collect();
-        let validation = structural::validate_carve_fast(
-            &self.world,
-            &self.face_data,
-            &carve_voxels,
-            &self.config,
-            &overlay,
-            &struts,
-        );
-        if matches!(validation.tier, structural::ValidationTier::Blocked) {
-            self.last_build_message = Some(validation.message);
-            return;
-        }
-        let stress_warning = matches!(validation.tier, structural::ValidationTier::Warning);
-        if stress_warning {
-            self.last_build_message = Some(validation.message);
+        let stress_warning;
+        {
+            let zone = self.voxel_zone(zone_id).unwrap();
+            let validation = structural::validate_carve_fast(
+                zone,
+                &zone.face_data,
+                &carve_voxels,
+                &self.config,
+                &overlay,
+                &struts,
+            );
+            if matches!(validation.tier, structural::ValidationTier::Blocked) {
+                self.last_build_message = Some(validation.message);
+                return;
+            }
+            stress_warning = matches!(validation.tier, structural::ValidationTier::Warning);
+            if stress_warning {
+                self.last_build_message = Some(validation.message);
+            }
         }
 
         let project_id = ProjectId::new(&mut self.rng);
@@ -724,16 +768,19 @@ impl SimState {
         // Use the walkable position as the task location so that
         // find_available_task's expanding-box search resolves instantly
         // instead of scanning the entire world from underground dirt.
-        let task_location = match crate::walkability::find_nearest_walkable(
-            &self.world,
-            &self.face_data,
-            carve_voxels[0],
-            5,
-            [1, 1, 1],
-            true, // elves can climb
-        ) {
-            Some(pos) => pos,
-            None => return,
+        let task_location = {
+            let zone = self.voxel_zone(zone_id).unwrap();
+            match crate::walkability::find_nearest_walkable(
+                zone,
+                &zone.face_data,
+                carve_voxels[0],
+                5,
+                [1, 1, 1],
+                true, // elves can climb
+            ) {
+                Some(pos) => pos,
+                None => return,
+            }
         };
         let task_id = TaskId::new(&mut self.rng);
         let num_voxels = carve_voxels.len() as u64;
@@ -741,6 +788,7 @@ impl SimState {
         // Insert blueprint before task — task_blueprint_ref has FK to blueprints.
         let bp = Blueprint {
             id: project_id,
+            zone_id,
             build_type: BuildType::Carve,
             voxels: carve_voxels,
             priority,
@@ -767,7 +815,7 @@ impl SimState {
             prerequisite_task_id: None,
             required_civ_id: self.player_civ_id,
         };
-        self.insert_task(build_task);
+        self.insert_task(zone_id, build_task);
 
         // Update blueprint with the task_id now that the task exists.
         if let Some(mut bp) = self.db.blueprints.get(&project_id) {
@@ -789,6 +837,7 @@ impl SimState {
             Some(bp) => bp,
             None => return,
         };
+        let zone_id = bp.zone_id;
 
         // Clear FK references before removing entities. Order matters:
         // - blueprint.task_id → tasks (restrict)
@@ -819,8 +868,11 @@ impl SimState {
         }
 
         // 3. Remove structures (structure.project_id → blueprints is restrict).
-        for &coord in &bp.voxels {
-            self.structure_voxels.remove(&coord);
+        {
+            let zone = self.voxel_zone_mut(zone_id).unwrap();
+            for &coord in &bp.voxels {
+                zone.structure_voxels.remove(&coord);
+            }
         }
         let structure_ids_to_remove: Vec<StructureId> = self
             .db
@@ -846,51 +898,58 @@ impl SimState {
         if is_carve {
             // Carve cancel: restore carved voxels to their original types.
             for &coord in &bp_voxels {
-                if self.world.get(coord) == VoxelType::Air
+                if self.voxel_zone(zone_id).unwrap().get(coord) == VoxelType::Air
                     && let Some(&original) = original_map.get(&coord)
                 {
                     self.set_voxel(coord, original);
                     any_reverted = true;
                 }
             }
-            self.carved_voxels.retain(|c| !bp_voxels.contains(c));
+            self.voxel_zone_mut(zone_id)
+                .unwrap()
+                .carved_voxels
+                .retain(|c| !bp_voxels.contains(c));
         } else {
             // Build cancel: revert materialized voxels to Air (or original for
             // overlap builds with convertible Leaf/Fruit).
             for &coord in &bp_voxels {
-                if self.world.get(coord) != VoxelType::Air {
+                if self.voxel_zone(zone_id).unwrap().get(coord) != VoxelType::Air {
                     let revert_to = original_map.get(&coord).copied().unwrap_or(VoxelType::Air);
                     self.set_voxel(coord, revert_to);
                     any_reverted = true;
                 }
             }
             // Remove from placed_voxels.
-            self.placed_voxels
+            self.voxel_zone_mut(zone_id)
+                .unwrap()
+                .placed_voxels
                 .retain(|(coord, _)| !bp_voxels.contains(coord));
         }
 
         // For buildings and ladders, also remove face_data entries.
         let is_ladder = matches!(bp.build_type, BuildType::WoodLadder | BuildType::RopeLadder);
         if is_building || is_ladder {
+            let zone = self.voxel_zone_mut(zone_id).unwrap();
             for &coord in &bp_voxels {
-                self.face_data.remove(&coord);
+                zone.face_data.remove(&coord);
             }
-            self.face_data_list
+            zone.face_data_list
                 .retain(|(coord, _)| !bp_voxels.contains(coord));
         }
         // For ladders, also remove ladder_orientations entries.
         if is_ladder {
+            let zone = self.voxel_zone_mut(zone_id).unwrap();
             for &coord in &bp_voxels {
-                self.ladder_orientations.remove(&coord);
+                zone.ladder_orientations.remove(&coord);
             }
-            self.ladder_orientations_list
+            zone.ladder_orientations_list
                 .retain(|(coord, _)| !bp_voxels.contains(coord));
         }
 
         if any_reverted {
             self.resnap_creature_nodes();
             // Reverted voxels may have been supporting ground piles.
-            self.apply_pile_gravity();
+            self.apply_pile_gravity(zone_id);
         }
 
         events.push(SimEvent {
@@ -902,22 +961,26 @@ impl SimState {
     /// Create a task at the nearest nav node to the given position.
     pub(crate) fn create_task(
         &mut self,
+        zone_id: ZoneId,
         kind: task::TaskKind,
         position: VoxelCoord,
         required_species: Option<Species>,
     ) {
         // Snap task location to the nearest walkable position so that
         // find_path can resolve it.
-        let task_location = match crate::walkability::find_nearest_walkable(
-            &self.world,
-            &self.face_data,
-            position,
-            5,
-            [1, 1, 1],
-            true, // elves can climb
-        ) {
-            Some(pos) => pos,
-            None => return,
+        let task_location = {
+            let zone = self.voxel_zone(zone_id).unwrap();
+            match crate::walkability::find_nearest_walkable(
+                zone,
+                &zone.face_data,
+                position,
+                5,
+                [1, 1, 1],
+                true, // elves can climb
+            ) {
+                Some(pos) => pos,
+                None => return,
+            }
         };
         let task_id = TaskId::new(&mut self.rng);
         let new_task = task::Task {
@@ -934,7 +997,7 @@ impl SimState {
             prerequisite_task_id: None,
             required_civ_id: self.player_civ_id,
         };
-        self.insert_task(new_task);
+        self.insert_task(zone_id, new_task);
     }
 
     /// Start a Build action: set action state, mark music as started on
@@ -1073,6 +1136,8 @@ impl SimState {
             Some(c) => c,
             None => return false,
         };
+        // TODO(F-zone-world): derive zone from creature/entity context
+        let zone_id = self.home_zone_id();
 
         if creature.mp_max == 0 {
             // Nonmagical creature — no mana cost applies (shouldn't be here,
@@ -1089,7 +1154,10 @@ impl SimState {
             true
         } else {
             // Insufficient mana: wasted action. Record position for VFX.
-            self.mana_wasted_positions.push(creature.position.min);
+            self.voxel_zone_mut(zone_id)
+                .unwrap()
+                .mana_wasted_positions
+                .push(creature.position.min);
             let threshold = self.config.mana_abandon_threshold;
             let mut creature = creature;
             creature.wasted_action_count += 1;
@@ -1124,6 +1192,7 @@ impl SimState {
             Some(bp) => bp,
             None => return,
         };
+        let zone_id = bp.zone_id;
         let build_type = bp.build_type;
         let voxel_type = build_type.to_voxel_type();
         let is_building = build_type == BuildType::Building;
@@ -1142,12 +1211,13 @@ impl SimState {
         // For struts, voxels may be Air or any replaceable natural type
         // (Trunk, Dirt, etc.) — struts replace natural materials during
         // construction.
+        let zone = self.voxel_zone(zone_id).unwrap();
         let eligible: Vec<VoxelCoord> = bp
             .voxels
             .iter()
             .copied()
             .filter(|&coord| {
-                let current = self.world.get(coord);
+                let current = zone.get(coord);
                 if allows_overlap {
                     // Already materialized to target type → skip.
                     if current == voxel_type {
@@ -1170,18 +1240,16 @@ impl SimState {
                 } else if current != VoxelType::Air {
                     return false;
                 }
-                if self.world.has_solid_face_neighbor(coord) {
+                if zone.has_solid_face_neighbor(coord) {
                     return true;
                 }
                 // For buildings, also accept BuildingInterior face neighbors.
                 if is_building {
-                    return self
-                        .world
-                        .has_face_neighbor_of_type(coord, VoxelType::BuildingInterior);
+                    return zone.has_face_neighbor_of_type(coord, VoxelType::BuildingInterior);
                 }
                 // For ladders, also accept same-type ladder face neighbors.
                 if is_ladder {
-                    return self.world.has_face_neighbor_of_type(coord, voxel_type);
+                    return zone.has_face_neighbor_of_type(coord, voxel_type);
                 }
                 false
             })
@@ -1217,7 +1285,10 @@ impl SimState {
 
         // Place the voxel.
         self.set_voxel(chosen, voxel_type);
-        self.placed_voxels.push((chosen, voxel_type));
+        self.voxel_zone_mut(zone_id)
+            .unwrap()
+            .placed_voxels
+            .push((chosen, voxel_type));
 
         // For buildings and ladders, copy face data from the blueprint into sim state.
         if is_building || is_ladder {
@@ -1225,8 +1296,9 @@ impl SimState {
                 && let Some(layout) = bp.face_layout_map()
                 && let Some(fd) = layout.get(&chosen)
             {
-                self.face_data.insert(chosen, fd.clone());
-                self.face_data_list.push((chosen, fd.clone()));
+                let zone = self.voxel_zone_mut(zone_id).unwrap();
+                zone.face_data.insert(chosen, fd.clone());
+                zone.face_data_list.push((chosen, fd.clone()));
             }
             // For ladders, also store the orientation.
             if is_ladder
@@ -1242,8 +1314,9 @@ impl SimState {
                     FaceDirection::NegZ,
                 ] {
                     if fd.get(dir) == FaceType::Wall && fd.get(dir.opposite()) == FaceType::Open {
-                        self.ladder_orientations.insert(chosen, dir);
-                        self.ladder_orientations_list.push((chosen, dir));
+                        let zone = self.voxel_zone_mut(zone_id).unwrap();
+                        zone.ladder_orientations.insert(chosen, dir);
+                        zone.ladder_orientations_list.push((chosen, dir));
                         break;
                     }
                 }
@@ -1260,13 +1333,14 @@ impl SimState {
             Some(bp) => bp,
             None => return,
         };
+        let zone_id = bp.zone_id;
 
         // Find blueprint voxels that are still solid (not yet carved).
         let still_solid: Vec<VoxelCoord> = bp
             .voxels
             .iter()
             .copied()
-            .filter(|&coord| self.world.get(coord).is_solid())
+            .filter(|&coord| self.voxel_zone(zone_id).unwrap().get(coord).is_solid())
             .collect();
 
         if still_solid.is_empty() {
@@ -1278,15 +1352,25 @@ impl SimState {
 
         // Set to Air.
         self.set_voxel(chosen, VoxelType::Air);
-        self.carved_voxels.push(chosen);
+        self.voxel_zone_mut(zone_id)
+            .unwrap()
+            .carved_voxels
+            .push(chosen);
 
         // A carved voxel may have been supporting a ground pile above it.
-        self.apply_pile_gravity();
+        self.apply_pile_gravity(zone_id);
     }
 
     /// Mark a blueprint as Complete, register the completed structure, and
     /// complete its associated task.
     pub(crate) fn complete_build(&mut self, project_id: ProjectId, task_id: TaskId) {
+        let zone_id = self
+            .db
+            .blueprints
+            .get(&project_id)
+            .map(|bp| bp.zone_id)
+            // TODO(F-zone-world): handle None zone_id — blueprint should always have a zone
+            .unwrap_or_else(|| self.home_zone_id());
         if let Some(mut bp) = self.db.blueprints.get(&project_id) {
             bp.state = BlueprintState::Complete;
             let _ = self.db.update_blueprint(bp);
@@ -1297,12 +1381,20 @@ impl SimState {
             let structure_id = StructureId(self.next_structure_id);
             self.next_structure_id += 1;
             // Populate structure_voxels ownership map.
-            for &coord in &bp.voxels {
-                self.structure_voxels.insert(coord, structure_id);
+            {
+                let zone = self.voxel_zone_mut(zone_id).unwrap();
+                for &coord in &bp.voxels {
+                    zone.structure_voxels.insert(coord, structure_id);
+                }
             }
             let inv_id = self.create_inventory(crate::db::InventoryOwnerKind::Structure);
-            let structure =
-                crate::db::CompletedStructure::from_blueprint(structure_id, &bp, self.tick, inv_id);
+            let structure = crate::db::CompletedStructure::from_blueprint(
+                structure_id,
+                &bp,
+                self.tick,
+                inv_id,
+                zone_id,
+            );
             self.db.insert_structure(structure).unwrap();
 
             // For struts: update the Strut row with the completed structure_id
@@ -1340,6 +1432,7 @@ impl SimState {
             Some(s) => s,
             None => return,
         };
+        let zone_id = structure.zone_id;
         if structure.build_type != BuildType::Building {
             return;
         }
@@ -1382,6 +1475,7 @@ impl SimState {
         for coord in &planned_furniture {
             let _ = self.db.insert_furniture_auto(|id| crate::db::Furniture {
                 id,
+                zone_id,
                 structure_id,
                 coord: *coord,
                 placed: false,
@@ -1442,9 +1536,10 @@ impl SimState {
         let _ = self.db.update_structure(structure);
         self.set_inv_wants(inv_id, &default_wants);
 
+        let zone = self.voxel_zone(zone_id).unwrap();
         if crate::walkability::find_nearest_walkable(
-            &self.world,
-            &self.face_data,
+            zone,
+            &zone.face_data,
             task_pos,
             5,
             [1, 1, 1],
@@ -1472,7 +1567,7 @@ impl SimState {
             prerequisite_task_id: None,
             required_civ_id: self.player_civ_id,
         };
-        self.insert_task(new_task);
+        self.insert_task(zone_id, new_task);
     }
 
     /// Assign a creature to a home structure, or unassign if `structure_id`
@@ -1611,6 +1706,8 @@ impl SimState {
     /// creature's position by finding the nearest walkable voxel. Clears
     /// stored paths since walkability may have changed.
     pub(crate) fn resnap_creature_nodes(&mut self) {
+        // TODO(F-zone-world): resnap per creature's zone, not home zone
+        let zone_id = self.home_zone_id();
         let creature_info: Vec<(CreatureId, Species, VoxelCoord, bool)> = self
             .db
             .creatures
@@ -1630,9 +1727,10 @@ impl SimState {
             // creatures may be far from any surviving walkable position.
             let species_data = &self.species_table[&species];
             let footprint = species_data.footprint;
+            let zone = self.voxel_zone(zone_id).unwrap();
             let new_pos = crate::walkability::find_nearest_walkable(
-                &self.world,
-                &self.face_data,
+                zone,
+                &zone.face_data,
                 old_pos,
                 20,
                 footprint,
@@ -1669,6 +1767,8 @@ impl SimState {
         skip_roofs: bool,
         y_cutoff: Option<i32>,
     ) -> Option<(StructureId, VoxelCoord)> {
+        // TODO(F-zone-world): derive zone from camera/viewport context
+        let zone_id = self.home_zone_id();
         let mut voxel = [
             from[0].floor() as i32,
             from[1].floor() as i32,
@@ -1699,7 +1799,12 @@ impl SimState {
             let above_cutoff = y_cutoff.is_some_and(|cutoff| coord.y >= cutoff);
 
             if !above_cutoff {
-                if let Some(&sid) = self.structure_voxels.get(&coord) {
+                if let Some(&sid) = self
+                    .voxel_zone(zone_id)
+                    .unwrap()
+                    .structure_voxels
+                    .get(&coord)
+                {
                     // Skip roof voxels when roofs are hidden.
                     let is_roof = skip_roofs
                         && self
@@ -1712,7 +1817,7 @@ impl SimState {
                     }
                 }
 
-                let vt = self.world.get(coord);
+                let vt = self.voxel_zone(zone_id).unwrap().get(coord);
                 if vt.is_solid() {
                     return None;
                 }
@@ -1735,7 +1840,7 @@ impl SimState {
 
     /// DDA voxel raycast that returns the `StructureId` of the first structure
     /// voxel hit along the ray. Uses the same Amanatides & Woo algorithm as
-    /// `VoxelWorld::raycast_hits_solid`, but checks `structure_voxels` at each
+    /// `VoxelZone::raycast_hits_solid`, but checks `structure_voxels` at each
     /// step:
     /// - If the voxel is in `structure_voxels`, return that `StructureId`.
     /// - If the voxel is solid but NOT a structure voxel (e.g., tree trunk),
@@ -1755,6 +1860,8 @@ impl SimState {
         max_steps: u32,
         y_cutoff: Option<i32>,
     ) -> Option<StructureId> {
+        // TODO(F-zone-world): derive zone from camera/viewport context
+        let zone_id = self.home_zone_id();
         let mut voxel = [
             from[0].floor() as i32,
             from[1].floor() as i32,
@@ -1784,12 +1891,17 @@ impl SimState {
 
             if !above_cutoff {
                 // Check structure ownership first.
-                if let Some(&sid) = self.structure_voxels.get(&coord) {
+                if let Some(&sid) = self
+                    .voxel_zone(zone_id)
+                    .unwrap()
+                    .structure_voxels
+                    .get(&coord)
+                {
                     return Some(sid);
                 }
 
                 // Non-structure solid voxels occlude — stop.
-                let vt = self.world.get(coord);
+                let vt = self.voxel_zone(zone_id).unwrap().get(coord);
                 if vt.is_solid() {
                     return None;
                 }
@@ -1837,6 +1949,8 @@ impl SimState {
         overlay: Option<&structural::BlueprintOverlay>,
         y_cutoff: Option<i32>,
     ) -> Option<(VoxelCoord, u8)> {
+        // TODO(F-zone-world): derive zone from camera/viewport context
+        let zone_id = self.home_zone_id();
         let mut voxel = [
             from[0].floor() as i32,
             from[1].floor() as i32,
@@ -1868,8 +1982,8 @@ impl SimState {
 
             let above_cutoff = y_cutoff.is_some_and(|cutoff| coord.y >= cutoff);
             let vt = match overlay {
-                Some(ov) => ov.effective_type(&self.world, coord),
-                None => self.world.get(coord),
+                Some(ov) => ov.effective_type(self.voxel_zone(zone_id).unwrap(), coord),
+                None => self.voxel_zone(zone_id).unwrap().get(coord),
             };
             if !first_step && !above_cutoff && vt.is_solid() {
                 // Compute the face: the ray entered through the face opposite
@@ -1910,6 +2024,8 @@ impl SimState {
     /// the highest count. Tie-break: first in iteration order (East,
     /// South, West, North).
     pub fn auto_ladder_orientation(&self, x: i32, y: i32, z: i32, height: i32) -> u8 {
+        // TODO(F-zone-world): derive zone from caller context
+        let zone_id = self.home_zone_id();
         // Cardinal directions: East(+X)=0, South(+Z)=4, West(-X)=1, North(-Z)=5
         let orientations: [(i32, i32, u8); 4] = [
             (1, 0, 0),  // East (+X) → face PosX
@@ -1925,7 +2041,7 @@ impl SimState {
             let mut count = 0i32;
             for dy in 0..height {
                 let neighbor = VoxelCoord::new(x + dx, y + dy, z + dz);
-                if self.world.get(neighbor).is_solid() {
+                if self.voxel_zone(zone_id).unwrap().get(neighbor).is_solid() {
                     count += 1;
                 }
             }

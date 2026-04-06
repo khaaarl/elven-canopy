@@ -82,6 +82,7 @@ impl SimState {
             Some(t) => t,
             None => return false,
         };
+        let zone_id = tree.zone_id;
 
         let fruit_count = self
             .db
@@ -111,16 +112,18 @@ impl SimState {
         let leaf_count = tree.leaf_voxels.len();
         let leaf_idx = self.rng.range_u64(0, leaf_count as u64) as usize;
         let leaf_pos = tree.leaf_voxels[leaf_idx];
-        if self.world.get(leaf_pos) == VoxelType::Air {
+        let zone = self.voxel_zone(zone_id).unwrap();
+        if zone.get(leaf_pos) == VoxelType::Air {
             return false;
         }
         let fruit_pos = VoxelCoord::new(leaf_pos.x, leaf_pos.y - 1, leaf_pos.z);
 
         // Position must be in-bounds, currently air, and not already fruited.
-        if !self.world.in_bounds(fruit_pos) {
+        let zone = self.voxel_zone(zone_id).unwrap();
+        if !zone.in_bounds(fruit_pos) {
             return false;
         }
-        if self.world.get(fruit_pos) != VoxelType::Air {
+        if zone.get(fruit_pos) != VoxelType::Air {
             return false;
         }
         if !self
@@ -136,6 +139,7 @@ impl SimState {
         self.set_voxel(fruit_pos, VoxelType::Fruit);
         let fruit = crate::db::TreeFruit {
             id: crate::types::TreeFruitId(0), // auto-increment
+            zone_id,
             tree_id,
             position: VoxelBox::point(fruit_pos),
             species_id,

@@ -21,6 +21,7 @@ fn spawn_second_elf(sim: &mut SimState) -> CreatureId {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -57,7 +58,7 @@ fn insert_pursuit_task(
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(task);
+    sim.insert_task(sim.home_zone_id(), task);
     // Directly assign the pursuer to this task.
     let mut pursuer_creature = sim.db.creatures.get(&pursuer).unwrap();
     pursuer_creature.current_task = Some(task_id);
@@ -81,6 +82,7 @@ fn make_interp_creature(
 ) -> crate::db::Creature {
     crate::db::Creature {
         id: CreatureId(SimUuid::new_v4(&mut GameRng::new(1))),
+        zone_id: Some(ZoneId(0)),
         species: Species::Elf,
         position: VoxelBox::point(position),
         name: String::new(),
@@ -191,6 +193,7 @@ fn interpolated_position_with_build_action_returns_static() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -236,6 +239,7 @@ fn walk_toward_dead_task_node_does_not_panic() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -250,20 +254,23 @@ fn walk_toward_dead_task_node_does_not_panic() {
 
     // Create a GoTo task at that position and assign it to the elf.
     let task_id = TaskId::new(&mut sim.rng);
-    sim.insert_task(Task {
-        id: task_id,
-        kind: TaskKind::GoTo,
-        state: TaskState::InProgress,
-        location: task_pos,
-        progress: 0,
-        total_cost: 0,
-        required_species: None,
-        origin: TaskOrigin::PlayerDirected,
-        target_creature: None,
-        restrict_to_creature_id: None,
-        prerequisite_task_id: None,
-        required_civ_id: None,
-    });
+    sim.insert_task(
+        sim.home_zone_id(),
+        Task {
+            id: task_id,
+            kind: TaskKind::GoTo,
+            state: TaskState::InProgress,
+            location: task_pos,
+            progress: 0,
+            total_cost: 0,
+            required_species: None,
+            origin: TaskOrigin::PlayerDirected,
+            target_creature: None,
+            restrict_to_creature_id: None,
+            prerequisite_task_id: None,
+            required_civ_id: None,
+        },
+    );
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
@@ -272,13 +279,15 @@ fn walk_toward_dead_task_node_does_not_panic() {
 
     // Make the task position unwalkable by filling it with solid voxel,
     // simulating a world change that invalidates the task's destination.
-    sim.world.set(task_pos, VoxelType::Dirt);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(task_pos, VoxelType::Dirt);
     sim.rebuild_transient_state();
 
     assert!(
         !crate::walkability::footprint_walkable(
-            &sim.world,
-            &sim.face_data,
+            sim.voxel_zone(sim.home_zone_id()).unwrap(),
+            &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
             task_pos,
             [1, 1, 1],
             true
@@ -400,7 +409,7 @@ fn pursuit_task_completes_when_adjacent() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(sleep_task);
+    sim.insert_task(sim.home_zone_id(), sleep_task);
     let mut target = sim.db.creatures.get(&target_id).unwrap();
     target.current_task = Some(sleep_task_id);
     sim.db.update_creature(target).unwrap();
@@ -580,6 +589,7 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -596,8 +606,8 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
     let elf_pos = elf.position.min;
     assert!(
         crate::walkability::footprint_walkable(
-            &sim.world,
-            &sim.face_data,
+            sim.voxel_zone(sim.home_zone_id()).unwrap(),
+            &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
             elf_pos,
             [1, 1, 1],
             true
@@ -612,8 +622,8 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
     let far_pos = VoxelCoord::new(elf_pos.x + 15, floor_y, elf_pos.z);
     assert!(
         crate::walkability::footprint_walkable(
-            &sim.world,
-            &sim.face_data,
+            sim.voxel_zone(sim.home_zone_id()).unwrap(),
+            &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
             near_pos,
             [1, 1, 1],
             true
@@ -622,8 +632,8 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
     );
     assert!(
         crate::walkability::footprint_walkable(
-            &sim.world,
-            &sim.face_data,
+            sim.voxel_zone(sim.home_zone_id()).unwrap(),
+            &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
             far_pos,
             [1, 1, 1],
             true
@@ -638,6 +648,7 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
 
     let far_task = crate::db::Task {
         id: far_task_id,
+        zone_id: sim.home_zone_id(),
         kind_tag: TaskKindTag::GoTo,
         state: TaskState::Available,
         location: far_pos,
@@ -652,6 +663,7 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
     };
     let near_task = crate::db::Task {
         id: near_task_id,
+        zone_id: sim.home_zone_id(),
         kind_tag: TaskKindTag::GoTo,
         state: TaskState::Available,
         location: near_pos,
@@ -691,6 +703,7 @@ fn find_available_task_single_candidate_skips_dijkstra() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -712,6 +725,7 @@ fn find_available_task_single_candidate_skips_dijkstra() {
     let task_id = TaskId::new(&mut sim.rng);
     let task = crate::db::Task {
         id: task_id,
+        zone_id: sim.home_zone_id(),
         kind_tag: TaskKindTag::GoTo,
         state: TaskState::Available,
         location: task_pos,
@@ -748,6 +762,7 @@ fn find_available_task_respects_species_filter_with_proximity() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Capybara,
             position: tree_pos,
         },
@@ -769,6 +784,7 @@ fn find_available_task_respects_species_filter_with_proximity() {
     let elf_task_id = TaskId::new(&mut sim.rng);
     let elf_task = crate::db::Task {
         id: elf_task_id,
+        zone_id: sim.home_zone_id(),
         kind_tag: TaskKindTag::GoTo,
         state: TaskState::Available,
         location: task_pos,
@@ -810,14 +826,14 @@ fn troll_pursues_elf_cross_species_pathfinding() {
 
     // Spawn troll near the tree.
     let troll_id = sim
-        .spawn_creature(Species::Troll, tree_pos, &mut events)
+        .spawn_creature(Species::Troll, tree_pos, sim.home_zone_id(), &mut events)
         .expect("spawn troll");
     let troll_pos = sim.db.creatures.get(&troll_id).unwrap().position.min;
 
     // Spawn elf within troll detection range (~12 voxels).
     let elf_spawn_pos = VoxelCoord::new(troll_pos.x + 5, troll_pos.y, troll_pos.z);
     let elf_id = sim
-        .spawn_creature(Species::Elf, elf_spawn_pos, &mut events)
+        .spawn_creature(Species::Elf, elf_spawn_pos, sim.home_zone_id(), &mut events)
         .expect("spawn elf");
 
     force_idle_and_cancel_activations(&mut sim, troll_id);
@@ -1105,7 +1121,13 @@ fn voxel_exclusion_flee_cornered_still_moves() {
         .iter()
         .map(|&(dx, dy, dz, _)| VoxelCoord::new(elf_pos.x + dx, elf_pos.y + dy, elf_pos.z + dz))
         .filter(|&pos| {
-            crate::walkability::footprint_walkable(&sim.world, &sim.face_data, pos, [1, 1, 1], true)
+            crate::walkability::footprint_walkable(
+                sim.voxel_zone(sim.home_zone_id()).unwrap(),
+                &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
+                pos,
+                [1, 1, 1],
+                true,
+            )
         })
         .collect();
 
@@ -1761,6 +1783,7 @@ fn voxel_exclusion_attack_move_task_blocked_by_hostile() {
         player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackMove {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             destination: dest_pos,
             queue: false,
@@ -1830,15 +1853,15 @@ fn cached_path_reroutes_when_nav_node_destroyed() {
     let bogus_a = VoxelCoord::new(63, 63, 63);
     let bogus_b = VoxelCoord::new(62, 63, 63);
     assert!(!crate::walkability::footprint_walkable(
-        &sim.world,
-        &sim.face_data,
+        sim.voxel_zone(sim.home_zone_id()).unwrap(),
+        &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
         bogus_a,
         [1, 1, 1],
         true,
     ));
     assert!(!crate::walkability::footprint_walkable(
-        &sim.world,
-        &sim.face_data,
+        sim.voxel_zone(sim.home_zone_id()).unwrap(),
+        &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
         bogus_b,
         [1, 1, 1],
         true,
@@ -2020,7 +2043,7 @@ fn aggressive_elf_vs_hornet_at_heights() {
         // ascend vertically while staying adjacent (dx=1) to the hornet
         // column — within bare-hands melee range at any shared height.
         for y in elf_pos.y..elf_pos.y + 5 {
-            sim.world.set(
+            sim.voxel_zone_mut(sim.home_zone_id()).unwrap().set(
                 VoxelCoord::new(elf_pos.x + 1, y, elf_pos.z),
                 VoxelType::Trunk,
             );
@@ -2141,7 +2164,7 @@ fn ordered_elf_vs_hornet_at_heights() {
 
         // Build a trunk pillar adjacent to the elf (same as aggressive test).
         for y in elf_pos.y..elf_pos.y + 5 {
-            sim.world.set(
+            sim.voxel_zone_mut(sim.home_zone_id()).unwrap().set(
                 VoxelCoord::new(elf_pos.x + 1, y, elf_pos.z),
                 VoxelType::Trunk,
             );
@@ -2203,7 +2226,7 @@ fn wyvern_pursues_and_damages_elf() {
     let wyvern_pos = VoxelCoord::new(elf_pos.x - 1, elf_pos.y + 4, elf_pos.z - 1);
     let mut events = Vec::new();
     let wyvern_id = sim
-        .spawn_creature(Species::Wyvern, wyvern_pos, &mut events)
+        .spawn_creature(Species::Wyvern, wyvern_pos, sim.home_zone_id(), &mut events)
         .expect("wyvern should spawn");
     force_guaranteed_hits(&mut sim, wyvern_id);
 
@@ -2233,7 +2256,12 @@ fn creature_on_solid_ground_does_not_fall() {
     // Spawn an elf away from the tree at a known ground position.
     let mut events = Vec::new();
     let elf_id = sim
-        .spawn_creature(Species::Elf, VoxelCoord::new(10, 1, 10), &mut events)
+        .spawn_creature(
+            Species::Elf,
+            VoxelCoord::new(10, 1, 10),
+            sim.home_zone_id(),
+            &mut events,
+        )
         .expect("should spawn elf");
 
     // Elf should be on solid ground (terrain at y=0 is solid, elf at y=1).
@@ -2251,19 +2279,28 @@ fn creature_falls_when_platform_removed() {
     let mut sim = test_sim(legacy_test_seed());
     // Use a low platform so the fall is survivable (2 voxels = 20 damage).
     let platform_pos = VoxelCoord::new(10, 2, 10);
-    sim.world.set(platform_pos, VoxelType::GrownPlatform);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(platform_pos, VoxelType::GrownPlatform);
     sim.rebuild_transient_state();
 
     let mut events = Vec::new();
     let elf_id = sim
-        .spawn_creature(Species::Elf, VoxelCoord::new(10, 3, 10), &mut events)
+        .spawn_creature(
+            Species::Elf,
+            VoxelCoord::new(10, 3, 10),
+            sim.home_zone_id(),
+            &mut events,
+        )
         .expect("should spawn elf");
     let elf = sim.db.creatures.get(&elf_id).unwrap();
     assert_eq!(elf.position.min.y, 3);
     let hp_before = elf.hp;
 
     // Remove the platform — elf is now unsupported.
-    sim.world.set(platform_pos, VoxelType::Air);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(platform_pos, VoxelType::Air);
     sim.rebuild_transient_state();
 
     events.clear();
@@ -2308,7 +2345,9 @@ fn fatal_fall_kills_creature() {
     // Place a very high platform so the fall is lethal.
     let platform_y = 40;
     let platform_pos = VoxelCoord::new(10, platform_y, 10);
-    sim.world.set(platform_pos, VoxelType::GrownPlatform);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(platform_pos, VoxelType::GrownPlatform);
     sim.rebuild_transient_state();
 
     let mut events = Vec::new();
@@ -2316,6 +2355,7 @@ fn fatal_fall_kills_creature() {
         .spawn_creature(
             Species::Elf,
             VoxelCoord::new(10, platform_y + 1, 10),
+            sim.home_zone_id(),
             &mut events,
         )
         .expect("should spawn elf");
@@ -2331,7 +2371,9 @@ fn fatal_fall_kills_creature() {
     );
 
     // Remove platform.
-    sim.world.set(platform_pos, VoxelType::Air);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(platform_pos, VoxelType::Air);
     sim.rebuild_transient_state();
 
     events.clear();
@@ -2362,16 +2404,25 @@ fn zero_fall_damage_config_means_no_damage() {
     sim.config.fall_damage_per_voxel = 0;
 
     let platform_pos = VoxelCoord::new(10, 10, 10);
-    sim.world.set(platform_pos, VoxelType::GrownPlatform);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(platform_pos, VoxelType::GrownPlatform);
     sim.rebuild_transient_state();
 
     let mut events = Vec::new();
     let elf_id = sim
-        .spawn_creature(Species::Elf, VoxelCoord::new(10, 11, 10), &mut events)
+        .spawn_creature(
+            Species::Elf,
+            VoxelCoord::new(10, 11, 10),
+            sim.home_zone_id(),
+            &mut events,
+        )
         .expect("should spawn elf");
     let hp_before = sim.db.creatures.get(&elf_id).unwrap().hp;
 
-    sim.world.set(platform_pos, VoxelType::Air);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(platform_pos, VoxelType::Air);
     sim.rebuild_transient_state();
 
     events.clear();
@@ -2388,7 +2439,9 @@ fn climber_on_trunk_does_not_fall() {
     // Place trunk voxels to create a trunk surface nav node.
     // The test world has floor_y=0, so trunk at y=1..5.
     for y in 1..6 {
-        sim.world.set(VoxelCoord::new(15, y, 15), VoxelType::Trunk);
+        sim.voxel_zone_mut(sim.home_zone_id())
+            .unwrap()
+            .set(VoxelCoord::new(15, y, 15), VoxelType::Trunk);
     }
     sim.rebuild_transient_state();
 
@@ -2396,8 +2449,8 @@ fn climber_on_trunk_does_not_fall() {
     // Trunk climb positions are adjacent to solid trunk voxels.
     let trunk_adj = VoxelCoord::new(16, 3, 15); // east of trunk
     if !crate::walkability::footprint_walkable(
-        &sim.world,
-        &sim.face_data,
+        sim.voxel_zone(sim.home_zone_id()).unwrap(),
+        &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
         trunk_adj,
         [1, 1, 1],
         true,
@@ -2409,7 +2462,7 @@ fn climber_on_trunk_does_not_fall() {
     // Spawn an elf (climber, ground_only=false) and move it to the trunk node.
     let mut events = Vec::new();
     let elf_id = sim
-        .spawn_creature(Species::Elf, trunk_adj, &mut events)
+        .spawn_creature(Species::Elf, trunk_adj, sim.home_zone_id(), &mut events)
         .expect("should spawn elf");
 
     // Move elf to trunk position (may already be there if spawn snapped).
@@ -2463,7 +2516,12 @@ fn flying_creature_does_not_fall() {
     // Spawn a hornet (flying creature) and move it mid-air.
     let mut events = Vec::new();
     let hornet_id = sim
-        .spawn_creature(Species::Hornet, VoxelCoord::new(20, 20, 20), &mut events)
+        .spawn_creature(
+            Species::Hornet,
+            VoxelCoord::new(20, 20, 20),
+            sim.home_zone_id(),
+            &mut events,
+        )
         .expect("should spawn hornet");
 
     // Hornet has MovementCategory::Flyer, so it's flying.
@@ -2490,17 +2548,26 @@ fn creature_gravity_at_activation_time() {
     let mut sim = test_sim(legacy_test_seed());
     // Place a platform and spawn an elf on it.
     let platform_pos = VoxelCoord::new(10, 5, 10);
-    sim.world.set(platform_pos, VoxelType::GrownPlatform);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(platform_pos, VoxelType::GrownPlatform);
     sim.rebuild_transient_state();
 
     let mut events = Vec::new();
     let elf_id = sim
-        .spawn_creature(Species::Elf, VoxelCoord::new(10, 6, 10), &mut events)
+        .spawn_creature(
+            Species::Elf,
+            VoxelCoord::new(10, 6, 10),
+            sim.home_zone_id(),
+            &mut events,
+        )
         .expect("should spawn elf");
     assert_eq!(sim.db.creatures.get(&elf_id).unwrap().position.min.y, 6);
 
     // Remove the platform and rebuild nav.
-    sim.world.set(platform_pos, VoxelType::Air);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(platform_pos, VoxelType::Air);
     sim.rebuild_transient_state();
 
     // Trigger creature activation — should detect unsupported and apply gravity.
@@ -2524,12 +2591,19 @@ fn creature_gravity_at_activation_time() {
 fn creature_gravity_clears_task_and_path() {
     let mut sim = test_sim(legacy_test_seed());
     let platform_pos = VoxelCoord::new(10, 5, 10);
-    sim.world.set(platform_pos, VoxelType::GrownPlatform);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(platform_pos, VoxelType::GrownPlatform);
     sim.rebuild_transient_state();
 
     let mut events = Vec::new();
     let elf_id = sim
-        .spawn_creature(Species::Elf, VoxelCoord::new(10, 6, 10), &mut events)
+        .spawn_creature(
+            Species::Elf,
+            VoxelCoord::new(10, 6, 10),
+            sim.home_zone_id(),
+            &mut events,
+        )
         .expect("should spawn elf");
 
     // Give the elf a fake path and task.
@@ -2548,7 +2622,7 @@ fn creature_gravity_clears_task_and_path() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(fake_task);
+    sim.insert_task(sim.home_zone_id(), fake_task);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = Some(task_id);
         c.path = Some(CreaturePath {
@@ -2558,7 +2632,9 @@ fn creature_gravity_clears_task_and_path() {
     }
 
     // Remove platform and apply gravity.
-    sim.world.set(platform_pos, VoxelType::Air);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(platform_pos, VoxelType::Air);
     sim.rebuild_transient_state();
 
     events.clear();
@@ -2577,17 +2653,26 @@ fn creature_gravity_clears_task_and_path() {
 fn logistics_heartbeat_triggers_creature_gravity() {
     let mut sim = test_sim(legacy_test_seed());
     let platform_pos = VoxelCoord::new(10, 5, 10);
-    sim.world.set(platform_pos, VoxelType::GrownPlatform);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(platform_pos, VoxelType::GrownPlatform);
     sim.rebuild_transient_state();
 
     let mut events = Vec::new();
     let elf_id = sim
-        .spawn_creature(Species::Elf, VoxelCoord::new(10, 6, 10), &mut events)
+        .spawn_creature(
+            Species::Elf,
+            VoxelCoord::new(10, 6, 10),
+            sim.home_zone_id(),
+            &mut events,
+        )
         .expect("should spawn elf");
     assert_eq!(sim.db.creatures.get(&elf_id).unwrap().position.min.y, 6);
 
     // Remove the platform and rebuild nav.
-    sim.world.set(platform_pos, VoxelType::Air);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(platform_pos, VoxelType::Air);
     sim.rebuild_transient_state();
 
     // Advance to a LogisticsHeartbeat tick — step forward enough ticks.
@@ -2617,7 +2702,7 @@ fn large_creature_falls_when_ground_removed() {
     // and spawn an elephant on it.
     for dx in 0..2 {
         for dz in 0..2 {
-            sim.world.set(
+            sim.voxel_zone_mut(sim.home_zone_id()).unwrap().set(
                 VoxelCoord::new(10 + dx, 5, 10 + dz),
                 VoxelType::GrownPlatform,
             );
@@ -2627,7 +2712,12 @@ fn large_creature_falls_when_ground_removed() {
 
     let mut events = Vec::new();
     let elephant_id = sim
-        .spawn_creature(Species::Elephant, VoxelCoord::new(10, 6, 10), &mut events)
+        .spawn_creature(
+            Species::Elephant,
+            VoxelCoord::new(10, 6, 10),
+            sim.home_zone_id(),
+            &mut events,
+        )
         .expect("should spawn elephant");
 
     let pos = sim.db.creatures.get(&elephant_id).unwrap().position.min;
@@ -2637,7 +2727,8 @@ fn large_creature_falls_when_ground_removed() {
     // Remove the platform.
     for dx in 0..2 {
         for dz in 0..2 {
-            sim.world
+            sim.voxel_zone_mut(sim.home_zone_id())
+                .unwrap()
                 .set(VoxelCoord::new(10 + dx, 5, 10 + dz), VoxelType::Air);
         }
     }
@@ -2675,7 +2766,12 @@ fn degenerate_landing_teleports_to_nearest_node() {
 
     // Spawn capybara (ground_only) at ground level, then teleport mid-air.
     let capy_id = sim
-        .spawn_creature(Species::Capybara, VoxelCoord::new(5, 1, 5), &mut events)
+        .spawn_creature(
+            Species::Capybara,
+            VoxelCoord::new(5, 1, 5),
+            sim.home_zone_id(),
+            &mut events,
+        )
         .expect("should spawn capybara");
     let original_pos = sim.db.creatures.get(&capy_id).unwrap().position.min;
 
@@ -2697,14 +2793,15 @@ fn degenerate_landing_teleports_to_nearest_node() {
     // The creature should have landed somewhere valid — either at ground
     // level in the same column or teleported to the nearest walkable position.
     let is_walkable = crate::walkability::footprint_walkable(
-        &sim.world,
-        &sim.face_data,
+        sim.voxel_zone(sim.home_zone_id()).unwrap(),
+        &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
         capy.position.min,
         [1, 1, 1],
         true,
     );
     let has_solid_below = sim
-        .world
+        .voxel_zone(sim.home_zone_id())
+        .unwrap()
         .get(VoxelCoord::new(
             capy.position.min.x,
             capy.position.min.y - 1,
@@ -2728,15 +2825,17 @@ fn ground_only_with_nav_node_but_no_solid_below_falls() {
     // creature to that position and remove the platform WITHOUT rebuilding
     // nav, so the nav node persists but the voxel below is gone.
     let platform_pos = VoxelCoord::new(10, 3, 10);
-    sim.world.set(platform_pos, VoxelType::GrownPlatform);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(platform_pos, VoxelType::GrownPlatform);
     sim.rebuild_transient_state();
 
     let standing_pos = VoxelCoord::new(10, 4, 10);
     // Verify position is walkable above platform.
     assert!(
         crate::walkability::footprint_walkable(
-            &sim.world,
-            &sim.face_data,
+            sim.voxel_zone(sim.home_zone_id()).unwrap(),
+            &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
             standing_pos,
             [1, 1, 1],
             true
@@ -2747,7 +2846,12 @@ fn ground_only_with_nav_node_but_no_solid_below_falls() {
     // Spawn capybara at ground level, then teleport to the platform pos.
     let mut events = Vec::new();
     let capy_id = sim
-        .spawn_creature(Species::Capybara, VoxelCoord::new(10, 1, 10), &mut events)
+        .spawn_creature(
+            Species::Capybara,
+            VoxelCoord::new(10, 1, 10),
+            sim.home_zone_id(),
+            &mut events,
+        )
         .expect("should spawn capybara");
     {
         let mut c = sim.db.creatures.get(&capy_id).unwrap();
@@ -2761,7 +2865,9 @@ fn ground_only_with_nav_node_but_no_solid_below_falls() {
 
     // Remove the platform — position becomes unwalkable but creature is
     // still there. Creature should be unsupported: ground_only needs solid below.
-    sim.world.set(platform_pos, VoxelType::Air);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(platform_pos, VoxelType::Air);
 
     assert!(
         !sim.creature_is_supported(capy_id),
@@ -2800,6 +2906,7 @@ fn flying_creature_directed_goto_creates_task() {
         player_name: String::new(),
         tick: tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: hornet,
             position: target,
             queue: false,
@@ -2840,6 +2947,7 @@ fn flying_creature_goto_reaches_destination() {
         player_name: String::new(),
         tick: tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: hornet,
             position: target,
             queue: false,
@@ -2883,6 +2991,7 @@ fn flying_creature_attack_move_creates_task() {
         player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackMove {
+            zone_id: sim.home_zone_id(),
             creature_id: hornet,
             destination: dest,
             queue: false,
@@ -2925,6 +3034,7 @@ fn flying_creature_attack_move_reaches_destination() {
         player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackMove {
+            zone_id: sim.home_zone_id(),
             creature_id: hornet,
             destination: dest,
             queue: false,
@@ -2965,6 +3075,7 @@ fn flying_creature_autonomous_combat_preempts_task() {
         player_name: String::new(),
         tick: tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: hornet,
             position: dest,
             queue: false,
@@ -3020,7 +3131,7 @@ fn find_available_task_works_for_flying_creature() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(task);
+    sim.insert_task(sim.home_zone_id(), task);
 
     let found = sim.find_available_task(hornet);
     assert_eq!(
@@ -3093,7 +3204,7 @@ fn flying_creature_walk_toward_task_unreachable_unassigns() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(task);
+    sim.insert_task(sim.home_zone_id(), task);
     sim.claim_task(hornet, task_id);
 
     let mut events = Vec::new();
@@ -3135,6 +3246,7 @@ fn flying_creature_attack_move_engages_hostile_en_route() {
         player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackMove {
+            zone_id: sim.home_zone_id(),
             creature_id: hornet,
             destination: dest,
             queue: false,
@@ -3185,7 +3297,7 @@ fn flying_creature_find_available_task_nearest_by_euclidean() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(near_task);
+    sim.insert_task(sim.home_zone_id(), near_task);
 
     let far_task_id = TaskId::new(&mut sim.rng);
     let far_task = task::Task {
@@ -3202,7 +3314,7 @@ fn flying_creature_find_available_task_nearest_by_euclidean() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(far_task);
+    sim.insert_task(sim.home_zone_id(), far_task);
 
     let found = sim.find_available_task(hornet);
     assert_eq!(
@@ -3279,6 +3391,7 @@ fn flying_creature_directed_goto_mid_move_defers() {
         player_name: String::new(),
         tick: tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: hornet,
             position: target,
             queue: false,
@@ -3353,6 +3466,7 @@ fn capybara_wanders_on_ground() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Capybara,
             position: tree_pos,
         },
@@ -3371,8 +3485,8 @@ fn capybara_wanders_on_ground() {
         .unwrap();
     assert!(
         crate::walkability::footprint_walkable(
-            &sim.world,
-            &sim.face_data,
+            sim.voxel_zone(sim.home_zone_id()).unwrap(),
+            &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
             capybara.position.min,
             [1, 1, 1],
             true,
@@ -3390,6 +3504,7 @@ fn capybara_stays_on_ground() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Capybara,
             position: tree_pos,
         },
@@ -3425,6 +3540,7 @@ fn determinism_with_capybara() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim_a.home_zone_id(),
             species: Species::Capybara,
             position: tree_pos,
         },
@@ -3450,6 +3566,7 @@ fn wandering_creature_stays_on_walkable_position() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -3467,8 +3584,8 @@ fn wandering_creature_stays_on_walkable_position() {
             .unwrap();
         assert!(
             crate::walkability::footprint_walkable(
-                &sim.world,
-                &sim.face_data,
+                sim.voxel_zone(sim.home_zone_id()).unwrap(),
+                &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
                 elf.position.min,
                 [1, 1, 1],
                 true,
@@ -3490,6 +3607,7 @@ fn wander_sets_movement_metadata() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -3559,6 +3677,7 @@ fn boar_stays_on_ground() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Boar,
             position: tree_pos,
         },
@@ -3591,6 +3710,7 @@ fn deer_stays_on_ground() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Deer,
             position: tree_pos,
         },
@@ -3622,6 +3742,7 @@ fn monkey_can_climb() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Monkey,
             position: tree_pos,
         },
@@ -3643,8 +3764,8 @@ fn monkey_can_climb() {
     // only to ground neighbors, so we just verify it has a valid nav node.
     assert!(
         crate::walkability::footprint_walkable(
-            &sim.world,
-            &sim.face_data,
+            sim.voxel_zone(sim.home_zone_id()).unwrap(),
+            &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
             monkey.position.min,
             [1, 1, 1],
             true,
@@ -3662,6 +3783,7 @@ fn squirrel_can_climb() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Squirrel,
             position: tree_pos,
         },
@@ -3678,8 +3800,8 @@ fn squirrel_can_climb() {
         .unwrap();
     assert!(
         crate::walkability::footprint_walkable(
-            &sim.world,
-            &sim.face_data,
+            sim.voxel_zone(sim.home_zone_id()).unwrap(),
+            &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
             squirrel.position.min,
             [1, 1, 1],
             true,
@@ -3707,6 +3829,7 @@ fn directed_goto_creates_task_for_specific_creature() {
         player_name: String::new(),
         tick: tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: target_pos,
             queue: false,
@@ -3747,7 +3870,7 @@ fn directed_goto_replaces_player_directed_task() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(task);
+    sim.insert_task(sim.home_zone_id(), task);
     sim.claim_task(elf, task_id);
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -3758,6 +3881,7 @@ fn directed_goto_replaces_player_directed_task() {
         player_name: String::new(),
         tick: tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: target_pos,
             queue: false,
@@ -3800,7 +3924,7 @@ fn directed_goto_preempts_autonomous_task() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(task);
+    sim.insert_task(sim.home_zone_id(), task);
     sim.claim_task(elf, task_id);
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -3811,6 +3935,7 @@ fn directed_goto_preempts_autonomous_task() {
         player_name: String::new(),
         tick: tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: target_pos,
             queue: false,
@@ -3847,6 +3972,7 @@ fn directed_goto_does_not_abort_mid_walk_action() {
         player_name: String::new(),
         tick: tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: target_a,
             queue: false,
@@ -3878,6 +4004,7 @@ fn directed_goto_does_not_abort_mid_walk_action() {
         player_name: String::new(),
         tick: tick2 + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: target_b,
             queue: false,
@@ -3943,6 +4070,7 @@ fn directed_goto_mid_action_command_does_not_schedule_extra_activation() {
             player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DirectedGoTo {
+                zone_id: sim.home_zone_id(),
                 creature_id: elf,
                 position: target_a,
                 queue: false,
@@ -3987,6 +4115,7 @@ fn directed_goto_mid_action_command_does_not_schedule_extra_activation() {
             player_name: String::new(),
             tick: tick2 + 1,
             action: SimAction::DirectedGoTo {
+                zone_id: sim.home_zone_id(),
                 creature_id: elf,
                 position: target_b,
                 queue: false,
@@ -4023,6 +4152,7 @@ fn group_goto_spreads_creatures_to_different_nodes() {
             player_name: String::new(),
             tick: tick + 1,
             action: SimAction::GroupGoTo {
+                zone_id: sim.home_zone_id(),
                 creature_ids: vec![elf_a, elf_b, elf_c],
                 position: dest,
                 queue: false,
@@ -4065,6 +4195,7 @@ fn group_goto_single_creature_delegates_to_normal() {
             player_name: String::new(),
             tick: tick + 1,
             action: SimAction::GroupGoTo {
+                zone_id: sim.home_zone_id(),
                 creature_ids: vec![elf],
                 position: dest,
                 queue: false,
@@ -4091,6 +4222,7 @@ fn group_goto_empty_list_is_noop() {
             player_name: String::new(),
             tick: tick + 1,
             action: SimAction::GroupGoTo {
+                zone_id: sim.home_zone_id(),
                 creature_ids: vec![],
                 position: dest,
                 queue: false,
@@ -4131,6 +4263,7 @@ fn group_goto_skips_dead_creatures() {
             player_name: String::new(),
             tick: tick2 + 1,
             action: SimAction::GroupGoTo {
+                zone_id: sim.home_zone_id(),
                 creature_ids: vec![elf_alive, elf_dead],
                 position: dest,
                 queue: false,
@@ -4153,10 +4286,12 @@ fn group_goto_skips_dead_creatures() {
 #[test]
 fn group_goto_serialization_roundtrip() {
     let mut rng = crate::prng::GameRng::new(42);
+    let test_zone_id = ZoneId(42);
     let cmd = SimCommand {
         player_name: "test_player".to_string(),
         tick: 100,
         action: SimAction::GroupGoTo {
+            zone_id: test_zone_id,
             creature_ids: vec![CreatureId::new(&mut rng), CreatureId::new(&mut rng)],
             position: VoxelCoord::new(10, 1, 5),
             queue: false,
@@ -4197,8 +4332,8 @@ fn path_resolution_nav_node_destroyed_no_panic() {
     let bogus_pos = VoxelCoord::new(63, 63, 63);
     assert!(
         !crate::walkability::footprint_walkable(
-            &sim.world,
-            &sim.face_data,
+            sim.voxel_zone(sim.home_zone_id()).unwrap(),
+            &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
             bogus_pos,
             [1, 1, 1],
             true
@@ -4281,6 +4416,7 @@ fn large_creature_does_not_get_permanently_stuck_on_terrain() {
             player_name: String::new(),
             tick: sim.tick + 1,
             action: SimAction::SpawnCreature {
+                zone_id: sim.home_zone_id(),
                 species: Species::Elephant,
                 position: spawn_pos,
             },
@@ -4389,8 +4525,8 @@ fn large_creature_does_not_get_permanently_stuck_on_terrain() {
                 .movement_category
                 .can_climb();
             let walkable = crate::walkability::footprint_walkable(
-                &sim.world,
-                &sim.face_data,
+                sim.voxel_zone(sim.home_zone_id()).unwrap(),
+                &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
                 pos,
                 footprint,
                 can_climb,
@@ -4412,8 +4548,8 @@ fn large_creature_does_not_get_permanently_stuck_on_terrain() {
                 let nx = pos.x + ndx;
                 let nz = pos.z + ndz;
                 let neighbor_walkable = crate::walkability::footprint_walkable(
-                    &sim.world,
-                    &sim.face_data,
+                    sim.voxel_zone(sim.home_zone_id()).unwrap(),
+                    &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
                     VoxelCoord::new(nx, pos.y, nz),
                     footprint,
                     can_climb,
@@ -4447,7 +4583,8 @@ fn large_creature_supported_at_incline_with_mixed_column_heights() {
         for dz in 0..2 {
             let height = if dx == 0 && dz == 0 { 2 } else { 3 };
             for y in 0..=height {
-                sim.world
+                sim.voxel_zone_mut(sim.home_zone_id())
+                    .unwrap()
                     .set(VoxelCoord::new(10 + dx, y, 10 + dz), VoxelType::Dirt);
             }
         }
@@ -4459,8 +4596,8 @@ fn large_creature_supported_at_incline_with_mixed_column_heights() {
     let elephant_fp = sim.species_table[&Species::Elephant].footprint;
     assert!(
         crate::walkability::footprint_walkable(
-            &sim.world,
-            &sim.face_data,
+            sim.voxel_zone(sim.home_zone_id()).unwrap(),
+            &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
             standing_pos,
             elephant_fp,
             false, // elephants can't climb
@@ -4471,7 +4608,12 @@ fn large_creature_supported_at_incline_with_mixed_column_heights() {
     // Spawn an elephant and teleport it to the incline position.
     let mut events = Vec::new();
     let elephant_id = sim
-        .spawn_creature(Species::Elephant, VoxelCoord::new(10, 4, 10), &mut events)
+        .spawn_creature(
+            Species::Elephant,
+            VoxelCoord::new(10, 4, 10),
+            sim.home_zone_id(),
+            &mut events,
+        )
         .expect("should spawn elephant near incline");
     {
         let footprint = sim.species_table[&Species::Elephant].footprint;
@@ -4502,7 +4644,7 @@ fn large_creature_unsupported_when_no_footprint_column_has_solid_below() {
     // (no solid at y=4). Large nav node will be at y=6.
     for dx in 0..2 {
         for dz in 0..2 {
-            sim.world.set(
+            sim.voxel_zone_mut(sim.home_zone_id()).unwrap().set(
                 VoxelCoord::new(10 + dx, 5, 10 + dz),
                 VoxelType::GrownPlatform,
             );
@@ -4514,8 +4656,8 @@ fn large_creature_unsupported_when_no_footprint_column_has_solid_below() {
     let elephant_fp = sim.species_table[&Species::Elephant].footprint;
     assert!(
         crate::walkability::footprint_walkable(
-            &sim.world,
-            &sim.face_data,
+            sim.voxel_zone(sim.home_zone_id()).unwrap(),
+            &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
             standing_pos,
             elephant_fp,
             false, // elephants can't climb
@@ -4526,7 +4668,12 @@ fn large_creature_unsupported_when_no_footprint_column_has_solid_below() {
     // Spawn elephant and teleport to the platform.
     let mut events = Vec::new();
     let elephant_id = sim
-        .spawn_creature(Species::Elephant, VoxelCoord::new(10, 6, 10), &mut events)
+        .spawn_creature(
+            Species::Elephant,
+            VoxelCoord::new(10, 6, 10),
+            sim.home_zone_id(),
+            &mut events,
+        )
         .expect("should spawn elephant on platform");
     {
         let mut c = sim.db.creatures.get(&elephant_id).unwrap();
@@ -4543,7 +4690,8 @@ fn large_creature_unsupported_when_no_footprint_column_has_solid_below() {
     // Remove the platform — no solid below in any footprint column.
     for dx in 0..2 {
         for dz in 0..2 {
-            sim.world
+            sim.voxel_zone_mut(sim.home_zone_id())
+                .unwrap()
                 .set(VoxelCoord::new(10 + dx, 5, 10 + dz), VoxelType::Air);
         }
     }
@@ -4664,7 +4812,7 @@ fn test_troll_stays_on_trunk_while_climbing() {
                 (0..2).all(|fy| {
                     (0..2).all(|fz| {
                         let p = VoxelCoord::new(pos.x + fx, pos.y + fy, pos.z + fz);
-                        sim.world.get(p) == VoxelType::Air
+                        sim.voxel_zone(sim.home_zone_id()).unwrap().get(p) == VoxelType::Air
                     })
                 })
             });
@@ -4716,7 +4864,12 @@ fn test_troll_stays_on_trunk_while_climbing() {
                             VoxelCoord::new(p.x, p.y, p.z - 1),
                             VoxelCoord::new(p.x, p.y, p.z + 1),
                         ];
-                        neighbors.iter().any(|&n| sim.world.get(n).is_solid())
+                        neighbors.iter().any(|&n| {
+                            sim.voxel_zone(sim.home_zone_id())
+                                .unwrap()
+                                .get(n)
+                                .is_solid()
+                        })
                     })
                 })
             });
@@ -4761,7 +4914,9 @@ fn test_elephant_floats_under_tree_foliage_on_hill() {
     for x in 12..18 {
         for z in 12..18 {
             for y in (floor_y + 1)..=(floor_y + 3) {
-                sim.world.set(VoxelCoord::new(x, y, z), VoxelType::Dirt);
+                sim.voxel_zone_mut(sim.home_zone_id())
+                    .unwrap()
+                    .set(VoxelCoord::new(x, y, z), VoxelType::Dirt);
             }
         }
     }
@@ -4774,17 +4929,20 @@ fn test_elephant_floats_under_tree_foliage_on_hill() {
     //    that elephants reject, masking the canopy teleportation bug.
     for x in 12..18 {
         for z in 12..18 {
-            sim.world
+            sim.voxel_zone_mut(sim.home_zone_id())
+                .unwrap()
                 .set(VoxelCoord::new(x, floor_y + 10, z), VoxelType::Leaf);
-            sim.world
+            sim.voxel_zone_mut(sim.home_zone_id())
+                .unwrap()
                 .set(VoxelCoord::new(x, floor_y + 11, z), VoxelType::Branch);
-            sim.world
+            sim.voxel_zone_mut(sim.home_zone_id())
+                .unwrap()
                 .set(VoxelCoord::new(x, floor_y + 12, z), VoxelType::Dirt);
         }
     }
 
     // 3. Rebuild spans so walkability queries see the new voxels.
-    sim.world.repack_all();
+    sim.voxel_zone_mut(sim.home_zone_id()).unwrap().repack_all();
     sim.rebuild_transient_state();
 
     // 4. Spawn 3 elephants near the hill center.  Force-position them onto
@@ -4805,6 +4963,7 @@ fn test_elephant_floats_under_tree_foliage_on_hill() {
             player_name: String::new(),
             tick: sim.tick + 1,
             action: SimAction::SpawnCreature {
+                zone_id: sim.home_zone_id(),
                 species: Species::Elephant,
                 position: spawn_pos,
             },
@@ -4919,25 +5078,33 @@ fn test_elephant_no_fall_damage_near_overhang() {
     // Vertical wall at x=20, z=13..18, y=floor_y..floor_y+3
     for z in 13..18 {
         for y in floor_y..floor_y + 4 {
-            sim.world.set(VoxelCoord::new(20, y, z), VoxelType::Trunk);
+            sim.voxel_zone_mut(sim.home_zone_id())
+                .unwrap()
+                .set(VoxelCoord::new(20, y, z), VoxelType::Trunk);
         }
     }
     // Overhang step 1: x=19, z=13..18, y=floor_y+3..floor_y+4
     for z in 13..18 {
         for y in floor_y + 3..floor_y + 5 {
-            sim.world.set(VoxelCoord::new(19, y, z), VoxelType::Trunk);
+            sim.voxel_zone_mut(sim.home_zone_id())
+                .unwrap()
+                .set(VoxelCoord::new(19, y, z), VoxelType::Trunk);
         }
     }
     // Overhang step 2: x=18, z=13..18, y=floor_y+4..floor_y+5
     for z in 13..18 {
         for y in floor_y + 4..floor_y + 6 {
-            sim.world.set(VoxelCoord::new(18, y, z), VoxelType::Trunk);
+            sim.voxel_zone_mut(sim.home_zone_id())
+                .unwrap()
+                .set(VoxelCoord::new(18, y, z), VoxelType::Trunk);
         }
     }
     // Overhang extends further: x=17, z=13..18, y=floor_y+5..floor_y+6
     for z in 13..18 {
         for y in floor_y + 5..floor_y + 7 {
-            sim.world.set(VoxelCoord::new(17, y, z), VoxelType::Trunk);
+            sim.voxel_zone_mut(sim.home_zone_id())
+                .unwrap()
+                .set(VoxelCoord::new(17, y, z), VoxelType::Trunk);
         }
     }
 
@@ -4948,7 +5115,12 @@ fn test_elephant_no_fall_damage_near_overhang() {
     let mut elephants = Vec::new();
     for i in 0..3 {
         let spawn_pos = VoxelCoord::new(17 + i, walking_y, 15);
-        if let Some(id) = sim.spawn_creature(Species::Elephant, spawn_pos, &mut events) {
+        if let Some(id) = sim.spawn_creature(
+            Species::Elephant,
+            spawn_pos,
+            sim.home_zone_id(),
+            &mut events,
+        ) {
             elephants.push(id);
         }
     }
@@ -4956,6 +5128,7 @@ fn test_elephant_no_fall_damage_near_overhang() {
         .spawn_creature(
             Species::Deer,
             VoxelCoord::new(16, walking_y, 15),
+            sim.home_zone_id(),
             &mut events,
         )
         .expect("should spawn deer");
@@ -4963,6 +5136,7 @@ fn test_elephant_no_fall_damage_near_overhang() {
         .spawn_creature(
             Species::Troll,
             VoxelCoord::new(15, walking_y, 15),
+            sim.home_zone_id(),
             &mut events,
         )
         .expect("should spawn troll");
@@ -5109,8 +5283,10 @@ fn large_creature_deflects_when_anchor_column_obstructed() {
     // Fill a solid slab across the elephant's anchor columns at y=3..4.
     // This is a 2-voxel-tall wall that blocks the footprint at y=3 and y=4
     // but only occupies the anchor column — nearby columns are clear.
+    let hz = sim.home_zone_id();
     for y in 3..=4 {
-        sim.world
+        sim.voxel_zone_mut(hz)
+            .unwrap()
             .set(VoxelCoord::new(10, y, 10), VoxelType::GrownPlatform);
     }
     sim.rebuild_transient_state();
@@ -5118,7 +5294,12 @@ fn large_creature_deflects_when_anchor_column_obstructed() {
     // Spawn elephant on the ground, then teleport to floating position.
     let mut events = Vec::new();
     let elephant_id = sim
-        .spawn_creature(Species::Elephant, VoxelCoord::new(20, 1, 20), &mut events)
+        .spawn_creature(
+            Species::Elephant,
+            VoxelCoord::new(20, 1, 20),
+            hz,
+            &mut events,
+        )
         .expect("should spawn elephant");
 
     // Teleport above the obstruction.
@@ -5148,17 +5329,20 @@ fn large_creature_deflects_when_anchor_column_obstructed() {
     );
     let fp = elephant.position.footprint_size();
     let can_climb = elephant.movement_category.can_climb();
-    assert!(
-        crate::walkability::footprint_walkable(
-            &sim.world,
-            &sim.face_data,
-            elephant.position.min,
-            fp,
-            can_climb,
-        ),
-        "elephant should be at a walkable position after deflection (pos={:?})",
-        elephant.position.min
-    );
+    {
+        let zone = sim.voxel_zone(hz).unwrap();
+        assert!(
+            crate::walkability::footprint_walkable(
+                zone,
+                &zone.face_data,
+                elephant.position.min,
+                fp,
+                can_climb,
+            ),
+            "elephant should be at a walkable position after deflection (pos={:?})",
+            elephant.position.min
+        );
+    }
 }
 
 /// Large creature completely enclosed in solid voxels with no open space
@@ -5167,13 +5351,16 @@ fn large_creature_deflects_when_anchor_column_obstructed() {
 fn large_creature_killed_when_no_deflection_possible() {
     let seed = fresh_test_seed();
     let mut sim = flat_world_sim(seed);
+    let hz = sim.home_zone_id();
 
     // Remove ALL ground from the world.  With no solid voxels below the
     // creature, find_creature_landing scans to y=0 without finding walkable
     // ground or a collision, and returns None.
     for x in 0..64 {
         for z in 0..64 {
-            sim.world.set(VoxelCoord::new(x, 0, z), VoxelType::Air);
+            sim.voxel_zone_mut(hz)
+                .unwrap()
+                .set(VoxelCoord::new(x, 0, z), VoxelType::Air);
         }
     }
     sim.rebuild_transient_state();
@@ -5182,25 +5369,35 @@ fn large_creature_killed_when_no_deflection_possible() {
     // actually we just removed it, so spawn will fail).  Instead, just
     // insert the creature row directly by spawning then teleporting.
     // Spawn in a corner where we'll place temporary ground.
-    sim.world
+    sim.voxel_zone_mut(hz)
+        .unwrap()
         .set(VoxelCoord::new(60, 0, 60), VoxelType::GrownPlatform);
-    sim.world
+    sim.voxel_zone_mut(hz)
+        .unwrap()
         .set(VoxelCoord::new(61, 0, 60), VoxelType::GrownPlatform);
-    sim.world
+    sim.voxel_zone_mut(hz)
+        .unwrap()
         .set(VoxelCoord::new(60, 0, 61), VoxelType::GrownPlatform);
-    sim.world
+    sim.voxel_zone_mut(hz)
+        .unwrap()
         .set(VoxelCoord::new(61, 0, 61), VoxelType::GrownPlatform);
     sim.rebuild_transient_state();
 
     let mut events = Vec::new();
     let elephant_id = sim
-        .spawn_creature(Species::Elephant, VoxelCoord::new(60, 1, 60), &mut events)
+        .spawn_creature(
+            Species::Elephant,
+            VoxelCoord::new(60, 1, 60),
+            hz,
+            &mut events,
+        )
         .expect("should spawn elephant");
 
     // Now remove that temporary ground too.
     for dx in 0..2 {
         for dz in 0..2 {
-            sim.world
+            sim.voxel_zone_mut(hz)
+                .unwrap()
                 .set(VoxelCoord::new(60 + dx, 0, 60 + dz), VoxelType::Air);
         }
     }
@@ -5236,17 +5433,25 @@ fn large_creature_cumulative_fall_damage_across_deflection() {
     let mut sim = flat_world_sim(seed);
     sim.config.fall_damage_per_voxel = 10;
 
+    let hz = sim.home_zone_id();
+
     // Place an obstruction at y=5 under the anchor — blocks straight-down
     // fall but isn't a valid 2x2 landing.  Ground at y=0 is intact, so
     // after deflecting the creature lands on the ground at y=1.
-    sim.world
+    sim.voxel_zone_mut(hz)
+        .unwrap()
         .set(VoxelCoord::new(10, 5, 10), VoxelType::GrownPlatform);
     sim.rebuild_transient_state();
 
     // Spawn elephant, then teleport to y=10.
     let mut events = Vec::new();
     let elephant_id = sim
-        .spawn_creature(Species::Elephant, VoxelCoord::new(20, 1, 20), &mut events)
+        .spawn_creature(
+            Species::Elephant,
+            VoxelCoord::new(20, 1, 20),
+            hz,
+            &mut events,
+        )
         .expect("should spawn elephant");
 
     // Give elephant enough HP to survive the fall and teleport.
@@ -5308,20 +5513,29 @@ fn large_creature_multiple_deflections() {
     let seed = fresh_test_seed();
     let mut sim = flat_world_sim(seed);
 
+    let hz = sim.home_zone_id();
+
     // First obstruction at y=6 in the anchor column (10,10).
-    sim.world
+    sim.voxel_zone_mut(hz)
+        .unwrap()
         .set(VoxelCoord::new(10, 6, 10), VoxelType::GrownPlatform);
 
     // Second obstruction at y=3 one column over at (11,10) — after the
     // first deflection moves the creature sideways, it hits this one.
-    sim.world
+    sim.voxel_zone_mut(hz)
+        .unwrap()
         .set(VoxelCoord::new(11, 3, 10), VoxelType::GrownPlatform);
 
     sim.rebuild_transient_state();
 
     let mut events = Vec::new();
     let elephant_id = sim
-        .spawn_creature(Species::Elephant, VoxelCoord::new(20, 1, 20), &mut events)
+        .spawn_creature(
+            Species::Elephant,
+            VoxelCoord::new(20, 1, 20),
+            hz,
+            &mut events,
+        )
         .expect("should spawn elephant");
 
     {
@@ -5340,17 +5554,20 @@ fn large_creature_multiple_deflections() {
     let elephant = sim.db.creatures.get(&elephant_id).unwrap();
     let fp = elephant.position.footprint_size();
     let can_climb = elephant.movement_category.can_climb();
-    assert!(
-        crate::walkability::footprint_walkable(
-            &sim.world,
-            &sim.face_data,
-            elephant.position.min,
-            fp,
-            can_climb,
-        ),
-        "elephant should land at a walkable position (pos={:?})",
-        elephant.position.min
-    );
+    {
+        let zone = sim.voxel_zone(hz).unwrap();
+        assert!(
+            crate::walkability::footprint_walkable(
+                zone,
+                &zone.face_data,
+                elephant.position.min,
+                fp,
+                can_climb,
+            ),
+            "elephant should land at a walkable position (pos={:?})",
+            elephant.position.min
+        );
+    }
     // Should have landed at y=1 (ground level).
     assert_eq!(
         elephant.position.min.y, 1,
@@ -5365,6 +5582,8 @@ fn large_creature_deflection_radius_limit() {
     let seed = fresh_test_seed();
     let mut sim = flat_world_sim(seed);
 
+    let hz = sim.home_zone_id();
+
     // Fill a solid mass that encloses the creature's position entirely.
     // The mass is wide enough (Manhattan distance > 5 in all directions)
     // that the deflection search can't escape.  The creature starts inside
@@ -5373,7 +5592,8 @@ fn large_creature_deflection_radius_limit() {
     for x in 2..=19 {
         for z in 2..=19 {
             for y in 1..=20 {
-                sim.world
+                sim.voxel_zone_mut(hz)
+                    .unwrap()
                     .set(VoxelCoord::new(x, y, z), VoxelType::GrownPlatform);
             }
         }
@@ -5382,7 +5602,12 @@ fn large_creature_deflection_radius_limit() {
 
     let mut events = Vec::new();
     let elephant_id = sim
-        .spawn_creature(Species::Elephant, VoxelCoord::new(30, 1, 30), &mut events)
+        .spawn_creature(
+            Species::Elephant,
+            VoxelCoord::new(30, 1, 30),
+            hz,
+            &mut events,
+        )
         .expect("should spawn elephant");
 
     // Teleport INSIDE the solid mass.  The creature is at y=10 with solid

@@ -98,11 +98,13 @@ macro_rules! wg_time {
         let _wg_timer = WgTimer::new($label, $log);
     };
 }
-use crate::db::{GreatTreeInfo, Tree};
+use crate::db::{GreatTreeInfo, Tree, Zone};
 use crate::structural;
 use crate::tree_gen;
-use crate::types::{CivId, CivOpinion, CivSpecies, CultureTag, TreeId, VoxelCoord};
-use crate::world::VoxelWorld;
+use crate::types::{
+    CivId, CivOpinion, CivSpecies, CultureTag, TreeId, VoxelCoord, ZoneId, ZoneType,
+};
+use crate::world::VoxelZone;
 use elven_canopy_prng::GameRng;
 
 /// Configuration for worldgen generators. Subsection of `GameConfig`.
@@ -126,7 +128,7 @@ pub struct WorldgenResult {
     pub runtime_rng: GameRng,
 
     /// The voxel world with tree geometry and terrain placed.
-    pub world: VoxelWorld,
+    pub world: VoxelZone,
 
     /// The player's home tree ID.
     pub player_tree_id: TreeId,
@@ -136,6 +138,9 @@ pub struct WorldgenResult {
 
     /// The player-controlled civilization's ID (always CivId(0)).
     pub player_civ_id: CivId,
+
+    /// The home zone's ID, allocated by the worldgen PRNG.
+    pub home_zone_id: ZoneId,
 }
 
 /// Run the full worldgen pipeline: generate the world from a seed and config.
@@ -159,16 +164,10 @@ pub fn run_worldgen(seed: u64, config: &GameConfig, log: &WgLog) -> WorldgenResu
     let _compat = wg_rng.next_128_bits();
     let player_tree_id = TreeId::new(&mut wg_rng);
 
-    // --- Generator 1: Terrain + Trees ---
-    let (world, home_tree, lesser_trees) = {
-        wg_time!("terrain + tree generation", log.as_ref());
-        generate_trees(&mut wg_rng, config, player_tree_id, log)
-    };
-
     // Load lexicon once — used by fruit naming and civ naming.
     let lexicon = elven_canopy_lang::default_lexicon();
 
-    // --- Generator 2: Fruits ---
+    // --- Generator 1: Fruits ---
     let fruit_species = {
         wg_time!("fruit species generation", log.as_ref());
         let mut species = crate::fruit::generate_fruit_species(&mut wg_rng, &config.worldgen.fruit);
@@ -179,6 +178,95 @@ pub fn run_worldgen(seed: u64, config: &GameConfig, log: &WgLog) -> WorldgenResu
             &lexicon,
         );
         species
+    };
+
+    // --- Generator 2: Civilizations + Zone + Diplomacy ---
+    let mut db = SimDb::new();
+
+    // Insert fruit species into SimDb.
+    for fruit in &fruit_species {
+        let _ = db.insert_fruit_species(fruit.clone());
+    }
+
+    // Insert the home zone. Draw zone seed from worldgen PRNG before
+    // manifestation to ensure future zones don't shift the sequence.
+    let home_zone_seed = wg_rng.next_u64();
+    let home_zone_id = db
+        .insert_zone_auto(|id| Zone {
+            id,
+            seed: home_zone_seed,
+            zone_type: ZoneType::GreatTreeForest,
+            zone_size: config.world_size,
+            floor_y: config.floor_y,
+        })
+        .expect("home zone insert must succeed");
+
+    let player_civ_id;
+    {
+        wg_time!("civilization generation", log.as_ref());
+        player_civ_id =
+            generate_civilizations(&mut wg_rng, &config.worldgen.civs, &mut db, &lexicon);
+    }
+
+    {
+        wg_time!("diplomacy generation", log.as_ref());
+        generate_diplomacy(&mut wg_rng, &config.worldgen.civs, &mut db);
+    }
+
+    // --- Generator 3: Manifest the home zone ---
+    let world = manifest_zone(
+        &mut wg_rng,
+        config,
+        home_zone_id,
+        player_tree_id,
+        player_civ_id,
+        &fruit_species,
+        &mut db,
+        log,
+    );
+
+    // Derive the runtime PRNG from the worldgen PRNG's current state.
+    // This uses the worldgen PRNG to generate a new seed, ensuring the
+    // runtime PRNG is deterministically derived but independent of the
+    // exact number of draws made during worldgen.
+    let runtime_seed = wg_rng.next_u64();
+    let runtime_rng = GameRng::new(runtime_seed);
+
+    WorldgenResult {
+        runtime_rng,
+        world,
+        player_tree_id,
+        db,
+        player_civ_id,
+        home_zone_id,
+    }
+}
+
+/// Materialize a zone into a playable state: generate terrain and tree
+/// geometry, insert Tree and GreatTreeInfo DB rows, assign fruit species to
+/// trees. Returns the fully populated VoxelZone.
+///
+/// This is the zone-level counterpart to `run_worldgen` (world-level). World
+/// setup (civs, diplomacy, fruit species, zone rows) happens in `run_worldgen`;
+/// zone manifestation produces everything needed for a zone to be playable.
+///
+/// Currently only manifests `GreatTreeForest` zones. Future zone types will
+/// branch on `zone.zone_type` here.
+#[allow(clippy::too_many_arguments)]
+pub fn manifest_zone(
+    rng: &mut GameRng,
+    config: &GameConfig,
+    zone_id: ZoneId,
+    player_tree_id: TreeId,
+    player_civ_id: CivId,
+    fruit_species: &[crate::fruit::FruitSpecies],
+    db: &mut SimDb,
+    log: &WgLog,
+) -> VoxelZone {
+    // --- Terrain + tree geometry ---
+    let (world, home_tree, lesser_trees) = {
+        wg_time!("terrain + tree generation", log.as_ref());
+        generate_trees(rng, config, zone_id, player_tree_id, log)
     };
 
     // Assign a fruit species to the home tree. Pick a random common species
@@ -192,37 +280,14 @@ pub fn run_worldgen(seed: u64, config: &GameConfig, log: &WgLog) -> WorldgenResu
         let chosen = if common_species.is_empty() {
             &fruit_species[0]
         } else {
-            let idx = wg_rng.next_u64() as usize % common_species.len();
+            let idx = rng.next_u64() as usize % common_species.len();
             common_species[idx]
         };
         home_tree.fruit_species_id = Some(chosen.id);
     }
 
-    // --- Generator 3: Civilizations ---
-    let mut db = SimDb::new();
-
-    // Insert fruit species into SimDb.
-    for fruit in &fruit_species {
-        let _ = db.insert_fruit_species(fruit.clone());
-    }
-
-    let player_civ_id;
-    {
-        wg_time!("civilization generation", log.as_ref());
-        player_civ_id =
-            generate_civilizations(&mut wg_rng, &config.worldgen.civs, &mut db, &lexicon);
-        home_tree.owner = Some(player_civ_id);
-    }
-
-    // --- Generator 4: Diplomacy ---
-    {
-        wg_time!("diplomacy generation", log.as_ref());
-        generate_diplomacy(&mut wg_rng, &config.worldgen.civs, &mut db);
-    }
-
-    // --- Generator 5: Knowledge distribution (placeholder) ---
-    // Will be implemented by F-civ-knowledge. The generator will populate
-    // CivFruitKnowledge tables.
+    // Set the home tree's owner to the player civ.
+    home_tree.owner = Some(player_civ_id);
 
     // --- Insert trees into SimDb ---
     // Home tree gets both a Tree row and a GreatTreeInfo row.
@@ -245,29 +310,16 @@ pub fn run_worldgen(seed: u64, config: &GameConfig, log: &WgLog) -> WorldgenResu
             // Roll to decide if this tree bears fruit (integer comparison
             // against PPM threshold for determinism — no floats in the hot path).
             let threshold = (fruit_fraction * 1_000_000.0) as u64;
-            let roll = wg_rng.next_u64() % 1_000_000;
+            let roll = rng.next_u64() % 1_000_000;
             if roll < threshold {
-                let idx = wg_rng.next_u64() as usize % fruit_species.len();
+                let idx = rng.next_u64() as usize % fruit_species.len();
                 lesser.fruit_species_id = Some(fruit_species[idx].id);
             }
         }
         let _ = db.insert_tree(lesser);
     }
 
-    // Derive the runtime PRNG from the worldgen PRNG's current state.
-    // This uses the worldgen PRNG to generate a new seed, ensuring the
-    // runtime PRNG is deterministically derived but independent of the
-    // exact number of draws made during worldgen.
-    let runtime_seed = wg_rng.next_u64();
-    let runtime_rng = GameRng::new(runtime_seed);
-
-    WorldgenResult {
-        runtime_rng,
-        world,
-        player_tree_id,
-        db,
-        player_civ_id,
-    }
+    world
 }
 
 /// Tree generator: produces the player's home tree, lesser trees, and
@@ -279,14 +331,15 @@ pub fn run_worldgen(seed: u64, config: &GameConfig, log: &WgLog) -> WorldgenResu
 fn generate_trees(
     rng: &mut GameRng,
     config: &GameConfig,
+    zone_id: ZoneId,
     player_tree_id: TreeId,
     log: &WgLog,
-) -> (VoxelWorld, Tree, Vec<Tree>) {
+) -> (VoxelZone, Tree, Vec<Tree>) {
     let (ws_x, ws_y, ws_z) = config.world_size;
     let center_x = ws_x as i32 / 2;
     let center_z = ws_z as i32 / 2;
 
-    let mut world = VoxelWorld::new(ws_x, ws_y, ws_z);
+    let mut world = VoxelZone::new(ws_x, ws_y, ws_z);
     let mut tree_result = None;
 
     for _attempt in 0..config.structural.tree_gen_max_retries {
@@ -307,7 +360,7 @@ fn generate_trees(
             break;
         }
         // Clear world for retry. Terrain + tree will be regenerated.
-        world = VoxelWorld::new(ws_x, ws_y, ws_z);
+        world = VoxelZone::new(ws_x, ws_y, ws_z);
     }
 
     let tree_result = tree_result.expect(
@@ -328,6 +381,7 @@ fn generate_trees(
 
     let home_tree = Tree {
         id: player_tree_id,
+        zone_id,
         position: VoxelCoord::new(center_x, main_surface_y, center_z),
         health: 100,
         growth_level: 1,
@@ -342,7 +396,7 @@ fn generate_trees(
     // --- Lesser trees ---
     let lesser_trees = {
         wg_time!("lesser tree generation", log.as_ref());
-        generate_lesser_trees(rng, config, &mut world, center_x, center_z, log)
+        generate_lesser_trees(rng, config, zone_id, &mut world, center_x, center_z, log)
     };
 
     (world, home_tree, lesser_trees)
@@ -357,7 +411,8 @@ fn generate_trees(
 fn generate_lesser_trees(
     rng: &mut GameRng,
     config: &GameConfig,
-    world: &mut VoxelWorld,
+    zone_id: ZoneId,
+    world: &mut VoxelZone,
     main_center_x: i32,
     main_center_z: i32,
     log: &WgLog,
@@ -439,6 +494,7 @@ fn generate_lesser_trees(
 
         let tree = Tree {
             id: tree_id,
+            zone_id,
             position: VoxelCoord::new(x, surface_y, z),
             health: 100,
             growth_level: 1,

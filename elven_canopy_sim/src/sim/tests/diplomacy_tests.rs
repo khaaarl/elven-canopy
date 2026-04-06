@@ -18,6 +18,7 @@ fn spawned_elf_gets_player_civ_id() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -45,6 +46,7 @@ fn spawned_non_elf_has_no_civ_id() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Capybara,
             position: tree_pos,
         },

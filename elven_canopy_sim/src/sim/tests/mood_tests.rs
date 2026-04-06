@@ -22,6 +22,7 @@ fn mope_test_setup(
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -148,6 +149,7 @@ fn eat_bread_generates_thought() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -193,7 +195,7 @@ fn eat_bread_generates_thought() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(eat_task);
+    sim.insert_task(sim.home_zone_id(), eat_task);
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
@@ -469,6 +471,7 @@ fn ground_sleep_generates_thought() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -538,6 +541,7 @@ fn eating_generates_thought() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -600,6 +604,7 @@ fn dormitory_sleep_generates_thought() {
     sim.db
         .insert_structure(CompletedStructure {
             id: structure_id,
+            zone_id: sim.home_zone_id(),
             project_id,
             build_type: BuildType::Building,
             anchor: bed_pos,
@@ -619,9 +624,11 @@ fn dormitory_sleep_generates_thought() {
             last_dinner_party_completed_tick: 0,
         })
         .unwrap();
+    let hz = sim.home_zone_id();
     sim.db
         .insert_furniture_auto(|id| crate::db::Furniture {
             id,
+            zone_id: hz,
             structure_id,
             coord: bed_pos,
             placed: true,
@@ -633,6 +640,7 @@ fn dormitory_sleep_generates_thought() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -708,6 +716,7 @@ fn home_sleep_generates_thought() {
     sim.db
         .insert_structure(CompletedStructure {
             id: structure_id,
+            zone_id: sim.home_zone_id(),
             project_id,
             build_type: BuildType::Building,
             anchor: bed_pos,
@@ -727,9 +736,11 @@ fn home_sleep_generates_thought() {
             last_dinner_party_completed_tick: 0,
         })
         .unwrap();
+    let hz = sim.home_zone_id();
     sim.db
         .insert_furniture_auto(|id| crate::db::Furniture {
             id,
+            zone_id: hz,
             structure_id,
             coord: bed_pos,
             placed: true,
@@ -741,6 +752,7 @@ fn home_sleep_generates_thought() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -828,6 +840,7 @@ fn low_ceiling_generates_thought() {
     sim.db
         .insert_structure(CompletedStructure {
             id: structure_id,
+            zone_id: sim.home_zone_id(),
             project_id,
             build_type: BuildType::Building,
             anchor: bed_pos,
@@ -847,9 +860,11 @@ fn low_ceiling_generates_thought() {
             last_dinner_party_completed_tick: 0,
         })
         .unwrap();
+    let hz = sim.home_zone_id();
     sim.db
         .insert_furniture_auto(|id| crate::db::Furniture {
             id,
+            zone_id: hz,
             structure_id,
             coord: bed_pos,
             placed: true,
@@ -861,6 +876,7 @@ fn low_ceiling_generates_thought() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -1083,6 +1099,7 @@ fn mope_does_not_interrupt_autonomous_sleep() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -1128,7 +1145,7 @@ fn mope_does_not_interrupt_autonomous_sleep() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(sleep_task);
+    sim.insert_task(sim.home_zone_id(), sleep_task);
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(sleep_task_id);
@@ -1237,7 +1254,7 @@ fn mope_always_preempts_player_directed_build() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(build_task);
+    sim.insert_task(sim.home_zone_id(), build_task);
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
@@ -1296,6 +1313,7 @@ fn mope_task_location_is_home_when_assigned() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -1500,6 +1518,7 @@ fn mope_interrupts_build_action() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -1523,6 +1542,7 @@ fn mope_interrupts_build_action() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -1639,7 +1659,7 @@ fn devastated_elf_interrupts_task_to_mope() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(goto_task);
+    sim.insert_task(sim.home_zone_id(), goto_task);
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);

@@ -385,6 +385,7 @@ fn build_action_drains_elf_mana() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -402,7 +403,10 @@ fn build_action_drains_elf_mana() {
         elf.mp
     );
     // Voxel should be placed (build succeeded).
-    assert_eq!(sim.world.get(air_coord), VoxelType::GrownPlatform);
+    assert_eq!(
+        sim.voxel_zone(sim.home_zone_id()).unwrap().get(air_coord),
+        VoxelType::GrownPlatform
+    );
 }
 
 #[test]
@@ -428,6 +432,7 @@ fn build_wasted_action_no_progress() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -442,7 +447,7 @@ fn build_wasted_action_no_progress() {
 
     // Voxel should NOT have been placed — elf has no mana.
     assert_eq!(
-        sim.world.get(air_coord),
+        sim.voxel_zone(sim.home_zone_id()).unwrap().get(air_coord),
         VoxelType::Air,
         "no voxel should be placed when elf has no mana"
     );
@@ -469,6 +474,7 @@ fn build_abandon_after_wasted_actions() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -559,7 +565,7 @@ fn nonmagical_creature_cannot_claim_build_task() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(task);
+    sim.insert_task(sim.home_zone_id(), task);
 
     // Goblin should NOT find this task (nonmagical, can't do Build).
     let found = sim.find_available_task(gob_id);
@@ -605,7 +611,7 @@ fn elf_with_no_mana_skips_build_task() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(task);
+    sim.insert_task(sim.home_zone_id(), task);
 
     // Elf with 0 mana should NOT find the Build task.
     let found = sim.find_available_task(elf_id);
@@ -626,6 +632,7 @@ fn elf_with_mana_claims_build_task() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -662,6 +669,7 @@ fn successful_build_resets_wasted_counter() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -730,7 +738,7 @@ fn try_drain_mana_exact_boundary() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(task);
+    sim.insert_task(sim.home_zone_id(), task);
     let mut elf = sim.db.creatures.get(&elf_id).unwrap();
     elf.current_task = Some(task_id);
     sim.db.update_creature(elf).unwrap();
@@ -766,7 +774,7 @@ fn nonmagical_creature_cannot_claim_furnish_task() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(task);
+    sim.insert_task(sim.home_zone_id(), task);
 
     let found = sim.find_available_task(gob_id);
     assert!(
@@ -940,7 +948,7 @@ fn cleanup_early_exit_resets_wasted_action_count() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(task);
+    sim.insert_task(sim.home_zone_id(), task);
     let mut elf = sim.db.creatures.get(&elf_id).unwrap();
     elf.current_task = Some(task_id);
     elf.wasted_action_count = 2;
@@ -1039,32 +1047,60 @@ fn mana_wasted_position_recorded_on_failed_drain() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(task);
+    sim.insert_task(sim.home_zone_id(), task);
     let mut elf = sim.db.creatures.get(&elf_id).unwrap();
     elf.current_task = Some(task_id);
     elf.mp = 0;
     sim.db.update_creature(elf).unwrap();
 
-    assert!(sim.mana_wasted_positions.is_empty());
+    assert!(
+        sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .mana_wasted_positions
+            .is_empty()
+    );
 
     let cost = sim.mana_cost_per_action(Some(BuildType::Platform));
     sim.try_drain_mana(elf_id, cost);
 
-    assert_eq!(sim.mana_wasted_positions.len(), 1);
-    assert_eq!(sim.mana_wasted_positions[0], elf_pos);
+    assert_eq!(
+        sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .mana_wasted_positions
+            .len(),
+        1
+    );
+    assert_eq!(
+        sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .mana_wasted_positions[0],
+        elf_pos
+    );
 }
 
 #[test]
 fn mana_wasted_positions_cleared_each_step() {
     let mut sim = test_sim(legacy_test_seed());
     // Manually push a position to simulate a previous step.
-    sim.mana_wasted_positions.push(VoxelCoord::new(0, 0, 0));
-    assert_eq!(sim.mana_wasted_positions.len(), 1);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .mana_wasted_positions
+        .push(VoxelCoord::new(0, 0, 0));
+    assert_eq!(
+        sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .mana_wasted_positions
+            .len(),
+        1
+    );
 
     // step() should clear the buffer.
     sim.step(&[], sim.tick + 1);
     assert!(
-        sim.mana_wasted_positions.is_empty(),
+        sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .mana_wasted_positions
+            .is_empty(),
         "buffer should be cleared at start of step()"
     );
 }
@@ -1091,7 +1127,7 @@ fn successful_drain_does_not_record_position() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(task);
+    sim.insert_task(sim.home_zone_id(), task);
     let mut elf = sim.db.creatures.get(&elf_id).unwrap();
     elf.current_task = Some(task_id);
     sim.db.update_creature(elf).unwrap();
@@ -1100,7 +1136,10 @@ fn successful_drain_does_not_record_position() {
     let result = sim.try_drain_mana(elf_id, cost);
     assert!(result, "drain should succeed — elf has full mana");
     assert!(
-        sim.mana_wasted_positions.is_empty(),
+        sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .mana_wasted_positions
+            .is_empty(),
         "no position recorded on success"
     );
 }
@@ -1190,7 +1229,7 @@ fn grow_arrow_drains_elf_mana() {
 
     let anchor = sim.db.structures.get(&structure_id).unwrap().anchor;
     let mut events = Vec::new();
-    sim.spawn_creature(Species::Elf, anchor, &mut events);
+    sim.spawn_creature(Species::Elf, anchor, sim.home_zone_id(), &mut events);
     let elf_id = sim
         .db
         .creatures
@@ -1244,7 +1283,7 @@ fn grow_with_zero_mana_wastes_actions_and_abandons() {
 
     let anchor = sim.db.structures.get(&structure_id).unwrap().anchor;
     let mut events = Vec::new();
-    sim.spawn_creature(Species::Elf, anchor, &mut events);
+    sim.spawn_creature(Species::Elf, anchor, sim.home_zone_id(), &mut events);
     let elf_id = sim
         .db
         .creatures
@@ -1305,7 +1344,7 @@ fn nonmagical_creature_cannot_claim_grow_craft_task() {
     // Spawn a capybara (nonmagical, mp_max = 0).
     let anchor = sim.db.structures.get(&structure_id).unwrap().anchor;
     let mut events = Vec::new();
-    sim.spawn_creature(Species::Capybara, anchor, &mut events);
+    sim.spawn_creature(Species::Capybara, anchor, sim.home_zone_id(), &mut events);
     let capybara_id = sim
         .db
         .creatures
@@ -1355,7 +1394,7 @@ fn non_grow_craft_completes_with_zero_mana() {
 
     let anchor = sim.db.structures.get(&structure_id).unwrap().anchor;
     let mut events = Vec::new();
-    sim.spawn_creature(Species::Elf, anchor, &mut events);
+    sim.spawn_creature(Species::Elf, anchor, sim.home_zone_id(), &mut events);
     let elf_id = sim
         .db
         .creatures
@@ -1435,7 +1474,7 @@ fn drained_elf_can_still_claim_non_grow_craft_task() {
 
     let anchor = sim.db.structures.get(&structure_id).unwrap().anchor;
     let mut events = Vec::new();
-    sim.spawn_creature(Species::Elf, anchor, &mut events);
+    sim.spawn_creature(Species::Elf, anchor, sim.home_zone_id(), &mut events);
     let elf_id = sim
         .db
         .creatures
@@ -1500,7 +1539,7 @@ fn drained_elf_cannot_claim_grow_craft_task() {
 
     let anchor = sim.db.structures.get(&structure_id).unwrap().anchor;
     let mut events = Vec::new();
-    sim.spawn_creature(Species::Elf, anchor, &mut events);
+    sim.spawn_creature(Species::Elf, anchor, sim.home_zone_id(), &mut events);
     let elf_id = sim
         .db
         .creatures

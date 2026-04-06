@@ -26,10 +26,12 @@ impl SimState {
         // exactly on a walkable voxel, so snap here before passing to
         // find_nearest.
         let mut fruit_candidates: Vec<(VoxelCoord, VoxelCoord)> = Vec::new();
+        // TODO(F-zone-world): iterate all active zones for fruit discovery
+        let zone = self.voxel_zone(self.home_zone_id()).unwrap();
         for tf in self.db.tree_fruits.iter_all() {
             if let Some(walkable_pos) = crate::walkability::find_nearest_walkable(
-                &self.world,
-                &self.face_data,
+                zone,
+                &zone.face_data,
                 tf.position.min,
                 5,
                 [1, 1, 1],
@@ -81,7 +83,8 @@ impl SimState {
         }
 
         // Remove fruit from world and the TreeFruit table.
-        if self.world.get(fruit_pos) == VoxelType::Fruit {
+        // TODO(F-zone-world): derive zone from fruit position context
+        if self.voxel_zone(self.home_zone_id()).unwrap().get(fruit_pos) == VoxelType::Fruit {
             self.set_voxel(fruit_pos, VoxelType::Air);
         }
         self.remove_tree_fruit_at(fruit_pos);
@@ -102,7 +105,9 @@ impl SimState {
         fruit_pos: VoxelCoord,
     ) -> bool {
         // Check fruit still exists.
-        let fruit_exists = self.world.get(fruit_pos) == VoxelType::Fruit;
+        // TODO(F-zone-world): derive zone from fruit position context
+        let fruit_exists =
+            self.voxel_zone(self.home_zone_id()).unwrap().get(fruit_pos) == VoxelType::Fruit;
 
         if fruit_exists {
             // Look up species before removing the row.
@@ -123,7 +128,9 @@ impl SimState {
             // Create ground pile at creature's position with species material.
             if let Some(creature) = self.db.creatures.get(&creature_id) {
                 let pile_pos = creature.position.min;
-                let pile_id = self.ensure_ground_pile(pile_pos);
+                // TODO(F-zone-world): handle None zone_id (in-transit creature)
+                let cz = creature.zone_id.unwrap_or_else(|| self.home_zone_id());
+                let pile_id = self.ensure_ground_pile(pile_pos, cz);
                 let pile = self.db.ground_piles.get(&pile_id).unwrap();
                 self.inv_add_item(
                     pile.inventory_id,
@@ -528,9 +535,11 @@ impl SimState {
             .by_structure_id(&home_id, tabulosity::QueryOpts::ASC)
             .into_iter()
             .find(|f| f.placed)?;
+        // TODO(F-zone-world): derive zone from structure's zone
+        let zone = self.voxel_zone(self.home_zone_id()).unwrap();
         let walkable_pos = crate::walkability::find_nearest_walkable(
-            &self.world,
-            &self.face_data,
+            zone,
+            &zone.face_data,
             bed.coord,
             5,
             [1, 1, 1],
@@ -596,9 +605,11 @@ impl SimState {
             .ok()?;
         let (bed_pos, structure_id) = bed_candidates[idx];
         // Beds are placed on walkable positions.
+        // TODO(F-zone-world): derive zone from structure's zone
+        let zone = self.voxel_zone(self.home_zone_id()).unwrap();
         let walkable_pos = crate::walkability::find_nearest_walkable(
-            &self.world,
-            &self.face_data,
+            zone,
+            &zone.face_data,
             bed_pos,
             5,
             [1, 1, 1],
@@ -686,9 +697,11 @@ impl SimState {
             .ok()?;
         let (table_coord, structure_id) = table_candidates[idx];
         // Tables are placed on walkable positions.
+        // TODO(F-zone-world): derive zone from structure's zone
+        let zone = self.voxel_zone(self.home_zone_id()).unwrap();
         let walkable_pos = crate::walkability::find_nearest_walkable(
-            &self.world,
-            &self.face_data,
+            zone,
+            &zone.face_data,
             table_coord,
             5,
             [1, 1, 1],

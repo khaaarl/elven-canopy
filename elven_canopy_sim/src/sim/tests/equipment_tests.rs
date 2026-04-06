@@ -148,7 +148,7 @@ fn acquire_item_auto_equips_one_from_multi_qty() {
 
     // Create a ground pile with 3 Hats.
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Hat, 3, None, None);
     }
@@ -182,7 +182,7 @@ fn acquire_item_auto_equips_one_from_multi_qty() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(acquire_task);
+    sim.insert_task(sim.home_zone_id(), acquire_task);
     {
         let pile = sim
             .db
@@ -325,7 +325,7 @@ fn acquire_item_preserves_material() {
         crate::fruit::FruitSpeciesId(0),
     ));
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_item(
             pile.inventory_id,
@@ -369,7 +369,7 @@ fn acquire_item_preserves_material() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(acquire_task);
+    sim.insert_task(sim.home_zone_id(), acquire_task);
     {
         let pile = sim
             .db
@@ -417,7 +417,7 @@ fn acquire_item_auto_equips_clothing() {
 
     // Create a ground pile with a Tunic.
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Tunic, 1, None, None);
     }
@@ -451,7 +451,7 @@ fn acquire_item_auto_equips_clothing() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(acquire_task);
+    sim.insert_task(sim.home_zone_id(), acquire_task);
     {
         let pile = sim
             .db
@@ -506,7 +506,7 @@ fn acquire_item_does_not_equip_if_slot_occupied() {
 
     // Create a ground pile with another Tunic.
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Tunic, 1, None, None);
     }
@@ -540,7 +540,7 @@ fn acquire_item_does_not_equip_if_slot_occupied() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(acquire_task);
+    sim.insert_task(sim.home_zone_id(), acquire_task);
     {
         let pile = sim
             .db
@@ -789,7 +789,7 @@ fn soldier_acquires_military_equipment_no_ownership_change() {
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Bow, 1, None, None);
     }
@@ -826,7 +826,7 @@ fn soldier_acquires_military_equipment_no_ownership_change() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(acquire_task);
+    sim.insert_task(sim.home_zone_id(), acquire_task);
     {
         let pile = sim
             .db
@@ -1342,7 +1342,7 @@ fn heartbeat_military_equip_creates_task_for_missing_bow() {
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Bow, 1, None, None);
     }
@@ -1549,7 +1549,7 @@ fn check_military_equipment_wants_overwrites_task_on_non_idle_elf() {
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Bow, 1, None, None);
     }
@@ -1598,7 +1598,7 @@ fn military_equip_phase_runs_before_personal_wants() {
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Bow, 1, None, None);
         sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Bread, 5, None, None);
@@ -1657,7 +1657,7 @@ fn cleanup_acquire_military_equipment_clears_reservations() {
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
     let pile_inv;
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         pile_inv = pile.inventory_id;
         sim.inv_add_simple_item(pile_inv, inventory::ItemKind::Bow, 1, None, None);
@@ -1687,7 +1687,7 @@ fn cleanup_acquire_military_equipment_clears_reservations() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(task);
+    sim.insert_task(sim.home_zone_id(), task);
 
     sim.inv_reserve_unowned_items(
         pile_inv,
@@ -1933,7 +1933,7 @@ fn military_equipment_auto_equips_wearable_on_pickup() {
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_item(
             pile.inventory_id,
@@ -1979,7 +1979,7 @@ fn military_equipment_auto_equips_wearable_on_pickup() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(acquire_task);
+    sim.insert_task(sim.home_zone_id(), acquire_task);
     {
         let pile = sim
             .db
@@ -2032,7 +2032,7 @@ fn military_equipment_auto_equip_displaces_existing_clothing() {
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_item(
             pile.inventory_id,
@@ -2098,7 +2098,7 @@ fn military_equipment_auto_equip_displaces_existing_clothing() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(acquire_task);
+    sim.insert_task(sim.home_zone_id(), acquire_task);
     {
         let pile = sim
             .db
@@ -2165,7 +2165,7 @@ fn military_equipment_non_wearable_not_equipped() {
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let pile_pos = VoxelCoord::new(tree_pos.x, 1, tree_pos.z);
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(pile.inventory_id, inventory::ItemKind::Bow, 1, None, None);
     }
@@ -2215,7 +2215,7 @@ fn military_equipment_non_wearable_not_equipped() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(acquire_task);
+    sim.insert_task(sim.home_zone_id(), acquire_task);
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);

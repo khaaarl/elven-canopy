@@ -17,6 +17,7 @@ fn spawn_elf_command() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -42,6 +43,7 @@ fn spawned_elf_has_vaelith_name() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -82,6 +84,7 @@ fn spawned_elf_name_is_deterministic() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim1.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -90,6 +93,7 @@ fn spawned_elf_name_is_deterministic() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim2.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -113,6 +117,7 @@ fn spawned_non_elf_has_no_name() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Capybara,
             position: tree_pos,
         },
@@ -1065,7 +1070,7 @@ fn spawn_initial_creatures_ground_piles() {
 
     // Ground pile should exist. Position may be snapped to surface via
     // find_surface_position, so look up by the expected surface position.
-    let surface_pos = sim.find_surface_position(32, 34);
+    let surface_pos = sim.find_surface_position(32, 34, sim.home_zone_id());
     let pile = sim
         .db
         .ground_piles
@@ -1123,12 +1128,17 @@ fn hornet_spawns_at_air_position_not_nav_node() {
     // Use flat_world_sim — guaranteed clear air above y=1.
     let mut sim = flat_world_sim(legacy_test_seed());
     let air_pos = VoxelCoord::new(32, 20, 32);
-    assert!(sim.world.get(air_pos).is_flyable());
+    assert!(
+        sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .get(air_pos)
+            .is_flyable()
+    );
 
     // Spawn directly (not through step()) to avoid immediate activation/wander.
     let mut events = Vec::new();
     let id = sim
-        .spawn_creature(Species::Hornet, air_pos, &mut events)
+        .spawn_creature(Species::Hornet, air_pos, sim.home_zone_id(), &mut events)
         .expect("hornet should spawn in air");
 
     let creature = sim.db.creatures.get(&id).unwrap();
@@ -1136,8 +1146,8 @@ fn hornet_spawns_at_air_position_not_nav_node() {
     assert_eq!(creature.position.min, air_pos);
     // Should be in the air — verify it's not walkable ground.
     assert!(!crate::walkability::footprint_walkable(
-        &sim.world,
-        &sim.face_data,
+        sim.voxel_zone(sim.home_zone_id()).unwrap(),
+        &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
         air_pos,
         [1, 1, 1],
         true,
@@ -1154,7 +1164,7 @@ fn hornet_is_hostile_to_elves() {
     let hornet_pos = VoxelCoord::new(elf_pos.x, elf_pos.y + 3, elf_pos.z);
     let mut events = Vec::new();
     let hornet_id = sim
-        .spawn_creature(Species::Hornet, hornet_pos, &mut events)
+        .spawn_creature(Species::Hornet, hornet_pos, sim.home_zone_id(), &mut events)
         .expect("hornet should spawn near elf");
 
     // Hornet is aggressive and has no civ.
@@ -1211,6 +1221,7 @@ fn spawn_hornet_via_spawn_creature_command() {
         player_name: String::new(),
         tick,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Hornet,
             position: air_pos,
         },
@@ -1260,10 +1271,15 @@ fn hornet_spawn_in_solid_returns_none() {
     let mut sim = test_sim(legacy_test_seed());
     // Find a trunk voxel (guaranteed to exist — the tree is there).
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
-    assert!(!sim.world.get(tree_pos).is_flyable());
+    assert!(
+        !sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .get(tree_pos)
+            .is_flyable()
+    );
     let mut events = Vec::new();
     assert!(
-        sim.spawn_creature(Species::Hornet, tree_pos, &mut events)
+        sim.spawn_creature(Species::Hornet, tree_pos, sim.home_zone_id(), &mut events)
             .is_none()
     );
 }
@@ -1272,10 +1288,12 @@ fn hornet_spawn_in_solid_returns_none() {
 fn hornet_spawn_in_leaf_succeeds() {
     let mut sim = test_sim(legacy_test_seed());
     let leaf_pos = VoxelCoord::new(32, 45, 32);
-    sim.world.set(leaf_pos, crate::types::VoxelType::Leaf);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(leaf_pos, crate::types::VoxelType::Leaf);
     let mut events = Vec::new();
     let id = sim
-        .spawn_creature(Species::Hornet, leaf_pos, &mut events)
+        .spawn_creature(Species::Hornet, leaf_pos, sim.home_zone_id(), &mut events)
         .expect("hornet should spawn in leaf voxel");
     assert_eq!(sim.db.creatures.get(&id).unwrap().position.min, leaf_pos);
 }
@@ -1319,7 +1337,7 @@ fn wyvern_spawn_has_traits() {
     let pos = VoxelCoord::new(20, 40, 20);
     let mut events = Vec::new();
     let id = sim
-        .spawn_creature(Species::Wyvern, pos, &mut events)
+        .spawn_creature(Species::Wyvern, pos, sim.home_zone_id(), &mut events)
         .expect("wyvern should spawn in open air");
 
     let body_color = sim.trait_int(id, TraitKind::BodyColor, -1);
@@ -1335,11 +1353,12 @@ fn wyvern_spawn_checks_full_footprint() {
     let mut sim = test_sim(legacy_test_seed());
     // Place a trunk voxel at one corner of where the 2x2x2 footprint would be.
     let anchor = VoxelCoord::new(20, 40, 20);
-    sim.world
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
         .set(VoxelCoord::new(21, 41, 21), crate::types::VoxelType::Trunk);
     let mut events = Vec::new();
     assert!(
-        sim.spawn_creature(Species::Wyvern, anchor, &mut events)
+        sim.spawn_creature(Species::Wyvern, anchor, sim.home_zone_id(), &mut events)
             .is_none(),
         "wyvern should not spawn when one footprint voxel is solid"
     );
@@ -1363,7 +1382,7 @@ fn wyvern_is_hostile_to_elves() {
     let wyvern_pos = VoxelCoord::new(elf_pos.x - 1, elf_pos.y + 5, elf_pos.z - 1);
     let mut events = Vec::new();
     let wyvern_id = sim
-        .spawn_creature(Species::Wyvern, wyvern_pos, &mut events)
+        .spawn_creature(Species::Wyvern, wyvern_pos, sim.home_zone_id(), &mut events)
         .expect("wyvern should spawn");
 
     let wyvern = sim.db.creatures.get(&wyvern_id).unwrap();
@@ -1393,6 +1412,7 @@ fn spawn_capybara_command() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Capybara,
             position: tree_pos,
         },
@@ -1417,8 +1437,8 @@ fn spawn_capybara_command() {
         .unwrap();
     assert_eq!(capybara.position.min.y, 1);
     assert!(crate::walkability::footprint_walkable(
-        &sim.world,
-        &sim.face_data,
+        sim.voxel_zone(sim.home_zone_id()).unwrap(),
+        &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
         capybara.position.min,
         [1, 1, 1],
         true,
@@ -1498,7 +1518,12 @@ fn elephant_spawns_on_walkable_ground() {
     let mut sim = test_sim(legacy_test_seed());
     let mut events = Vec::new();
     let spawn_pos = VoxelCoord::new(10, 1, 10);
-    sim.spawn_creature(Species::Elephant, spawn_pos, &mut events);
+    sim.spawn_creature(
+        Species::Elephant,
+        spawn_pos,
+        sim.home_zone_id(),
+        &mut events,
+    );
 
     let elephants: Vec<&crate::db::Creature> = sim
         .db
@@ -1511,8 +1536,8 @@ fn elephant_spawns_on_walkable_ground() {
     let elephant = elephants[0];
     assert!(
         crate::walkability::footprint_walkable(
-            &sim.world,
-            &sim.face_data,
+            sim.voxel_zone(sim.home_zone_id()).unwrap(),
+            &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
             elephant.position.min,
             [1, 1, 1],
             true,
@@ -1526,7 +1551,7 @@ fn troll_spawns_on_walkable_ground() {
     let mut sim = test_sim(legacy_test_seed());
     let mut events = Vec::new();
     let spawn_pos = VoxelCoord::new(10, 1, 10);
-    sim.spawn_creature(Species::Troll, spawn_pos, &mut events);
+    sim.spawn_creature(Species::Troll, spawn_pos, sim.home_zone_id(), &mut events);
 
     let trolls: Vec<&crate::db::Creature> = sim
         .db
@@ -1539,8 +1564,8 @@ fn troll_spawns_on_walkable_ground() {
     let troll = trolls[0];
     assert!(
         crate::walkability::footprint_walkable(
-            &sim.world,
-            &sim.face_data,
+            sim.voxel_zone(sim.home_zone_id()).unwrap(),
+            &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
             troll.position.min,
             [1, 1, 1],
             true,
@@ -1560,6 +1585,7 @@ fn creature_species_preserved() {
             player_name: String::new(),
             tick: 1,
             action: SimAction::SpawnCreature {
+                zone_id: sim.home_zone_id(),
                 species: Species::Elf,
                 position: tree_pos,
             },
@@ -1568,6 +1594,7 @@ fn creature_species_preserved() {
             player_name: String::new(),
             tick: 1,
             action: SimAction::SpawnCreature {
+                zone_id: sim.home_zone_id(),
                 species: Species::Capybara,
                 position: tree_pos,
             },
@@ -1610,6 +1637,7 @@ fn spawn_boar_command() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Boar,
             position: tree_pos,
         },
@@ -1644,6 +1672,7 @@ fn spawn_deer_command() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Deer,
             position: tree_pos,
         },
@@ -1678,6 +1707,7 @@ fn spawn_monkey_command() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Monkey,
             position: tree_pos,
         },
@@ -1703,6 +1733,7 @@ fn spawn_squirrel_command() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Squirrel,
             position: tree_pos,
         },
@@ -1741,6 +1772,7 @@ fn all_small_species_spawn_and_coexist() {
             player_name: String::new(),
             tick,
             action: SimAction::SpawnCreature {
+                zone_id: sim.home_zone_id(),
                 species,
                 position: tree_pos,
             },
@@ -1760,8 +1792,8 @@ fn all_small_species_spawn_and_coexist() {
     for creature in sim.db.creatures.iter_all() {
         assert!(
             crate::walkability::footprint_walkable(
-                &sim.world,
-                &sim.face_data,
+                sim.voxel_zone(sim.home_zone_id()).unwrap(),
+                &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
                 creature.position.min,
                 [1, 1, 1],
                 true,
@@ -1781,7 +1813,13 @@ fn spawn_creature_with_civ_sets_civ_id() {
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let creature_id = sim
-        .spawn_creature_with_civ(Species::Goblin, tree_pos, Some(hostile_civ), &mut events)
+        .spawn_creature_with_civ(
+            Species::Goblin,
+            tree_pos,
+            Some(hostile_civ),
+            sim.home_zone_id(),
+            &mut events,
+        )
         .expect("should spawn goblin");
 
     let creature = sim.db.creatures.get(&creature_id).unwrap();
@@ -2414,6 +2452,7 @@ fn test_large_creature_landing_near_world_edge() {
         .spawn_creature(
             Species::Elephant,
             VoxelCoord::new(ws_x as i32 / 2, floor_y + 1, ws_x as i32 / 2),
+            sim.home_zone_id(),
             &mut events,
         )
         .expect("should spawn elephant");
@@ -2430,7 +2469,7 @@ fn test_large_creature_landing_near_world_edge() {
     // Remove ground below the elephant to trigger gravity.
     for dx in 0..2 {
         for dz in 0..2 {
-            sim.world.set(
+            sim.voxel_zone_mut(sim.home_zone_id()).unwrap().set(
                 VoxelCoord::new(edge_x + dx, floor_y, 10 + dz),
                 VoxelType::Air,
             );
@@ -2482,8 +2521,9 @@ fn spawned_creature_gets_movement_category_from_species() {
     // Hornet → Flyer (spawn in air since flyers can't use ground spawn)
     let air_pos = VoxelCoord::new(32, 20, 32);
     let mut events = Vec::new();
+    let zone_id = sim.home_zone_id();
     let hornet_id = sim
-        .spawn_creature(Species::Hornet, air_pos, &mut events)
+        .spawn_creature(Species::Hornet, air_pos, zone_id, &mut events)
         .expect("hornet should spawn in air");
     assert_eq!(
         sim.db.creatures.get(&hornet_id).unwrap().movement_category,

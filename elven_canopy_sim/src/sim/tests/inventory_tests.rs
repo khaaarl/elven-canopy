@@ -92,7 +92,7 @@ fn ground_piles_in_sim_state() {
     let mut sim = test_sim(legacy_test_seed());
     let pos = VoxelCoord::new(10, 1, 20);
     {
-        let pile_id = sim.ensure_ground_pile(pos);
+        let pile_id = sim.ensure_ground_pile(pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(
             pile.inventory_id,
@@ -126,7 +126,7 @@ fn ground_piles_serialization_roundtrip() {
     let pos1 = VoxelCoord::new(10, 1, 20);
     let pos2 = VoxelCoord::new(3, 1, 7);
     {
-        let pile_id = sim.ensure_ground_pile(pos1);
+        let pile_id = sim.ensure_ground_pile(pos1, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(
             pile.inventory_id,
@@ -137,7 +137,7 @@ fn ground_piles_serialization_roundtrip() {
         );
     }
     {
-        let pile_id = sim.ensure_ground_pile(pos2);
+        let pile_id = sim.ensure_ground_pile(pos2, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(
             pile.inventory_id,
@@ -191,7 +191,7 @@ fn ground_piles_serde_roundtrip() {
     let mut sim = test_sim(legacy_test_seed());
     let pos = VoxelCoord::new(10, 1, 20);
     {
-        let pile_id = sim.ensure_ground_pile(pos);
+        let pile_id = sim.ensure_ground_pile(pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(
             pile.inventory_id,
@@ -493,7 +493,7 @@ fn enchantment_effect_cascade_delete() {
 fn inv_item_count_respects_material_filter() {
     let mut sim = test_sim(legacy_test_seed());
     let pos = VoxelCoord::new(10, 1, 20);
-    let pile_id = sim.ensure_ground_pile(pos);
+    let pile_id = sim.ensure_ground_pile(pos, sim.home_zone_id());
     let inv_id = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
 
     let species_a = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(1));
@@ -564,7 +564,7 @@ fn inv_item_count_respects_material_filter() {
 fn inv_reserve_items_single_material_lock() {
     let mut sim = test_sim(legacy_test_seed());
     let pos = VoxelCoord::new(10, 1, 20);
-    let pile_id = sim.ensure_ground_pile(pos);
+    let pile_id = sim.ensure_ground_pile(pos, sim.home_zone_id());
     let inv_id = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
 
     let species_a = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(1));
@@ -619,7 +619,7 @@ fn inv_reserve_items_single_material_lock() {
 fn inv_reserve_items_specific_filter() {
     let mut sim = test_sim(legacy_test_seed());
     let pos = VoxelCoord::new(10, 1, 20);
-    let pile_id = sim.ensure_ground_pile(pos);
+    let pile_id = sim.ensure_ground_pile(pos, sim.home_zone_id());
     let inv_id = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
 
     let species_a = inventory::Material::FruitSpecies(crate::fruit::FruitSpeciesId(1));
@@ -763,7 +763,7 @@ fn pile_on_solid_ground_does_not_fall() {
     let mut sim = test_sim(legacy_test_seed());
     // Place a pile on y=1 (above terrain at y=0 — always solid).
     let pos = VoxelCoord::new(10, 1, 10);
-    let pile_id = sim.ensure_ground_pile(pos);
+    let pile_id = sim.ensure_ground_pile(pos, sim.home_zone_id());
     sim.inv_add_simple_item(
         sim.db.ground_piles.get(&pile_id).unwrap().inventory_id,
         inventory::ItemKind::Bread,
@@ -772,7 +772,7 @@ fn pile_on_solid_ground_does_not_fall() {
         None,
     );
 
-    let fell = sim.apply_pile_gravity();
+    let fell = sim.apply_pile_gravity(sim.home_zone_id());
     assert_eq!(fell, 0);
 
     // Pile is still at original position.
@@ -785,11 +785,13 @@ fn floating_pile_falls_to_surface() {
     let mut sim = test_sim(legacy_test_seed());
     // Create a solid platform at y=5 by setting (10, 5, 10) to Platform.
     let platform_pos = VoxelCoord::new(10, 5, 10);
-    sim.world.set(platform_pos, VoxelType::GrownPlatform);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(platform_pos, VoxelType::GrownPlatform);
 
     // Place a pile at y=6 (on top of the platform).
     let pile_pos = VoxelCoord::new(10, 6, 10);
-    let pile_id = sim.ensure_ground_pile(pile_pos);
+    let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
     sim.inv_add_simple_item(
         sim.db.ground_piles.get(&pile_id).unwrap().inventory_id,
         inventory::ItemKind::Bread,
@@ -799,11 +801,13 @@ fn floating_pile_falls_to_surface() {
     );
 
     // Pile should not fall — platform is solid below.
-    assert_eq!(sim.apply_pile_gravity(), 0);
+    assert_eq!(sim.apply_pile_gravity(sim.home_zone_id()), 0);
 
     // Remove the platform — pile is now floating.
-    sim.world.set(platform_pos, VoxelType::Air);
-    let fell = sim.apply_pile_gravity();
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(platform_pos, VoxelType::Air);
+    let fell = sim.apply_pile_gravity(sim.home_zone_id());
     assert_eq!(fell, 1);
 
     // Pile should have fallen to y=1 (above terrain at y=0).
@@ -828,7 +832,7 @@ fn floating_pile_merges_with_existing_pile() {
     let mut sim = test_sim(legacy_test_seed());
     // Place a pile on the ground at y=1.
     let ground_pos = VoxelCoord::new(15, 1, 15);
-    let ground_pile_id = sim.ensure_ground_pile(ground_pos);
+    let ground_pile_id = sim.ensure_ground_pile(ground_pos, sim.home_zone_id());
     let ground_inv = sim
         .db
         .ground_piles
@@ -839,15 +843,19 @@ fn floating_pile_merges_with_existing_pile() {
 
     // Create a platform and a pile on top of it.
     let platform_pos = VoxelCoord::new(15, 5, 15);
-    sim.world.set(platform_pos, VoxelType::GrownPlatform);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(platform_pos, VoxelType::GrownPlatform);
     let high_pos = VoxelCoord::new(15, 6, 15);
-    let high_pile_id = sim.ensure_ground_pile(high_pos);
+    let high_pile_id = sim.ensure_ground_pile(high_pos, sim.home_zone_id());
     let high_inv = sim.db.ground_piles.get(&high_pile_id).unwrap().inventory_id;
     sim.inv_add_simple_item(high_inv, inventory::ItemKind::Fruit, 2, None, None);
 
     // Remove the platform — high pile should fall and merge with ground pile.
-    sim.world.set(platform_pos, VoxelType::Air);
-    let fell = sim.apply_pile_gravity();
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(platform_pos, VoxelType::Air);
+    let fell = sim.apply_pile_gravity(sim.home_zone_id());
     assert_eq!(fell, 1);
 
     // The floating pile should be deleted.
@@ -876,7 +884,7 @@ fn merge_stacks_same_item_kind() {
     // Both piles have Bread — after merge, the ground pile should have a
     // single Bread stack with the combined quantity.
     let ground_pos = VoxelCoord::new(20, 1, 20);
-    let ground_pile_id = sim.ensure_ground_pile(ground_pos);
+    let ground_pile_id = sim.ensure_ground_pile(ground_pos, sim.home_zone_id());
     let ground_inv = sim
         .db
         .ground_piles
@@ -886,14 +894,18 @@ fn merge_stacks_same_item_kind() {
     sim.inv_add_simple_item(ground_inv, inventory::ItemKind::Bread, 4, None, None);
 
     let platform_pos = VoxelCoord::new(20, 3, 20);
-    sim.world.set(platform_pos, VoxelType::GrownPlatform);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(platform_pos, VoxelType::GrownPlatform);
     let high_pos = VoxelCoord::new(20, 4, 20);
-    let high_pile_id = sim.ensure_ground_pile(high_pos);
+    let high_pile_id = sim.ensure_ground_pile(high_pos, sim.home_zone_id());
     let high_inv = sim.db.ground_piles.get(&high_pile_id).unwrap().inventory_id;
     sim.inv_add_simple_item(high_inv, inventory::ItemKind::Bread, 6, None, None);
 
-    sim.world.set(platform_pos, VoxelType::Air);
-    sim.apply_pile_gravity();
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(platform_pos, VoxelType::Air);
+    sim.apply_pile_gravity(sim.home_zone_id());
 
     assert!(sim.db.ground_piles.get(&high_pile_id).is_none());
     let stacks = sim.inv_items(ground_inv);
@@ -909,11 +921,15 @@ fn pile_falls_to_intermediate_surface() {
     // Remove y=6 — pile should fall to y=4 (on top of y=3 platform), not y=1.
     let lower_platform = VoxelCoord::new(25, 3, 25);
     let upper_platform = VoxelCoord::new(25, 6, 25);
-    sim.world.set(lower_platform, VoxelType::GrownPlatform);
-    sim.world.set(upper_platform, VoxelType::GrownPlatform);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(lower_platform, VoxelType::GrownPlatform);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(upper_platform, VoxelType::GrownPlatform);
 
     let pile_pos = VoxelCoord::new(25, 7, 25);
-    let pile_id = sim.ensure_ground_pile(pile_pos);
+    let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
     sim.inv_add_simple_item(
         sim.db.ground_piles.get(&pile_id).unwrap().inventory_id,
         inventory::ItemKind::Bread,
@@ -923,8 +939,10 @@ fn pile_falls_to_intermediate_surface() {
     );
 
     // Remove upper platform only.
-    sim.world.set(upper_platform, VoxelType::Air);
-    sim.apply_pile_gravity();
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(upper_platform, VoxelType::Air);
+    sim.apply_pile_gravity(sim.home_zone_id());
 
     // Pile gets a new ID after remove+re-insert, so look up by position.
     let landing = VoxelCoord::new(25, 4, 25);
@@ -943,22 +961,30 @@ fn multiple_floating_piles_in_same_column() {
     // Use coordinates far from the tree trunk (~32,32) to avoid overlap.
     let p1 = VoxelCoord::new(10, 3, 10);
     let p2 = VoxelCoord::new(10, 6, 10);
-    sim.world.set(p1, VoxelType::GrownPlatform);
-    sim.world.set(p2, VoxelType::GrownPlatform);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(p1, VoxelType::GrownPlatform);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(p2, VoxelType::GrownPlatform);
 
     let pile1_pos = VoxelCoord::new(10, 4, 10);
-    let pile1_id = sim.ensure_ground_pile(pile1_pos);
+    let pile1_id = sim.ensure_ground_pile(pile1_pos, sim.home_zone_id());
     let pile1_inv = sim.db.ground_piles.get(&pile1_id).unwrap().inventory_id;
     sim.inv_add_simple_item(pile1_inv, inventory::ItemKind::Bread, 2, None, None);
 
     let pile2_pos = VoxelCoord::new(10, 7, 10);
-    let pile2_id = sim.ensure_ground_pile(pile2_pos);
+    let pile2_id = sim.ensure_ground_pile(pile2_pos, sim.home_zone_id());
     let pile2_inv = sim.db.ground_piles.get(&pile2_id).unwrap().inventory_id;
     sim.inv_add_simple_item(pile2_inv, inventory::ItemKind::Fruit, 3, None, None);
 
-    sim.world.set(p1, VoxelType::Air);
-    sim.world.set(p2, VoxelType::Air);
-    let fell = sim.apply_pile_gravity();
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(p1, VoxelType::Air);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(p2, VoxelType::Air);
+    let fell = sim.apply_pile_gravity(sim.home_zone_id());
     assert_eq!(fell, 2);
 
     // Both should have ended up at y=1. Only one pile should remain.
@@ -983,12 +1009,16 @@ fn empty_floating_pile_is_cleaned_up() {
     let mut sim = test_sim(legacy_test_seed());
     // A floating pile with no items should still be moved.
     let platform_pos = VoxelCoord::new(35, 3, 35);
-    sim.world.set(platform_pos, VoxelType::GrownPlatform);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(platform_pos, VoxelType::GrownPlatform);
     let pile_pos = VoxelCoord::new(35, 4, 35);
-    let _pile_id = sim.ensure_ground_pile(pile_pos);
+    let _pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
 
-    sim.world.set(platform_pos, VoxelType::Air);
-    let fell = sim.apply_pile_gravity();
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(platform_pos, VoxelType::Air);
+    let fell = sim.apply_pile_gravity(sim.home_zone_id());
     assert_eq!(fell, 1);
 
     // Pile should have moved to y=1.
@@ -1037,7 +1067,7 @@ fn ensure_ground_pile_snaps_floating_position_to_surface() {
     let mut sim = test_sim(legacy_test_seed());
     // Request a pile at y=10 with no solid voxel below (except floor at y=0).
     let floating_pos = VoxelCoord::new(40, 10, 40);
-    let pile_id = sim.ensure_ground_pile(floating_pos);
+    let pile_id = sim.ensure_ground_pile(floating_pos, sim.home_zone_id());
 
     // Pile should have been snapped to y=1 (above terrain).
     let pile = sim.db.ground_piles.get(&pile_id).unwrap();
@@ -1048,9 +1078,10 @@ fn ensure_ground_pile_snaps_floating_position_to_surface() {
 fn ensure_ground_pile_snaps_to_intermediate_platform() {
     let mut sim = test_sim(legacy_test_seed());
     // Platform at y=5, request pile at y=10.
-    sim.world
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
         .set(VoxelCoord::new(42, 5, 42), VoxelType::GrownPlatform);
-    let pile_id = sim.ensure_ground_pile(VoxelCoord::new(42, 10, 42));
+    let pile_id = sim.ensure_ground_pile(VoxelCoord::new(42, 10, 42), sim.home_zone_id());
 
     let pile = sim.db.ground_piles.get(&pile_id).unwrap();
     assert_eq!(pile.position, VoxelCoord::new(42, 6, 42));
@@ -1061,7 +1092,7 @@ fn ensure_ground_pile_merges_when_snapped_to_existing() {
     let mut sim = test_sim(legacy_test_seed());
     // Create a pile at y=1.
     let ground_pos = VoxelCoord::new(44, 1, 44);
-    let ground_pile_id = sim.ensure_ground_pile(ground_pos);
+    let ground_pile_id = sim.ensure_ground_pile(ground_pos, sim.home_zone_id());
     let ground_inv = sim
         .db
         .ground_piles
@@ -1072,7 +1103,7 @@ fn ensure_ground_pile_merges_when_snapped_to_existing() {
 
     // Request a pile at y=8 (floating) — should snap to y=1 and return
     // the existing pile instead of creating a new one.
-    let returned_id = sim.ensure_ground_pile(VoxelCoord::new(44, 8, 44));
+    let returned_id = sim.ensure_ground_pile(VoxelCoord::new(44, 8, 44), sim.home_zone_id());
     assert_eq!(returned_id, ground_pile_id);
 
     // Only one pile at this column.
@@ -2179,11 +2210,17 @@ fn arrow_surface_hit_always_destroyed_when_min_equals_max_hp() {
 
     // Place a solid wall.
     for y in 1..=5 {
-        sim.world
+        sim.voxel_zone_mut(sim.home_zone_id())
+            .unwrap()
             .set(VoxelCoord::new(45, y, 40), VoxelType::GrownPlatform);
     }
 
-    sim.spawn_projectile(VoxelCoord::new(40, 3, 40), VoxelCoord::new(45, 3, 40), None);
+    sim.spawn_projectile(
+        VoxelCoord::new(40, 3, 40),
+        VoxelCoord::new(45, 3, 40),
+        None,
+        sim.home_zone_id(),
+    );
 
     let mut all_events = Vec::new();
     for _ in 0..500 {
@@ -2235,11 +2272,17 @@ fn arrow_surface_hit_survives_when_no_damage() {
     sim.config.arrow_impact_damage_max = 0;
 
     for y in 1..=5 {
-        sim.world
+        sim.voxel_zone_mut(sim.home_zone_id())
+            .unwrap()
             .set(VoxelCoord::new(45, y, 40), VoxelType::GrownPlatform);
     }
 
-    sim.spawn_projectile(VoxelCoord::new(40, 3, 40), VoxelCoord::new(45, 3, 40), None);
+    sim.spawn_projectile(
+        VoxelCoord::new(40, 3, 40),
+        VoxelCoord::new(45, 3, 40),
+        None,
+        sim.home_zone_id(),
+    );
 
     for _ in 0..500 {
         if sim.db.projectiles.is_empty() {
@@ -2281,7 +2324,7 @@ fn arrow_creature_hit_always_destroyed_when_min_equals_max_hp() {
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
     let origin = VoxelCoord::new(goblin_pos.x - 10, goblin_pos.y, goblin_pos.z);
-    sim.spawn_projectile(origin, goblin_pos, None);
+    sim.spawn_projectile(origin, goblin_pos, None, sim.home_zone_id());
 
     let mut all_events = Vec::new();
     for _ in 0..500 {
@@ -2333,7 +2376,7 @@ fn arrow_creature_hit_survives_when_no_damage() {
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let goblin_pos = sim.db.creatures.get(&goblin).unwrap().position.min;
     let origin = VoxelCoord::new(goblin_pos.x - 10, goblin_pos.y, goblin_pos.z);
-    sim.spawn_projectile(origin, goblin_pos, None);
+    sim.spawn_projectile(origin, goblin_pos, None, sim.home_zone_id());
 
     for _ in 0..500 {
         if sim.db.projectiles.is_empty() {
@@ -2375,11 +2418,17 @@ fn arrow_impact_damage_is_deterministic() {
         sim.config.arrow_impact_damage_max = 3;
 
         for y in 1..=5 {
-            sim.world
+            sim.voxel_zone_mut(sim.home_zone_id())
+                .unwrap()
                 .set(VoxelCoord::new(45, y, 40), VoxelType::GrownPlatform);
         }
 
-        sim.spawn_projectile(VoxelCoord::new(40, 3, 40), VoxelCoord::new(45, 3, 40), None);
+        sim.spawn_projectile(
+            VoxelCoord::new(40, 3, 40),
+            VoxelCoord::new(45, 3, 40),
+            None,
+            sim.home_zone_id(),
+        );
 
         for _ in 0..500 {
             if sim.db.projectiles.is_empty() {
@@ -2428,11 +2477,17 @@ fn arrow_impact_partial_damage_reduces_hp() {
     sim.config.arrow_impact_damage_max = 1;
 
     for y in 1..=5 {
-        sim.world
+        sim.voxel_zone_mut(sim.home_zone_id())
+            .unwrap()
             .set(VoxelCoord::new(45, y, 40), VoxelType::GrownPlatform);
     }
 
-    sim.spawn_projectile(VoxelCoord::new(40, 3, 40), VoxelCoord::new(45, 3, 40), None);
+    sim.spawn_projectile(
+        VoxelCoord::new(40, 3, 40),
+        VoxelCoord::new(45, 3, 40),
+        None,
+        sim.home_zone_id(),
+    );
 
     for _ in 0..500 {
         if sim.db.projectiles.is_empty() {
@@ -2573,7 +2628,7 @@ fn damaged_arrow_survives_serde_roundtrip() {
     let mut sim = test_sim(legacy_test_seed());
     // Place a damaged arrow in a ground pile.
     let pos = VoxelCoord::new(128, 1, 128);
-    let pile_id = sim.ensure_ground_pile(pos);
+    let pile_id = sim.ensure_ground_pile(pos, sim.home_zone_id());
     let pile_inv = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
     sim.inv_add_item_with_durability(
         pile_inv,
@@ -2614,11 +2669,17 @@ fn arrow_impact_no_damage_when_min_exceeds_max() {
     sim.config.arrow_impact_damage_max = 2; // min > max → no damage
 
     for y in 1..=5 {
-        sim.world
+        sim.voxel_zone_mut(sim.home_zone_id())
+            .unwrap()
             .set(VoxelCoord::new(45, y, 40), VoxelType::GrownPlatform);
     }
 
-    sim.spawn_projectile(VoxelCoord::new(40, 3, 40), VoxelCoord::new(45, 3, 40), None);
+    sim.spawn_projectile(
+        VoxelCoord::new(40, 3, 40),
+        VoxelCoord::new(45, 3, 40),
+        None,
+        sim.home_zone_id(),
+    );
 
     for _ in 0..500 {
         if sim.db.projectiles.is_empty() {
@@ -3263,7 +3324,9 @@ fn fruit_set_in_world_grid() {
         .by_tree_id(&tree_id, tabulosity::QueryOpts::ASC);
     for tf in &fruits {
         assert_eq!(
-            sim.world.get(tf.position.min),
+            sim.voxel_zone(sim.home_zone_id())
+                .unwrap()
+                .get(tf.position.min),
             VoxelType::Fruit,
             "World should have Fruit voxel at {}",
             tf.position.min
@@ -3479,7 +3542,7 @@ fn harvest_fruit_carries_species_material() {
     let elf_pos = find_walkable(&sim, fruit_pos, 10).unwrap();
     let mut events = Vec::new();
     let elf_id = sim
-        .spawn_creature(Species::Elf, elf_pos, &mut events)
+        .spawn_creature(Species::Elf, elf_pos, sim.home_zone_id(), &mut events)
         .unwrap();
     sim.config.elf_starting_bread = 100; // Prevent hunger.
 
@@ -3499,11 +3562,14 @@ fn harvest_fruit_carries_species_material() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(task);
+    sim.insert_task(sim.home_zone_id(), task);
     sim.resolve_harvest_action(elf_id, task_id, fruit_pos);
 
     // The fruit should be gone from world and TreeFruit table.
-    assert_eq!(sim.world.get(fruit_pos), VoxelType::Air);
+    assert_eq!(
+        sim.voxel_zone(sim.home_zone_id()).unwrap().get(fruit_pos),
+        VoxelType::Air
+    );
     assert!(
         sim.db
             .tree_fruits
@@ -3643,8 +3709,10 @@ fn tree_fruit_position_unique_index_prevents_duplicates() {
         .unwrap();
 
     let pos = VoxelCoord::new(10, 60, 10);
+    let hz = sim.home_zone_id();
     let result1 = sim.db.insert_tree_fruit_auto(|id| crate::db::TreeFruit {
         id,
+        zone_id: hz,
         tree_id,
         position: VoxelBox::point(pos),
         species_id,
@@ -3653,6 +3721,7 @@ fn tree_fruit_position_unique_index_prevents_duplicates() {
 
     let result2 = sim.db.insert_tree_fruit_auto(|id| crate::db::TreeFruit {
         id,
+        zone_id: hz,
         tree_id,
         position: VoxelBox::point(pos),
         species_id,
@@ -3810,6 +3879,7 @@ fn add_ground_pile_item() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::AddGroundPileItem {
+            zone_id: sim.home_zone_id(),
             position: pos,
             item_kind: crate::inventory::ItemKind::Bread,
             quantity: 3,
@@ -3904,7 +3974,7 @@ fn death_drop_preserves_preexisting_pile_items() {
     // Pre-place arrows in a ground pile at the elf's position.
     // Use a unique material (Willow) so they won't merge with the elf's
     // starting arrows (which have material: None).
-    let pile_id = sim.ensure_ground_pile(elf_pos);
+    let pile_id = sim.ensure_ground_pile(elf_pos, sim.home_zone_id());
     let pile_inv = sim.db.ground_piles.get(&pile_id).unwrap().inventory_id;
     let fake_task = TaskId::new(&mut sim.rng.clone());
     insert_stub_task(&mut sim, fake_task);

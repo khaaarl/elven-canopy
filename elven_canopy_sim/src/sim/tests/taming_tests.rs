@@ -998,7 +998,7 @@ fn taming_success_cancels_other_civs_tame_tasks() {
         prerequisite_task_id: None,
         required_civ_id: Some(civ2_id),
     };
-    sim.insert_task(civ2_task);
+    sim.insert_task(sim.home_zone_id(), civ2_task);
 
     // Verify two tame tasks exist.
     let tame_task_count = sim

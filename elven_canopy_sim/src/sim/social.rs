@@ -201,6 +201,8 @@ impl SimState {
             None => return, // non-civ creatures don't do casual social
         };
         let pos = creature.position.min;
+        // TODO(F-zone-world): handle None zone_id (in-transit creature)
+        let zone_id = creature.zone_id.unwrap_or_else(|| self.home_zone_id());
         let radius = self.config.social.casual_social_radius;
 
         // Scan nearby voxels for same-civ alive creatures.
@@ -213,7 +215,7 @@ impl SimState {
                         continue;
                     }
                     let voxel = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
-                    for &other_id in &self.creatures_at_voxel(voxel) {
+                    for &other_id in &self.creatures_at_voxel(zone_id, voxel) {
                         if other_id == creature_id {
                             continue;
                         }
@@ -245,7 +247,7 @@ impl SimState {
             }
         }
         // Also check the initiator's own voxel (dx=dy=dz=0, dist=0 was skipped).
-        for &other_id in &self.creatures_at_voxel(pos) {
+        for &other_id in &self.creatures_at_voxel(zone_id, pos) {
             if other_id == creature_id {
                 continue;
             }

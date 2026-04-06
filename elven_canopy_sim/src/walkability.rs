@@ -14,13 +14,13 @@
 // instead of rolling their own neighbor loops.
 //
 // See also: `pathfinding.rs` (A* using these predicates), `nav.rs` (EdgeType
-// enum and DIST_SCALE constants), `world.rs` (VoxelWorld), `types.rs`
+// enum and DIST_SCALE constants), `world.rs` (VoxelZone), `types.rs`
 // (FaceData, FaceDirection, FaceType).
 
 use crate::nav::EdgeType;
 use crate::pathfinding::NEIGHBOR_OFFSETS;
 use crate::types::{FaceData, FaceDirection, FaceType, VoxelCoord, VoxelType};
-use crate::world::VoxelWorld;
+use crate::world::VoxelZone;
 use std::collections::BTreeMap;
 
 /// 6 face-neighbor offsets (±x, ±y, ±z).
@@ -53,7 +53,7 @@ const CLIMBER_FACE_OFFSETS: [(i32, i32, i32); 4] = [(1, 0, 0), (-1, 0, 0), (0, 0
 /// `footprint_walkable` (ground creatures) and `find_creature_landing`
 /// (gravity deflection).  It does NOT check ground support — that's
 /// `footprint_walkable`'s job.
-pub fn footprint_fits(world: &VoxelWorld, anchor: VoxelCoord, footprint: [u8; 3]) -> bool {
+pub fn footprint_fits(world: &VoxelZone, anchor: VoxelCoord, footprint: [u8; 3]) -> bool {
     for dx in 0..footprint[0] as i32 {
         for dy in 0..footprint[1] as i32 {
             for dz in 0..footprint[2] as i32 {
@@ -110,7 +110,7 @@ pub fn footprint_fits(world: &VoxelWorld, anchor: VoxelCoord, footprint: [u8; 3]
 /// like platform edges. When `can_climb` is false, only the non-climber
 /// rules above apply — the climber section is skipped entirely.
 pub fn footprint_walkable(
-    world: &VoxelWorld,
+    world: &VoxelZone,
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     anchor: VoxelCoord,
     footprint: [u8; 3],
@@ -244,7 +244,7 @@ pub fn footprint_walkable(
 /// Inner walkability check for 1×1×1 creatures. Not public — all external
 /// callers go through `footprint_walkable`.
 fn footprint_walkable_1x1(
-    world: &VoxelWorld,
+    world: &VoxelZone,
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     pos: VoxelCoord,
     can_climb: bool,
@@ -307,7 +307,7 @@ fn footprint_walkable_1x1(
 /// a scaled Euclidean distance suitable for cost computation. Callers derive
 /// edge type and cost from these positions.
 pub fn ground_neighbors(
-    world: &VoxelWorld,
+    world: &VoxelZone,
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     pos: VoxelCoord,
     footprint: [u8; 3],
@@ -344,7 +344,7 @@ pub fn ground_neighbors(
 /// For Air voxels next to `BuildingInterior` with blocking faces, the face
 /// type determines the surface similarly.
 pub fn derive_surface_type(
-    world: &VoxelWorld,
+    world: &VoxelZone,
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     pos: VoxelCoord,
 ) -> VoxelType {
@@ -537,7 +537,7 @@ pub fn derive_edge_type(
 /// For [1,1,1] creatures, this is equivalent to the old `find_nearest_walkable`.
 /// For larger footprints, tests `footprint_walkable` at each candidate.
 pub fn find_nearest_walkable(
-    world: &VoxelWorld,
+    world: &VoxelZone,
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     pos: VoxelCoord,
     max_distance: u32,
@@ -557,7 +557,7 @@ pub fn find_nearest_walkable(
 
 /// Find the nearest walkable ground-level voxel (surface type `Dirt`) to `pos`.
 pub fn find_nearest_ground_walkable(
-    world: &VoxelWorld,
+    world: &VoxelZone,
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     pos: VoxelCoord,
     max_distance: u32,
@@ -577,7 +577,7 @@ pub fn find_nearest_ground_walkable(
 /// `find_nearest_footprint_walkable`, and `find_nearest_ground_walkable` — they
 /// all delegate here with different filters.
 fn find_nearest_walkable_filtered(
-    world: &VoxelWorld,
+    world: &VoxelZone,
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     pos: VoxelCoord,
     max_distance: u32,
@@ -644,7 +644,7 @@ fn find_nearest_walkable_filtered(
 /// the first result. Used by group move commands to spread creatures across
 /// nearby positions instead of stacking them all on the same voxel.
 pub fn spread_destinations(
-    world: &VoxelWorld,
+    world: &VoxelZone,
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     center: VoxelCoord,
     count: usize,
@@ -689,11 +689,11 @@ pub fn spread_destinations(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::VoxelWorld;
+    use crate::world::VoxelZone;
 
     /// Create a flat dirt floor at y=floor_y, air above.
-    fn ground_world(sx: u32, sy: u32, sz: u32, floor_y: i32) -> VoxelWorld {
-        let mut world = VoxelWorld::new(sx, sy, sz);
+    fn ground_world(sx: u32, sy: u32, sz: u32, floor_y: i32) -> VoxelZone {
+        let mut world = VoxelZone::new(sx, sy, sz);
         for x in 0..sx as i32 {
             for z in 0..sz as i32 {
                 world.set(VoxelCoord::new(x, floor_y, z), VoxelType::Dirt);
@@ -787,7 +787,7 @@ mod tests {
 
     #[test]
     fn find_nearest_walkable_none_in_range() {
-        let world = VoxelWorld::new(16, 16, 16); // all air
+        let world = VoxelZone::new(16, 16, 16); // all air
         let fd = no_faces();
         let pos = VoxelCoord::new(5, 5, 5);
         assert_eq!(find_nearest_walkable(&world, &fd, pos, 5, FP1, true), None);
@@ -835,7 +835,7 @@ mod tests {
 
     #[test]
     fn spread_destinations_unwalkable_center() {
-        let world = VoxelWorld::new(16, 16, 16); // all air
+        let world = VoxelZone::new(16, 16, 16); // all air
         let fd = no_faces();
         let center = VoxelCoord::new(5, 5, 5);
         let result = spread_destinations(&world, &fd, center, 5, FP1, true);
@@ -924,7 +924,7 @@ mod tests {
     fn test_footprint_walkable_2x2x2_three_columns_supported() {
         // 3 of 4 ground columns have solid at y-1 (y=5), 1 column does not.
         // 3 >= 3 threshold → walkable.
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         let fd = no_faces();
         // Place dirt at y=5 for 3 columns but not (6,5,6).
         world.set(VoxelCoord::new(5, 5, 5), VoxelType::Dirt);
@@ -944,7 +944,7 @@ mod tests {
         // support via the climber fallback. To test the "not enough support"
         // case, we need NO solid anywhere near the footprint (y-1 or
         // face-adjacent), with solid ONLY at y-3 (too far for any rule).
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         let fd = no_faces();
         // Place solid only at y=3 (y-3 from anchor y=6), too deep for any rule.
         world.set(VoxelCoord::new(5, 3, 5), VoxelType::Dirt);
@@ -960,7 +960,7 @@ mod tests {
     fn test_footprint_walkable_2x2x2_one_direct_two_deep() {
         // 1 column has solid at y-1, 2 columns have solid at y-2 (but not y-1).
         // 1+ at y-1 AND 2+ at y-2 → walkable.
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         let fd = no_faces();
         // 1 column with direct support at y=5.
         world.set(VoxelCoord::new(5, 5, 5), VoxelType::Dirt);
@@ -985,7 +985,7 @@ mod tests {
         // To actually get false, there must be no solid within face-adjacency
         // of y-1 or y-2 for any column — i.e., no solid at y-1, y-2, y-3,
         // or horizontally adjacent at those levels.
-        let world = VoxelWorld::new(16, 16, 16);
+        let world = VoxelZone::new(16, 16, 16);
         let fd = no_faces();
         // Completely empty world — no solid anywhere.
         assert!(
@@ -1001,7 +1001,7 @@ mod tests {
     #[test]
     fn test_footprint_walkable_2x2x2_non_climber_three_direct() {
         // 3 of 4 columns have solid at y-1 → walkable even without climbing.
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         let fd = no_faces();
         world.set(VoxelCoord::new(5, 5, 5), VoxelType::Dirt);
         world.set(VoxelCoord::new(6, 5, 5), VoxelType::Dirt);
@@ -1015,7 +1015,7 @@ mod tests {
     #[test]
     fn test_footprint_walkable_2x2x2_non_climber_one_direct_two_deep() {
         // 1 column at y-1, 2 columns at y-2 → walkable for non-climber.
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         let fd = no_faces();
         world.set(VoxelCoord::new(5, 5, 5), VoxelType::Dirt);
         world.set(VoxelCoord::new(6, 4, 5), VoxelType::Dirt);
@@ -1030,7 +1030,7 @@ mod tests {
     fn test_footprint_walkable_2x2x2_non_climber_two_direct_only() {
         // Only 2 columns at y-1, 0 at y-2 → NOT walkable for non-climber.
         // (2 < 3 threshold, and deep_support = 0 < 2.)
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         let fd = no_faces();
         world.set(VoxelCoord::new(5, 5, 5), VoxelType::Dirt);
         world.set(VoxelCoord::new(6, 5, 5), VoxelType::Dirt);
@@ -1044,7 +1044,7 @@ mod tests {
     fn test_footprint_walkable_2x2x2_non_climber_zero_direct() {
         // 0 columns at y-1 → NOT walkable for non-climber, even with solid
         // at y-2 or face-adjacent walls.
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         let fd = no_faces();
         // Solid at y-2 for all columns, but nothing at y-1.
         for dx in 0..2 {
@@ -1064,7 +1064,7 @@ mod tests {
     fn test_footprint_walkable_2x2x2_non_climber_ignores_wall_adjacency() {
         // Non-climber with 0 direct support but wall-adjacent solid.
         // Should NOT be walkable — only climbers use face adjacency.
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         let fd = no_faces();
         // Trunk right next to the footprint at body level.
         world.set(VoxelCoord::new(4, 6, 5), VoxelType::Trunk);
@@ -1194,7 +1194,7 @@ mod tests {
 
     #[test]
     fn footprint_fits_rejects_y_below_1() {
-        let world = VoxelWorld::new(16, 16, 16);
+        let world = VoxelZone::new(16, 16, 16);
         // Anchor at y=0 — the footprint includes y=0 which is < 1.
         assert!(!footprint_fits(&world, VoxelCoord::new(3, 0, 3), [2, 2, 2],));
         // 1x1x1 at y=0 also rejected.

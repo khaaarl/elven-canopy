@@ -43,7 +43,7 @@
 // ## RLE-aware iteration
 //
 // The smooth mesh pass iterates all voxels in the chunk + border region. The
-// leaf pass walks each column's RLE spans via `VoxelWorld::column_spans()`,
+// leaf pass walks each column's RLE spans via `VoxelZone::column_spans()`,
 // clipping to the chunk's Y range and skipping non-leaf spans.
 //
 // ## Face culling rule
@@ -109,7 +109,7 @@ impl Default for MeshPipelineConfig {
     }
 }
 use elven_canopy_sim::types::{VoxelCoord, VoxelType};
-use elven_canopy_sim::world::VoxelWorld;
+use elven_canopy_sim::world::VoxelZone;
 
 /// Side length of a chunk in voxels.
 pub const CHUNK_SIZE: i32 = 16;
@@ -253,7 +253,7 @@ pub fn chunk_mesh_to_obj(mesh: &ChunkMesh) -> String {
 /// overriding the config's `decimation_enabled` field. Thread-safe: creates
 /// a modified config copy instead of mutating global state.
 pub fn generate_chunk_mesh_with_decimation(
-    world: &VoxelWorld,
+    world: &VoxelZone,
     chunk: ChunkCoord,
     y_cutoff: Option<i32>,
     decimate: bool,
@@ -266,10 +266,10 @@ pub fn generate_chunk_mesh_with_decimation(
 }
 
 /// Convenience wrapper: extracts a `ChunkNeighborhood` from the world and
-/// generates the mesh. Use this when you have a `&VoxelWorld` and don't need
+/// generates the mesh. Use this when you have a `&VoxelZone` and don't need
 /// to decouple extraction from generation (tests, synchronous callers).
 pub fn generate_chunk_mesh_from_world(
-    world: &VoxelWorld,
+    world: &VoxelZone,
     chunk: ChunkCoord,
     y_cutoff: Option<i32>,
     grassless: &std::collections::BTreeSet<VoxelCoord>,
@@ -767,8 +767,8 @@ mod tests {
     }
 
     /// Helper: create a small world (one chunk = 16x16x16).
-    fn one_chunk_world() -> VoxelWorld {
-        VoxelWorld::new(16, 16, 16)
+    fn one_chunk_world() -> VoxelZone {
+        VoxelZone::new(16, 16, 16)
     }
 
     #[test]
@@ -889,7 +889,7 @@ mod tests {
     fn chunk_boundary_neighbor_check() {
         let cfg = no_decimate();
         // World is 32 voxels wide (2 chunks). Place voxels at chunk boundary.
-        let mut world = VoxelWorld::new(32, 16, 16);
+        let mut world = VoxelZone::new(32, 16, 16);
         world.set(VoxelCoord::new(15, 8, 8), VoxelType::Trunk); // last voxel in chunk 0
         world.set(VoxelCoord::new(16, 8, 8), VoxelType::Trunk); // first voxel in chunk 1
 
@@ -1168,7 +1168,7 @@ mod tests {
     fn span_clips_to_chunk_y_range() {
         // World with 2 vertical chunks (32 tall). Place a tall column of trunk
         // spanning y=10..25 (crosses the chunk boundary at y=16).
-        let mut world = VoxelWorld::new(16, 32, 16);
+        let mut world = VoxelZone::new(16, 32, 16);
         for y in 10..26 {
             world.set(VoxelCoord::new(4, y, 4), VoxelType::Trunk);
         }
@@ -1202,7 +1202,7 @@ mod tests {
     #[test]
     fn empty_chunk_in_tall_world() {
         // A tall world where a chunk far above the content is empty.
-        let mut world = VoxelWorld::new(16, 128, 16);
+        let mut world = VoxelZone::new(16, 128, 16);
         world.set(VoxelCoord::new(8, 0, 8), VoxelType::Trunk);
 
         // Chunk at y=64..79 should be empty.
@@ -1252,7 +1252,7 @@ mod tests {
     fn world_smaller_than_chunk_skips_out_of_bounds_columns() {
         // World is only 8×16×8 but chunk footprint is 16×16. The 8 columns
         // outside the world in each dimension should be skipped.
-        let mut world = VoxelWorld::new(8, 16, 8);
+        let mut world = VoxelZone::new(8, 16, 8);
         world.set(VoxelCoord::new(4, 4, 4), VoxelType::Trunk);
         let mesh = generate_chunk_mesh_from_world(
             &world,
@@ -1358,7 +1358,7 @@ mod tests {
         // code. For two adjacent chunks sharing a boundary at x=16, every
         // vertex that appears in BOTH chunks' output must have IDENTICAL
         // position AND normal (within float epsilon).
-        let mut world = VoxelWorld::new(32, 16, 16);
+        let mut world = VoxelZone::new(32, 16, 16);
         for x in 0..32 {
             let height = 3 + (x % 3);
             for y in 0..height {
@@ -1465,7 +1465,7 @@ mod tests {
 
     #[test]
     fn build_smooth_mesh_empty_returns_none() {
-        let world = VoxelWorld::new(16, 16, 16);
+        let world = VoxelZone::new(16, 16, 16);
         let nh =
             ChunkNeighborhood::extract(&world, ChunkCoord::new(0, 0, 0), None, &no_grassless());
         assert!(build_smooth_mesh(&nh, &no_decimate()).is_none());
@@ -1478,7 +1478,7 @@ mod tests {
             smoothing_enabled: false,
             ..MeshPipelineConfig::default()
         };
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
         world.set(VoxelCoord::new(9, 8, 8), VoxelType::Branch);
         world.set(VoxelCoord::new(8, 7, 8), VoxelType::Dirt);
@@ -1522,8 +1522,8 @@ mod tests {
 
     /// Helper: create a multi-voxel world for config-variation tests.
     /// Returns (world, chunk, neighborhood) with 3 opaque voxels.
-    fn config_test_world() -> (VoxelWorld, ChunkCoord, ChunkNeighborhood) {
-        let mut world = VoxelWorld::new(16, 16, 16);
+    fn config_test_world() -> (VoxelZone, ChunkCoord, ChunkNeighborhood) {
+        let mut world = VoxelZone::new(16, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
         world.set(VoxelCoord::new(9, 8, 8), VoxelType::Branch);
         world.set(VoxelCoord::new(8, 7, 8), VoxelType::Dirt);
@@ -1662,7 +1662,7 @@ mod tests {
         // This is the core motivation for replacing global atomics.
         // Extract two separate neighborhoods (ChunkNeighborhood is not Clone).
         fn make_nh() -> ChunkNeighborhood {
-            let mut world = VoxelWorld::new(16, 16, 16);
+            let mut world = VoxelZone::new(16, 16, 16);
             world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
             world.set(VoxelCoord::new(9, 8, 8), VoxelType::Branch);
             world.set(VoxelCoord::new(8, 7, 8), VoxelType::Dirt);

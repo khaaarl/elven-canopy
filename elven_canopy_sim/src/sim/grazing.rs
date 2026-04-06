@@ -28,16 +28,18 @@ impl SimState {
     /// Check whether a dirt voxel is "grassy" — exposed dirt (air above) that
     /// is not in the grassless set.
     pub(crate) fn is_grassy_dirt(&self, coord: VoxelCoord) -> bool {
-        let vt = self.world.get(coord);
+        // TODO(F-zone-world): derive zone from coord or caller context
+        let zone = self.voxel_zone(self.home_zone_id()).unwrap();
+        let vt = zone.get(coord);
         if vt != VoxelType::Dirt {
             return false;
         }
         let above = VoxelCoord::new(coord.x, coord.y + 1, coord.z);
-        let above_vt = self.world.get(above);
+        let above_vt = zone.get(above);
         if above_vt.is_solid() {
             return false;
         }
-        !self.grassless.contains(&coord)
+        !zone.grassless.contains(&coord)
     }
 
     /// Find the nearest reachable grassy dirt surface for a creature, using
@@ -60,9 +62,11 @@ impl SimState {
         let species_data = &self.species_table[&creature.species];
         let footprint = species_data.footprint;
         let can_climb = category.can_climb();
+        // TODO(F-zone-world): derive zone from creature's zone_id
+        let zone = self.voxel_zone(self.home_zone_id()).unwrap();
         if !crate::walkability::footprint_walkable(
-            &self.world,
-            &self.face_data,
+            zone,
+            &zone.face_data,
             start,
             footprint,
             can_climb,
@@ -94,17 +98,17 @@ impl SimState {
             // Expand neighbors via ground_neighbors (handles walkability,
             // face-blocking, and large-creature surface snapping).
             for (neighbor, dist_scaled) in crate::walkability::ground_neighbors(
-                &self.world,
-                &self.face_data,
+                zone,
+                &zone.face_data,
                 pos,
                 footprint,
                 can_climb,
             ) {
                 // Derive edge type to check species restrictions and speed.
                 let from_surface =
-                    crate::walkability::derive_surface_type(&self.world, &self.face_data, pos);
+                    crate::walkability::derive_surface_type(zone, &zone.face_data, pos);
                 let to_surface =
-                    crate::walkability::derive_surface_type(&self.world, &self.face_data, neighbor);
+                    crate::walkability::derive_surface_type(zone, &zone.face_data, neighbor);
                 let edge_type =
                     crate::walkability::derive_edge_type(from_surface, to_surface, pos, neighbor);
 
@@ -146,12 +150,14 @@ impl SimState {
         }
 
         // Add to grassless set.
-        self.grassless.insert(grass_pos);
+        // TODO(F-zone-world): derive zone from creature's zone_id
+        let zone = self.voxel_zone_mut(self.home_zone_id()).unwrap();
+        zone.grassless.insert(grass_pos);
 
         // Mark dirty for mesh regeneration. We don't change the actual voxel
         // type (it's still Dirt), but the mesh color changes, so we need the
         // chunk to be regenerated.
-        self.world.mark_dirty(grass_pos);
+        zone.mark_dirty(grass_pos);
 
         self.complete_task(task_id);
         true
@@ -162,36 +168,38 @@ impl SimState {
     /// Uses the sim PRNG for determinism.
     pub(crate) fn process_grass_regrowth(&mut self) {
         let chance_pct = self.config.grass_regrowth_chance_pct;
-        if chance_pct == 0 || self.grassless.is_empty() {
+        // TODO(F-zone-world): iterate all active zones
+        if self
+            .voxel_zone(self.home_zone_id())
+            .unwrap()
+            .grassless
+            .is_empty()
+            || chance_pct == 0
+        {
             return;
         }
 
         // Collect coords to potentially regrow. We iterate the full set
         // deterministically (BTreeSet iteration is ordered).
-        let coords: Vec<VoxelCoord> = self.grassless.iter().copied().collect();
+        // TODO(F-zone-world): iterate all active zones
+        let coords: Vec<VoxelCoord> = self
+            .voxel_zone(self.home_zone_id())
+            .unwrap()
+            .grassless
+            .iter()
+            .copied()
+            .collect();
 
         for coord in coords {
             // Roll regrowth chance.
             let roll = self.rng.next_u32() % 100;
             if roll < chance_pct {
-                self.grassless.remove(&coord);
+                // TODO(F-zone-world): derive zone from coord context
+                let zone = self.voxel_zone_mut(self.home_zone_id()).unwrap();
+                zone.grassless.remove(&coord);
                 // Mark dirty for mesh regeneration.
-                self.world.mark_dirty(coord);
+                zone.mark_dirty(coord);
             }
-        }
-    }
-
-    /// Backfill for saves that predate F-wild-grazing: schedule a
-    /// `GrassRegrowth` event if one isn't already in the queue.
-    pub(crate) fn backfill_grass_regrowth_event(&mut self) {
-        let has_regrowth = self
-            .event_queue
-            .iter()
-            .any(|e| matches!(e.kind, crate::event::ScheduledEventKind::GrassRegrowth));
-        if !has_regrowth {
-            let next_tick = self.tick + self.config.grass_regrowth_interval_ticks;
-            self.event_queue
-                .schedule(next_tick, crate::event::ScheduledEventKind::GrassRegrowth);
         }
     }
 
@@ -206,15 +214,17 @@ impl SimState {
     /// All sim-side voxel mutations should use this instead of raw
     /// `world.set()` to keep the grassless set consistent.
     pub(crate) fn set_voxel(&mut self, coord: VoxelCoord, new_type: VoxelType) {
-        let old_type = self.world.get(coord);
-        self.world.set(coord, new_type);
+        // TODO(F-zone-world): derive zone from coord or caller context
+        let zone = self.voxel_zone_mut(self.home_zone_id()).unwrap();
+        let old_type = zone.get(coord);
+        zone.set(coord, new_type);
 
         // Case 1: solid→non-solid at coord — dirt below may be freshly exposed.
         if old_type.is_solid() && !new_type.is_solid() {
             let below = VoxelCoord::new(coord.x, coord.y - 1, coord.z);
-            if self.world.get(below) == VoxelType::Dirt {
-                self.grassless.insert(below);
-                self.world.mark_dirty(below);
+            if zone.get(below) == VoxelType::Dirt {
+                zone.grassless.insert(below);
+                zone.mark_dirty(below);
             }
         }
 
@@ -222,8 +232,8 @@ impl SimState {
         // remove from grassless (no longer visible).
         if !old_type.is_solid() && new_type.is_solid() {
             let below = VoxelCoord::new(coord.x, coord.y - 1, coord.z);
-            if self.grassless.remove(&below) {
-                self.world.mark_dirty(below);
+            if zone.grassless.remove(&below) {
+                zone.mark_dirty(below);
             }
         }
     }

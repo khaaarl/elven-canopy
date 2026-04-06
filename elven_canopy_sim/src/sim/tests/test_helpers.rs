@@ -19,6 +19,16 @@ static FRESH_SEED: LazyLock<u64> = LazyLock::new(|| {
     seed
 });
 
+/// Get the home zone ID from a sim (convenience helper for tests).
+pub(super) fn home_zone_id(sim: &SimState) -> ZoneId {
+    sim.home_zone_id()
+}
+
+/// Get the home voxel zone from a sim (convenience helper for tests).
+pub(super) fn home_voxel_zone(sim: &SimState) -> &VoxelZone {
+    sim.voxel_zone(sim.home_zone_id()).unwrap()
+}
+
 /// Hardcoded seed for existing tests. These tests have been hardened
 /// against many fragility patterns (activation races, stat-dependent
 /// behavior, fruit existence, etc.) but haven't yet been validated
@@ -56,10 +66,10 @@ static CACHED_SIM_FRESH: LazyLock<SimState> =
 /// Cached flat-world geometry (world only). Seed-independent
 /// (terrain_max_height=0 makes zero PRNG calls), so one copy serves all seeds.
 /// `flat_world_sim` clones the world and overlays seed-dependent civs/diplomacy/RNG.
-static FLAT_GEOMETRY: LazyLock<crate::world::VoxelWorld> = LazyLock::new(|| {
+static FLAT_GEOMETRY: LazyLock<crate::world::VoxelZone> = LazyLock::new(|| {
     let config = flat_world_config();
     let (ws_x, ws_y, ws_z) = config.world_size;
-    let mut world = crate::world::VoxelWorld::new(ws_x, ws_y, ws_z);
+    let mut world = crate::world::VoxelZone::new(ws_x, ws_y, ws_z);
     // terrain_max_height=0: flat ground, no PRNG calls.
     crate::tree_gen::generate_terrain(&mut world, &config, &mut elven_canopy_prng::GameRng::new(0));
     world.clear_dirty_voxels();
@@ -142,8 +152,8 @@ pub(super) fn flat_world_config() -> GameConfig {
 /// voxels. Creatures can be spawned and will snap to the flat ground's
 /// nav nodes.
 pub(super) fn flat_world_sim(seed: u64) -> SimState {
-    use crate::db::{GreatTreeInfo, SimDb, Tree};
-    use crate::types::TreeId;
+    use crate::db::{GreatTreeInfo, SimDb, Tree, Zone};
+    use crate::types::{TreeId, ZoneId, ZoneType};
     use crate::worldgen;
     use elven_canopy_prng::GameRng;
 
@@ -158,13 +168,26 @@ pub(super) fn flat_world_sim(seed: u64) -> SimState {
     // but call it anyway to keep the PRNG sequence in sync with
     // run_worldgen_flat.
     crate::tree_gen::generate_terrain(
-        &mut crate::world::VoxelWorld::new(1, 1, 1),
+        &mut crate::world::VoxelZone::new(1, 1, 1),
         &config,
         &mut rng,
     );
 
     let lexicon = elven_canopy_lang::default_lexicon();
     let mut db = SimDb::new();
+
+    // Insert home zone (flat test world, no zone-specific seed needed).
+    let home_zone_seed = rng.next_u64();
+    let zone_id = db
+        .insert_zone_auto(|id| Zone {
+            id,
+            seed: home_zone_seed,
+            zone_type: ZoneType::GreatTreeForest,
+            zone_size: config.world_size,
+            floor_y: config.floor_y,
+        })
+        .unwrap();
+
     let player_civ_id =
         worldgen::generate_civilizations(&mut rng, &config.worldgen.civs, &mut db, &lexicon);
     worldgen::generate_diplomacy(&mut rng, &config.worldgen.civs, &mut db);
@@ -173,6 +196,7 @@ pub(super) fn flat_world_sim(seed: u64) -> SimState {
     let center_z = config.world_size.2 as i32 / 2;
     let home_tree = Tree {
         id: player_tree_id,
+        zone_id: zone_id,
         position: VoxelCoord::new(center_x, config.floor_y, center_z),
         health: 100,
         growth_level: 1,
@@ -203,25 +227,16 @@ pub(super) fn flat_world_sim(seed: u64) -> SimState {
         config,
         event_queue: EventQueue::new(),
         db,
-        placed_voxels: Vec::new(),
-        carved_voxels: Vec::new(),
-        face_data_list: Vec::new(),
-        face_data: BTreeMap::new(),
-        ladder_orientations_list: Vec::new(),
-        ladder_orientations: BTreeMap::new(),
         next_structure_id: 0,
         next_request_id: 0,
         pending_llm_requests: BTreeMap::new(),
         outbound_requests: Vec::new(),
         player_tree_id,
         player_civ_id: Some(player_civ_id),
-        world: world.clone(),
+        voxel_zones: BTreeMap::from([(zone_id, world.clone())]),
         species_table,
         lexicon: Some(lexicon),
         last_build_message: None,
-        structure_voxels: BTreeMap::new(),
-        mana_wasted_positions: Vec::new(),
-        grassless: BTreeSet::new(),
     };
 
     // Schedule heartbeats (logistics, grass regrowth). No tree heartbeat
@@ -261,6 +276,7 @@ pub(super) fn spawn_creature(sim: &mut SimState, species: Species) -> CreatureId
         player_name: String::new(),
         tick,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species,
             position: tree_pos,
         },
@@ -288,6 +304,7 @@ pub(super) fn spawn_elf(sim: &mut SimState) -> CreatureId {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -307,6 +324,7 @@ pub(super) fn insert_stub_blueprint(sim: &mut SimState, project_id: ProjectId) {
     sim.db
         .insert_blueprint(crate::db::Blueprint {
             id: project_id,
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Building,
             voxels: Vec::new(),
             priority: crate::types::Priority::Normal,
@@ -327,6 +345,7 @@ pub(super) fn insert_stub_task(sim: &mut SimState, task_id: TaskId) {
     sim.db
         .insert_task(crate::db::Task {
             id: task_id,
+            zone_id: sim.home_zone_id(),
             kind_tag: TaskKindTag::GoTo,
             state: TaskState::Available,
             location: VoxelCoord::new(0, 0, 0),
@@ -359,7 +378,7 @@ pub(super) fn insert_goto_task(sim: &mut SimState, location_coord: VoxelCoord) -
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(task);
+    sim.insert_task(sim.home_zone_id(), task);
     task_id
 }
 
@@ -382,7 +401,12 @@ pub(super) fn find_air_adjacent_to_trunk(sim: &SimState) -> VoxelCoord {
         ] {
             let neighbor =
                 VoxelCoord::new(trunk_coord.x + dx, trunk_coord.y + dy, trunk_coord.z + dz);
-            if sim.world.in_bounds(neighbor) && sim.world.get(neighbor) == VoxelType::Air {
+            if sim
+                .voxel_zone(sim.home_zone_id())
+                .unwrap()
+                .in_bounds(neighbor)
+                && sim.voxel_zone(sim.home_zone_id()).unwrap().get(neighbor) == VoxelType::Air
+            {
                 return neighbor;
             }
         }
@@ -402,13 +426,17 @@ pub(super) fn find_air_strip_adjacent_to_trunk(sim: &SimState, count: usize) -> 
     // in the +x direction.
     for &trunk_coord in &tree.trunk_voxels {
         let start = VoxelCoord::new(trunk_coord.x + 1, trunk_coord.y, trunk_coord.z);
-        if !sim.world.in_bounds(start) || sim.world.get(start) != VoxelType::Air {
+        if !sim.voxel_zone(sim.home_zone_id()).unwrap().in_bounds(start)
+            || sim.voxel_zone(sim.home_zone_id()).unwrap().get(start) != VoxelType::Air
+        {
             continue;
         }
         let mut strip = vec![start];
         for i in 1..count {
             let next = VoxelCoord::new(start.x + i as i32, start.y, start.z);
-            if !sim.world.in_bounds(next) || sim.world.get(next) != VoxelType::Air {
+            if !sim.voxel_zone(sim.home_zone_id()).unwrap().in_bounds(next)
+                || sim.voxel_zone(sim.home_zone_id()).unwrap().get(next) != VoxelType::Air
+            {
                 break;
             }
             strip.push(next);
@@ -441,11 +469,16 @@ pub(super) fn find_building_site(sim: &SimState) -> VoxelCoord {
             for dx in 0..3 {
                 for dz in 0..3 {
                     let foundation = VoxelCoord::new(x + dx, 0, z + dz);
-                    if !sim.world.get(foundation).is_solid() {
+                    if !sim
+                        .voxel_zone(sim.home_zone_id())
+                        .unwrap()
+                        .get(foundation)
+                        .is_solid()
+                    {
                         all_solid = false;
                     }
                     let above = VoxelCoord::new(x + dx, 1, z + dz);
-                    if sim.world.get(above) != VoxelType::Air {
+                    if sim.voxel_zone(sim.home_zone_id()).unwrap().get(above) != VoxelType::Air {
                         all_air = false;
                     }
                 }
@@ -475,20 +508,23 @@ pub(super) fn insert_completed_building(sim: &mut SimState, anchor: VoxelCoord) 
     // and creates interior voxels at anchor.y + 1.
     let face_layout = crate::building::compute_building_face_layout(anchor, 3, 3, 1);
     for (&coord, fd) in &face_layout {
-        sim.world.set(coord, VoxelType::BuildingInterior);
-        sim.face_data.insert(coord, fd.clone());
-        sim.face_data_list.push((coord, fd.clone()));
-        sim.placed_voxels.push((coord, VoxelType::BuildingInterior));
-        sim.structure_voxels.insert(coord, id);
+        let zone = sim.voxel_zone_mut(sim.home_zone_id()).unwrap();
+        zone.set(coord, VoxelType::BuildingInterior);
+        zone.face_data.insert(coord, fd.clone());
+        zone.face_data_list.push((coord, fd.clone()));
+        zone.placed_voxels
+            .push((coord, VoxelType::BuildingInterior));
+        zone.structure_voxels.insert(coord, id);
     }
 
     // Place the foundation as solid GrownWall underneath.
     for z in anchor.z..anchor.z + 3 {
         for x in anchor.x..anchor.x + 3 {
             let foundation = VoxelCoord::new(x, anchor.y, z);
-            if sim.world.get(foundation) == VoxelType::Air {
-                sim.world.set(foundation, VoxelType::GrownWall);
-                sim.placed_voxels.push((foundation, VoxelType::GrownWall));
+            let zone = sim.voxel_zone_mut(sim.home_zone_id()).unwrap();
+            if zone.get(foundation) == VoxelType::Air {
+                zone.set(foundation, VoxelType::GrownWall);
+                zone.placed_voxels.push((foundation, VoxelType::GrownWall));
             }
         }
     }
@@ -503,6 +539,7 @@ pub(super) fn insert_completed_building(sim: &mut SimState, anchor: VoxelCoord) 
     sim.db
         .insert_blueprint(crate::db::Blueprint {
             id: project_id,
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Building,
             voxels: Vec::new(),
             priority: crate::types::Priority::Normal,
@@ -519,6 +556,7 @@ pub(super) fn insert_completed_building(sim: &mut SimState, anchor: VoxelCoord) 
     sim.db
         .insert_structure(CompletedStructure {
             id,
+            zone_id: sim.home_zone_id(),
             project_id,
             build_type: BuildType::Building,
             anchor: interior_anchor,
@@ -560,6 +598,7 @@ pub(super) fn spawn_species(sim: &mut SimState, species: Species) -> CreatureId 
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species,
             position: tree_pos,
         },
@@ -582,8 +621,8 @@ pub(super) fn creature_pos(sim: &SimState, creature_id: CreatureId) -> VoxelCoor
 /// Uses [1,1,1] footprint (standard creature size).
 pub(super) fn find_walkable(sim: &SimState, pos: VoxelCoord, radius: u32) -> Option<VoxelCoord> {
     crate::walkability::find_nearest_walkable(
-        &sim.world,
-        &sim.face_data,
+        sim.voxel_zone(sim.home_zone_id()).unwrap(),
+        &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
         pos,
         radius,
         [1, 1, 1],
@@ -600,8 +639,8 @@ pub(super) fn find_different_walkable(sim: &SimState, exclude: VoxelCoord) -> Vo
             let pos = VoxelCoord::new(x, floor_y, z);
             if pos != exclude
                 && crate::walkability::footprint_walkable(
-                    &sim.world,
-                    &sim.face_data,
+                    sim.voxel_zone(sim.home_zone_id()).unwrap(),
+                    &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
                     pos,
                     [1, 1, 1],
                     true,
@@ -623,8 +662,8 @@ pub(super) fn find_far_walkable(sim: &SimState, from: VoxelCoord, min_dist: u32)
             let pos = VoxelCoord::new(x, floor_y, z);
             if pos.manhattan_distance(from) >= min_dist
                 && crate::walkability::footprint_walkable(
-                    &sim.world,
-                    &sim.face_data,
+                    sim.voxel_zone(sim.home_zone_id()).unwrap(),
+                    &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
                     pos,
                     [1, 1, 1],
                     true,
@@ -920,6 +959,7 @@ pub(super) fn insert_building(
     sim.db
         .insert_structure(CompletedStructure {
             id: sid,
+            zone_id: sim.home_zone_id(),
             project_id,
             build_type: BuildType::Building,
             anchor,
@@ -955,9 +995,11 @@ pub(super) fn insert_completed_home(sim: &mut SimState, anchor: VoxelCoord) -> S
     structure.furnishing = Some(FurnishingType::Home);
     sim.db.update_structure(structure).unwrap();
 
+    let zone_id = sim.home_zone_id();
     sim.db
         .insert_furniture_auto(|id| crate::db::Furniture {
             id,
+            zone_id,
             structure_id,
             coord: bed_pos,
             placed: true,
@@ -980,6 +1022,7 @@ pub(super) fn spawn_hornet_at(sim: &mut SimState, pos: VoxelCoord) -> CreatureId
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Hornet,
             position: pos,
         },
@@ -1029,14 +1072,14 @@ pub(super) fn find_connected_pair(sim: &SimState) -> (VoxelCoord, VoxelCoord) {
             let a = VoxelCoord::new(x, floor_y, z);
             let b = VoxelCoord::new(x + 1, floor_y, z);
             if crate::walkability::footprint_walkable(
-                &sim.world,
-                &sim.face_data,
+                sim.voxel_zone(sim.home_zone_id()).unwrap(),
+                &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
                 a,
                 [1, 1, 1],
                 true,
             ) && crate::walkability::footprint_walkable(
-                &sim.world,
-                &sim.face_data,
+                sim.voxel_zone(sim.home_zone_id()).unwrap(),
+                &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
                 b,
                 [1, 1, 1],
                 true,
@@ -1058,20 +1101,20 @@ pub(super) fn find_chain_of_three(sim: &SimState) -> (VoxelCoord, VoxelCoord, Vo
             let b = VoxelCoord::new(x + 1, floor_y, z);
             let c = VoxelCoord::new(x + 2, floor_y, z);
             if crate::walkability::footprint_walkable(
-                &sim.world,
-                &sim.face_data,
+                sim.voxel_zone(sim.home_zone_id()).unwrap(),
+                &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
                 a,
                 [1, 1, 1],
                 true,
             ) && crate::walkability::footprint_walkable(
-                &sim.world,
-                &sim.face_data,
+                sim.voxel_zone(sim.home_zone_id()).unwrap(),
+                &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
                 b,
                 [1, 1, 1],
                 true,
             ) && crate::walkability::footprint_walkable(
-                &sim.world,
-                &sim.face_data,
+                sim.voxel_zone(sim.home_zone_id()).unwrap(),
+                &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
                 c,
                 [1, 1, 1],
                 true,
@@ -1097,6 +1140,7 @@ pub(super) fn spawn_test_elf(sim: &mut SimState) -> CreatureId {
         player_name: String::new(),
         tick: sim.tick.max(1),
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -1228,7 +1272,10 @@ pub(super) fn ensure_tree_has_fruit(sim: &mut SimState) -> VoxelCoord {
         .leaf_voxels
         .iter()
         .map(|&leaf| VoxelCoord::new(leaf.x, leaf.y - 1, leaf.z))
-        .find(|&pos| sim.world.in_bounds(pos) && sim.world.get(pos) == VoxelType::Air)
+        .find(|&pos| {
+            sim.voxel_zone(sim.home_zone_id()).unwrap().in_bounds(pos)
+                && sim.voxel_zone(sim.home_zone_id()).unwrap().get(pos) == VoxelType::Air
+        })
         .expect("No valid fruit position found (all positions below leaves are blocked)");
 
     // Ensure the tree has a fruit species. If not, insert a test one.
@@ -1242,8 +1289,10 @@ pub(super) fn ensure_tree_has_fruit(sim: &mut SimState) -> VoxelCoord {
 
     // Place the fruit voxel and insert a TreeFruit row.
     sim.set_voxel(fruit_pos, VoxelType::Fruit);
+    let zone_id = sim.home_zone_id();
     let _ = sim.db.insert_tree_fruit_auto(|id| crate::db::TreeFruit {
         id,
+        zone_id,
         tree_id,
         position: VoxelBox::point(fruit_pos),
         species_id,
@@ -1386,7 +1435,7 @@ pub(super) fn spawn_test_elves(sim: &mut SimState, count: usize) -> Vec<Creature
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     for _ in 0..count {
         let mut events = Vec::new();
-        sim.spawn_creature(Species::Elf, tree_pos, &mut events);
+        sim.spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events);
     }
     sim.db
         .creatures

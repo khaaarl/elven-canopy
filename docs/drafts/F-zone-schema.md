@@ -1,6 +1,6 @@
 # Zone Schema (F-zone-schema)
 
-**Status:** Draft — decisions solidifying, open questions remain.
+**Status:** Implementation complete — pending once-over and merge.
 
 ---
 

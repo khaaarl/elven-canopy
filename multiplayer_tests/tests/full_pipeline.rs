@@ -23,7 +23,7 @@ use std::time::Duration;
 use elven_canopy_protocol::message::ServerMessage;
 use elven_canopy_relay::server::{RelayConfig, RelayHandle, start_relay};
 use elven_canopy_sim::command::SimAction;
-use elven_canopy_sim::types::{Species, VoxelCoord};
+use elven_canopy_sim::types::{Species, VoxelCoord, ZoneId};
 use multiplayer_tests::TestGameClient;
 
 /// Small test world size — 64^3 is ~64x fewer voxels than the default
@@ -33,6 +33,11 @@ const TEST_WORLD_SIZE: (u32, u32, u32) = (64, 64, 64);
 /// Ticks per turn for tests. Short enough for fast tests, long enough for
 /// the relay's turn timer to work reliably.
 const TEST_TICKS_PER_TURN: u32 = 50;
+
+/// Get the home zone ID from a TestGameClient's loaded sim.
+fn home_zone_id(client: &TestGameClient) -> ZoneId {
+    client.sim.as_ref().unwrap().home_zone_id()
+}
 
 /// Start a relay on a random port, connect a host and a joiner.
 /// Returns the relay handle, both clients, and the relay address (for
@@ -121,6 +126,7 @@ fn command_round_trip() {
 
     // Host sends SpawnCreature.
     host.send_action(&SimAction::SpawnCreature {
+        zone_id: home_zone_id(&host),
         species: Species::Elf,
         position: tree_pos,
     });
@@ -166,10 +172,12 @@ fn bidirectional_commands() {
 
     // Both send spawn commands in the same turn window.
     host.send_action(&SimAction::SpawnCreature {
+        zone_id: home_zone_id(&host),
         species: Species::Elf,
         position: spawn_pos_1,
     });
     joiner.send_action(&SimAction::SpawnCreature {
+        zone_id: home_zone_id(&host),
         species: Species::Elf,
         position: spawn_pos_2,
     });
@@ -222,6 +230,7 @@ fn multi_turn_determinism() {
         .position;
     // Turn 1: spawn an elf.
     host.send_action(&SimAction::SpawnCreature {
+        zone_id: home_zone_id(&host),
         species: Species::Elf,
         position: tree_pos,
     });
@@ -235,6 +244,7 @@ fn multi_turn_determinism() {
     // Turn 2: issue a GoTo task.
     let goto_pos = VoxelCoord::new(tree_pos.x + 2, tree_pos.y, tree_pos.z);
     host.send_action(&SimAction::CreateTask {
+        zone_id: home_zone_id(&host),
         kind: elven_canopy_sim::task::TaskKind::GoTo,
         position: goto_pos,
         required_species: Some(Species::Elf),
@@ -248,6 +258,7 @@ fn multi_turn_determinism() {
 
     // Turn 3: spawn another elf.
     host.send_action(&SimAction::SpawnCreature {
+        zone_id: home_zone_id(&host),
         species: Species::Elf,
         position: tree_pos,
     });
@@ -444,6 +455,7 @@ fn mid_game_join_snapshot() {
     let spawn_pos = tree_pos;
 
     host.send_action(&SimAction::SpawnCreature {
+        zone_id: home_zone_id(&host),
         species: Species::Elf,
         position: spawn_pos,
     });
@@ -517,6 +529,7 @@ fn mid_game_join_then_commands() {
 
     // Spawn an elf before mid-join.
     host.send_action(&SimAction::SpawnCreature {
+        zone_id: home_zone_id(&host),
         species: Species::Elf,
         position: spawn_pos,
     });
@@ -552,14 +565,17 @@ fn mid_game_join_then_commands() {
     let spawn_pos_3 = VoxelCoord::new(tree_pos.x + 2, tree_pos.y, tree_pos.z);
 
     host.send_action(&SimAction::SpawnCreature {
+        zone_id: home_zone_id(&host),
         species: Species::Elf,
         position: spawn_pos,
     });
     joiner.send_action(&SimAction::SpawnCreature {
+        zone_id: home_zone_id(&host),
         species: Species::Elf,
         position: spawn_pos_2,
     });
     late_joiner.send_action(&SimAction::SpawnCreature {
+        zone_id: home_zone_id(&host),
         species: Species::Elf,
         position: spawn_pos_3,
     });
@@ -624,6 +640,7 @@ fn mid_game_join_checksum() {
     let spawn_pos = tree_pos;
 
     host.send_action(&SimAction::SpawnCreature {
+        zone_id: home_zone_id(&host),
         species: Species::Elf,
         position: spawn_pos,
     });
@@ -684,6 +701,7 @@ fn disconnect_mid_game() {
     let spawn_pos = tree_pos;
 
     host.send_action(&SimAction::SpawnCreature {
+        zone_id: home_zone_id(&host),
         species: Species::Elf,
         position: spawn_pos,
     });
@@ -707,6 +725,7 @@ fn disconnect_mid_game() {
 
     // Host should still be able to send commands and receive turns.
     host.send_action(&SimAction::SpawnCreature {
+        zone_id: home_zone_id(&host),
         species: Species::Elf,
         position: spawn_pos,
     });

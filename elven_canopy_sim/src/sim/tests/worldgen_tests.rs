@@ -5,7 +5,10 @@
 // original test module.
 
 use super::*;
-use crate::worldgen::{WorldgenConfig, noop_log, run_worldgen, species_default_opinion};
+use crate::types::{ZoneId, ZoneType};
+use crate::worldgen::{
+    WorldgenConfig, manifest_zone, noop_log, run_worldgen, species_default_opinion,
+};
 
 /// Small-world config for fast worldgen tests.
 fn wg_test_config() -> GameConfig {
@@ -760,4 +763,270 @@ fn species_default_opinion_cross_species_pairs() {
         CivOpinion::Suspicious,
         "Orc→Goblin should be Suspicious"
     );
+}
+
+// --- Zone table tests ---
+
+#[test]
+fn worldgen_creates_home_zone() {
+    let config = wg_test_config();
+    let result = run_worldgen(fresh_test_seed(), &config, &noop_log());
+
+    let zone = result
+        .db
+        .zones
+        .get(&result.home_zone_id)
+        .expect("Home zone must exist");
+    assert_eq!(zone.zone_type, ZoneType::GreatTreeForest);
+    assert_eq!(zone.zone_size, config.world_size);
+    assert_eq!(zone.floor_y, config.floor_y);
+}
+
+#[test]
+fn worldgen_creates_exactly_one_zone() {
+    let config = wg_test_config();
+    let result = run_worldgen(fresh_test_seed(), &config, &noop_log());
+
+    let zones: Vec<_> = result.db.zones.iter_all().collect();
+    assert_eq!(
+        zones.len(),
+        1,
+        "Should have exactly one zone (the home zone)"
+    );
+    assert_eq!(zones[0].id, result.home_zone_id);
+}
+
+#[test]
+fn worldgen_zone_seed_is_deterministic() {
+    let seed = fresh_test_seed();
+    let config = wg_test_config();
+    let r1 = run_worldgen(seed, &config, &noop_log());
+    let r2 = run_worldgen(seed, &config, &noop_log());
+
+    let z1 = r1.db.zones.get(&r1.home_zone_id).unwrap();
+    let z2 = r2.db.zones.get(&r2.home_zone_id).unwrap();
+    assert_eq!(z1.seed, z2.seed, "Zone seed must be deterministic");
+    assert_eq!(z1.zone_size, z2.zone_size);
+    assert_eq!(z1.floor_y, z2.floor_y);
+}
+
+#[test]
+fn manifest_zone_inserts_trees_into_db() {
+    let seed = fresh_test_seed();
+    let config = wg_test_config();
+    let mut rng = elven_canopy_prng::GameRng::new(seed);
+    let _compat = rng.next_128_bits();
+    let player_tree_id = TreeId::new(&mut rng);
+    let player_civ_id = CivId(0);
+
+    let mut db = SimDb::new();
+    let zone_seed = rng.next_u64();
+    let test_zone_id = db
+        .insert_zone_auto(|id| crate::db::Zone {
+            id,
+            seed: zone_seed,
+            zone_type: ZoneType::GreatTreeForest,
+            zone_size: config.world_size,
+            floor_y: config.floor_y,
+        })
+        .unwrap();
+    // Manifest needs at least an empty civ for the home tree owner FK.
+    let _ = db.insert_civilization(crate::db::Civilization {
+        id: player_civ_id,
+        name: "Test".into(),
+        primary_species: CivSpecies::Elf,
+        minority_species: Vec::new(),
+        culture_tag: CultureTag::Woodland,
+        player_controlled: true,
+    });
+
+    let world = manifest_zone(
+        &mut rng,
+        &config,
+        test_zone_id,
+        player_tree_id,
+        player_civ_id,
+        &[],
+        &mut db,
+        &noop_log(),
+    );
+
+    // Home tree must exist in DB.
+    let home = db.trees.get(&player_tree_id).expect("Home tree in DB");
+    assert_eq!(home.owner, Some(player_civ_id));
+    assert!(
+        !home.trunk_voxels.is_empty(),
+        "Home tree should have trunk voxels"
+    );
+
+    // GreatTreeInfo must exist.
+    assert!(
+        db.great_tree_infos.get(&player_tree_id).is_some(),
+        "GreatTreeInfo must exist for home tree"
+    );
+
+    // VoxelZone dimensions must match config.
+    assert_eq!(world.size_x, config.world_size.0);
+    assert_eq!(world.size_y, config.world_size.1);
+    assert_eq!(world.size_z, config.world_size.2);
+}
+
+// -------------------------------------------------------------------
+// Zone schema tests (F-zone-schema)
+// -------------------------------------------------------------------
+
+#[test]
+fn worldgen_creates_home_zone_row() {
+    let config = wg_test_config();
+    let result = run_worldgen(fresh_test_seed(), &config, &noop_log());
+
+    let zone = result.db.zones.get(&result.home_zone_id);
+    assert!(zone.is_some(), "Home zone row must exist after worldgen");
+    let zone = zone.unwrap();
+    assert_eq!(zone.zone_type, ZoneType::GreatTreeForest);
+    assert_eq!(zone.zone_size, config.world_size);
+    assert_eq!(zone.floor_y, config.floor_y);
+}
+
+#[test]
+fn worldgen_home_tree_has_home_zone_id() {
+    let config = wg_test_config();
+    let result = run_worldgen(fresh_test_seed(), &config, &noop_log());
+
+    let tree = result.db.trees.get(&result.player_tree_id).unwrap();
+    assert_eq!(tree.zone_id, result.home_zone_id);
+}
+
+#[test]
+fn worldgen_all_trees_have_home_zone_id() {
+    let mut config = wg_test_config();
+    config.lesser_trees.count = 5;
+    let result = run_worldgen(fresh_test_seed(), &config, &noop_log());
+
+    for tree in result.db.trees.iter_all() {
+        assert_eq!(
+            tree.zone_id, result.home_zone_id,
+            "Tree {:?} should be in home zone",
+            tree.id
+        );
+    }
+}
+
+#[test]
+fn zone_type_serde_roundtrip() {
+    let zt = ZoneType::GreatTreeForest;
+    let json = serde_json::to_string(&zt).unwrap();
+    let rt: ZoneType = serde_json::from_str(&json).unwrap();
+    assert_eq!(rt, zt);
+}
+
+#[test]
+fn zone_id_serde_roundtrip() {
+    for &val in &[0u32, 1, 100, u32::MAX] {
+        let id = ZoneId(val);
+        let json = serde_json::to_string(&id).unwrap();
+        let rt: ZoneId = serde_json::from_str(&json).unwrap();
+        assert_eq!(rt, id);
+    }
+}
+
+#[test]
+fn zone_table_survives_simstate_serde_roundtrip() {
+    let sim = flat_world_sim(fresh_test_seed());
+    let hz = sim.home_zone_id();
+
+    let json = sim.to_json().unwrap();
+    let sim2 = SimState::from_json(&json).unwrap();
+
+    let zone = sim2.db.zones.get(&hz).expect("zone must survive serde");
+    assert_eq!(zone.zone_type, ZoneType::GreatTreeForest);
+    assert!(zone.zone_size.0 > 0);
+}
+
+#[test]
+fn voxel_zone_accessor_returns_none_for_nonexistent_zone() {
+    let sim = flat_world_sim(fresh_test_seed());
+    assert!(sim.voxel_zone(ZoneId(999)).is_none());
+}
+
+#[test]
+fn voxel_zone_accessor_returns_home_zone() {
+    let sim = flat_world_sim(fresh_test_seed());
+    assert!(sim.voxel_zone(sim.home_zone_id()).is_some());
+}
+
+#[test]
+fn spatial_command_with_invalid_zone_rejects_silently() {
+    let mut sim = flat_world_sim(fresh_test_seed());
+    let mut events = Vec::new();
+
+    // DesignateBuild with non-existent zone should be silently rejected.
+    let bad_zone = ZoneId(999);
+    sim.apply_command(
+        &SimCommand {
+            tick: sim.tick,
+            player_name: "test".into(),
+            action: SimAction::DesignateBuild {
+                zone_id: bad_zone,
+                build_type: BuildType::Platform,
+                voxels: vec![VoxelCoord::new(5, 2, 5)],
+                priority: Priority::Normal,
+            },
+        },
+        &mut events,
+    );
+    // No blueprints should have been created.
+    assert_eq!(sim.db.blueprints.len(), 0);
+
+    // SpawnCreature with non-existent zone should be silently rejected.
+    let creature_count_before = sim.db.creatures.len();
+    sim.apply_command(
+        &SimCommand {
+            tick: sim.tick,
+            player_name: "test".into(),
+            action: SimAction::SpawnCreature {
+                zone_id: bad_zone,
+                species: Species::Elf,
+                position: VoxelCoord::new(5, 2, 5),
+            },
+        },
+        &mut events,
+    );
+    assert_eq!(sim.db.creatures.len(), creature_count_before);
+}
+
+#[test]
+fn creature_with_none_zone_excluded_from_spatial_index() {
+    let mut sim = flat_world_sim(fresh_test_seed());
+
+    // Spawn a creature normally (gets zone_id: Some(home_zone_id)).
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    let pos = elf.position.min;
+
+    // It should be in the spatial index.
+    assert!(
+        sim.creatures_at_voxel(sim.home_zone_id(), pos)
+            .contains(&elf_id)
+    );
+
+    // Set its zone_id to None (simulating in-transit).
+    let mut elf = sim.db.creatures.get(&elf_id).unwrap();
+    elf.zone_id = None;
+    let _ = sim.db.update_creature(elf);
+
+    // It should no longer appear in spatial queries.
+    assert!(
+        !sim.creatures_at_voxel(sim.home_zone_id(), pos)
+            .contains(&elf_id),
+        "Creature with zone_id: None must be excluded from spatial index"
+    );
+}
+
+#[test]
+fn spawned_creature_has_home_zone_id() {
+    let mut sim = flat_world_sim(fresh_test_seed());
+    let elf_id = spawn_creature(&mut sim, Species::Elf);
+    let elf = sim.db.creatures.get(&elf_id).unwrap();
+    assert_eq!(elf.zone_id, Some(sim.home_zone_id()));
 }

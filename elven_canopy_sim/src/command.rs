@@ -102,6 +102,7 @@ pub struct SimCommand {
 pub enum SimAction {
     /// Designate a new build project.
     DesignateBuild {
+        zone_id: ZoneId,
         build_type: BuildType,
         voxels: Vec<VoxelCoord>,
         priority: Priority,
@@ -116,12 +117,14 @@ pub enum SimAction {
     /// Spawn a creature of the given species at the given position (snapped to
     /// nearest nav node, or nearest ground node for ground-only species).
     SpawnCreature {
+        zone_id: ZoneId,
         species: Species,
         position: VoxelCoord,
     },
     /// Create a task at the given position (snapped to nearest nav node).
     /// If `required_species` is set, only that species can claim the task.
     CreateTask {
+        zone_id: ZoneId,
         kind: TaskKind,
         position: VoxelCoord,
         required_species: Option<Species>,
@@ -130,6 +133,7 @@ pub enum SimAction {
     /// corner of the footprint at foundation level. Interior voxels are placed
     /// above it. Width/depth must be >= 3.
     DesignateBuilding {
+        zone_id: ZoneId,
         anchor: VoxelCoord,
         width: i32,
         depth: i32,
@@ -140,6 +144,7 @@ pub enum SimAction {
     /// The ladder extends upward for `height` voxels. `orientation` is the
     /// face the ladder panel is on (must be horizontal: PosX/NegX/PosZ/NegZ).
     DesignateLadder {
+        zone_id: ZoneId,
         anchor: VoxelCoord,
         height: i32,
         orientation: FaceDirection,
@@ -149,6 +154,7 @@ pub enum SimAction {
     /// Designate a rectangular region of solid voxels for carving (removal to Air).
     /// Air and Dirt voxels in the selection are silently skipped.
     DesignateCarve {
+        zone_id: ZoneId,
         voxels: Vec<VoxelCoord>,
         priority: Priority,
     },
@@ -193,6 +199,7 @@ pub enum SimAction {
     },
     /// Add items to a ground pile (creating it if it doesn't exist).
     AddGroundPileItem {
+        zone_id: ZoneId,
         position: VoxelCoord,
         item_kind: ItemKind,
         quantity: u32,
@@ -291,6 +298,7 @@ pub enum SimAction {
     /// immediately assigns it to the specified creature, preempting lower-
     /// priority tasks.
     DirectedGoTo {
+        zone_id: ZoneId,
         creature_id: CreatureId,
         position: VoxelCoord,
         /// If true, append to the creature's command queue instead of replacing.
@@ -301,6 +309,7 @@ pub enum SimAction {
     /// engaging any hostiles detected en route. Creates an AttackMove task with
     /// PlayerCombat preemption level.
     AttackMove {
+        zone_id: ZoneId,
         creature_id: CreatureId,
         destination: VoxelCoord,
         #[serde(default)]
@@ -310,6 +319,7 @@ pub enum SimAction {
     /// destination instead of stacking them all on the same voxel. Each creature
     /// gets a unique nearby destination assigned via BFS outward from the target.
     GroupGoTo {
+        zone_id: ZoneId,
         creature_ids: Vec<CreatureId>,
         position: VoxelCoord,
         #[serde(default)]
@@ -318,6 +328,7 @@ pub enum SimAction {
     /// Group attack-move: like `GroupGoTo` but each creature attack-moves to its
     /// assigned spread destination, engaging hostiles en route.
     GroupAttackMove {
+        zone_id: ZoneId,
         creature_ids: Vec<CreatureId>,
         destination: VoxelCoord,
         #[serde(default)]
@@ -372,6 +383,7 @@ pub enum SimAction {
     /// Spawn a projectile at a position with a given velocity (debug/testing).
     /// Creates a projectile with an arrow item in its inventory.
     DebugSpawnProjectile {
+        zone_id: ZoneId,
         /// Position to spawn from (voxel coordinate, will be converted to
         /// sub-voxel center).
         origin: VoxelCoord,
@@ -386,6 +398,7 @@ pub enum SimAction {
     /// (e.g., debug dance), idle creatures discover and volunteer via their
     /// activation loop. For Directed activities, use `AssignToActivity` after.
     CreateActivity {
+        zone_id: ZoneId,
         kind: ActivityKind,
         location: VoxelCoord,
         min_count: Option<u16>,
@@ -442,13 +455,13 @@ pub enum SimAction {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn command_serialization_roundtrip() {
         let cmd = SimCommand {
             player_name: "test_player".to_string(),
             tick: 100,
             action: SimAction::DesignateBuild {
+                zone_id: ZoneId(0),
                 build_type: BuildType::Platform,
                 voxels: vec![VoxelCoord::new(10, 20, 30), VoxelCoord::new(11, 20, 30)],
                 priority: Priority::Normal,
@@ -471,6 +484,7 @@ mod tests {
             player_name: "test".to_string(),
             tick: 42,
             action: SimAction::CreateActivity {
+                zone_id: ZoneId(0),
                 kind: ActivityKind::Dance,
                 location: VoxelCoord::new(10, 51, 20),
                 min_count: Some(3),

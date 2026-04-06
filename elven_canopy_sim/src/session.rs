@@ -475,7 +475,7 @@ impl GameSession {
 mod tests {
     use super::*;
     use crate::event::SimEventKind;
-    use crate::types::{Species, VoxelCoord};
+    use crate::types::{Species, VoxelCoord, ZoneId};
     use std::sync::LazyLock;
 
     /// Small test config matching sim/mod.rs test_config() — 64x64x64 world,
@@ -513,6 +513,17 @@ mod tests {
 
     /// Spawn position near world center at walking level for 64x64x64 world.
     const TEST_SPAWN_POS: VoxelCoord = VoxelCoord::new(32, 1, 32);
+
+    /// Home zone ID for test sessions.
+    static TEST_ZONE_ID: LazyLock<ZoneId> = LazyLock::new(|| {
+        let sim = SimState::from_json(&CACHED_SIM_JSON).unwrap();
+        sim.home_zone_id()
+    });
+
+    /// Get the home zone id for test sessions.
+    fn test_zone_id() -> ZoneId {
+        *TEST_ZONE_ID
+    }
 
     // -----------------------------------------------------------------------
     // 15.1 Message processing basics
@@ -688,6 +699,7 @@ mod tests {
         session.process(SessionMessage::SimCommand {
             from: SessionPlayerId::LOCAL,
             action: SimAction::SpawnCreature {
+                zone_id: test_zone_id(),
                 species: Species::Elf,
                 position: TEST_SPAWN_POS,
             },
@@ -707,6 +719,7 @@ mod tests {
         session.process(SessionMessage::SimCommand {
             from: SessionPlayerId::LOCAL,
             action: SimAction::SpawnCreature {
+                zone_id: test_zone_id(),
                 species: Species::Elf,
                 position: TEST_SPAWN_POS,
             },
@@ -714,6 +727,7 @@ mod tests {
         session.process(SessionMessage::SimCommand {
             from: SessionPlayerId::LOCAL,
             action: SimAction::SpawnCreature {
+                zone_id: test_zone_id(),
                 species: Species::Capybara,
                 position: TEST_SPAWN_POS,
             },
@@ -735,6 +749,7 @@ mod tests {
         let events = session.process(SessionMessage::SimCommand {
             from: SessionPlayerId::LOCAL,
             action: SimAction::SpawnCreature {
+                zone_id: test_zone_id(),
                 species: Species::Elf,
                 position: TEST_SPAWN_POS,
             },
@@ -779,6 +794,7 @@ mod tests {
         session.process(SessionMessage::SimCommand {
             from: p1,
             action: SimAction::SpawnCreature {
+                zone_id: test_zone_id(),
                 species: Species::Elf,
                 position: TEST_SPAWN_POS,
             },
@@ -786,6 +802,7 @@ mod tests {
         session.process(SessionMessage::SimCommand {
             from: p2,
             action: SimAction::SpawnCreature {
+                zone_id: test_zone_id(),
                 species: Species::Capybara,
                 position: TEST_SPAWN_POS,
             },
@@ -832,6 +849,7 @@ mod tests {
         session.process(SessionMessage::SimCommand {
             from: SessionPlayerId::LOCAL,
             action: SimAction::SpawnCreature {
+                zone_id: test_zone_id(),
                 species: Species::Elf,
                 position: TEST_SPAWN_POS,
             },
@@ -854,6 +872,7 @@ mod tests {
         session.process(SessionMessage::SimCommand {
             from: SessionPlayerId::LOCAL,
             action: SimAction::SpawnCreature {
+                zone_id: test_zone_id(),
                 species: Species::Elf,
                 position: TEST_SPAWN_POS,
             },
@@ -992,6 +1011,7 @@ mod tests {
             SessionMessage::SimCommand {
                 from: SessionPlayerId::LOCAL,
                 action: SimAction::SpawnCreature {
+                    zone_id: test_zone_id(),
                     species: Species::Elf,
                     position: TEST_SPAWN_POS,
                 },
@@ -1000,6 +1020,7 @@ mod tests {
             SessionMessage::SimCommand {
                 from: SessionPlayerId::LOCAL,
                 action: SimAction::SpawnCreature {
+                    zone_id: test_zone_id(),
                     species: Species::Capybara,
                     position: TEST_SPAWN_POS,
                 },
@@ -1119,6 +1140,7 @@ mod tests {
         session_a.process(SessionMessage::SimCommand {
             from: SessionPlayerId::LOCAL,
             action: SimAction::SpawnCreature {
+                zone_id: test_zone_id(),
                 species: Species::Elf,
                 position: TEST_SPAWN_POS,
             },
@@ -1179,6 +1201,7 @@ mod tests {
         let events = session.process(SessionMessage::SimCommand {
             from: SessionPlayerId::LOCAL,
             action: SimAction::SpawnCreature {
+                zone_id: test_zone_id(),
                 species: Species::Elf,
                 position: TEST_SPAWN_POS,
             },
@@ -1238,6 +1261,7 @@ mod tests {
         let events_0 = session.process(SessionMessage::SimCommand {
             from: SessionPlayerId::LOCAL,
             action: SimAction::SpawnCreature {
+                zone_id: test_zone_id(),
                 species: Species::Elf,
                 position: TEST_SPAWN_POS,
             },
@@ -1259,6 +1283,7 @@ mod tests {
         let events_500 = session.process(SessionMessage::SimCommand {
             from: SessionPlayerId::LOCAL,
             action: SimAction::SpawnCreature {
+                zone_id: test_zone_id(),
                 species: Species::Capybara,
                 position: TEST_SPAWN_POS,
             },
@@ -1283,6 +1308,7 @@ mod tests {
         let cmd_events = session.process(SessionMessage::SimCommand {
             from: SessionPlayerId::LOCAL,
             action: SimAction::SpawnCreature {
+                zone_id: test_zone_id(),
                 species: Species::Elf,
                 position: TEST_SPAWN_POS,
             },
@@ -1309,6 +1335,7 @@ mod tests {
         let events = session.process(SessionMessage::SimCommand {
             from: SessionPlayerId::LOCAL,
             action: SimAction::SpawnCreature {
+                zone_id: test_zone_id(),
                 species: Species::Elf,
                 position: TEST_SPAWN_POS,
             },
@@ -1340,6 +1367,7 @@ mod tests {
         session.process(SessionMessage::SimCommand {
             from: SessionPlayerId::LOCAL,
             action: SimAction::SpawnCreature {
+                zone_id: test_zone_id(),
                 species: Species::Elf,
                 position: TEST_SPAWN_POS,
             },
@@ -1377,6 +1405,7 @@ mod tests {
             session.process(SessionMessage::SimCommand {
                 from: SessionPlayerId::LOCAL,
                 action: SimAction::SpawnCreature {
+                    zone_id: test_zone_id(),
                     species,
                     position: TEST_SPAWN_POS,
                 },
@@ -1411,6 +1440,7 @@ mod tests {
         session.process(SessionMessage::SimCommand {
             from: SessionPlayerId::LOCAL,
             action: SimAction::SpawnCreature {
+                zone_id: test_zone_id(),
                 species: Species::Elf,
                 position: TEST_SPAWN_POS,
             },
@@ -1441,6 +1471,7 @@ mod tests {
         session_a.process(SessionMessage::SimCommand {
             from: SessionPlayerId::LOCAL,
             action: SimAction::SpawnCreature {
+                zone_id: test_zone_id(),
                 species: Species::Elf,
                 position: TEST_SPAWN_POS,
             },
@@ -1449,6 +1480,7 @@ mod tests {
         session_a.process(SessionMessage::SimCommand {
             from: SessionPlayerId::LOCAL,
             action: SimAction::SpawnCreature {
+                zone_id: test_zone_id(),
                 species: Species::Capybara,
                 position: TEST_SPAWN_POS,
             },
@@ -1459,6 +1491,7 @@ mod tests {
         session_b.process(SessionMessage::SimCommand {
             from: SessionPlayerId::LOCAL,
             action: SimAction::SpawnCreature {
+                zone_id: test_zone_id(),
                 species: Species::Elf,
                 position: TEST_SPAWN_POS,
             },
@@ -1468,6 +1501,7 @@ mod tests {
         session_b.process(SessionMessage::SimCommand {
             from: SessionPlayerId::LOCAL,
             action: SimAction::SpawnCreature {
+                zone_id: test_zone_id(),
                 species: Species::Capybara,
                 position: TEST_SPAWN_POS,
             },
@@ -1492,6 +1526,7 @@ mod tests {
             session.process(SessionMessage::SimCommand {
                 from: SessionPlayerId::LOCAL,
                 action: SimAction::SpawnCreature {
+                    zone_id: test_zone_id(),
                     species: Species::Elf,
                     position: TEST_SPAWN_POS,
                 },
@@ -1499,6 +1534,7 @@ mod tests {
             session.process(SessionMessage::SimCommand {
                 from: SessionPlayerId::LOCAL,
                 action: SimAction::SpawnCreature {
+                    zone_id: test_zone_id(),
                     species: Species::Capybara,
                     position: TEST_SPAWN_POS,
                 },

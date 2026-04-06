@@ -88,7 +88,7 @@
 use crate::config::GameConfig;
 use crate::db::Strut;
 use crate::types::{FaceData, FaceDirection, FaceType, VoxelCoord, VoxelType};
-use crate::world::VoxelWorld;
+use crate::world::VoxelZone;
 use std::collections::BTreeMap;
 
 // ---------------------------------------------------------------------------
@@ -195,7 +195,7 @@ impl BlueprintOverlay {
 
     /// Return the effective voxel type at `coord`: overlay if present,
     /// otherwise the actual world voxel.
-    pub fn effective_type(&self, world: &VoxelWorld, coord: VoxelCoord) -> VoxelType {
+    pub fn effective_type(&self, world: &VoxelZone, coord: VoxelCoord) -> VoxelType {
         self.voxels
             .get(&coord)
             .copied()
@@ -326,7 +326,7 @@ fn should_skip_ladder_spring(
 /// dirt. Floating dirt (isolated by carving) is included in the network but not
 /// pinned, so structures resting on it will correctly fail stress analysis.
 pub fn build_network(
-    world: &VoxelWorld,
+    world: &VoxelZone,
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     config: &GameConfig,
 ) -> StructuralNetwork {
@@ -848,7 +848,7 @@ fn compute_weight_flow_stress(
 /// under its own weight. Returns `true` if the peak stress ratio stays below
 /// the warn threshold, ensuring the generated tree has ample headroom for
 /// player-placed platforms and buildings without triggering warnings.
-pub fn validate_tree(world: &VoxelWorld, config: &GameConfig) -> bool {
+pub fn validate_tree(world: &VoxelZone, config: &GameConfig) -> bool {
     let mut network = build_network(world, &BTreeMap::new(), config);
     let result = solve(&mut network, config);
     result.max_stress_ratio < f32_to_fp(config.structural.warn_stress_ratio)
@@ -864,7 +864,7 @@ pub fn validate_tree(world: &VoxelWorld, config: &GameConfig) -> bool {
 ///
 /// Returns `true` if all proposed voxels are reachable from ground.
 pub fn flood_fill_connected(
-    world: &VoxelWorld,
+    world: &VoxelZone,
     proposed_voxels: &[VoxelCoord],
     proposed_type: VoxelType,
 ) -> bool {
@@ -956,7 +956,7 @@ pub fn flood_fill_connected(
 /// a hypothetical network including the proposed voxels and solves. Returns
 /// a tiered result with per-voxel stress data for heatmap rendering.
 pub fn validate_blueprint(
-    world: &VoxelWorld,
+    world: &VoxelZone,
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     proposed_voxels: &[VoxelCoord],
     proposed_type: VoxelType,
@@ -1067,7 +1067,7 @@ fn build_network_from_set(
     voxels: &BTreeMap<VoxelCoord, VoxelType>,
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     config: &GameConfig,
-    world: &VoxelWorld,
+    world: &VoxelZone,
     get_type: &impl Fn(VoxelCoord) -> VoxelType,
 ) -> StructuralNetwork {
     let mut nodes = Vec::new();
@@ -1265,7 +1265,7 @@ fn add_rod_springs(
 /// Cost: ~15K ops vs ~10M+ for the full path (~700x faster).
 #[allow(clippy::too_many_arguments)]
 pub fn validate_blueprint_fast(
-    world: &VoxelWorld,
+    world: &VoxelZone,
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     proposed_voxels: &[VoxelCoord],
     proposed_type: VoxelType,
@@ -1517,7 +1517,7 @@ pub fn validate_blueprint_fast(
 /// contiguous dirt runs vertically.
 fn dirt_reaches_bedrock(
     coord: VoxelCoord,
-    world: &VoxelWorld,
+    world: &VoxelZone,
     get_type: &impl Fn(VoxelCoord) -> VoxelType,
 ) -> bool {
     // The voxel itself must be dirt.
@@ -1669,7 +1669,7 @@ fn dirt_reaches_bedrock(
 /// neighbors of the carved voxels (the surviving structure), not from the
 /// carved voxels themselves.
 pub fn validate_carve_fast(
-    world: &VoxelWorld,
+    world: &VoxelZone,
     face_data: &BTreeMap<VoxelCoord, FaceData>,
     carved_voxels: &[VoxelCoord],
     config: &GameConfig,
@@ -1921,8 +1921,8 @@ pub fn validate_carve_fast(
 mod tests {
     use super::*;
     use crate::config::GameConfig;
-    use crate::types::{FaceData, FaceDirection, FaceType, VoxelCoord, VoxelType};
-    use crate::world::VoxelWorld;
+    use crate::types::{FaceData, FaceDirection, FaceType, VoxelCoord, VoxelType, ZoneId};
+    use crate::world::VoxelZone;
 
     /// Helper: create a small world with a forest floor at y=0 across the
     /// given x/z range, plus a vertical column of trunk from y=1 up to
@@ -1933,8 +1933,8 @@ mod tests {
         cx: i32,
         cz: i32,
         column_height: i32,
-    ) -> VoxelWorld {
-        let mut world = VoxelWorld::new(size, size, size);
+    ) -> VoxelZone {
+        let mut world = VoxelZone::new(size, size, size);
 
         // Forest floor at y=0.
         for x in floor_range.clone() {
@@ -1954,7 +1954,7 @@ mod tests {
     /// Helper: add a horizontal arm of `arm_type` at height `y` extending
     /// from (start_x, y, z) to (end_x, y, z).
     fn add_horizontal_arm(
-        world: &mut VoxelWorld,
+        world: &mut VoxelZone,
         y: i32,
         z: i32,
         start_x: i32,
@@ -1993,7 +1993,7 @@ mod tests {
 
     #[test]
     fn build_network_no_air_nodes() {
-        let world = VoxelWorld::new(8, 8, 8); // All air.
+        let world = VoxelZone::new(8, 8, 8); // All air.
         let config = GameConfig::default();
         let network = build_network(&world, &BTreeMap::new(), &config);
         assert_eq!(network.nodes.len(), 0);
@@ -2629,7 +2629,7 @@ mod tests {
         // validator as pinned terrain, otherwise its high density (999)
         // causes bogus structural failure.
         let config = GameConfig::default();
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
 
         // Forest floor at y=0.
         for x in 0..8 {
@@ -2692,7 +2692,7 @@ mod tests {
         // should return Ok via fast path 1 (queue empty, all seeds are dirt).
         // Exercises the `queue.is_empty()` early return.
         let config = GameConfig::default();
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
 
         // Fill y=0..3 with dirt.
         for x in 0..8 {
@@ -2735,7 +2735,7 @@ mod tests {
         // NOT fire — the BFS runs, finds ground, then the all-dirt check
         // returns Ok without building a stress network.
         let config = GameConfig::default();
-        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut world = VoxelZone::new(64, 64, 64);
 
         // Dirt floor y=0..2.
         for x in 0..32 {
@@ -2784,7 +2784,7 @@ mod tests {
         // Carving a mix of dirt and non-dirt voxels should NOT trigger the
         // all-dirt optimization — the full stress analysis must run.
         let config = GameConfig::default();
-        let mut world = VoxelWorld::new(64, 64, 64);
+        let mut world = VoxelZone::new(64, 64, 64);
 
         // Dirt floor y=0..2.
         for x in 0..32 {
@@ -3211,7 +3211,7 @@ mod tests {
         // A wood ladder column with no platform above — only the floor below.
         // The bottom ladder voxel at y=1 is adjacent to Dirt at y=0.
         // Wood ladders CAN anchor at the bottom (they lean against things).
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         for x in 0..8 {
             for z in 0..8 {
                 world.set(VoxelCoord::new(x, 0, z), VoxelType::Dirt);
@@ -3250,7 +3250,7 @@ mod tests {
         // adjacent to Dirt should NOT become the anchor. The rope
         // ladder has no valid anchor and should be fully disconnected from
         // non-ladder structure.
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         for x in 0..8 {
             for z in 0..8 {
                 world.set(VoxelCoord::new(x, 0, z), VoxelType::Dirt);
@@ -3351,6 +3351,7 @@ mod tests {
 
         let strut = crate::db::Strut {
             id: crate::types::StrutId(1),
+            zone_id: ZoneId(0),
             endpoint_a: a,
             endpoint_b: b,
             blueprint_id: None,
@@ -3405,6 +3406,7 @@ mod tests {
 
         let strut = crate::db::Strut {
             id: crate::types::StrutId(1),
+            zone_id: ZoneId(0),
             endpoint_a: a,
             endpoint_b: b,
             blueprint_id: None,
@@ -3446,6 +3448,7 @@ mod tests {
 
         let strut = crate::db::Strut {
             id: crate::types::StrutId(1),
+            zone_id: ZoneId(0),
             endpoint_a: a,
             endpoint_b: b,
             blueprint_id: None,
@@ -3485,7 +3488,7 @@ mod tests {
         let config = GameConfig::default();
 
         // Small world with Dirt at y=0 (no trunk).
-        let mut world = VoxelWorld::new(24, 24, 24);
+        let mut world = VoxelZone::new(24, 24, 24);
         for x in 0..16 {
             for z in 0..16 {
                 world.set(VoxelCoord::new(x, 0, z), VoxelType::Dirt);
@@ -3507,6 +3510,7 @@ mod tests {
 
         let strut = crate::db::Strut {
             id: crate::types::StrutId(1),
+            zone_id: ZoneId(0),
             endpoint_a: strut_a,
             endpoint_b: strut_b,
             blueprint_id: None,
@@ -3595,7 +3599,7 @@ mod tests {
         //   y=0:   [floor]
         let config = GameConfig::default();
 
-        let mut world = VoxelWorld::new(48, 24, 24);
+        let mut world = VoxelZone::new(48, 24, 24);
         // Dirt at y=0.
         for x in 0..32 {
             for z in 0..16 {
@@ -3646,6 +3650,7 @@ mod tests {
 
         let brace_strut = crate::db::Strut {
             id: crate::types::StrutId(1),
+            zone_id: ZoneId(0),
             endpoint_a: brace_a,
             endpoint_b: brace_b,
             blueprint_id: None,
@@ -3679,7 +3684,7 @@ mod tests {
         // connectivity. A diagonal strut from trunk to open air should
         // validate Ok.
         let config = GameConfig::default();
-        let mut world = VoxelWorld::new(24, 24, 24);
+        let mut world = VoxelZone::new(24, 24, 24);
         for x in 0..16 {
             for z in 0..16 {
                 world.set(VoxelCoord::new(x, 0, z), VoxelType::Dirt);
@@ -3737,6 +3742,7 @@ mod tests {
 
         let strut = crate::db::Strut {
             id: crate::types::StrutId(1),
+            zone_id: ZoneId(0),
             endpoint_a: strut_a,
             endpoint_b: strut_b,
             blueprint_id: Some(crate::types::ProjectId(crate::types::SimUuid::new_v4(
@@ -3791,6 +3797,7 @@ mod tests {
 
         let strut_a = crate::db::Strut {
             id: crate::types::StrutId(1),
+            zone_id: ZoneId(0),
             endpoint_a: a1,
             endpoint_b: a2,
             blueprint_id: None,
@@ -3798,6 +3805,7 @@ mod tests {
         };
         let strut_b = crate::db::Strut {
             id: crate::types::StrutId(2),
+            zone_id: ZoneId(0),
             endpoint_a: b1,
             endpoint_b: b2,
             blueprint_id: None,
@@ -3845,6 +3853,7 @@ mod tests {
 
         let strut = crate::db::Strut {
             id: crate::types::StrutId(1),
+            zone_id: ZoneId(0),
             endpoint_a: strut_a,
             endpoint_b: strut_b,
             blueprint_id: None,
@@ -3879,7 +3888,7 @@ mod tests {
         // A strut voxel replacing Dirt should NOT be pinned,
         // but adjacent Dirt voxels should remain pinned.
         let config = GameConfig::default();
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
 
         // Dirt at y=0.
         for x in 0..8 {
@@ -3946,7 +3955,7 @@ mod tests {
         );
 
         // Verify a strut node in a network uses the correct mass.
-        let mut world = VoxelWorld::new(8, 8, 8);
+        let mut world = VoxelZone::new(8, 8, 8);
         world.set(VoxelCoord::new(3, 0, 3), VoxelType::Dirt);
         world.set(VoxelCoord::new(3, 1, 3), VoxelType::Strut);
 
@@ -3997,7 +4006,7 @@ mod tests {
 
     /// Helper: fill a rectangular dirt region.
     fn fill_dirt(
-        world: &mut VoxelWorld,
+        world: &mut VoxelZone,
         x_range: std::ops::Range<i32>,
         y_range: std::ops::Range<i32>,
         z_range: std::ops::Range<i32>,
@@ -4015,7 +4024,7 @@ mod tests {
     fn dirt_reaches_bedrock_uncarved_column() {
         // A contiguous dirt column from y=0 to y=3 — every voxel trivially
         // reaches bedrock via the fast-path (single column span).
-        let mut world = VoxelWorld::new(8, 8, 8);
+        let mut world = VoxelZone::new(8, 8, 8);
         fill_dirt(&mut world, 2..6, 0..4, 2..6);
 
         let get_type = |c: VoxelCoord| world.get(c);
@@ -4031,7 +4040,7 @@ mod tests {
     fn dirt_reaches_bedrock_floating_after_carve() {
         // Floating 3×3 dirt island at y=3..5 with no dirt connecting it
         // to the bedrock layer at y=0.
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         // Bedrock layer at y=0.
         fill_dirt(&mut world, 0..16, 0..1, 0..16);
         // Floating island — air gap at y=1..2.
@@ -4056,7 +4065,7 @@ mod tests {
     fn dirt_reaches_bedrock_lateral_path() {
         // Dirt column at x=5 has its lower portion carved, but a lateral
         // path through neighboring dirt at x=4 reconnects it to y=0.
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         // Base layer at y=0..4 for x=4..6, z=5.
         fill_dirt(&mut world, 4..6, 0..4, 5..6);
         // Carve out x=5 at y=1 — breaks the direct column.
@@ -4074,7 +4083,7 @@ mod tests {
     #[test]
     fn dirt_reaches_bedrock_hypothetical_world() {
         // Test with a closure that simulates carved voxels (hypothetical world).
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         fill_dirt(&mut world, 4..7, 0..4, 4..7);
 
         // Hypothetical: carve all of y=1 in this region, isolating y=2..3.
@@ -4106,7 +4115,7 @@ mod tests {
         // The carve should be blocked because the trunk's ground connection
         // goes through dirt that would become floating.
         let config = GameConfig::default();
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         // Dirt at y=0..3.
         fill_dirt(&mut world, 0..8, 0..3, 0..8);
         // Trunk column from y=3..6 sitting on the dirt.
@@ -4145,7 +4154,7 @@ mod tests {
         // structure) should be Ok, even if it creates floating dirt.
         // No structures are affected.
         let config = GameConfig::default();
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         fill_dirt(&mut world, 0..8, 0..4, 0..8);
 
         // Carve a single dirt voxel in the interior — all neighbors are dirt.
@@ -4172,7 +4181,7 @@ mod tests {
         // above — a cave-in hazard. This should be Blocked even though no
         // above-ground structures are present.
         let config = GameConfig::default();
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         fill_dirt(&mut world, 0..8, 0..4, 0..8);
 
         // Carve the entire y=1 layer.
@@ -4202,7 +4211,7 @@ mod tests {
     fn build_network_floating_dirt_not_pinned() {
         // A trunk column on floating dirt — the dirt should NOT be pinned
         // in the network, so the structure should fail stress analysis.
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         // Bedrock at y=0.
         fill_dirt(&mut world, 0..8, 0..1, 0..8);
         // Floating dirt island at y=3 (gap at y=1..2).
@@ -4235,7 +4244,7 @@ mod tests {
         // Verify that bedrock-connected dirt IS pinned under the new code
         // path (which routes terrain through dirt_reaches_bedrock instead
         // of unconditionally pinning).
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         fill_dirt(&mut world, 0..8, 0..3, 0..8);
         // Trunk column sitting on the dirt.
         for y in 3..7 {
@@ -4263,7 +4272,7 @@ mod tests {
         // Placing a structure on floating dirt should be Blocked — the
         // dirt is not connected to bedrock so it cannot anchor anything.
         let config = GameConfig::default();
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         fill_dirt(&mut world, 0..8, 0..1, 0..8);
         // Floating dirt island at y=4 (gap at y=1..3).
         world.set(VoxelCoord::new(4, 4, 4), VoxelType::Dirt);
@@ -4292,7 +4301,7 @@ mod tests {
     fn blueprint_ok_on_grounded_dirt() {
         // Placing a structure on bedrock-connected dirt should pass.
         let config = GameConfig::default();
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         fill_dirt(&mut world, 0..8, 0..3, 0..8);
 
         // Propose a Trunk on top of grounded dirt.

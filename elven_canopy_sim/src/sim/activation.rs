@@ -48,11 +48,16 @@ impl SimState {
                 None => continue,
             };
             for i in 0..spec.count {
-                let creature_id =
-                    match self.spawn_creature(spec.species, spec.spawn_position, events) {
-                        Some(id) => id,
-                        None => continue,
-                    };
+                // TODO(F-zone-world): derive zone from spawn context
+                let creature_id = match self.spawn_creature(
+                    spec.species,
+                    spec.spawn_position,
+                    self.home_zone_id(),
+                    events,
+                ) {
+                    Some(id) => id,
+                    None => continue,
+                };
 
                 if spec.species == Species::Elf {
                     starting_elf_ids.push(creature_id);
@@ -130,8 +135,10 @@ impl SimState {
 
         let pile_specs = self.config.initial_ground_piles.clone();
         for pile_spec in &pile_specs {
-            let pos = self.find_surface_position(pile_spec.position.x, pile_spec.position.z);
-            let pile_id = self.ensure_ground_pile(pos);
+            // TODO(F-zone-world): derive zone from spawn context
+            let hz = self.home_zone_id();
+            let pos = self.find_surface_position(pile_spec.position.x, pile_spec.position.z, hz);
+            let pile_id = self.ensure_ground_pile(pos, hz);
             let pile = self.db.ground_piles.get(&pile_id).unwrap();
             let pile_inv = pile.inventory_id;
             self.inv_add_item(
@@ -221,6 +228,7 @@ impl SimState {
 
         let creature = self.db.creatures.get(&creature_id).unwrap();
         let species = creature.species;
+        let zone_id = creature.zone_id.unwrap();
         let is_flying = creature.movement_category.is_flyer();
 
         // Gravity check: ground creatures only.
@@ -251,19 +259,26 @@ impl SimState {
         let species_data_act = &self.species_table[&species];
         let footprint = species_data_act.footprint;
         let can_climb = creature.movement_category.can_climb();
-        if let Some(pos) = current_node
-            && !crate::walkability::footprint_walkable(
-                &self.world,
-                &self.face_data,
+        let not_walkable = if let Some(pos) = current_node {
+            let zone = self.voxel_zone(zone_id).unwrap();
+            !crate::walkability::footprint_walkable(
+                zone,
+                &zone.face_data,
                 pos,
                 footprint,
                 can_climb,
             )
+        } else {
+            false
+        };
+        if let Some(pos) = current_node
+            && not_walkable
         {
             self.abort_current_action(creature_id);
+            let zone = self.voxel_zone(zone_id).unwrap();
             let new_pos = match crate::walkability::find_nearest_walkable(
-                &self.world,
-                &self.face_data,
+                zone,
+                &zone.face_data,
                 pos,
                 5,
                 footprint,
@@ -679,16 +694,20 @@ impl SimState {
         current_node: Option<VoxelCoord>,
         events: &mut Vec<SimEvent>,
     ) {
-        let creature_ref = self.db.creatures.get(&creature_id);
-        let creature_species = creature_ref.as_ref().map(|c| c.species);
-        let is_flying = creature_ref
+        let creature_row = self.db.creatures.get(&creature_id);
+        let creature_species = creature_row.as_ref().map(|c| c.species);
+        let zone_id = creature_row
+            .as_ref()
+            .and_then(|c| c.zone_id)
+            .unwrap_or_else(|| self.home_zone_id()); // TODO(F-zone-world): derive from entity context
+        let is_flying = creature_row
             .as_ref()
             .map(|c| c.movement_category.is_flyer())
             .unwrap_or(false);
         let footprint = creature_species
             .map(|s| self.species_table[&s].footprint)
             .unwrap_or([1, 1, 1]);
-        let can_climb = creature_ref
+        let can_climb = creature_row
             .as_ref()
             .map(|c| c.movement_category.can_climb())
             .unwrap_or(false);
@@ -755,14 +774,18 @@ impl SimState {
         // Ground creatures: snap task location to nearest walkable position.
         // Flying creatures skip this.
         if !is_flying {
-            match crate::walkability::find_nearest_walkable(
-                &self.world,
-                &self.face_data,
-                task_location_coord,
-                5,
-                footprint,
-                can_climb,
-            ) {
+            let snapped = {
+                let zone = self.voxel_zone(zone_id).unwrap();
+                crate::walkability::find_nearest_walkable(
+                    zone,
+                    &zone.face_data,
+                    task_location_coord,
+                    5,
+                    footprint,
+                    can_climb,
+                )
+            };
+            match snapped {
                 Some(p) => {
                     task_location_coord = p;
                 }
@@ -1159,7 +1182,8 @@ impl SimState {
             prerequisite_task_id: None,
             required_civ_id: None,
         };
-        self.insert_task(new_task);
+        // TODO(F-zone-world): derive zone from creature/entity context
+        self.insert_task(self.home_zone_id(), new_task);
         if let Some(mut creature) = self.db.creatures.get(&creature_id) {
             creature.current_task = Some(task_id);
             let name = creature.name.clone();
@@ -1290,7 +1314,8 @@ impl SimState {
             prerequisite_task_id: None,
             required_civ_id: None,
         };
-        self.insert_task(new_task);
+        // TODO(F-zone-world): derive zone from creature/entity context
+        self.insert_task(self.home_zone_id(), new_task);
         if let Some(mut creature) = self.db.creatures.get(&creature_id) {
             creature.current_task = Some(task_id);
             let _ = self.db.update_creature(creature);
@@ -1400,7 +1425,14 @@ impl SimState {
 
         // Find or create a ground pile at the creature's position.
         let creature_pos = creature_position;
-        let pile_id = self.ensure_ground_pile(creature_pos);
+        let creature_zone = self
+            .db
+            .creatures
+            .get(&creature_id)
+            .and_then(|c| c.zone_id)
+            // TODO(F-zone-world): handle None zone_id (in-transit creature)
+            .unwrap_or_else(|| self.home_zone_id());
+        let pile_id = self.ensure_ground_pile(creature_pos, creature_zone);
         let pile_inv = match self.db.ground_piles.get(&pile_id) {
             Some(p) => p.inventory_id,
             None => return,
@@ -1574,7 +1606,8 @@ impl SimState {
             prerequisite_task_id: None,
             required_civ_id: None,
         };
-        self.insert_task(new_task);
+        // TODO(F-zone-world): derive zone from creature/entity context
+        self.insert_task(self.home_zone_id(), new_task);
         if let Some(mut creature) = self.db.creatures.get(&creature_id) {
             creature.current_task = Some(task_id);
             let _ = self.db.update_creature(creature);

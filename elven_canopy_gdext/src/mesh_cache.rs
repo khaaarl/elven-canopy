@@ -67,7 +67,7 @@ use elven_canopy_graphics::mesh_gen::{
 };
 use elven_canopy_graphics::texture_gen::TilingCache;
 use elven_canopy_sim::types::VoxelCoord;
-use elven_canopy_sim::world::VoxelWorld;
+use elven_canopy_sim::world::VoxelZone;
 
 /// Side length of a MegaChunk in chunks (16 chunks = 256 voxels per side).
 pub const MEGA_SIZE: i32 = 16;
@@ -861,7 +861,7 @@ impl MeshCache {
     /// `column_spans()` and checks whether any geometry-producing voxel type
     /// overlaps the chunk's Y range. This is much cheaper than generating full
     /// meshes for the entire world.
-    pub fn scan_nonempty_chunks(&mut self, world: &VoxelWorld) {
+    pub fn scan_nonempty_chunks(&mut self, world: &VoxelZone) {
         self.chunks.clear();
         self.dirty.clear();
 
@@ -945,7 +945,7 @@ impl MeshCache {
     #[cfg(test)]
     pub fn build_all(
         &mut self,
-        world: &VoxelWorld,
+        world: &VoxelZone,
         grassless: &std::collections::BTreeSet<VoxelCoord>,
     ) {
         self.scan_nonempty_chunks(world);
@@ -987,7 +987,7 @@ impl MeshCache {
     /// dirty flag + staleness check will handle re-submission later.
     fn submit_chunk(
         &mut self,
-        world: &VoxelWorld,
+        world: &VoxelZone,
         coord: ChunkCoord,
         grassless: &std::collections::BTreeSet<VoxelCoord>,
     ) {
@@ -1097,7 +1097,7 @@ impl MeshCache {
     /// Returns the number of chunk meshes generated this frame.
     pub fn update_visibility(
         &mut self,
-        world: &VoxelWorld,
+        world: &VoxelZone,
         cam_pos: [f32; 3],
         frustum_planes: &[[f32; 4]],
         grassless: &std::collections::BTreeSet<VoxelCoord>,
@@ -1448,7 +1448,7 @@ impl MeshCache {
     /// and will trigger another regeneration.
     pub fn update_dirty(
         &mut self,
-        world: &VoxelWorld,
+        world: &VoxelZone,
         grassless: &std::collections::BTreeSet<VoxelCoord>,
     ) -> usize {
         // Process dirty chunks that are currently visible or shadow-only.
@@ -1570,7 +1570,7 @@ fn chunk_distance_sq(c: ChunkCoord, pos: [f32; 3]) -> f32 {
 mod tests {
     use super::*;
     use elven_canopy_sim::types::VoxelType;
-    use elven_canopy_sim::world::VoxelWorld;
+    use elven_canopy_sim::world::VoxelZone;
 
     // -- MegaChunkCoord conversion --
 
@@ -1785,7 +1785,7 @@ mod tests {
 
     #[test]
     fn scan_empty_world() {
-        let world = VoxelWorld::new(16, 16, 16);
+        let world = VoxelZone::new(16, 16, 16);
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
         assert!(cache.megachunks.is_empty());
@@ -1793,7 +1793,7 @@ mod tests {
 
     #[test]
     fn scan_single_voxel() {
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
@@ -1807,7 +1807,7 @@ mod tests {
 
     #[test]
     fn scan_tall_column_spans_multiple_chunk_y_levels() {
-        let mut world = VoxelWorld::new(16, 48, 16);
+        let mut world = VoxelZone::new(16, 48, 16);
         // Trunk from y=0 to y=47 spans 3 chunk Y levels.
         for y in 0..48 {
             world.set(VoxelCoord::new(4, y, 4), VoxelType::Trunk);
@@ -1824,7 +1824,7 @@ mod tests {
 
     #[test]
     fn scan_finds_chunk_with_dirt_and_trunk() {
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         world.set(VoxelCoord::new(8, 0, 8), VoxelType::Dirt);
         world.set(VoxelCoord::new(8, 1, 8), VoxelType::Trunk);
         let mut cache = MeshCache::new();
@@ -1838,7 +1838,7 @@ mod tests {
 
     #[test]
     fn estimate_byte_size_via_build() {
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
         let mut cache = MeshCache::new();
         cache.build_all(&world, &std::collections::BTreeSet::new());
@@ -1854,7 +1854,7 @@ mod tests {
 
     #[test]
     fn visibility_draw_distance_excludes_far_chunks() {
-        let mut world = VoxelWorld::new(256, 16, 16);
+        let mut world = VoxelZone::new(256, 16, 16);
         // Place voxels in two chunks far apart.
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk); // chunk (0,0,0)
         world.set(VoxelCoord::new(200, 8, 8), VoxelType::Trunk); // chunk (12,0,0)
@@ -1877,7 +1877,7 @@ mod tests {
 
     #[test]
     fn visibility_unlimited_draw_distance_shows_all() {
-        let mut world = VoxelWorld::new(256, 16, 16);
+        let mut world = VoxelZone::new(256, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
         world.set(VoxelCoord::new(200, 8, 8), VoxelType::Trunk);
 
@@ -1901,7 +1901,7 @@ mod tests {
 
     #[test]
     fn visibility_frustum_excludes_behind_camera() {
-        let mut world = VoxelWorld::new(256, 16, 256);
+        let mut world = VoxelZone::new(256, 16, 256);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk); // chunk (0,0,0)
         world.set(VoxelCoord::new(200, 8, 200), VoxelType::Trunk); // chunk (12,0,12)
 
@@ -1932,7 +1932,7 @@ mod tests {
 
     #[test]
     fn visibility_generates_meshes_on_demand() {
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
 
         let mut cache = MeshCache::new();
@@ -1956,7 +1956,7 @@ mod tests {
     fn visibility_submits_all_chunks_without_cap() {
         // With async mesh generation, all visible chunks are submitted in a
         // single frame (no per-frame cap). Verify all 3 chunks get generated.
-        let mut world = VoxelWorld::new(48, 16, 16);
+        let mut world = VoxelZone::new(48, 16, 16);
         // 3 chunks with geometry.
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
         world.set(VoxelCoord::new(24, 8, 8), VoxelType::Trunk);
@@ -1982,7 +1982,7 @@ mod tests {
 
     #[test]
     fn visibility_show_hide_deltas() {
-        let mut world = VoxelWorld::new(256, 16, 16);
+        let mut world = VoxelZone::new(256, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
         world.set(VoxelCoord::new(200, 8, 8), VoxelType::Trunk);
 
@@ -2036,7 +2036,7 @@ mod tests {
 
     #[test]
     fn lru_eviction_under_budget() {
-        let mut world = VoxelWorld::new(256, 16, 16);
+        let mut world = VoxelZone::new(256, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
         world.set(VoxelCoord::new(200, 8, 8), VoxelType::Trunk);
 
@@ -2087,7 +2087,7 @@ mod tests {
 
     #[test]
     fn lru_visible_chunks_never_evicted() {
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
 
         let mut cache = MeshCache::new();
@@ -2118,7 +2118,7 @@ mod tests {
 
     #[test]
     fn dirty_visible_chunk_rebuilt() {
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
 
         let mut cache = MeshCache::new();
@@ -2142,7 +2142,7 @@ mod tests {
 
     #[test]
     fn dirty_non_visible_chunk_deferred() {
-        let mut world = VoxelWorld::new(256, 16, 16);
+        let mut world = VoxelZone::new(256, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
         world.set(VoxelCoord::new(200, 8, 8), VoxelType::Trunk);
 
@@ -2167,7 +2167,7 @@ mod tests {
 
     #[test]
     fn dirty_chunk_rebuilt_when_entering_visibility() {
-        let mut world = VoxelWorld::new(256, 16, 16);
+        let mut world = VoxelZone::new(256, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
         world.set(VoxelCoord::new(200, 8, 8), VoxelType::Trunk);
 
@@ -2211,7 +2211,7 @@ mod tests {
 
     #[test]
     fn lru_evicts_oldest_stamp_first() {
-        let mut world = VoxelWorld::new(256, 16, 256);
+        let mut world = VoxelZone::new(256, 16, 256);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk); // chunk (0,0,0)
         world.set(VoxelCoord::new(200, 8, 8), VoxelType::Trunk); // chunk (12,0,0)
         world.set(VoxelCoord::new(8, 8, 200), VoxelType::Trunk); // chunk (0,0,12)
@@ -2270,7 +2270,7 @@ mod tests {
 
     #[test]
     fn update_dirty_emptied_chunk_removed_from_visible_set() {
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
 
         let mut cache = MeshCache::new();
@@ -2302,7 +2302,7 @@ mod tests {
 
     #[test]
     fn update_dirty_byte_accounting() {
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
 
         let mut cache = MeshCache::new();
@@ -2337,7 +2337,7 @@ mod tests {
 
     #[test]
     fn mark_dirty_registers_chunk_in_megachunk() {
-        let world = VoxelWorld::new(32, 16, 16);
+        let world = VoxelZone::new(32, 16, 16);
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
 
@@ -2363,7 +2363,7 @@ mod tests {
         // If a chunk leaves visibility before its mesh completes, the
         // completed mesh should still be cached but not added to
         // chunks_to_show.
-        let mut world = VoxelWorld::new(256, 16, 16);
+        let mut world = VoxelZone::new(256, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
         world.set(VoxelCoord::new(200, 8, 8), VoxelType::Trunk);
 
@@ -2398,7 +2398,7 @@ mod tests {
 
     #[test]
     fn scan_registers_chunk_despite_y_cutoff() {
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
 
         let mut cache = MeshCache::new();
@@ -2443,7 +2443,7 @@ mod tests {
 
     #[test]
     fn generated_chunks_always_in_show_list() {
-        let mut world = VoxelWorld::new(48, 16, 16);
+        let mut world = VoxelZone::new(48, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
         world.set(VoxelCoord::new(24, 8, 8), VoxelType::Trunk);
         world.set(VoxelCoord::new(40, 8, 8), VoxelType::Trunk);
@@ -2490,7 +2490,7 @@ mod tests {
     fn removing_cutoff_restores_previously_hidden_chunks() {
         // World with voxels at two different heights: chunk cy=0 (low) and cy=2 (high).
         // A 48-tall world gives us 3 chunk Y-levels: 0, 1, 2.
-        let mut world = VoxelWorld::new(16, 48, 16);
+        let mut world = VoxelZone::new(16, 48, 16);
         world.set(VoxelCoord::new(8, 4, 8), VoxelType::Trunk); // chunk (0,0,0)
         world.set(VoxelCoord::new(8, 36, 8), VoxelType::Trunk); // chunk (0,2,0)
 
@@ -2572,7 +2572,7 @@ mod tests {
     fn raising_cutoff_restores_chunks_above_old_cutoff() {
         // Similar scenario: verify that raising the cutoff (not just removing)
         // also restores previously-hidden chunks.
-        let mut world = VoxelWorld::new(16, 64, 16);
+        let mut world = VoxelZone::new(16, 64, 16);
         world.set(VoxelCoord::new(8, 4, 8), VoxelType::Trunk); // chunk (0,0,0)
         world.set(VoxelCoord::new(8, 36, 8), VoxelType::Trunk); // chunk (0,2,0)
         world.set(VoxelCoord::new(8, 52, 8), VoxelType::Trunk); // chunk (0,3,0)
@@ -2632,7 +2632,7 @@ mod tests {
 
     #[test]
     fn evicted_chunks_not_in_hide_list() {
-        let mut world = VoxelWorld::new(256, 16, 16);
+        let mut world = VoxelZone::new(256, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
         world.set(VoxelCoord::new(200, 8, 8), VoxelType::Trunk);
 
@@ -2675,7 +2675,7 @@ mod tests {
         // A chunk with geometry-producing voxels that are fully interior
         // (all faces culled) generates an empty mesh. It should be cached
         // in empty_chunks and not re-generated on subsequent frames.
-        let mut world = VoxelWorld::new(48, 48, 48);
+        let mut world = VoxelZone::new(48, 48, 48);
         // Fill a 16³ interior so chunk (1,1,1) is fully surrounded.
         for x in 0..48 {
             for y in 0..48 {
@@ -2721,7 +2721,7 @@ mod tests {
 
     #[test]
     fn empty_chunk_cleared_on_mark_dirty() {
-        let mut world = VoxelWorld::new(48, 48, 48);
+        let mut world = VoxelZone::new(48, 48, 48);
         for x in 0..48 {
             for y in 0..48 {
                 for z in 0..48 {
@@ -2753,7 +2753,7 @@ mod tests {
 
     #[test]
     fn empty_chunk_boundary_neighbor_cleared_on_dirty() {
-        let mut world = VoxelWorld::new(48, 48, 48);
+        let mut world = VoxelZone::new(48, 48, 48);
         for x in 0..48 {
             for y in 0..48 {
                 for z in 0..48 {
@@ -2786,7 +2786,7 @@ mod tests {
 
     #[test]
     fn empty_chunk_cleared_on_y_cutoff_change() {
-        let mut world = VoxelWorld::new(16, 48, 16);
+        let mut world = VoxelZone::new(16, 48, 16);
         // Single voxel in chunk (0,0,0).
         world.set(VoxelCoord::new(8, 4, 8), VoxelType::Trunk);
 
@@ -2818,7 +2818,7 @@ mod tests {
 
     #[test]
     fn scan_nonempty_chunks_clears_empty_chunks() {
-        let mut world = VoxelWorld::new(48, 48, 48);
+        let mut world = VoxelZone::new(48, 48, 48);
         for x in 0..48 {
             for y in 0..48 {
                 for z in 0..48 {
@@ -2850,7 +2850,7 @@ mod tests {
 
     #[test]
     fn update_dirty_emptied_chunk_added_to_empty_chunks() {
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
 
         let mut cache = MeshCache::new();
@@ -3002,7 +3002,7 @@ mod tests {
     #[test]
     fn shadow_visibility_chunk_above_frustum_becomes_shadow_only() {
         // World: two chunks stacked — one at Y=0 (in frustum), one at Y=3 (above).
-        let mut world = VoxelWorld::new(16, 64, 16);
+        let mut world = VoxelZone::new(16, 64, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk); // chunk (0,0,0)
         world.set(VoxelCoord::new(8, 56, 8), VoxelType::Trunk); // chunk (0,3,0)
 
@@ -3056,7 +3056,7 @@ mod tests {
 
     #[test]
     fn shadow_visibility_no_light_direction_means_no_shadow_set() {
-        let mut world = VoxelWorld::new(16, 64, 16);
+        let mut world = VoxelZone::new(16, 64, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
         world.set(VoxelCoord::new(8, 56, 8), VoxelType::Trunk);
 
@@ -3093,7 +3093,7 @@ mod tests {
 
     #[test]
     fn shadow_visibility_shadow_to_visible_transition() {
-        let mut world = VoxelWorld::new(16, 64, 16);
+        let mut world = VoxelZone::new(16, 64, 16);
         world.set(VoxelCoord::new(8, 56, 8), VoxelType::Trunk); // chunk (0,3,0)
 
         let mut cache = MeshCache::new();
@@ -3142,7 +3142,7 @@ mod tests {
 
     #[test]
     fn shadow_visibility_shadow_to_hidden_transition() {
-        let mut world = VoxelWorld::new(16, 64, 16);
+        let mut world = VoxelZone::new(16, 64, 16);
         world.set(VoxelCoord::new(8, 56, 8), VoxelType::Trunk); // chunk (0,3,0)
 
         let mut cache = MeshCache::new();
@@ -3186,7 +3186,7 @@ mod tests {
 
     #[test]
     fn shadow_visibility_visible_to_shadow_transition() {
-        let mut world = VoxelWorld::new(16, 64, 16);
+        let mut world = VoxelZone::new(16, 64, 16);
         world.set(VoxelCoord::new(8, 56, 8), VoxelType::Trunk); // chunk (0,3,0)
 
         let mut cache = MeshCache::new();
@@ -3237,7 +3237,7 @@ mod tests {
     fn shadow_visibility_visible_to_hidden_not_in_shadow() {
         // A chunk that leaves the frustum AND the shadow volume should go
         // to chunks_to_hide, not chunks_to_shadow.
-        let mut world = VoxelWorld::new(16, 64, 16);
+        let mut world = VoxelZone::new(16, 64, 16);
         // Chunk at Y=0, below the camera in a downward-light scenario.
         // Its shadow goes further down, not into the frustum.
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk); // chunk (0,0,0)
@@ -3284,7 +3284,7 @@ mod tests {
 
     #[test]
     fn shadow_visibility_stable_shadow_no_delta() {
-        let mut world = VoxelWorld::new(16, 64, 16);
+        let mut world = VoxelZone::new(16, 64, 16);
         world.set(VoxelCoord::new(8, 56, 8), VoxelType::Trunk); // chunk (0,3,0)
 
         let mut cache = MeshCache::new();
@@ -3342,7 +3342,7 @@ mod tests {
     #[test]
     fn shadow_visibility_draw_distance_limits_shadow() {
         // Chunk far in XZ (200 voxels away) but upstream of downward light.
-        let mut world = VoxelWorld::new(256, 64, 16);
+        let mut world = VoxelZone::new(256, 64, 16);
         world.set(VoxelCoord::new(200, 56, 8), VoxelType::Trunk); // chunk (12,3,0)
 
         let mut cache = MeshCache::new();
@@ -3373,7 +3373,7 @@ mod tests {
 
     #[test]
     fn shadow_visibility_pending_gen_serves_shadow_chunks() {
-        let mut world = VoxelWorld::new(16, 64, 16);
+        let mut world = VoxelZone::new(16, 64, 16);
         world.set(VoxelCoord::new(8, 56, 8), VoxelType::Trunk); // chunk (0,3,0)
 
         let mut cache = MeshCache::new();
@@ -3413,7 +3413,7 @@ mod tests {
 
     #[test]
     fn stale_result_discarded_by_sim_tick() {
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
         world.sim_tick = 10; // Non-zero so staleness check is meaningful.
 
@@ -3449,7 +3449,7 @@ mod tests {
 
     #[test]
     fn duplicate_submit_supersedes_in_queue() {
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
 
         let mut cache = MeshCache::new();
@@ -3482,7 +3482,7 @@ mod tests {
         //       dirty flag preserved, chunk re-submitted after the
         //       stale result arrives.
         // In either case, the final mesh should be up-to-date.
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
 
         let mut cache = MeshCache::new();
@@ -3533,7 +3533,7 @@ mod tests {
 
     #[test]
     fn empty_mesh_from_dirty_produces_hide_delta() {
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
 
         let mut cache = MeshCache::new();
@@ -3583,7 +3583,7 @@ mod tests {
         // should appear in chunks_generated (GDScript creates the
         // MeshInstance3D) AND in chunks_to_hide (GDScript immediately
         // hides it). This ensures the node exists for future show deltas.
-        let mut world = VoxelWorld::new(256, 16, 16);
+        let mut world = VoxelZone::new(256, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk); // chunk (0,0,0)
         world.set(VoxelCoord::new(200, 8, 8), VoxelType::Trunk); // chunk (12,0,0)
 
@@ -3631,7 +3631,7 @@ mod tests {
         // A chunk completes generation while offscreen, then the camera
         // returns. The chunk should appear via chunks_to_show because
         // its MeshInstance3D was created (and hidden) earlier.
-        let mut world = VoxelWorld::new(256, 16, 16);
+        let mut world = VoxelZone::new(256, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk); // chunk (0,0,0)
         world.set(VoxelCoord::new(200, 8, 8), VoxelType::Trunk); // chunk (12,0,0)
 
@@ -3680,7 +3680,7 @@ mod tests {
     fn work_queue_closest_chunk_picked_first() {
         // With two chunks at different distances from the camera, the
         // closer one should be generated first.
-        let mut world = VoxelWorld::new(256, 16, 16);
+        let mut world = VoxelZone::new(256, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk); // chunk (0,0,0) — near
         world.set(VoxelCoord::new(200, 8, 8), VoxelType::Trunk); // chunk (12,0,0) — far
 
@@ -3710,7 +3710,7 @@ mod tests {
         // When a chunk is submitted twice, the second submission should
         // supersede the first. After flushing, the cached mesh should
         // reflect the newer sim_tick (the superseded snapshot).
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
 
         let mut cache = MeshCache::new();
@@ -3745,7 +3745,7 @@ mod tests {
     fn camera_position_updates_between_frames() {
         // Verify that the work queue's camera position is updated each
         // frame by update_visibility.
-        let world = VoxelWorld::new(16, 16, 16);
+        let world = VoxelZone::new(16, 16, 16);
 
         let mut cache = MeshCache::new();
         cache.scan_nonempty_chunks(&world);
@@ -3779,7 +3779,7 @@ mod tests {
         // in pending), calling submit_chunk for that coord should be a
         // no-op: the neighborhood is NOT inserted into pending, and the
         // dirty flag is NOT cleared.
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
 
         let mut cache = MeshCache::new();
@@ -3816,7 +3816,7 @@ mod tests {
         // After submitting chunks, calling scan_nonempty_chunks should
         // clear the work queue's pending map so stale work from a
         // previous world state isn't processed.
-        let mut world = VoxelWorld::new(32, 16, 16);
+        let mut world = VoxelZone::new(32, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
         world.set(VoxelCoord::new(24, 8, 8), VoxelType::Trunk);
 
@@ -3849,7 +3849,7 @@ mod tests {
     fn drop_completes_with_pending_work() {
         // Dropping a MeshCache with pending work in the queue should
         // complete without deadlocking.
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
 
         let mut cache = MeshCache::new();
@@ -3876,7 +3876,7 @@ mod tests {
         // When a chunk is in the work queue and then dirties (e.g., from
         // grazing), update_dirty should supersede the stale entry with a
         // fresh snapshot via submit_chunk.
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
         world.sim_tick = 1;
 
@@ -3930,7 +3930,7 @@ mod tests {
         // actively generating (in_flight, not in pending), the dirty
         // flag should NOT be cleared. This ensures re-submission after
         // the stale result arrives.
-        let mut world = VoxelWorld::new(16, 16, 16);
+        let mut world = VoxelZone::new(16, 16, 16);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
 
         let mut cache = MeshCache::new();

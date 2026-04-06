@@ -523,17 +523,20 @@ impl SimState {
             };
 
             let interior_pos = self.db.structures.get(&sid).unwrap().anchor;
-            if crate::walkability::find_nearest_walkable(
-                &self.world,
-                &self.face_data,
-                interior_pos,
-                5,
-                [1, 1, 1],
-                true, // elves can climb
-            )
-            .is_none()
             {
-                continue;
+                let zone = self.voxel_zone(self.home_zone_id()).unwrap(); // TODO(F-zone-world): derive from entity context
+                if crate::walkability::find_nearest_walkable(
+                    zone,
+                    &zone.face_data,
+                    interior_pos,
+                    5,
+                    [1, 1, 1],
+                    true, // elves can climb
+                )
+                .is_none()
+                {
+                    continue;
+                }
             }
             let location = interior_pos;
 
@@ -567,7 +570,8 @@ impl SimState {
                 prerequisite_task_id: None,
                 required_civ_id: self.player_civ_id,
             };
-            self.insert_task(new_task);
+            // TODO(F-zone-world): derive zone from creature/entity context
+            self.insert_task(self.home_zone_id(), new_task);
 
             for input in &resolved.inputs {
                 self.inv_reserve_items(

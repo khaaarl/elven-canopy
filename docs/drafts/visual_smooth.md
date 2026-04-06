@@ -100,7 +100,7 @@ implemented.
 When generating a chunk mesh, the generator reads voxels in a border around the
 chunk (e.g., 2 voxels → up to 20×20×20 for a 16×16×16 chunk, clamped to world
 bounds). The `generate_chunk_mesh` function already has access to the full
-`&VoxelWorld`, so this is a conceptual read radius, not a data-plumbing change.
+`&VoxelZone`, so this is a conceptual read radius, not a data-plumbing change.
 The border provides:
 
 1. Correct face culling at chunk boundaries (existing behavior)
@@ -432,7 +432,7 @@ sides at their original planes).
 ### In `mesh_cache.rs`
 
 11. Ensure `generate_chunk_mesh` reads voxels within the required border radius
-    (it already has `&VoxelWorld` access; this is a matter of expanding the
+    (it already has `&VoxelZone` access; this is a matter of expanding the
     iteration bounds, not plumbing new data).
 
 ## Open Questions

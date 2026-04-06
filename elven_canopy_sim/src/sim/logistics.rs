@@ -211,7 +211,9 @@ impl SimState {
                 if let Some(creature) = self.db.creatures.get(&creature_id) {
                     let pos = creature.position.min;
                     let creature_inv = creature.inventory_id;
-                    let pile_id = self.ensure_ground_pile(pos);
+                    // TODO(F-zone-world): handle None zone_id (in-transit creature)
+                    let cz = creature.zone_id.unwrap_or_else(|| self.home_zone_id());
+                    let pile_id = self.ensure_ground_pile(pos, cz);
                     let pile_inv = self.db.ground_piles.get(&pile_id).unwrap().inventory_id;
                     self.inv_move_reserved_items(creature_inv, pile_inv, task_id);
                 }
@@ -337,11 +339,13 @@ impl SimState {
             .collect();
 
         let mut unclaimed_fruit: Vec<VoxelCoord> = Vec::new();
+        let home_zone = self.home_zone_id(); // TODO(F-zone-world): derive from entity context
+        let zone = self.voxel_zone(home_zone).unwrap();
         for tf in self.db.tree_fruits.iter_all() {
             if !claimed_positions.contains(&tf.position.min)
                 && crate::walkability::find_nearest_walkable(
-                    &self.world,
-                    &self.face_data,
+                    zone,
+                    &zone.face_data,
                     tf.position.min,
                     5,
                     [1, 1, 1],
@@ -373,7 +377,8 @@ impl SimState {
                 prerequisite_task_id: None,
                 required_civ_id: self.player_civ_id,
             };
-            self.insert_task(new_task);
+            // TODO(F-zone-world): derive zone from creature/entity context
+            self.insert_task(self.home_zone_id(), new_task);
         }
     }
 
@@ -467,7 +472,8 @@ impl SimState {
                         prerequisite_task_id: None,
                         required_civ_id: self.player_civ_id,
                     };
-                    self.insert_task(new_task);
+                    // TODO(F-zone-world): derive zone from creature/entity context
+                    self.insert_task(self.home_zone_id(), new_task);
 
                     // Reserve items at source (task row now exists for FK).
                     let hauled_material =
@@ -538,12 +544,13 @@ impl SimState {
         requester_priority: u8,
     ) -> Option<(task::HaulSource, u32, VoxelCoord)> {
         // Phase 1: Check ground piles.
+        // TODO(F-zone-world): derive zone from pile's zone, not home zone
         for pile in self.db.ground_piles.iter_all() {
             let available = self.inv_unreserved_item_count(pile.inventory_id, item_kind, filter);
             if available > 0
                 && crate::walkability::find_nearest_walkable(
-                    &self.world,
-                    &self.face_data,
+                    self.voxel_zone(self.home_zone_id()).unwrap(),
+                    &self.voxel_zone(self.home_zone_id()).unwrap().face_data,
                     pile.position,
                     5,
                     [1, 1, 1],
@@ -560,6 +567,7 @@ impl SimState {
         }
 
         // Phase 2: Check other buildings with strictly lower priority.
+        // TODO(F-zone-world): derive zone from structure's zone, not home zone
         for structure in self.db.structures.iter_all() {
             let sid = structure.id;
             if sid == exclude_building {
@@ -575,8 +583,8 @@ impl SimState {
                 self.inv_unreserved_item_count(structure.inventory_id, item_kind, filter);
             if available > 0
                 && crate::walkability::find_nearest_walkable(
-                    &self.world,
-                    &self.face_data,
+                    self.voxel_zone(self.home_zone_id()).unwrap(),
+                    &self.voxel_zone(self.home_zone_id()).unwrap().face_data,
                     structure.anchor,
                     5,
                     [1, 1, 1],
@@ -592,6 +600,7 @@ impl SimState {
             }
         }
 
+        // TODO(F-zone-world): derive zone from structure's zone, not home zone
         // Phase 3: Check logistics-enabled buildings for surplus items.
         // `held` uses the caller's filter. `wanted` sums all wants for this kind
         // (regardless of filter) to prevent stripping items from buildings with
@@ -609,8 +618,8 @@ impl SimState {
             let surplus = held.saturating_sub(wanted);
             if surplus > 0
                 && crate::walkability::find_nearest_walkable(
-                    &self.world,
-                    &self.face_data,
+                    self.voxel_zone(self.home_zone_id()).unwrap(),
+                    &self.voxel_zone(self.home_zone_id()).unwrap().face_data,
                     structure.anchor,
                     5,
                     [1, 1, 1],
@@ -674,12 +683,13 @@ impl SimState {
     ) -> Option<(task::HaulSource, u32, VoxelCoord)> {
         // Check ground piles. Return the nearest walkable position so that
         // find_path can resolve the task location.
+        // TODO(F-zone-world): derive zone from pile's zone, not home zone
         for pile in self.db.ground_piles.iter_all() {
             let available = self.inv_count_owned_unreserved(pile.inventory_id, kind, filter, owner);
             if available > 0
                 && let Some(walkable_pos) = crate::walkability::find_nearest_walkable(
-                    &self.world,
-                    &self.face_data,
+                    self.voxel_zone(self.home_zone_id()).unwrap(),
+                    &self.voxel_zone(self.home_zone_id()).unwrap().face_data,
                     pile.position,
                     5,
                     [1, 1, 1],
@@ -695,14 +705,15 @@ impl SimState {
         }
 
         // Check building inventories.
+        // TODO(F-zone-world): derive zone from structure's zone, not home zone
         for structure in self.db.structures.iter_all() {
             let sid = structure.id;
             let available =
                 self.inv_count_owned_unreserved(structure.inventory_id, kind, filter, owner);
             if available > 0
                 && let Some(walkable_pos) = crate::walkability::find_nearest_walkable(
-                    &self.world,
-                    &self.face_data,
+                    self.voxel_zone(self.home_zone_id()).unwrap(),
+                    &self.voxel_zone(self.home_zone_id()).unwrap().face_data,
                     structure.anchor,
                     5,
                     [1, 1, 1],
@@ -733,12 +744,13 @@ impl SimState {
         needed: u32,
     ) -> Option<(task::HaulSource, u32, VoxelCoord)> {
         // Check ground piles.
+        // TODO(F-zone-world): derive zone from pile's zone, not home zone
         for pile in self.db.ground_piles.iter_all() {
             let available = self.inv_count_unowned_unreserved(pile.inventory_id, kind, filter);
             if available > 0
                 && let Some(walkable_pos) = crate::walkability::find_nearest_walkable(
-                    &self.world,
-                    &self.face_data,
+                    self.voxel_zone(self.home_zone_id()).unwrap(),
+                    &self.voxel_zone(self.home_zone_id()).unwrap().face_data,
                     pile.position,
                     5,
                     [1, 1, 1],
@@ -754,13 +766,14 @@ impl SimState {
         }
 
         // Check building inventories.
+        // TODO(F-zone-world): derive zone from structure's zone, not home zone
         for structure in self.db.structures.iter_all() {
             let sid = structure.id;
             let available = self.inv_count_unowned_unreserved(structure.inventory_id, kind, filter);
             if available > 0
                 && let Some(walkable_pos) = crate::walkability::find_nearest_walkable(
-                    &self.world,
-                    &self.face_data,
+                    self.voxel_zone(self.home_zone_id()).unwrap(),
+                    &self.voxel_zone(self.home_zone_id()).unwrap().face_data,
                     structure.anchor,
                     5,
                     [1, 1, 1],

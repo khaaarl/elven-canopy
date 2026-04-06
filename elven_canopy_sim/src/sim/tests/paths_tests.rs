@@ -174,63 +174,6 @@ fn elf_spawn_auto_assigns_outcast() {
 }
 
 #[test]
-fn backfill_outcast_paths_assigns_unpathed_elves() {
-    let mut sim = test_sim(legacy_test_seed());
-    let elf_id = spawn_test_elf(&mut sim);
-
-    // Manually remove the path assignment to simulate an old save.
-    sim.db.remove_path_assignment(&elf_id).unwrap();
-    assert_eq!(sim.creature_path(elf_id), None);
-
-    sim.backfill_outcast_paths();
-
-    assert_eq!(
-        sim.creature_path(elf_id),
-        Some(PathId::Outcast),
-        "backfill should assign Outcast to unpathed elves"
-    );
-}
-
-#[test]
-fn backfill_outcast_paths_skips_already_pathed() {
-    let mut sim = test_sim(legacy_test_seed());
-    let elf_id = spawn_test_elf(&mut sim);
-
-    // Manually assign Warrior.
-    let mut events = Vec::new();
-    sim.assign_path(elf_id, PathId::Warrior, &mut events);
-
-    sim.backfill_outcast_paths();
-
-    // Warrior assignment should not be overwritten.
-    assert_eq!(sim.creature_path(elf_id), Some(PathId::Warrior));
-}
-
-#[test]
-fn backfill_outcast_paths_skips_non_elves() {
-    let mut sim = test_sim(legacy_test_seed());
-
-    // Spawn a non-elf creature.
-    let mut events = Vec::new();
-    sim.spawn_creature(Species::Deer, VoxelCoord::new(32, 1, 32), &mut events);
-    let deer_id = sim
-        .db
-        .creatures
-        .iter_all()
-        .find(|c| c.species == Species::Deer)
-        .unwrap()
-        .id;
-
-    sim.backfill_outcast_paths();
-
-    assert_eq!(
-        sim.creature_path(deer_id),
-        None,
-        "non-elves should not get a path assignment"
-    );
-}
-
-#[test]
 fn assign_path_via_sim_command() {
     let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_test_elf(&mut sim);
@@ -382,30 +325,6 @@ fn path_assignment_survives_save_load() {
 }
 
 #[test]
-fn backfill_outcast_paths_via_from_json() {
-    let mut sim = test_sim(legacy_test_seed());
-    let elf_id = spawn_test_elf(&mut sim);
-    assert_eq!(sim.creature_path(elf_id), Some(PathId::Outcast));
-
-    // Serialize, strip path_assignments from JSON to simulate old save.
-    let mut json_val: serde_json::Value = serde_json::from_str(&sim.to_json().unwrap()).unwrap();
-    if let Some(db) = json_val.get_mut("db") {
-        db.as_object_mut()
-            .unwrap()
-            .insert("path_assignments".to_string(), serde_json::json!([]));
-    }
-    let json = serde_json::to_string(&json_val).unwrap();
-
-    // from_json should call backfill_outcast_paths.
-    let sim2 = SimState::from_json(&json).unwrap();
-    assert_eq!(
-        sim2.creature_path(elf_id),
-        Some(PathId::Outcast),
-        "backfill in from_json should assign Outcast"
-    );
-}
-
-#[test]
 fn non_elf_spawn_has_no_path() {
     let mut sim = test_sim(legacy_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -414,6 +333,7 @@ fn non_elf_spawn_has_no_path() {
         player_name: String::new(),
         tick: sim.tick.max(1),
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Deer,
             position: tree_pos,
         },
@@ -444,6 +364,7 @@ fn assign_path_rejects_non_elf() {
         player_name: String::new(),
         tick: sim.tick.max(1),
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Deer,
             position: tree_pos,
         },
@@ -524,67 +445,6 @@ fn path_config_serde_roundtrip() {
         assert_eq!(orig.skill_caps, rest.skill_caps);
         assert_eq!(orig.extra_advancement_rolls, rest.extra_advancement_rolls);
     }
-}
-
-#[test]
-fn backfill_outcast_paths_includes_incapacitated() {
-    let mut sim = test_sim(legacy_test_seed());
-    let elf_id = spawn_test_elf(&mut sim);
-
-    // Damage elf to 0 HP to incapacitate via DamageCreature command.
-    let hp = sim.db.creatures.get(&elf_id).unwrap().hp;
-    let tick = sim.tick + 1;
-    sim.step(
-        &[SimCommand {
-            player_name: String::new(),
-            tick,
-            action: SimAction::DamageCreature {
-                creature_id: elf_id,
-                amount: hp,
-            },
-        }],
-        tick + 1,
-    );
-    assert_eq!(
-        sim.db.creatures.get(&elf_id).unwrap().vital_status,
-        VitalStatus::Incapacitated
-    );
-
-    // Remove path to simulate old save.
-    sim.db.remove_path_assignment(&elf_id).unwrap();
-
-    sim.backfill_outcast_paths();
-
-    assert_eq!(
-        sim.creature_path(elf_id),
-        Some(PathId::Outcast),
-        "incapacitated elves should also get backfilled"
-    );
-}
-
-#[test]
-fn backfill_outcast_paths_skips_dead_elves() {
-    let mut sim = test_sim(legacy_test_seed());
-    let elf_id = spawn_test_elf(&mut sim);
-
-    // Kill the elf fully (damage past -hp_max).
-    let mut events = Vec::new();
-    sim.handle_creature_death(elf_id, DeathCause::Debug, &mut events);
-    assert_eq!(
-        sim.db.creatures.get(&elf_id).unwrap().vital_status,
-        VitalStatus::Dead
-    );
-
-    // Remove path to simulate old save.
-    sim.db.remove_path_assignment(&elf_id).unwrap();
-
-    sim.backfill_outcast_paths();
-
-    assert_eq!(
-        sim.creature_path(elf_id),
-        None,
-        "dead elves should NOT get backfilled"
-    );
 }
 
 #[test]

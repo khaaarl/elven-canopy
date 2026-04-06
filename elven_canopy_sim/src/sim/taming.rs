@@ -96,7 +96,9 @@ impl super::SimState {
             prerequisite_task_id: None,
             required_civ_id: self.player_civ_id,
         };
-        self.insert_task(task);
+        // TODO(F-zone-world): derive zone from creature/entity context
+        let zone_id = self.home_zone_id();
+        self.insert_task(zone_id, task);
     }
 
     /// Handle `SimAction::CancelTameDesignation`: remove only the player's

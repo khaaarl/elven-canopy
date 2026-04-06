@@ -2,7 +2,7 @@
 //
 // A `ChunkNeighborhood` captures the voxel data needed to generate a single
 // chunk's mesh: the chunk's own 16x16x16 region plus a border for cross-chunk
-// smoothing. It is extracted from `VoxelWorld` on the main thread (fast — just
+// smoothing. It is extracted from `VoxelZone` on the main thread (fast — just
 // copying voxel types and RLE spans), then sent to a background worker for
 // mesh generation with no further world access.
 //
@@ -12,14 +12,14 @@
 // passes.
 //
 // See also: `mesh_gen.rs` for the mesh generation algorithm that consumes this,
-// `world.rs` for the `VoxelWorld` that produces it, `mesh_cache.rs` (gdext
+// `world.rs` for the `VoxelZone` that produces it, `mesh_cache.rs` (gdext
 // crate) for the async pipeline that coordinates extraction and generation.
 
 use std::collections::BTreeSet;
 
 use crate::mesh_gen::{CHUNK_SIZE, ChunkCoord, SMOOTH_BORDER};
 use elven_canopy_sim::types::{VoxelCoord, VoxelType};
-use elven_canopy_sim::world::VoxelWorld;
+use elven_canopy_sim::world::VoxelZone;
 
 /// Border size around the chunk needed for smooth mesh cross-boundary
 /// consistency. Re-exported from `mesh_gen::SMOOTH_BORDER` so both modules
@@ -27,7 +27,7 @@ use elven_canopy_sim::world::VoxelWorld;
 const BORDER: i32 = SMOOTH_BORDER;
 
 /// A self-contained snapshot of the voxel data surrounding one chunk,
-/// sufficient to generate its mesh without access to the full `VoxelWorld`.
+/// sufficient to generate its mesh without access to the full `VoxelZone`.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ChunkNeighborhood {
     /// The chunk this neighborhood was extracted for.
@@ -81,7 +81,7 @@ impl ChunkNeighborhood {
     /// while holding read access to the world; the resulting value is then
     /// sent to a background worker.
     pub fn extract(
-        world: &VoxelWorld,
+        world: &VoxelZone,
         chunk: ChunkCoord,
         y_cutoff: Option<i32>,
         grassless: &BTreeSet<VoxelCoord>,
@@ -179,7 +179,7 @@ impl ChunkNeighborhood {
 
     /// Look up a voxel type at the given world coordinate.
     /// Returns `Air` for coordinates outside the captured region (matching
-    /// `VoxelWorld::get()` behavior for out-of-bounds coords).
+    /// `VoxelZone::get()` behavior for out-of-bounds coords).
     pub fn get(&self, coord: VoxelCoord) -> VoxelType {
         let lx = coord.x - self.origin_x;
         let ly = coord.y - self.origin_y;
@@ -201,7 +201,7 @@ impl ChunkNeighborhood {
     /// The column at `(x, z)` must be within the captured region.
     ///
     /// Returns an iterator yielding `(VoxelType, y_start, y_end)` triples
-    /// that fully tile the column, matching `VoxelWorld::column_spans()`.
+    /// that fully tile the column, matching `VoxelZone::column_spans()`.
     pub fn column_spans(&self, x: u32, z: u32) -> impl Iterator<Item = (VoxelType, u8, u8)> + '_ {
         let lx = x as i32 - self.col_origin_x;
         let lz = z as i32 - self.col_origin_z;
@@ -222,8 +222,8 @@ mod tests {
     use super::*;
 
     /// Helper: create a small world (one chunk = 16x16x16).
-    fn one_chunk_world() -> VoxelWorld {
-        VoxelWorld::new(16, 16, 16)
+    fn one_chunk_world() -> VoxelZone {
+        VoxelZone::new(16, 16, 16)
     }
 
     #[test]
@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn column_spans_match_world() {
-        let mut world = VoxelWorld::new(32, 32, 32);
+        let mut world = VoxelZone::new(32, 32, 32);
         // Build a column with multiple span types.
         for y in 0..5 {
             world.set(VoxelCoord::new(8, y, 8), VoxelType::Dirt);
@@ -323,7 +323,7 @@ mod tests {
     fn border_captures_neighbor_chunk_voxels() {
         // World with 2 chunks in X. Place a voxel at x=17 (chunk 1),
         // which should be captured by chunk 0's border (extends to x=18).
-        let mut world = VoxelWorld::new(32, 16, 16);
+        let mut world = VoxelZone::new(32, 16, 16);
         world.set(VoxelCoord::new(17, 8, 8), VoxelType::Branch);
 
         let nh =
@@ -345,7 +345,7 @@ mod tests {
             decimation_enabled: false,
             ..MeshPipelineConfig::default()
         };
-        let mut world = VoxelWorld::new(32, 16, 32);
+        let mut world = VoxelZone::new(32, 16, 32);
         world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
         world.set(VoxelCoord::new(9, 8, 8), VoxelType::Branch);
         world.set(VoxelCoord::new(8, 0, 8), VoxelType::Dirt);

@@ -61,7 +61,6 @@ This reduces merge conflicts when parallel work streams add items.
 [~] F-parallel-dedup       Radix-partitioned parallel dedup (elven_canopy_utils)
 [~] F-path-ui              Path management UI and notifications
 [~] F-ssao                 Screen-space ambient occlusion toggle
-[~] F-zone-schema          Zone ID on all spatial tables
 ```
 
 ### Todo
@@ -589,6 +588,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-worldgen-framework   Worldgen generator framework
 [x] F-wyvern               Wyvern hostile flying creature (2×2×2)
 [x] F-zlevel-vis           Z-level visibility (cutaway/toggle)
+[x] F-zone-schema          Zone ID on all spatial tables
 [x] R-inv-display          Extract shared inventory display component (subsumed by R-panel-dedup)
 ```
 
@@ -6094,8 +6094,13 @@ Zone-based world architecture within a single unified sim. The world is partitio
 
 **Per-zone coordinate systems:** Each zone has its own local voxel coordinate system. Spatial queries (creature lookup, fruit search, hostile detection) must be scoped to a zone. This requires compound spatial indexes in tabulosity — keyed by `(zone_id, spatial_box)` — so that a query like "creatures near position X in zone Z" only searches the R-tree for that zone, not the entire world. This is the primary reason this feature is blocked by F-tab-spatial-2.
 
-**Blocked by:** F-zone-schema
-**Unblocked by:** F-tab-spatial-2
+**Creature zone_id: Option audit (from F-zone-schema):** `Creature.zone_id` is `Option<ZoneId>` to support in-transit creatures (between zones). F-zone-schema leaves it always `Some(...)` — no code path currently sets `None`. There are ~60 sites in the sim that unconditionally `.unwrap()` the zone_id. When implementing inter-zone transit, each of these must be audited case by case to determine correct behavior when a creature has no zone assignment: some should skip the creature (spatial queries, pathfinding), some should use the departure zone, some should use the destination zone, and some may need to wait until the creature arrives. Do not apply a blanket policy — each call site has different semantics.
+
+**`home_zone_id()` audit — 64 call sites (from F-zone-schema):** `self.home_zone_id()` is a single-zone shortcut that derives the zone from the player's tree. There are **64 call sites** across production sim code (logistics, combat, activation, movement, grazing, crafting, taming, social, mod.rs). Every single one is wrong for multi-zone and must be examined case by case. Each is marked with a `// TODO(F-zone-world):` comment explaining what needs to change. Common categories: (1) `insert_task(self.home_zone_id(), ...)` — zone should come from the creature or entity that triggered the task; (2) `voxel_zone(self.home_zone_id())` in heartbeat sweeps — should iterate all active zones; (3) `creature.zone_id.unwrap_or_else(|| self.home_zone_id())` — fallback is wrong, should handle None properly for in-transit creatures. The `home_zone_id()` method itself should be deleted once all call sites are fixed.
+
+**`by_position()` queries on TreeFruit/GroundPile:** These single-field index lookups work in single-zone but will return cross-zone results in multi-zone. Must be migrated to compound `by_zone_position(zone_id, position)` queries when multi-zone entities exist.
+
+**Unblocked by:** F-tab-spatial-2, F-zone-schema
 **Related:** F-bigger-world, F-dwarf-fort-gen, F-enemy-raids, F-forest-radar, F-lesser-trees, F-military-campaign, F-multi-tree, F-settlement-gen, F-tree-db, F-world-map, F-zone-schema
 
 ### Soul Mechanics & Magic
@@ -8167,8 +8172,8 @@ Gate item: declare save format backward-compatibility and document the contract.
 3. **Document the stability contract:** old saves will always load into newer versions. New features get default values via `#[serde(default)]` and tabulosity's empty-table deserialization. The `schema_version` number is bumped with each release that adds schema.
 4. **No more structural changes** to existing tables without a migration path. New columns (with defaults) and new tables are fine.
 
-**Blocked by:** F-multi-tree-schema, F-zone-schema
-**Unblocked by:** F-move-categories
+**Blocked by:** F-multi-tree-schema
+**Unblocked by:** F-move-categories, F-zone-schema
 **Related:** F-save-load, F-tab-schema-evol, F-tab-schema-ver
 
 #### F-serde — Serialization for all sim types
@@ -8254,7 +8259,7 @@ different params. Cross-section bridging ensures 6-connectivity. Voxel
 type priority prevents overwrites.
 
 #### F-zone-schema — Zone ID on all spatial tables
-**Status:** In Progress
+**Status:** Done
 
 The DB-structural part of F-zone-world, extracted so schema changes can be planned and reviewed independently of zone simulation logic. Adds:
 
@@ -8273,8 +8278,8 @@ Implementation: ~12-18 commits in 6 steps. F-remove-navgraph prerequisite (done)
 
 **Draft:** `docs/drafts/F-zone-schema.md`
 
-**Blocks:** F-save-stable, F-zone-world
 **Unblocked by:** F-tab-spatial-2
+**Unblocked:** F-save-stable, F-zone-world
 **Related:** F-tree-db, F-zone-world
 
 ### Tabulosity

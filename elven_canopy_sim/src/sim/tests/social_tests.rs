@@ -884,11 +884,21 @@ fn setup_casual_social_sim(seed: u64) -> crate::sim::SimState {
 
 #[test]
 fn casual_social_nearby_elves_gain_opinions() {
-    let mut sim = setup_casual_social_sim(42);
+    let mut sim = setup_casual_social_sim(fresh_test_seed());
     let elf_a = spawn_creature(&mut sim, Species::Elf);
     let elf_b = spawn_creature(&mut sim, Species::Elf);
 
-    // Both elves spawn at the tree position — same voxel, well within radius.
+    // Force both elves to the same position so they're co-located regardless
+    // of seed. spawn_creature may snap to different walkable positions.
+    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
+    force_position(&mut sim, elf_a, tree_pos);
+    force_position(&mut sim, elf_b, tree_pos);
+
+    // Give both elves high CHA so the social impression roll is guaranteed
+    // to produce a non-zero delta (roll > 50 → delta +2).
+    set_trait(&mut sim, elf_a, TraitKind::Charisma, 200);
+    set_trait(&mut sim, elf_b, TraitKind::Charisma, 200);
+
     // Directly call try_casual_social for elf_a.
     sim.try_casual_social(elf_a);
 

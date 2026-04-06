@@ -290,10 +290,10 @@ use crate::species::SpeciesData;
 use crate::structural;
 use crate::task;
 use crate::types::*;
-use crate::world::VoxelWorld;
+use crate::world::VoxelZone;
 use elven_canopy_lang::Lexicon;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 /// Serde helper: serialize `BTreeMap<VoxelCoord, V>` with string keys `"x,y,z"`
 /// so JSON output has valid string keys (JSON objects require string keys).
@@ -317,42 +317,6 @@ pub struct SimState {
     /// FK-validated, indexed in-memory database.
     #[serde(default)]
     pub db: SimDb,
-
-    // trees field removed — now in self.db.trees / self.db.great_tree_infos
-    /// Voxels placed by construction (persisted for save/load).
-    /// Each entry is `(coord, voxel_type)`. On world rebuild, these are
-    /// placed after tree voxels to restore construction progress.
-    #[serde(default)]
-    pub placed_voxels: Vec<(VoxelCoord, VoxelType)>,
-
-    /// Voxels carved (removed to Air) by the carve system. Persisted for
-    /// save/load — on world rebuild, these are set to Air after tree voxels.
-    #[serde(default)]
-    pub carved_voxels: Vec<VoxelCoord>,
-
-    /// Per-face data for `BuildingInterior` and ladder voxels. Persisted as a
-    /// flat list of (coord, face_data) pairs since `VoxelCoord` can't be a
-    /// JSON map key. At runtime, `face_data` (transient BTreeMap) is the
-    /// primary lookup.
-    #[serde(default)]
-    pub face_data_list: Vec<(VoxelCoord, FaceData)>,
-
-    /// Per-face data indexed by coordinate for O(1) lookup at runtime
-    /// (buildings and ladders). Rebuilt from `face_data_list` after
-    /// deserialization.
-    #[serde(skip)]
-    pub face_data: BTreeMap<VoxelCoord, FaceData>,
-
-    /// Ladder orientation data. Persisted as a flat list of (coord, face_direction)
-    /// pairs since `VoxelCoord` can't be a JSON map key. Records which face
-    /// each ladder panel is on (needed for rendering and validation).
-    #[serde(default)]
-    pub ladder_orientations_list: Vec<(VoxelCoord, FaceDirection)>,
-
-    /// Ladder orientations indexed by coordinate for O(1) lookup at runtime.
-    /// Rebuilt from `ladder_orientations_list` after deserialization.
-    #[serde(skip)]
-    pub ladder_orientations: BTreeMap<VoxelCoord, FaceDirection>,
 
     /// Counter for the next `StructureId` to assign (monotonically increasing).
     #[serde(default)]
@@ -382,8 +346,10 @@ pub struct SimState {
     #[serde(default)]
     pub player_civ_id: Option<CivId>,
 
-    /// The 3D voxel world grid. Serialized compactly as packed binary data.
-    pub world: VoxelWorld,
+    /// Materialized zone data, keyed by `ZoneId`. Each entry contains the RLE
+    /// voxel grid plus zone-local simulation state (placed/carved voxels, face
+    /// data, grassless set, etc.). Only active zones appear here.
+    pub(crate) voxel_zones: BTreeMap<ZoneId, VoxelZone>,
 
     /// Species data table built from config. Not serialized (rebuilt from config).
     #[serde(skip)]
@@ -400,30 +366,32 @@ pub struct SimState {
     /// Cleared at the start of each designation call.
     #[serde(skip)]
     pub last_build_message: Option<String>,
+}
 
-    /// Maps each voxel coordinate belonging to a completed structure back to
-    /// its `StructureId`. Transient — rebuilt from completed blueprints in
-    /// `rebuild_transient_state()`. Used by `raycast_structure()` to identify
-    /// which structure the player clicked on.
-    #[serde(skip)]
-    pub structure_voxels: BTreeMap<VoxelCoord, StructureId>,
+impl SimState {
+    /// Derive the home zone ID from the player's tree. Every entity that
+    /// needs "the player's zone" should call this or get the zone from
+    /// its parent entity — never use a hardcoded constant.
+    pub fn home_zone_id(&self) -> ZoneId {
+        self.db
+            .trees
+            .get(&self.player_tree_id)
+            .expect("player tree must exist")
+            .zone_id
+    }
 
-    /// Positions where mana-wasted work actions occurred during the current
-    /// step. Cleared at the start of each `step()` call. Read by the GDScript
-    /// VFX layer via `sim_bridge.rs::get_mana_wasted_positions()` to spawn
-    /// floating blue swirl sprites.
-    #[serde(skip)]
-    pub mana_wasted_positions: Vec<VoxelCoord>,
+    /// Access a zone's voxel data by ID (immutable). Returns `None` for
+    /// unmaterialized zones.
+    pub fn voxel_zone(&self, id: ZoneId) -> Option<&VoxelZone> {
+        self.voxel_zones.get(&id)
+    }
 
-    /// Set of dirt voxel coordinates that are NOT grassy. By default, any
-    /// exposed dirt voxel is considered grassy. This set stores the exceptions.
-    /// Dirt becomes grassless when: (1) a creature grazes on it, or (2) a voxel
-    /// change freshly exposes dirt. Grassless dirt regrows periodically via the
-    /// `GrassRegrowth` scheduled event. Used by mesh generation to color
-    /// grassless dirt brown instead of green. `BTreeSet` for deterministic
-    /// iteration (regrowth sweep).
-    #[serde(default)]
-    pub grassless: BTreeSet<VoxelCoord>,
+    /// Access a zone's voxel data by ID (mutable). Returns `None` for
+    /// unmaterialized zones.
+    #[allow(dead_code)] // Will be used when multi-zone is active.
+    pub fn voxel_zone_mut(&mut self, id: ZoneId) -> Option<&mut VoxelZone> {
+        self.voxel_zones.get_mut(&id)
+    }
 }
 
 /// A creature's current path through the voxel world.
@@ -592,21 +560,27 @@ impl SimState {
         let footprint = creature.position.footprint_size();
         let category = creature.movement_category;
 
+        let creature_zone = creature
+            .zone_id
+            .expect("creature must have zone for pathfinding");
+
         if category.is_flyer() {
             // Flying creature: A* on voxel grid.
             let agility = self.trait_int(creature_id, TraitKind::Agility, 0);
             let base_tpv =
                 crate::stats::creature_base_tpv(species_data.move_ticks_per_voxel, agility);
-            crate::pathfinding::astar_fly(&self.world, position, goal, base_tpv, opts, footprint)
+            let zone = self.voxel_zone(creature_zone).unwrap();
+            crate::pathfinding::astar_fly(zone, position, goal, base_tpv, opts, footprint)
         } else {
             // Ground creature: voxel-direct A* with stat-modified speeds.
             let agility = self.trait_int(creature_id, TraitKind::Agility, 0);
             let base_tpv =
                 crate::stats::creature_base_tpv(species_data.move_ticks_per_voxel, agility);
             let nav_speeds = crate::pathfinding::GroundSpeeds { base_tpv, category };
+            let zone = self.voxel_zone(creature_zone).unwrap();
             crate::pathfinding::astar_ground(
-                &self.world,
-                &self.face_data,
+                zone,
+                &zone.face_data,
                 position,
                 goal,
                 &nav_speeds,
@@ -647,18 +621,18 @@ impl SimState {
         let footprint = creature.position.footprint_size();
         let category = creature.movement_category;
 
+        let creature_zone = creature
+            .zone_id
+            .expect("creature must have zone for pathfinding");
+
         if category.is_flyer() {
             // Flying creature: interleaved A* across candidates.
             let agility = self.trait_int(creature_id, TraitKind::Agility, 0);
             let base_tpv =
                 crate::stats::creature_base_tpv(species_data.move_ticks_per_voxel, agility);
+            let zone = self.voxel_zone(creature_zone).unwrap();
             let nearest_coord = crate::pathfinding::nearest_fly(
-                &self.world,
-                position,
-                candidates,
-                base_tpv,
-                opts,
-                footprint,
+                zone, position, candidates, base_tpv, opts, footprint,
             )?;
             candidates
                 .iter()
@@ -671,9 +645,10 @@ impl SimState {
                 crate::stats::creature_base_tpv(species_data.move_ticks_per_voxel, agility);
             let nav_speeds = crate::pathfinding::GroundSpeeds { base_tpv, category };
 
+            let zone = self.voxel_zone(creature_zone).unwrap();
             let nearest_coord = crate::pathfinding::nearest_ground(
-                &self.world,
-                &self.face_data,
+                zone,
+                &zone.face_data,
                 position,
                 candidates,
                 &nav_speeds,
@@ -733,33 +708,25 @@ impl SimState {
             config,
             event_queue: EventQueue::new(),
             db: wg.db,
-            placed_voxels: Vec::new(),
-            carved_voxels: Vec::new(),
-            face_data_list: Vec::new(),
-            face_data: BTreeMap::new(),
-            ladder_orientations_list: Vec::new(),
-            ladder_orientations: BTreeMap::new(),
             next_structure_id: 0,
             next_request_id: 0,
             pending_llm_requests: BTreeMap::new(),
             outbound_requests: Vec::new(),
             player_tree_id,
             player_civ_id: Some(wg.player_civ_id),
-            world: wg.world,
+            voxel_zones: BTreeMap::from([(wg.home_zone_id, wg.world)]),
             species_table,
             lexicon: Some(elven_canopy_lang::default_lexicon()),
             last_build_message: None,
-            structure_voxels: BTreeMap::new(),
-            mana_wasted_positions: Vec::new(),
-            grassless: BTreeSet::new(),
         };
 
         // The world rebuild above produces thousands of set() calls that
         // accumulate dirty_voxels entries. Clear them — the mesh cache will
         // do a full build_all() at init, so those entries aren't needed.
-        state.world.clear_dirty_voxels();
+        let hz = wg.home_zone_id;
+        state.voxel_zone_mut(hz).unwrap().clear_dirty_voxels();
         // Compact RLE column groups after bulk worldgen writes.
-        state.world.repack_all();
+        state.voxel_zone_mut(hz).unwrap().repack_all();
 
         // Fast-forward fruit spawning for all fruit-bearing trees: run
         // attempt_fruit_spawn N times per tree, as if N heartbeats had passed.
@@ -933,7 +900,12 @@ impl SimState {
     /// Commands must be sorted by tick. Commands with tick > `target_tick`
     /// are ignored (caller error).
     pub fn step(&mut self, commands: &[SimCommand], target_tick: u64) -> StepResult {
-        self.mana_wasted_positions.clear();
+        // TODO(F-zone-world): iterate all active zones
+        let hz = self.home_zone_id();
+        self.voxel_zone_mut(hz)
+            .unwrap()
+            .mana_wasted_positions
+            .clear();
         let mut events = Vec::new();
 
         // Index into the sorted command slice.
@@ -991,7 +963,9 @@ impl SimState {
         }
 
         self.tick = target_tick;
-        self.world.sim_tick = self.tick;
+        // TODO(F-zone-world): iterate all active zones
+        let hz = self.home_zone_id();
+        self.voxel_zone_mut(hz).unwrap().sim_tick = self.tick;
         let outbound_requests = std::mem::take(&mut self.outbound_requests);
         StepResult {
             events,
@@ -1005,16 +979,26 @@ impl SimState {
     /// immediately on receipt, without waiting for the next `step()` call.
     pub(crate) fn apply_command(&mut self, cmd: &SimCommand, events: &mut Vec<SimEvent>) {
         match &cmd.action {
-            SimAction::SpawnCreature { species, position } => {
-                self.spawn_creature(*species, *position, events);
+            SimAction::SpawnCreature {
+                zone_id,
+                species,
+                position,
+            } => {
+                if self.db.zones.get(zone_id).is_none() {
+                    return;
+                }
+                self.spawn_creature(*species, *position, *zone_id, events);
             }
-            // Other commands will be implemented as features are added.
             SimAction::DesignateBuild {
+                zone_id,
                 build_type,
                 voxels,
                 priority,
             } => {
-                self.designate_build(*build_type, voxels, *priority, events);
+                if self.db.zones.get(zone_id).is_none() {
+                    return;
+                }
+                self.designate_build(*zone_id, *build_type, voxels, *priority, events);
             }
             SimAction::CancelBuild { project_id } => {
                 self.cancel_build(*project_id, events);
@@ -1023,32 +1007,61 @@ impl SimState {
                 // TODO: Phase 2 — task system.
             }
             SimAction::CreateTask {
+                zone_id,
                 kind,
                 position,
                 required_species,
             } => {
-                self.create_task(kind.clone(), *position, *required_species);
+                if self.db.zones.get(zone_id).is_none() {
+                    return;
+                }
+                self.create_task(*zone_id, kind.clone(), *position, *required_species);
             }
             SimAction::DesignateBuilding {
+                zone_id,
                 anchor,
                 width,
                 depth,
                 height,
                 priority,
             } => {
-                self.designate_building(*anchor, *width, *depth, *height, *priority, events);
+                if self.db.zones.get(zone_id).is_none() {
+                    return;
+                }
+                self.designate_building(
+                    *zone_id, *anchor, *width, *depth, *height, *priority, events,
+                );
             }
             SimAction::DesignateLadder {
+                zone_id,
                 anchor,
                 height,
                 orientation,
                 kind,
                 priority,
             } => {
-                self.designate_ladder(*anchor, *height, *orientation, *kind, *priority, events);
+                if self.db.zones.get(zone_id).is_none() {
+                    return;
+                }
+                self.designate_ladder(
+                    *zone_id,
+                    *anchor,
+                    *height,
+                    *orientation,
+                    *kind,
+                    *priority,
+                    events,
+                );
             }
-            SimAction::DesignateCarve { voxels, priority } => {
-                self.designate_carve(voxels, *priority, events);
+            SimAction::DesignateCarve {
+                zone_id,
+                voxels,
+                priority,
+            } => {
+                if self.db.zones.get(zone_id).is_none() {
+                    return;
+                }
+                self.designate_carve(*zone_id, voxels, *priority, events);
             }
             SimAction::RenameStructure { structure_id, name } => {
                 if let Some(mut s) = self.db.structures.get(structure_id) {
@@ -1106,11 +1119,15 @@ impl SimState {
                 self.inv_add_simple_item(inv_id, *item_kind, *quantity, Some(*creature_id), None);
             }
             SimAction::AddGroundPileItem {
+                zone_id,
                 position,
                 item_kind,
                 quantity,
             } => {
-                let pile_id = self.ensure_ground_pile(*position);
+                if self.db.zones.get(zone_id).is_none() {
+                    return;
+                }
+                let pile_id = self.ensure_ground_pile(*position, *zone_id);
                 let pile = self.db.ground_piles.get(&pile_id).unwrap();
                 self.inv_add_simple_item(pile.inventory_id, *item_kind, *quantity, None, None);
             }
@@ -1199,10 +1216,14 @@ impl SimState {
                 self.command_attack_creature(*attacker_id, *target_id, *queue, events);
             }
             SimAction::DirectedGoTo {
+                zone_id,
                 creature_id,
                 position,
                 queue,
             } => {
+                if self.db.zones.get(zone_id).is_none() {
+                    return;
+                }
                 self.command_directed_goto(*creature_id, *position, *queue, events);
             }
             SimAction::DebugMeleeAttack {
@@ -1245,31 +1266,47 @@ impl SimState {
                 self.trigger_raid(events);
             }
             SimAction::DebugSpawnProjectile {
+                zone_id,
                 origin,
                 target,
                 shooter_id,
             } => {
-                self.spawn_projectile(*origin, *target, *shooter_id);
+                if self.db.zones.get(zone_id).is_none() {
+                    return;
+                }
+                self.spawn_projectile(*origin, *target, *shooter_id, *zone_id);
             }
             SimAction::AttackMove {
+                zone_id,
                 creature_id,
                 destination,
                 queue,
             } => {
+                if self.db.zones.get(zone_id).is_none() {
+                    return;
+                }
                 self.command_attack_move(*creature_id, *destination, *queue, events);
             }
             SimAction::GroupGoTo {
+                zone_id,
                 creature_ids,
                 position,
                 queue,
             } => {
+                if self.db.zones.get(zone_id).is_none() {
+                    return;
+                }
                 self.command_group_goto(creature_ids, *position, *queue, events);
             }
             SimAction::GroupAttackMove {
+                zone_id,
                 creature_ids,
                 destination,
                 queue,
             } => {
+                if self.db.zones.get(zone_id).is_none() {
+                    return;
+                }
                 self.command_group_attack_move(creature_ids, *destination, *queue, events);
             }
             SimAction::SetSelectionGroup {
@@ -1299,18 +1336,23 @@ impl SimState {
 
             // --- Group activity commands ---
             SimAction::CreateActivity {
+                zone_id,
                 kind,
                 location,
                 min_count,
                 desired_count,
                 origin,
             } => {
+                if self.db.zones.get(zone_id).is_none() {
+                    return;
+                }
                 self.handle_create_activity(
                     *kind,
                     *location,
                     *min_count,
                     *desired_count,
                     *origin,
+                    *zone_id,
                     events,
                 );
             }
@@ -1613,7 +1655,8 @@ impl SimState {
                             prerequisite_task_id: None,
                             required_civ_id: None,
                         };
-                        self.insert_task(new_task);
+                        // TODO(F-zone-world): derive zone from creature/entity context
+                        self.insert_task(self.home_zone_id(), new_task);
 
                         // Reserve one edible food item in the dining hall.
                         let mut food_reserved = false;
@@ -1706,7 +1749,8 @@ impl SimState {
                             prerequisite_task_id: None,
                             required_civ_id: None,
                         };
-                        self.insert_task(new_task);
+                        // TODO(F-zone-world): derive zone from creature/entity context
+                        self.insert_task(self.home_zone_id(), new_task);
                         if let Some(mut creature) = self.db.creatures.get(&creature_id) {
                             creature.current_task = Some(task_id);
                             let _ = self.db.update_creature(creature);
@@ -1748,7 +1792,8 @@ impl SimState {
                         prerequisite_task_id: None,
                         required_civ_id: None,
                     };
-                    self.insert_task(new_task);
+                    // TODO(F-zone-world): derive zone from creature/entity context
+                    self.insert_task(self.home_zone_id(), new_task);
                     if let Some(mut creature) = self.db.creatures.get(&creature_id) {
                         creature.current_task = Some(task_id);
                         let _ = self.db.update_creature(creature);
@@ -1780,7 +1825,8 @@ impl SimState {
                         prerequisite_task_id: None,
                         required_civ_id: None,
                     };
-                    self.insert_task(new_task);
+                    // TODO(F-zone-world): derive zone from creature/entity context
+                    self.insert_task(self.home_zone_id(), new_task);
                     if let Some(mut creature) = self.db.creatures.get(&creature_id) {
                         creature.current_task = Some(task_id);
                         let _ = self.db.update_creature(creature);
@@ -1813,7 +1859,8 @@ impl SimState {
                         prerequisite_task_id: None,
                         required_civ_id: None,
                     };
-                    self.insert_task(new_task);
+                    // TODO(F-zone-world): derive zone from creature/entity context
+                    self.insert_task(self.home_zone_id(), new_task);
                     if let Some(mut creature) = self.db.creatures.get(&creature_id) {
                         creature.current_task = Some(task_id);
                         let _ = self.db.update_creature(creature);
@@ -1839,21 +1886,28 @@ impl SimState {
                                 self.config.sleep_ticks_bed,
                                 task::SleepLocation::Dormitory(sid),
                             )
-                        } else if let Some(creature) = self.db.creatures.get(&creature_id)
-                            && crate::walkability::footprint_walkable(
-                                &self.world,
-                                &self.face_data,
+                        } else if let Some(creature) = self.db.creatures.get(&creature_id) {
+                            let cz = creature
+                                .zone_id
+                                .expect("creature must have zone for sleep check");
+                            let zone = self.voxel_zone(cz).unwrap();
+                            let walkable = crate::walkability::footprint_walkable(
+                                zone,
+                                &zone.face_data,
                                 creature.position.min,
                                 self.species_table[&creature.species].footprint,
                                 true, // elves can climb
-                            )
-                        {
-                            (
-                                None,
-                                creature.position.min,
-                                self.config.sleep_ticks_ground,
-                                task::SleepLocation::Ground,
-                            )
+                            );
+                            if walkable {
+                                (
+                                    None,
+                                    creature.position.min,
+                                    self.config.sleep_ticks_ground,
+                                    task::SleepLocation::Ground,
+                                )
+                            } else {
+                                return; // Not walkable — skip.
+                            }
                         } else {
                             return; // No valid position — skip.
                         };
@@ -1876,7 +1930,8 @@ impl SimState {
                         prerequisite_task_id: None,
                         required_civ_id: None,
                     };
-                    self.insert_task(new_task);
+                    // TODO(F-zone-world): derive zone from creature/entity context
+                    self.insert_task(self.home_zone_id(), new_task);
                     if let Some(mut creature) = self.db.creatures.get(&creature_id) {
                         creature.current_task = Some(task_id);
                         let _ = self.db.update_creature(creature);
@@ -1945,7 +2000,9 @@ impl SimState {
             ScheduledEventKind::LogisticsHeartbeat => {
                 // Periodic gravity sweep: drop any floating piles and
                 // unsupported creatures before logistics processing.
-                self.apply_pile_gravity();
+                // TODO(F-zone-world): iterate all active zones
+                let hz = self.home_zone_id();
+                self.apply_pile_gravity(hz);
                 self.apply_creature_gravity(events);
                 self.process_logistics_heartbeat();
                 let next_tick = self.tick + self.config.logistics_heartbeat_interval_ticks;
@@ -2372,8 +2429,12 @@ impl SimState {
     /// (from embedded JSON), `structure_voxels` (from completed blueprints +
     /// structures).
     pub fn rebuild_transient_state(&mut self) {
-        self.face_data = self.face_data_list.iter().cloned().collect();
-        self.ladder_orientations = self.ladder_orientations_list.iter().cloned().collect();
+        // Rebuild zone-local transient state for all materialized zones.
+        for zone in self.voxel_zones.values_mut() {
+            zone.face_data = zone.face_data_list.iter().cloned().collect();
+            zone.ladder_orientations = zone.ladder_orientations_list.iter().cloned().collect();
+        }
+
         self.species_table = self.config.species.clone();
         self.lexicon = Some(elven_canopy_lang::default_lexicon());
 
@@ -2384,32 +2445,38 @@ impl SimState {
         self.upgrade_creature_positions();
 
         // Rebuild structure_voxels from completed blueprints.
-        self.structure_voxels.clear();
-        for bp in self.db.blueprints.iter_all() {
-            if bp.state == BlueprintState::Complete {
-                // Find the StructureId for this blueprint's project.
-                if let Some(structure) = self
-                    .db
+        let structure_entries: Vec<_> = self
+            .db
+            .blueprints
+            .iter_all()
+            .filter(|bp| bp.state == BlueprintState::Complete)
+            .filter_map(|bp| {
+                self.db
                     .structures
                     .iter_all()
                     .find(|s| s.project_id == bp.id)
-                {
-                    let sid = structure.id;
-                    for &coord in &bp.voxels {
-                        self.structure_voxels.insert(coord, sid);
-                    }
-                }
+                    .map(|s| (s.id, bp.voxels.clone()))
+            })
+            .collect();
+        // TODO(F-zone-world): iterate all active zones for structure_voxels rebuild
+        let hz = self.home_zone_id();
+        let zone = self.voxel_zone_mut(hz).unwrap();
+        zone.structure_voxels.clear();
+        for (sid, voxels) in structure_entries {
+            for coord in voxels {
+                zone.structure_voxels.insert(coord, sid);
             }
         }
     }
 
-    /// Query all creatures at a given voxel coordinate. Returns a sorted Vec
-    /// for deterministic iteration (sorted by `CreatureId` for PRNG selection).
-    /// Uses the tabulosity R*-tree spatial index on Creature.position.
-    pub fn creatures_at_voxel(&self, coord: VoxelCoord) -> Vec<CreatureId> {
+    /// Query all creatures at a given voxel coordinate in the specified zone.
+    /// Returns a sorted Vec for deterministic iteration (sorted by `CreatureId`
+    /// for PRNG selection). Uses the tabulosity compound R*-tree spatial index
+    /// on `(zone_id, position)`.
+    pub fn creatures_at_voxel(&self, zone_id: ZoneId, coord: VoxelCoord) -> Vec<CreatureId> {
         self.db
             .creatures
-            .intersecting_creature_spatial(&VoxelBox::point(coord))
+            .intersecting_by_creature_spatial(&Some(zone_id), &VoxelBox::point(coord))
             .iter()
             .map(|c| c.id)
             .collect()
@@ -2453,15 +2520,23 @@ impl SimState {
     }
 
     /// Deserialize a simulation state from a JSON string and rebuild
-    /// transient fields (world, species_table, lexicon, face_data).
+    /// transient fields (species_table, lexicon, face_data, structure_voxels).
+    ///
+    /// Old saves (pre-F-zone-schema) are incompatible — the VoxelZone
+    /// serialization format changed from raw bytes to a struct, and zone_id
+    /// columns were added to all spatial tables. Serde will produce a
+    /// deserialization error on old saves; no migration path exists.
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         let mut state: SimState = serde_json::from_str(json)?;
+        // Validate that the zone map is non-empty. Old saves that somehow
+        // partially deserialize would have an empty map.
+        if state.voxel_zones.is_empty() {
+            return Err(serde::de::Error::custom(
+                "Save file is from a pre-zone-schema version and cannot be loaded. \
+                 Start a new game.",
+            ));
+        }
         state.rebuild_transient_state();
-        // Backfill Outcast path for elves from old saves that predate the
-        // path system (F-path-core).
-        state.backfill_outcast_paths();
-        // Backfill GrassRegrowth event for saves that predate F-wild-grazing.
-        state.backfill_grass_regrowth_event();
         Ok(state)
     }
 

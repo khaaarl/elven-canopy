@@ -19,6 +19,7 @@ fn elf_wanders_after_spawn() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -39,8 +40,8 @@ fn elf_wanders_after_spawn() {
     // Verify elf is at a walkable position.
     assert!(
         crate::walkability::footprint_walkable(
-            &sim.world,
-            &sim.face_data,
+            sim.voxel_zone(sim.home_zone_id()).unwrap(),
+            &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
             elf.position.min,
             [1, 1, 1],
             true,
@@ -61,6 +62,7 @@ fn determinism_with_elf_after_1000_ticks() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim_a.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -173,6 +175,7 @@ fn action_state_set_during_work_actions() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -265,6 +268,7 @@ fn task_removed_during_build_action_creature_wanders() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -334,7 +338,7 @@ fn pickup_action_transitions_haul_phase() {
     // Place bread on the ground.
     let pile_pos = tree_pos;
     {
-        let pile_id = sim.ensure_ground_pile(pile_pos);
+        let pile_id = sim.ensure_ground_pile(pile_pos, sim.home_zone_id());
         let pile = sim.db.ground_piles.get(&pile_id).unwrap();
         sim.inv_add_simple_item(
             pile.inventory_id,
@@ -432,6 +436,7 @@ fn sleep_adaptive_completion_rest_full_exits_early() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -474,7 +479,7 @@ fn sleep_adaptive_completion_rest_full_exits_early() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(sleep_task);
+    sim.insert_task(sim.home_zone_id(), sleep_task);
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.current_task = Some(task_id);
@@ -592,7 +597,7 @@ fn eat_action_ticks_controls_timing() {
 
     // Spawn elf.
     let mut events = Vec::new();
-    sim.spawn_creature(Species::Elf, tree_pos, &mut events);
+    sim.spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events);
     let elf_id = sim
         .db
         .creatures
@@ -618,7 +623,7 @@ fn eat_action_ticks_controls_timing() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(eat_task);
+    sim.insert_task(sim.home_zone_id(), eat_task);
 
     // Give elf bread and assign task.
     let inv_id = sim.creature_inv(elf_id);
@@ -680,6 +685,7 @@ fn abort_no_action_is_harmless() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -749,6 +755,7 @@ fn abort_build_action_clears_state_only() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -807,7 +814,7 @@ fn interrupt_goto_completes_task_and_clears_creature() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(goto_task);
+    sim.insert_task(sim.home_zone_id(), goto_task);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = Some(task_id);
         sim.db.update_creature(c).unwrap();
@@ -833,6 +840,7 @@ fn interrupt_build_returns_task_to_available() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -878,6 +886,7 @@ fn interrupt_craft_clears_reservations() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: structure.anchor,
         },
@@ -994,7 +1003,7 @@ fn interrupt_sleep_completes_task() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(sleep_task);
+    sim.insert_task(sim.home_zone_id(), sleep_task);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = Some(task_id);
         sim.db.update_creature(c).unwrap();
@@ -1069,7 +1078,7 @@ fn interrupt_clears_move_action() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(goto_task);
+    sim.insert_task(sim.home_zone_id(), goto_task);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = Some(task_id);
         sim.db.update_creature(c).unwrap();
@@ -1111,7 +1120,13 @@ fn find_available_task_respects_civ_filter() {
     // Spawn a goblin belonging to the hostile civ.
     let mut events = Vec::new();
     let goblin_id = sim
-        .spawn_creature_with_civ(Species::Goblin, tree_pos, Some(hostile_civ), &mut events)
+        .spawn_creature_with_civ(
+            Species::Goblin,
+            tree_pos,
+            Some(hostile_civ),
+            sim.home_zone_id(),
+            &mut events,
+        )
         .expect("should spawn goblin");
     {
         let mut c = sim.db.creatures.get(&goblin_id).unwrap();
@@ -1125,6 +1140,7 @@ fn find_available_task_respects_civ_filter() {
     let task_id = TaskId::new(&mut sim.rng);
     let task = crate::db::Task {
         id: task_id,
+        zone_id: sim.home_zone_id(),
         kind_tag: TaskKindTag::GoTo,
         state: TaskState::Available,
         location: task_pos,
@@ -1147,7 +1163,7 @@ fn find_available_task_respects_civ_filter() {
 
     // Spawn an elf (player civ) — it SHOULD see the task.
     let elf_id = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("should spawn elf");
     {
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
@@ -1177,6 +1193,7 @@ fn find_available_task_unaffiliated_creature_blocked_by_civ_filter() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Capybara,
             position: tree_pos,
         },
@@ -1205,6 +1222,7 @@ fn find_available_task_unaffiliated_creature_blocked_by_civ_filter() {
     let task_id = TaskId::new(&mut sim.rng);
     let task = crate::db::Task {
         id: task_id,
+        zone_id: sim.home_zone_id(),
         kind_tag: TaskKindTag::GoTo,
         state: TaskState::Available,
         location: task_pos,
@@ -1248,7 +1266,7 @@ fn insert_task_propagates_required_civ_id() {
         prerequisite_task_id: None,
         required_civ_id: Some(player_civ),
     };
-    sim.insert_task(dto);
+    sim.insert_task(sim.home_zone_id(), dto);
 
     let db_task = sim.db.tasks.get(&task_id).expect("task should be inserted");
     assert_eq!(
@@ -1267,7 +1285,13 @@ fn find_available_task_no_civ_filter_allows_any() {
 
     let mut events = Vec::new();
     let goblin_id = sim
-        .spawn_creature_with_civ(Species::Goblin, tree_pos, Some(hostile_civ), &mut events)
+        .spawn_creature_with_civ(
+            Species::Goblin,
+            tree_pos,
+            Some(hostile_civ),
+            sim.home_zone_id(),
+            &mut events,
+        )
         .expect("should spawn goblin");
     {
         let mut c = sim.db.creatures.get(&goblin_id).unwrap();
@@ -1281,6 +1305,7 @@ fn find_available_task_no_civ_filter_allows_any() {
     let task_id = TaskId::new(&mut sim.rng);
     let task = crate::db::Task {
         id: task_id,
+        zone_id: sim.home_zone_id(),
         kind_tag: TaskKindTag::GoTo,
         state: TaskState::Available,
         location: task_pos,
@@ -1341,6 +1366,7 @@ fn directed_goto_on_wandering_creature_does_not_schedule_extra_activation() {
             player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DirectedGoTo {
+                zone_id: sim.home_zone_id(),
                 creature_id: elf,
                 position: target,
                 queue: false,
@@ -1391,6 +1417,7 @@ fn directed_goto_on_wandering_creature_preserves_move_action() {
             player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DirectedGoTo {
+                zone_id: sim.home_zone_id(),
                 creature_id: elf,
                 position: target,
                 queue: false,
@@ -1451,6 +1478,7 @@ fn directed_goto_spam_does_not_accumulate_activations() {
             player_name: String::new(),
             tick: tick + 1,
             action: SimAction::DirectedGoTo {
+                zone_id: sim.home_zone_id(),
                 creature_id: elf,
                 position: target_a,
                 queue: false,
@@ -1489,6 +1517,7 @@ fn directed_goto_spam_does_not_accumulate_activations() {
                 player_name: String::new(),
                 tick: t + 1,
                 action: SimAction::DirectedGoTo {
+                    zone_id: sim.home_zone_id(),
                     creature_id: elf,
                     position: target,
                     queue: false,
@@ -1545,6 +1574,7 @@ fn attack_move_on_wandering_creature_does_not_schedule_extra_activation() {
             player_name: String::new(),
             tick: tick + 1,
             action: SimAction::AttackMove {
+                zone_id: sim.home_zone_id(),
                 creature_id: elf,
                 destination: target,
                 queue: false,
@@ -1585,6 +1615,7 @@ fn attack_move_creature_reactivates_after_arriving_at_destination() {
         player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackMove {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             destination: dest,
             queue: false,
@@ -1633,6 +1664,7 @@ fn attack_move_creature_wanders_after_arriving_at_destination() {
         player_name: String::new(),
         tick: tick + 1,
         action: SimAction::AttackMove {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             destination: dest,
             queue: false,
@@ -1784,6 +1816,7 @@ fn queue_directed_goto_creates_linked_task() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: pos_a,
             queue: false,
@@ -1798,6 +1831,7 @@ fn queue_directed_goto_creates_linked_task() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: pos_b,
             queue: true,
@@ -1840,6 +1874,7 @@ fn unshifted_command_cancels_queue() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: pos_a,
             queue: false,
@@ -1854,6 +1889,7 @@ fn unshifted_command_cancels_queue() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: pos_b,
             queue: true,
@@ -1863,6 +1899,7 @@ fn unshifted_command_cancels_queue() {
         player_name: String::new(),
         tick: sim.tick + 2,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: pos_c,
             queue: true,
@@ -1885,6 +1922,7 @@ fn unshifted_command_cancels_queue() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: pos_d,
             queue: false,
@@ -1916,6 +1954,7 @@ fn find_queue_tail_follows_chain() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: pos_a,
             queue: false,
@@ -1928,6 +1967,7 @@ fn find_queue_tail_follows_chain() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: pos_b,
             queue: true,
@@ -1940,6 +1980,7 @@ fn find_queue_tail_follows_chain() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: pos_c,
             queue: true,
@@ -1972,6 +2013,7 @@ fn queue_completion_flows_to_next_task() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: pos_a,
             queue: false,
@@ -1987,6 +2029,7 @@ fn queue_completion_flows_to_next_task() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: pos_b,
             queue: true,
@@ -2034,6 +2077,7 @@ fn creature_death_cancels_queued_tasks() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: pos_a,
             queue: false,
@@ -2046,6 +2090,7 @@ fn creature_death_cancels_queued_tasks() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: pos_b,
             queue: true,
@@ -2093,6 +2138,7 @@ fn queue_on_idle_creature_falls_through_to_immediate() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: pos,
             queue: true,
@@ -2125,6 +2171,7 @@ fn queue_attack_move_creates_linked_task_with_extension_data() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: pos_a,
             queue: false,
@@ -2139,6 +2186,7 @@ fn queue_attack_move_creates_linked_task_with_extension_data() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::AttackMove {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             destination: dest,
             queue: true,
@@ -2178,37 +2226,43 @@ fn deleted_prerequisite_unblocks_dependent_task() {
     // Create prerequisite task A.
     let task_a_id = TaskId::new(&mut sim.rng);
     let pos = VoxelCoord::new(10, 1, 10);
-    sim.insert_task(Task {
-        id: task_a_id,
-        kind: TaskKind::GoTo,
-        state: TaskState::Available,
-        location: pos,
-        progress: 0,
-        total_cost: 0,
-        required_species: Some(Species::Elf),
-        origin: TaskOrigin::PlayerDirected,
-        target_creature: None,
-        restrict_to_creature_id: Some(elf),
-        prerequisite_task_id: None,
-        required_civ_id: None,
-    });
+    sim.insert_task(
+        sim.home_zone_id(),
+        Task {
+            id: task_a_id,
+            kind: TaskKind::GoTo,
+            state: TaskState::Available,
+            location: pos,
+            progress: 0,
+            total_cost: 0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::PlayerDirected,
+            target_creature: None,
+            restrict_to_creature_id: Some(elf),
+            prerequisite_task_id: None,
+            required_civ_id: None,
+        },
+    );
 
     // Create dependent task B.
     let task_b_id = TaskId::new(&mut sim.rng);
-    sim.insert_task(Task {
-        id: task_b_id,
-        kind: TaskKind::GoTo,
-        state: TaskState::Available,
-        location: VoxelCoord::new(20, 1, 20),
-        progress: 0,
-        total_cost: 0,
-        required_species: Some(Species::Elf),
-        origin: TaskOrigin::PlayerDirected,
-        target_creature: None,
-        restrict_to_creature_id: Some(elf),
-        prerequisite_task_id: Some(task_a_id),
-        required_civ_id: None,
-    });
+    sim.insert_task(
+        sim.home_zone_id(),
+        Task {
+            id: task_b_id,
+            kind: TaskKind::GoTo,
+            state: TaskState::Available,
+            location: VoxelCoord::new(20, 1, 20),
+            progress: 0,
+            total_cost: 0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::PlayerDirected,
+            target_creature: None,
+            restrict_to_creature_id: Some(elf),
+            prerequisite_task_id: Some(task_a_id),
+            required_civ_id: None,
+        },
+    );
 
     // Delete the prerequisite task entirely (simulates DB compaction/pruning).
     sim.db.remove_task(&task_a_id).unwrap();
@@ -2232,6 +2286,7 @@ fn queue_attack_creature_creates_linked_task() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: pos_a,
             queue: false,
@@ -2247,6 +2302,7 @@ fn queue_attack_creature_creates_linked_task() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Goblin,
             position: goblin_pos,
         },
@@ -2298,12 +2354,14 @@ fn queue_attack_creature_creates_linked_task() {
 #[test]
 fn sim_action_queue_serde_roundtrip() {
     let mut rng = crate::prng::GameRng::new(42);
+    let test_zone_id = ZoneId(42);
 
     // DirectedGoTo with queue: true
     let cmd = SimCommand {
         player_name: "p".to_string(),
         tick: 1,
         action: SimAction::DirectedGoTo {
+            zone_id: test_zone_id,
             creature_id: CreatureId::new(&mut rng),
             position: VoxelCoord::new(5, 1, 5),
             queue: true,
@@ -2318,6 +2376,7 @@ fn sim_action_queue_serde_roundtrip() {
         player_name: "p".to_string(),
         tick: 2,
         action: SimAction::AttackMove {
+            zone_id: test_zone_id,
             creature_id: CreatureId::new(&mut rng),
             destination: VoxelCoord::new(10, 1, 10),
             queue: true,
@@ -2345,7 +2404,7 @@ fn sim_action_queue_serde_roundtrip() {
 #[test]
 fn sim_action_queue_backward_compat() {
     // Old-format JSON without queue field should deserialize with queue: false.
-    let json = r#"{"player_name":"p","tick":1,"action":{"DirectedGoTo":{"creature_id":"00000000-0000-0000-0000-000000000001","position":[5,1,5]}}}"#;
+    let json = r#"{"player_name":"p","tick":1,"action":{"DirectedGoTo":{"zone_id":0,"creature_id":"00000000-0000-0000-0000-000000000001","position":[5,1,5]}}}"#;
     let cmd: SimCommand = serde_json::from_str(json).unwrap();
     match &cmd.action {
         SimAction::DirectedGoTo { queue, .. } => assert!(!queue, "queue should default to false"),
@@ -2364,6 +2423,7 @@ fn two_queue_commands_same_tick_form_linear_chain() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: pos_a,
             queue: false,
@@ -2379,6 +2439,7 @@ fn two_queue_commands_same_tick_form_linear_chain() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: pos_b,
             queue: true,
@@ -2388,6 +2449,7 @@ fn two_queue_commands_same_tick_form_linear_chain() {
         player_name: String::new(),
         tick: sim.tick + 1, // same tick as cmd_b
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: pos_c,
             queue: true,
@@ -2431,34 +2493,40 @@ fn find_queue_tail_terminates_on_cycle() {
     let task_b_id = TaskId::new(&mut sim.rng);
     let pos = VoxelCoord::new(10, 1, 10);
 
-    sim.insert_task(Task {
-        id: task_a_id,
-        kind: TaskKind::GoTo,
-        state: TaskState::Available,
-        location: pos,
-        progress: 0,
-        total_cost: 0,
-        required_species: Some(Species::Elf),
-        origin: TaskOrigin::PlayerDirected,
-        target_creature: None,
-        restrict_to_creature_id: Some(elf),
-        prerequisite_task_id: Some(task_b_id),
-        required_civ_id: None,
-    });
-    sim.insert_task(Task {
-        id: task_b_id,
-        kind: TaskKind::GoTo,
-        state: TaskState::Available,
-        location: pos,
-        progress: 0,
-        total_cost: 0,
-        required_species: Some(Species::Elf),
-        origin: TaskOrigin::PlayerDirected,
-        target_creature: None,
-        restrict_to_creature_id: Some(elf),
-        prerequisite_task_id: Some(task_a_id),
-        required_civ_id: None,
-    });
+    sim.insert_task(
+        sim.home_zone_id(),
+        Task {
+            id: task_a_id,
+            kind: TaskKind::GoTo,
+            state: TaskState::Available,
+            location: pos,
+            progress: 0,
+            total_cost: 0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::PlayerDirected,
+            target_creature: None,
+            restrict_to_creature_id: Some(elf),
+            prerequisite_task_id: Some(task_b_id),
+            required_civ_id: None,
+        },
+    );
+    sim.insert_task(
+        sim.home_zone_id(),
+        Task {
+            id: task_b_id,
+            kind: TaskKind::GoTo,
+            state: TaskState::Available,
+            location: pos,
+            progress: 0,
+            total_cost: 0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::PlayerDirected,
+            target_creature: None,
+            restrict_to_creature_id: Some(elf),
+            prerequisite_task_id: Some(task_a_id),
+            required_civ_id: None,
+        },
+    );
 
     // Set the elf's current_task to task_a to start the chain.
     if let Some(mut c) = sim.db.creatures.get(&elf) {
@@ -2486,6 +2554,7 @@ fn flee_interrupt_preserves_command_queue() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: pos_a,
             queue: false,
@@ -2499,6 +2568,7 @@ fn flee_interrupt_preserves_command_queue() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: pos_b,
             queue: true,
@@ -2551,6 +2621,7 @@ fn shift_click_during_flee_preserves_and_extends_queue() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: pos_a,
             queue: false,
@@ -2564,6 +2635,7 @@ fn shift_click_during_flee_preserves_and_extends_queue() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: pos_b,
             queue: true,
@@ -2592,6 +2664,7 @@ fn shift_click_during_flee_preserves_and_extends_queue() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: pos_c,
             queue: true,
@@ -2646,6 +2719,7 @@ fn creature_wanders_via_activation_chain() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -2679,8 +2753,8 @@ fn creature_wanders_via_activation_chain() {
     // Position should be walkable.
     assert!(
         crate::walkability::footprint_walkable(
-            &sim.world,
-            &sim.face_data,
+            sim.voxel_zone(sim.home_zone_id()).unwrap(),
+            &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
             elf.position.min,
             [1, 1, 1],
             true,
@@ -2761,6 +2835,7 @@ fn create_task_command_adds_task() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::CreateTask {
+            zone_id: sim.home_zone_id(),
             kind: TaskKind::GoTo,
             position: tree_pos,
             required_species: Some(Species::Elf),
@@ -2784,6 +2859,7 @@ fn end_to_end_summon_task() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -2795,6 +2871,7 @@ fn end_to_end_summon_task() {
         player_name: String::new(),
         tick: 3,
         action: SimAction::CreateTask {
+            zone_id: sim.home_zone_id(),
             kind: TaskKind::GoTo,
             position: VoxelCoord::new(tree_pos.x + 10, 0, tree_pos.z),
             required_species: Some(Species::Elf),
@@ -2836,6 +2913,7 @@ fn only_one_creature_claims_goto_task() {
             player_name: String::new(),
             tick: sim.tick + 1,
             action: SimAction::SpawnCreature {
+                zone_id: sim.home_zone_id(),
                 species: Species::Elf,
                 position: tree_pos,
             },
@@ -2847,6 +2925,7 @@ fn only_one_creature_claims_goto_task() {
             player_name: String::new(),
             tick: sim.tick + 1,
             action: SimAction::SpawnCreature {
+                zone_id: sim.home_zone_id(),
                 species: Species::Capybara,
                 position: tree_pos,
             },
@@ -2915,6 +2994,7 @@ fn abort_current_action_clears_activation_state() {
         player_name: String::new(),
         tick: tick + 1,
         action: SimAction::DirectedGoTo {
+            zone_id: sim.home_zone_id(),
             creature_id: elf,
             position: target,
             queue: false,
@@ -2970,7 +3050,7 @@ fn find_available_task_skips_task_restricted_to_other_creature() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(task);
+    sim.insert_task(sim.home_zone_id(), task);
 
     // elf_b should NOT find this task.
     assert!(
@@ -3007,7 +3087,7 @@ fn find_available_task_skips_incomplete_prerequisite() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(task_a);
+    sim.insert_task(sim.home_zone_id(), task_a);
 
     // Create dependent task B with prerequisite = A.
     let task_b_id = TaskId::new(&mut sim.rng);
@@ -3026,7 +3106,7 @@ fn find_available_task_skips_incomplete_prerequisite() {
         prerequisite_task_id: Some(task_a_id),
         required_civ_id: None,
     };
-    sim.insert_task(task_b);
+    sim.insert_task(sim.home_zone_id(), task_b);
 
     // Only task A should be found (B's prerequisite is not complete).
     assert_eq!(
@@ -3057,20 +3137,23 @@ fn cancel_creature_queue_cancels_entire_chain() {
     // Create a chain: A -> B -> C (B depends on A, C depends on B).
     let task_a_id = TaskId::new(&mut sim.rng);
     let pos = VoxelCoord::new(10, 1, 10);
-    sim.insert_task(Task {
-        id: task_a_id,
-        kind: TaskKind::GoTo,
-        state: TaskState::InProgress,
-        location: pos,
-        progress: 0,
-        total_cost: 0,
-        required_species: Some(Species::Elf),
-        origin: TaskOrigin::PlayerDirected,
-        target_creature: None,
-        restrict_to_creature_id: Some(elf_id),
-        prerequisite_task_id: None,
-        required_civ_id: None,
-    });
+    sim.insert_task(
+        sim.home_zone_id(),
+        Task {
+            id: task_a_id,
+            kind: TaskKind::GoTo,
+            state: TaskState::InProgress,
+            location: pos,
+            progress: 0,
+            total_cost: 0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::PlayerDirected,
+            target_creature: None,
+            restrict_to_creature_id: Some(elf_id),
+            prerequisite_task_id: None,
+            required_civ_id: None,
+        },
+    );
     // Assign A to the elf.
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = Some(task_a_id);
@@ -3078,36 +3161,42 @@ fn cancel_creature_queue_cancels_entire_chain() {
     }
 
     let task_b_id = TaskId::new(&mut sim.rng);
-    sim.insert_task(Task {
-        id: task_b_id,
-        kind: TaskKind::GoTo,
-        state: TaskState::Available,
-        location: VoxelCoord::new(20, 1, 20),
-        progress: 0,
-        total_cost: 0,
-        required_species: Some(Species::Elf),
-        origin: TaskOrigin::PlayerDirected,
-        target_creature: None,
-        restrict_to_creature_id: Some(elf_id),
-        prerequisite_task_id: Some(task_a_id),
-        required_civ_id: None,
-    });
+    sim.insert_task(
+        sim.home_zone_id(),
+        Task {
+            id: task_b_id,
+            kind: TaskKind::GoTo,
+            state: TaskState::Available,
+            location: VoxelCoord::new(20, 1, 20),
+            progress: 0,
+            total_cost: 0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::PlayerDirected,
+            target_creature: None,
+            restrict_to_creature_id: Some(elf_id),
+            prerequisite_task_id: Some(task_a_id),
+            required_civ_id: None,
+        },
+    );
 
     let task_c_id = TaskId::new(&mut sim.rng);
-    sim.insert_task(Task {
-        id: task_c_id,
-        kind: TaskKind::GoTo,
-        state: TaskState::Available,
-        location: VoxelCoord::new(30, 1, 30),
-        progress: 0,
-        total_cost: 0,
-        required_species: Some(Species::Elf),
-        origin: TaskOrigin::PlayerDirected,
-        target_creature: None,
-        restrict_to_creature_id: Some(elf_id),
-        prerequisite_task_id: Some(task_b_id),
-        required_civ_id: None,
-    });
+    sim.insert_task(
+        sim.home_zone_id(),
+        Task {
+            id: task_c_id,
+            kind: TaskKind::GoTo,
+            state: TaskState::Available,
+            location: VoxelCoord::new(30, 1, 30),
+            progress: 0,
+            total_cost: 0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::PlayerDirected,
+            target_creature: None,
+            restrict_to_creature_id: Some(elf_id),
+            prerequisite_task_id: Some(task_b_id),
+            required_civ_id: None,
+        },
+    );
 
     // Cancel the queue via cancel_creature_queue (simulates unshifted player
     // command replacing the queue).
@@ -3136,37 +3225,43 @@ fn cancel_creature_queue_only_cancels_player_directed() {
     // Create a player-directed queued task.
     let pd_task_id = TaskId::new(&mut sim.rng);
     let pos = VoxelCoord::new(10, 1, 10);
-    sim.insert_task(Task {
-        id: pd_task_id,
-        kind: TaskKind::GoTo,
-        state: TaskState::Available,
-        location: pos,
-        progress: 0,
-        total_cost: 0,
-        required_species: Some(Species::Elf),
-        origin: TaskOrigin::PlayerDirected,
-        target_creature: None,
-        restrict_to_creature_id: Some(elf_id),
-        prerequisite_task_id: None,
-        required_civ_id: None,
-    });
+    sim.insert_task(
+        sim.home_zone_id(),
+        Task {
+            id: pd_task_id,
+            kind: TaskKind::GoTo,
+            state: TaskState::Available,
+            location: pos,
+            progress: 0,
+            total_cost: 0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::PlayerDirected,
+            target_creature: None,
+            restrict_to_creature_id: Some(elf_id),
+            prerequisite_task_id: None,
+            required_civ_id: None,
+        },
+    );
 
     // Create an autonomous restricted task (should survive cancellation).
     let auto_task_id = TaskId::new(&mut sim.rng);
-    sim.insert_task(Task {
-        id: auto_task_id,
-        kind: TaskKind::GoTo,
-        state: TaskState::Available,
-        location: VoxelCoord::new(20, 1, 20),
-        progress: 0,
-        total_cost: 0,
-        required_species: Some(Species::Elf),
-        origin: TaskOrigin::Autonomous,
-        target_creature: None,
-        restrict_to_creature_id: Some(elf_id),
-        prerequisite_task_id: None,
-        required_civ_id: None,
-    });
+    sim.insert_task(
+        sim.home_zone_id(),
+        Task {
+            id: auto_task_id,
+            kind: TaskKind::GoTo,
+            state: TaskState::Available,
+            location: VoxelCoord::new(20, 1, 20),
+            progress: 0,
+            total_cost: 0,
+            required_species: Some(Species::Elf),
+            origin: TaskOrigin::Autonomous,
+            target_creature: None,
+            restrict_to_creature_id: Some(elf_id),
+            prerequisite_task_id: None,
+            required_civ_id: None,
+        },
+    );
 
     // Cancel the creature's player-directed queue.
     sim.cancel_creature_queue(elf_id);

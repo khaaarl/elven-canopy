@@ -6,7 +6,7 @@
 // types into Godot `ArrayMesh` objects for rendering.
 //
 // Depends on `elven_canopy_sim` for core voxel types (`VoxelCoord`,
-// `VoxelType`, `VoxelWorld`).
+// `VoxelType`, `VoxelZone`).
 //
 // Module overview:
 // - `mesh_gen.rs`:         Chunk-based voxel mesh generation with smooth surface rendering.

@@ -26,6 +26,7 @@ fn setup_executing_dance(
         Some(elves.len() as u16),
         Some(elves.len() as u16),
         TaskOrigin::PlayerDirected,
+        sim.home_zone_id(),
         &mut events,
     );
     let activity_id = sim

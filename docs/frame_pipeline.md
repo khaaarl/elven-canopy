@@ -24,7 +24,7 @@ GDScript main loop (every frame)
 ├─ 2. tree_renderer.refresh()
 │     │
 │     ├─ 2a. update_world_mesh()
-│     │     Drains dirty_voxels from VoxelWorld (render-only metadata).
+│     │     Drains dirty_voxels from VoxelZone (render-only metadata).
 │     │     Marks affected chunks + neighbors as dirty in MeshCache.
 │     │     Submits visible dirty chunks for background re-generation
 │     │     via ChunkNeighborhood extraction (quick voxel copy).
@@ -83,7 +83,7 @@ position, remove it, unlock, generate the mesh, send the result back via
 an mpsc channel.
 
 Workers operate on owned `ChunkNeighborhood` snapshots — they do not hold
-references to `VoxelWorld` or any other shared state. The snapshot is
+references to `VoxelZone` or any other shared state. The snapshot is
 extracted on the main thread during steps 2a (dirty re-generation) and 2b
 (first-time generation of newly-visible chunks). Each extraction copies
 the chunk's 16x16x16 voxels plus a 2-voxel border (~20x20x20 = 8000
@@ -94,7 +94,7 @@ This means:
   insert work and update the camera position. Workers hold it briefly to
   scan pending entries and pop the closest one. The expensive mesh
   generation happens entirely outside the lock. There is no concurrent
-  access to `VoxelWorld`.
+  access to `VoxelZone`.
 - **Dynamic prioritization.** The camera position stored in the queue is
   updated each frame. Workers always pick the chunk closest to the
   *current* camera, not where it was when the chunk was submitted. This
@@ -125,5 +125,5 @@ This means:
 | `elven_canopy_gdext/src/mesh_cache.rs` | MegaChunk hierarchy, async submission, channel drain, visibility culling, LRU eviction |
 | `elven_canopy_graphics/src/chunk_neighborhood.rs` | `ChunkNeighborhood`: lightweight voxel snapshot for off-thread mesh generation |
 | `elven_canopy_graphics/src/mesh_gen.rs` | Pure mesh generation: `ChunkNeighborhood` → `ChunkMesh` |
-| `elven_canopy_sim/src/world.rs` | `VoxelWorld`: RLE voxel grid, dirty tracking, `sim_tick` |
-| `elven_canopy_sim/src/sim/mod.rs` | `SimState`: owns `VoxelWorld` and `grassless: BTreeSet<VoxelCoord>` (grazed dirt coords, also captured into neighborhoods) |
+| `elven_canopy_sim/src/world.rs` | `VoxelZone`: RLE voxel grid, dirty tracking, `sim_tick` |
+| `elven_canopy_sim/src/sim/mod.rs` | `SimState`: owns `VoxelZone` and `grassless: BTreeSet<VoxelCoord>` (grazed dirt coords, also captured into neighborhoods) |

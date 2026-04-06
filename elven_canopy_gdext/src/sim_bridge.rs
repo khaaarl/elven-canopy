@@ -181,7 +181,7 @@ use elven_canopy_sim::types::{
     ActiveRecipeId, ActiveRecipeTargetId, BuildType, CreatureId, DiplomaticRelation, FaceDirection,
     FruitSpeciesId, FurnishingType, FurnitureKind, ItemStackId, LadderKind, OpinionKind,
     OverlapClassification, Priority, SimUuid, Species, StructureId, TraitKind, VitalStatus,
-    VoxelCoord, VoxelType,
+    VoxelCoord, VoxelType, ZoneId,
 };
 use godot::classes::ImageTexture;
 use godot::prelude::*;
@@ -566,6 +566,7 @@ pub struct SimBridge {
     net_client: Option<NetClient>,
     relay_handle: Option<RelayHandle>,
     is_multiplayer_mode: bool,
+    active_zone_id: ZoneId,
     mp_events: Vec<String>,
     /// Current ticks_per_turn from the relay (updated on SpeedChanged).
     mp_ticks_per_turn: u32,
@@ -622,6 +623,7 @@ impl INode for SimBridge {
             net_client: None,
             relay_handle: None,
             is_multiplayer_mode: false,
+            active_zone_id: ZoneId(1), // placeholder until sim is created
             mp_events: Vec::new(),
             mp_ticks_per_turn: 50,
             base_ticks_per_turn: 50,
@@ -787,6 +789,9 @@ impl SimBridge {
         // Spin-poll until the GameStart message comes back and creates the sim.
         self.wait_for_sim_ready();
         if self.session.has_sim() {
+            if let Some(sim) = &self.session.sim {
+                self.active_zone_id = sim.home_zone_id();
+            }
             self.rebuild_mesh_cache();
             self.creature_sprite_cache.clear();
             godot_print!("SimBridge: simulation initialized with seed {seed}");
@@ -835,6 +840,9 @@ impl SimBridge {
             seed: seed as u64,
             config: Box::new(config),
         });
+        if let Some(sim) = &self.session.sim {
+            self.active_zone_id = sim.home_zone_id();
+        }
         self.rebuild_mesh_cache();
         godot_print!("SimBridge: test sim initialized with seed {seed} (small world)");
     }
@@ -1002,7 +1010,12 @@ impl SimBridge {
         let mut arr = PackedInt32Array::new();
         for tf in sim.db.tree_fruits.iter_all() {
             // Skip voxels carved to Air so the renderer doesn't draw them.
-            if sim.world.get(tf.position.min) == VoxelType::Air {
+            if sim
+                .voxel_zone(self.active_zone_id)
+                .unwrap()
+                .get(tf.position.min)
+                == VoxelType::Air
+            {
                 continue;
             }
             arr.push(tf.position.min.x);
@@ -1233,6 +1246,7 @@ impl SimBridge {
             return;
         };
         self.apply_or_send(SimAction::SpawnCreature {
+            zone_id: self.active_zone_id,
             species,
             position: VoxelCoord::new(x, y, z),
         });
@@ -1366,18 +1380,19 @@ impl SimBridge {
         );
 
         let footprint: [u8; 3] = if large { [2, 2, 2] } else { [1, 1, 1] };
+        let zone = sim.voxel_zone(self.active_zone_id).unwrap();
         let nearest = if ground_only {
             elven_canopy_sim::walkability::find_nearest_ground_walkable(
-                &sim.world,
-                &sim.face_data,
+                zone,
+                &zone.face_data,
                 air_pos,
                 5,
                 footprint,
             )
         } else {
             elven_canopy_sim::walkability::find_nearest_walkable(
-                &sim.world,
-                &sim.face_data,
+                zone,
+                &zone.face_data,
                 air_pos,
                 5,
                 footprint,
@@ -1402,6 +1417,7 @@ impl SimBridge {
     #[func]
     fn create_goto_task(&mut self, x: i32, y: i32, z: i32) {
         self.apply_or_send(SimAction::CreateTask {
+            zone_id: self.active_zone_id,
             kind: elven_canopy_sim::task::TaskKind::GoTo,
             position: VoxelCoord::new(x, y, z),
             required_species: Some(Species::Elf),
@@ -1424,6 +1440,7 @@ impl SimBridge {
             return;
         };
         self.apply_or_send(SimAction::DirectedGoTo {
+            zone_id: self.active_zone_id,
             creature_id,
             position: VoxelCoord::new(x, y, z),
             queue,
@@ -1439,6 +1456,7 @@ impl SimBridge {
             return;
         };
         self.apply_or_send(SimAction::AttackMove {
+            zone_id: self.active_zone_id,
             creature_id,
             destination: VoxelCoord::new(x, y, z),
             queue,
@@ -1466,6 +1484,7 @@ impl SimBridge {
             return;
         }
         self.apply_or_send(SimAction::GroupGoTo {
+            zone_id: self.active_zone_id,
             creature_ids,
             position: VoxelCoord::new(x, y, z),
             queue,
@@ -1485,6 +1504,7 @@ impl SimBridge {
             return;
         }
         self.apply_or_send(SimAction::GroupAttackMove {
+            zone_id: self.active_zone_id,
             creature_ids,
             destination: VoxelCoord::new(x, y, z),
             queue,
@@ -2073,9 +2093,10 @@ impl SimBridge {
         for z in (cz - radius)..=(cz + radius) {
             for x in (cx - radius)..=(cx + radius) {
                 let coord = VoxelCoord::new(x, y, z);
+                let zone = sim.voxel_zone(self.active_zone_id).unwrap();
                 let vt = match &overlay {
-                    Some(ov) => ov.effective_type(&sim.world, coord),
-                    None => sim.world.get(coord),
+                    Some(ov) => ov.effective_type(zone, coord),
+                    None => zone.get(coord),
                 };
                 data.push(if vt.is_solid() { 1u8 } else { 0u8 });
             }
@@ -2103,7 +2124,10 @@ impl SimBridge {
         let Some(sim) = &mut self.session.sim else {
             return PackedInt32Array::new();
         };
-        let dirty = sim.world.drain_dirty_heightmap_tiles();
+        let dirty = sim
+            .voxel_zone_mut(self.active_zone_id)
+            .unwrap()
+            .drain_dirty_heightmap_tiles();
         let mut result = PackedInt32Array::new();
         result.resize(dirty.len() * 2);
         for (i, (cx, cz)) in dirty.iter().enumerate() {
@@ -2127,7 +2151,12 @@ impl SimBridge {
         for i in 0..n {
             pairs.push((coords[i * 2], coords[i * 2 + 1]));
         }
-        PackedByteArray::from(sim.world.heightmap_tiles_batch(&pairs).as_slice())
+        PackedByteArray::from(
+            sim.voxel_zone(self.active_zone_id)
+                .unwrap()
+                .heightmap_tiles_batch(&pairs)
+                .as_slice(),
+        )
     }
 
     /// Return the world dimensions as `Vector3i(size_x, size_y, size_z)`.
@@ -2137,11 +2166,8 @@ impl SimBridge {
         let Some(sim) = &self.session.sim else {
             return Vector3i::new(0, 0, 0);
         };
-        Vector3i::new(
-            sim.world.size_x as i32,
-            sim.world.size_y as i32,
-            sim.world.size_z as i32,
-        )
+        let zone = sim.voxel_zone(self.active_zone_id).unwrap();
+        Vector3i::new(zone.size_x as i32, zone.size_y as i32, zone.size_z as i32)
     }
 
     /// Return info about a completed structure as a Dictionary. Returns an
@@ -3111,7 +3137,11 @@ impl SimBridge {
             return VarArray::new();
         };
         let mut arr = VarArray::new();
-        for pos in &sim.mana_wasted_positions {
+        for pos in &sim
+            .voxel_zone(self.active_zone_id)
+            .unwrap()
+            .mana_wasted_positions
+        {
             arr.push(
                 &Vector3::new(pos.x as f32 + 0.5, pos.y as f32 + 0.5, pos.z as f32 + 0.5)
                     .to_variant(),
@@ -3577,6 +3607,7 @@ impl SimBridge {
             .any(|e| matches!(e, elven_canopy_sim::session::SessionEvent::SimLoaded));
         if loaded {
             if let Some(sim) = &self.session.sim {
+                self.active_zone_id = sim.home_zone_id();
                 godot_print!(
                     "SimBridge: loaded save (tick={}, creatures={})",
                     sim.tick,
@@ -4583,9 +4614,10 @@ impl SimBridge {
             return false;
         };
         let coord = VoxelCoord::new(x, y, z);
-        sim.world.in_bounds(coord)
-            && sim.world.get(coord) == VoxelType::Air
-            && sim.world.has_solid_face_neighbor(coord)
+        let zone = sim.voxel_zone(self.active_zone_id).unwrap();
+        zone.in_bounds(coord)
+            && zone.get(coord) == VoxelType::Air
+            && zone.has_solid_face_neighbor(coord)
     }
 
     /// Check whether a single voxel is in-bounds and Air (buildable).
@@ -4600,7 +4632,8 @@ impl SimBridge {
             return false;
         };
         let coord = VoxelCoord::new(x, y, z);
-        if !sim.world.in_bounds(coord) || sim.world.get(coord) != VoxelType::Air {
+        let zone = sim.voxel_zone(self.active_zone_id).unwrap();
+        if !zone.in_bounds(coord) || zone.get(coord) != VoxelType::Air {
             return false;
         }
         // F-no-bp-overlap: also reject if this voxel is claimed by an
@@ -4617,7 +4650,9 @@ impl SimBridge {
         let Some(sim) = &self.session.sim else {
             return false;
         };
-        sim.world.has_solid_face_neighbor(VoxelCoord::new(x, y, z))
+        sim.voxel_zone(self.active_zone_id)
+            .unwrap()
+            .has_solid_face_neighbor(VoxelCoord::new(x, y, z))
     }
 
     /// Designate a single-voxel platform blueprint at the given position.
@@ -4628,6 +4663,7 @@ impl SimBridge {
     #[func]
     fn designate_build(&mut self, x: i32, y: i32, z: i32) -> GString {
         self.apply_build_action(SimAction::DesignateBuild {
+            zone_id: self.active_zone_id,
             build_type: BuildType::Platform,
             voxels: vec![VoxelCoord::new(x, y, z)],
             priority: Priority::Normal,
@@ -4651,6 +4687,7 @@ impl SimBridge {
             }
         }
         self.apply_build_action(SimAction::DesignateBuild {
+            zone_id: self.active_zone_id,
             build_type: BuildType::Platform,
             voxels,
             priority: Priority::Normal,
@@ -4673,6 +4710,7 @@ impl SimBridge {
         height: i32,
     ) -> GString {
         self.apply_build_action(SimAction::DesignateBuilding {
+            zone_id: self.active_zone_id,
             anchor: VoxelCoord::new(x, y, z),
             width,
             depth,
@@ -4707,6 +4745,7 @@ impl SimBridge {
             }
         }
         self.apply_build_action(SimAction::DesignateCarve {
+            zone_id: self.active_zone_id,
             voxels,
             priority: Priority::Normal,
         })
@@ -4723,6 +4762,7 @@ impl SimBridge {
         let endpoint_b = VoxelCoord::new(bx, by, bz);
         let voxels = endpoint_a.line_to(endpoint_b);
         self.apply_build_action(SimAction::DesignateBuild {
+            zone_id: self.active_zone_id,
             build_type: BuildType::Strut,
             voxels,
             priority: Priority::Normal,
@@ -4751,8 +4791,9 @@ impl SimBridge {
             return Self::preview_result("Blocked", "Simulation not initialized.");
         };
         let overlay = sim.blueprint_overlay();
+        let zone = sim.voxel_zone(self.active_zone_id).unwrap();
         let effective_type =
-            |coord: VoxelCoord| -> VoxelType { overlay.effective_type(&sim.world, coord) };
+            |coord: VoxelCoord| -> VoxelType { overlay.effective_type(zone, coord) };
         let w = width.max(1);
         let d = depth.max(1);
         let h = height.max(1);
@@ -4762,7 +4803,7 @@ impl SimBridge {
             for dx in 0..w {
                 for dz in 0..d {
                     let coord = VoxelCoord::new(x + dx, y + dy, z + dz);
-                    if !sim.world.in_bounds(coord) {
+                    if !zone.in_bounds(coord) {
                         return Self::preview_result("Blocked", "Carve position is out of bounds.");
                     }
                 }
@@ -4794,8 +4835,8 @@ impl SimBridge {
 
         let struts: Vec<_> = sim.db.struts.iter_all().cloned().collect();
         let validation = structural::validate_carve_fast(
-            &sim.world,
-            &sim.face_data,
+            zone,
+            &zone.face_data,
             &carve_coords,
             &sim.config,
             &overlay,
@@ -4849,12 +4890,13 @@ impl SimBridge {
         }
 
         let overlay = sim.blueprint_overlay();
+        let zone = sim.voxel_zone(self.active_zone_id).unwrap();
         let effective_type =
-            |coord: VoxelCoord| -> VoxelType { overlay.effective_type(&sim.world, coord) };
+            |coord: VoxelCoord| -> VoxelType { overlay.effective_type(zone, coord) };
 
         // Bounds check.
         for &coord in &line {
-            if !sim.world.in_bounds(coord) {
+            if !zone.in_bounds(coord) {
                 let mut dict = Self::preview_result("Blocked", "Strut extends out of bounds.");
                 dict.set("voxels", voxel_array);
                 return dict;
@@ -4877,7 +4919,7 @@ impl SimBridge {
         // Replacement validation. Struts can pass through natural materials,
         // platforms, and bridges, but not buildings, walls, or ladders.
         for &coord in &line {
-            let vt = sim.world.get(coord);
+            let vt = zone.get(coord);
             match vt {
                 VoxelType::Air
                 | VoxelType::Leaf
@@ -4924,14 +4966,15 @@ impl SimBridge {
         let mut struts: Vec<_> = sim.db.struts.iter_all().cloned().collect();
         struts.push(elven_canopy_sim::db::Strut {
             id: elven_canopy_sim::types::StrutId(u64::MAX),
+            zone_id: elven_canopy_sim::types::ZoneId(0),
             endpoint_a,
             endpoint_b,
             blueprint_id: None,
             structure_id: None,
         });
         let validation = structural::validate_blueprint_fast(
-            &sim.world,
-            &sim.face_data,
+            zone,
+            &zone.face_data,
             &line,
             VoxelType::Strut,
             &BTreeMap::new(),
@@ -4970,13 +5013,14 @@ impl SimBridge {
             return false;
         }
         let overlay = sim.blueprint_overlay();
+        let zone = sim.voxel_zone(self.active_zone_id).unwrap();
         let effective_type =
-            |coord: VoxelCoord| -> VoxelType { overlay.effective_type(&sim.world, coord) };
+            |coord: VoxelCoord| -> VoxelType { overlay.effective_type(zone, coord) };
         // Check foundation (considering blueprint overlay).
         for dx in 0..width {
             for dz in 0..depth {
                 let coord = VoxelCoord::new(x + dx, y, z + dz);
-                if !sim.world.in_bounds(coord) || !effective_type(coord).is_solid() {
+                if !zone.in_bounds(coord) || !effective_type(coord).is_solid() {
                     return false;
                 }
             }
@@ -4986,7 +5030,7 @@ impl SimBridge {
             for dx in 0..width {
                 for dz in 0..depth {
                     let coord = VoxelCoord::new(x + dx, y + dy, z + dz);
-                    if !sim.world.in_bounds(coord) || effective_type(coord) != VoxelType::Air {
+                    if !zone.in_bounds(coord) || effective_type(coord) != VoxelType::Air {
                         return false;
                     }
                 }
@@ -5020,8 +5064,9 @@ impl SimBridge {
             return Self::preview_result("Blocked", "Simulation not initialized.");
         };
         let overlay = sim.blueprint_overlay();
+        let zone = sim.voxel_zone(self.active_zone_id).unwrap();
         let effective_type =
-            |coord: VoxelCoord| -> VoxelType { overlay.effective_type(&sim.world, coord) };
+            |coord: VoxelCoord| -> VoxelType { overlay.effective_type(zone, coord) };
         let w = width.max(1);
         let d = depth.max(1);
         let mut voxels = Vec::with_capacity((w * d) as usize);
@@ -5033,7 +5078,7 @@ impl SimBridge {
 
         // Basic bounds check.
         for &coord in &voxels {
-            if !sim.world.in_bounds(coord) {
+            if !zone.in_bounds(coord) {
                 return Self::preview_result("Blocked", "Build position is out of bounds.");
             }
         }
@@ -5071,7 +5116,7 @@ impl SimBridge {
         // At least one buildable voxel must be face-adjacent to solid.
         // Check both actual world and blueprint overlay for adjacency.
         let any_adjacent = build_voxels.iter().any(|&coord| {
-            sim.world.has_solid_face_neighbor(coord)
+            zone.has_solid_face_neighbor(coord)
                 || FaceDirection::ALL.iter().any(|&dir| {
                     let (dx, dy, dz) = dir.to_offset();
                     let neighbor = VoxelCoord::new(coord.x + dx, coord.y + dy, coord.z + dz);
@@ -5091,8 +5136,8 @@ impl SimBridge {
         // Structural validation on buildable voxels only.
         let struts: Vec<_> = sim.db.struts.iter_all().cloned().collect();
         let validation = structural::validate_blueprint_fast(
-            &sim.world,
-            &sim.face_data,
+            zone,
+            &zone.face_data,
             &build_voxels,
             BuildType::Platform.to_voxel_type(),
             &BTreeMap::new(),
@@ -5128,8 +5173,9 @@ impl SimBridge {
             return Self::preview_result("Blocked", "Simulation not initialized.");
         };
         let overlay = sim.blueprint_overlay();
+        let zone = sim.voxel_zone(self.active_zone_id).unwrap();
         let effective_type =
-            |coord: VoxelCoord| -> VoxelType { overlay.effective_type(&sim.world, coord) };
+            |coord: VoxelCoord| -> VoxelType { overlay.effective_type(zone, coord) };
 
         if width < 3 || depth < 3 || height < 1 {
             return Self::preview_result("Blocked", "Building too small (min 3x3x1).");
@@ -5158,7 +5204,7 @@ impl SimBridge {
         for dx in 0..width {
             for dz in 0..depth {
                 let coord = VoxelCoord::new(x + dx, y, z + dz);
-                if !sim.world.in_bounds(coord) || !effective_type(coord).is_solid() {
+                if !zone.in_bounds(coord) || !effective_type(coord).is_solid() {
                     return Self::preview_result("Blocked", "Foundation must be on solid ground.");
                 }
             }
@@ -5169,7 +5215,7 @@ impl SimBridge {
             for dx in 0..width {
                 for dz in 0..depth {
                     let coord = VoxelCoord::new(x + dx, y + dy, z + dz);
-                    if !sim.world.in_bounds(coord) || effective_type(coord) != VoxelType::Air {
+                    if !zone.in_bounds(coord) || effective_type(coord) != VoxelType::Air {
                         return Self::preview_result("Blocked", "Building interior must be clear.");
                     }
                 }
@@ -5183,8 +5229,8 @@ impl SimBridge {
 
         let struts: Vec<_> = sim.db.struts.iter_all().cloned().collect();
         let validation = structural::validate_blueprint_fast(
-            &sim.world,
-            &sim.face_data,
+            zone,
+            &zone.face_data,
             &voxels,
             VoxelType::BuildingInterior,
             &face_layout,
@@ -5224,9 +5270,10 @@ impl SimBridge {
             return PackedInt32Array::new();
         };
         let mut arr = PackedInt32Array::new();
-        for (coord, fd) in &sim.face_data {
+        let zone = sim.voxel_zone(self.active_zone_id).unwrap();
+        for (coord, fd) in &zone.face_data {
             // Skip ladder voxels — they're rendered by ladder_renderer.gd.
-            if sim.world.get(*coord).is_ladder() {
+            if zone.get(*coord).is_ladder() {
                 continue;
             }
             for (dir_idx, &face) in fd.faces.iter().enumerate() {
@@ -5271,7 +5318,7 @@ impl SimBridge {
                 for v in &bp.voxels {
                     // A voxel is "unbuilt" if it hasn't been converted to the
                     // target type yet (whether currently Air, Leaf, or Fruit).
-                    if sim.world.get(*v) != target {
+                    if sim.voxel_zone(self.active_zone_id).unwrap().get(*v) != target {
                         arr.push(v.x);
                         arr.push(v.y);
                         arr.push(v.z);
@@ -5296,7 +5343,7 @@ impl SimBridge {
         for bp in sim.db.blueprints.iter_all() {
             if bp.state == BlueprintState::Designated && bp.build_type == BuildType::Carve {
                 for v in &bp.voxels {
-                    if sim.world.get(*v) != VoxelType::Air {
+                    if sim.voxel_zone(self.active_zone_id).unwrap().get(*v) != VoxelType::Air {
                         arr.push(v.x);
                         arr.push(v.y);
                         arr.push(v.z);
@@ -5364,7 +5411,7 @@ impl SimBridge {
         if let Some(cfg) = old_config {
             cache.mesh_config = cfg;
         }
-        cache.scan_nonempty_chunks(&sim.world);
+        cache.scan_nonempty_chunks(sim.voxel_zone(self.active_zone_id).unwrap());
         self.mesh_cache = Some(cache);
     }
 
@@ -5384,7 +5431,7 @@ impl SimBridge {
         if let Some(cfg) = old_config {
             cache.mesh_config = cfg;
         }
-        cache.scan_nonempty_chunks(&sim.world);
+        cache.scan_nonempty_chunks(sim.voxel_zone(self.active_zone_id).unwrap());
         godot_print!(
             "SimBridge: scanned world mesh ({} megachunks)",
             cache.megachunk_count()
@@ -5408,11 +5455,15 @@ impl SimBridge {
         let Some(cache) = &mut self.mesh_cache else {
             return 0;
         };
-        let dirty = sim.world.drain_dirty_voxels();
+        let dirty = sim
+            .voxel_zone_mut(self.active_zone_id)
+            .unwrap()
+            .drain_dirty_voxels();
         if !dirty.is_empty() {
             cache.mark_dirty_voxels(&dirty);
         }
-        cache.update_dirty(&sim.world, &sim.grassless) as i32
+        let zone = sim.voxel_zone(self.active_zone_id).unwrap();
+        cache.update_dirty(zone, &zone.grassless) as i32
     }
 
     /// Set the Y cutoff for height hiding. Voxels at or above this Y level
@@ -5800,12 +5851,13 @@ impl SimBridge {
             .as_ref()
             .map(|c| c.mesh_config)
             .unwrap_or_default();
+        let zone = sim.voxel_zone(self.active_zone_id).unwrap();
         let mesh = generate_chunk_mesh_with_decimation(
-            &sim.world,
+            zone,
             chunk,
             None,
             with_decimation,
-            &sim.grassless,
+            &zone.grassless,
             &config,
         );
         let obj = chunk_mesh_to_obj(&mesh);
@@ -5836,7 +5888,8 @@ impl SimBridge {
             .chunks_exact(4)
             .map(|c| [c[0], c[1], c[2], c[3]])
             .collect();
-        cache.update_visibility(&sim.world, cam_pos, &planes, &sim.grassless) as i32
+        let zone = sim.voxel_zone(self.active_zone_id).unwrap();
+        cache.update_visibility(zone, cam_pos, &planes, &zone.grassless) as i32
     }
 
     /// Return chunks that should become visible this frame (set .visible=true).
@@ -5977,11 +6030,12 @@ impl SimBridge {
             return PackedInt32Array::new();
         };
         let mut arr = PackedInt32Array::new();
-        for &(coord, voxel_type) in &sim.placed_voxels {
+        let zone = sim.voxel_zone(self.active_zone_id).unwrap();
+        for &(coord, voxel_type) in &zone.placed_voxels {
             if !voxel_type.is_ladder() {
                 continue;
             }
-            let face_dir = sim
+            let face_dir = zone
                 .ladder_orientations
                 .get(&coord)
                 .map_or(0, |d| d.index() as i32);
@@ -6019,7 +6073,7 @@ impl SimBridge {
             let target = bp.build_type.to_voxel_type();
             if let Some(layout) = bp.face_layout_map() {
                 for &coord in &bp.voxels {
-                    if sim.world.get(coord) == target {
+                    if sim.voxel_zone(self.active_zone_id).unwrap().get(coord) == target {
                         continue; // already materialized
                     }
                     // Derive face_dir from face layout.
@@ -6076,8 +6130,9 @@ impl SimBridge {
             return Self::preview_result("Blocked", "Simulation not initialized.");
         };
         let overlay = sim.blueprint_overlay();
+        let zone = sim.voxel_zone(self.active_zone_id).unwrap();
         let effective_type =
-            |coord: VoxelCoord| -> VoxelType { overlay.effective_type(&sim.world, coord) };
+            |coord: VoxelCoord| -> VoxelType { overlay.effective_type(zone, coord) };
         if height < 1 {
             return Self::preview_result("Blocked", "Height must be at least 1.");
         }
@@ -6106,7 +6161,7 @@ impl SimBridge {
         let mut build_voxels = Vec::new();
         for dy in 0..height {
             let coord = VoxelCoord::new(x, y + dy, z);
-            if !sim.world.in_bounds(coord) {
+            if !zone.in_bounds(coord) {
                 return Self::preview_result("Blocked", "Ladder extends out of bounds.");
             }
             match effective_type(coord).classify_for_overlap() {
@@ -6161,8 +6216,8 @@ impl SimBridge {
         };
         let struts: Vec<_> = sim.db.struts.iter_all().cloned().collect();
         let validation = structural::validate_blueprint_fast(
-            &sim.world,
-            &sim.face_data,
+            zone,
+            &zone.face_data,
             &build_voxels,
             voxel_type,
             &BTreeMap::new(),
@@ -6201,6 +6256,7 @@ impl SimBridge {
             LadderKind::Rope
         };
         self.apply_build_action(SimAction::DesignateLadder {
+            zone_id: self.active_zone_id,
             anchor: VoxelCoord::new(x, y, z),
             height,
             orientation: face_dir,

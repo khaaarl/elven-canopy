@@ -100,13 +100,14 @@ fn elf_does_not_flee_when_goblin_out_of_range() {
 
 #[test]
 fn flee_interrupts_current_task() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = flat_world_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
+    // Place elf at a known position with room to flee.
+    let elf_pos = VoxelCoord::new(32, 1, 32);
+    force_position(&mut sim, elf, elf_pos);
 
     // Give the elf a GoTo task to somewhere.
-    let elf_node = creature_pos(&sim, elf);
-    let goto_pos = find_different_walkable(&sim, elf_node);
+    let goto_pos = VoxelCoord::new(40, 1, 40);
 
     let task_id = insert_goto_task(&mut sim, goto_pos);
     // Force-assign the task to the elf.
@@ -324,7 +325,7 @@ fn should_flee_with_fight_group() {
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("should spawn elf");
 
     // Default: implicit civilian (Flee group) → should flee.
@@ -350,7 +351,7 @@ fn should_flee_with_flee_group() {
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("should spawn elf");
 
     // Implicit civilian → Flee.
@@ -373,7 +374,7 @@ fn should_flee_player_combat_override() {
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("should spawn elf");
 
     // Elf is in Flee group (civilian).
@@ -381,7 +382,7 @@ fn should_flee_player_combat_override() {
 
     // Spawn a goblin target.
     let goblin_id = sim
-        .spawn_creature(Species::Goblin, tree_pos, &mut events)
+        .spawn_creature(Species::Goblin, tree_pos, sim.home_zone_id(), &mut events)
         .expect("should spawn goblin");
 
     // Issue a player-directed attack (creates a PlayerCombat-level task).
@@ -601,7 +602,7 @@ fn player_combat_task_overrides_flee() {
     let mut events = Vec::new();
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("spawn elf");
 
     // Elf species default is defensive with 100% disengage (always flees).
@@ -679,7 +680,7 @@ fn ammo_exhausted_switch_to_melee_pursues() {
     use crate::species::{
         AmmoExhaustedBehavior, EngagementInitiative, EngagementStyle, WeaponPreference,
     };
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = flat_world_sim(fresh_test_seed());
     sim.species_table
         .get_mut(&Species::Goblin)
         .unwrap()
@@ -723,7 +724,7 @@ fn prefer_melee_closes_distance_before_shooting() {
     use crate::species::{
         AmmoExhaustedBehavior, EngagementInitiative, EngagementStyle, WeaponPreference,
     };
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = flat_world_sim(fresh_test_seed());
     sim.species_table
         .get_mut(&Species::Goblin)
         .unwrap()
@@ -900,7 +901,7 @@ fn non_civ_defensive_creature_not_targeted_by_civ() {
     let mut events = Vec::new();
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("spawn elf");
     let deer_id = spawn_species(&mut sim, Species::Deer);
 
@@ -937,7 +938,7 @@ fn is_non_hostile_symmetry() {
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let elf_id = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("spawn elf");
     let goblin_id = spawn_species(&mut sim, Species::Goblin);
     let deer_id = spawn_species(&mut sim, Species::Deer);
@@ -1038,7 +1039,7 @@ fn group_style_change_affects_should_flee() {
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let elf_id = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("spawn elf");
 
     // Assign to soldiers (Aggressive, 0% disengage).
@@ -1099,7 +1100,7 @@ fn aggressive_soldier_interrupts_low_priority_task_to_fight() {
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("spawn elf");
     let soldiers = soldiers_group(&sim);
     set_military_group(&mut sim, elf_id, Some(soldiers.id));
@@ -1132,7 +1133,7 @@ fn aggressive_soldier_interrupts_low_priority_task_to_fight() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(acquire_task);
+    sim.insert_task(sim.home_zone_id(), acquire_task);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = Some(task_id);
         sim.db.update_creature(c).unwrap();
@@ -1182,15 +1183,19 @@ fn creature_does_not_freeze_after_combat_preempts_task() {
     // Regression test: after the autonomous combat check interrupts a task
     // and hostile_pursue fires a shot, the creature must continue to act
     // (not freeze due to activation cancellation).
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = flat_world_sim(fresh_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
     let mut events = Vec::new();
 
+    // Spawn at tree position (valid spawn point), then force to a known flat
+    // location with clear LOS.
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("spawn elf");
+    let elf_pos = VoxelCoord::new(tree_pos.x, sim.config.floor_y + 1, tree_pos.z);
+    force_position(&mut sim, elf_id, elf_pos);
     let soldiers = soldiers_group(&sim);
     set_military_group(&mut sim, elf_id, Some(soldiers.id));
     arm_with_bow_and_arrows(&mut sim, elf_id, 20);
@@ -1198,7 +1203,6 @@ fn creature_does_not_freeze_after_combat_preempts_task() {
     force_guaranteed_hits(&mut sim, elf_id);
 
     // Give elf a low-priority task.
-    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     let far_pos = VoxelCoord::new(elf_pos.x + 20, elf_pos.y, elf_pos.z);
     let task_loc = find_walkable(&sim, far_pos, 10).unwrap();
     let task_id = TaskId::new(&mut sim.rng);
@@ -1220,7 +1224,7 @@ fn creature_does_not_freeze_after_combat_preempts_task() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(acquire_task);
+    sim.insert_task(sim.home_zone_id(), acquire_task);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = Some(task_id);
         sim.db.update_creature(c).unwrap();
@@ -1275,7 +1279,7 @@ fn defensive_elf_fights_instead_of_claiming_non_preemptable_task() {
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("spawn elf");
     let soldiers = soldiers_group(&sim);
     let cmd = SimCommand {
@@ -1330,7 +1334,7 @@ fn defensive_elf_fights_instead_of_claiming_non_preemptable_task() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(goto_task);
+    sim.insert_task(sim.home_zone_id(), goto_task);
 
     // Spawn orc nearby (within detection range).
     let orc_id = spawn_species(&mut sim, Species::Orc);
@@ -1395,7 +1399,7 @@ fn aggressive_soldier_shoots_repeatedly_over_time() {
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("spawn elf");
     let soldiers = soldiers_group(&sim);
     set_military_group(&mut sim, elf_id, Some(soldiers.id));
@@ -1472,7 +1476,7 @@ fn civilian_elf_flees_instead_of_fighting() {
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("spawn elf");
     // Elf stays in default civilian group.
 
@@ -1529,7 +1533,7 @@ fn defensive_elf_shoots_at_target_beyond_pursuit_range() {
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("spawn elf");
     // Defensive group with 0% disengage — will fight, not flee.
     let soldiers = soldiers_group(&sim);
@@ -1610,7 +1614,7 @@ fn defensive_elf_with_flee_ammo_shoots_troll_at_10_voxels() {
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("spawn elf");
 
     // Configure soldiers group: defensive, prefer ranged, flee if no ammo,
@@ -1643,7 +1647,7 @@ fn defensive_elf_with_flee_ammo_shoots_troll_at_10_voxels() {
     // Spawn troll and place at exactly 10 voxels away (force_position
     // bypasses nav-node snapping that could shift the distance).
     let troll_id = sim
-        .spawn_creature(Species::Troll, elf_pos, &mut events)
+        .spawn_creature(Species::Troll, elf_pos, sim.home_zone_id(), &mut events)
         .expect("spawn troll");
     let troll_target = VoxelCoord::new(elf_pos.x + 10, elf_pos.y, elf_pos.z);
     force_position(&mut sim, troll_id, troll_target);
@@ -1732,7 +1736,7 @@ fn defensive_elf_does_not_freeze_after_shooting_once() {
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("spawn elf");
 
     let soldiers = soldiers_group(&sim);
@@ -1758,7 +1762,7 @@ fn defensive_elf_does_not_freeze_after_shooting_once() {
     // Spawn troll CLOSE (3 voxels, well within both detection and pursuit).
     let troll_spawn = VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z);
     let troll_id = sim
-        .spawn_creature(Species::Troll, troll_spawn, &mut events)
+        .spawn_creature(Species::Troll, troll_spawn, sim.home_zone_id(), &mut events)
         .expect("spawn troll");
     force_idle_and_cancel_activations(&mut sim, troll_id);
     force_idle_and_cancel_activations(&mut sim, elf_id);
@@ -1818,7 +1822,7 @@ fn defensive_elf_with_task_interrupts_to_shoot_troll_at_10_voxels() {
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("spawn elf");
 
     let soldiers = soldiers_group(&sim);
@@ -1864,7 +1868,7 @@ fn defensive_elf_with_task_interrupts_to_shoot_troll_at_10_voxels() {
         prerequisite_task_id: None,
         required_civ_id: None,
     };
-    sim.insert_task(acquire_task);
+    sim.insert_task(sim.home_zone_id(), acquire_task);
     if let Some(mut c) = sim.db.creatures.get(&elf_id) {
         c.current_task = Some(task_id);
         sim.db.update_creature(c).unwrap();
@@ -1873,7 +1877,7 @@ fn defensive_elf_with_task_interrupts_to_shoot_troll_at_10_voxels() {
     // Place troll exactly 10 voxels away (force_position bypasses nav-node
     // snapping that could shift the distance outside detection range).
     let troll_id = sim
-        .spawn_creature(Species::Troll, elf_pos, &mut events)
+        .spawn_creature(Species::Troll, elf_pos, sim.home_zone_id(), &mut events)
         .expect("spawn troll");
     force_position(
         &mut sim,
@@ -1929,7 +1933,7 @@ fn debug_spawn_troll_via_command_elf_detects_and_shoots() {
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_id = sim
-        .spawn_creature(Species::Elf, tree_pos, &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("spawn elf");
 
     // Configure soldiers: defensive, prefer ranged, flee if no ammo, 10%.
@@ -1965,6 +1969,7 @@ fn debug_spawn_troll_via_command_elf_detects_and_shoots() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Troll,
             position: troll_target,
         },

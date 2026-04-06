@@ -824,7 +824,7 @@ detecting creature does.
 ### Line of Sight (§5.1)
 
 LOS is computed via **3D voxel ray march** (DDA) from the shooter's voxel
-position to the target's voxel position through the `VoxelWorld` grid.
+position to the target's voxel position through the `VoxelZone` grid.
 
 - A ray that hits any **solid voxel** (Trunk, Branch, Root, or any
   structure voxel) is blocked — no LOS.

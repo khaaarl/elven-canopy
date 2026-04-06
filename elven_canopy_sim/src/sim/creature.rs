@@ -33,6 +33,7 @@ impl SimState {
         &mut self,
         species: Species,
         position: VoxelCoord,
+        zone_id: ZoneId,
         events: &mut Vec<SimEvent>,
     ) -> Option<CreatureId> {
         // Elves belong to the player's civ; other species are unaffiliated.
@@ -41,7 +42,7 @@ impl SimState {
         } else {
             None
         };
-        self.spawn_creature_with_civ(species, position, civ_id, events)
+        self.spawn_creature_with_civ(species, position, civ_id, zone_id, events)
     }
 
     /// Spawn a creature at the nearest walkable position with an
@@ -52,6 +53,7 @@ impl SimState {
         species: Species,
         position: VoxelCoord,
         civ_id: Option<CivId>,
+        zone_id: ZoneId,
         events: &mut Vec<SimEvent>,
     ) -> Option<CreatureId> {
         let species_data = &self.species_table[&species];
@@ -69,16 +71,21 @@ impl SimState {
         // flyable); ground creatures snap to the nearest walkable position.
         let node_pos = if is_flyer {
             let footprint = species_data.footprint;
-            if !crate::pathfinding::footprint_flyable(&self.world, position, footprint) {
+            if !crate::pathfinding::footprint_flyable(
+                self.voxel_zone(zone_id).unwrap(),
+                position,
+                footprint,
+            ) {
                 return None;
             }
             position
         } else {
             // Ground creature: find nearest walkable position for this footprint.
             let can_climb = movement_category.can_climb();
+            let zone = self.voxel_zone(zone_id).unwrap();
             let nearest = crate::walkability::find_nearest_walkable(
-                &self.world,
-                &self.face_data,
+                zone,
+                &zone.face_data,
                 position,
                 10,
                 footprint,
@@ -116,6 +123,7 @@ impl SimState {
 
         let creature = crate::db::Creature {
             id: creature_id,
+            zone_id: Some(zone_id),
             species,
             position: VoxelBox::from_anchor(node_pos, footprint),
             name,
@@ -491,10 +499,11 @@ impl SimState {
 
     /// Find the lowest non-solid Y position at the given (x, z) column.
     /// Returns the first air voxel above solid ground, defaulting to y=1.
-    pub(crate) fn find_surface_position(&self, x: i32, z: i32) -> VoxelCoord {
-        for y in 1..self.world.size_y as i32 {
+    pub(crate) fn find_surface_position(&self, x: i32, z: i32, zone_id: ZoneId) -> VoxelCoord {
+        let zone = self.voxel_zone(zone_id).unwrap();
+        for y in 1..zone.size_y as i32 {
             let pos = VoxelCoord::new(x, y, z);
-            if !self.world.get(pos).is_solid() {
+            if !zone.get(pos).is_solid() {
                 return pos;
             }
         }
@@ -506,15 +515,16 @@ impl SimState {
     /// is floating (no solid voxel below), it is snapped down to the nearest
     /// surface before creation. If a pile already exists at the snapped
     /// position, that pile is returned instead of creating a new one.
-    pub(crate) fn ensure_ground_pile(&mut self, pos: VoxelCoord) -> GroundPileId {
+    pub(crate) fn ensure_ground_pile(&mut self, pos: VoxelCoord, zone_id: ZoneId) -> GroundPileId {
         // Snap to surface if the position is floating.
         let pos = if pos.y > 0
             && !self
-                .world
+                .voxel_zone(zone_id)
+                .unwrap()
                 .get(VoxelCoord::new(pos.x, pos.y - 1, pos.z))
                 .is_solid()
         {
-            self.find_surface_below(pos.x, pos.y, pos.z)
+            self.find_surface_below(pos.x, pos.y, pos.z, zone_id)
         } else {
             pos
         };
@@ -532,6 +542,7 @@ impl SimState {
             self.db
                 .insert_ground_pile_auto(|id| crate::db::GroundPile {
                     id,
+                    zone_id,
                     position: pos,
                     inventory_id: inv_id,
                 })
@@ -543,14 +554,26 @@ impl SimState {
     /// Scans downward from `start_y - 1` to find the first solid voxel, then
     /// returns the air voxel directly above it. Falls back to `floor_y + 1` if
     /// no solid voxel is found (terrain at `floor_y` is always solid).
-    pub(crate) fn find_surface_below(&self, x: i32, start_y: i32, z: i32) -> VoxelCoord {
+    pub(crate) fn find_surface_below(
+        &self,
+        x: i32,
+        start_y: i32,
+        z: i32,
+        zone_id: ZoneId,
+    ) -> VoxelCoord {
+        let zone = self.voxel_zone(zone_id).unwrap();
         for y in (0..start_y).rev() {
-            if self.world.get(VoxelCoord::new(x, y, z)).is_solid() {
+            if zone.get(VoxelCoord::new(x, y, z)).is_solid() {
                 return VoxelCoord::new(x, y + 1, z);
             }
         }
         // Shouldn't happen (terrain is always solid), but safe fallback.
-        VoxelCoord::new(x, self.config.floor_y + 1, z)
+        let floor_y = self
+            .db
+            .zones
+            .get(&zone_id)
+            .map_or(self.config.floor_y, |z| z.floor_y);
+        VoxelCoord::new(x, floor_y + 1, z)
     }
 
     /// Check all ground piles for gravity: if the voxel below a pile's position
@@ -558,16 +581,17 @@ impl SimState {
     /// already exists at the landing position, the falling pile's inventory is
     /// merged into it and the floating pile is deleted. Returns the number of
     /// piles that fell.
-    pub(crate) fn apply_pile_gravity(&mut self) -> usize {
+    pub(crate) fn apply_pile_gravity(&mut self, zone_id: ZoneId) -> usize {
         // Collect all piles that need to fall. We snapshot first because
         // modifying tables during iteration would invalidate the iterator.
+        let zone = self.voxel_zone(zone_id).unwrap();
         let floating: Vec<(GroundPileId, VoxelCoord)> = self
             .db
             .ground_piles
             .iter_all()
             .filter_map(|pile| {
                 let below = VoxelCoord::new(pile.position.x, pile.position.y - 1, pile.position.z);
-                if pile.position.y > 0 && !self.world.get(below).is_solid() {
+                if pile.position.y > 0 && !zone.get(below).is_solid() {
                     Some((pile.id, pile.position))
                 } else {
                     None
@@ -582,7 +606,7 @@ impl SimState {
                 Some(p) => p,
                 None => continue,
             };
-            let landing = self.find_surface_below(old_pos.x, old_pos.y, old_pos.z);
+            let landing = self.find_surface_below(old_pos.x, old_pos.y, old_pos.z, zone_id);
             if landing == old_pos {
                 continue; // Already on a surface (race with another pile falling here).
             }
@@ -610,6 +634,7 @@ impl SimState {
                     .db
                     .insert_ground_pile_auto(|new_id| crate::db::GroundPile {
                         id: new_id,
+                        zone_id,
                         position: landing,
                         inventory_id: inv_id,
                     });
@@ -636,9 +661,11 @@ impl SimState {
             return true; // flying creatures are always supported
         }
         let can_climb = creature.movement_category.can_climb();
+        let zone_id = creature.zone_id.unwrap();
+        let zone = self.voxel_zone(zone_id).unwrap();
         crate::walkability::footprint_walkable(
-            &self.world,
-            &self.face_data,
+            zone,
+            &zone.face_data,
             creature.position.min,
             creature.position.footprint_size(),
             can_climb,
@@ -659,6 +686,7 @@ impl SimState {
         };
         let movement_category = creature.movement_category;
         let old_pos = creature.position.min;
+        let zone_id = creature.zone_id.unwrap();
 
         // Flying creatures are exempt.
         if movement_category.is_flyer() {
@@ -670,7 +698,10 @@ impl SimState {
         }
 
         // Find a landing position using the fall-deflect algorithm.
-        let landing = find_creature_landing(&self.world, &self.face_data, &mut self.rng, &creature);
+        // Access voxel_zones directly (not via self.voxel_zone()) so the borrow
+        // checker can see that &voxel_zones and &mut rng are disjoint fields.
+        let zone = self.voxel_zones.get(&zone_id).unwrap();
+        let landing = find_creature_landing(zone, &zone.face_data, &mut self.rng, &creature);
 
         match landing {
             Some(pos) if pos == old_pos => return false,
@@ -952,7 +983,7 @@ impl SimState {
 /// from the species table, so per-creature overrides (e.g., magic size
 /// changes) work automatically.
 pub(crate) fn find_creature_landing(
-    world: &crate::world::VoxelWorld,
+    world: &crate::world::VoxelZone,
     face_data: &std::collections::BTreeMap<VoxelCoord, crate::types::FaceData>,
     rng: &mut elven_canopy_prng::GameRng,
     creature: &crate::db::Creature,

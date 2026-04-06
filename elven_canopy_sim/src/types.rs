@@ -891,8 +891,33 @@ impl fmt::Display for FruitSpeciesId {
 }
 
 // ---------------------------------------------------------------------------
+// Zone IDs — sequential u16, assigned by worldgen in batch.
+// ---------------------------------------------------------------------------
+
+/// Zone identifier. Auto-incremented by tabulosity on insertion.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Bounded,
+)]
+pub struct ZoneId(pub u32);
+
+impl fmt::Display for ZoneId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ZoneId({})", self.0)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Simulation enums
 // ---------------------------------------------------------------------------
+
+/// The type of terrain/biome a zone contains. Determines which generation
+/// logic `manifest_zone` uses (tree profiles, terrain shape, etc.).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum ZoneType {
+    /// Dense forest of enormous trees with one great tree. The starting zone
+    /// type — all current gameplay happens in this zone type.
+    GreatTreeForest,
+}
 
 /// Species of creature. Used as a key into `SpeciesData` in `GameConfig`
 /// to drive all behavioral differences from data.
@@ -2073,6 +2098,7 @@ mod tests {
 
         let activity = Activity {
             id: activity_id,
+            zone_id: ZoneId(0),
             kind: ActivityKind::Dance,
             phase: ActivityPhase::Recruiting,
             location: VoxelCoord::new(10, 51, 20),

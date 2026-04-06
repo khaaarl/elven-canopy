@@ -24,7 +24,7 @@ use elven_canopy_graphics::mesh_gen::{
 };
 use elven_canopy_sim::config::GameConfig;
 use elven_canopy_sim::types::{VoxelCoord, VoxelType};
-use elven_canopy_sim::world::VoxelWorld;
+use elven_canopy_sim::world::VoxelZone;
 use elven_canopy_sim::worldgen;
 
 // ---------------------------------------------------------------------------
@@ -66,12 +66,12 @@ struct ExpectedOutputs {
 // Fixture generation: hand-built
 // ---------------------------------------------------------------------------
 
-fn make_neighborhood(world: &VoxelWorld, chunk: ChunkCoord) -> ChunkNeighborhood {
+fn make_neighborhood(world: &VoxelZone, chunk: ChunkCoord) -> ChunkNeighborhood {
     ChunkNeighborhood::extract(world, chunk, None, &BTreeSet::new())
 }
 
 fn fixture_single_voxel() -> Fixture {
-    let mut world = VoxelWorld::new(16, 16, 16);
+    let mut world = VoxelZone::new(16, 16, 16);
     world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
     Fixture {
         name: "single_voxel".into(),
@@ -80,7 +80,7 @@ fn fixture_single_voxel() -> Fixture {
 }
 
 fn fixture_flat_slab() -> Fixture {
-    let mut world = VoxelWorld::new(16, 16, 16);
+    let mut world = VoxelZone::new(16, 16, 16);
     for x in 0..16 {
         for z in 0..16 {
             world.set(VoxelCoord::new(x, 8, z), VoxelType::Dirt);
@@ -93,7 +93,7 @@ fn fixture_flat_slab() -> Fixture {
 }
 
 fn fixture_l_shape() -> Fixture {
-    let mut world = VoxelWorld::new(16, 16, 16);
+    let mut world = VoxelZone::new(16, 16, 16);
     // L-shape: horizontal arm + vertical arm of GrownPlatform.
     for x in 2..10 {
         world.set(VoxelCoord::new(x, 4, 4), VoxelType::GrownPlatform);
@@ -108,7 +108,7 @@ fn fixture_l_shape() -> Fixture {
 }
 
 fn fixture_staircase() -> Fixture {
-    let mut world = VoxelWorld::new(16, 16, 16);
+    let mut world = VoxelZone::new(16, 16, 16);
     for i in 0..8 {
         world.set(VoxelCoord::new(4 + i, i, 4), VoxelType::Trunk);
     }
@@ -119,7 +119,7 @@ fn fixture_staircase() -> Fixture {
 }
 
 fn fixture_diagonal_adjacency() -> Fixture {
-    let mut world = VoxelWorld::new(16, 16, 16);
+    let mut world = VoxelZone::new(16, 16, 16);
     // Two voxels diagonal (triggers chamfer edge cases).
     world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
     world.set(VoxelCoord::new(9, 9, 9), VoxelType::Trunk);
@@ -130,7 +130,7 @@ fn fixture_diagonal_adjacency() -> Fixture {
 }
 
 fn fixture_mixed_material() -> Fixture {
-    let mut world = VoxelWorld::new(16, 16, 16);
+    let mut world = VoxelZone::new(16, 16, 16);
     world.set(VoxelCoord::new(8, 7, 8), VoxelType::Dirt);
     world.set(VoxelCoord::new(8, 8, 8), VoxelType::Trunk);
     world.set(VoxelCoord::new(8, 9, 8), VoxelType::Leaf);
@@ -142,7 +142,7 @@ fn fixture_mixed_material() -> Fixture {
 }
 
 fn fixture_fully_solid() -> Fixture {
-    let mut world = VoxelWorld::new(16, 16, 16);
+    let mut world = VoxelZone::new(16, 16, 16);
     for x in 0..16 {
         for y in 0..16 {
             for z in 0..16 {
@@ -157,7 +157,7 @@ fn fixture_fully_solid() -> Fixture {
 }
 
 fn fixture_fully_empty() -> Fixture {
-    let world = VoxelWorld::new(16, 16, 16);
+    let world = VoxelZone::new(16, 16, 16);
     Fixture {
         name: "fully_empty".into(),
         neighborhood: make_neighborhood(&world, ChunkCoord::new(0, 0, 0)),
@@ -165,7 +165,7 @@ fn fixture_fully_empty() -> Fixture {
 }
 
 fn fixture_thin_wall() -> Fixture {
-    let mut world = VoxelWorld::new(16, 16, 16);
+    let mut world = VoxelZone::new(16, 16, 16);
     // Single-voxel-thick wall.
     for y in 0..10 {
         for z in 2..14 {
@@ -179,7 +179,7 @@ fn fixture_thin_wall() -> Fixture {
 }
 
 fn fixture_overhang() -> Fixture {
-    let mut world = VoxelWorld::new(16, 16, 16);
+    let mut world = VoxelZone::new(16, 16, 16);
     // Platform floating with nothing below.
     for x in 4..12 {
         for z in 4..12 {
@@ -193,7 +193,7 @@ fn fixture_overhang() -> Fixture {
 }
 
 fn fixture_building_terrain_edge() -> Fixture {
-    let mut world = VoxelWorld::new(32, 16, 32);
+    let mut world = VoxelZone::new(32, 16, 32);
     // Terrain: dirt slope rising from y=0 to y=4, stopping at x=8.
     // This means the building at x=6..9 straddles the terrain edge.
     for x in 0..9 {
@@ -630,7 +630,7 @@ fn snapshot_regression() {
 }
 
 /// Verify that fixture neighborhoods produce the same mesh whether generated
-/// from a fresh VoxelWorld or loaded from serialized bincode.
+/// from a fresh VoxelZone or loaded from serialized bincode.
 #[test]
 fn serde_roundtrip_preserves_mesh() {
     let fixture = fixture_single_voxel();

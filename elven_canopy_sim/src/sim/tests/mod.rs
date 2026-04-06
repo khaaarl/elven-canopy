@@ -88,11 +88,11 @@ fn step_advances_tick() {
 #[test]
 fn step_updates_world_sim_tick() {
     let mut sim = test_sim(legacy_test_seed());
-    assert_eq!(sim.world.sim_tick, 0);
+    assert_eq!(sim.voxel_zone(sim.home_zone_id()).unwrap().sim_tick, 0);
     sim.step(&[], 10);
-    assert_eq!(sim.world.sim_tick, 10);
+    assert_eq!(sim.voxel_zone(sim.home_zone_id()).unwrap().sim_tick, 10);
     sim.step(&[], 25);
-    assert_eq!(sim.world.sim_tick, 25);
+    assert_eq!(sim.voxel_zone(sim.home_zone_id()).unwrap().sim_tick, 25);
 }
 
 #[test]
@@ -227,14 +227,17 @@ fn remove_tree_fruit_at_removes_correct_fruit() {
     // Manually insert two TreeFruit rows.
     let fruit_a = VoxelCoord::new(10, 60, 10);
     let fruit_b = VoxelCoord::new(11, 60, 11);
+    let hz = sim.home_zone_id();
     let _ = sim.db.insert_tree_fruit_auto(|id| crate::db::TreeFruit {
         id,
+        zone_id: hz,
         tree_id,
         position: VoxelBox::point(fruit_a),
         species_id,
     });
     let _ = sim.db.insert_tree_fruit_auto(|id| crate::db::TreeFruit {
         id,
+        zone_id: hz,
         tree_id,
         position: VoxelBox::point(fruit_b),
         species_id,
@@ -269,6 +272,7 @@ fn determinism_after_stepping() {
         player_name: String::new(),
         tick: 50,
         action: SimAction::SpawnCreature {
+            zone_id: sim_a.home_zone_id(),
             species: Species::Elf,
             position: VoxelCoord::new(128, 1, 128),
         },
@@ -331,11 +335,18 @@ fn flat_world_has_clear_air_above_ground() {
     let center_z = sim.config.world_size.2 as i32 / 2;
     // Ground at floor_y should be solid.
     let ground = VoxelCoord::new(center_x, sim.config.floor_y, center_z);
-    assert_ne!(sim.world.get(ground), VoxelType::Air);
+    assert_ne!(
+        sim.voxel_zone(sim.home_zone_id()).unwrap().get(ground),
+        VoxelType::Air
+    );
     // Everything above floor_y should be air.
     for y in (sim.config.floor_y + 1)..10 {
         let pos = VoxelCoord::new(center_x, y, center_z);
-        assert_eq!(sim.world.get(pos), VoxelType::Air, "Expected air at y={y}");
+        assert_eq!(
+            sim.voxel_zone(sim.home_zone_id()).unwrap().get(pos),
+            VoxelType::Air,
+            "Expected air at y={y}"
+        );
     }
 }
 
@@ -372,8 +383,8 @@ fn flat_world_different_seeds_same_geometry() {
     for y in 0..10 {
         let pos = VoxelCoord::new(center_x, y, center_z);
         assert_eq!(
-            sim_a.world.get(pos),
-            sim_b.world.get(pos),
+            sim_a.voxel_zone(sim_a.home_zone_id()).unwrap().get(pos),
+            sim_b.voxel_zone(sim_b.home_zone_id()).unwrap().get(pos),
             "Voxel at y={y} should be identical across seeds"
         );
     }
@@ -404,6 +415,7 @@ fn json_roundtrip_preserves_state() {
             player_name: String::new(),
             tick: 1,
             action: SimAction::SpawnCreature {
+                zone_id: sim.home_zone_id(),
                 species: Species::Elf,
                 position: tree_pos,
             },
@@ -412,6 +424,7 @@ fn json_roundtrip_preserves_state() {
             player_name: String::new(),
             tick: 1,
             action: SimAction::SpawnCreature {
+                zone_id: sim.home_zone_id(),
                 species: Species::Capybara,
                 position: tree_pos,
             },
@@ -444,6 +457,7 @@ fn json_roundtrip_continues_deterministically() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -483,6 +497,7 @@ fn elf_spawned_after_roundtrip_gets_name() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -555,6 +570,7 @@ fn state_checksum_changes_after_mutation() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: spawn_pos,
         },
@@ -576,7 +592,8 @@ fn state_checksum_changes_after_mutation() {
 fn spatial_index_empty_before_spawn() {
     let sim = test_sim(legacy_test_seed());
     assert!(
-        sim.creatures_at_voxel(VoxelCoord::new(0, 0, 0)).is_empty(),
+        sim.creatures_at_voxel(sim.home_zone_id(), VoxelCoord::new(0, 0, 0))
+            .is_empty(),
         "Spatial index should be empty before any creatures are spawned"
     );
 }
@@ -589,7 +606,7 @@ fn spatial_index_populated_after_spawn() {
     let pos = elf.position.min;
 
     // Elf has a [1,1,1] footprint — should be found at its anchor voxel.
-    let at_pos = sim.creatures_at_voxel(pos);
+    let at_pos = sim.creatures_at_voxel(sim.home_zone_id(), pos);
     assert!(
         at_pos.contains(&elf_id),
         "Elf should be in spatial index at its position"
@@ -609,15 +626,20 @@ fn spatial_index_tracks_movement() {
 
     if new_pos != initial_pos {
         assert!(
-            !sim.creatures_at_voxel(initial_pos).contains(&elf_id),
+            !sim.creatures_at_voxel(sim.home_zone_id(), initial_pos)
+                .contains(&elf_id),
             "Elf should not be at old position after moving"
         );
         assert!(
-            sim.creatures_at_voxel(new_pos).contains(&elf_id),
+            sim.creatures_at_voxel(sim.home_zone_id(), new_pos)
+                .contains(&elf_id),
             "Elf should be at new position after moving"
         );
     } else {
-        assert!(sim.creatures_at_voxel(initial_pos).contains(&elf_id));
+        assert!(
+            sim.creatures_at_voxel(sim.home_zone_id(), initial_pos)
+                .contains(&elf_id)
+        );
     }
 }
 
@@ -631,7 +653,7 @@ fn spatial_index_multiple_creatures_same_voxel() {
     let pos1 = sim.db.creatures.get(&elf1).unwrap().position.min;
     force_position(&mut sim, elf2, pos1);
 
-    let at_pos = sim.creatures_at_voxel(pos1);
+    let at_pos = sim.creatures_at_voxel(sim.home_zone_id(), pos1);
     assert!(at_pos.contains(&elf1));
     assert!(at_pos.contains(&elf2));
     assert_eq!(at_pos.len(), 2);
@@ -645,7 +667,7 @@ fn spatial_index_multiple_creatures_same_voxel() {
 #[test]
 fn spatial_index_query_empty_voxel() {
     let sim = test_sim(legacy_test_seed());
-    let empty = sim.creatures_at_voxel(VoxelCoord::new(999, 999, 999));
+    let empty = sim.creatures_at_voxel(sim.home_zone_id(), VoxelCoord::new(999, 999, 999));
     assert!(empty.is_empty());
 }
 
@@ -654,7 +676,10 @@ fn spatial_index_survives_save_load_roundtrip() {
     let mut sim = test_sim(legacy_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
-    assert!(sim.creatures_at_voxel(pos).contains(&elf_id));
+    assert!(
+        sim.creatures_at_voxel(sim.home_zone_id(), pos)
+            .contains(&elf_id)
+    );
 
     // Roundtrip through JSON. Tabulosity rebuilds the spatial index from
     // the deserialized position data automatically.
@@ -663,7 +688,8 @@ fn spatial_index_survives_save_load_roundtrip() {
 
     let elf2 = sim2.db.creatures.get(&elf_id).unwrap();
     assert!(
-        sim2.creatures_at_voxel(elf2.position.min).contains(&elf_id),
+        sim2.creatures_at_voxel(sim2.home_zone_id(), elf2.position.min)
+            .contains(&elf_id),
         "Spatial index should be rebuilt after deserialization"
     );
 }
@@ -681,7 +707,8 @@ fn spatial_index_consistent_after_many_ticks() {
     for &elf_id in &[elf1, elf2, elf3] {
         let elf = sim.db.creatures.get(&elf_id).unwrap();
         assert!(
-            sim.creatures_at_voxel(elf.position.min).contains(&elf_id),
+            sim.creatures_at_voxel(sim.home_zone_id(), elf.position.min)
+                .contains(&elf_id),
             "Creature {:?} should be at its position {:?}",
             elf_id,
             elf.position,
@@ -711,7 +738,8 @@ fn spatial_index_multi_voxel_creature_found_at_all_footprint_voxels() {
             for dz in 0..fp[2] as i32 {
                 let voxel = VoxelCoord::new(anchor.x + dx, anchor.y + dy, anchor.z + dz);
                 assert!(
-                    sim.creatures_at_voxel(voxel).contains(&troll),
+                    sim.creatures_at_voxel(sim.home_zone_id(), voxel)
+                        .contains(&troll),
                     "Troll should be found at footprint voxel offset ({dx}, {dy}, {dz})"
                 );
             }
@@ -721,7 +749,8 @@ fn spatial_index_multi_voxel_creature_found_at_all_footprint_voxels() {
     // Should NOT be found at an adjacent voxel outside the footprint.
     let outside = VoxelCoord::new(anchor.x + fp[0] as i32, anchor.y, anchor.z);
     assert!(
-        !sim.creatures_at_voxel(outside).contains(&troll),
+        !sim.creatures_at_voxel(sim.home_zone_id(), outside)
+            .contains(&troll),
         "Troll should not be found outside its footprint"
     );
 }
@@ -744,7 +773,8 @@ fn spatial_index_multi_voxel_creature_tracks_movement() {
                 let voxel =
                     VoxelCoord::new(new_anchor.x + dx, new_anchor.y + dy, new_anchor.z + dz);
                 assert!(
-                    sim.creatures_at_voxel(voxel).contains(&troll),
+                    sim.creatures_at_voxel(sim.home_zone_id(), voxel)
+                        .contains(&troll),
                     "Troll should be at new footprint voxel offset ({dx}, {dy}, {dz})"
                 );
             }
@@ -758,7 +788,8 @@ fn spatial_index_multi_voxel_creature_tracks_movement() {
                 let voxel =
                     VoxelCoord::new(old_anchor.x + dx, old_anchor.y + dy, old_anchor.z + dz);
                 assert!(
-                    !sim.creatures_at_voxel(voxel).contains(&troll),
+                    !sim.creatures_at_voxel(sim.home_zone_id(), voxel)
+                        .contains(&troll),
                     "Troll should not be at old footprint voxel offset ({dx}, {dy}, {dz})"
                 );
             }
@@ -828,7 +859,8 @@ fn upgrade_creature_positions_fixes_multi_voxel_from_legacy_save() {
             for dz in 0..expected_fp[2] as i32 {
                 let voxel = VoxelCoord::new(anchor.x + dx, anchor.y + dy, anchor.z + dz);
                 assert!(
-                    sim2.creatures_at_voxel(voxel).contains(&troll),
+                    sim2.creatures_at_voxel(sim2.home_zone_id(), voxel)
+                        .contains(&troll),
                     "Troll should be in spatial index at upgraded footprint voxel ({dx}, {dy}, {dz})"
                 );
             }
@@ -869,7 +901,10 @@ fn save_load_preserves_world_voxels() {
     // Check trunk voxels survived serialization.
     for coord in &tree.trunk_voxels {
         assert_eq!(
-            restored.world.get(*coord),
+            restored
+                .voxel_zone(restored.home_zone_id())
+                .unwrap()
+                .get(*coord),
             VoxelType::Trunk,
             "Restored world missing trunk voxel at {coord}"
         );
@@ -877,7 +912,10 @@ fn save_load_preserves_world_voxels() {
     // Check branch voxels.
     for coord in &tree.branch_voxels {
         assert_eq!(
-            restored.world.get(*coord),
+            restored
+                .voxel_zone(restored.home_zone_id())
+                .unwrap()
+                .get(*coord),
             VoxelType::Branch,
             "Restored world missing branch voxel at {coord}"
         );
@@ -885,7 +923,10 @@ fn save_load_preserves_world_voxels() {
     // Check root voxels.
     for coord in &tree.root_voxels {
         assert_eq!(
-            restored.world.get(*coord),
+            restored
+                .voxel_zone(restored.home_zone_id())
+                .unwrap()
+                .get(*coord),
             VoxelType::Root,
             "Restored world missing root voxel at {coord}"
         );
@@ -893,7 +934,10 @@ fn save_load_preserves_world_voxels() {
     // Check leaf voxels.
     for coord in &tree.leaf_voxels {
         assert_eq!(
-            restored.world.get(*coord),
+            restored
+                .voxel_zone(restored.home_zone_id())
+                .unwrap()
+                .get(*coord),
             VoxelType::Leaf,
             "Restored world missing leaf voxel at {coord}"
         );
@@ -901,7 +945,10 @@ fn save_load_preserves_world_voxels() {
     // Check that a known solid voxel (first trunk) survived.
     let first_trunk = tree.trunk_voxels[0];
     assert_eq!(
-        restored.world.get(first_trunk),
+        restored
+            .voxel_zone(restored.home_zone_id())
+            .unwrap()
+            .get(first_trunk),
         VoxelType::Trunk,
         "First trunk voxel should be present after roundtrip"
     );
@@ -914,23 +961,29 @@ fn save_load_preserves_world_voxels() {
 #[test]
 fn find_surface_position_finds_air() {
     let sim = test_sim(legacy_test_seed());
-    let center = sim.world.size_x as i32 / 2;
-    let pos = sim.find_surface_position(center, center);
+    let center = sim.voxel_zone(sim.home_zone_id()).unwrap().size_x as i32 / 2;
+    let pos = sim.find_surface_position(center, center, sim.home_zone_id());
 
     // The returned position should be Air (non-solid).
     assert!(
-        !sim.world.get(pos).is_solid(),
+        !sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .get(pos)
+            .is_solid(),
         "Surface position should be Air, got {:?}",
-        sim.world.get(pos)
+        sim.voxel_zone(sim.home_zone_id()).unwrap().get(pos)
     );
 
     // One below should be solid (the ground).
     if pos.y > 0 {
         let below = VoxelCoord::new(pos.x, pos.y - 1, pos.z);
         assert!(
-            sim.world.get(below).is_solid(),
+            sim.voxel_zone(sim.home_zone_id())
+                .unwrap()
+                .get(below)
+                .is_solid(),
             "Below surface should be solid, got {:?}",
-            sim.world.get(below)
+            sim.voxel_zone(sim.home_zone_id()).unwrap().get(below)
         );
     }
 }

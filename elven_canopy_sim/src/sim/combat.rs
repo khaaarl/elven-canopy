@@ -97,9 +97,11 @@ impl SimState {
             let attacker_species_data = &self.species_table[&attacker.species];
             let attacker_footprint = attacker_species_data.footprint;
             let attacker_can_climb = attacker.movement_category.can_climb();
+            let attacker_zone_id = attacker.zone_id.unwrap();
+            let zone = self.voxel_zone(attacker_zone_id).unwrap();
             if crate::walkability::find_nearest_walkable(
-                &self.world,
-                &self.face_data,
+                zone,
+                &zone.face_data,
                 target.position.min,
                 5,
                 attacker_footprint,
@@ -132,7 +134,8 @@ impl SimState {
                 prerequisite_task_id: Some(tail_id),
                 required_civ_id: None,
             };
-            self.insert_task(new_task);
+            // TODO(F-zone-world): derive zone from creature/entity context
+            self.insert_task(self.home_zone_id(), new_task);
             return;
         }
         // Queue mode with no current task falls through to non-queue behavior.
@@ -192,7 +195,8 @@ impl SimState {
             prerequisite_task_id: None,
             required_civ_id: None,
         };
-        self.insert_task(new_task);
+        // TODO(F-zone-world): derive zone from creature/entity context
+        self.insert_task(self.home_zone_id(), new_task);
         // Assign directly — skip Available state.
         if let Some(mut c) = self.db.creatures.get(&attacker_id) {
             c.current_task = Some(task_id);
@@ -224,6 +228,7 @@ impl SimState {
         // Ground creatures need a reachable nav node at the destination.
         // Snap to nav node position so find_path can resolve it exactly.
         let species = creature.species;
+        let creature_zone_id = creature.zone_id.unwrap();
         let species_data = &self.species_table[&species];
         let is_flying = creature.movement_category.is_flyer();
         let footprint = species_data.footprint;
@@ -231,9 +236,10 @@ impl SimState {
         let destination = if is_flying {
             destination
         } else {
+            let zone = self.voxel_zone(creature_zone_id).unwrap();
             match crate::walkability::find_nearest_walkable(
-                &self.world,
-                &self.face_data,
+                zone,
+                &zone.face_data,
                 destination,
                 5,
                 footprint,
@@ -261,7 +267,8 @@ impl SimState {
                 prerequisite_task_id: Some(tail_id),
                 required_civ_id: None,
             };
-            self.insert_task(new_task);
+            // TODO(F-zone-world): derive zone from creature/entity context
+            self.insert_task(self.home_zone_id(), new_task);
 
             // Insert extension row with destination.
             let _ = self
@@ -321,7 +328,8 @@ impl SimState {
             prerequisite_task_id: None,
             required_civ_id: None,
         };
-        self.insert_task(new_task);
+        // TODO(F-zone-world): derive zone from creature/entity context
+        self.insert_task(self.home_zone_id(), new_task);
 
         // Insert extension row with destination.
         let _ = self
@@ -397,6 +405,7 @@ impl SimState {
 
         let creature_ref = self.db.creatures.get(&creature_id);
         let creature_species = creature_ref.as_ref().map(|c| c.species);
+        let creature_zone_id = creature_ref.as_ref().and_then(|c| c.zone_id).unwrap();
         let is_flying = creature_ref
             .as_ref()
             .map(|c| c.movement_category.is_flyer())
@@ -412,9 +421,10 @@ impl SimState {
         // Ground creatures: resolve destination to walkable position for location checks.
         // Flying creatures use VoxelCoord directly.
         let dest_nav_node: Option<VoxelCoord> = if !is_flying {
+            let zone = self.voxel_zone(creature_zone_id).unwrap();
             match crate::walkability::find_nearest_walkable(
-                &self.world,
-                &self.face_data,
+                zone,
+                &zone.face_data,
                 destination,
                 5,
                 footprint,
@@ -465,9 +475,10 @@ impl SimState {
                 // ground-creature proximity check (not dest_nav_node, which is
                 // the attack-move destination, not the engaged target).
                 let target_node: Option<VoxelCoord> = if !is_flying {
+                    let zone = self.voxel_zone(creature_zone_id).unwrap();
                     crate::walkability::find_nearest_walkable(
-                        &self.world,
-                        &self.face_data,
+                        zone,
+                        &zone.face_data,
                         task_location_coord,
                         5,
                         footprint,
@@ -645,10 +656,12 @@ impl SimState {
         let chase_species_data = &self.species_table[&species];
         let chase_footprint = chase_species_data.footprint;
         let chase_can_climb = creature.movement_category.can_climb();
+        let chase_zone_id = creature.zone_id.unwrap();
+        let zone = self.voxel_zone(chase_zone_id).unwrap();
         if !is_flying
             && crate::walkability::find_nearest_walkable(
-                &self.world,
-                &self.face_data,
+                zone,
+                &zone.face_data,
                 origin_voxel,
                 20,
                 chase_footprint,
@@ -697,7 +710,8 @@ impl SimState {
             prerequisite_task_id: None,
             required_civ_id: None,
         };
-        self.insert_task(new_task);
+        // TODO(F-zone-world): derive zone from creature/entity context
+        self.insert_task(self.home_zone_id(), new_task);
 
         let _ = self
             .db
@@ -737,6 +751,7 @@ impl SimState {
             None => return,
         };
         let species = creature.species;
+        let wk_zone_id = creature.zone_id.unwrap();
 
         // Flying creatures: delegate to fly_toward_target.
         if creature.movement_category.is_flyer() {
@@ -760,9 +775,10 @@ impl SimState {
         let can_climb = creature.movement_category.can_climb();
         let next_pos = if let Some(ref path) = creature.path {
             if let Some(&next) = path.remaining_positions.first() {
+                let zone = self.voxel_zone(wk_zone_id).unwrap();
                 if crate::walkability::footprint_walkable(
-                    &self.world,
-                    &self.face_data,
+                    zone,
+                    &zone.face_data,
                     next,
                     footprint,
                     can_climb,
@@ -825,10 +841,9 @@ impl SimState {
 
         // Derive edge type for speed computation.
         let old_pos = self.db.creatures.get(&creature_id).unwrap().position.min;
-        let from_surface =
-            crate::walkability::derive_surface_type(&self.world, &self.face_data, old_pos);
-        let to_surface =
-            crate::walkability::derive_surface_type(&self.world, &self.face_data, dest_pos);
+        let zone = self.voxel_zone(wk_zone_id).unwrap();
+        let from_surface = crate::walkability::derive_surface_type(zone, &zone.face_data, old_pos);
+        let to_surface = crate::walkability::derive_surface_type(zone, &zone.face_data, dest_pos);
         let edge_type =
             crate::walkability::derive_edge_type(from_surface, to_surface, old_pos, dest_pos);
 
@@ -1090,6 +1105,7 @@ impl SimState {
             None => return,
         };
         let species = creature.species;
+        let wt_zone_id = creature.zone_id.unwrap();
 
         // Flying creatures: delegate to fly_toward_target with failure tracking.
         if creature.movement_category.is_flyer() {
@@ -1132,9 +1148,10 @@ impl SimState {
         let footprint = species_data_gt.footprint;
         let next_pos = if let Some(ref path) = creature.path {
             if let Some(&next) = path.remaining_positions.first() {
+                let zone = self.voxel_zone(wt_zone_id).unwrap();
                 if crate::walkability::footprint_walkable(
-                    &self.world,
-                    &self.face_data,
+                    zone,
+                    &zone.face_data,
                     next,
                     footprint,
                     can_climb,
@@ -1226,10 +1243,9 @@ impl SimState {
 
         // Derive edge type for speed computation.
         let old_pos = self.db.creatures.get(&creature_id).unwrap().position.min;
-        let from_surface =
-            crate::walkability::derive_surface_type(&self.world, &self.face_data, old_pos);
-        let to_surface =
-            crate::walkability::derive_surface_type(&self.world, &self.face_data, dest_pos);
+        let zone = self.voxel_zone(wt_zone_id).unwrap();
+        let from_surface = crate::walkability::derive_surface_type(zone, &zone.face_data, old_pos);
+        let to_surface = crate::walkability::derive_surface_type(zone, &zone.face_data, dest_pos);
         let edge_type =
             crate::walkability::derive_edge_type(from_surface, to_surface, old_pos, dest_pos);
 
@@ -1366,8 +1382,10 @@ impl SimState {
         cause: DeathCause,
         events: &mut Vec<SimEvent>,
     ) {
-        let (species, position) = match self.db.creatures.get(&creature_id) {
-            Some(c) if c.vital_status != VitalStatus::Dead => (c.species, c.position.min),
+        let (species, position, creature_zone_id) = match self.db.creatures.get(&creature_id) {
+            Some(c) if c.vital_status != VitalStatus::Dead => {
+                (c.species, c.position.min, c.zone_id.unwrap())
+            }
             _ => return, // already dead or doesn't exist
         };
 
@@ -1410,7 +1428,7 @@ impl SimState {
                 .by_inventory_id(&inv_id, tabulosity::QueryOpts::ASC)
                 .is_empty();
             if has_items {
-                let pile_id = self.ensure_ground_pile(position);
+                let pile_id = self.ensure_ground_pile(position, creature_zone_id);
                 let pile_inv_id = self.db.ground_piles.get(&pile_id).unwrap().inventory_id;
                 self.inv_move_items(inv_id, pile_inv_id, None, None, None);
                 // Clear owner, reserved_by, and equipped_slot on the dead
@@ -1888,6 +1906,7 @@ impl SimState {
         }
 
         let attacker_pos = attacker.position.min;
+        let attacker_zone_id = attacker.zone_id.unwrap();
         let target_pos = target.position.min;
         let target_species = target.species;
         let target_footprint = self.species_table[&target_species].footprint;
@@ -1895,23 +1914,29 @@ impl SimState {
         // 4. LOS check — try each occupied voxel of the target's footprint.
         let mut has_los = false;
         let mut los_target_voxel = target_pos;
-        for dy in 0..target_footprint[1] as i32 {
-            for dx in 0..target_footprint[0] as i32 {
-                for dz in 0..target_footprint[2] as i32 {
-                    let tv =
-                        VoxelCoord::new(target_pos.x + dx, target_pos.y + dy, target_pos.z + dz);
-                    if self.world.has_los(attacker_pos, tv) {
-                        has_los = true;
-                        los_target_voxel = tv;
+        {
+            let zone = self.voxel_zone(attacker_zone_id).unwrap();
+            for dy in 0..target_footprint[1] as i32 {
+                for dx in 0..target_footprint[0] as i32 {
+                    for dz in 0..target_footprint[2] as i32 {
+                        let tv = VoxelCoord::new(
+                            target_pos.x + dx,
+                            target_pos.y + dy,
+                            target_pos.z + dz,
+                        );
+                        if zone.has_los(attacker_pos, tv) {
+                            has_los = true;
+                            los_target_voxel = tv;
+                            break;
+                        }
+                    }
+                    if has_los {
                         break;
                     }
                 }
                 if has_los {
                     break;
                 }
-            }
-            if has_los {
-                break;
             }
         }
         if !has_los {
@@ -1970,6 +1995,7 @@ impl SimState {
 
         let _ = self.db.insert_projectile_auto(|id| crate::db::Projectile {
             id,
+            zone_id: attacker_zone_id,
             shooter: Some(attacker_id),
             inventory_id: proj_inv_id,
             position: origin_sub,
@@ -2016,6 +2042,7 @@ impl SimState {
         origin: VoxelCoord,
         target: VoxelCoord,
         shooter_id: Option<CreatureId>,
+        zone_id: ZoneId,
     ) {
         use crate::projectile::{compute_aim_velocity, sub_voxel_from_voxel_center};
 
@@ -2040,6 +2067,7 @@ impl SimState {
         // Insert projectile into SimDb.
         let _ = self.db.insert_projectile_auto(|id| crate::db::Projectile {
             id,
+            zone_id,
             shooter: shooter_id,
             inventory_id: inv_id,
             position: origin_sub,
@@ -2064,7 +2092,6 @@ impl SimState {
         use crate::projectile::{ballistic_step, sub_voxel_to_voxel};
 
         let gravity = self.config.arrow_gravity;
-        let (world_sx, world_sy, world_sz) = self.config.world_size;
 
         // Collect all projectile IDs to iterate (can't mutate DB while iterating).
         let projectile_ids: Vec<ProjectileId> =
@@ -2075,6 +2102,14 @@ impl SimState {
                 Some(p) => p,
                 None => continue, // already removed
             };
+
+            let proj_zone_id = proj.zone_id;
+            let proj_zone = self
+                .db
+                .zones
+                .get(&proj_zone_id)
+                .expect("projectile zone row");
+            let (world_sx, world_sy, world_sz) = proj_zone.zone_size;
 
             // Step 1: save current voxel as prev_voxel.
             let current_voxel = sub_voxel_to_voxel(proj.position);
@@ -2103,7 +2138,8 @@ impl SimState {
             let new_voxel = sub_voxel_to_voxel(new_pos);
 
             // Step 5: solid voxel check.
-            if self.world.in_bounds(new_voxel) && self.world.get(new_voxel).is_solid() {
+            let zone = self.voxel_zone(proj_zone_id).unwrap();
+            if zone.in_bounds(new_voxel) && zone.get(new_voxel).is_solid() {
                 // Surface hit — transfer arrow to ground pile at prev_voxel.
                 self.resolve_projectile_surface_hit(proj_id, current_voxel, events);
                 continue;
@@ -2127,7 +2163,7 @@ impl SimState {
                 let dz = (new_voxel.z - origin_voxel.z).abs();
                 dx <= 1 && dy <= 1 && dz <= 1
             };
-            let creatures_here = self.creatures_at_voxel(new_voxel);
+            let creatures_here = self.creatures_at_voxel(proj_zone_id, new_voxel);
             if !creatures_here.is_empty() {
                 // Filter to alive creatures, skipping non-hostiles near origin.
                 // Sort is preserved from tabulosity spatial index for determinism.
@@ -2197,13 +2233,14 @@ impl SimState {
             None => return,
         };
         let proj_inv = proj.inventory_id;
+        let proj_zone_id = proj.zone_id;
 
         // Apply random durability damage to the arrow.
         let arrow_broke = self.apply_arrow_impact_damage(proj_inv, events);
 
         if !arrow_broke {
             // Arrow survived — transfer to ground pile.
-            let pile_id = self.ensure_ground_pile(prev_voxel);
+            let pile_id = self.ensure_ground_pile(prev_voxel, proj_zone_id);
             let pile_inv = self.db.ground_piles.get(&pile_id).unwrap().inventory_id;
             self.inv_merge(proj_inv, pile_inv);
         }
@@ -2237,6 +2274,7 @@ impl SimState {
         let shooter_id = proj.shooter;
         let proj_inv = proj.inventory_id;
         let origin_voxel = proj.origin_voxel;
+        let proj_zone_id = proj.zone_id;
 
         // Compute damage from impact speed (momentum-based: linear in speed).
         // REFERENCE_SPEED is arrow_base_speed (the "normal" launch speed).
@@ -2332,7 +2370,7 @@ impl SimState {
 
         if !arrow_broke {
             // Arrow survived — transfer to ground pile.
-            let pile_id = self.ensure_ground_pile(hit_voxel);
+            let pile_id = self.ensure_ground_pile(hit_voxel, proj_zone_id);
             let pile_inv = self.db.ground_piles.get(&pile_id).unwrap().inventory_id;
             self.inv_merge(proj_inv, pile_inv);
         }
@@ -2964,6 +3002,7 @@ impl SimState {
         };
         let pos = creature.position.min;
         let civ_id = creature.civ_id;
+        let flee_zone_id = creature.zone_id.unwrap();
         let detection_range_sq = self.effective_detection_range_sq(creature_id, species);
 
         // Detect threats (hostile creatures within range).
@@ -2997,19 +3036,20 @@ impl SimState {
         let species_data = &self.species_table[&species];
         let footprint = species_data.footprint;
         let can_climb = category.can_climb();
+        let zone = self.voxel_zone(flee_zone_id).unwrap();
         let from_surface =
-            crate::walkability::derive_surface_type(&self.world, &self.face_data, current_pos);
+            crate::walkability::derive_surface_type(zone, &zone.face_data, current_pos);
 
         let mut eligible: Vec<VoxelCoord> = Vec::new();
         for (neighbor, _dist) in crate::walkability::ground_neighbors(
-            &self.world,
-            &self.face_data,
+            zone,
+            &zone.face_data,
             current_pos,
             footprint,
             can_climb,
         ) {
             let to_surface =
-                crate::walkability::derive_surface_type(&self.world, &self.face_data, neighbor);
+                crate::walkability::derive_surface_type(zone, &zone.face_data, neighbor);
             let edge_type = crate::walkability::derive_edge_type(
                 from_surface,
                 to_surface,
@@ -3551,11 +3591,18 @@ impl SimState {
         dest_pos: VoxelCoord,
         footprint: [u8; 3],
     ) -> bool {
+        let blocker_zone_id = self
+            .db
+            .creatures
+            .get(&creature_id)
+            .unwrap()
+            .zone_id
+            .unwrap();
         for dx in 0..footprint[0] as i32 {
             for dy in 0..footprint[1] as i32 {
                 for dz in 0..footprint[2] as i32 {
                     let voxel = VoxelCoord::new(dest_pos.x + dx, dest_pos.y + dy, dest_pos.z + dz);
-                    for &occupant_id in &self.creatures_at_voxel(voxel) {
+                    for &occupant_id in &self.creatures_at_voxel(blocker_zone_id, voxel) {
                         if occupant_id != creature_id
                             && !self.is_non_hostile(creature_id, occupant_id)
                             && self
@@ -3595,7 +3642,13 @@ impl SimState {
         use crate::projectile::{ballistic_step, sub_voxel_from_voxel_center, sub_voxel_to_voxel};
 
         let gravity = self.config.arrow_gravity;
-        let (world_sx, world_sy, world_sz) = self.config.world_size;
+        let shooter_zone_id = self.db.creatures.get(&shooter_id).unwrap().zone_id.unwrap();
+        let shooter_zone = self
+            .db
+            .zones
+            .get(&shooter_zone_id)
+            .expect("shooter zone row");
+        let (world_sx, world_sy, world_sz) = shooter_zone.zone_size;
         let max_ticks: u32 = 5000;
 
         let origin_sub = sub_voxel_from_voxel_center(origin_voxel);
@@ -3623,13 +3676,14 @@ impl SimState {
             let current_voxel = sub_voxel_to_voxel(pos);
 
             // Solid voxel — stop (arrow would hit surface).
-            if self.world.in_bounds(current_voxel) && self.world.get(current_voxel).is_solid() {
+            let zone = self.voxel_zone(shooter_zone_id).unwrap();
+            if zone.in_bounds(current_voxel) && zone.get(current_voxel).is_solid() {
                 return None;
             }
 
             // Check creatures at this voxel.
             if current_voxel != prev_voxel {
-                let creatures_here = self.creatures_at_voxel(current_voxel);
+                let creatures_here = self.creatures_at_voxel(shooter_zone_id, current_voxel);
                 for &cid in &creatures_here {
                     if cid == shooter_id {
                         continue;
@@ -3852,9 +3906,11 @@ impl SimState {
         let footprint = species_data_rp.footprint;
         let can_climb = creature.movement_category.can_climb();
         let current_pos = creature.position.min;
+        let repos_zone_id = creature.zone_id.unwrap();
+        let zone = self.voxel_zone(repos_zone_id).unwrap();
         if !crate::walkability::footprint_walkable(
-            &self.world,
-            &self.face_data,
+            zone,
+            &zone.face_data,
             current_pos,
             footprint,
             can_climb,
@@ -3878,8 +3934,8 @@ impl SimState {
         let mut best_fallback: Option<(VoxelCoord, i64)> = None;
 
         for (neighbor_pos, _dist) in crate::walkability::ground_neighbors(
-            &self.world,
-            &self.face_data,
+            zone,
+            &zone.face_data,
             current_pos,
             footprint,
             can_climb,
@@ -3903,7 +3959,7 @@ impl SimState {
                             target_pos.y + dy,
                             target_pos.z + dz,
                         );
-                        if self.world.has_los(neighbor_pos, tv) {
+                        if zone.has_los(neighbor_pos, tv) {
                             has_los = true;
                             los_target = tv;
                             break;

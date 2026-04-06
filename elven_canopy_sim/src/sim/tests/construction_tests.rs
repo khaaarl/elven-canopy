@@ -24,7 +24,7 @@ fn find_leaf_adjacent_to_wood(sim: &SimState) -> VoxelCoord {
             (0, 0, -1),
         ] {
             let neighbor = VoxelCoord::new(leaf_coord.x + dx, leaf_coord.y + dy, leaf_coord.z + dz);
-            let vt = sim.world.get(neighbor);
+            let vt = sim.voxel_zone(sim.home_zone_id()).unwrap().get(neighbor);
             if matches!(vt, VoxelType::Trunk | VoxelType::Branch | VoxelType::Root) {
                 return leaf_coord;
             }
@@ -52,6 +52,7 @@ fn designate_and_complete_build(mut sim: SimState) -> SimState {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: air_coord,
         },
@@ -63,6 +64,7 @@ fn designate_and_complete_build(mut sim: SimState) -> SimState {
         player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -117,6 +119,7 @@ fn designate_and_complete_building(mut sim: SimState) -> SimState {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: air_above,
         },
@@ -128,6 +131,7 @@ fn designate_and_complete_building(mut sim: SimState) -> SimState {
         player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuilding {
+            zone_id: sim.home_zone_id(),
             anchor,
             width: 3,
             depth: 3,
@@ -185,7 +189,7 @@ fn find_ladder_column(sim: &SimState, height: i32) -> (VoxelCoord, FaceDirection
     for &trunk_coord in &tree.trunk_voxels {
         for &(dx, dz) in &[(1, 0), (-1, 0), (0, 1), (0, -1)] {
             let base = VoxelCoord::new(trunk_coord.x + dx, trunk_coord.y, trunk_coord.z + dz);
-            if !sim.world.in_bounds(base) {
+            if !sim.voxel_zone(sim.home_zone_id()).unwrap().in_bounds(base) {
                 continue;
             }
             // The orientation points from air toward trunk (i.e., face
@@ -193,7 +197,8 @@ fn find_ladder_column(sim: &SimState, height: i32) -> (VoxelCoord, FaceDirection
             let orientation = FaceDirection::from_offset(-dx, 0, -dz).unwrap();
             let all_air = (0..height).all(|dy| {
                 let coord = VoxelCoord::new(base.x, base.y + dy, base.z);
-                sim.world.in_bounds(coord) && sim.world.get(coord) == VoxelType::Air
+                sim.voxel_zone(sim.home_zone_id()).unwrap().in_bounds(coord)
+                    && sim.voxel_zone(sim.home_zone_id()).unwrap().get(coord) == VoxelType::Air
             });
             if all_air {
                 return (base, orientation);
@@ -211,10 +216,10 @@ fn find_strut_endpoints(sim: &SimState) -> (VoxelCoord, VoxelCoord) {
         // Try +X direction: two air voxels extending from trunk.
         let a = VoxelCoord::new(trunk_coord.x + 1, trunk_coord.y, trunk_coord.z);
         let b = VoxelCoord::new(trunk_coord.x + 2, trunk_coord.y, trunk_coord.z);
-        if sim.world.in_bounds(a)
-            && sim.world.in_bounds(b)
-            && sim.world.get(a) == VoxelType::Air
-            && sim.world.get(b) == VoxelType::Air
+        if sim.voxel_zone(sim.home_zone_id()).unwrap().in_bounds(a)
+            && sim.voxel_zone(sim.home_zone_id()).unwrap().in_bounds(b)
+            && sim.voxel_zone(sim.home_zone_id()).unwrap().get(a) == VoxelType::Air
+            && sim.voxel_zone(sim.home_zone_id()).unwrap().get(b) == VoxelType::Air
         {
             return (a, b);
         }
@@ -234,6 +239,7 @@ fn designate_build_creates_build_task() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -267,6 +273,7 @@ fn designate_build_rejects_out_of_bounds() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![oob],
             priority: Priority::Normal,
@@ -287,6 +294,7 @@ fn designate_build_rejects_non_air() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![trunk_coord],
             priority: Priority::Normal,
@@ -302,13 +310,21 @@ fn designate_build_rejects_no_adjacency() {
     let mut sim = test_sim(legacy_test_seed());
     // Pick a coord far from any solid geometry.
     let isolated = VoxelCoord::new(0, 50, 0);
-    assert_eq!(sim.world.get(isolated), VoxelType::Air);
-    assert!(!sim.world.has_solid_face_neighbor(isolated));
+    assert_eq!(
+        sim.voxel_zone(sim.home_zone_id()).unwrap().get(isolated),
+        VoxelType::Air
+    );
+    assert!(
+        !sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .has_solid_face_neighbor(isolated)
+    );
 
     let cmd = SimCommand {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![isolated],
             priority: Priority::Normal,
@@ -327,6 +343,7 @@ fn designate_build_rejects_empty_voxels() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![],
             priority: Priority::Normal,
@@ -351,6 +368,7 @@ fn cancel_build_removes_blueprint() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -410,6 +428,7 @@ fn cancel_build_removes_associated_task() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -446,6 +465,7 @@ fn cancel_build_unassigns_elf() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -512,6 +532,7 @@ fn cancel_build_reverts_partial_voxels() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -521,9 +542,13 @@ fn cancel_build_reverts_partial_voxels() {
     let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
 
     // Simulate partial construction by manually placing a voxel.
-    sim.placed_voxels
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .placed_voxels
         .push((air_coord, VoxelType::GrownPlatform));
-    sim.world.set(air_coord, VoxelType::GrownPlatform);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(air_coord, VoxelType::GrownPlatform);
 
     // Cancel the build.
     let cmd2 = SimCommand {
@@ -534,9 +559,15 @@ fn cancel_build_reverts_partial_voxels() {
     sim.step(&[cmd2], 2);
 
     // Voxel should be reverted to Air.
-    assert_eq!(sim.world.get(air_coord), VoxelType::Air);
+    assert_eq!(
+        sim.voxel_zone(sim.home_zone_id()).unwrap().get(air_coord),
+        VoxelType::Air
+    );
     assert!(
-        sim.placed_voxels.is_empty(),
+        sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .placed_voxels
+            .is_empty(),
         "placed_voxels should be cleared"
     );
 }
@@ -554,6 +585,7 @@ fn sim_serialization_with_blueprints() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -585,6 +617,7 @@ fn blueprint_determinism() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim_a.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_a],
             priority: Priority::Normal,
@@ -594,6 +627,7 @@ fn blueprint_determinism() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim_b.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_b],
             priority: Priority::Normal,
@@ -625,6 +659,7 @@ fn build_task_completes_and_all_voxels_placed() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -650,7 +685,7 @@ fn build_task_completes_and_all_voxels_placed() {
 
     // Voxel should be solid.
     assert_eq!(
-        sim.world.get(air_coord),
+        sim.voxel_zone(sim.home_zone_id()).unwrap().get(air_coord),
         VoxelType::GrownPlatform,
         "Build voxel should be GrownPlatform"
     );
@@ -668,7 +703,9 @@ fn build_task_completes_and_all_voxels_placed() {
 
     // placed_voxels should contain the coord.
     assert!(
-        sim.placed_voxels
+        sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .placed_voxels
             .contains(&(air_coord, VoxelType::GrownPlatform))
     );
 }
@@ -691,6 +728,7 @@ fn build_task_materializes_voxels_incrementally() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: strip.clone(),
             priority: Priority::Normal,
@@ -708,7 +746,7 @@ fn build_task_materializes_voxels_incrementally() {
     // At least 1 voxel should be placed, but not all 3.
     let placed_count = strip
         .iter()
-        .filter(|c| sim.world.get(**c) != VoxelType::Air)
+        .filter(|c| sim.voxel_zone(sim.home_zone_id()).unwrap().get(**c) != VoxelType::Air)
         .count();
 
     // With 200k ticks and 50k per voxel, we'd expect 1-3 placed.
@@ -739,6 +777,7 @@ fn build_voxels_maintain_adjacency() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: strip.clone(),
             priority: Priority::Normal,
@@ -752,7 +791,7 @@ fn build_voxels_maintain_adjacency() {
     // All 3 voxels should be solid.
     for coord in &strip {
         assert_eq!(
-            sim.world.get(*coord),
+            sim.voxel_zone(sim.home_zone_id()).unwrap().get(*coord),
             VoxelType::GrownPlatform,
             "Voxel at {coord} should be GrownPlatform"
         );
@@ -764,7 +803,9 @@ fn build_voxels_maintain_adjacency() {
     // property: each voxel has at least one solid face neighbor now.
     for coord in &strip {
         assert!(
-            sim.world.has_solid_face_neighbor(*coord),
+            sim.voxel_zone(sim.home_zone_id())
+                .unwrap()
+                .has_solid_face_neighbor(*coord),
             "Placed voxel at {coord} should have a solid face neighbor"
         );
     }
@@ -780,8 +821,8 @@ fn build_displaces_creature_on_occupied_voxel() {
 
     // Check if air_coord is walkable; if so, place the elf there.
     if crate::walkability::footprint_walkable(
-        &sim.world,
-        &sim.face_data,
+        &sim.voxel_zone(sim.home_zone_id()).unwrap(),
+        &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
         air_coord,
         [1, 1, 1],
         true,
@@ -798,6 +839,7 @@ fn build_displaces_creature_on_occupied_voxel() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -809,6 +851,7 @@ fn build_displaces_creature_on_occupied_voxel() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -820,7 +863,10 @@ fn build_displaces_creature_on_occupied_voxel() {
     sim.step(&[], sim.tick + 200_000);
 
     // The voxel should be solid.
-    assert_eq!(sim.world.get(air_coord), VoxelType::GrownPlatform);
+    assert_eq!(
+        sim.voxel_zone(sim.home_zone_id()).unwrap().get(air_coord),
+        VoxelType::GrownPlatform
+    );
 
     // The first elf should have been displaced — its position should not
     // be at air_coord (which is now solid).
@@ -831,8 +877,8 @@ fn build_displaces_creature_on_occupied_voxel() {
     );
     // It should still be at a walkable position.
     assert!(crate::walkability::footprint_walkable(
-        &sim.world,
-        &sim.face_data,
+        &sim.voxel_zone(sim.home_zone_id()).unwrap(),
+        &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
         elf.position.min,
         [1, 1, 1],
         true,
@@ -853,6 +899,7 @@ fn save_load_preserves_partially_built_platform() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: strip.clone(),
             priority: Priority::Normal,
@@ -863,19 +910,37 @@ fn save_load_preserves_partially_built_platform() {
     // Tick for partial construction.
     sim.step(&[], sim.tick + 200_000);
 
-    let placed_before = sim.placed_voxels.len();
+    let placed_before = sim
+        .voxel_zone(sim.home_zone_id())
+        .unwrap()
+        .placed_voxels
+        .len();
 
     // Save and load.
     let json = sim.to_json().unwrap();
     let restored = SimState::from_json(&json).unwrap();
 
     // placed_voxels should be preserved.
-    assert_eq!(restored.placed_voxels.len(), placed_before);
+    assert_eq!(
+        restored
+            .voxel_zone(restored.home_zone_id())
+            .unwrap()
+            .placed_voxels
+            .len(),
+        placed_before
+    );
 
     // The world should contain the placed voxels.
-    for &(coord, vt) in &restored.placed_voxels {
+    for &(coord, vt) in &restored
+        .voxel_zone(restored.home_zone_id())
+        .unwrap()
+        .placed_voxels
+    {
         assert_eq!(
-            restored.world.get(coord),
+            restored
+                .voxel_zone(restored.home_zone_id())
+                .unwrap()
+                .get(coord),
             vt,
             "Restored world should contain placed voxel at {coord}"
         );
@@ -895,6 +960,7 @@ fn designate_building_creates_blueprint() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuilding {
+            zone_id: sim.home_zone_id(),
             anchor,
             width: 3,
             depth: 3,
@@ -921,6 +987,7 @@ fn designate_building_creates_task() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuilding {
+            zone_id: sim.home_zone_id(),
             anchor,
             width: 3,
             depth: 3,
@@ -947,6 +1014,7 @@ fn designate_building_rejects_small_width() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuilding {
+            zone_id: sim.home_zone_id(),
             anchor,
             width: 2, // too small
             depth: 3,
@@ -967,6 +1035,7 @@ fn designate_building_rejects_non_solid_foundation() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuilding {
+            zone_id: sim.home_zone_id(),
             anchor: VoxelCoord::new(1, 10, 1),
             width: 3,
             depth: 3,
@@ -987,6 +1056,7 @@ fn building_materialization_sets_building_interior() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuilding {
+            zone_id: sim.home_zone_id(),
             anchor,
             width: 3,
             depth: 3,
@@ -1002,15 +1072,20 @@ fn building_materialization_sets_building_interior() {
 
     // At least one voxel should now be BuildingInterior.
     let has_building = sim
+        .voxel_zone(sim.home_zone_id())
+        .unwrap()
         .placed_voxels
         .iter()
         .any(|(_, vt)| *vt == VoxelType::BuildingInterior);
     assert!(has_building, "Should have placed a BuildingInterior voxel");
 
     // The placed voxel should have face_data.
-    let placed_coord = sim.placed_voxels[0].0;
+    let placed_coord = sim.voxel_zone(sim.home_zone_id()).unwrap().placed_voxels[0].0;
     assert!(
-        sim.face_data.contains_key(&placed_coord),
+        sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .face_data
+            .contains_key(&placed_coord),
         "Placed building voxel should have face_data",
     );
 }
@@ -1024,6 +1099,7 @@ fn building_materialization_creates_nav_node() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuilding {
+            zone_id: sim.home_zone_id(),
             anchor,
             width: 3,
             depth: 3,
@@ -1036,11 +1112,11 @@ fn building_materialization_creates_nav_node() {
 
     sim.materialize_next_build_voxel(project_id);
 
-    let placed_coord = sim.placed_voxels[0].0;
+    let placed_coord = sim.voxel_zone(sim.home_zone_id()).unwrap().placed_voxels[0].0;
     assert!(
         crate::walkability::footprint_walkable(
-            &sim.world,
-            &sim.face_data,
+            &sim.voxel_zone(sim.home_zone_id()).unwrap(),
+            &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
             placed_coord,
             [1, 1, 1],
             true
@@ -1058,6 +1134,7 @@ fn cancel_building_removes_face_data() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuilding {
+            zone_id: sim.home_zone_id(),
             anchor,
             width: 3,
             depth: 3,
@@ -1071,8 +1148,20 @@ fn cancel_building_removes_face_data() {
     // Materialize some voxels.
     sim.materialize_next_build_voxel(project_id);
     sim.materialize_next_build_voxel(project_id);
-    assert!(!sim.face_data.is_empty(), "Should have face_data");
-    assert!(!sim.placed_voxels.is_empty(), "Should have placed voxels");
+    assert!(
+        !sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .face_data
+            .is_empty(),
+        "Should have face_data"
+    );
+    assert!(
+        !sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .placed_voxels
+            .is_empty(),
+        "Should have placed voxels"
+    );
 
     // Cancel the build.
     let cmd2 = SimCommand {
@@ -1082,9 +1171,18 @@ fn cancel_building_removes_face_data() {
     };
     sim.step(&[cmd2], 2);
 
-    assert!(sim.face_data.is_empty(), "face_data should be cleared");
     assert!(
-        sim.placed_voxels.is_empty(),
+        sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .face_data
+            .is_empty(),
+        "face_data should be cleared"
+    );
+    assert!(
+        sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .placed_voxels
+            .is_empty(),
         "placed_voxels should be cleared",
     );
     assert!(sim.db.blueprints.is_empty(), "blueprint should be removed");
@@ -1093,7 +1191,9 @@ fn cancel_building_removes_face_data() {
     for x in anchor.x..anchor.x + 3 {
         for z in anchor.z..anchor.z + 3 {
             assert_eq!(
-                sim.world.get(VoxelCoord::new(x, anchor.y + 1, z)),
+                sim.voxel_zone(sim.home_zone_id())
+                    .unwrap()
+                    .get(VoxelCoord::new(x, anchor.y + 1, z)),
                 VoxelType::Air,
             );
         }
@@ -1109,6 +1209,7 @@ fn save_load_preserves_building() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuilding {
+            zone_id: sim.home_zone_id(),
             anchor,
             width: 3,
             depth: 3,
@@ -1124,8 +1225,12 @@ fn save_load_preserves_building() {
     sim.materialize_next_build_voxel(project_id);
     sim.materialize_next_build_voxel(project_id);
 
-    let original_face_data_len = sim.face_data.len();
-    let original_placed_len = sim.placed_voxels.len();
+    let original_face_data_len = sim.voxel_zone(sim.home_zone_id()).unwrap().face_data.len();
+    let original_placed_len = sim
+        .voxel_zone(sim.home_zone_id())
+        .unwrap()
+        .placed_voxels
+        .len();
     assert!(original_face_data_len > 0);
     assert!(original_placed_len > 0);
 
@@ -1134,24 +1239,45 @@ fn save_load_preserves_building() {
     let restored = SimState::from_json(&json).unwrap();
 
     // Check face_data preserved.
-    assert_eq!(restored.face_data.len(), original_face_data_len);
-    for (coord, fd) in &sim.face_data {
-        let restored_fd = restored.face_data.get(coord).unwrap();
+    assert_eq!(
+        restored
+            .voxel_zone(restored.home_zone_id())
+            .unwrap()
+            .face_data
+            .len(),
+        original_face_data_len
+    );
+    for (coord, fd) in &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data {
+        let restored_fd = restored
+            .voxel_zone(restored.home_zone_id())
+            .unwrap()
+            .face_data
+            .get(coord)
+            .unwrap();
         assert_eq!(fd, restored_fd);
     }
 
     // Check placed voxels preserved in rebuilt world.
-    for &(coord, vt) in &sim.placed_voxels {
-        assert_eq!(restored.world.get(coord), vt);
+    for &(coord, vt) in &sim.voxel_zone(sim.home_zone_id()).unwrap().placed_voxels {
+        assert_eq!(
+            restored
+                .voxel_zone(restored.home_zone_id())
+                .unwrap()
+                .get(coord),
+            vt
+        );
     }
 
     // Check walkability at building voxels.
-    for &(coord, vt) in &sim.placed_voxels {
+    for &(coord, vt) in &sim.voxel_zone(sim.home_zone_id()).unwrap().placed_voxels {
         if vt == VoxelType::BuildingInterior {
             assert!(
                 crate::walkability::footprint_walkable(
-                    &restored.world,
-                    &restored.face_data,
+                    &restored.voxel_zone(restored.home_zone_id()).unwrap(),
+                    &restored
+                        .voxel_zone(restored.home_zone_id())
+                        .unwrap()
+                        .face_data,
                     coord,
                     [1, 1, 1],
                     true,
@@ -1169,12 +1295,15 @@ fn designate_building_rejects_non_air_interior() {
 
     // Place a solid voxel in the interior area.
     let interior = VoxelCoord::new(anchor.x + 1, anchor.y + 1, anchor.z + 1);
-    sim.world.set(interior, VoxelType::Trunk);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(interior, VoxelType::Trunk);
 
     let cmd = SimCommand {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuilding {
+            zone_id: sim.home_zone_id(),
             anchor,
             width: 3,
             depth: 3,
@@ -1214,6 +1343,7 @@ fn completed_structure_sequential_ids() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: air_coord,
         },
@@ -1225,6 +1355,7 @@ fn completed_structure_sequential_ids() {
         player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -1265,8 +1396,11 @@ fn completed_structure_sequential_ids() {
         ] {
             let neighbor =
                 VoxelCoord::new(trunk_coord.x + dx, trunk_coord.y + dy, trunk_coord.z + dz);
-            if sim.world.in_bounds(neighbor)
-                && sim.world.get(neighbor) == VoxelType::Air
+            if sim
+                .voxel_zone(sim.home_zone_id())
+                .unwrap()
+                .in_bounds(neighbor)
+                && sim.voxel_zone(sim.home_zone_id()).unwrap().get(neighbor) == VoxelType::Air
                 && neighbor != air_coord
             {
                 second_air = Some(neighbor);
@@ -1285,6 +1419,7 @@ fn completed_structure_sequential_ids() {
         player_name: String::new(),
         tick,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![second_coord],
             priority: Priority::Normal,
@@ -1345,7 +1480,12 @@ fn structure_voxels_populated_on_complete_build() {
     let sim = designate_and_complete_build(test_sim(legacy_test_seed()));
 
     // The completed build should populate structure_voxels.
-    assert!(!sim.structure_voxels.is_empty());
+    assert!(
+        !sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .structure_voxels
+            .is_empty()
+    );
     let structure = sim.db.structures.iter_all().next().unwrap();
     let bp = sim
         .db
@@ -1355,7 +1495,10 @@ fn structure_voxels_populated_on_complete_build() {
         .unwrap();
     for &coord in &bp.voxels {
         assert_eq!(
-            sim.structure_voxels.get(&coord),
+            sim.voxel_zone(sim.home_zone_id())
+                .unwrap()
+                .structure_voxels
+                .get(&coord),
             Some(&structure.id),
             "Voxel {coord} should map to structure {}",
             structure.id
@@ -1366,7 +1509,12 @@ fn structure_voxels_populated_on_complete_build() {
 #[test]
 fn structure_voxels_cleared_on_cancel_build() {
     let mut sim = designate_and_complete_build(test_sim(legacy_test_seed()));
-    assert!(!sim.structure_voxels.is_empty());
+    assert!(
+        !sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .structure_voxels
+            .is_empty()
+    );
 
     let project_id = sim.db.structures.iter_all().next().unwrap().project_id;
 
@@ -1379,7 +1527,10 @@ fn structure_voxels_cleared_on_cancel_build() {
     sim.step(&[cmd], tick);
 
     assert!(
-        sim.structure_voxels.is_empty(),
+        sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .structure_voxels
+            .is_empty(),
         "Cancelling a completed build should clear structure_voxels"
     );
 }
@@ -1387,7 +1538,11 @@ fn structure_voxels_cleared_on_cancel_build() {
 #[test]
 fn structure_voxels_rebuilt_on_rebuild_transient_state() {
     let sim = designate_and_complete_build(test_sim(legacy_test_seed()));
-    let voxels_before = sim.structure_voxels.clone();
+    let voxels_before = sim
+        .voxel_zone(sim.home_zone_id())
+        .unwrap()
+        .structure_voxels
+        .clone();
     assert!(!voxels_before.is_empty());
 
     // Round-trip through JSON (which drops transient fields).
@@ -1395,7 +1550,11 @@ fn structure_voxels_rebuilt_on_rebuild_transient_state() {
     let restored = SimState::from_json(&json).unwrap();
 
     assert_eq!(
-        restored.structure_voxels, voxels_before,
+        restored
+            .voxel_zone(restored.home_zone_id())
+            .unwrap()
+            .structure_voxels,
+        voxels_before,
         "structure_voxels should be identical after save/load"
     );
 }
@@ -1441,7 +1600,9 @@ fn raycast_structure_stops_at_trunk() {
     // Place a trunk voxel between the ray origin and the structure.
     let mut sim = sim;
     let blocker = VoxelCoord::new(voxel.x, voxel.y + 5, voxel.z);
-    sim.world.set(blocker, VoxelType::Trunk);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(blocker, VoxelType::Trunk);
 
     let from = [
         voxel.x as f32 + 0.5,
@@ -1725,12 +1886,16 @@ fn rename_nonexistent_structure_is_noop() {
 fn overlap_platform_at_leaf_creates_blueprint() {
     let mut sim = test_sim(legacy_test_seed());
     let leaf_coord = find_leaf_adjacent_to_wood(&sim);
-    assert_eq!(sim.world.get(leaf_coord), VoxelType::Leaf);
+    assert_eq!(
+        sim.voxel_zone(sim.home_zone_id()).unwrap().get(leaf_coord),
+        VoxelType::Leaf
+    );
 
     let cmd = SimCommand {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![leaf_coord],
             priority: Priority::Normal,
@@ -1755,6 +1920,7 @@ fn overlap_all_trunk_rejects_nothing_to_build() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![trunk_coord],
             priority: Priority::Normal,
@@ -1785,9 +1951,12 @@ fn overlap_mixed_air_trunk_only_builds_air() {
         (0, 0, -1),
     ] {
         let neighbor = VoxelCoord::new(air_coord.x + dx, air_coord.y + dy, air_coord.z + dz);
-        if sim.world.in_bounds(neighbor)
+        if sim
+            .voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .in_bounds(neighbor)
             && matches!(
-                sim.world.get(neighbor),
+                sim.voxel_zone(sim.home_zone_id()).unwrap().get(neighbor),
                 VoxelType::Trunk | VoxelType::Branch | VoxelType::Root
             )
         {
@@ -1801,6 +1970,7 @@ fn overlap_mixed_air_trunk_only_builds_air() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord, trunk_coord],
             priority: Priority::Normal,
@@ -1821,12 +1991,15 @@ fn overlap_blocked_voxel_rejects() {
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     // First build a platform at the air coord.
-    sim.world.set(air_coord, VoxelType::GrownPlatform);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(air_coord, VoxelType::GrownPlatform);
 
     let cmd = SimCommand {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -1844,7 +2017,10 @@ fn overlap_blocked_voxel_rejects() {
 fn overlap_leaf_materializes_to_grown_platform() {
     let mut sim = build_test_sim();
     let leaf_coord = find_leaf_adjacent_to_wood(&sim);
-    assert_eq!(sim.world.get(leaf_coord), VoxelType::Leaf);
+    assert_eq!(
+        sim.voxel_zone(sim.home_zone_id()).unwrap().get(leaf_coord),
+        VoxelType::Leaf
+    );
 
     // Spawn elf.
     spawn_elf(&mut sim);
@@ -1854,6 +2030,7 @@ fn overlap_leaf_materializes_to_grown_platform() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![leaf_coord],
             priority: Priority::Normal,
@@ -1868,7 +2045,7 @@ fn overlap_leaf_materializes_to_grown_platform() {
 
     // Leaf should have been converted to GrownPlatform.
     assert_eq!(
-        sim.world.get(leaf_coord),
+        sim.voxel_zone(sim.home_zone_id()).unwrap().get(leaf_coord),
         VoxelType::GrownPlatform,
         "Leaf voxel should be converted to GrownPlatform"
     );
@@ -1882,13 +2059,17 @@ fn overlap_leaf_materializes_to_grown_platform() {
 fn overlap_cancel_reverts_to_original_type() {
     let mut sim = test_sim(legacy_test_seed());
     let leaf_coord = find_leaf_adjacent_to_wood(&sim);
-    assert_eq!(sim.world.get(leaf_coord), VoxelType::Leaf);
+    assert_eq!(
+        sim.voxel_zone(sim.home_zone_id()).unwrap().get(leaf_coord),
+        VoxelType::Leaf
+    );
 
     // Designate platform at the leaf voxel.
     let cmd = SimCommand {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![leaf_coord],
             priority: Priority::Normal,
@@ -1899,9 +2080,13 @@ fn overlap_cancel_reverts_to_original_type() {
     let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
 
     // Simulate partial construction by manually placing the voxel.
-    sim.placed_voxels
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .placed_voxels
         .push((leaf_coord, VoxelType::GrownPlatform));
-    sim.world.set(leaf_coord, VoxelType::GrownPlatform);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(leaf_coord, VoxelType::GrownPlatform);
 
     // Cancel the build.
     let cmd2 = SimCommand {
@@ -1913,7 +2098,7 @@ fn overlap_cancel_reverts_to_original_type() {
 
     // Voxel should revert to Leaf, not Air.
     assert_eq!(
-        sim.world.get(leaf_coord),
+        sim.voxel_zone(sim.home_zone_id()).unwrap().get(leaf_coord),
         VoxelType::Leaf,
         "Cancelled overlap build should revert to original Leaf, not Air"
     );
@@ -1928,6 +2113,7 @@ fn overlap_save_load_preserves_original_voxels() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![leaf_coord],
             priority: Priority::Normal,
@@ -1959,6 +2145,7 @@ fn overlap_determinism() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim_a.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![leaf_a],
             priority: Priority::Normal,
@@ -1968,6 +2155,7 @@ fn overlap_determinism() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim_b.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![leaf_b],
             priority: Priority::Normal,
@@ -1996,6 +2184,7 @@ fn overlap_wall_at_leaf_rejects() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Wall,
             voxels: vec![leaf_coord],
             priority: Priority::Normal,
@@ -2019,12 +2208,16 @@ fn test_designate_carve_filters_air() {
     let solid = find_carvable_voxel(&sim);
     // Pick an air voxel (high up, guaranteed empty).
     let air = VoxelCoord::new(5, 50, 5);
-    assert_eq!(sim.world.get(air), VoxelType::Air);
+    assert_eq!(
+        sim.voxel_zone(sim.home_zone_id()).unwrap().get(air),
+        VoxelType::Air
+    );
 
     let cmd = SimCommand {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateCarve {
+            zone_id: sim.home_zone_id(),
             voxels: vec![solid, air],
             priority: Priority::Normal,
         },
@@ -2060,7 +2253,12 @@ fn test_carve_execution_removes_voxels() {
         .filter(|v| v.y > 0)
         .min_by_key(|v| v.y)
         .expect("No trunk voxel above floor");
-    assert!(sim.world.get(solid).is_solid());
+    assert!(
+        sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .get(solid)
+            .is_solid()
+    );
 
     // Spawn an elf at tree base and designate carve.
     let _elf_id = spawn_elf(&mut sim);
@@ -2068,6 +2266,7 @@ fn test_carve_execution_removes_voxels() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateCarve {
+            zone_id: sim.home_zone_id(),
             voxels: vec![solid],
             priority: Priority::Normal,
         },
@@ -2087,12 +2286,15 @@ fn test_carve_execution_removes_voxels() {
 
     // The solid voxel should now be Air.
     assert_eq!(
-        sim.world.get(solid),
+        sim.voxel_zone(sim.home_zone_id()).unwrap().get(solid),
         VoxelType::Air,
         "Carved voxel should be Air"
     );
     assert!(
-        sim.carved_voxels.contains(&solid),
+        sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .carved_voxels
+            .contains(&solid),
         "carved_voxels should track the removal"
     );
 }
@@ -2118,13 +2320,18 @@ fn test_carve_task_location_uses_nav_node() {
         .flat_map(|dx| (-20i32..=20).map(move |dz| (dx, dz)))
         .flat_map(|(dx, dz)| (1i32..=5).rev().map(move |y| (dx, y, dz)))
         .map(|(dx, y, dz)| VoxelCoord::new(tree_pos.x + dx, y, tree_pos.z + dz))
-        .find(|&c| sim.world.in_bounds(c) && sim.world.get(c) == VoxelType::Dirt && c.y > 0)
+        .find(|&c| {
+            sim.voxel_zone(sim.home_zone_id()).unwrap().in_bounds(c)
+                && sim.voxel_zone(sim.home_zone_id()).unwrap().get(c) == VoxelType::Dirt
+                && c.y > 0
+        })
         .expect("Should find carvable dirt voxel near tree");
 
     let cmd = SimCommand {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateCarve {
+            zone_id: sim.home_zone_id(),
             voxels: vec![dirt_coord],
             priority: Priority::Normal,
         },
@@ -2142,8 +2349,8 @@ fn test_carve_task_location_uses_nav_node() {
     // Task location should be at a walkable position, not the underground dirt voxel.
     assert!(
         crate::walkability::footprint_walkable(
-            &sim.world,
-            &sim.face_data,
+            &sim.voxel_zone(sim.home_zone_id()).unwrap(),
+            &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
             task.location,
             [1, 1, 1],
             true,
@@ -2169,13 +2376,18 @@ fn test_designate_carve_accepts_dirt_voxels() {
         .flat_map(|dx| (-20i32..=20).map(move |dz| (dx, dz)))
         .flat_map(|(dx, dz)| (1i32..=5).rev().map(move |y| (dx, y, dz)))
         .map(|(dx, y, dz)| VoxelCoord::new(tree_pos.x + dx, y, tree_pos.z + dz))
-        .find(|&c| sim.world.in_bounds(c) && sim.world.get(c) == VoxelType::Dirt && c.y > 0)
+        .find(|&c| {
+            sim.voxel_zone(sim.home_zone_id()).unwrap().in_bounds(c)
+                && sim.voxel_zone(sim.home_zone_id()).unwrap().get(c) == VoxelType::Dirt
+                && c.y > 0
+        })
         .expect("Should find carvable dirt voxel near tree");
 
     let cmd = SimCommand {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateCarve {
+            zone_id: sim.home_zone_id(),
             voxels: vec![dirt_coord],
             priority: Priority::Normal,
         },
@@ -2202,12 +2414,18 @@ fn test_carve_skips_bedrock_layer() {
     let center_x = ws_x as i32 / 2;
     let center_z = ws_z as i32 / 2;
     let bedrock = VoxelCoord::new(center_x, 0, center_z);
-    assert!(sim.world.get(bedrock).is_solid());
+    assert!(
+        sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .get(bedrock)
+            .is_solid()
+    );
 
     let cmd = SimCommand {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateCarve {
+            zone_id: sim.home_zone_id(),
             voxels: vec![bedrock],
             priority: Priority::Normal,
         },
@@ -2231,7 +2449,7 @@ fn test_cancel_carve_restores_originals() {
     // Find two adjacent trunk voxels for carving.
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     let v1 = tree.trunk_voxels.iter().copied().find(|v| v.y > 0).unwrap();
-    let original_type = sim.world.get(v1);
+    let original_type = sim.voxel_zone(sim.home_zone_id()).unwrap().get(v1);
     assert!(original_type.is_solid());
 
     // Spawn elf and designate carve.
@@ -2241,6 +2459,7 @@ fn test_cancel_carve_restores_originals() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: elf_pos,
         },
@@ -2249,6 +2468,7 @@ fn test_cancel_carve_restores_originals() {
         player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateCarve {
+            zone_id: sim.home_zone_id(),
             voxels: vec![v1],
             priority: Priority::Normal,
         },
@@ -2257,7 +2477,10 @@ fn test_cancel_carve_restores_originals() {
 
     // Run long enough for the carve to complete.
     sim.step(&[], 500_000);
-    assert_eq!(sim.world.get(v1), VoxelType::Air);
+    assert_eq!(
+        sim.voxel_zone(sim.home_zone_id()).unwrap().get(v1),
+        VoxelType::Air
+    );
 
     // Now cancel the build.
     let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
@@ -2270,12 +2493,15 @@ fn test_cancel_carve_restores_originals() {
 
     // The voxel should be restored to its original type.
     assert_eq!(
-        sim.world.get(v1),
+        sim.voxel_zone(sim.home_zone_id()).unwrap().get(v1),
         original_type,
         "Cancelled carve should restore original voxel type"
     );
     assert!(
-        !sim.carved_voxels.contains(&v1),
+        !sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .carved_voxels
+            .contains(&v1),
         "carved_voxels should be cleaned up"
     );
 }
@@ -2298,7 +2524,10 @@ fn test_carve_updates_walkability() {
     let solid = find_carvable_voxel(&sim);
     // Before carving, the voxel is solid — it should not be a nav node itself.
     assert!(
-        sim.world.get(solid).is_solid(),
+        sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .get(solid)
+            .is_solid(),
         "Precondition: voxel is solid"
     );
 
@@ -2308,6 +2537,7 @@ fn test_carve_updates_walkability() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: tree_pos,
         },
@@ -2316,6 +2546,7 @@ fn test_carve_updates_walkability() {
         player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateCarve {
+            zone_id: sim.home_zone_id(),
             voxels: vec![solid],
             priority: Priority::Normal,
         },
@@ -2327,12 +2558,19 @@ fn test_carve_updates_walkability() {
 
     // After carving, the voxel is Air. If it has a solid face neighbor,
     // it should now be a nav node.
-    assert_eq!(sim.world.get(solid), VoxelType::Air);
-    if sim.world.has_solid_face_neighbor(solid) {
+    assert_eq!(
+        sim.voxel_zone(sim.home_zone_id()).unwrap().get(solid),
+        VoxelType::Air
+    );
+    if sim
+        .voxel_zone(sim.home_zone_id())
+        .unwrap()
+        .has_solid_face_neighbor(solid)
+    {
         assert!(
             crate::walkability::footprint_walkable(
-                &sim.world,
-                &sim.face_data,
+                &sim.voxel_zone(sim.home_zone_id()).unwrap(),
+                &sim.voxel_zone(sim.home_zone_id()).unwrap().face_data,
                 solid,
                 [1, 1, 1],
                 true
@@ -2362,7 +2600,7 @@ fn test_carve_save_load_roundtrip() {
         .filter(|v| v.y > 0)
         .min_by_key(|v| v.y)
         .expect("No trunk voxel above floor");
-    let original_type = sim.world.get(solid);
+    let original_type = sim.voxel_zone(sim.home_zone_id()).unwrap().get(solid);
 
     // Spawn elf at tree base and designate carve.
     let _elf_id = spawn_elf(&mut sim);
@@ -2370,6 +2608,7 @@ fn test_carve_save_load_roundtrip() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateCarve {
+            zone_id: sim.home_zone_id(),
             voxels: vec![solid],
             priority: Priority::Normal,
         },
@@ -2378,17 +2617,34 @@ fn test_carve_save_load_roundtrip() {
 
     // Complete the carve.
     sim.step(&[], sim.tick + 500_000);
-    assert_eq!(sim.world.get(solid), VoxelType::Air);
-    assert!(sim.carved_voxels.contains(&solid));
+    assert_eq!(
+        sim.voxel_zone(sim.home_zone_id()).unwrap().get(solid),
+        VoxelType::Air
+    );
+    assert!(
+        sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .carved_voxels
+            .contains(&solid)
+    );
 
     // Save and load.
     let json = sim.to_json().unwrap();
     let restored = SimState::from_json(&json).unwrap();
 
     // Verify carved voxels survived.
-    assert!(restored.carved_voxels.contains(&solid));
+    assert!(
+        restored
+            .voxel_zone(restored.home_zone_id())
+            .unwrap()
+            .carved_voxels
+            .contains(&solid)
+    );
     assert_eq!(
-        restored.world.get(solid),
+        restored
+            .voxel_zone(restored.home_zone_id())
+            .unwrap()
+            .get(solid),
         VoxelType::Air,
         "Carved voxel should be Air after reload"
     );
@@ -2426,6 +2682,7 @@ fn carve_uses_separate_duration_from_build() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateCarve {
+            zone_id: sim.home_zone_id(),
             voxels: vec![carve_coord],
             priority: Priority::Normal,
         },
@@ -2467,6 +2724,7 @@ fn designate_wood_ladder_creates_blueprint() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateLadder {
+            zone_id: sim.home_zone_id(),
             anchor,
             height: 3,
             orientation,
@@ -2500,6 +2758,7 @@ fn designate_rope_ladder_creates_blueprint() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateLadder {
+            zone_id: sim.home_zone_id(),
             anchor,
             height: 1,
             orientation,
@@ -2523,6 +2782,7 @@ fn designate_ladder_rejects_vertical_orientation() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateLadder {
+            zone_id: sim.home_zone_id(),
             anchor,
             height: 1,
             orientation: FaceDirection::PosY,
@@ -2548,6 +2808,7 @@ fn designate_ladder_rejects_zero_height() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateLadder {
+            zone_id: sim.home_zone_id(),
             anchor,
             height: 0,
             orientation,
@@ -2570,12 +2831,16 @@ fn designate_wood_ladder_rejects_no_anchor() {
     // Place ladder in open air with no adjacent solid.
     let anchor = VoxelCoord::new(1, 10, 1);
     // Confirm it's air with no solid neighbor.
-    assert_eq!(sim.world.get(anchor), VoxelType::Air);
+    assert_eq!(
+        sim.voxel_zone(sim.home_zone_id()).unwrap().get(anchor),
+        VoxelType::Air
+    );
 
     let cmd = SimCommand {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateLadder {
+            zone_id: sim.home_zone_id(),
             anchor,
             height: 1,
             orientation: FaceDirection::PosX,
@@ -2597,6 +2862,7 @@ fn designate_ladder_creates_build_task() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateLadder {
+            zone_id: sim.home_zone_id(),
             anchor,
             height: 2,
             orientation,
@@ -2657,6 +2923,7 @@ fn cancel_ladder_removes_blueprint_and_data() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateLadder {
+            zone_id: sim.home_zone_id(),
             anchor,
             height: 2,
             orientation,
@@ -2694,6 +2961,7 @@ fn ladder_save_load_roundtrip() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateLadder {
+            zone_id: sim.home_zone_id(),
             anchor,
             height: 2,
             orientation,
@@ -2725,7 +2993,8 @@ fn designate_rope_ladder_rejects_no_anchor() {
     // Make sure the far anchor column is air (best effort — skip if not).
     let all_air = (0..3).all(|dy| {
         let coord = VoxelCoord::new(far_anchor.x, far_anchor.y + dy, far_anchor.z);
-        sim.world.in_bounds(coord) && sim.world.get(coord) == VoxelType::Air
+        sim.voxel_zone(sim.home_zone_id()).unwrap().in_bounds(coord)
+            && sim.voxel_zone(sim.home_zone_id()).unwrap().get(coord) == VoxelType::Air
     });
     if !all_air {
         // Can't construct the test scenario — skip gracefully.
@@ -2736,6 +3005,7 @@ fn designate_rope_ladder_rejects_no_anchor() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateLadder {
+            zone_id: sim.home_zone_id(),
             anchor: far_anchor,
             height: 3,
             orientation,
@@ -2766,12 +3036,19 @@ fn designate_rope_ladder_multiheight() {
             let base = VoxelCoord::new(trunk_coord.x + dx, trunk_coord.y - 2, trunk_coord.z + dz);
             let all_air = (0..3).all(|dy| {
                 let coord = VoxelCoord::new(base.x, base.y + dy, base.z);
-                sim.world.in_bounds(coord) && sim.world.get(coord) == VoxelType::Air
+                sim.voxel_zone(sim.home_zone_id()).unwrap().in_bounds(coord)
+                    && sim.voxel_zone(sim.home_zone_id()).unwrap().get(coord) == VoxelType::Air
             });
             // Top voxel's ladder-face neighbor must be solid (the trunk).
             let (odx, _, odz) = orientation.to_offset();
             let top_neighbor = VoxelCoord::new(base.x + odx, base.y + 2, base.z + odz);
-            if all_air && sim.world.get(top_neighbor).is_solid() {
+            if all_air
+                && sim
+                    .voxel_zone(sim.home_zone_id())
+                    .unwrap()
+                    .get(top_neighbor)
+                    .is_solid()
+            {
                 found = Some((base, orientation));
                 break;
             }
@@ -2786,6 +3063,7 @@ fn designate_rope_ladder_multiheight() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateLadder {
+            zone_id: sim.home_zone_id(),
             anchor,
             height: 3,
             orientation,
@@ -2840,6 +3118,7 @@ fn designate_ladder_determinism() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateLadder {
+            zone_id: sim_a.home_zone_id(),
             anchor: anchor_a,
             height: 3,
             orientation: orientation_a,
@@ -2851,6 +3130,7 @@ fn designate_ladder_determinism() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateLadder {
+            zone_id: sim_b.home_zone_id(),
             anchor: anchor_b,
             height: 3,
             orientation: orientation_b,
@@ -2878,6 +3158,7 @@ fn build_rejects_overlap_with_existing_build_blueprint() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -2891,6 +3172,7 @@ fn build_rejects_overlap_with_existing_build_blueprint() {
         player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -2922,6 +3204,7 @@ fn build_rejects_overlap_with_carve_blueprint() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateCarve {
+            zone_id: sim.home_zone_id(),
             voxels: vec![solid],
             priority: Priority::Normal,
         },
@@ -2935,6 +3218,7 @@ fn build_rejects_overlap_with_carve_blueprint() {
         player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Wall,
             voxels: vec![solid],
             priority: Priority::Normal,
@@ -2964,6 +3248,7 @@ fn carve_filters_out_build_blueprint_voxels() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -2978,6 +3263,7 @@ fn carve_filters_out_build_blueprint_voxels() {
         player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateCarve {
+            zone_id: sim.home_zone_id(),
             voxels: vec![air_coord],
             priority: Priority::Normal,
         },
@@ -3000,6 +3286,7 @@ fn carve_filters_out_carve_blueprint_voxels() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateCarve {
+            zone_id: sim.home_zone_id(),
             voxels: vec![solid],
             priority: Priority::Normal,
         },
@@ -3012,6 +3299,7 @@ fn carve_filters_out_carve_blueprint_voxels() {
         player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateCarve {
+            zone_id: sim.home_zone_id(),
             voxels: vec![solid],
             priority: Priority::Normal,
         },
@@ -3032,7 +3320,10 @@ fn building_rejects_overlap_with_existing_blueprint() {
     // Designate a platform on one of the building's wall voxels (y+1).
     // Building walls are at the perimeter of (site.x..site.x+3, site.y+1, site.z..site.z+3).
     let wall_coord = VoxelCoord::new(site.x, site.y + 1, site.z);
-    assert_eq!(sim.world.get(wall_coord), VoxelType::Air);
+    assert_eq!(
+        sim.voxel_zone(sim.home_zone_id()).unwrap().get(wall_coord),
+        VoxelType::Air
+    );
 
     // First: place a platform at the wall position.
     // Need adjacency — wall_coord is above solid ground, so has a solid
@@ -3041,6 +3332,7 @@ fn building_rejects_overlap_with_existing_blueprint() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![wall_coord],
             priority: Priority::Normal,
@@ -3054,6 +3346,7 @@ fn building_rejects_overlap_with_existing_blueprint() {
         player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuilding {
+            zone_id: sim.home_zone_id(),
             anchor: site,
             width: 3,
             depth: 3,
@@ -3086,6 +3379,7 @@ fn ladder_rejects_overlap_with_existing_blueprint() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![anchor],
             priority: Priority::Normal,
@@ -3099,6 +3393,7 @@ fn ladder_rejects_overlap_with_existing_blueprint() {
         player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateLadder {
+            zone_id: sim.home_zone_id(),
             anchor,
             height: 2,
             orientation,
@@ -3135,7 +3430,7 @@ fn carve_partial_overlap_filters_claimed_voxels() {
         .iter()
         .copied()
         .filter(|v| {
-            let vt = sim.world.get(*v);
+            let vt = sim.voxel_zone(sim.home_zone_id()).unwrap().get(*v);
             vt.is_solid() && v.y > 0
         })
         .take(2)
@@ -3147,6 +3442,7 @@ fn carve_partial_overlap_filters_claimed_voxels() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateCarve {
+            zone_id: sim.home_zone_id(),
             voxels: vec![carvable[0]],
             priority: Priority::Normal,
         },
@@ -3159,6 +3455,7 @@ fn carve_partial_overlap_filters_claimed_voxels() {
         player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateCarve {
+            zone_id: sim.home_zone_id(),
             voxels: carvable.clone(),
             priority: Priority::Normal,
         },
@@ -3191,10 +3488,10 @@ fn build_partial_overlap_rejected() {
         for &(dx, dz) in &[(1, 0), (-1, 0), (0, 1), (0, -1)] {
             let a = VoxelCoord::new(trunk_coord.x + dx, trunk_coord.y, trunk_coord.z + dz);
             let b = VoxelCoord::new(a.x + dx, a.y, a.z + dz);
-            if sim.world.in_bounds(a)
-                && sim.world.in_bounds(b)
-                && sim.world.get(a) == VoxelType::Air
-                && sim.world.get(b) == VoxelType::Air
+            if sim.voxel_zone(sim.home_zone_id()).unwrap().in_bounds(a)
+                && sim.voxel_zone(sim.home_zone_id()).unwrap().in_bounds(b)
+                && sim.voxel_zone(sim.home_zone_id()).unwrap().get(a) == VoxelType::Air
+                && sim.voxel_zone(sim.home_zone_id()).unwrap().get(b) == VoxelType::Air
             {
                 air_pair = Some((a, b));
                 break 'outer;
@@ -3208,6 +3505,7 @@ fn build_partial_overlap_rejected() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![a],
             priority: Priority::Normal,
@@ -3221,6 +3519,7 @@ fn build_partial_overlap_rejected() {
         player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![a, b],
             priority: Priority::Normal,
@@ -3244,7 +3543,12 @@ fn non_overlapping_builds_both_succeed() {
     for &trunk_coord in &tree.trunk_voxels {
         for &(dx, dz) in &[(1, 0), (-1, 0), (0, 1), (0, -1)] {
             let neighbor = VoxelCoord::new(trunk_coord.x + dx, trunk_coord.y, trunk_coord.z + dz);
-            if sim.world.in_bounds(neighbor) && sim.world.get(neighbor) == VoxelType::Air {
+            if sim
+                .voxel_zone(sim.home_zone_id())
+                .unwrap()
+                .in_bounds(neighbor)
+                && sim.voxel_zone(sim.home_zone_id()).unwrap().get(neighbor) == VoxelType::Air
+            {
                 air_voxels.push(neighbor);
                 if air_voxels.len() >= 2 {
                     break;
@@ -3263,6 +3567,7 @@ fn non_overlapping_builds_both_succeed() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![a],
             priority: Priority::Normal,
@@ -3272,6 +3577,7 @@ fn non_overlapping_builds_both_succeed() {
         player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![b],
             priority: Priority::Normal,
@@ -3302,6 +3608,7 @@ fn completed_blueprint_does_not_block_carve() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: elf_pos,
         },
@@ -3310,6 +3617,7 @@ fn completed_blueprint_does_not_block_carve() {
         player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -3321,7 +3629,7 @@ fn completed_blueprint_does_not_block_carve() {
     // Let the build complete.
     sim.step(&[], 500_000);
     assert_eq!(
-        sim.world.get(air_coord),
+        sim.voxel_zone(sim.home_zone_id()).unwrap().get(air_coord),
         VoxelType::GrownPlatform,
         "Platform should be materialized"
     );
@@ -3332,6 +3640,7 @@ fn completed_blueprint_does_not_block_carve() {
         player_name: String::new(),
         tick: 500_001,
         action: SimAction::DesignateCarve {
+            zone_id: sim.home_zone_id(),
             voxels: vec![air_coord],
             priority: Priority::Normal,
         },
@@ -3355,6 +3664,7 @@ fn compute_furniture_positions_3x3_dormitory() {
     let mut rng = GameRng::new(42);
     let structure = CompletedStructure {
         id: StructureId(0),
+        zone_id: ZoneId(0),
         project_id: ProjectId::new(&mut rng),
         build_type: BuildType::Building,
         anchor: VoxelCoord::new(0, 0, 0),
@@ -3393,6 +3703,7 @@ fn compute_furniture_positions_5x5_dormitory() {
     let mut rng = GameRng::new(42);
     let structure = CompletedStructure {
         id: StructureId(0),
+        zone_id: ZoneId(0),
         project_id: ProjectId::new(&mut rng),
         build_type: BuildType::Building,
         anchor: VoxelCoord::new(0, 0, 0),
@@ -3432,6 +3743,7 @@ fn display_name_dormitory_when_furnished() {
     let mut rng = GameRng::new(42);
     let structure = CompletedStructure {
         id: StructureId(7),
+        zone_id: ZoneId(0),
         project_id: ProjectId::new(&mut rng),
         build_type: BuildType::Building,
         anchor: VoxelCoord::new(0, 0, 0),
@@ -3459,6 +3771,7 @@ fn display_name_custom_overrides_dormitory() {
     let mut rng = GameRng::new(42);
     let structure = CompletedStructure {
         id: StructureId(7),
+        zone_id: ZoneId(0),
         project_id: ProjectId::new(&mut rng),
         build_type: BuildType::Building,
         anchor: VoxelCoord::new(0, 0, 0),
@@ -3620,6 +3933,7 @@ fn furnish_rejects_non_building() {
     insert_stub_blueprint(&mut sim, project_id);
     let structure = CompletedStructure {
         id,
+        zone_id: sim.home_zone_id(),
         project_id,
         build_type: BuildType::Platform,
         anchor: VoxelCoord::new(10, 5, 10),
@@ -3743,6 +4057,7 @@ fn do_furnish_work_places_items_incrementally() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: spawn_pos,
         },
@@ -3802,6 +4117,7 @@ fn furnish_completes_all_items() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: spawn_pos,
         },
@@ -3898,6 +4214,7 @@ fn compute_furniture_positions_home_single_item() {
     let mut rng = GameRng::new(42);
     let structure = CompletedStructure {
         id: StructureId(0),
+        zone_id: ZoneId(0),
         project_id: ProjectId::new(&mut rng),
         build_type: BuildType::Building,
         anchor: VoxelCoord::new(0, 0, 0),
@@ -3929,6 +4246,7 @@ fn compute_furniture_positions_dining_hall_density() {
     let mut rng = GameRng::new(42);
     let structure = CompletedStructure {
         id: StructureId(0),
+        zone_id: ZoneId(0),
         project_id: ProjectId::new(&mut rng),
         build_type: BuildType::Building,
         anchor: VoxelCoord::new(0, 0, 0),
@@ -3979,6 +4297,7 @@ fn display_name_all_furnishing_types() {
     for (furnishing_type, expected) in types_and_names {
         let structure = CompletedStructure {
             id: StructureId(0),
+            zone_id: ZoneId(0),
             project_id: ProjectId::new(&mut rng),
             build_type: BuildType::Building,
             anchor: VoxelCoord::new(0, 0, 0),
@@ -4109,7 +4428,9 @@ fn raycast_solid_finds_solid_voxel() {
     let mut sim = test_sim(legacy_test_seed());
     // Place a known solid voxel and cast a ray at it.
     let target = VoxelCoord::new(5, 5, 5);
-    sim.world.set(target, VoxelType::Trunk);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(target, VoxelType::Trunk);
     let from = [5.5, 10.0, 5.5];
     let dir = [0.0, -1.0, 0.0];
     let result = sim.raycast_solid(from, dir, 100, None, None);
@@ -4124,7 +4445,9 @@ fn raycast_solid_returns_correct_face() {
     let mut sim = test_sim(legacy_test_seed());
     // Place a solid voxel in a clear area far from the tree.
     let target = VoxelCoord::new(5, 10, 5);
-    sim.world.set(target, VoxelType::Trunk);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(target, VoxelType::Trunk);
 
     // Ray from above -> enters through PosY face (index 2).
     let from_above = [5.5, 15.0, 5.5];
@@ -4168,7 +4491,9 @@ fn raycast_solid_returns_none_for_empty_ray() {
 fn raycast_solid_negative_face_directions() {
     let mut sim = test_sim(legacy_test_seed());
     let target = VoxelCoord::new(5, 10, 5);
-    sim.world.set(target, VoxelType::Trunk);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(target, VoxelType::Trunk);
 
     // Ray from -X side -> enters through NegX face (index 1).
     let from_west = [0.5, 10.5, 5.5];
@@ -4193,8 +4518,12 @@ fn raycast_solid_negative_face_directions() {
 fn raycast_solid_skips_starting_voxel() {
     let mut sim = test_sim(legacy_test_seed());
     // Place two solid voxels adjacent vertically.
-    sim.world.set(VoxelCoord::new(5, 10, 5), VoxelType::Trunk);
-    sim.world.set(VoxelCoord::new(5, 11, 5), VoxelType::Trunk);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(VoxelCoord::new(5, 10, 5), VoxelType::Trunk);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(VoxelCoord::new(5, 11, 5), VoxelType::Trunk);
     // Start inside the upper voxel, cast downward — should skip
     // the starting voxel and hit the lower one.
     let from = [5.5, 11.5, 5.5];
@@ -4234,6 +4563,7 @@ fn raycast_solid_hits_blueprint_with_overlay() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![target],
             priority: Priority::Normal,
@@ -4258,7 +4588,9 @@ fn raycast_solid_hits_blueprint_with_overlay() {
 fn raycast_solid_skips_above_y_cutoff() {
     let mut sim = test_sim(legacy_test_seed());
     let target = VoxelCoord::new(5, 10, 5);
-    sim.world.set(target, VoxelType::Trunk);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(target, VoxelType::Trunk);
 
     // Sanity: without y_cutoff, we hit the voxel.
     let from = [5.5, 15.0, 5.5];
@@ -4282,8 +4614,12 @@ fn raycast_solid_hits_below_y_cutoff() {
     // Place two solid voxels stacked vertically.
     let upper = VoxelCoord::new(5, 11, 5);
     let lower = VoxelCoord::new(5, 10, 5);
-    sim.world.set(upper, VoxelType::Trunk);
-    sim.world.set(lower, VoxelType::Trunk);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(upper, VoxelType::Trunk);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(lower, VoxelType::Trunk);
 
     let from = [5.5, 15.0, 5.5];
     let dir = [0.0, -1.0, 0.0];
@@ -4309,15 +4645,25 @@ fn auto_ladder_orientation_faces_trunk() {
     // Place a trunk column at (5, 10..14, 5) and test ladder at (6, 10, 5).
     // Use an elevated position far from the real tree to avoid interference.
     for y in 10..14 {
-        sim.world.set(VoxelCoord::new(5, y, 5), VoxelType::Trunk);
+        sim.voxel_zone_mut(sim.home_zone_id())
+            .unwrap()
+            .set(VoxelCoord::new(5, y, 5), VoxelType::Trunk);
     }
     // Clear all neighbors around the ladder column to ensure only the
     // trunk at x=5 is adjacent.
     for y in 10..14 {
-        sim.world.set(VoxelCoord::new(6, y, 5), VoxelType::Air);
-        sim.world.set(VoxelCoord::new(7, y, 5), VoxelType::Air);
-        sim.world.set(VoxelCoord::new(6, y, 4), VoxelType::Air);
-        sim.world.set(VoxelCoord::new(6, y, 6), VoxelType::Air);
+        sim.voxel_zone_mut(sim.home_zone_id())
+            .unwrap()
+            .set(VoxelCoord::new(6, y, 5), VoxelType::Air);
+        sim.voxel_zone_mut(sim.home_zone_id())
+            .unwrap()
+            .set(VoxelCoord::new(7, y, 5), VoxelType::Air);
+        sim.voxel_zone_mut(sim.home_zone_id())
+            .unwrap()
+            .set(VoxelCoord::new(6, y, 4), VoxelType::Air);
+        sim.voxel_zone_mut(sim.home_zone_id())
+            .unwrap()
+            .set(VoxelCoord::new(6, y, 6), VoxelType::Air);
     }
 
     let face = sim.auto_ladder_orientation(6, 10, 5, 4);
@@ -4333,11 +4679,19 @@ fn auto_ladder_orientation_tie_breaks_to_first() {
     // creating a tie. The code iterates [PosX, PosZ, NegX, NegZ], so
     // PosX (face 0) should win.
     for y in 10..14 {
-        sim.world.set(VoxelCoord::new(4, y, 5), VoxelType::Trunk); // -X
-        sim.world.set(VoxelCoord::new(6, y, 5), VoxelType::Trunk); // +X
+        sim.voxel_zone_mut(sim.home_zone_id())
+            .unwrap()
+            .set(VoxelCoord::new(4, y, 5), VoxelType::Trunk); // -X
+        sim.voxel_zone_mut(sim.home_zone_id())
+            .unwrap()
+            .set(VoxelCoord::new(6, y, 5), VoxelType::Trunk); // +X
         // Clear other neighbors.
-        sim.world.set(VoxelCoord::new(5, y, 4), VoxelType::Air);
-        sim.world.set(VoxelCoord::new(5, y, 6), VoxelType::Air);
+        sim.voxel_zone_mut(sim.home_zone_id())
+            .unwrap()
+            .set(VoxelCoord::new(5, y, 4), VoxelType::Air);
+        sim.voxel_zone_mut(sim.home_zone_id())
+            .unwrap()
+            .set(VoxelCoord::new(5, y, 6), VoxelType::Air);
     }
     let face = sim.auto_ladder_orientation(5, 10, 5, 4);
     assert_eq!(
@@ -4351,11 +4705,21 @@ fn auto_ladder_orientation_no_neighbors_defaults_east() {
     let mut sim = test_sim(legacy_test_seed());
     // Clear all neighbors around the ladder column — no solid voxels.
     for y in 10..14 {
-        sim.world.set(VoxelCoord::new(5, y, 5), VoxelType::Air);
-        sim.world.set(VoxelCoord::new(4, y, 5), VoxelType::Air);
-        sim.world.set(VoxelCoord::new(6, y, 5), VoxelType::Air);
-        sim.world.set(VoxelCoord::new(5, y, 4), VoxelType::Air);
-        sim.world.set(VoxelCoord::new(5, y, 6), VoxelType::Air);
+        sim.voxel_zone_mut(sim.home_zone_id())
+            .unwrap()
+            .set(VoxelCoord::new(5, y, 5), VoxelType::Air);
+        sim.voxel_zone_mut(sim.home_zone_id())
+            .unwrap()
+            .set(VoxelCoord::new(4, y, 5), VoxelType::Air);
+        sim.voxel_zone_mut(sim.home_zone_id())
+            .unwrap()
+            .set(VoxelCoord::new(6, y, 5), VoxelType::Air);
+        sim.voxel_zone_mut(sim.home_zone_id())
+            .unwrap()
+            .set(VoxelCoord::new(5, y, 4), VoxelType::Air);
+        sim.voxel_zone_mut(sim.home_zone_id())
+            .unwrap()
+            .set(VoxelCoord::new(5, y, 6), VoxelType::Air);
     }
     let face = sim.auto_ladder_orientation(5, 10, 5, 4);
     // All counts are 0, so first direction (PosX, face 0) wins.
@@ -4372,6 +4736,7 @@ fn completed_structure_serde_backward_compat_crafting() {
     let mut rng = GameRng::new(42);
     let structure = CompletedStructure {
         id: StructureId(1),
+        zone_id: ZoneId(0),
         project_id: ProjectId::new(&mut rng),
         build_type: BuildType::Building,
         anchor: VoxelCoord::new(0, 0, 0),
@@ -4456,6 +4821,7 @@ fn blueprint_overlay_includes_designated_blueprints() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -4482,6 +4848,7 @@ fn blueprint_overlay_excludes_complete_blueprints() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -4511,7 +4878,7 @@ fn blueprint_overlay_maps_carve_to_air() {
         .trunk_voxels
         .iter()
         .find(|&&c| {
-            let vt = sim.world.get(c);
+            let vt = sim.voxel_zone(sim.home_zone_id()).unwrap().get(c);
             vt.is_solid() && c.y > 0
         })
         .expect("Need a carvable trunk voxel");
@@ -4520,6 +4887,7 @@ fn blueprint_overlay_maps_carve_to_air() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateCarve {
+            zone_id: sim.home_zone_id(),
             voxels: vec![carve_coord],
             priority: Priority::Normal,
         },
@@ -4547,6 +4915,7 @@ fn second_platform_blocked_by_existing_blueprint() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -4560,6 +4929,7 @@ fn second_platform_blocked_by_existing_blueprint() {
         player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -4600,7 +4970,9 @@ fn adjacent_platform_sees_blueprint_support() {
                     trunk_coord.y,
                     trunk_coord.z + dz * i,
                 );
-                if !sim.world.in_bounds(c) || sim.world.get(c) != VoxelType::Air {
+                if !sim.voxel_zone(sim.home_zone_id()).unwrap().in_bounds(c)
+                    || sim.voxel_zone(sim.home_zone_id()).unwrap().get(c) != VoxelType::Air
+                {
                     break;
                 }
                 strip.push(c);
@@ -4608,10 +4980,11 @@ fn adjacent_platform_sees_blueprint_support() {
             if strip.len() < 2 {
                 continue;
             }
-            if let Some(split) = strip
-                .iter()
-                .position(|&c| !sim.world.has_solid_face_neighbor(c))
-                && split > 0
+            if let Some(split) = strip.iter().position(|&c| {
+                !sim.voxel_zone(sim.home_zone_id())
+                    .unwrap()
+                    .has_solid_face_neighbor(c)
+            }) && split > 0
             {
                 best = Some((strip, split));
                 break 'outer;
@@ -4630,6 +5003,7 @@ fn adjacent_platform_sees_blueprint_support() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: first_batch.to_vec(),
             priority: Priority::Normal,
@@ -4644,6 +5018,7 @@ fn adjacent_platform_sees_blueprint_support() {
         player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![extension],
             priority: Priority::Normal,
@@ -4668,7 +5043,7 @@ fn overlapping_carve_designations_rejected() {
         .trunk_voxels
         .iter()
         .find(|&&c| {
-            let vt = sim.world.get(c);
+            let vt = sim.voxel_zone(sim.home_zone_id()).unwrap().get(c);
             vt.is_solid() && c.y > 0
         })
         .expect("Need a carvable trunk voxel");
@@ -4678,6 +5053,7 @@ fn overlapping_carve_designations_rejected() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateCarve {
+            zone_id: sim.home_zone_id(),
             voxels: vec![carve_coord],
             priority: Priority::Normal,
         },
@@ -4690,6 +5066,7 @@ fn overlapping_carve_designations_rejected() {
         player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateCarve {
+            zone_id: sim.home_zone_id(),
             voxels: vec![carve_coord],
             priority: Priority::Normal,
         },
@@ -4730,6 +5107,7 @@ fn building_foundation_on_designated_platform() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: platform_voxels,
             priority: Priority::Normal,
@@ -4753,8 +5131,10 @@ fn building_foundation_on_designated_platform() {
     for dx in 0..3 {
         for dz in 0..3 {
             let coord = VoxelCoord::new(site.x + dx, 2, site.z + dz);
-            if sim.world.get(coord) != VoxelType::Air {
-                sim.world.set(coord, VoxelType::Air);
+            if sim.voxel_zone(sim.home_zone_id()).unwrap().get(coord) != VoxelType::Air {
+                sim.voxel_zone_mut(sim.home_zone_id())
+                    .unwrap()
+                    .set(coord, VoxelType::Air);
             }
         }
     }
@@ -4763,6 +5143,7 @@ fn building_foundation_on_designated_platform() {
         player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuilding {
+            zone_id: sim.home_zone_id(),
             anchor: building_anchor,
             width: 3,
             depth: 3,
@@ -4791,6 +5172,7 @@ fn ladder_anchored_to_designated_platform() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -4817,7 +5199,10 @@ fn ladder_anchored_to_designated_platform() {
                 dir,
             )
         })
-        .find(|&(coord, _)| sim.world.in_bounds(coord) && sim.world.get(coord) == VoxelType::Air)
+        .find(|&(coord, _)| {
+            sim.voxel_zone(sim.home_zone_id()).unwrap().in_bounds(coord)
+                && sim.voxel_zone(sim.home_zone_id()).unwrap().get(coord) == VoxelType::Air
+        })
         .expect("Need an air voxel adjacent to the platform for ladder placement");
 
     // Clear any solid face neighbors so anchoring can only succeed via overlay.
@@ -4828,12 +5213,22 @@ fn ladder_anchored_to_designated_platform() {
             ladder_coord.y + dy,
             ladder_coord.z + dz,
         );
-        if neighbor != air_coord && sim.world.get(neighbor).is_solid() {
-            sim.world.set(neighbor, VoxelType::Air);
+        if neighbor != air_coord
+            && sim
+                .voxel_zone(sim.home_zone_id())
+                .unwrap()
+                .get(neighbor)
+                .is_solid()
+        {
+            sim.voxel_zone_mut(sim.home_zone_id())
+                .unwrap()
+                .set(neighbor, VoxelType::Air);
         }
     }
     assert!(
-        !sim.world.has_solid_face_neighbor(ladder_coord),
+        !sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .has_solid_face_neighbor(ladder_coord),
         "Ladder voxel should have no solid face neighbors in the real world"
     );
 
@@ -4841,6 +5236,7 @@ fn ladder_anchored_to_designated_platform() {
         player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateLadder {
+            zone_id: sim.home_zone_id(),
             anchor: ladder_coord,
             height: 1,
             orientation,
@@ -4871,6 +5267,7 @@ fn strut_designate_creates_blueprint_and_strut_row() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Strut,
             voxels: line.clone(),
             priority: Priority::Normal,
@@ -4909,6 +5306,7 @@ fn strut_rejects_single_voxel() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Strut,
             voxels: vec![air],
             priority: Priority::Normal,
@@ -4935,6 +5333,7 @@ fn strut_rejects_invalid_bresenham_list() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Strut,
             voxels: bogus,
             priority: Priority::Normal,
@@ -4956,16 +5355,21 @@ fn strut_rejects_player_built_structure() {
     let air = find_air_adjacent_to_trunk(&sim);
 
     // Place a GrownPlatform at `air`.
-    sim.world.set(air, VoxelType::GrownPlatform);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(air, VoxelType::GrownPlatform);
 
     // Try to designate a strut through the platform.
     let b = VoxelCoord::new(air.x + 1, air.y, air.z);
-    if sim.world.in_bounds(b) && sim.world.get(b) == VoxelType::Air {
+    if sim.voxel_zone(sim.home_zone_id()).unwrap().in_bounds(b)
+        && sim.voxel_zone(sim.home_zone_id()).unwrap().get(b) == VoxelType::Air
+    {
         let line = air.line_to(b);
         let cmd = SimCommand {
             player_name: String::new(),
             tick: 1,
             action: SimAction::DesignateBuild {
+                zone_id: sim.home_zone_id(),
                 build_type: BuildType::Strut,
                 voxels: line,
                 priority: Priority::Normal,
@@ -4991,10 +5395,13 @@ fn strut_replaces_trunk_records_originals() {
     for &trunk_coord in &tree.trunk_voxels {
         let before = VoxelCoord::new(trunk_coord.x - 1, trunk_coord.y, trunk_coord.z);
         let after = VoxelCoord::new(trunk_coord.x + 1, trunk_coord.y, trunk_coord.z);
-        if sim.world.in_bounds(before)
-            && sim.world.in_bounds(after)
-            && sim.world.get(before) == VoxelType::Air
-            && sim.world.get(after) == VoxelType::Air
+        if sim
+            .voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .in_bounds(before)
+            && sim.voxel_zone(sim.home_zone_id()).unwrap().in_bounds(after)
+            && sim.voxel_zone(sim.home_zone_id()).unwrap().get(before) == VoxelType::Air
+            && sim.voxel_zone(sim.home_zone_id()).unwrap().get(after) == VoxelType::Air
         {
             found = Some((before, trunk_coord, after));
             break;
@@ -5007,6 +5414,7 @@ fn strut_replaces_trunk_records_originals() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Strut,
             voxels: line,
             priority: Priority::Normal,
@@ -5031,16 +5439,17 @@ fn strut_rejects_no_adjacency() {
     // Place strut entirely in open air, far from any structure.
     let a = VoxelCoord::new(60, 60, 60);
     let b = VoxelCoord::new(61, 60, 60);
-    if sim.world.in_bounds(a)
-        && sim.world.in_bounds(b)
-        && sim.world.get(a) == VoxelType::Air
-        && sim.world.get(b) == VoxelType::Air
+    if sim.voxel_zone(sim.home_zone_id()).unwrap().in_bounds(a)
+        && sim.voxel_zone(sim.home_zone_id()).unwrap().in_bounds(b)
+        && sim.voxel_zone(sim.home_zone_id()).unwrap().get(a) == VoxelType::Air
+        && sim.voxel_zone(sim.home_zone_id()).unwrap().get(b) == VoxelType::Air
     {
         let line = a.line_to(b);
         let cmd = SimCommand {
             player_name: String::new(),
             tick: 1,
             action: SimAction::DesignateBuild {
+                zone_id: sim.home_zone_id(),
                 build_type: BuildType::Strut,
                 voxels: line,
                 priority: Priority::Normal,
@@ -5068,6 +5477,7 @@ fn strut_blueprint_overlap_rejected() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Strut,
             voxels: line.clone(),
             priority: Priority::Normal,
@@ -5081,6 +5491,7 @@ fn strut_blueprint_overlap_rejected() {
         player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Strut,
             voxels: line,
             priority: Priority::Normal,
@@ -5110,6 +5521,7 @@ fn strut_cancel_deletes_strut_row() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Strut,
             voxels: line,
             priority: Priority::Normal,
@@ -5142,6 +5554,7 @@ fn strut_serde_roundtrip() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Strut,
             voxels: line.clone(),
             priority: Priority::Normal,
@@ -5175,10 +5588,10 @@ fn strut_replaces_replaceable_types() {
         .find(|c| {
             let a = VoxelCoord::new(c.x - 1, c.y, c.z);
             let b = VoxelCoord::new(c.x + 1, c.y, c.z);
-            sim.world.in_bounds(a)
-                && sim.world.in_bounds(b)
-                && sim.world.get(a) == VoxelType::Air
-                && sim.world.get(b) == VoxelType::Air
+            sim.voxel_zone(sim.home_zone_id()).unwrap().in_bounds(a)
+                && sim.voxel_zone(sim.home_zone_id()).unwrap().in_bounds(b)
+                && sim.voxel_zone(sim.home_zone_id()).unwrap().get(a) == VoxelType::Air
+                && sim.voxel_zone(sim.home_zone_id()).unwrap().get(b) == VoxelType::Air
         })
         .copied()
         .expect("Need trunk with air on both sides");
@@ -5195,12 +5608,15 @@ fn strut_replaces_replaceable_types() {
         VoxelType::Root,
         VoxelType::Branch,
     ] {
-        sim.world.set(trunk_coord, replaceable);
+        sim.voxel_zone_mut(sim.home_zone_id())
+            .unwrap()
+            .set(trunk_coord, replaceable);
         let line = a.line_to(b);
         let cmd = SimCommand {
             player_name: String::new(),
             tick,
             action: SimAction::DesignateBuild {
+                zone_id: sim.home_zone_id(),
                 build_type: BuildType::Strut,
                 voxels: line,
                 priority: Priority::Normal,
@@ -5224,7 +5640,9 @@ fn strut_replaces_replaceable_types() {
         sim.step(&[cmd], tick);
         tick += 1;
         // Restore the original type for the next iteration.
-        sim.world.set(trunk_coord, VoxelType::Trunk);
+        sim.voxel_zone_mut(sim.home_zone_id())
+            .unwrap()
+            .set(trunk_coord, VoxelType::Trunk);
     }
 }
 
@@ -5240,6 +5658,7 @@ fn strut_completed_structure_display_name() {
         id: ProjectId(crate::types::SimUuid::new_v4(
             &mut crate::prng::GameRng::new(1),
         )),
+        zone_id: ZoneId(0),
         build_type: BuildType::Strut,
         voxels: vec![VoxelCoord::new(0, 0, 0), VoxelCoord::new(1, 0, 0)],
         priority: Priority::Normal,
@@ -5250,7 +5669,8 @@ fn strut_completed_structure_display_name() {
         stress_warning: false,
         original_voxels: vec![],
     };
-    let structure = CompletedStructure::from_blueprint(StructureId(42), &bp, 100, inv_id);
+    let structure =
+        CompletedStructure::from_blueprint(StructureId(42), &bp, 100, inv_id, ZoneId(0));
     assert_eq!(structure.display_name(), "Strut #42");
 }
 
@@ -5269,10 +5689,10 @@ fn strut_cancel_restores_original_voxels() {
         .find(|c| {
             let a = VoxelCoord::new(c.x - 1, c.y, c.z);
             let b = VoxelCoord::new(c.x + 1, c.y, c.z);
-            sim.world.in_bounds(a)
-                && sim.world.in_bounds(b)
-                && sim.world.get(a) == VoxelType::Air
-                && sim.world.get(b) == VoxelType::Air
+            sim.voxel_zone(sim.home_zone_id()).unwrap().in_bounds(a)
+                && sim.voxel_zone(sim.home_zone_id()).unwrap().in_bounds(b)
+                && sim.voxel_zone(sim.home_zone_id()).unwrap().get(a) == VoxelType::Air
+                && sim.voxel_zone(sim.home_zone_id()).unwrap().get(b) == VoxelType::Air
         })
         .copied()
         .expect("Need trunk with air on both sides");
@@ -5286,6 +5706,7 @@ fn strut_cancel_restores_original_voxels() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Strut,
             voxels: line.clone(),
             priority: Priority::Normal,
@@ -5305,9 +5726,17 @@ fn strut_cancel_restores_original_voxels() {
 
     // Simulate materialization: set the trunk voxel to Strut and add
     // to placed_voxels (as the build task would).
-    sim.world.set(trunk_coord, VoxelType::Strut);
-    sim.placed_voxels.push((trunk_coord, VoxelType::Strut));
-    assert_eq!(sim.world.get(trunk_coord), VoxelType::Strut);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(trunk_coord, VoxelType::Strut);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .placed_voxels
+        .push((trunk_coord, VoxelType::Strut));
+    assert_eq!(
+        sim.voxel_zone(sim.home_zone_id()).unwrap().get(trunk_coord),
+        VoxelType::Strut
+    );
 
     // Cancel the build.
     let bp_id = sim.db.blueprints.iter_all().next().unwrap().id;
@@ -5320,14 +5749,18 @@ fn strut_cancel_restores_original_voxels() {
 
     // After cancel, the trunk voxel should be restored.
     assert_eq!(
-        sim.world.get(trunk_coord),
+        sim.voxel_zone(sim.home_zone_id()).unwrap().get(trunk_coord),
         VoxelType::Trunk,
         "Cancel should restore trunk voxel from original_voxels"
     );
 
     // placed_voxels should no longer contain the strut entry.
     assert!(
-        !sim.placed_voxels.iter().any(|(c, _)| *c == trunk_coord),
+        !sim.voxel_zone(sim.home_zone_id())
+            .unwrap()
+            .placed_voxels
+            .iter()
+            .any(|(c, _)| *c == trunk_coord),
         "placed_voxels should not contain cancelled strut voxel"
     );
 }
@@ -5344,6 +5777,7 @@ fn strut_materialization_creates_voxels() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: a,
         },
@@ -5355,6 +5789,7 @@ fn strut_materialization_creates_voxels() {
         player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Strut,
             voxels: line.clone(),
             priority: Priority::Normal,
@@ -5387,7 +5822,7 @@ fn strut_materialization_creates_voxels() {
     // All line voxels should be Strut.
     for &coord in &line {
         assert_eq!(
-            sim.world.get(coord),
+            sim.voxel_zone(sim.home_zone_id()).unwrap().get(coord),
             VoxelType::Strut,
             "Voxel at {:?} should be Strut after completion",
             coord
@@ -5421,6 +5856,7 @@ fn strut_save_load_roundtrip_with_completed_strut() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::SpawnCreature {
+            zone_id: sim.home_zone_id(),
             species: Species::Elf,
             position: a,
         },
@@ -5431,6 +5867,7 @@ fn strut_save_load_roundtrip_with_completed_strut() {
         player_name: String::new(),
         tick: 2,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Strut,
             voxels: line.clone(),
             priority: Priority::Normal,
@@ -5467,7 +5904,10 @@ fn strut_save_load_roundtrip_with_completed_strut() {
     // Verify voxels survived.
     for &coord in &line {
         assert_eq!(
-            restored.world.get(coord),
+            restored
+                .voxel_zone(restored.home_zone_id())
+                .unwrap()
+                .get(coord),
             VoxelType::Strut,
             "Strut voxel at {:?} should survive save/load",
             coord
@@ -5493,6 +5933,7 @@ fn cancel_build_with_no_task_cleans_up() {
     sim.db
         .insert_blueprint(crate::db::Blueprint {
             id: project_id,
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: crate::types::Priority::Normal,
@@ -5506,8 +5947,13 @@ fn cancel_build_with_no_task_cleans_up() {
         .unwrap();
 
     // Place the voxel as GrownPlatform so cancel_build has something to revert.
-    sim.world.set(air_coord, VoxelType::GrownPlatform);
-    sim.structure_voxels.insert(air_coord, StructureId(999_999));
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .set(air_coord, VoxelType::GrownPlatform);
+    sim.voxel_zone_mut(sim.home_zone_id())
+        .unwrap()
+        .structure_voxels
+        .insert(air_coord, StructureId(999_999));
 
     assert!(sim.db.blueprints.contains(&project_id));
 
@@ -5534,6 +5980,7 @@ fn designate_build_creates_blueprint() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -5562,6 +6009,7 @@ fn designate_build_creates_composition() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -5598,6 +6046,7 @@ fn composition_persists_across_serde_roundtrip() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,
@@ -5634,11 +6083,11 @@ fn designate_carve_has_no_composition() {
 
     // Find a solid trunk voxel to carve.
     let mut carve_coord = None;
-    for y in 1..sim.world.size_y as i32 {
-        for z in 0..sim.world.size_z as i32 {
-            for x in 0..sim.world.size_x as i32 {
+    for y in 1..sim.voxel_zone(sim.home_zone_id()).unwrap().size_y as i32 {
+        for z in 0..sim.voxel_zone(sim.home_zone_id()).unwrap().size_z as i32 {
+            for x in 0..sim.voxel_zone(sim.home_zone_id()).unwrap().size_x as i32 {
                 let coord = VoxelCoord::new(x, y, z);
-                if sim.world.get(coord) == VoxelType::Trunk {
+                if sim.voxel_zone(sim.home_zone_id()).unwrap().get(coord) == VoxelType::Trunk {
                     carve_coord = Some(coord);
                     break;
                 }
@@ -5657,6 +6106,7 @@ fn designate_carve_has_no_composition() {
         player_name: String::new(),
         tick: 1,
         action: SimAction::DesignateCarve {
+            zone_id: sim.home_zone_id(),
             voxels: vec![carve_coord],
             priority: Priority::Normal,
         },
@@ -5691,6 +6141,7 @@ fn build_work_sets_composition_build_started() {
         player_name: String::new(),
         tick: sim.tick + 1,
         action: SimAction::DesignateBuild {
+            zone_id: sim.home_zone_id(),
             build_type: BuildType::Platform,
             voxels: vec![air_coord],
             priority: Priority::Normal,

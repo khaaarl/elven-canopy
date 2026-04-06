@@ -149,13 +149,14 @@ impl SimState {
     }
 
     /// Insert a task and populate its relationship/extension tables based on kind.
-    pub(crate) fn insert_task(&mut self, task: task::Task) {
+    pub(crate) fn insert_task(&mut self, zone_id: ZoneId, task: task::Task) {
         let task_id = task.id;
         let kind = &task.kind;
 
         // Insert the base task row first (extension tables have FK → tasks).
         let db_task = crate::db::Task {
             id: task.id,
+            zone_id,
             kind_tag: crate::db::TaskKindTag::from_kind(kind),
             state: task.state,
             location: task.location,
