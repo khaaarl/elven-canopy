@@ -1,5 +1,9 @@
 // Walkability predicates for voxel-direct ground pathfinding.
 //
+// `footprint_fits` is the body-clearance check: can a creature physically fit
+// at a position (all footprint voxels non-solid, y >= 1).  Used by
+// `footprint_walkable` and by `find_creature_landing` (gravity deflection).
+//
 // `footprint_walkable` is the single authority for "can a creature with this
 // footprint stand at this position." All walkability checks — pathfinding,
 // movement, combat, grazing, gravity — go through this function.
@@ -42,6 +46,26 @@ pub const FACE_OFFSETS: [(i32, i32, i32); 6] = [
 /// Downward support is already handled by the direct-support (y-1) and
 /// deep-support (y-2) checks that precede the climber section.
 const CLIMBER_FACE_OFFSETS: [(i32, i32, i32); 4] = [(1, 0, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1)];
+
+/// Body-clearance check: can a creature with the given footprint physically
+/// fit at `anchor`?  Returns `true` if every voxel in the footprint is
+/// non-solid and at y >= 1.  This is the spatial-occupancy test shared by
+/// `footprint_walkable` (ground creatures) and `find_creature_landing`
+/// (gravity deflection).  It does NOT check ground support — that's
+/// `footprint_walkable`'s job.
+pub fn footprint_fits(world: &VoxelWorld, anchor: VoxelCoord, footprint: [u8; 3]) -> bool {
+    for dx in 0..footprint[0] as i32 {
+        for dy in 0..footprint[1] as i32 {
+            for dz in 0..footprint[2] as i32 {
+                let v = VoxelCoord::new(anchor.x + dx, anchor.y + dy, anchor.z + dz);
+                if v.y < 1 || world.get(v).is_solid() {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
 
 /// Check whether a ground-creature footprint anchored at `anchor` is walkable.
 /// The anchor is the min-corner of the bounding box. This is the **single
@@ -99,15 +123,8 @@ pub fn footprint_walkable(
 
     // --- Large footprint (2×2×2) ---
     // All voxels in the footprint must be non-solid and y >= 1.
-    for dx in 0..footprint[0] as i32 {
-        for dy in 0..footprint[1] as i32 {
-            for dz in 0..footprint[2] as i32 {
-                let v = VoxelCoord::new(anchor.x + dx, anchor.y + dy, anchor.z + dz);
-                if v.y < 1 || world.get(v).is_solid() {
-                    return false;
-                }
-            }
-        }
+    if !footprint_fits(world, anchor, footprint) {
+        return false;
     }
 
     // --- Climber fast path: body-level horizontal adjacency ---
@@ -1159,6 +1176,30 @@ mod tests {
     // -----------------------------------------------------------------------
     // derive_surface_type tests
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn footprint_fits_all_air() {
+        let world = ground_world(16, 16, 16, 5);
+        // y=6 and y=7 are air above the floor at y=5.
+        assert!(footprint_fits(&world, VoxelCoord::new(3, 6, 3), [2, 2, 2],));
+    }
+
+    #[test]
+    fn footprint_fits_blocked_by_solid() {
+        let mut world = ground_world(16, 16, 16, 5);
+        world.set(VoxelCoord::new(4, 6, 3), VoxelType::GrownPlatform);
+        // Footprint at (3,6,3) includes (4,6,3) which is now solid.
+        assert!(!footprint_fits(&world, VoxelCoord::new(3, 6, 3), [2, 2, 2],));
+    }
+
+    #[test]
+    fn footprint_fits_rejects_y_below_1() {
+        let world = VoxelWorld::new(16, 16, 16);
+        // Anchor at y=0 — the footprint includes y=0 which is < 1.
+        assert!(!footprint_fits(&world, VoxelCoord::new(3, 0, 3), [2, 2, 2],));
+        // 1x1x1 at y=0 also rejected.
+        assert!(!footprint_fits(&world, VoxelCoord::new(3, 0, 3), [1, 1, 1],));
+    }
 
     #[test]
     fn test_derive_surface_type_standing_on_dirt() {

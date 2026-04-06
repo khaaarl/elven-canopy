@@ -69,10 +69,10 @@ This reduces merge conflicts when parallel work streams add items.
 ```
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-fast-checksum        Incremental state checksum for desync detection (replace full-state JSON serialization)
+[ ] B-flyable-shared       Replace footprint_flyable with shared footprint_fits helper
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fog-billboards       Fog post-process does not obscure billboard sprites
 [ ] B-ground-only          Remove ground_only field; use MovementCategory for all movement constraints
-[ ] B-large-fall-deflect   Large creatures may land at invalid positions during gravity fall
 [ ] B-per-species-iter     Eliminate per-species iteration in selection and tooltip controllers
 [ ] B-relay-stability      Windows TCP connection drops during singleplayer gameplay
 [ ] B-stale-path           Creatures can traverse forbidden edges when cached path becomes stale
@@ -329,6 +329,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-flying-arrow-chase   Flying creatures excluded from arrow-chase
 [x] B-flying-tasks         Flying creatures skip task system entirely
 [x] B-hostile-detect-nav   detect_hostile_targets panics on flying targets (NavNodeId u32::MAX hack)
+[x] B-large-fall-deflect   Large creatures may land at invalid positions during gravity fall
 [x] B-large-stuck          Large creatures (elephants) get permanently stuck at terrain inclines
 [x] B-leaf-diagonal        Leaf blobs sometimes only diagonally connected, looks bad
 [x] B-local-relay          Singleplayer must launch the real relay (on localhost), not use a fake tick-pacing LocalRelay
@@ -1515,6 +1516,20 @@ would also confirm the fix.
 
 After issuing move commands (select creatures, right-click a destination), creature movement becomes erratic and possibly faster than intended. Repro: select one or more creatures, right-click to move them, observe movement behavior.
 
+#### B-flyable-shared — Replace footprint_flyable with shared footprint_fits helper
+**Status:** Todo
+
+`footprint_flyable` in `pathfinding.rs` uses `VoxelType::is_flyable()` to check body clearance for flying creatures, which allows flyers to pass through Leaf and Fruit voxels via special-case logic. This should instead use the same `!is_solid()` check used by all other movement code (via a shared `footprint_fits` helper in `walkability.rs`).
+
+`footprint_fits` is being extracted as part of B-large-fall-deflect. Once that lands, `footprint_flyable` should be replaced with a call to `footprint_fits`, and `VoxelType::is_flyable()` should be removed if it has no other callers.
+
+Relevant code:
+- `footprint_flyable`: `elven_canopy_sim/src/pathfinding.rs` (line ~382)
+- `VoxelType::is_flyable()`: `elven_canopy_sim/src/types.rs` (line ~1689)
+- `footprint_fits` (new, from B-large-fall-deflect): `elven_canopy_sim/src/walkability.rs`
+
+**Related:** B-large-fall-deflect
+
 #### B-ground-only — Remove ground_only field; use MovementCategory for all movement constraints
 **Status:** Todo
 
@@ -2124,7 +2139,7 @@ task-driven system (player commands, construction, hauling, etc.).
 **Related:** F-arrow-chase
 
 #### B-large-fall-deflect — Large creatures may land at invalid positions during gravity fall
-**Status:** Todo
+**Status:** Done
 
 When a large (2x2x2 footprint) ground creature like an elephant loses support and gravity kicks in, `find_creature_landing` only checks the creature's current anchor column `(ax, az)` via `large_node_surface_y`. If that specific 2x2 anchor position doesn't have valid ground below (e.g., the creature was knocked off a platform onto a narrow column, or terrain was destroyed beneath it), the function returns `None`.
 
@@ -2139,6 +2154,8 @@ When both fail, `apply_single_creature_gravity` returns `false` — the creature
 2. Increase the `find_nearest_walkable` fallback search radius, or make the fallback scan downward iteratively (search radius 5 at current Y, then radius 5 at Y-5, etc.) until ground is found.
 
 **Relevant code:** `find_creature_landing` and `apply_single_creature_gravity` in `elven_canopy_sim/src/sim/creature.rs` (lines ~689-790), `large_node_surface_y` in `elven_canopy_sim/src/walkability.rs` (line ~162).
+
+**Related:** B-flyable-shared
 
 #### B-sprite-shuffle — Non-elf creature sprites shuffle appearance when population changes
 **Status:** Done

@@ -9,6 +9,10 @@
 //
 // Creature gravity (F-creature-gravity): creatures on unsupported voxels fall
 // to the nearest valid position below, taking damage proportional to distance.
+// Large creatures use a fall-deflect algorithm: if the footprint hits an
+// obstruction that isn't a valid landing, the creature deflects horizontally
+// (Manhattan-distance search, radius 5) and continues falling.  Creatures
+// with no valid landing are killed.  See `find_creature_landing()`.
 // Support rules vary by creature type — see `creature_is_supported()`.
 //
 // See also: `activation.rs` (creature decision loop), `combat.rs` (death
@@ -628,7 +632,6 @@ impl SimState {
             Some(c) if c.vital_status == VitalStatus::Alive => c,
             _ => return true, // dead or missing — not our problem
         };
-        let species_data = &self.species_table[&creature.species];
         if creature.movement_category.is_flyer() {
             return true; // flying creatures are always supported
         }
@@ -637,39 +640,9 @@ impl SimState {
             &self.world,
             &self.face_data,
             creature.position.min,
-            species_data.footprint,
+            creature.position.footprint_size(),
             can_climb,
         )
-    }
-
-    /// Scan downward from a creature's current position to find a valid
-    /// landing position. Returns `None` if no valid position exists above
-    /// Y=0 (degenerate case — caller should teleport to nearest walkable position).
-    pub(crate) fn find_creature_landing(
-        &self,
-        species: Species,
-        movement_category: crate::nav::MovementCategory,
-        pos: VoxelCoord,
-    ) -> Option<VoxelCoord> {
-        let species_data = &self.species_table[&species];
-        let can_climb = movement_category.can_climb();
-
-        // Scan downward for the first Y that meets walkability and support
-        // criteria. Works for all footprint sizes. The `can_climb` parameter
-        // ensures non-climbers only land on positions with solid below.
-        for y in (1..pos.y).rev() {
-            let candidate = VoxelCoord::new(pos.x, y, pos.z);
-            if crate::walkability::footprint_walkable(
-                &self.world,
-                &self.face_data,
-                candidate,
-                species_data.footprint,
-                can_climb,
-            ) {
-                return Some(candidate);
-            }
-        }
-        None
     }
 
     /// Apply gravity to a single creature: move it to the landing position,
@@ -684,7 +657,6 @@ impl SimState {
             Some(c) if c.vital_status == VitalStatus::Alive => c,
             _ => return false,
         };
-        let species = creature.species;
         let movement_category = creature.movement_category;
         let old_pos = creature.position.min;
 
@@ -697,85 +669,90 @@ impl SimState {
             return false;
         }
 
-        // Find a landing position.
-        let landing = match self.find_creature_landing(species, movement_category, old_pos) {
-            Some(pos) => pos,
-            None => {
-                // Degenerate: no valid landing column. Teleport to nearest
-                // footprint-walkable position.
-                let sp = &self.species_table[&species];
-                let fp = sp.footprint;
-                let cc = movement_category.can_climb();
-                match crate::walkability::find_nearest_walkable(
-                    &self.world,
-                    &self.face_data,
-                    old_pos,
-                    5,
-                    fp,
-                    cc,
-                ) {
-                    Some(pos) => pos,
-                    None => return false, // no walkable positions — nothing to do
+        // Find a landing position using the fall-deflect algorithm.
+        let landing = find_creature_landing(&self.world, &self.face_data, &mut self.rng, &creature);
+
+        match landing {
+            Some(pos) if pos == old_pos => return false,
+            Some(landing) => {
+                let fall_distance = (old_pos.y - landing.y).max(0) as i64;
+
+                // Abort current action and task.
+                self.abort_current_action(creature_id);
+                if let Some(task_id) = self
+                    .db
+                    .creatures
+                    .get(&creature_id)
+                    .and_then(|c| c.current_task)
+                {
+                    self.interrupt_task(creature_id, task_id);
+                }
+
+                // Move creature to landing position.
+                if let Some(mut c) = self.db.creatures.get(&creature_id) {
+                    c.position = c.position.with_anchor(landing);
+                    c.path = None;
+                    let _ = self.db.update_creature(c);
+                }
+
+                // Apply fall damage (cumulative across any deflections).
+                let damage = fall_distance * self.config.fall_damage_per_voxel;
+                let remaining_hp = self
+                    .db
+                    .creatures
+                    .get(&creature_id)
+                    .map(|c| (c.hp - damage).max(0))
+                    .unwrap_or(0);
+
+                events.push(SimEvent {
+                    tick: self.tick,
+                    kind: SimEventKind::CreatureFell {
+                        creature_id,
+                        from: old_pos,
+                        to: landing,
+                        damage,
+                        remaining_hp,
+                    },
+                });
+
+                if damage > 0 {
+                    self.apply_damage_with_cause(creature_id, damage, DeathCause::Falling, events);
+                }
+
+                // Mark creature for reactivation so it resumes behavior (if alive).
+                if self
+                    .db
+                    .creatures
+                    .get(&creature_id)
+                    .is_some_and(|c| c.vital_status == VitalStatus::Alive)
+                {
+                    self.set_creature_activation_tick(creature_id, self.tick + 1);
                 }
             }
-        };
-
-        if landing == old_pos {
-            return false;
-        }
-
-        let fall_distance = (old_pos.y - landing.y).max(0) as i64;
-
-        // Abort current action and task.
-        self.abort_current_action(creature_id);
-        if let Some(task_id) = self
-            .db
-            .creatures
-            .get(&creature_id)
-            .and_then(|c| c.current_task)
-        {
-            self.interrupt_task(creature_id, task_id);
-        }
-
-        // Move creature to landing position.
-        if let Some(mut c) = self.db.creatures.get(&creature_id) {
-            c.position = c.position.with_anchor(landing);
-            c.path = None;
-            let _ = self.db.update_creature(c);
-        }
-
-        // Apply fall damage.
-        let damage = fall_distance * self.config.fall_damage_per_voxel;
-        let remaining_hp = self
-            .db
-            .creatures
-            .get(&creature_id)
-            .map(|c| (c.hp - damage).max(0))
-            .unwrap_or(0);
-
-        events.push(SimEvent {
-            tick: self.tick,
-            kind: SimEventKind::CreatureFell {
-                creature_id,
-                from: old_pos,
-                to: landing,
-                damage,
-                remaining_hp,
-            },
-        });
-
-        if damage > 0 {
-            self.apply_damage_with_cause(creature_id, damage, DeathCause::Falling, events);
-        }
-
-        // Mark creature for reactivation so it resumes behavior (if alive).
-        if self
-            .db
-            .creatures
-            .get(&creature_id)
-            .is_some_and(|c| c.vital_status == VitalStatus::Alive)
-        {
-            self.set_creature_activation_tick(creature_id, self.tick + 1);
+            None => {
+                // No valid landing exists — kill the creature.
+                self.abort_current_action(creature_id);
+                if let Some(task_id) = self
+                    .db
+                    .creatures
+                    .get(&creature_id)
+                    .and_then(|c| c.current_task)
+                {
+                    self.interrupt_task(creature_id, task_id);
+                }
+                // Apply lethal damage to kill the creature. Must exceed
+                // hp + hp_max to bypass incapacitation and cause instant death.
+                let (hp, hp_max) = self
+                    .db
+                    .creatures
+                    .get(&creature_id)
+                    .map(|c| (c.hp, c.hp_max))
+                    .unwrap_or((0, 0));
+                let lethal = hp + hp_max + 1;
+                if lethal > 0 {
+                    self.apply_damage_with_cause(creature_id, lethal, DeathCause::Falling, events);
+                }
+            }
         }
 
         true
@@ -959,6 +936,102 @@ impl SimState {
                 t.state = task::TaskState::Complete;
                 let _ = self.db.update_task(t);
             }
+        }
+    }
+}
+
+/// Find a landing position for a falling creature using the fall-deflect
+/// algorithm.  Scans straight down from the creature's current position; if
+/// the footprint is walkable, lands there.  If it hits an obstruction (solid
+/// in the footprint but not walkable), deflects horizontally within Manhattan
+/// distance 5 to the nearest open or walkable position, then continues
+/// falling.  Returns `None` if no valid landing can be found (caller should
+/// kill the creature).
+///
+/// Reads footprint and movement modality directly from the creature row, not
+/// from the species table, so per-creature overrides (e.g., magic size
+/// changes) work automatically.
+pub(crate) fn find_creature_landing(
+    world: &crate::world::VoxelWorld,
+    face_data: &std::collections::BTreeMap<VoxelCoord, crate::types::FaceData>,
+    rng: &mut elven_canopy_prng::GameRng,
+    creature: &crate::db::Creature,
+) -> Option<VoxelCoord> {
+    let footprint = creature.position.footprint_size();
+    let can_climb = creature.movement_category.can_climb();
+    let start_pos = creature.position.min;
+
+    let mut anchor_x = start_pos.x;
+    let mut anchor_z = start_pos.z;
+    let mut current_y = start_pos.y;
+
+    loop {
+        // --- Fall phase: scan downward from current_y - 1 ---
+        let mut collision_y = None;
+        for y in (1..current_y).rev() {
+            let candidate = VoxelCoord::new(anchor_x, y, anchor_z);
+            if crate::walkability::footprint_walkable(
+                world, face_data, candidate, footprint, can_climb,
+            ) {
+                return Some(candidate);
+            }
+            if !crate::walkability::footprint_fits(world, candidate, footprint) {
+                // Footprint overlaps solid voxels — can't pass through.
+                collision_y = Some(y);
+                break;
+            }
+        }
+
+        // Reached y=0 without landing or colliding — no valid position.
+        let col_y = collision_y?;
+
+        // --- Deflect phase: search horizontally at col_y ---
+        let mut new_anchor = None;
+
+        for dist in 1..=5i32 {
+            let mut walkable_candidates = Vec::new();
+            let mut open_candidates = Vec::new();
+
+            // Enumerate all (dx, dz) with |dx| + |dz| == dist.
+            for dx in -dist..=dist {
+                let adz = dist - dx.abs();
+                let dz_values: &[i32] = if adz == 0 { &[0] } else { &[-adz, adz] };
+                for &dz in dz_values {
+                    let cx = anchor_x + dx;
+                    let cz = anchor_z + dz;
+                    let candidate = VoxelCoord::new(cx, col_y, cz);
+
+                    if crate::walkability::footprint_walkable(
+                        world, face_data, candidate, footprint, can_climb,
+                    ) {
+                        walkable_candidates.push(candidate);
+                    } else if crate::walkability::footprint_fits(world, candidate, footprint) {
+                        open_candidates.push(candidate);
+                    }
+                }
+            }
+
+            if !walkable_candidates.is_empty() {
+                let idx = rng.range_u64(0, walkable_candidates.len() as u64) as usize;
+                return Some(walkable_candidates[idx]);
+            }
+            if !open_candidates.is_empty() {
+                let idx = rng.range_u64(0, open_candidates.len() as u64) as usize;
+                let chosen = open_candidates[idx];
+                new_anchor = Some((chosen.x, chosen.z));
+                break;
+            }
+        }
+
+        match new_anchor {
+            Some((nx, nz)) => {
+                anchor_x = nx;
+                anchor_z = nz;
+                current_y = col_y;
+                // Continue the outer loop — resume falling from deflection point.
+            }
+            // No open space within radius 5 — creature is stuck.
+            None => return None,
         }
     }
 }

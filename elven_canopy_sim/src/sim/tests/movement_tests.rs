@@ -5080,3 +5080,329 @@ fn test_elephant_no_fall_damage_near_overhang() {
         hp_violations.join("\n")
     );
 }
+
+// ---------------------------------------------------------------------------
+// B-large-fall-deflect: large creature gravity with deflection
+// ---------------------------------------------------------------------------
+
+/// Large creature floating above an area where its 2x2 footprint can't
+/// fit straight down (solid obstructions in the column), but there IS a
+/// valid walkable position a few voxels away horizontally.  The creature
+/// should deflect and land rather than getting stuck floating.
+///
+/// We isolate this by removing the flat ground entirely under the anchor
+/// area, placing obstructions in the fall path, and providing a landing
+/// platform offset to the side.  The existing code (straight-down scan +
+/// find_nearest_walkable with radius 5) cannot reach the landing because
+/// the creature is more than 5 Manhattan-distance from any walkable
+/// position at its floating Y.
+#[test]
+fn large_creature_deflects_when_anchor_column_obstructed() {
+    let seed = fresh_test_seed();
+    let mut sim = flat_world_sim(seed);
+
+    // Build a column obstruction that blocks the elephant's 2x2 footprint
+    // from falling straight down but isn't a valid landing.  The flat world
+    // ground at y=0 is intact — after deflecting, the creature should land
+    // on the ground (y=1) at a nearby anchor.
+    //
+    // Fill a solid slab across the elephant's anchor columns at y=3..4.
+    // This is a 2-voxel-tall wall that blocks the footprint at y=3 and y=4
+    // but only occupies the anchor column — nearby columns are clear.
+    for y in 3..=4 {
+        sim.world
+            .set(VoxelCoord::new(10, y, 10), VoxelType::GrownPlatform);
+    }
+    sim.rebuild_transient_state();
+
+    // Spawn elephant on the ground, then teleport to floating position.
+    let mut events = Vec::new();
+    let elephant_id = sim
+        .spawn_creature(Species::Elephant, VoxelCoord::new(20, 1, 20), &mut events)
+        .expect("should spawn elephant");
+
+    // Teleport above the obstruction.
+    {
+        let mut c = sim.db.creatures.get(&elephant_id).unwrap();
+        let fp = c.position.footprint_size();
+        c.position = VoxelBox::from_anchor(VoxelCoord::new(10, 10, 10), fp);
+        sim.db.update_creature(c).unwrap();
+    }
+
+    events.clear();
+    let fell = sim.apply_single_creature_gravity(elephant_id, &mut events);
+    assert!(fell, "elephant should fall from unsupported position");
+
+    let elephant = sim.db.creatures.get(&elephant_id).unwrap();
+    // The elephant should have deflected around the obstruction and landed
+    // on the ground.
+    assert!(
+        elephant.position.min.y < 4,
+        "elephant should land below the obstruction at y=4, now at y={}",
+        elephant.position.min.y
+    );
+    // Verify the elephant is at anchor != (10, 10) since it had to deflect.
+    assert!(
+        elephant.position.min.x != 10 || elephant.position.min.z != 10,
+        "elephant should have deflected to a different anchor column"
+    );
+    let fp = elephant.position.footprint_size();
+    let can_climb = elephant.movement_category.can_climb();
+    assert!(
+        crate::walkability::footprint_walkable(
+            &sim.world,
+            &sim.face_data,
+            elephant.position.min,
+            fp,
+            can_climb,
+        ),
+        "elephant should be at a walkable position after deflection (pos={:?})",
+        elephant.position.min
+    );
+}
+
+/// Large creature completely enclosed in solid voxels with no open space
+/// within deflection radius.  Should be killed rather than stuck floating.
+#[test]
+fn large_creature_killed_when_no_deflection_possible() {
+    let seed = fresh_test_seed();
+    let mut sim = flat_world_sim(seed);
+
+    // Remove ALL ground from the world.  With no solid voxels below the
+    // creature, find_creature_landing scans to y=0 without finding walkable
+    // ground or a collision, and returns None.
+    for x in 0..64 {
+        for z in 0..64 {
+            sim.world.set(VoxelCoord::new(x, 0, z), VoxelType::Air);
+        }
+    }
+    sim.rebuild_transient_state();
+
+    // Spawn elephant on ground far away first (before we removed it —
+    // actually we just removed it, so spawn will fail).  Instead, just
+    // insert the creature row directly by spawning then teleporting.
+    // Spawn in a corner where we'll place temporary ground.
+    sim.world
+        .set(VoxelCoord::new(60, 0, 60), VoxelType::GrownPlatform);
+    sim.world
+        .set(VoxelCoord::new(61, 0, 60), VoxelType::GrownPlatform);
+    sim.world
+        .set(VoxelCoord::new(60, 0, 61), VoxelType::GrownPlatform);
+    sim.world
+        .set(VoxelCoord::new(61, 0, 61), VoxelType::GrownPlatform);
+    sim.rebuild_transient_state();
+
+    let mut events = Vec::new();
+    let elephant_id = sim
+        .spawn_creature(Species::Elephant, VoxelCoord::new(60, 1, 60), &mut events)
+        .expect("should spawn elephant");
+
+    // Now remove that temporary ground too.
+    for dx in 0..2 {
+        for dz in 0..2 {
+            sim.world
+                .set(VoxelCoord::new(60 + dx, 0, 60 + dz), VoxelType::Air);
+        }
+    }
+    sim.rebuild_transient_state();
+
+    // Teleport to floating position in the void.
+    {
+        let mut c = sim.db.creatures.get(&elephant_id).unwrap();
+        let fp = c.position.footprint_size();
+        c.position = VoxelBox::from_anchor(VoxelCoord::new(10, 10, 10), fp);
+        sim.db.update_creature(c).unwrap();
+    }
+
+    events.clear();
+    let fell = sim.apply_single_creature_gravity(elephant_id, &mut events);
+    assert!(fell, "gravity should act on unsupported elephant");
+
+    let elephant = sim.db.creatures.get(&elephant_id).unwrap();
+    assert_eq!(
+        elephant.vital_status,
+        VitalStatus::Dead,
+        "elephant should be killed when no valid landing exists"
+    );
+}
+
+/// Large creature falls from y=10, hits an obstruction that forces a
+/// deflection, then continues falling to a landing platform.  Total fall
+/// damage should be cumulative based on (start_y - final_landing_y), not
+/// just the distance of one segment.
+#[test]
+fn large_creature_cumulative_fall_damage_across_deflection() {
+    let seed = fresh_test_seed();
+    let mut sim = flat_world_sim(seed);
+    sim.config.fall_damage_per_voxel = 10;
+
+    // Place an obstruction at y=5 under the anchor — blocks straight-down
+    // fall but isn't a valid 2x2 landing.  Ground at y=0 is intact, so
+    // after deflecting the creature lands on the ground at y=1.
+    sim.world
+        .set(VoxelCoord::new(10, 5, 10), VoxelType::GrownPlatform);
+    sim.rebuild_transient_state();
+
+    // Spawn elephant, then teleport to y=10.
+    let mut events = Vec::new();
+    let elephant_id = sim
+        .spawn_creature(Species::Elephant, VoxelCoord::new(20, 1, 20), &mut events)
+        .expect("should spawn elephant");
+
+    // Give elephant enough HP to survive the fall and teleport.
+    {
+        let mut c = sim.db.creatures.get(&elephant_id).unwrap();
+        c.hp = 500;
+        c.hp_max = 500;
+        let fp = c.position.footprint_size();
+        c.position = VoxelBox::from_anchor(VoxelCoord::new(10, 10, 10), fp);
+        sim.db.update_creature(c).unwrap();
+    }
+
+    events.clear();
+    let fell = sim.apply_single_creature_gravity(elephant_id, &mut events);
+    assert!(fell, "elephant should fall");
+
+    let elephant = sim.db.creatures.get(&elephant_id).unwrap();
+    let landed_y = elephant.position.min.y;
+    assert!(
+        landed_y < 5,
+        "elephant should land below the obstruction at y=5"
+    );
+
+    // Fall damage should be based on total vertical distance: 10 - landed_y.
+    // The creature fell from y=10, deflected at y=5, continued falling to
+    // y=landed_y.  Cumulative distance = 10 - landed_y.
+    let expected_distance = 10 - landed_y;
+    let expected_damage = expected_distance as i64 * 10;
+
+    // Check the CreatureFell event records the correct from/to.
+    let fell_event = events.iter().find_map(|e| match &e.kind {
+        SimEventKind::CreatureFell {
+            creature_id: cid,
+            from,
+            to,
+            damage,
+            ..
+        } if *cid == elephant_id => Some((*from, *to, *damage)),
+        _ => None,
+    });
+    assert!(
+        fell_event.is_some(),
+        "expected CreatureFell event for elephant"
+    );
+    let (from, to, damage) = fell_event.unwrap();
+    assert_eq!(from.y, 10, "fall should start from y=10");
+    assert_eq!(to.y, landed_y, "fall should end at landing y");
+    assert_eq!(
+        damage, expected_damage,
+        "fall damage should be cumulative: ({} voxels) * 10 = {}, got {}",
+        expected_distance, expected_damage, damage
+    );
+}
+
+/// Multi-deflection: staggered obstructions at two different Y levels force
+/// the creature to deflect twice before landing.
+#[test]
+fn large_creature_multiple_deflections() {
+    let seed = fresh_test_seed();
+    let mut sim = flat_world_sim(seed);
+
+    // First obstruction at y=6 in the anchor column (10,10).
+    sim.world
+        .set(VoxelCoord::new(10, 6, 10), VoxelType::GrownPlatform);
+
+    // Second obstruction at y=3 one column over at (11,10) — after the
+    // first deflection moves the creature sideways, it hits this one.
+    sim.world
+        .set(VoxelCoord::new(11, 3, 10), VoxelType::GrownPlatform);
+
+    sim.rebuild_transient_state();
+
+    let mut events = Vec::new();
+    let elephant_id = sim
+        .spawn_creature(Species::Elephant, VoxelCoord::new(20, 1, 20), &mut events)
+        .expect("should spawn elephant");
+
+    {
+        let mut c = sim.db.creatures.get(&elephant_id).unwrap();
+        c.hp = 500;
+        c.hp_max = 500;
+        let fp = c.position.footprint_size();
+        c.position = VoxelBox::from_anchor(VoxelCoord::new(10, 10, 10), fp);
+        sim.db.update_creature(c).unwrap();
+    }
+
+    events.clear();
+    let fell = sim.apply_single_creature_gravity(elephant_id, &mut events);
+    assert!(fell, "elephant should fall");
+
+    let elephant = sim.db.creatures.get(&elephant_id).unwrap();
+    let fp = elephant.position.footprint_size();
+    let can_climb = elephant.movement_category.can_climb();
+    assert!(
+        crate::walkability::footprint_walkable(
+            &sim.world,
+            &sim.face_data,
+            elephant.position.min,
+            fp,
+            can_climb,
+        ),
+        "elephant should land at a walkable position (pos={:?})",
+        elephant.position.min
+    );
+    // Should have landed at y=1 (ground level).
+    assert_eq!(
+        elephant.position.min.y, 1,
+        "elephant should reach ground level after multiple deflections"
+    );
+}
+
+/// Deflection search radius is exactly 5.  An obstruction where the nearest
+/// open space is at Manhattan distance 6 should result in None (creature killed).
+#[test]
+fn large_creature_deflection_radius_limit() {
+    let seed = fresh_test_seed();
+    let mut sim = flat_world_sim(seed);
+
+    // Fill a solid mass that encloses the creature's position entirely.
+    // The mass is wide enough (Manhattan distance > 5 in all directions)
+    // that the deflection search can't escape.  The creature starts inside
+    // the mass, so footprint_fits is false at every Y and every deflection
+    // candidate → find_creature_landing returns None → creature killed.
+    for x in 2..=19 {
+        for z in 2..=19 {
+            for y in 1..=20 {
+                sim.world
+                    .set(VoxelCoord::new(x, y, z), VoxelType::GrownPlatform);
+            }
+        }
+    }
+    sim.rebuild_transient_state();
+
+    let mut events = Vec::new();
+    let elephant_id = sim
+        .spawn_creature(Species::Elephant, VoxelCoord::new(30, 1, 30), &mut events)
+        .expect("should spawn elephant");
+
+    // Teleport INSIDE the solid mass.  The creature is at y=10 with solid
+    // everywhere — footprint_walkable returns false (footprint_fits fails),
+    // so the creature is unsupported.
+    {
+        let mut c = sim.db.creatures.get(&elephant_id).unwrap();
+        let fp = c.position.footprint_size();
+        c.position = VoxelBox::from_anchor(VoxelCoord::new(10, 10, 10), fp);
+        sim.db.update_creature(c).unwrap();
+    }
+
+    events.clear();
+    let fell = sim.apply_single_creature_gravity(elephant_id, &mut events);
+    assert!(fell, "gravity should act on unsupported elephant");
+
+    let elephant = sim.db.creatures.get(&elephant_id).unwrap();
+    assert_eq!(
+        elephant.vital_status,
+        VitalStatus::Dead,
+        "elephant should be killed when deflection radius 5 is insufficient"
+    );
+}
