@@ -141,7 +141,7 @@ The only exception is editing `CLAUDE.md` itself, which can be done on `main` if
 
 ## Committing Code
 
-ALWAYS ASK FOR PERMISSION BEFORE COMMITTING TO MAIN/MASTER, BUT COMMITTING TO FEATURE BRANCHES DOES NOT REQUIRE PERMISSION. When committing to a feature branch, always push to origin immediately after committing (`git push`).
+ALWAYS ASK FOR PERMISSION BEFORE COMMITTING TO MAIN/MASTER, BUT COMMITTING AND PUSHING TO FEATURE BRANCHES DOES NOT REQUIRE PERMISSION AND SHOULD BE DONE ALWAYS AFTER ANY CHANGE BEFORE RETURNING TO THE USER. When committing to a feature branch, always push to origin immediately after committing (`git push`).
 
 **Remote testing (CRITICAL):** The user tests on a different machine. Any time you tell the user to build, run, or test something, you MUST commit and push first. Code that isn't pushed doesn't exist from the user's perspective.
 

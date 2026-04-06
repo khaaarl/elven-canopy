@@ -202,9 +202,10 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-night-predators      Nocturnal predators
 [ ] F-pack-animals         Beast-of-burden hauling for heavy loads and caravans
 [ ] F-partial-struct       Structural checks on incomplete builds
-[ ] F-path-cache           Explore pathfinding caching (snippet cache, chunk precomputation)
+[ ] F-path-cache           Pathfinding caching (flowfields, path sub-segment cache, hierarchical)
 [ ] F-path-civil           Civil path definitions and organic self-assignment
 [ ] F-path-combat          Combat path definitions and player assignment
+[ ] F-path-metrics         Pathfinding performance metrics (call counts, node expansions, wall-clock distribution)
 [ ] F-path-residue         Skill residue from past paths
 [ ] F-path-specialize      Path specialization branching and prerequisites
 [ ] F-path-stuck           Deep commitment personality drift and refusal
@@ -1921,28 +1922,66 @@ voxel adjacent to solid. Duplicate edges avoided via 13-offset trick.
 voxel placement instead of full graph rebuild. Returns removed NodeIds for
 creature resnapping.
 
-#### F-path-cache — Explore pathfinding caching (snippet cache, chunk precomputation)
+#### F-path-cache — Pathfinding caching (flowfields, path sub-segment cache, hierarchical)
 **Status:** Todo
 
-Explore caching schemes for ground pathfinding to reduce repeated A* computation. Currently every path request runs a fresh A* search from scratch. In a busy sim with many creatures, this is a significant CPU cost. Caching partial or complete path results could reduce redundant work.
+Explore caching schemes for pathfinding to reduce repeated A* computation. Currently every path request runs a fresh A* search. In a busy sim with many creatures, this is a significant CPU cost.
 
-One promising approach is the Factorio-style "path snippet cache": precompute and cache short path segments between key waypoints (e.g., chunk boundaries or high-traffic nodes), then stitch them together for longer paths. This amortizes the cost of A* over many creatures that traverse similar routes.
+Two complementary systems are envisioned, targeting different use cases:
 
-Other approaches to explore:
-- **Chunk-level precomputation**: for each column chunk, precompute internal connectivity and border-to-border paths. Path queries that cross chunks only need to A* at the chunk graph level, then look up intra-chunk segments.
-- **Hierarchical pathfinding (HPA*)**: abstract the voxel grid into a coarser graph of chunk regions, pathfind on the abstract graph, then refine each segment.
-- **Flowfields**: for common destinations (e.g., dining hall, stockpile), precompute a flowfield that all creatures heading to that destination can follow without individual A*.
+**1. Flowfields for high-traffic fixed destinations**
 
-Key constraints:
-- Determinism: any caching scheme must produce deterministic results. Cache invalidation on world mutation (voxel changes) must be correct.
-- The voxel world is 3D and mutable (construction, tree growth, terrain destruction), so cache invalidation is non-trivial.
-- F-move-categories (uniform cost ratios within movement categories) would make caching much more practical — only 3 cache variants needed instead of per-species caches.
+For buildings that many creatures visit (dining hall, workshops, stockpiles), precompute a flowfield: run Dijkstra from the destination outward over all walkable voxels, storing integer distances at each walkable voxel. Creatures follow the gradient by moving to whichever neighbor has the lowest distance value. Uses integer arithmetic with a multiplier to avoid floating point (e.g., base step cost 100, diagonal 141, climb step 200). This is deterministic and avoids per-creature A* entirely for common routes.
 
-Reference: Factorio Friday Facts on pathfinding optimization (snippet caching approach).
+Key properties:
+- **Per-modality + per-size caches.** Each combination of movement modality and creature footprint size needs its own flowfield for a given destination, since edge costs and passability differ. Nothing for flyers — too many potential locations to be reasonable.
+- **Activation threshold.** Only spin up a flowfield when enough creatures of that modality+size exist in the civilization to justify the cost. No need to cache a large-climber flowfield until you have several friendly trolls.
+- **Congestion / lane-spreading.** Because the flowfield encodes the full gradient (not a single best path), multiple approximately equivalent next steps often exist. If we add traffic/congestion mechanics in the future, creatures can spread across lanes naturally.
+- **Invalidation.** A voxel change can affect distances in distant chunks if it opens or closes a chokepoint. Start with full recompute on any change to a chunk the flowfield covers; optimize with dirty-flag lazy recomputation later if needed.
 
-Relevant code: astar_ground() and nearest_astar_ground() in pathfinding.rs, ground_neighbors() in walkability.rs.
+**2. Path sub-segment cache for transient clusters**
 
-**Related:** F-move-categories
+For transient bursts of similar queries (combat — attackers chasing defenders, group activities, migration), cache recently computed A* paths and reuse sub-segments. If a path from A to B is cached, and a new query asks for C to D where both C and D lie on the cached A→B path (in order), the sub-segment is provably optimal (optimal substructure property of shortest paths) and can be returned immediately with no A*.
+
+Key properties:
+- **Index by voxel position.** A map from voxel position to (path_id, index_in_path) allows fast lookup of whether a query's start/end points lie on any cached path.
+- **Column-chunk invalidation.** Each cached path records which column chunks it touches. Any voxel change in a chunk invalidates all paths through that chunk. Simple and sufficient — surgical per-voxel invalidation is possible but unnecessary.
+- **TTL.** Cached paths also expire after a time-to-live as a safety net.
+- **Chase optimization.** In a chase scenario, as a creature moves along a cached path, its new position is on the path by definition — re-pathing after movement is just advancing the cursor.
+
+**3. Hierarchical pathfinding (longer-term, heavier investment)**
+
+Hierarchical pathfinding (HPA*) is viable mainly for ground-level travel, where the world is roughly 2D and column chunks work as natural regions. For the full 3D vertical topology (platforms, bridges, stairs, trunk surfaces), column-chunk-level hierarchy is a poor fit — the world can be very awkwardly vertical and disconnected within a single chunk. A more sophisticated approach is the connectivity-based direction oracle described in `docs/drafts/hierarchical-nav-oracle.md`, which partitions by graph connectivity rather than spatial proximity. This is a much heavier investment and would only be pursued if the simpler caching systems prove insufficient.
+
+**Movement categories:** F-move-categories provides 4 uniform movement categories (walker, climber, flyer, sessile), so caches need at most 4 modality variants (minus flyers for flowfields, minus sessile entirely) rather than per-species caches.
+
+Relevant code: `astar_ground()` and `nearest_astar_ground()` in `pathfinding.rs`, `ground_neighbors()` in `walkability.rs`.
+
+**Related:** F-move-categories, F-path-metrics
+
+#### F-path-metrics — Pathfinding performance metrics (call counts, node expansions, wall-clock distribution)
+**Status:** Todo
+
+Add instrumentation to the pathfinding system to measure its real-world cost and identify problems. This is observability-only — counters and timings are reported out (via debug overlay or sim events) and never fed back into sim decisions, so determinism is unaffected.
+
+**Per-tick metrics to track:**
+- Number of A* calls (ground and flight separately)
+- Total nodes expanded
+- Wall-clock time spent in pathfinding
+
+**Wall-clock distribution tracking:**
+- Track p50, p95, p99, and max wall-clock time per individual A* call, not just aggregate per-tick time. A single degenerate pathfinding call (unreachable destination, huge open search space) can spike a whole tick even if average load is low. Use `Instant::now()` at the start and end of each A* call — overhead is ~20-25ns per read, negligible compared to A* work.
+- Rolling window or periodic reset so the stats reflect recent behavior, not all-time history.
+
+**Reporting:**
+- Debug overlay showing current-tick and recent-window stats.
+- Optionally log periodic summaries (e.g., every N ticks) for offline analysis.
+
+This instrumentation is useful independent of any caching work (F-path-cache) — it tells us when pathfinding becomes a problem and whether future optimizations actually help.
+
+Relevant code: `astar_ground()` and `nearest_astar_ground()` in `pathfinding.rs`, `astar_flight()` in `flight_pathfinding.rs`.
+
+**Related:** F-path-cache
 
 #### F-pathfinding — A* pathfinding over nav graph
 **Status:** Done · **Phase:** 1 · **Refs:** §10
