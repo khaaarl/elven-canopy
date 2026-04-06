@@ -64,14 +64,18 @@ once-overs in succession, which helps check for issues more thoroughly.
    For spec violations, fix any with a clear correct implementation; escalate
    ambiguous ones to the user. Fix shortcuts/quality issues.
 
-   **Pre-existing bugs.** If any agent flags a bug that is unrelated to the
-   current branch's work (e.g., a latent issue in code that was only read,
-   not changed), highlight it prominently to the user and suggest adding it
-   as a tracker bug via `scripts/tracker.py add`.
+   **Pre-existing problems.** If any agent flags a problem, HOWEVER MINOR,
+   that is unrelated to the current branch's work (e.g., a latent issue in
+   code that was only read, not changed; or stale documentation), **fix it
+   if small and/or highlight it prominently to the user**. Do NOT dismiss
+   pre-existing issues as "not this branch's responsibility" — the once-over
+   exists to catch exactly these things, so discuss them with the user.
+   IMPROVING THE QUALITY OF THE CODEBASE IS MORE IMPORTANT THAN EXPEDIENCE.
+   For code bugs, suggest adding a tracker item via `scripts/tracker.py add`.
 
    **Dismissals.** When dismissing an agent's finding, you MUST include a
    concise but thorough summary of the complaint and a clear explanation of
-   why it is safe to dismiss. Do not silently drop findings — the user needs
+   why it is safe to dismiss. NEVER silently drop findings — the user needs
    to see what was raised and why you consider it resolved. A bare "not
    relevant" or "already handled" is not sufficient; cite the specific code
    or reasoning that makes the finding a non-issue.
@@ -108,7 +112,10 @@ once-overs in succession, which helps check for issues more thoroughly.
      decision** (with the question)
 
    End the report with a **CI status** line and a clear **verdict** (e.g.,
-   "Ready to merge", "Blocked on user decisions above", etc.).
+   "Ready to merge", "Blocked on user decisions above", etc.). If there
+   were any topics from step 3 or 4 that are worth raising to the user,
+   ABSOLUTELY do so here. If there were any borderline dismissals,
+   summarize them here.
 
    **Do not silently drop or collapse findings.** If all four agents say
    "no issues," say that explicitly. If agents raised 12 findings and
