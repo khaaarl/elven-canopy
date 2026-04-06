@@ -501,6 +501,38 @@ re-trigger naturally if the interaction matters.
   when the response arrives. On peer disconnect, entries for that peer are
   removed (the requests expire at deadline).
 
+#### Request and Response Deduplication
+
+In multiplayer, every client runs the same deterministic sim, so every client
+emits the same `OutboundRequest` with the same `request_id` and sends it to the
+relay as `ClientMessage::LlmRequest`. Without deduplication, an N-player game
+dispatches N identical requests, produces N identical responses, and delivers N
+duplicate `LlmResult`s in the turn — wasting inference compute and potentially
+confusing the sim if it doesn't expect duplicates.
+
+The relay deduplicates both requests and responses using two `HashSet<u64>`s on
+the `Session`:
+
+- `dispatched_request_ids: HashSet<u64>` — every `request_id` that has been
+  dispatched. When `handle_llm_request` receives a request whose ID is already
+  in this set, it silently drops the duplicate. The first arrival wins and gets
+  dispatched; subsequent identical requests from other clients are no-ops.
+
+- `completed_request_ids: HashSet<u64>` — every `request_id` for which a
+  response has been accepted and buffered. When `handle_llm_response` receives
+  a response whose ID is already in this set, it silently drops the duplicate.
+  This future-proofs for redundant dispatch (sending the same request to
+  multiple peers for reliability) — only the first response is accepted.
+
+Both sets grow by one `u64` per LLM request (8 bytes each). LLM requests are
+infrequent high-latency operations (seconds per request, not per-tick), so even
+very long sessions produce negligible memory growth. No eviction is needed.
+
+The `outstanding_dispatches` map continues to track which peer a request was
+dispatched to (for disconnect cleanup and response validation). The dedup sets
+are orthogonal — `outstanding_dispatches` entries are transient (removed on
+response), while the dedup sets are permanent (for the session's lifetime).
+
 **Backpressure:** LLM request payloads are small (~5-10KB of natural language
 text). The relay already uses synchronous per-peer writes with no backpressure
 management — LLM dispatch doesn't meaningfully worsen this. If needed, prompt
@@ -834,7 +866,7 @@ pub enum ClientMessage {
 
 The relay stores this per-player in the session's `PlayerState`. When a player's
 capability changes mid-session (e.g., model finishes downloading), they send a
-new `ClientMessage::LlmCapabilityChanged { capable: bool }`. The relay's
+new `ClientMessage::LlmCapabilityChanged { llm_capable: bool }`. The relay's
 `handle_message` updates the player's stored capability flag.
 
 Edge case: if the last LLM-capable peer becomes incapable (or disconnects) while

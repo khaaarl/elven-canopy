@@ -60,6 +60,8 @@ var _ai_action_btn: Button
 var _ai_progress_label: Label
 var _ai_gpu_toggle: Button
 var _ai_gpu_value: bool = true
+var _ai_debug_toggle: Button
+var _ai_debug_value: bool = false
 var _save_btn: Button
 var _paused_value: bool = false
 var _fog_enabled_value: bool = true
@@ -349,6 +351,21 @@ func _ready() -> void:
 	_ai_gpu_toggle.pressed.connect(_toggle_ai_gpu)
 	ai_gpu_row.add_child(_ai_gpu_toggle)
 
+	# Debug logging toggle row.
+	var ai_debug_row := HBoxContainer.new()
+	ai_debug_row.add_theme_constant_override("separation", 10)
+	ai_vbox.add_child(ai_debug_row)
+
+	var ai_debug_label := Label.new()
+	ai_debug_label.text = "Debug Logging"
+	ai_debug_label.custom_minimum_size = Vector2(160, 0)
+	ai_debug_row.add_child(ai_debug_label)
+
+	_ai_debug_toggle = Button.new()
+	_ai_debug_toggle.custom_minimum_size = Vector2(120, 0)
+	_ai_debug_toggle.pressed.connect(_toggle_ai_debug)
+	ai_debug_row.add_child(_ai_debug_toggle)
+
 	_update_ai_display()
 	var mm := _get_model_manager()
 	if mm:
@@ -432,6 +449,15 @@ func _toggle_ai_gpu() -> void:
 
 func _update_ai_gpu_label() -> void:
 	_ai_gpu_toggle.text = "\u2713 GPU" if _ai_gpu_value else "\u2717 CPU"
+
+
+func _toggle_ai_debug() -> void:
+	_ai_debug_value = not _ai_debug_value
+	_update_ai_debug_label()
+
+
+func _update_ai_debug_label() -> void:
+	_ai_debug_toggle.text = "\u2713 ON" if _ai_debug_value else "\u2717 OFF"
 
 
 func _process(_delta: float) -> void:
@@ -551,6 +577,8 @@ func open(config: Node) -> void:
 	_window_mode_dropdown.selected = wm_idx if wm_idx >= 0 else 0
 	_ai_gpu_value = config.get_setting("llm_gpu")
 	_update_ai_gpu_label()
+	_ai_debug_value = config.get_setting("llm_debug")
+	_update_ai_debug_label()
 	_save_btn.disabled = _name_input.text.strip_edges().is_empty()
 
 
@@ -574,6 +602,7 @@ func save_and_close() -> void:
 	_config.set_setting("edge_outline", _edge_outline_value)
 	_config.set_setting("edge_scroll_mode", _edge_scroll_mode)
 	_config.set_setting("llm_gpu", _ai_gpu_value)
+	_config.set_setting("llm_debug", _ai_debug_value)
 	var wm_value: String = WINDOW_MODES[_window_mode_dropdown.selected]
 	_config.set_setting("window_mode", wm_value)
 	_apply_window_mode(wm_value)

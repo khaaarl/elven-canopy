@@ -996,6 +996,7 @@ func _setup_common(bridge: SimBridge) -> void:
 	# that outlives this scene.
 	_llm_sync_callable = _sync_llm_model.bind(bridge)
 	_sync_llm_model(bridge)
+	bridge.set_llm_debug(GameConfig.get_setting("llm_debug"))
 	ModelManager.state_changed.connect(_llm_sync_callable)
 	GameConfig.setting_changed.connect(_on_llm_setting_changed.bind(bridge))
 
@@ -1013,10 +1014,12 @@ func _sync_llm_model(bridge: SimBridge) -> void:
 		bridge.unload_llm_model()
 
 
-## Re-sync LLM model when a relevant setting changes (e.g., GPU toggle).
+## Re-sync LLM settings when relevant config changes (GPU toggle, debug logging).
 func _on_llm_setting_changed(key: String, bridge: SimBridge) -> void:
 	if key == "llm_gpu":
 		_sync_llm_model(bridge)
+	elif key == "llm_debug":
+		bridge.set_llm_debug(GameConfig.get_setting("llm_debug"))
 
 
 ## Disconnect LLM-related signals from persistent autoloads. Called from

@@ -112,6 +112,7 @@ impl RelayConnection {
         sim_version_hash: u64,
         config_hash: u64,
         password: Option<String>,
+        llm_capable: bool,
     ) -> Result<(NetClient, WelcomeInfo), String> {
         let hello = ClientMessage::Hello {
             protocol_version: 1,
@@ -120,7 +121,7 @@ impl RelayConnection {
             sim_version_hash,
             config_hash,
             session_password: password,
-            llm_capable: false,
+            llm_capable,
         };
         send_client_msg(&self.stream, &hello)?;
 
@@ -192,6 +193,7 @@ impl NetClient {
         sim_version_hash: u64,
         config_hash: u64,
         password: Option<String>,
+        llm_capable: bool,
     ) -> Result<(Self, WelcomeInfo), String> {
         let conn = RelayConnection::connect(addr)?;
         conn.join_session(
@@ -200,6 +202,7 @@ impl NetClient {
             sim_version_hash,
             config_hash,
             password,
+            llm_capable,
         )
     }
 
@@ -294,6 +297,13 @@ impl NetClient {
             payload,
         };
         send_msg(&mut self.writer, &msg).map_err(|e| format!("send LlmResponse failed: {e}"))
+    }
+
+    /// Notify the relay that this client's LLM capability has changed.
+    pub fn send_llm_capability_changed(&mut self, llm_capable: bool) -> Result<(), String> {
+        let msg = ClientMessage::LlmCapabilityChanged { llm_capable };
+        send_msg(&mut self.writer, &msg)
+            .map_err(|e| format!("send LlmCapabilityChanged failed: {e}"))
     }
 
     /// Send Goodbye and close the connection.

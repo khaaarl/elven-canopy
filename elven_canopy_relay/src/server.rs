@@ -63,6 +63,7 @@ enum InternalEvent {
         sim_version_hash: u64,
         config_hash: u64,
         session_password: Option<String>,
+        llm_capable: bool,
         stream: TcpStream,
         reader: BufReader<TcpStream>,
         reply_tx: mpsc::Sender<Result<RelayPlayerId, String>>,
@@ -398,7 +399,7 @@ fn handshake_thread(stream: TcpStream, tx: Sender<InternalEvent>, keep_running: 
                 sim_version_hash,
                 config_hash,
                 session_password,
-                llm_capable: _,
+                llm_capable,
             } => {
                 // Forward the join request to the main thread.
                 let write_stream = match stream.try_clone() {
@@ -414,6 +415,7 @@ fn handshake_thread(stream: TcpStream, tx: Sender<InternalEvent>, keep_running: 
                         sim_version_hash,
                         config_hash,
                         session_password,
+                        llm_capable,
                         stream: write_stream,
                         reader,
                         reply_tx,
@@ -489,6 +491,7 @@ fn handle_event(
             sim_version_hash,
             config_hash,
             session_password,
+            llm_capable,
             stream,
             reader,
             reply_tx,
@@ -506,6 +509,7 @@ fn handle_event(
                 sim_version_hash,
                 config_hash,
                 session_password,
+                llm_capable,
                 stream,
             ) {
                 Ok(player_id) => {

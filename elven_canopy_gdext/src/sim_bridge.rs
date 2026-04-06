@@ -587,6 +587,15 @@ pub struct SimBridge {
     /// call to avoid spawning a thread for temporary SimBridge instances
     /// (e.g., the one created in `game_session.gd` just for elfcyclopedia).
     llm_worker: Option<crate::llm_worker::LlmWorker>,
+    /// Whether this client has an LLM model loaded and can run inference.
+    /// Tracks load/unload requests sent to the worker thread. Used to set
+    /// `llm_capable` in the Hello handshake and send `LlmCapabilityChanged`
+    /// when the state changes mid-session.
+    llm_model_loaded: bool,
+    /// When true, log LLM prompts, raw responses, latency, and token counts.
+    /// Toggled via `set_llm_debug` from GDScript (driven by the `llm_debug`
+    /// game config setting).
+    llm_debug: bool,
 }
 
 /// Cache key for sprite invalidation — captures everything that affects a
@@ -631,6 +640,8 @@ impl INode for SimBridge {
             pending_compositions: BTreeMap::new(),
             creature_sprite_cache: HashMap::new(),
             llm_worker: None,
+            llm_model_loaded: false,
+            llm_debug: false,
         }
     }
 }
@@ -698,6 +709,10 @@ impl SimBridge {
             path: path_str,
             use_gpu,
         });
+        if !self.llm_model_loaded {
+            self.llm_model_loaded = true;
+            self.send_llm_capability_changed(true);
+        }
     }
 
     /// Unload the LLM model, freeing memory. Called from GDScript when the
@@ -707,6 +722,31 @@ impl SimBridge {
         if let Some(worker) = &self.llm_worker {
             godot_print!("SimBridge: requesting LLM model unload");
             worker.send(crate::llm_worker::LlmWorkerCmd::UnloadModel);
+        }
+        if self.llm_model_loaded {
+            self.llm_model_loaded = false;
+            self.send_llm_capability_changed(false);
+        }
+    }
+
+    /// Enable or disable debug logging for LLM prompts, responses, and
+    /// performance metrics. Called from GDScript when the `llm_debug` setting
+    /// changes.
+    #[func]
+    fn set_llm_debug(&mut self, enabled: bool) {
+        self.llm_debug = enabled;
+        if enabled {
+            godot_print!("SimBridge: LLM debug logging enabled");
+        }
+    }
+
+    /// Notify the relay that this client's LLM capability has changed.
+    /// No-op if not connected to a relay.
+    fn send_llm_capability_changed(&mut self, llm_capable: bool) {
+        if let Some(client) = &mut self.net_client
+            && let Err(e) = client.send_llm_capability_changed(llm_capable)
+        {
+            godot_error!("SimBridge: failed to send LlmCapabilityChanged: {e}");
         }
     }
 
@@ -6321,6 +6361,7 @@ impl SimBridge {
             SIM_VERSION_HASH,
             config_hash,
             password,
+            self.llm_model_loaded,
         ) {
             Ok((client, info)) => {
                 let pid = SessionPlayerId(info.player_id.0);
@@ -6422,6 +6463,7 @@ impl SimBridge {
             SIM_VERSION_HASH,
             config_hash,
             pw,
+            self.llm_model_loaded,
         ) {
             Ok((client, info)) => {
                 let pid = SessionPlayerId(info.player_id.0);
@@ -6756,6 +6798,13 @@ impl SimBridge {
                                 full_prompt.push('\n');
                             }
 
+                            if self.llm_debug {
+                                godot_print!(
+                                    "[LLM DEBUG] dispatch request {request_id} creature={} max_tokens={}\n--- PROMPT ---\n{full_prompt}\n--- END PROMPT ---",
+                                    req.creature_id,
+                                    req.max_tokens,
+                                );
+                            }
                             if let Some(worker) = &self.llm_worker {
                                 worker.send(crate::llm_worker::LlmWorkerCmd::Infer {
                                     request_id,
@@ -6779,6 +6828,22 @@ impl SimBridge {
         // relay as LlmResponse messages.
         if let (Some(client), Some(worker)) = (&mut self.net_client, &self.llm_worker) {
             while let Ok(result) = worker.result_rx.try_recv() {
+                if self.llm_debug
+                    && let Ok(payload) =
+                        serde_json::from_slice::<LlmResponsePayload>(&result.payload)
+                {
+                    let m = &payload.metadata;
+                    godot_print!(
+                        "[LLM DEBUG] result request {} latency={}ms tokens={} (prefill={} decode={}) cache_hit={}\n--- RESPONSE ---\n{}\n--- END RESPONSE ---",
+                        result.request_id,
+                        m.latency_ms,
+                        m.token_count,
+                        m.prefill_tokens,
+                        m.decode_tokens,
+                        m.cache_hit,
+                        payload.result_json,
+                    );
+                }
                 if let Err(e) = client.send_llm_response(result.request_id, result.payload) {
                     godot_error!(
                         "SimBridge: failed to send LlmResponse for request {}: {e}",

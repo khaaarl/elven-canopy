@@ -55,7 +55,6 @@ This reduces merge conflicts when parallel work streams add items.
 [~] F-face-tint            Directional face tinting by normal (top warm, bottom cool)
 [~] F-fruit-variety        Procedural fruit variety and processing
 [~] F-genetics             Creature genetics (additive SNP bitfield genomes with inheritance)
-[~] F-llm-creatures        LLM creature infrastructure: model download, llama.cpp, relay inference pipeline
 [~] F-multiplayer          Relay-coordinator multiplayer networking
 [~] F-notifications        Player-visible event notifications
 [~] F-parallel-dedup       Radix-partitioned parallel dedup (elven_canopy_utils)
@@ -72,6 +71,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fog-billboards       Fog post-process does not obscure billboard sprites
 [ ] B-ground-only          Remove ground_only field; use MovementCategory for all movement constraints
+[ ] B-llm-load-race        LLM capability signaled before async model load completes
 [ ] B-per-species-iter     Eliminate per-species iteration in selection and tooltip controllers
 [ ] B-relay-stability      Windows TCP connection drops during singleplayer gameplay
 [ ] B-stale-path           Creatures can traverse forbidden edges when cached path becomes stale
@@ -175,8 +175,11 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-llm-activities       LLM-driven activity scheduling and task inclination nudging
 [ ] F-llm-convo-ui         Creature conversation text bubbles and detail panel log
 [ ] F-llm-cuda-launcher    CUDA+Vulkan launcher for optimal GPU inference
+[ ] F-llm-debug-overlay    LLM debug overlay with inference metrics
+[ ] F-llm-decision-log     Per-creature LLM decision history
 [ ] F-llm-diplomacy        LLM-driven foreign civilization diplomatic decisions
 [ ] F-llm-dl-prompt        First-launch prompt for AI creature personality download
+[ ] F-llm-failure-track    LLM inference failure and timeout tracking
 [ ] F-llm-monologue        LLM inner monologue with emergent personality drift
 [ ] F-llm-social-chat      LLM-generated creature dialogue in social interactions
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
@@ -462,6 +465,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-large-pathfind       2x2 footprint nav grid
 [x] F-leaf-sway            Foliage vertex sway shader (wind simulation)
 [x] F-lesser-trees         Lesser trees (non-sentient, resource/ecology)
+[x] F-llm-creatures        LLM creature infrastructure: model download, llama.cpp, relay inference pipeline
 [x] F-logistics            Spatial resource flow (Kanban-style)
 [x] F-logistics-filter     Logistics material filter
 [x] F-main-menu            Main menu UI
@@ -4126,11 +4130,11 @@ This is the "life decisions" layer: not moment-to-moment task execution, but hig
 
 **Draft:** docs/drafts/llm-creatures.md
 
-**Blocked by:** F-llm-creatures
+**Unblocked by:** F-llm-creatures
 **Related:** F-llm-monologue, F-llm-social-chat
 
 #### F-llm-creatures — LLM creature infrastructure: model download, llama.cpp, relay inference pipeline
-**Status:** In Progress
+**Status:** Done
 
 Foundation for all LLM-driven creature features. Concrete decisions made (see draft for full details):
 
@@ -4140,7 +4144,7 @@ Foundation for all LLM-driven creature features. Concrete decisions made (see dr
 
 **Sim outbox:** The sim emits `OutboundRequest`s into a `Vec` drained after each `step()`. Each request carries preamble sections (well-known string key or literal text), an ephemeral prompt, a JSON schema description (for prompt construction and post-hoc validation, not grammar enforcement), and a deadline tick. Pending requests tracked in a `BTreeMap<u64, PendingLlmRequest>` (serialized for save/load). The sim has NO conditional compilation for LLM — it always emits requests; they expire silently when LLM is unavailable.
 
-**Relay routing (Option C — hybrid):** Dedicated protocol messages for dispatch (`ClientMessage::LlmRequest`, `ServerMessage::LlmDispatch`), but results delivered inside Turn messages (`Turn.llm_results`) for simple canonicalization. The relay selects LLM-capable peers (signaled via `llm_capable` field in `Hello`), load-balances, and buffers results until the next turn flush. Payloads are opaque `Vec<u8>` — the relay never inspects prompts or results.
+**Relay routing (Option C — hybrid):** Dedicated protocol messages for dispatch (`ClientMessage::LlmRequest`, `ServerMessage::LlmDispatch`), but results delivered inside Turn messages (`Turn.llm_results`) for simple canonicalization. The relay selects LLM-capable peers (signaled via `llm_capable` field in `Hello`), load-balances, and buffers results until the next turn flush. Payloads are opaque `Vec<u8>` — the relay never inspects prompts or results. Request and response deduplication via permanent `HashSet<u64>`s (`dispatched_request_ids`, `completed_request_ids`) — all clients emit identical requests since sims are deterministic.
 
 **THE RELAY IS THE ONLY PATH.** All LLM inference — singleplayer AND multiplayer — goes through the relay. The relay is the sole mechanism for dispatch and canonicalization. The code that submits a request and the code that consumes the result are identical regardless of player count. This is enforced at the architectural level (B-local-relay landed — singleplayer now uses the real relay on localhost).
 
@@ -4148,11 +4152,9 @@ Foundation for all LLM-driven creature features. Concrete decisions made (see dr
 
 **Model download:** User-initiated opt-in (~1.5 GB), background download, checksum verification, platform-conventional storage. Not bundled with the game.
 
-**Observability:** Toggleable logging of prompts, raw responses, latency, cache hits/misses, per-creature decision history.
+**Observability:** Toggleable `llm_debug` setting (Settings > AI > Debug Logging) logs prompts, raw responses, latency, and token counts via `[LLM DEBUG]` prefixed messages.
 
 **Draft:** docs/drafts/llm-creatures.md
-
-**Progress:**
 
 **DONE — Model download manager:**
 - `godot/scripts/model_manager.gd` — autoload singleton managing the full download lifecycle. Downloads Qwen 3 1.7B Q5_K_M (~1.17 GB) from HuggingFace. State machine: NOT_DOWNLOADED → DOWNLOADING → VERIFYING → READY (or FAILED). Downloads to `.part` file first, renames atomically on success. Size verification on startup detects corrupt/partial files.
@@ -4168,10 +4170,10 @@ Foundation for all LLM-driven creature features. Concrete decisions made (see dr
 **DONE — Sim outbox + protocol + relay dispatch + gdext wiring:**
 - `elven_canopy_sim/src/llm.rs` — `OutboundRequest`, `PreambleSection`, `PendingLlmRequest`, `LlmRequestKind`, `InferenceMetadata` types. `SimState` gains `next_request_id`, `pending_llm_requests` (serialized), `outbound_requests` (transient, drained into `StepResult`). `SimAction::LlmResult` with deadline validation. Expiry sweep each tick. 13 tests.
 - `elven_canopy_protocol` — `ClientMessage::LlmRequest`, `LlmResponse`, `LlmCapabilityChanged`; `ServerMessage::LlmDispatch`; `Turn.llm_results` (`#[serde(default)]` for backward compat); `Hello.llm_capable`. 7 new tests including backward-compat deserialization.
-- `elven_canopy_relay` — `Session` tracks `pending_llm_results` and `outstanding_dispatches`. Dispatch selects capable peer with fewest outstanding (load balance). Response buffered until turn flush. Disconnect cleanup. `PlayerState.llm_capable`. 6 new tests.
+- `elven_canopy_relay` — `Session` tracks `pending_llm_results` and `outstanding_dispatches`. Dispatch selects capable peer with fewest outstanding (load balance). Response buffered until turn flush. Disconnect cleanup. `PlayerState.llm_capable`. Request/response deduplication via `dispatched_request_ids` and `completed_request_ids` HashSets. 10 tests.
 - `elven_canopy_sim/src/session.rs` — `SessionMessage::LlmResult` routes through `apply_command` with `[LLM]` attribution. 1 new test.
 - `elven_canopy_gdext/src/sim_bridge.rs` — Turn handler processes `llm_results` before `AdvanceTo`, drains sim outbox after step and sends `LlmRequest`s to relay.
-- `elven_canopy_relay/src/client.rs` — `send_llm_request` and `send_llm_response` convenience methods on `NetClient`.
+- `elven_canopy_relay/src/client.rs` — `send_llm_request`, `send_llm_response`, and `send_llm_capability_changed` convenience methods on `NetClient`.
 
 **DONE — gdext inference worker thread:**
 - `elven_canopy_gdext/src/llm_worker.rs` — long-lived worker thread with command channel (`LoadModel`, `UnloadModel`, `Infer`, `Shutdown`) and result channel. Serial inference queue. Model created on worker thread (`LlamaContext` is `!Send`). Lazily spawned on first `load_llm_model` call.
@@ -4186,13 +4188,22 @@ Foundation for all LLM-driven creature features. Concrete decisions made (see dr
 - `build.py`: auto-redirects `CARGO_TARGET_DIR` to `C:\ct` on Windows to work around MSVC's 260-char path limit.
 - README updated with all build dependencies per platform.
 
-**Remaining work:**
+**DONE — Capability signaling:**
+- `join_session()` and `add_player()` accept `llm_capable` parameter from Hello handshake.
+- `llm_capable` threaded through `InternalEvent::RequestJoin` → `add_player()` → `PlayerState`.
+- `SimBridge` tracks `llm_model_loaded` and sends `LlmCapabilityChanged` to relay on model load/unload.
+- `send_llm_capability_changed()` on `NetClient`.
 
-1. **Capability signaling at connect time** — `Hello.llm_capable` is in the protocol but the client doesn't yet set it based on model availability. Trivial: check `ModelManager.get_state() == READY` at connect time, send `LlmCapabilityChanged` when model is downloaded/deleted.
+**DONE — Observability:**
+- `llm_debug` setting in `GameConfig` (default: false), toggle in Settings > AI > Debug Logging.
+- `set_llm_debug()` GDScript-callable on SimBridge, synced from config on startup and setting changes.
+- `[LLM DEBUG]` logging of prompts, raw responses, latency, and token counts in SimBridge frame loop.
 
-2. **Observability** — Toggleable debug logging of prompts, raw responses, latency, cache hits. The `InferenceMetadata` struct is plumbed through but nothing logs it yet.
+**DONE — Relay deduplication:**
+- `dispatched_request_ids: HashSet<u64>` — first client's request wins; duplicates from other clients silently dropped.
+- `completed_request_ids: HashSet<u64>` — first response accepted; duplicates rejected (future-proofing for redundant dispatch).
 
-**Blocks:** F-llm-activities, F-llm-diplomacy, F-llm-dl-prompt, F-llm-social-chat
+**Unblocked:** F-llm-activities, F-llm-diplomacy, F-llm-dl-prompt, F-llm-social-chat
 **Related:** F-llm-cuda-launcher
 
 #### F-llm-diplomacy — LLM-driven foreign civilization diplomatic decisions
@@ -4204,7 +4215,7 @@ Deferred until other-civilization systems are more developed. Same infrastructur
 
 **Draft:** docs/drafts/llm-creatures.md
 
-**Blocked by:** F-llm-creatures
+**Unblocked by:** F-llm-creatures
 
 #### F-llm-monologue — LLM inner monologue with emergent personality drift
 **Status:** Todo
@@ -4237,8 +4248,8 @@ When the existing casual social heartbeat PPM roll triggers an interaction betwe
 
 **Draft:** docs/drafts/llm-creatures.md
 
-**Blocked by:** F-llm-creatures
 **Blocks:** F-llm-convo-ui, F-llm-monologue
+**Unblocked by:** F-llm-creatures
 **Related:** F-llm-activities, F-llm-monologue
 
 #### F-mana-mood — Mana generation tied to elf mood
@@ -7072,12 +7083,21 @@ Player-facing UI for LLM-generated creature conversations. Text bubbles in the w
 
 **Blocked by:** F-llm-social-chat
 
+#### F-llm-debug-overlay — LLM debug overlay with inference metrics
+**Status:** Todo
+
+Debug overlay metrics for the LLM inference pipeline: inference queue depth, average latency, cache hit rate, failures/minute. Displayed as a toggleable overlay in the game UI, similar to FPS counters.
+
+**Scope:** Aggregate metrics from InferenceMetadata (latency, token counts, cache hits) and failure tracking (F-llm-failure-track). Display in a debug overlay panel. Toggle via a debug key or settings menu.
+
+**Context:** Split out from F-llm-creatures observability spec (docs/drafts/llm-creatures.md lines 887-888).
+
 #### F-llm-dl-prompt — First-launch prompt for AI creature personality download
 **Status:** Todo
 
 On first launch (or when the model becomes available for the first time), prompt the player: "Enable AI creature personalities? (requires ~1.5 GB download)". Currently the download option is only accessible via the Settings panel, which means players who don't explore settings will never discover the feature. The prompt should be unobtrusive, dismissable, and not reappear if the player declines. If the player accepts, start the download immediately (using the existing ModelManager infrastructure). A GameConfig setting like `llm_prompt_dismissed` can track whether the prompt has been shown.
 
-**Blocked by:** F-llm-creatures
+**Unblocked by:** F-llm-creatures
 
 #### F-lod-sprites — LOD sprites (chibi / detailed)
 **Status:** Todo · **Phase:** 8+ · **Refs:** §24
@@ -8874,6 +8894,17 @@ The total state is too large to ever want to iterate over during ordinary gamepl
 
 **Blocked by:** F-tab-row-crc
 
+#### B-llm-load-race — LLM capability signaled before async model load completes
+**Status:** Todo
+
+`llm_model_loaded` in SimBridge is set to `true` (and `LlmCapabilityChanged(true)` sent to the relay) immediately when `load_llm_model` is called, before the async worker thread actually loads the model. If the load fails (corrupt GGUF, OOM, llama.cpp error), the relay thinks this client is capable but inference requests will be silently dropped (deadline expiry handles it).
+
+**Likely fix:** Add a `LoadResult` feedback message from the worker thread to the main thread. SimBridge only sends `LlmCapabilityChanged(true)` after receiving `LoadResult::Success`. On `LoadResult::Failed`, it sets `llm_model_loaded = false` and sends `LlmCapabilityChanged(false)`.
+
+The relay side also needs work: rather than immediately dropping requests when no capable peer is available, the relay could hold requests briefly if at least one peer has signaled `llm_capable: true` in Hello but hasn't yet confirmed a successful load. Only drop if everyone who claimed capability has reported failure (or disconnected). This prevents the race window where requests arrive between Hello and successful load from being silently lost.
+
+**Affected files:** `elven_canopy_gdext/src/sim_bridge.rs` (load_llm_model), `elven_canopy_gdext/src/llm_worker.rs` (worker loop LoadModel result), `elven_canopy_relay/src/session.rs` (dispatch logic).
+
 #### B-local-relay — Singleplayer must launch the real relay (on localhost), not use a fake tick-pacing LocalRelay
 **Status:** Done
 
@@ -8941,6 +8972,24 @@ The relay thread has **zero logging** (see F-logging), so when the connection di
 5. If the timeout fix already resolved it, the logs will confirm clean operation
 
 **Blocked by:** F-logging
+
+#### F-llm-decision-log — Per-creature LLM decision history
+**Status:** Todo
+
+Per-creature history of LLM decisions: what was requested (prompt summary, request type), what came back (raw response, parsed result), and how it was applied (mechanical effects on the creature). Useful for debugging why a creature made a particular choice or why an LLM response was rejected.
+
+**Scope:** Store a rolling window of recent LLM interactions per creature. Accessible from the creature info panel or a dedicated debug panel. Include: request type, prompt summary, raw response text, parsed JSON, validation result (accepted/rejected + reason), mechanical effects applied.
+
+**Context:** Split out from F-llm-creatures observability spec (docs/drafts/llm-creatures.md lines 884-885). Depends on LLM features actually generating requests (F-llm-activities, F-llm-social-chat).
+
+#### F-llm-failure-track — LLM inference failure and timeout tracking
+**Status:** Todo
+
+Track LLM inference failures, retries, and timeout/expiry counts. Surface these as counters accessible from the debug overlay or logging system. Currently, failed inferences are silently dropped (deadline expiry handles them), but there's no visibility into how often this happens or why.
+
+**Scope:** Count and log inference failures (worker errors, deadline expiry, malformed responses). Distinguish failure reasons. Make counts available to the debug overlay (see F-llm-debug-overlay).
+
+**Context:** Split out from F-llm-creatures observability spec (docs/drafts/llm-creatures.md lines 882-883).
 
 #### F-mp-chat — Multiplayer in-game chat
 **Status:** Todo · **Phase:** 8+ · **Refs:** §4

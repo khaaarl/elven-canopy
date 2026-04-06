@@ -17,6 +17,7 @@
 ##   window_mode: String = "windowed" — window mode
 ##       ("windowed", "borderless_fullscreen", "exclusive_fullscreen")
 ##   llm_gpu: bool = true             — use GPU for LLM inference (faster, needs VRAM)
+##   llm_debug: bool = false          — log LLM prompts, responses, and latency
 ##
 ## Unknown keys in the JSON file are preserved across load/save (forward
 ## compatibility — a newer version's settings won't be lost if an older
@@ -48,6 +49,7 @@ const DEFAULTS := {
 	"edge_outline": true,
 	"window_mode": "windowed",
 	"llm_gpu": true,
+	"llm_debug": false,
 }
 
 ## File path for the config JSON. Tests can override this to use a temp path.

@@ -1119,7 +1119,8 @@ fn embedded_net_client_connect_shortcut() {
     // Use the high-level client API to join.
     use elven_canopy_relay::client::NetClient;
     let addr_str = format!("{addr}");
-    let (client, welcome) = NetClient::connect(&addr_str, "Guest", 0xABCD, 0x1234, None).unwrap();
+    let (client, welcome) =
+        NetClient::connect(&addr_str, "Guest", 0xABCD, 0x1234, None, false).unwrap();
     assert_eq!(welcome.player_id, RelayPlayerId(1));
     assert_eq!(welcome.session_name, "embed");
 
@@ -1153,7 +1154,7 @@ fn dedicated_relay_connection_two_phase_api() {
 
     // Join.
     let (mut client, welcome) = conn
-        .join_session(sid, "Player1", 0xABCD, 0x1234, None)
+        .join_session(sid, "Player1", 0xABCD, 0x1234, None, false)
         .unwrap();
     assert_eq!(welcome.player_id, RelayPlayerId(0));
 

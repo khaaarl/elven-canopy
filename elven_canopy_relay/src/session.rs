@@ -24,7 +24,7 @@
 // single client are logged but do not crash the relay — the reader thread
 // for that client will detect the broken pipe and send a `Disconnected` event.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::io::BufWriter;
 use std::net::TcpStream;
 
@@ -67,6 +67,11 @@ pub struct Session {
     // and outstanding request-to-peer mapping for cleanup on disconnect.
     pending_llm_results: Vec<LlmResult>,
     outstanding_dispatches: BTreeMap<u64, RelayPlayerId>,
+    // LLM deduplication: in multiplayer all clients emit identical requests.
+    // These sets ensure the relay dispatches each request once and accepts
+    // each response once, regardless of how many clients submit duplicates.
+    dispatched_request_ids: HashSet<u64>,
+    completed_request_ids: HashSet<u64>,
 }
 
 /// Tracks a pending mid-game join snapshot transfer.
@@ -108,6 +113,8 @@ impl Session {
             snapshot_pending: None,
             pending_llm_results: Vec::new(),
             outstanding_dispatches: BTreeMap::new(),
+            dispatched_request_ids: HashSet::new(),
+            completed_request_ids: HashSet::new(),
         }
     }
 
@@ -123,6 +130,7 @@ impl Session {
         sim_version_hash: u64,
         config_hash: u64,
         session_password: Option<String>,
+        llm_capable: bool,
         stream: TcpStream,
     ) -> Result<RelayPlayerId, String> {
         // Password check.
@@ -202,7 +210,7 @@ impl Session {
             PlayerState {
                 name: player_name,
                 writer,
-                llm_capable: false,
+                llm_capable,
             },
         );
 
@@ -262,6 +270,11 @@ impl Session {
     /// with the fewest outstanding dispatches and forward the request. If no
     /// capable peer is available, drop the request (sim deadline will expire).
     pub fn handle_llm_request(&mut self, _from: RelayPlayerId, request_id: u64, payload: Vec<u8>) {
+        // Deduplicate: all clients run the same sim and emit the same request.
+        if !self.dispatched_request_ids.insert(request_id) {
+            return; // Already dispatched — duplicate from another client.
+        }
+
         // Find the capable peer with the fewest outstanding dispatches.
         let mut best: Option<(RelayPlayerId, usize)> = None;
         for (&pid, ps) in &self.players {
@@ -303,6 +316,15 @@ impl Session {
                 self.outstanding_dispatches.remove(&request_id);
             }
             _ => return, // Unknown or mismatched — discard.
+        }
+        // Deduplicate: future-proofing for redundant dispatch where the same
+        // request is sent to multiple peers. Currently unreachable in the
+        // single-dispatch model (the outstanding_dispatches check above is
+        // sufficient), but will become load-bearing when redundant dispatch
+        // is added — at that point outstanding_dispatches will need to map
+        // request_id to multiple peers.
+        if !self.completed_request_ids.insert(request_id) {
+            return; // Already accepted a response for this request.
         }
         self.pending_llm_results.push(LlmResult {
             request_id,
@@ -616,7 +638,7 @@ mod tests {
         let (client, server) = tcp_pair();
         let mut session = Session::new("test".into(), None, 50, 4);
 
-        let result = session.add_player("Alice".into(), 100, 200, None, server);
+        let result = session.add_player("Alice".into(), 100, 200, None, false, server);
         assert!(result.is_ok());
         let id = result.unwrap();
         assert_eq!(id, RelayPlayerId(0));
@@ -647,7 +669,14 @@ mod tests {
         let (_client, server) = tcp_pair();
         let mut session = Session::new("test".into(), Some("secret".into()), 50, 4);
 
-        let result = session.add_player("Alice".into(), 100, 200, Some("wrong".into()), server);
+        let result = session.add_player(
+            "Alice".into(),
+            100,
+            200,
+            Some("wrong".into()),
+            false,
+            server,
+        );
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "incorrect password");
     }
@@ -657,7 +686,14 @@ mod tests {
         let (_client, server) = tcp_pair();
         let mut session = Session::new("test".into(), Some("secret".into()), 50, 4);
 
-        let result = session.add_player("Alice".into(), 100, 200, Some("secret".into()), server);
+        let result = session.add_player(
+            "Alice".into(),
+            100,
+            200,
+            Some("secret".into()),
+            false,
+            server,
+        );
         assert!(result.is_ok());
     }
 
@@ -669,11 +705,11 @@ mod tests {
 
         // First player sets reference hashes.
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
 
         // Second player with different sim_version_hash.
-        let result = session.add_player("Bob".into(), 999, 200, None, server2);
+        let result = session.add_player("Bob".into(), 999, 200, None, false, server2);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "sim version mismatch");
     }
@@ -685,9 +721,9 @@ mod tests {
         let mut session = Session::new("test".into(), None, 50, 1); // max 1 player
 
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
-        let result = session.add_player("Bob".into(), 100, 200, None, server2);
+        let result = session.add_player("Bob".into(), 100, 200, None, false, server2);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "session is full");
     }
@@ -699,9 +735,9 @@ mod tests {
         let mut session = Session::new("test".into(), None, 50, 4);
 
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
-        let result = session.add_player("Alice".into(), 100, 200, None, server2);
+        let result = session.add_player("Alice".into(), 100, 200, None, false, server2);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("already taken"));
     }
@@ -713,14 +749,14 @@ mod tests {
         let mut session = Session::new("test".into(), None, 50, 4);
 
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
         let mut reader1 = BufReader::new(client1);
         // Drain Alice's Welcome.
         let _welcome = recv_server_msg(&mut reader1);
 
         session
-            .add_player("Bob".into(), 100, 200, None, server2)
+            .add_player("Bob".into(), 100, 200, None, false, server2)
             .unwrap();
 
         // Alice should receive PlayerJoined.
@@ -751,10 +787,10 @@ mod tests {
         let mut session = Session::new("test".into(), None, 50, 4);
 
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
         session
-            .add_player("Bob".into(), 100, 200, None, server2)
+            .add_player("Bob".into(), 100, 200, None, false, server2)
             .unwrap();
 
         let mut reader1 = BufReader::new(client1);
@@ -782,10 +818,10 @@ mod tests {
         let mut session = Session::new("test".into(), None, 50, 4);
 
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
         session
-            .add_player("Bob".into(), 100, 200, None, server2)
+            .add_player("Bob".into(), 100, 200, None, false, server2)
             .unwrap();
 
         // Start the game so turns flush.
@@ -843,10 +879,10 @@ mod tests {
         let mut session = Session::new("test".into(), None, 50, 4);
 
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
         session
-            .add_player("Bob".into(), 100, 200, None, server2)
+            .add_player("Bob".into(), 100, 200, None, false, server2)
             .unwrap();
 
         // Start the game so turns flush.
@@ -898,10 +934,10 @@ mod tests {
         let mut session = Session::new("test".into(), None, 50, 4);
 
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
         session
-            .add_player("Bob".into(), 100, 200, None, server2)
+            .add_player("Bob".into(), 100, 200, None, false, server2)
             .unwrap();
 
         // Both players send the same checksum — no DesyncDetected.
@@ -921,10 +957,10 @@ mod tests {
         let mut session = Session::new("test".into(), None, 50, 4);
 
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
         session
-            .add_player("Bob".into(), 100, 200, None, server2)
+            .add_player("Bob".into(), 100, 200, None, false, server2)
             .unwrap();
 
         // Different checksums → DesyncDetected.
@@ -949,7 +985,7 @@ mod tests {
         let (client1, server1) = tcp_pair();
         let mut session = Session::new("test".into(), None, 50, 4);
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
 
         session.request_pause(RelayPlayerId(0));
@@ -973,10 +1009,10 @@ mod tests {
         let mut session = Session::new("test".into(), None, 50, 4);
 
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
         session
-            .add_player("Bob".into(), 100, 200, None, server2)
+            .add_player("Bob".into(), 100, 200, None, false, server2)
             .unwrap();
 
         // Bob (not host) tries to change speed — ignored.
@@ -1004,7 +1040,7 @@ mod tests {
         let (_client1, server1) = tcp_pair();
         let mut session = Session::new("test".into(), None, 50, 4);
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
 
         // Host tries to set speed to 0 — should be silently ignored.
@@ -1020,7 +1056,7 @@ mod tests {
         let (client1, server1) = tcp_pair();
         let mut session = Session::new("test".into(), None, 50, 4);
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
 
         session.chat(RelayPlayerId(0), "hello".into());
@@ -1045,10 +1081,10 @@ mod tests {
         let mut session = Session::new("test".into(), None, 50, 4);
 
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
         session
-            .add_player("Bob".into(), 100, 200, None, server2)
+            .add_player("Bob".into(), 100, 200, None, false, server2)
             .unwrap();
 
         // Enqueue a command and flush without starting the game.
@@ -1078,10 +1114,10 @@ mod tests {
         let mut session = Session::new("test".into(), None, 50, 4);
 
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
         session
-            .add_player("Bob".into(), 100, 200, None, server2)
+            .add_player("Bob".into(), 100, 200, None, false, server2)
             .unwrap();
 
         session.handle_start_game(RelayPlayerId(0), 42, r#"{"key":"val"}"#.into(), None);
@@ -1116,10 +1152,10 @@ mod tests {
         let mut session = Session::new("test".into(), None, 50, 4);
 
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
         session
-            .add_player("Bob".into(), 100, 200, None, server2)
+            .add_player("Bob".into(), 100, 200, None, false, server2)
             .unwrap();
 
         // Bob (not host) tries to start — ignored.
@@ -1137,7 +1173,7 @@ mod tests {
         let mut session = Session::new("test".into(), None, 50, 4);
 
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
 
         session.handle_start_game(RelayPlayerId(0), 42, "{}".into(), None);
@@ -1177,10 +1213,10 @@ mod tests {
         let mut session = Session::new("test".into(), None, 50, 4);
 
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
         session
-            .add_player("Bob".into(), 100, 200, None, server2)
+            .add_player("Bob".into(), 100, 200, None, false, server2)
             .unwrap();
         session.handle_start_game(RelayPlayerId(0), 42, "{}".into(), None);
 
@@ -1205,7 +1241,7 @@ mod tests {
         // A third player joins after the game has started.
         let (_client3, server3) = tcp_pair();
         session
-            .add_player("Charlie".into(), 100, 200, None, server3)
+            .add_player("Charlie".into(), 100, 200, None, false, server3)
             .unwrap();
 
         assert!(session.is_snapshot_pending());
@@ -1236,7 +1272,7 @@ mod tests {
         // Third player joins mid-game.
         let (client3, server3) = tcp_pair();
         session
-            .add_player("Charlie".into(), 100, 200, None, server3)
+            .add_player("Charlie".into(), 100, 200, None, false, server3)
             .unwrap();
         assert!(session.is_snapshot_pending());
 
@@ -1273,7 +1309,7 @@ mod tests {
         // Third player joins mid-game — snapshot pending.
         let (_client3, server3) = tcp_pair();
         session
-            .add_player("Charlie".into(), 100, 200, None, server3)
+            .add_player("Charlie".into(), 100, 200, None, false, server3)
             .unwrap();
         assert!(session.is_snapshot_pending());
 
@@ -1296,7 +1332,7 @@ mod tests {
         // Third player joins mid-game.
         let (_client3, server3) = tcp_pair();
         session
-            .add_player("Charlie".into(), 100, 200, None, server3)
+            .add_player("Charlie".into(), 100, 200, None, false, server3)
             .unwrap();
 
         // Complete the snapshot transfer.
@@ -1317,7 +1353,7 @@ mod tests {
 
         let (_client3, server3) = tcp_pair();
         let joiner_id = session
-            .add_player("Charlie".into(), 100, 200, None, server3)
+            .add_player("Charlie".into(), 100, 200, None, false, server3)
             .unwrap();
         assert!(session.is_snapshot_pending());
 
@@ -1335,7 +1371,7 @@ mod tests {
 
         let (_client3, server3) = tcp_pair();
         session
-            .add_player("Charlie".into(), 100, 200, None, server3)
+            .add_player("Charlie".into(), 100, 200, None, false, server3)
             .unwrap();
         assert!(session.is_snapshot_pending());
 
@@ -1354,7 +1390,7 @@ mod tests {
         // Third player joins mid-game — snapshot pending.
         let (_client3, server3) = tcp_pair();
         session
-            .add_player("Charlie".into(), 100, 200, None, server3)
+            .add_player("Charlie".into(), 100, 200, None, false, server3)
             .unwrap();
         assert!(session.is_snapshot_pending());
 
@@ -1379,13 +1415,13 @@ mod tests {
         // First mid-game join — accepted.
         let (_client3, server3) = tcp_pair();
         session
-            .add_player("Charlie".into(), 100, 200, None, server3)
+            .add_player("Charlie".into(), 100, 200, None, false, server3)
             .unwrap();
         assert!(session.is_snapshot_pending());
 
         // Second mid-game join while first is still pending — rejected.
         let (_client4, server4) = tcp_pair();
-        let result = session.add_player("Dave".into(), 100, 200, None, server4);
+        let result = session.add_player("Dave".into(), 100, 200, None, false, server4);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "another player is joining, try again");
 
@@ -1399,7 +1435,7 @@ mod tests {
         let (client1, server1) = tcp_pair();
         let mut session = Session::new("test".into(), None, 50, 4);
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
 
         session.request_pause(RelayPlayerId(0));
@@ -1420,7 +1456,7 @@ mod tests {
         let (client1, server1) = tcp_pair();
         let mut session = Session::new("test".into(), None, 50, 4);
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
 
         // Resume without pausing — should be a no-op.
@@ -1438,7 +1474,7 @@ mod tests {
         let (_client1, server1) = tcp_pair();
         let mut session = Session::new("test".into(), None, 50, 4);
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
 
         // Remove a player that doesn't exist — should be a no-op.
@@ -1451,7 +1487,7 @@ mod tests {
         let (client1, server1) = tcp_pair();
         let mut session = Session::new("test".into(), None, 50, 4);
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
 
         let long_text = "x".repeat(8000);
@@ -1488,7 +1524,7 @@ mod tests {
         let (client1, server1) = tcp_pair();
         let mut session = Session::new("test".into(), None, 50, 4);
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
 
         // Single player sends a checksum — should never trigger desync.
@@ -1510,13 +1546,13 @@ mod tests {
         let mut session = Session::new("test".into(), None, 50, 4);
 
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
         session
-            .add_player("Bob".into(), 100, 200, None, server2)
+            .add_player("Bob".into(), 100, 200, None, false, server2)
             .unwrap();
         session
-            .add_player("Charlie".into(), 100, 200, None, server3)
+            .add_player("Charlie".into(), 100, 200, None, false, server3)
             .unwrap();
 
         // Charlie sends a checksum for tick 1000, then disconnects.
@@ -1549,7 +1585,7 @@ mod tests {
         let (_client1, server1) = tcp_pair();
         let mut session = Session::new("test".into(), None, 50, 4);
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
 
         session.handle_start_game(RelayPlayerId(0), 42, "{}".into(), Some(5000));
@@ -1566,7 +1602,7 @@ mod tests {
         let (_client1, server1) = tcp_pair();
         let mut session = Session::new("test".into(), None, 50, 4);
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
 
         session.handle_start_game(RelayPlayerId(0), 42, "{}".into(), None);
@@ -1581,7 +1617,7 @@ mod tests {
         let (client1, server1) = tcp_pair();
         let mut session = Session::new("test".into(), None, 50, 4);
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
 
         // Resume at tick 10000.
@@ -1620,10 +1656,10 @@ mod tests {
         let (_client2, server2) = tcp_pair();
         let mut session = Session::new("test".into(), None, 50, 4);
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
         session
-            .add_player("Bob".into(), 100, 200, None, server2)
+            .add_player("Bob".into(), 100, 200, None, false, server2)
             .unwrap();
 
         // Bob (not host) tries to resume — ignored.
@@ -1641,7 +1677,7 @@ mod tests {
         let (_client1, server1) = tcp_pair();
         let mut session = Session::new("test".into(), None, 50, 4);
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
 
         session.handle_resume_session(RelayPlayerId(0), 5000);
@@ -1657,7 +1693,7 @@ mod tests {
         let (client1, server1) = tcp_pair();
         let mut session = Session::new("test".into(), None, 50, 4);
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
 
         session.handle_start_game(RelayPlayerId(0), 42, "{}".into(), Some(3000));
@@ -1683,7 +1719,7 @@ mod tests {
         let (_client1, server1) = tcp_pair();
         let mut session = Session::new("test".into(), None, 50, 4);
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
 
         // Start game normally at tick 0.
@@ -1701,7 +1737,7 @@ mod tests {
         let (_client1, server1) = tcp_pair();
         let mut session = Session::new("test".into(), None, 50, 4);
         session
-            .add_player("Alice".into(), 100, 200, None, server1)
+            .add_player("Alice".into(), 100, 200, None, false, server1)
             .unwrap();
 
         // Resume at tick 5000.
@@ -1722,10 +1758,10 @@ mod tests {
         let (client2, server2) = tcp_pair();
         let mut session = Session::new("test".into(), None, 50, 4);
         session
-            .add_player("Host".into(), 100, 200, None, server1)
+            .add_player("Host".into(), 100, 200, None, false, server1)
             .unwrap();
         session
-            .add_player("Guest".into(), 100, 200, None, server2)
+            .add_player("Guest".into(), 100, 200, None, false, server2)
             .unwrap();
         let reader1 = BufReader::new(client1);
         let reader2 = BufReader::new(client2);
@@ -1871,7 +1907,7 @@ mod tests {
         let (client3, server3) = tcp_pair();
         let (mut session, _reader_host, _reader_guest) = two_player_session();
         session
-            .add_player("Third".into(), 100, 200, None, server3)
+            .add_player("Third".into(), 100, 200, None, false, server3)
             .unwrap();
         let mut _reader3 = BufReader::new(client3);
 
@@ -1887,5 +1923,128 @@ mod tests {
             session.outstanding_dispatches.values().collect();
         // Both capable peers should have received one dispatch each.
         assert_eq!(dispatched_peers.len(), 2);
+    }
+
+    #[test]
+    fn llm_duplicate_requests_deduplicated() {
+        let (mut session, _reader_host, mut reader_guest) = two_player_session();
+        session.handle_llm_capability_changed(RelayPlayerId(1), true);
+        drain_messages(&mut reader_guest);
+
+        // Both players submit the same request (simulating deterministic sims).
+        session.handle_llm_request(RelayPlayerId(0), 42, vec![1, 2, 3]);
+        session.handle_llm_request(RelayPlayerId(1), 42, vec![1, 2, 3]);
+
+        // Only one dispatch should have been sent.
+        let msgs = drain_messages(&mut reader_guest);
+        let dispatch_count = msgs
+            .iter()
+            .filter(|m| matches!(m, ServerMessage::LlmDispatch { request_id: 42, .. }))
+            .count();
+        assert_eq!(
+            dispatch_count, 1,
+            "duplicate request should be deduplicated"
+        );
+        assert_eq!(session.outstanding_dispatches.len(), 1);
+    }
+
+    #[test]
+    fn add_player_with_llm_capable_true_enables_dispatch() {
+        let (client1, server1) = tcp_pair();
+        let (client2, server2) = tcp_pair();
+        let mut session = Session::new("test".into(), None, 50, 4);
+        // Host joins without LLM capability.
+        session
+            .add_player("Host".into(), 100, 200, None, false, server1)
+            .unwrap();
+        // Guest joins WITH LLM capability set in Hello.
+        session
+            .add_player("Guest".into(), 100, 200, None, true, server2)
+            .unwrap();
+        let _reader_host = BufReader::new(client1);
+        let mut reader_guest = BufReader::new(client2);
+
+        // Drain Welcome + PlayerJoined from guest's reader.
+        drain_messages(&mut reader_guest);
+
+        // Host submits an LLM request — guest should receive dispatch
+        // without needing a separate LlmCapabilityChanged message.
+        session.handle_llm_request(RelayPlayerId(0), 99, vec![7, 8, 9]);
+
+        let msgs = drain_messages(&mut reader_guest);
+        assert!(
+            msgs.iter()
+                .any(|m| matches!(m, ServerMessage::LlmDispatch { request_id: 99, .. })),
+            "expected LlmDispatch to capable peer added via Hello, got {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn llm_capability_changed_toggles_dispatch_eligibility() {
+        let (mut session, _reader_host, mut reader_guest) = two_player_session();
+        drain_messages(&mut reader_guest);
+
+        // Initially not capable — request should be dropped.
+        session.handle_llm_request(RelayPlayerId(0), 1, vec![1]);
+        assert!(session.outstanding_dispatches.is_empty());
+
+        // Enable capability — next request should be dispatched.
+        session.handle_llm_capability_changed(RelayPlayerId(1), true);
+        session.handle_llm_request(RelayPlayerId(0), 2, vec![2]);
+        assert_eq!(session.outstanding_dispatches.len(), 1);
+        let msgs = drain_messages(&mut reader_guest);
+        assert!(
+            msgs.iter()
+                .any(|m| matches!(m, ServerMessage::LlmDispatch { request_id: 2, .. }))
+        );
+
+        // Disable capability — next request should be dropped again.
+        session.handle_llm_capability_changed(RelayPlayerId(1), false);
+        session.handle_llm_response(RelayPlayerId(1), 2, vec![3]); // clear outstanding
+        session.handle_llm_request(RelayPlayerId(0), 3, vec![4]);
+        assert!(session.outstanding_dispatches.is_empty());
+    }
+
+    #[test]
+    fn llm_capability_changed_unknown_player_is_noop() {
+        let (mut session, _reader_host, _reader_guest) = two_player_session();
+        // Should not panic — unknown player ID is silently ignored.
+        session.handle_llm_capability_changed(RelayPlayerId(99), true);
+    }
+
+    #[test]
+    fn llm_dedup_set_persists_after_response() {
+        let (mut session, _reader_host, mut reader_guest) = two_player_session();
+        session.handle_llm_capability_changed(RelayPlayerId(1), true);
+        drain_messages(&mut reader_guest);
+
+        // Dispatch and respond to request 42.
+        session.handle_llm_request(RelayPlayerId(0), 42, vec![1]);
+        session.handle_llm_response(RelayPlayerId(1), 42, vec![2]);
+
+        // outstanding_dispatches is cleared, but dedup set remembers.
+        assert!(session.outstanding_dispatches.is_empty());
+        assert_eq!(session.pending_llm_results.len(), 1);
+
+        // A late duplicate of request 42 from another client should be rejected.
+        session.handle_llm_request(RelayPlayerId(1), 42, vec![1]);
+        // Should still be just one outstanding (from the original), not re-dispatched.
+        assert!(session.outstanding_dispatches.is_empty());
+    }
+
+    #[test]
+    fn llm_duplicate_response_rejected() {
+        let (mut session, _reader_host, _reader_guest) = two_player_session();
+        session.handle_llm_capability_changed(RelayPlayerId(1), true);
+
+        session.handle_llm_request(RelayPlayerId(0), 42, vec![1]);
+        // First response — accepted.
+        session.handle_llm_response(RelayPlayerId(1), 42, vec![2]);
+        assert_eq!(session.pending_llm_results.len(), 1);
+
+        // Second response for same request from same peer — rejected by
+        // outstanding_dispatches check (entry already removed).
+        session.handle_llm_response(RelayPlayerId(1), 42, vec![3]);
+        assert_eq!(session.pending_llm_results.len(), 1);
     }
 }

@@ -45,7 +45,7 @@ impl TestGameClient {
     /// For joiners connecting to an embedded relay (SessionId(0)).
     pub fn connect(addr: std::net::SocketAddr, name: &str) -> Self {
         let addr_str = addr.to_string();
-        let (client, info) = NetClient::connect(&addr_str, name, 1, 0, None)
+        let (client, info) = NetClient::connect(&addr_str, name, 1, 0, None, false)
             .expect("TestGameClient::connect failed");
         Self {
             client,
@@ -69,7 +69,7 @@ impl TestGameClient {
             .create_session(name, None, ticks_per_turn, max_players)
             .expect("create_session failed");
         let (client, info) = conn
-            .join_session(session_id, name, 1, 0, None)
+            .join_session(session_id, name, 1, 0, None, false)
             .expect("join_session failed");
         Self {
             client,
