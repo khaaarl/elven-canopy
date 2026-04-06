@@ -19,4 +19,5 @@ path = "src/bin/test_inference.rs"
 default = []
 cuda = ["llama-cpp-2/cuda"]
 vulkan = ["llama-cpp-2/vulkan"]
+metal = ["llama-cpp-2/metal"]
 rocm = ["llama-cpp-2/rocm"]

@@ -452,6 +452,34 @@ func test_window_mode_dropdown_items() -> void:
 	assert_eq(_panel._window_mode_dropdown.get_item_text(2), "Exclusive Fullscreen")
 
 
+## Open populates GPU toggle from config.
+func test_open_populates_llm_gpu() -> void:
+	_config.set_setting("llm_gpu", false)
+	_panel.open(_config)
+	assert_eq(_panel.get_llm_gpu_enabled(), false)
+
+
+## Save writes GPU toggle to config.
+func test_save_writes_llm_gpu() -> void:
+	_panel.set_llm_gpu_enabled(false)
+	_panel.save_and_close()
+	assert_eq(_config.get_setting("llm_gpu"), false)
+
+
+## Cancel discards GPU toggle changes.
+func test_cancel_discards_llm_gpu() -> void:
+	_config.set_setting("llm_gpu", true)
+	_panel.open(_config)
+	_panel.set_llm_gpu_enabled(false)
+	_panel.cancel_and_close()
+	assert_eq(_config.get_setting("llm_gpu"), true)
+
+
+## GPU toggle defaults to true (GPU).
+func test_llm_gpu_default() -> void:
+	assert_eq(_panel.get_llm_gpu_enabled(), true)
+
+
 ## Panel runs with PROCESS_MODE_ALWAYS (required for escape menu paused tree).
 func test_process_mode_always() -> void:
 	assert_eq(

@@ -127,6 +127,10 @@ var _unread_notification_count: int = 0
 var _escape_menu: ColorRect
 var _lobby_overlay: ColorRect
 var _elfcyclopedia_url_label: RichTextLabel
+## Stored callable for _sync_llm_model so we can disconnect it on cleanup.
+## Without this, the lambda would leak on ModelManager (an autoload that
+## persists across sessions) and hold a stale reference to the freed bridge.
+var _llm_sync_callable: Callable
 
 
 func _ready() -> void:
@@ -986,7 +990,46 @@ func _setup_common(bridge: SimBridge) -> void:
 	# Hydrate selection groups from sim (restores groups after loading a save).
 	_selector.hydrate_selection_groups()
 
+	# Load LLM model on the inference worker thread if already downloaded.
+	# Re-sync on ModelManager state changes (download/delete). Store the
+	# callable so we can disconnect on cleanup — ModelManager is an autoload
+	# that outlives this scene.
+	_llm_sync_callable = _sync_llm_model.bind(bridge)
+	_sync_llm_model(bridge)
+	ModelManager.state_changed.connect(_llm_sync_callable)
+	GameConfig.setting_changed.connect(_on_llm_setting_changed.bind(bridge))
+
 	setup_complete.emit()
+
+
+## Synchronize the LLM model state with the inference worker. If the model
+## is downloaded and ready, tell SimBridge to load it. Otherwise, unload.
+func _sync_llm_model(bridge: SimBridge) -> void:
+	var path := ModelManager.get_model_path()
+	if not path.is_empty():
+		var use_gpu: bool = GameConfig.get_setting("llm_gpu")
+		bridge.load_llm_model(path, use_gpu)
+	else:
+		bridge.unload_llm_model()
+
+
+## Re-sync LLM model when a relevant setting changes (e.g., GPU toggle).
+func _on_llm_setting_changed(key: String, bridge: SimBridge) -> void:
+	if key == "llm_gpu":
+		_sync_llm_model(bridge)
+
+
+## Disconnect LLM-related signals from persistent autoloads. Called from
+## _notification(NOTIFICATION_PREDELETE) to prevent stale references when
+## the main scene is freed (e.g., returning to menu).
+func _disconnect_llm_signals() -> void:
+	if _llm_sync_callable.is_valid():
+		if ModelManager.state_changed.is_connected(_llm_sync_callable):
+			ModelManager.state_changed.disconnect(_llm_sync_callable)
+	# GameConfig.setting_changed connections use bind(), so we can't easily
+	# look them up. But GameConfig.setting_changed is safe — the callback
+	# (_on_llm_setting_changed) is a method on this node, so Godot
+	# automatically disconnects it when this node is freed.
 
 
 ## Try to load a save file. Returns true on success.
@@ -1012,7 +1055,10 @@ func _try_load_save(bridge: SimBridge, save_path: String) -> bool:
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		_disconnect_llm_signals()
 		$SimBridge.shutdown()
+	elif what == NOTIFICATION_PREDELETE:
+		_disconnect_llm_signals()
 
 
 func _process(delta: float) -> void:

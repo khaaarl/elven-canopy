@@ -58,6 +58,12 @@ elven-canopy/
 │   │   └── mesh_snapshots.rs   # Snapshot regression test for mesh pipeline (15 fixtures × 4 configs)
 │   └── benches/
 │       └── mesh_pipeline.rs    # Criterion benchmarks for mesh pipeline stages
+├── elven_canopy_llm/           # LLM inference wrapper (llama-cpp-2, model loading, generation)
+│   └── src/
+│       ├── lib.rs              # Crate root: re-exports engine module
+│       ├── engine.rs           # LlmEngine: model loading, greedy inference, log suppression
+│       └── bin/
+│           └── test_inference.rs  # Smoke test: load model, run inference, validate JSON
 ├── elven_canopy_lang/          # Shared Vaelith conlang (types, lexicon, name gen)
 │   └── src/
 │       ├── lib.rs              # Lexicon loader (JSON → typed struct), re-exports
@@ -114,6 +120,7 @@ elven-canopy/
 ├── elven_canopy_gdext/         # GDExtension bridge (depends on sim + godot crate)
 │   └── src/
 │       ├── lib.rs              # ExtensionLibrary entry point
+│       ├── llm_worker.rs       # Long-lived LLM inference worker thread (mpsc channels, serial queue)
 │       ├── mesh_cache.rs       # MegaChunk spatial hierarchy, visibility culling, LRU mesh cache
 │       ├── elfcyclopedia_server.rs # Embedded localhost HTTP species bestiary
 │       ├── sprite_bridge.rs    # SpriteGenerator — converts pixel buffers to Godot textures

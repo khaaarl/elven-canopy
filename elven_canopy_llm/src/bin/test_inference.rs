@@ -26,7 +26,12 @@ fn main() {
         std::process::exit(1);
     }
 
-    let mut engine = LlmEngine::new(&model_path, 2048).expect("failed to load model");
+    let n_gpu_layers = if std::env::var("LLM_CPU").is_ok() {
+        0
+    } else {
+        999
+    };
+    let mut engine = LlmEngine::new(&model_path, 2048, n_gpu_layers).expect("failed to load model");
     println!("Model loaded successfully.\n");
 
     // Prompt the model for JSON output. No grammar constraint — we validate

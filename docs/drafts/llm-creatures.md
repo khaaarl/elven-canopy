@@ -193,10 +193,9 @@ renderer typically uses 500MB-1.5GB depending on scene complexity. On a 4GB GPU
 (common mid-range), this is tight. On an 8GB GPU, comfortable. Mitigation:
 - At startup, query available VRAM (llama.cpp exposes this for Vulkan/CUDA).
   If insufficient for GPU inference, fall back to CPU automatically.
-- Expose a setting: "LLM acceleration: Auto / GPU / CPU". Auto uses the VRAM
-  check; GPU uses the compiled-in backend; CPU forces CPU-only inference
-  regardless of available GPU. Manual overrides for users who know their
-  hardware.
+- Expose a setting: "GPU Inference: ON / OFF" (default: ON). ON offloads all
+  model layers to GPU; OFF forces CPU-only inference. Simple binary toggle —
+  users who hit VRAM issues can switch to CPU manually.
 - CPU inference on a 1.7B model is slower (~1-5s per request on modern CPUs)
   but within the latency budget and avoids all GPU contention.
 

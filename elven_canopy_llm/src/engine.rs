@@ -83,10 +83,26 @@ impl LlmEngine {
     ///
     /// `n_ctx` is the context window size in tokens. 2048 is generous for our
     /// ~600 token prompts and leaves room for generation.
-    pub fn new(model_path: &Path, n_ctx: u32) -> Result<Self, LlmError> {
+    ///
+    /// `n_gpu_layers` controls GPU offloading: 0 = CPU only, 999 = all layers
+    /// on GPU (capped at the model's actual layer count). Requires a GPU
+    /// backend feature (`cuda`, `vulkan`, or `rocm`) to be compiled in.
+    pub fn new(model_path: &Path, n_ctx: u32, n_gpu_layers: u32) -> Result<Self, LlmError> {
+        // Suppress llama.cpp's verbose model-loading output. The C library
+        // reads GGML_LOG_LEVEL at init time: 0 = errors only, 1 = warnings,
+        // 2 = info (default), 3+ = debug. We set this before backend init
+        // so the first llama_backend_init() call picks it up.
+        if std::env::var("GGML_LOG_LEVEL").is_err() {
+            // SAFETY: Called on the LLM worker thread before any other llama.cpp
+            // calls. No concurrent reads of this env var from other threads.
+            unsafe {
+                std::env::set_var("GGML_LOG_LEVEL", "0");
+            }
+        }
+
         let backend = LlamaBackend::init().map_err(|e| LlmError::BackendInit(e.to_string()))?;
 
-        let model_params = LlamaModelParams::default();
+        let model_params = LlamaModelParams::default().with_n_gpu_layers(n_gpu_layers);
         let model = LlamaModel::load_from_file(&backend, model_path, &model_params)
             .map_err(|e| LlmError::ModelLoad(e.to_string()))?;
 

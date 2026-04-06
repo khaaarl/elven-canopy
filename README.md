@@ -55,12 +55,22 @@ The Godot binary needs to be on your `PATH` so the build script can find it. It 
 
 ### 4. C++ build dependencies (for the LLM crate)
 
-The `elven_canopy_llm` crate wraps llama.cpp, which is compiled from C++ source during the Rust build. This requires CMake, a C++ compiler, and LLVM/Clang (for bindgen FFI generation).
+The `elven_canopy_llm` crate wraps llama.cpp, which is compiled from C++ source during the Rust build. This requires CMake, a C++ compiler, LLVM/Clang (for bindgen FFI generation), and GPU SDK headers for hardware-accelerated inference.
+
+**GPU backends:** The build automatically selects the right GPU backend for each platform — Vulkan on Linux/Windows, Metal on macOS. Metal support is built into macOS (no extra install). Vulkan requires SDK headers at build time (see below). At runtime, if no compatible GPU is found, llama.cpp falls back to CPU automatically.
 
 **Linux (Debian/Ubuntu):**
 
 ```bash
-sudo apt install cmake libclang-dev
+sudo apt install cmake libclang-dev libvulkan-dev glslang-tools
+# On Ubuntu 22.04 and older, vulkan-headers is a separate package:
+sudo apt install vulkan-headers 2>/dev/null || true
+
+# glslc (Vulkan shader compiler) is not in standard Ubuntu packages.
+# Install from the LunarG Vulkan SDK repository:
+wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
+sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list https://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
+sudo apt update && sudo apt install -y shaderc
 ```
 
 A C++ compiler (`g++`) is typically already installed. If not: `sudo apt install build-essential`.
@@ -75,9 +85,11 @@ xcode-select --install
 
 If CMake is missing after that: `brew install cmake`.
 
+No extra GPU SDK is needed — Metal is built into macOS and the Xcode tools.
+
 **Windows:**
 
-Three things are needed:
+Four things are needed:
 
 1. **Visual Studio Build Tools 2022** (provides the MSVC C++ compiler and linker):
    ```
@@ -93,9 +105,14 @@ Three things are needed:
    ```
    After installation, set the `LIBCLANG_PATH` environment variable to the LLVM bin directory (typically `C:\Program Files\LLVM\bin`).
 
+4. **Vulkan SDK** (provides headers and shader compiler for GPU inference):
+   Download and install from [vulkan.lunarg.com](https://vulkan.lunarg.com/sdk/home). The installer sets `VULKAN_SDK` automatically. Verify with `echo %VULKAN_SDK%`.
+
 **Important:** On Windows, run builds from the **"x64 Native Tools Command Prompt for VS 2022"** (search Start menu) so that the MSVC compiler and linker are on PATH. Building from a regular terminal or PowerShell will fail with `link.exe not found`.
 
 > **Note:** If you previously had Visual Studio 2017 installed, uninstall it — CMake may find the old toolchain first, which lacks C++17 support required by llama.cpp.
+
+> **Note:** On Windows, the build script automatically places Cargo's target directory at `C:\ct` instead of the project's `target/` subdirectory. This is required because MSVC's `cl.exe` does not support paths longer than 260 characters, and the llama.cpp Vulkan shader build generates deeply nested paths that exceed this limit. You can override this with the `CARGO_TARGET_DIR` environment variable.
 
 The first build compiles llama.cpp from source, which takes several minutes. Subsequent builds are cached.
 

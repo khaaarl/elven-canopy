@@ -175,6 +175,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-leaf-tuning          Leaf visual fine-tuning and interior decisions
 [ ] F-llm-activities       LLM-driven activity scheduling and task inclination nudging
 [ ] F-llm-convo-ui         Creature conversation text bubbles and detail panel log
+[ ] F-llm-cuda-launcher    CUDA+Vulkan launcher for optimal GPU inference
 [ ] F-llm-diplomacy        LLM-driven foreign civilization diplomatic decisions
 [ ] F-llm-dl-prompt        First-launch prompt for AI creature personality download
 [ ] F-llm-monologue        LLM inner monologue with emergent personality drift
@@ -4133,7 +4134,7 @@ This is the "life decisions" layer: not moment-to-moment task execution, but hig
 
 Foundation for all LLM-driven creature features. Concrete decisions made (see draft for full details):
 
-**Library:** `llama-cpp-2` (only actively maintained Rust llama.cpp binding). **Model:** Qwen 3 1.7B Q5_K_M (Apache 2.0, best structured output at this size). **GPU:** GPU backends via feature flags (`cuda`, `vulkan`, `rocm`); runtime choice is GPU vs CPU with auto-detection based on available VRAM. Base crate (CPU inference) is always compiled — no optional build flag.
+**Library:** `llama-cpp-2` (only actively maintained Rust llama.cpp binding). **Model:** Qwen 3 1.7B Q5_K_M (Apache 2.0, best structured output at this size). **GPU:** Vulkan on Windows/Linux, Metal on macOS — auto-selected at compile time via `cfg(target_os)`. GPU/CPU toggle in Settings > AI (default: GPU). CPU fallback automatic if no compatible GPU found.
 
 **No grammar-constrained generation.** Both GBNF (`LlamaSampler::grammar`) and llguidance (`LlamaSampler::llguidance`) are broken in llama-cpp-2 v0.1.141. GBNF crashes with a C++ assertion when grammar stacks empty; llguidance fails tokenizer mapping and silently falls through to unconstrained generation. Instead, the model generates unconstrained text and the sim validates output post-hoc: extract first balanced `{...}`, parse JSON, validate schema, discard on failure. The sim's deadline expiry handles invalid responses naturally.
 
@@ -4155,31 +4156,44 @@ Foundation for all LLM-driven creature features. Concrete decisions made (see dr
 
 **DONE — Model download manager:**
 - `godot/scripts/model_manager.gd` — autoload singleton managing the full download lifecycle. Downloads Qwen 3 1.7B Q5_K_M (~1.17 GB) from HuggingFace. State machine: NOT_DOWNLOADED → DOWNLOADING → VERIFYING → READY (or FAILED). Downloads to `.part` file first, renames atomically on success. Size verification on startup detects corrupt/partial files.
-- `godot/scripts/settings_panel.gd` — new "AI" section with "Creature Personalities" row. Shows download status, live progress, and action button.
+- `godot/scripts/settings_panel.gd` — new "AI" section with "Creature Personalities" row. Shows download status, live progress, and action button. GPU Inference toggle (default: GPU).
 - `godot/test/test_model_manager.gd` — unit tests for format_bytes, SHA-256, state transitions, signal emission, delete behavior.
 
 **DONE — `elven_canopy_llm` crate:**
-- New Rust crate wrapping `llama-cpp-2`. Always compiled. Model loading, unconstrained inference with greedy sampling, post-hoc JSON extraction.
+- New Rust crate wrapping `llama-cpp-2`. Always compiled. Model loading with configurable `n_gpu_layers` (999 for GPU, 0 for CPU), unconstrained inference with greedy sampling, post-hoc JSON extraction.
+- `GGML_LOG_LEVEL=0` suppresses verbose llama.cpp output.
 - Validated on Linux and Windows against Qwen 3 1.7B Q5_K_M.
-- Build requires CMake, C++ compiler, and libclang (LLVM). CI and build-and-package workflows updated.
+- Build requires CMake, C++ compiler, libclang (LLVM), and Vulkan SDK (Linux/Windows). CI and build-and-package workflows updated with all dependencies.
 
 **DONE — Sim outbox + protocol + relay dispatch + gdext wiring:**
 - `elven_canopy_sim/src/llm.rs` — `OutboundRequest`, `PreambleSection`, `PendingLlmRequest`, `LlmRequestKind`, `InferenceMetadata` types. `SimState` gains `next_request_id`, `pending_llm_requests` (serialized), `outbound_requests` (transient, drained into `StepResult`). `SimAction::LlmResult` with deadline validation. Expiry sweep each tick. 13 tests.
 - `elven_canopy_protocol` — `ClientMessage::LlmRequest`, `LlmResponse`, `LlmCapabilityChanged`; `ServerMessage::LlmDispatch`; `Turn.llm_results` (`#[serde(default)]` for backward compat); `Hello.llm_capable`. 7 new tests including backward-compat deserialization.
 - `elven_canopy_relay` — `Session` tracks `pending_llm_results` and `outstanding_dispatches`. Dispatch selects capable peer with fewest outstanding (load balance). Response buffered until turn flush. Disconnect cleanup. `PlayerState.llm_capable`. 6 new tests.
 - `elven_canopy_sim/src/session.rs` — `SessionMessage::LlmResult` routes through `apply_command` with `[LLM]` attribution. 1 new test.
-- `elven_canopy_gdext/src/sim_bridge.rs` — Turn handler processes `llm_results` before `AdvanceTo`, drains sim outbox after step and sends `LlmRequest`s to relay. `LlmDispatch` handler stubbed (logs only). Wire-format payload structs (`LlmRequestPayload`, `LlmResponsePayload`).
+- `elven_canopy_gdext/src/sim_bridge.rs` — Turn handler processes `llm_results` before `AdvanceTo`, drains sim outbox after step and sends `LlmRequest`s to relay.
 - `elven_canopy_relay/src/client.rs` — `send_llm_request` and `send_llm_response` convenience methods on `NetClient`.
+
+**DONE — gdext inference worker thread:**
+- `elven_canopy_gdext/src/llm_worker.rs` — long-lived worker thread with command channel (`LoadModel`, `UnloadModel`, `Infer`, `Shutdown`) and result channel. Serial inference queue. Model created on worker thread (`LlamaContext` is `!Send`). Lazily spawned on first `load_llm_model` call.
+- `sim_bridge.rs` — `LlmDispatch` handler deserializes payload, builds full prompt from preambles, submits to worker. Result drain loop sends completed inferences back to relay as `LlmResponse`. `load_llm_model(path, use_gpu)` / `unload_llm_model()` callable from GDScript. Worker shutdown in `shutdown()`.
+- `main.gd` — `_sync_llm_model()` checks `ModelManager` state and loads/unloads model on SimBridge. Connected to `ModelManager.state_changed` for mid-session download/delete.
+
+**DONE — GPU backend selection and build infrastructure:**
+- Platform-conditional GPU features: Vulkan on Windows/Linux, Metal on macOS (via `cfg(target_os)` in `elven_canopy_gdext/Cargo.toml`).
+- `llm_gpu` setting in `GameConfig` (default: true/GPU), toggle in Settings > AI.
+- `LlmEngine::new` accepts `n_gpu_layers` parameter (999 = all on GPU, 0 = CPU).
+- CI: LunarG Vulkan SDK repo for `shaderc` (glslc). Build-and-package: Vulkan SDK action for Windows.
+- `build.py`: auto-redirects `CARGO_TARGET_DIR` to `C:\ct` on Windows to work around MSVC's 260-char path limit.
+- README updated with all build dependencies per platform.
 
 **Remaining work:**
 
-1. **gdext inference execution** — The `LlmDispatch` handler in `sim_bridge.rs` is stubbed (logs only). Needs an async worker thread that loads the model via `elven_canopy_llm`, runs inference on the dispatched prompt, and sends `ClientMessage::LlmResponse` back. This is the last piece before the pipeline produces results end-to-end. Pattern: similar to the existing async mesh worker (long-lived thread + mpsc channel).
+1. **Capability signaling at connect time** — `Hello.llm_capable` is in the protocol but the client doesn't yet set it based on model availability. Trivial: check `ModelManager.get_state() == READY` at connect time, send `LlmCapabilityChanged` when model is downloaded/deleted.
 
-2. **Capability signaling at connect time** — `Hello.llm_capable` is in the protocol but the client doesn't yet set it based on model availability. Trivial once inference is wired: check `ModelManager.get_state() == READY` at connect time, send `LlmCapabilityChanged` when model is downloaded/deleted.
-
-3. **Observability** — Toggleable debug logging of prompts, raw responses, latency, cache hits. The `InferenceMetadata` struct is plumbed through but nothing logs it yet.
+2. **Observability** — Toggleable debug logging of prompts, raw responses, latency, cache hits. The `InferenceMetadata` struct is plumbed through but nothing logs it yet.
 
 **Blocks:** F-llm-activities, F-llm-diplomacy, F-llm-dl-prompt, F-llm-social-chat
+**Related:** F-llm-cuda-launcher
 
 #### F-llm-diplomacy — LLM-driven foreign civilization diplomatic decisions
 **Status:** Todo
@@ -7890,6 +7904,31 @@ already a standalone pure mutation method with no dependency on `step()` or tick
 state. The sim crate itself should need no changes.
 
 **Related:** F-multiplayer, F-multiplayer (relay ordering)., F-session-sm, F-session-sm (session architecture)
+
+#### F-llm-cuda-launcher — CUDA+Vulkan launcher for optimal GPU inference
+**Status:** Todo
+
+Currently the game ships with Vulkan-only GPU inference for the LLM crate (llama.cpp). Vulkan works on all platforms but is ~20-40% slower than CUDA on NVIDIA hardware. Investigate shipping both a Vulkan and a CUDA build of the gdext library, with a launcher that selects the right one at startup.
+
+**Why it matters:** Most gaming PCs have NVIDIA GPUs with CUDA support. As model sizes or inference frequency increase, the performance gap will matter more. A launcher-based approach would give NVIDIA users CUDA performance while everyone else gets Vulkan — transparent to the user.
+
+**Approach to investigate:**
+
+1. **Build two gdext DLLs** — one with `vulkan` feature, one with `cuda` feature. CI would need the CUDA toolkit installed for the CUDA build (Windows and Linux only; Mac uses Metal regardless).
+
+2. **Launcher executable** — a small native binary that runs before Godot. It checks for CUDA availability (e.g., `nvcuda.dll` on Windows, `libcuda.so` on Linux), then either swaps a symlink, rewrites the `.gdextension` file, or copies the right DLL into place. Then launches Godot. From the user's perspective they double-click the launcher and the game "just works."
+
+3. **Packaging** — the launcher replaces the Godot executable as the user-facing entry point. Both DLL variants ship in the package. The launcher is small enough to write in Rust or even as a batch/shell script wrapper.
+
+**Key questions to resolve:**
+- Does llama-cpp-2's CUDA feature produce a binary that fails to load (not just fails to use GPU) when CUDA runtime is absent? If it loads but falls back gracefully, a single CUDA+Vulkan binary might work after all — no launcher needed.
+- What's the actual measured perf difference on NVIDIA hardware with the 1.7B model? If it's <1 second, may not be worth the complexity.
+- Can Godot's `.gdextension` file be modified between process start and extension loading? (Probably not — extensions load before scenes.)
+- How does this interact with Mac (Metal) and Android (Vulkan)? Those platforms don't need CUDA, so the launcher logic is Windows/Linux only.
+
+**Not urgent** — Vulkan works fine for the current 1.7B model with multi-second deadlines. Revisit when inference frequency or model size increases.
+
+**Related:** F-llm-creatures
 
 #### F-logging — Unified file-persisted logging system across all crates
 **Status:** Todo

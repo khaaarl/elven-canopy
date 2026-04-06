@@ -34,6 +34,30 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 IS_WINDOWS = platform.system() == "Windows"
 
+# On Windows, MSVC's cl.exe does not support long paths (even with the
+# LongPathsEnabled registry key — cl.exe lacks the longPathAware manifest).
+# The llama.cpp Vulkan shader generator creates deeply nested CMake build
+# paths that exceed the 260-character MAX_PATH limit when built under the
+# default target/ directory. Work around this by placing the Cargo target
+# directory at C:\ct. The user can override with CARGO_TARGET_DIR.
+if IS_WINDOWS and "CARGO_TARGET_DIR" not in os.environ:
+    _WIN_TARGET = Path("C:/ct")
+    _WIN_TARGET.mkdir(exist_ok=True)
+    _readme = _WIN_TARGET / "README.txt"
+    if not _readme.exists():
+        _readme.write_text(
+            "This directory is used by Elven Canopy's build script as the Cargo\n"
+            "target directory. It exists here (instead of inside the project) to\n"
+            "keep build paths short enough for MSVC's 260-character path limit.\n"
+            "\n"
+            "It is safe to delete this directory — it will be recreated on the\n"
+            "next build. To use a different location, set the CARGO_TARGET_DIR\n"
+            "environment variable before building.\n"
+            "\n"
+            f"Project: {REPO_ROOT}\n"
+        )
+    os.environ["CARGO_TARGET_DIR"] = str(_WIN_TARGET)
+
 # Crate directories used by `quicktest` to detect changes and by `check` for
 # scoped clippy.  In quicktest, multiplayer_tests is always appended separately
 # (not detected by directory changes).  In check/clippy, all are included.
@@ -151,9 +175,27 @@ def run_godot(*args: str, headless_display: bool = False, **kwargs) -> subproces
 
 
 def ensure_symlink() -> None:
-    """Ensure godot/target points to ../target (symlink or junction)."""
+    """Ensure godot/target points to the Cargo target directory.
+
+    On most platforms this is ../target (relative).  On Windows, if
+    CARGO_TARGET_DIR was redirected to a short path (e.g. C:\\ct) to avoid
+    MSVC's MAX_PATH limit, the symlink/junction points there instead.
+    """
     link = REPO_ROOT / "godot" / "target"
-    target = Path("../target")  # relative
+
+    # Determine the actual target directory Cargo will use.
+    cargo_target_dir = os.environ.get("CARGO_TARGET_DIR")
+    if cargo_target_dir:
+        abs_target = Path(cargo_target_dir).resolve()
+        # For symlinks we still try a relative path when possible.
+        try:
+            target = Path(os.path.relpath(abs_target, link.parent))
+        except ValueError:
+            # relpath fails across drives on Windows — use absolute.
+            target = abs_target
+    else:
+        abs_target = (REPO_ROOT / "target").resolve()
+        target = Path("../target")
 
     if link.is_symlink():
         try:
@@ -164,9 +206,24 @@ def ensure_symlink() -> None:
             return
         print(f"Fixing symlink {link} -> {target}")
         link.unlink()
+    elif link.is_junction() if hasattr(link, "is_junction") else False:
+        # Python 3.12+ has is_junction(); check if existing junction
+        # already points to the right place.
+        try:
+            current = Path(os.readlink(link))
+        except OSError:
+            current = None
+        if current is not None and current.resolve() == abs_target:
+            return
+        print(f"Fixing junction {link} -> {abs_target}")
+        link.unlink()
     elif link.exists():
         # Something real is there (not a symlink) — don't clobber it.
         return
+
+    # Ensure the target directory exists — Cargo creates it on first build,
+    # but it may be missing after a cargo clean.
+    abs_target.mkdir(exist_ok=True)
 
     print(f"Creating symlink {link} -> {target}")
     try:
@@ -176,7 +233,6 @@ def ensure_symlink() -> None:
             # Symlinks may require dev mode; fall back to a directory junction.
             print("  symlink failed, trying directory junction...")
             # mklink /J needs an absolute target path.
-            abs_target = (REPO_ROOT / "target").resolve()
             run("cmd", "/c", "mklink", "/J", str(link), str(abs_target))
         else:
             raise

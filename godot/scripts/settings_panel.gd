@@ -58,6 +58,8 @@ var _window_mode_dropdown: OptionButton
 var _ai_status_label: Label
 var _ai_action_btn: Button
 var _ai_progress_label: Label
+var _ai_gpu_toggle: Button
+var _ai_gpu_value: bool = true
 var _save_btn: Button
 var _paused_value: bool = false
 var _fog_enabled_value: bool = true
@@ -332,6 +334,21 @@ func _ready() -> void:
 	_ai_progress_label.add_theme_font_size_override("font_size", 13)
 	ai_vbox.add_child(_ai_progress_label)
 
+	# GPU inference toggle row.
+	var ai_gpu_row := HBoxContainer.new()
+	ai_gpu_row.add_theme_constant_override("separation", 10)
+	ai_vbox.add_child(ai_gpu_row)
+
+	var ai_gpu_label := Label.new()
+	ai_gpu_label.text = "GPU Inference"
+	ai_gpu_label.custom_minimum_size = Vector2(160, 0)
+	ai_gpu_row.add_child(ai_gpu_label)
+
+	_ai_gpu_toggle = Button.new()
+	_ai_gpu_toggle.custom_minimum_size = Vector2(120, 0)
+	_ai_gpu_toggle.pressed.connect(_toggle_ai_gpu)
+	ai_gpu_row.add_child(_ai_gpu_toggle)
+
 	_update_ai_display()
 	var mm := _get_model_manager()
 	if mm:
@@ -406,6 +423,15 @@ func _toggle_edge_outline() -> void:
 
 func _update_edge_outline_label() -> void:
 	_edge_outline_toggle.text = "\u2713 ENABLED" if _edge_outline_value else "\u2717 DISABLED"
+
+
+func _toggle_ai_gpu() -> void:
+	_ai_gpu_value = not _ai_gpu_value
+	_update_ai_gpu_label()
+
+
+func _update_ai_gpu_label() -> void:
+	_ai_gpu_toggle.text = "\u2713 GPU" if _ai_gpu_value else "\u2717 CPU"
 
 
 func _process(_delta: float) -> void:
@@ -523,6 +549,8 @@ func open(config: Node) -> void:
 	var wm: String = config.get_setting("window_mode")
 	var wm_idx := WINDOW_MODES.find(wm)
 	_window_mode_dropdown.selected = wm_idx if wm_idx >= 0 else 0
+	_ai_gpu_value = config.get_setting("llm_gpu")
+	_update_ai_gpu_label()
 	_save_btn.disabled = _name_input.text.strip_edges().is_empty()
 
 
@@ -545,6 +573,7 @@ func save_and_close() -> void:
 	_config.set_setting("fog_end", _parse_fog_end())
 	_config.set_setting("edge_outline", _edge_outline_value)
 	_config.set_setting("edge_scroll_mode", _edge_scroll_mode)
+	_config.set_setting("llm_gpu", _ai_gpu_value)
 	var wm_value: String = WINDOW_MODES[_window_mode_dropdown.selected]
 	_config.set_setting("window_mode", wm_value)
 	_apply_window_mode(wm_value)
@@ -657,6 +686,15 @@ func get_window_mode() -> String:
 func set_window_mode(value: String) -> void:
 	var idx := WINDOW_MODES.find(value)
 	_window_mode_dropdown.selected = idx if idx >= 0 else 0
+
+
+func get_llm_gpu_enabled() -> bool:
+	return _ai_gpu_value
+
+
+func set_llm_gpu_enabled(value: bool) -> void:
+	_ai_gpu_value = value
+	_update_ai_gpu_label()
 
 
 ## Apply a window mode string via DisplayServer.

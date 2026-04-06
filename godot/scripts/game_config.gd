@@ -16,6 +16,7 @@
 ##   edge_outline: bool = true       — screen-space edge outline post-process
 ##   window_mode: String = "windowed" — window mode
 ##       ("windowed", "borderless_fullscreen", "exclusive_fullscreen")
+##   llm_gpu: bool = true             — use GPU for LLM inference (faster, needs VRAM)
 ##
 ## Unknown keys in the JSON file are preserved across load/save (forward
 ## compatibility — a newer version's settings won't be lost if an older
@@ -29,6 +30,8 @@
 ## name prompt), game_config.gd tests in test/test_game_config.gd.
 
 extends Node
+
+signal setting_changed(key: String)
 
 const DEFAULT_CONFIG_PATH := "user://config.json"
 
@@ -44,6 +47,7 @@ const DEFAULTS := {
 	"edge_scroll_mode": "pan",
 	"edge_outline": true,
 	"window_mode": "windowed",
+	"llm_gpu": true,
 }
 
 ## File path for the config JSON. Tests can override this to use a temp path.
@@ -120,6 +124,7 @@ func get_setting(key: String) -> Variant:
 func set_setting(key: String, value: Variant) -> void:
 	_data[key] = value
 	save_config()
+	setting_changed.emit(key)
 
 
 ## Set an in-memory override that takes priority over the normal value.

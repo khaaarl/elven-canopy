@@ -206,10 +206,11 @@ struct LlmRequestPayload {
 
 /// Wire format for an LLM response payload (inference peer → relay → all clients).
 /// Serialized as JSON into the opaque `Vec<u8>` in `LlmResult.payload`.
+/// `pub(crate)` so `llm_worker.rs` can serialize the same type.
 #[derive(serde::Serialize, serde::Deserialize)]
-struct LlmResponsePayload {
-    result_json: String,
-    metadata: elven_canopy_sim::llm::InferenceMetadata,
+pub(crate) struct LlmResponsePayload {
+    pub(crate) result_json: String,
+    pub(crate) metadata: elven_canopy_sim::llm::InferenceMetadata,
 }
 
 /// Compile-time version hash. Bump when making breaking protocol changes.
@@ -581,6 +582,10 @@ pub struct SimBridge {
     /// from biological traits + equipment). Invalidates per-creature when the
     /// key changes.
     creature_sprite_cache: HashMap<CreatureId, CachedCreatureSprite>,
+    /// LLM inference worker thread. Created lazily on first `load_llm_model`
+    /// call to avoid spawning a thread for temporary SimBridge instances
+    /// (e.g., the one created in `game_session.gd` just for elfcyclopedia).
+    llm_worker: Option<crate::llm_worker::LlmWorker>,
 }
 
 /// Cache key for sprite invalidation — captures everything that affects a
@@ -623,6 +628,7 @@ impl INode for SimBridge {
             mp_time_since_turn: 0.0,
             pending_compositions: BTreeMap::new(),
             creature_sprite_cache: HashMap::new(),
+            llm_worker: None,
         }
     }
 }
@@ -648,6 +654,11 @@ impl SimBridge {
         // Gracefully disconnect and shut down the relay.
         self.shutdown_relay();
 
+        // Shut down the LLM inference worker thread (if it was started).
+        if let Some(worker) = &mut self.llm_worker {
+            worker.shutdown();
+        }
+
         // Print accumulated perf stats before tearing down.
         if let Some(cache) = &self.mesh_cache {
             cache.perf.print_summary();
@@ -665,6 +676,36 @@ impl SimBridge {
         self.creature_sprite_cache.clear();
 
         godot_print!("SimBridge: shutdown complete");
+    }
+
+    /// Load an LLM model on the background inference thread. Called from
+    /// GDScript when `ModelManager` detects the model file is available
+    /// (either on startup or after download completes). The model path is
+    /// an absolute filesystem path to a GGUF file. `use_gpu` offloads all
+    /// model layers to GPU when true. Spawns the worker thread lazily on
+    /// first call.
+    #[func]
+    fn load_llm_model(&mut self, path: GString, use_gpu: bool) {
+        let path_str = path.to_string();
+        let mode = if use_gpu { "GPU" } else { "CPU" };
+        godot_print!("SimBridge: requesting LLM model load ({mode}): {path_str}");
+        let worker = self
+            .llm_worker
+            .get_or_insert_with(crate::llm_worker::LlmWorker::new);
+        worker.send(crate::llm_worker::LlmWorkerCmd::LoadModel {
+            path: path_str,
+            use_gpu,
+        });
+    }
+
+    /// Unload the LLM model, freeing memory. Called from GDScript when the
+    /// user deletes the model file via settings.
+    #[func]
+    fn unload_llm_model(&mut self) {
+        if let Some(worker) = &self.llm_worker {
+            godot_print!("SimBridge: requesting LLM model unload");
+            worker.send(crate::llm_worker::LlmWorkerCmd::UnloadModel);
+        }
     }
 
     /// Set the local player's display name. Must be called before init_sim()
@@ -6631,16 +6672,63 @@ impl SimBridge {
                 }
                 ServerMessage::LlmDispatch {
                     request_id,
-                    payload: _,
+                    payload,
                 } => {
-                    // TODO(F-llm-creatures): run local inference via
-                    // elven_canopy_llm on a worker thread and send
-                    // ClientMessage::LlmResponse back to the relay.
-                    godot_print!(
-                        "SimBridge: received LlmDispatch for request {request_id} (inference not yet wired)"
-                    );
+                    match serde_json::from_slice::<LlmRequestPayload>(&payload) {
+                        Ok(req) => {
+                            // Build the full prompt from preambles + ephemeral prompt.
+                            // For now, preambles are concatenated as-is. KV cache
+                            // optimization for well-known sections is a future step.
+                            let mut full_prompt = String::new();
+                            for section in &req.preambles {
+                                match section {
+                                    elven_canopy_sim::llm::PreambleSection::WellKnown(key) => {
+                                        full_prompt.push_str(key);
+                                        full_prompt.push('\n');
+                                    }
+                                    elven_canopy_sim::llm::PreambleSection::Literal(text) => {
+                                        full_prompt.push_str(text);
+                                        full_prompt.push('\n');
+                                    }
+                                }
+                            }
+                            full_prompt.push_str(&req.prompt);
+                            if !req.response_schema.is_empty() {
+                                full_prompt
+                                    .push_str("\n\nRespond with JSON matching this schema:\n");
+                                full_prompt.push_str(&req.response_schema);
+                                full_prompt.push('\n');
+                            }
+
+                            if let Some(worker) = &self.llm_worker {
+                                worker.send(crate::llm_worker::LlmWorkerCmd::Infer {
+                                    request_id,
+                                    prompt: full_prompt,
+                                    max_tokens: req.max_tokens,
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            godot_error!(
+                                "SimBridge: failed to deserialize LlmDispatch payload for request {request_id}: {e}"
+                            );
+                        }
+                    }
                 }
                 _ => {}
+            }
+        }
+
+        // Drain completed LLM inference results and send them back to the
+        // relay as LlmResponse messages.
+        if let (Some(client), Some(worker)) = (&mut self.net_client, &self.llm_worker) {
+            while let Ok(result) = worker.result_rx.try_recv() {
+                if let Err(e) = client.send_llm_response(result.request_id, result.payload) {
+                    godot_error!(
+                        "SimBridge: failed to send LlmResponse for request {}: {e}",
+                        result.request_id
+                    );
+                }
             }
         }
 

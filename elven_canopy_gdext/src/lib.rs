@@ -19,6 +19,9 @@
 // - `session_browser.rs`: `SessionBrowser` RefCounted class for browsing
 //                     relay sessions from menu scenes (before `SimBridge`
 //                     exists). Used by `join_game_menu.gd`.
+// - `llm_worker.rs`:  Long-lived LLM inference worker thread. Receives
+//                     dispatched requests, runs inference via `elven_canopy_llm`,
+//                     and sends results back for relay routing.
 // - `mesh_cache.rs`:  Chunk mesh cache — caches `ChunkMesh` data per 16x16x16
 //                     chunk and tracks dirty chunks for incremental updates.
 //                     Used by `sim_bridge.rs` to serve chunk ArrayMesh data.
@@ -37,6 +40,7 @@
 // `elven_canopy_relay` for the relay server and client.
 
 mod elfcyclopedia_server;
+mod llm_worker;
 mod mesh_cache;
 mod session_browser;
 mod sim_bridge;

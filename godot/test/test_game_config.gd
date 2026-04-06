@@ -46,6 +46,7 @@ func test_defaults_when_no_file() -> void:
 	assert_eq(_config.get_setting("audio_volume"), 25)
 	assert_eq(_config.get_setting("edge_outline"), true)
 	assert_eq(_config.get_setting("window_mode"), "windowed")
+	assert_eq(_config.get_setting("llm_gpu"), true)
 
 
 ## Settings can be changed and read back.
@@ -70,6 +71,21 @@ func test_save_load_roundtrip() -> void:
 
 	assert_eq(config2.get_setting("player_name"), "Thranduil")
 	assert_eq(config2.get_setting("start_paused"), true)
+	# Bool settings survive roundtrip without type coercion issues.
+	assert_eq(config2.get_setting("llm_gpu"), true)
+	config2.free()
+
+
+## llm_gpu roundtrip: false survives save/load.
+func test_llm_gpu_false_roundtrip() -> void:
+	_config.set_setting("llm_gpu", false)
+
+	var config2 := Node.new()
+	config2.set_script(GameConfigScript)
+	config2.config_path = TEST_CONFIG_PATH
+	config2.load_config()
+
+	assert_eq(config2.get_setting("llm_gpu"), false)
 	config2.free()
 
 
