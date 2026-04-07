@@ -6396,8 +6396,99 @@ Hotkeys are displayed on the buttons and can be rebound.
 #### F-ai-sprites — AI-generated sprite art pipeline
 **Status:** Todo · **Phase:** 8+ · **Refs:** §24
 
-Replace placeholder sprites with AI-generated layered art: base body
-templates + composited clothing/hair/face layers for visual variety.
+Replace the current algorithmic placeholder sprites with high-quality,
+painterly AI-generated art (target aesthetic: Vanillaware — lush,
+hand-drawn-looking, not pixel art). Sprites are generated offline during
+development, not at runtime. The game composites pre-generated layers
+at runtime to produce the final creature appearance.
+
+**End-goal vision:**
+
+For each creature species, a library of pre-generated sprite assets at
+multiple camera-relative facing angles (front, back, side, diagonal-toward,
+diagonal-away — mirrored for left/right, giving 8 effective facings).
+Equipment/clothing overlays are separate layers composited over a base body
+sprite at runtime, with palette swaps for color variation (material, dye,
+biological traits like fur/skin/hair color).
+
+**Offline art pipeline (highly speculative — the entire pipeline design is
+exploratory and subject to major revision as we learn what works):**
+
+1. Sketch generation: Produce structured line-art sketches for each
+   species × facing × equipment-silhouette-class, defining proportions,
+   pose, and layer regions. Leading approach: start from a T-posing rigged
+   3D model (e.g., chibi elf base), use headless Blender scripting to pose
+   it (rotate joints for each facing angle) and render line-art/silhouette
+   projections from a slightly-above camera via Blender's Freestyle
+   renderer. This gives spatially consistent sketches across all facings
+   from a single source model. Alternative: hand-tuned 2D projection code
+   building on the existing sprite crate's anatomy knowledge. TBD which
+   approach works better.
+
+2. AI image generation: Sketches are fed as conditioning input (e.g.,
+   ControlNet or equivalent) to an image generation model along with style
+   prompts targeting the Vanillaware painterly aesthetic. This is a batch
+   offline process run during development, not at runtime. The specific
+   model and conditioning approach are TBD — the key requirement is that
+   the model respects the sketch structure so that separately-generated
+   layers (base body, equipment overlays) share consistent proportions and
+   anchor points.
+
+3. Post-processing: Generated images are cleaned up, palette-quantized in
+   clothing/body color regions to enable runtime palette swapping, and
+   packed into sprite atlases.
+
+**Runtime compositing:**
+
+- Select facing angle based on camera-relative direction of creature
+  movement/orientation.
+- Layer base body sprite + equipment overlay sprites in z-order (legs →
+  feet → torso → hands → head — same ordering as current system).
+- Apply palette swaps for equipment color (material/dye) and biological
+  color variation (skin tone, hair color, fur color, etc.).
+
+**Equipment silhouette classes (tentative):**
+
+To keep generation count manageable, equipment collapses into a small
+number of shape classes per slot. Color variation within a shape class is
+handled by palette swap, not separate generation. Tentative classes:
+- Head: bare, cloth hat, metal helmet
+- Torso: bare, cloth tunic, metal breastplate
+- Legs: bare, cloth leggings, metal greaves
+- Feet: bare, sandals, boots
+- Hands: bare, gloves, gauntlets
+
+**Shading coherence strategy (speculative):**
+
+To ensure lighting consistency between body and equipment layers, the
+leading idea is to generate fully-clothed characters as single images
+(using the sketch for structure), then use region masks derived from the
+sketch to extract equipment layers in post. This preserves coherent
+lighting across layers. Alternative: generate overlays with neutral/flat
+lighting and blend at composite time. Both approaches need prototyping.
+
+**Animation (stretch goal):**
+
+Simple 2-3 frame animation (idle bob, walk cycle) may be achievable by
+generating sketch variants with minor pose adjustments and running each
+frame through the same pipeline. This multiplies generation count by frame
+count. Should be attempted only after the static multi-facing system works.
+
+**Scope for initial prototype:**
+
+Elves only, 5 unique facing angles, base body + 1-2 equipment shape
+classes. Validate that the sketch → AI generation → palette-swap
+compositing pipeline produces acceptable results before scaling to all
+species.
+
+**What this replaces:**
+
+The current elven_canopy_sprites crate generates all creature sprites
+algorithmically at runtime from biological traits. This system produces
+functional but placeholder-quality art (filled circles/ellipses/rectangles).
+The algorithmic sprite code will remain useful as the basis for sketch
+generation, and as a fallback for any species not yet through the AI
+pipeline.
 
 #### F-alt-deselect — Alt+click to remove from selection
 **Status:** Done · **Phase:** 5
