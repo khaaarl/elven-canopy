@@ -7169,7 +7169,15 @@ Fine-tune leaf visual quality and decide on leaf interior rendering.
 #### F-llm-convo-ui — Creature conversation text bubbles and detail panel log
 **Status:** Todo
 
-Player-facing UI for LLM-generated creature conversations. Text bubbles in the world view when creatures speak. Conversation log in the creature detail panel showing recent exchanges. This is a UI task somewhat independent of the LLM plumbing — messages need display regardless of how they were generated.
+Player-facing UI for LLM-generated creature conversations. Conversation log in the creature detail panel showing recent exchanges. This is a UI task somewhat independent of the LLM plumbing — messages need display regardless of how they were generated.
+
+**World-view speech bubbles:** Handled by F-speech-bubbles (the permanent infrastructure). This task wires LLM-generated dialogue text into the existing bubble system, replacing the temporary thought-based shim.
+
+**Temporary shims to remove (from F-speech-bubbles):**
+- `sim_bridge.rs`: Remove `get_recent_thoughts()` method — replace with whatever the LLM dialogue pipeline uses to deliver text to GDScript.
+- `godot/scripts/speech_bubble_manager.gd`: Remove `_thought_to_speech_text()` function and `_SPEAKABLE_KINDS` filter (or whatever the temporary thought-kind-to-text mapping is named). Replace the thought-polling loop in `_process()` with the real LLM dialogue event source. All temporary code is marked with TODO comments referencing F-llm-convo-ui — search for "F-llm-convo-ui" across the codebase to find them all.
+
+**Panel conversation log:** Scrollable log in the creature info panel showing recent dialogue exchanges. Separate from the ephemeral world-view bubbles.
 
 **Draft:** docs/drafts/llm-creatures.md
 
@@ -7514,20 +7522,19 @@ controller handles click-to-place with nav node highlighting.
 
 Floating speech bubbles above creatures in the world view. When a creature "says" something (currently: social interactions; future: LLM-generated dialogue), a text bubble appears above their head for a few seconds, then fades out.
 
-**No existing floating text system.** This requires new infrastructure:
-- A Godot scene for the bubble (panel + label, styled to look like a speech bubble with a tail pointing at the creature).
-- Positioning logic: the bubble must track the creature's world position, projected to screen space each frame. Needs to handle camera movement, zoom, and creatures going off-screen (hide bubble).
-- Lifecycle: bubbles appear on a sim event or bridge call, display for a configurable duration, then fade/disappear. Multiple bubbles from different creatures can be visible simultaneously.
-- Z-ordering: bubbles should render above creatures but below UI panels.
+**Rendering:** Label3D with billboard mode — text shrinks naturally with distance ("harder to hear"). A Sprite3D behind the Label3D displays a procedurally generated rounded-rect-with-tail background texture (cached in a few size presets keyed by character count, similar to hp_bar.gd). Positioned above HP/MP bars using creature position + species Y offset.
 
-**Initial scope (placeholder text):** Before LLM dialogue is available, speech bubbles display simple placeholder text during social interactions — e.g., "Hello, {name}!" on a pleasant chat, "Hmph." on an awkward one. This exercises the full bubble infrastructure without requiring LLM integration.
+**New files:**
+- `godot/scripts/speech_bubble.gd` — Individual bubble: Node3D containing a Label3D (text) and Sprite3D (background panel + tail pointer). Handles fade-out via Tween on modulate alpha.
+- `godot/scripts/speech_bubble_manager.gd` — Manager node (child of Main). Each frame, polls bridge for recent thoughts, spawns/positions/expires bubbles. Tracks active bubbles by creature_id — one per creature, new replaces old. Pooled: expired bubbles are hidden and reused.
 
-**Integration points:**
-- SimEvent or bridge method to signal "creature X said Y" to GDScript.
-- `main.gd` or a dedicated manager node listens for speech events and spawns bubble instances.
-- Creature info panel conversation log (F-llm-convo-ui) is separate — bubbles are the ephemeral world-view display, the log is the persistent panel display.
+**Lifecycle:** Bubble displays for ~3 seconds, then fades out over ~0.5s, then returned to pool.
 
-**Blocks F-llm-convo-ui** for the world-view portion of conversation display (the panel log portion can proceed independently).
+**Bridge method (TEMPORARY):** `get_recent_thoughts(since_tick)` in `sim_bridge.rs` scans `db.thoughts.all()`, filters by `tick >= since_tick`, returns array of `{creature_id, kind, text, tick}`. This is a temporary shim — the real text source will be LLM dialogue via F-llm-convo-ui.
+
+**Temporary text generation (TEMPORARY):** In `speech_bubble_manager.gd`, a function maps thought kind strings to short spoken-aloud placeholder text. Only social thoughts become speech (HadPleasantChat, HadAwkwardChat, EnjoyedDinnerWith, AwkwardDinnerWith, EnjoyedDanceWith, AwkwardDanceWith). Internal thoughts (slept, ate, low ceiling) are skipped. Every line of temporary mapping and filtering is marked with TODO comments pointing to F-llm-convo-ui.
+
+**Integration:** main.gd creates SpeechBubbleManager as child node, calls setup(bridge), passes render_tick each frame like other renderers.
 
 **Blocks:** F-llm-convo-ui
 
