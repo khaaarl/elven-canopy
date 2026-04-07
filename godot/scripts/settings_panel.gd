@@ -23,6 +23,9 @@
 ##
 ## The panel layout uses a VBoxContainer for sections, so future features
 ## (e.g. F-controls-config-C keybinding section) can append sections easily.
+## Settings sections are wrapped in a ScrollContainer so the panel remains
+## usable when content exceeds viewport height. See F-settings-tabs for
+## future tabbed reorganization plans.
 ##
 ## Exposes get/set helpers for controls so tests can drive the panel without
 ## needing to dig into the node tree.
@@ -62,6 +65,7 @@ var _ai_gpu_toggle: Button
 var _ai_gpu_value: bool = true
 var _ai_debug_toggle: Button
 var _ai_debug_value: bool = false
+var _scroll_vbox: VBoxContainer
 var _save_btn: Button
 var _paused_value: bool = false
 var _fog_enabled_value: bool = true
@@ -84,6 +88,11 @@ func _ready() -> void:
 	var panel := PanelContainer.new()
 	center.add_child(panel)
 
+	# Cap panel height to viewport so the ScrollContainer inside gets real
+	# surplus space — see docs/godot_scroll_sizing.md for why this is needed.
+	_clamp_panel_height(panel)
+	get_viewport().size_changed.connect(_clamp_panel_height.bind(panel))
+
 	var outer_vbox := VBoxContainer.new()
 	outer_vbox.add_theme_constant_override("separation", 16)
 	panel.add_child(outer_vbox)
@@ -95,15 +104,27 @@ func _ready() -> void:
 	header.add_theme_font_size_override("font_size", 28)
 	outer_vbox.add_child(header)
 
+	# Scrollable area for all settings sections. Header and button row stay
+	# outside so they are always visible.
+	var scroll_container := ScrollContainer.new()
+	scroll_container.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll_container.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	outer_vbox.add_child(scroll_container)
+
+	_scroll_vbox = VBoxContainer.new()
+	_scroll_vbox.add_theme_constant_override("separation", 16)
+	_scroll_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll_container.add_child(_scroll_vbox)
+
 	# --- General section ---
 	var section_label := Label.new()
 	section_label.text = "General"
 	section_label.add_theme_font_size_override("font_size", 18)
-	outer_vbox.add_child(section_label)
+	_scroll_vbox.add_child(section_label)
 
 	var settings_vbox := VBoxContainer.new()
 	settings_vbox.add_theme_constant_override("separation", 10)
-	outer_vbox.add_child(settings_vbox)
+	_scroll_vbox.add_child(settings_vbox)
 
 	# Player name row.
 	var name_row := HBoxContainer.new()
@@ -178,11 +199,11 @@ func _ready() -> void:
 	var audio_label := Label.new()
 	audio_label.text = "Audio"
 	audio_label.add_theme_font_size_override("font_size", 18)
-	outer_vbox.add_child(audio_label)
+	_scroll_vbox.add_child(audio_label)
 
 	var audio_vbox := VBoxContainer.new()
 	audio_vbox.add_theme_constant_override("separation", 10)
-	outer_vbox.add_child(audio_vbox)
+	_scroll_vbox.add_child(audio_vbox)
 
 	# Volume row.
 	var volume_row := HBoxContainer.new()
@@ -210,11 +231,11 @@ func _ready() -> void:
 	var visual_label := Label.new()
 	visual_label.text = "Visual"
 	visual_label.add_theme_font_size_override("font_size", 18)
-	outer_vbox.add_child(visual_label)
+	_scroll_vbox.add_child(visual_label)
 
 	var visual_vbox := VBoxContainer.new()
 	visual_vbox.add_theme_constant_override("separation", 10)
-	outer_vbox.add_child(visual_vbox)
+	_scroll_vbox.add_child(visual_vbox)
 
 	# Window mode row.
 	var window_mode_row := HBoxContainer.new()
@@ -306,11 +327,11 @@ func _ready() -> void:
 	var ai_label := Label.new()
 	ai_label.text = "AI"
 	ai_label.add_theme_font_size_override("font_size", 18)
-	outer_vbox.add_child(ai_label)
+	_scroll_vbox.add_child(ai_label)
 
 	var ai_vbox := VBoxContainer.new()
 	ai_vbox.add_theme_constant_override("separation", 10)
-	outer_vbox.add_child(ai_vbox)
+	_scroll_vbox.add_child(ai_vbox)
 
 	# AI creature personalities row.
 	var ai_row := HBoxContainer.new()
@@ -524,6 +545,10 @@ func _get_model_manager() -> Node:
 	if root and root.has_node("ModelManager"):
 		return root.get_node("ModelManager")
 	return null
+
+
+func _clamp_panel_height(panel: PanelContainer) -> void:
+	panel.custom_minimum_size.y = get_viewport().get_visible_rect().size.y - 40
 
 
 ## Parse draw distance text to a clamped int (0–500). Invalid input returns

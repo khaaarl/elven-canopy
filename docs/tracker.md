@@ -234,6 +234,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-sculptures           Decorative sculptures
 [ ] F-seasons              Seasonal visual and gameplay effects
 [ ] F-selection-bar        Bottom-of-screen selection bar (SC2-style)
+[ ] F-settings-tabs        Tabbed settings panel reorganization
 [ ] F-settlement-gen       Procedural NPC settlement generation
 [ ] F-skirmish             Ranged skirmish/kite behavior (shoot-retreat loop)
 [ ] F-slow-eating          Slow eating with interruptible consumption and partial restoration
@@ -347,6 +348,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-quit-crash           Crash on quit from in-flight rayon mesh workers
 [x] B-raid-spawn           Raiders sometimes spawn inside map instead of at perimeter
 [x] B-retire-spatidx       Retire SimState.spatial_index in favor of tabulosity Creature table index
+[x] B-settings-scroll      Settings panel overflows screen, needs scrolling
 [x] B-shared-inventory     Buildings completing around the same time show identical inventory contents
 [x] B-sim-floats           Remaining f32/f64 in sim logic threaten determinism
 [x] B-spawn-creature       spawn_creature test helper finds first creature of species, not newly spawned
@@ -6371,6 +6373,11 @@ Added a canonical normal check to `collapse_would_flip` in `mesh_decimation.rs`.
 
 **Related:** B-chamfer-nonmfld, F-mesh-lod
 
+#### B-settings-scroll — Settings panel overflows screen, needs scrolling
+**Status:** Done · **Refs:** §5
+
+The Configure Settings panel overflows the screen on smaller resolutions — the Save/Cancel buttons are unreachable. Wrapping the settings sections in a ScrollContainer (with the header and button row outside the scroll area) fixes the immediate issue. Panel height is capped to viewport height minus margin using the _match_viewport_height pattern from godot_scroll_sizing.md.
+
 #### B-start-paused-ui — start_paused_on_load UI desync and missing new-game support
 **Status:** Done
 
@@ -7493,6 +7500,11 @@ Requires F-player-identity for per-player persistent storage.
 
 **Unblocked by:** F-game-speed-fkeys, F-player-identity
 **Related:** B-doubletap-groups, F-controls-config, F-dblclick-select, F-follow-multi, F-player-identity
+
+#### F-settings-tabs — Tabbed settings panel reorganization
+**Status:** Todo · **Refs:** §5
+
+The settings panel (settings_panel.gd) has grown large enough that it overflows the screen on smaller resolutions. The immediate fix (B-settings-scroll) adds scrolling, but the long-term solution is to reorganize settings into multiple tabs (e.g., General, Audio, Visual, AI). This is exploratory — the exact tab groupings, visual treatment, and interaction model are not yet decided. Consider whether TabContainer or a custom sidebar/top-bar approach works best for the game's aesthetic. May also want to evaluate whether some settings should be promoted to a quick-access location outside the full settings panel.
 
 #### F-shadow-cull — Shadow-only rendering for culled chunks in light direction
 **Status:** Done
