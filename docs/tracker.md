@@ -246,6 +246,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-social-ui            Social tab on creature info panel
 [ ] F-soul-mech            Death, soul passage, resurrection
 [ ] F-sound-effects        Basic ambient and action sound effects
+[ ] F-speech-bubbles       Creature speech bubbles in world view
 [ ] F-spell-berserk        Berserk frenzy buff (damage up, uncontrollable)
 [ ] F-spell-blink          Short-range teleport spell
 [ ] F-spell-cloak          Invisibility spell on self or nearby allies
@@ -7081,7 +7082,7 @@ Player-facing UI for LLM-generated creature conversations. Text bubbles in the w
 
 **Draft:** docs/drafts/llm-creatures.md
 
-**Blocked by:** F-llm-social-chat
+**Blocked by:** F-llm-social-chat, F-speech-bubbles
 
 #### F-llm-debug-overlay — LLM debug overlay with inference metrics
 **Status:** Todo
@@ -7416,6 +7417,28 @@ Toolbar with creature spawn buttons and keyboard shortcuts. Placement
 controller handles click-to-place with nav node highlighting.
 
 **Related:** F-debug-menu
+
+#### F-speech-bubbles — Creature speech bubbles in world view
+**Status:** Todo
+
+Floating speech bubbles above creatures in the world view. When a creature "says" something (currently: social interactions; future: LLM-generated dialogue), a text bubble appears above their head for a few seconds, then fades out.
+
+**No existing floating text system.** This requires new infrastructure:
+- A Godot scene for the bubble (panel + label, styled to look like a speech bubble with a tail pointing at the creature).
+- Positioning logic: the bubble must track the creature's world position, projected to screen space each frame. Needs to handle camera movement, zoom, and creatures going off-screen (hide bubble).
+- Lifecycle: bubbles appear on a sim event or bridge call, display for a configurable duration, then fade/disappear. Multiple bubbles from different creatures can be visible simultaneously.
+- Z-ordering: bubbles should render above creatures but below UI panels.
+
+**Initial scope (placeholder text):** Before LLM dialogue is available, speech bubbles display simple placeholder text during social interactions — e.g., "Hello, {name}!" on a pleasant chat, "Hmph." on an awkward one. This exercises the full bubble infrastructure without requiring LLM integration.
+
+**Integration points:**
+- SimEvent or bridge method to signal "creature X said Y" to GDScript.
+- `main.gd` or a dedicated manager node listens for speech events and spawns bubble instances.
+- Creature info panel conversation log (F-llm-convo-ui) is separate — bubbles are the ephemeral world-view display, the log is the persistent panel display.
+
+**Blocks F-llm-convo-ui** for the world-view portion of conversation display (the panel log portion can proceed independently).
+
+**Blocks:** F-llm-convo-ui
 
 #### F-sprite-cache-evict — Evict dead creatures from sprite caches
 **Status:** Todo
