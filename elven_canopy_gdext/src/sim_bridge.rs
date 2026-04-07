@@ -139,7 +139,12 @@
 //   `get_ground_pile_info(x,y,z)` — returns a single pile's dict (same
 //   format) or empty dict if no pile at that position. Used by the pile
 //   info panel for display and per-frame refresh.
-// - **Species queries:** `get_all_creature_positions_with_relations()` — all alive creatures with
+// - **Speech bubbles (TEMPORARY):** `get_recent_thoughts(since_tick)` —
+//   scans all thoughts, filters to social kinds, returns creature_id + text +
+//   tick. Placeholder for F-llm-convo-ui; remove when LLM dialogue is wired in.
+// - **Species queries:** `is_species_ground_only(species_name)` — used by
+//   the placement controller to decide which nav nodes to show.
+//   `get_all_creature_positions_with_relations()` — all alive creatures with
 //     positions and player-relation classification (for minimap).
 //   `get_creature_player_relation()` — single-creature player relation query.
 // - **Placement raycasting:** `raycast_solid(origin, dir)` — DDA raycast
@@ -179,8 +184,8 @@ use elven_canopy_sim::task::{TaskOrigin, TaskState};
 use elven_canopy_sim::types::{
     ActiveRecipeId, ActiveRecipeTargetId, BuildType, CreatureId, DiplomaticRelation, FaceDirection,
     FruitSpeciesId, FurnishingType, FurnitureKind, ItemStackId, LadderKind, OpinionKind,
-    OverlapClassification, Priority, SimUuid, Species, StructureId, TraitKind, VitalStatus,
-    VoxelCoord, VoxelType, ZoneId,
+    OverlapClassification, Priority, SimUuid, Species, StructureId, ThoughtKind, TraitKind,
+    VitalStatus, VoxelCoord, VoxelType, ZoneId,
 };
 use godot::classes::ImageTexture;
 use godot::prelude::*;
@@ -3206,6 +3211,58 @@ impl SimBridge {
         result.set("hp_ratios", hp_ratios);
         result.set("mp_ratios", mp_ratios);
         result.set("incap_flags", incap_flags);
+        result
+    }
+
+    // TODO(F-llm-convo-ui): TEMPORARY — remove this method when LLM dialogue
+    // replaces thought-based speech. See F-llm-convo-ui tracker item for the
+    // full list of temporary shims to remove.
+    /// Return recent "speakable" thoughts since a given tick.
+    ///
+    /// Scans ALL thoughts and filters to social interaction kinds that make
+    /// sense as spoken-aloud text. Returns a `VarArray` of `VarDictionary`
+    /// with keys: `creature_id` (String UUID), `text` (String description),
+    /// `tick` (i64).
+    ///
+    /// **TEMPORARY** — this whole method is a placeholder shim. The real text
+    /// source will be LLM-generated dialogue via F-llm-convo-ui.
+    #[func]
+    fn get_recent_thoughts(&self, since_tick: i64) -> VarArray {
+        let mut result = VarArray::new();
+        let Some(sim) = &self.session.sim else {
+            return result;
+        };
+        // TODO(F-llm-convo-ui): TEMPORARY — this scan-all-thoughts approach
+        // is a placeholder. Replace with LLM dialogue event source.
+        for thought in sim.db.thoughts.iter_all() {
+            if (thought.tick as i64) < since_tick {
+                continue;
+            }
+            // TODO(F-llm-convo-ui): TEMPORARY — only social thought kinds are
+            // "speakable". Remove this filter when LLM dialogue provides text.
+            let is_social = matches!(
+                thought.kind,
+                ThoughtKind::HadPleasantChat(_)
+                    | ThoughtKind::HadAwkwardChat(_)
+                    | ThoughtKind::EnjoyedDinnerWith(_)
+                    | ThoughtKind::AwkwardDinnerWith(_)
+                    | ThoughtKind::EnjoyedDanceWith(_)
+                    | ThoughtKind::AwkwardDanceWith(_)
+                    | ThoughtKind::DancedWithFriend
+                    | ThoughtKind::EnjoyedDinnerParty
+            );
+            if !is_social {
+                continue;
+            }
+            let mut d = VarDictionary::new();
+            d.set(
+                "creature_id",
+                GString::from(thought.creature_id.0.to_string().as_str()),
+            );
+            d.set("text", GString::from(thought.kind.description().as_str()));
+            d.set("tick", thought.tick as i64);
+            result.push(&d.to_variant());
+        }
         result
     }
 

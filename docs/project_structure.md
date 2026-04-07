@@ -184,6 +184,8 @@ elven-canopy/
 │   │   ├── test_selection_controller.gd # Selection controller tests
 │   │   ├── test_selection_utils.gd # Selection utility tests
 │   │   ├── test_settings_panel.gd # Settings panel tests
+│   │   ├── test_speech_bubble.gd  # Speech bubble geometry and texture tests
+│   │   ├── test_speech_bubble_manager.gd # Speech bubble manager temporary mapping tests
 │   │   ├── test_status_bar.gd     # Status bar tests
 │   │   ├── test_view_toggle_icons.gd # View toggle icon tests
 │   │   └── test_wants_editor.gd   # Wants editor tests
@@ -221,6 +223,8 @@ elven-canopy/
 │       ├── group_info_panel.gd     # Right-side multi-creature selection panel
 │       ├── selection_highlight.gd    # Faction-colored selection ring rendering (pool pattern)
 │       ├── hp_bar.gd               # Overhead HP/MP bar textures and sprite helpers
+│       ├── speech_bubble.gd        # Individual speech bubble (Label3D text + Sprite3D background)
+│       ├── speech_bubble_manager.gd # Speech bubble lifecycle manager (polling, pooling, positioning)
 │       ├── mana_vfx.gd             # Floating blue swirl VFX for mana-depleted work actions
 │       ├── projectile_renderer.gd   # In-flight projectile rendering (oriented CylinderMesh pool)
 │       ├── minimap.gd              # Zoomable top-down minimap (terrain, creatures, camera frustum)

@@ -39,6 +39,7 @@
 ## book button next to the Menu button), tree_renderer.gd /
 ## creature_renderer.gd / blueprint_renderer.gd / ladder_renderer.gd /
 ## furniture_renderer.gd / ground_pile_renderer.gd / projectile_renderer.gd for rendering,
+## speech_bubble_manager.gd for floating speech bubbles above creatures,
 ## action_toolbar.gd for the toolbar UI, placement_controller.gd for
 ## click-to-place logic, construction_controller.gd for construction mode
 ## and platform placement, selection_controller.gd for click-to-select,
@@ -70,6 +71,7 @@ signal setup_complete
 
 ## Preloaded creature renderer script for Y-offset access from other scripts.
 const CreatureRenderer = preload("res://scripts/creature_renderer.gd")
+const SpeechBubbleManager = preload("res://scripts/speech_bubble_manager.gd")
 
 ## The simulation seed. Deterministic: same seed = same game.
 ## Overridden by GameSession.sim_seed when launched through the menu flow.
@@ -101,6 +103,7 @@ var _ladder_renderer: Node3D
 var _furniture_renderer: Node3D
 var _pile_renderer: Node3D
 var _projectile_renderer: Node3D
+var _speech_bubble_manager: Node3D
 var _selection_highlight: Node3D
 var _tooltip_controller: Node
 var _notification_display: VBoxContainer
@@ -270,6 +273,13 @@ func _setup_common(bridge: SimBridge) -> void:
 	add_child(creature_renderer)
 	creature_renderer.setup(bridge)
 	_creature_renderer = creature_renderer
+
+	# Set up speech bubble manager (floating text above creatures).
+	var sbm := Node3D.new()
+	sbm.set_script(SpeechBubbleManager)
+	add_child(sbm)
+	sbm.setup(bridge)
+	_speech_bubble_manager = sbm
 
 	# Set up selection highlight renderer (rings at selected creatures' feet).
 	var highlight_script = load("res://scripts/selection_highlight.gd")
@@ -918,6 +928,9 @@ func _setup_common(bridge: SimBridge) -> void:
 				bridge.trigger_raid()
 			elif action == "ExportMesh":
 				_export_chunk_mesh(bridge)
+			elif action == "DebugSpeechBubbles":
+				if _speech_bubble_manager:
+					_speech_bubble_manager.debug_show_all(bridge)
 	)
 
 	_task_panel.zoom_to_creature.connect(
@@ -1081,6 +1094,8 @@ func _process(delta: float) -> void:
 		_creature_renderer.set_render_tick(render_tick)
 	if _projectile_renderer:
 		_projectile_renderer.set_render_tick(render_tick)
+	if _speech_bubble_manager:
+		_speech_bubble_manager.set_render_tick(render_tick)
 	_selector.set_render_tick(render_tick)
 	if _minimap:
 		_minimap.set_render_tick(render_tick)

@@ -245,7 +245,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-social-ui            Social tab on creature info panel
 [ ] F-soul-mech            Death, soul passage, resurrection
 [ ] F-sound-effects        Basic ambient and action sound effects
-[ ] F-speech-bubbles       Creature speech bubbles in world view
 [ ] F-spell-berserk        Berserk frenzy buff (damage up, uncontrollable)
 [ ] F-spell-blink          Short-range teleport spell
 [ ] F-spell-cloak          Invisibility spell on self or nearby allies
@@ -548,6 +547,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-social-opinions      Interpersonal opinion table and social skill checks
 [x] F-spatial-index        Creature spatial index for voxel-level position queries
 [x] F-spawn-toolbar        Spawn toolbar and placement UI
+[x] F-speech-bubbles       Creature speech bubbles in world view
 [x] F-split-graphics       Extract graphics/mesh code from sim into elven_canopy_graphics crate
 [x] F-split-sim            Split monolithic sim.rs into domain sub-modules
 [x] F-split-sim-tests      Split sim tests.rs into per-module test files
@@ -7187,14 +7187,17 @@ Player-facing UI for LLM-generated creature conversations. Conversation log in t
 **World-view speech bubbles:** Handled by F-speech-bubbles (the permanent infrastructure). This task wires LLM-generated dialogue text into the existing bubble system, replacing the temporary thought-based shim.
 
 **Temporary shims to remove (from F-speech-bubbles):**
-- `sim_bridge.rs`: Remove `get_recent_thoughts()` method — replace with whatever the LLM dialogue pipeline uses to deliver text to GDScript.
-- `godot/scripts/speech_bubble_manager.gd`: Remove `_thought_to_speech_text()` function and `_SPEAKABLE_KINDS` filter (or whatever the temporary thought-kind-to-text mapping is named). Replace the thought-polling loop in `_process()` with the real LLM dialogue event source. All temporary code is marked with TODO comments referencing F-llm-convo-ui — search for "F-llm-convo-ui" across the codebase to find them all.
+- `sim_bridge.rs`: Remove `get_recent_thoughts()` method and the `ThoughtKind` import — replace with whatever the LLM dialogue pipeline uses to deliver text to GDScript.
+- `godot/scripts/speech_bubble_manager.gd`: Remove `_thought_to_speech_text()` function (the inline string-matching mapper). Replace the thought-polling loop in `_poll_new_thoughts()` with the real LLM dialogue event source.
+- `godot/test/test_speech_bubble_manager.gd`: Remove or rewrite the temporary thought-mapping tests (all tests in this file cover the temporary shim).
+- All temporary code is marked with TODO comments referencing F-llm-convo-ui — search for "F-llm-convo-ui" across the codebase to find them all.
 
 **Panel conversation log:** Scrollable log in the creature info panel showing recent dialogue exchanges. Separate from the ephemeral world-view bubbles.
 
 **Draft:** docs/drafts/llm-creatures.md
 
-**Blocked by:** F-llm-social-chat, F-speech-bubbles
+**Blocked by:** F-llm-social-chat
+**Unblocked by:** F-speech-bubbles
 
 #### F-llm-debug-overlay — LLM debug overlay with inference metrics
 **Status:** Todo
@@ -7536,11 +7539,11 @@ controller handles click-to-place with nav node highlighting.
 **Related:** F-debug-menu
 
 #### F-speech-bubbles — Creature speech bubbles in world view
-**Status:** Todo
+**Status:** Done
 
 Floating speech bubbles above creatures in the world view. When a creature "says" something (currently: social interactions; future: LLM-generated dialogue), a text bubble appears above their head for a few seconds, then fades out.
 
-**Rendering:** Label3D with billboard mode — text shrinks naturally with distance ("harder to hear"). A Sprite3D behind the Label3D displays a procedurally generated rounded-rect-with-tail background texture (cached in a few size presets keyed by character count, similar to hp_bar.gd). Positioned above HP/MP bars using creature position + species Y offset.
+**Rendering:** Label3D with billboard mode — text shrinks naturally with distance ("harder to hear"). A Sprite3D behind the Label3D displays a procedurally generated rounded-rect-with-tail background texture, dynamically sized to the actual text dimensions via `font.get_string_size()` and cached by exact pixel dimensions. Positioned above HP/MP bars using creature position + species Y offset.
 
 **New files:**
 - `godot/scripts/speech_bubble.gd` — Individual bubble: Node3D containing a Label3D (text) and Sprite3D (background panel + tail pointer). Handles fade-out via Tween on modulate alpha.
@@ -7548,13 +7551,13 @@ Floating speech bubbles above creatures in the world view. When a creature "says
 
 **Lifecycle:** Bubble displays for ~3 seconds, then fades out over ~0.5s, then returned to pool.
 
-**Bridge method (TEMPORARY):** `get_recent_thoughts(since_tick)` in `sim_bridge.rs` scans `db.thoughts.all()`, filters by `tick >= since_tick`, returns array of `{creature_id, kind, text, tick}`. This is a temporary shim — the real text source will be LLM dialogue via F-llm-convo-ui.
+**Bridge method (TEMPORARY):** `get_recent_thoughts(since_tick)` in `sim_bridge.rs` scans `db.thoughts.all()`, filters to social thought kinds with `tick >= since_tick`, returns array of `{creature_id, text, tick}`. This is a temporary shim — the real text source will be LLM dialogue via F-llm-convo-ui.
 
-**Temporary text generation (TEMPORARY):** In `speech_bubble_manager.gd`, a function maps thought kind strings to short spoken-aloud placeholder text. Only social thoughts become speech (HadPleasantChat, HadAwkwardChat, EnjoyedDinnerWith, AwkwardDinnerWith, EnjoyedDanceWith, AwkwardDanceWith). Internal thoughts (slept, ate, low ceiling) are skipped. Every line of temporary mapping and filtering is marked with TODO comments pointing to F-llm-convo-ui.
+**Temporary text generation (TEMPORARY):** In `speech_bubble_manager.gd`, a function maps thought description strings to short spoken-aloud placeholder text. Only social thoughts become speech (HadPleasantChat, HadAwkwardChat, EnjoyedDinnerWith, AwkwardDinnerWith, EnjoyedDanceWith, AwkwardDanceWith, DancedWithFriend, EnjoyedDinnerParty). Internal thoughts (slept, ate, low ceiling) are skipped. Every line of temporary mapping and filtering is marked with TODO comments pointing to F-llm-convo-ui.
 
 **Integration:** main.gd creates SpeechBubbleManager as child node, calls setup(bridge), passes render_tick each frame like other renderers.
 
-**Blocks:** F-llm-convo-ui
+**Unblocked:** F-llm-convo-ui
 
 #### F-sprite-cache-evict — Evict dead creatures from sprite caches
 **Status:** Todo

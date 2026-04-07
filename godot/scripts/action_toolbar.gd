@@ -256,6 +256,11 @@ func _ready() -> void:
 	wyvern_button.pressed.connect(_on_spawn.bind("Wyvern"))
 	_debug_row.add_child(wyvern_button)
 
+	var speech_button := Button.new()
+	speech_button.text = "Speech Test"
+	speech_button.pressed.connect(func(): action_requested.emit("DebugSpeechBubbles"))
+	_debug_row.add_child(speech_button)
+
 	var wireframe_button := Button.new()
 	wireframe_button.text = "Wireframe"
 	wireframe_button.toggle_mode = true
