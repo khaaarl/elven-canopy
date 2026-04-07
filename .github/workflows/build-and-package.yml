@@ -29,6 +29,17 @@ on:
 
 env:
   GODOT_VERSION: "4.6.1"
+  # *** CACHE_EPOCH — MUST BE KEPT IN SYNC WITH ci.yml ***
+  # Bump this to invalidate ALL caches (apt packages AND Rust dependency
+  # artifacts). You MUST bump it in BOTH workflow files at the same time.
+  # Reasons to bump: apt dependency changes that affect compiled output
+  # (e.g., new libclang version changing bindgen output), or stale cache
+  # causing mysterious build failures.
+  # Last bumped: 2026-04-07
+  CACHE_EPOCH: v2
+  # Forces all JS-based actions to run on Node 24 ahead of GitHub's mandatory
+  # switch on 2026-06-02. Becomes a no-op after that date and can be removed.
+  # (Assessed 2026-04-07.)
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
@@ -112,16 +123,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # Swatinem/rust-cache: stay on @v2 — there is no v3. The v2 line already
+      # uses @actions/cache v6+ internally (fixed in v2.7.8), so it is NOT
+      # affected by the actions/cache v1/v2 deprecation. Only caches dependency
+      # artifacts (not workspace crates) by default. (Assessed 2026-04-07.)
       - uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: ${{ env.CACHE_EPOCH }}
           key: linux
 
-      - name: Install llama.cpp build dependencies
-        run: |
-          sudo apt-get update && sudo apt-get install -y libclang-dev cmake libvulkan-dev glslang-tools
-          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
-          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list https://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
-          sudo apt-get update && sudo apt-get install -y shaderc
+      - uses: ./.github/actions/install-llama-deps
+        with:
+          cache-epoch: ${{ env.CACHE_EPOCH }}
 
       - name: Build GDExtension library
         run: cargo build --release -p elven_canopy_gdext
@@ -132,6 +145,9 @@ jobs:
           cp target/release/libelven_canopy_gdext.so godot/target/release/
           cp target/release/libelven_canopy_gdext.so godot/target/debug/
 
+      # chickensoft-games/setup-godot: @v2 floating tag resolves to latest v2.x
+      # (currently v2.4.1). Uses @actions/cache npm v6+ internally and runs on
+      # Node 24 — unaffected by the actions/cache deprecation. (Assessed 2026-04-07.)
       - name: Setup Godot
         uses: chickensoft-games/setup-godot@v2
         with:
@@ -167,15 +183,25 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: ${{ env.CACHE_EPOCH }}
           key: windows
 
+      # KyleMayes/install-llvm-action: provides libclang for bindgen on Windows.
+      # Latest is v2.0.9 (no v3 exists). Uses @actions/tool-cache (NOT
+      # @actions/cache), so unaffected by the cache v1/v2 deprecation.
+      # (Assessed 2026-04-07.)
       - name: Install LLVM (for bindgen/libclang)
         uses: KyleMayes/install-llvm-action@v2
         with:
           version: "18"
 
+      # humbletim/setup-vulkan-sdk: builds only the listed components from
+      # Khronos source (~20 MB), unlike jakoch/install-vulkan-sdk-action which
+      # downloads the full LunarG SDK (600 MB–1.8 GB). Lightly maintained but
+      # sufficient for our needs. v1.2.1 fixed the actions/cache v2 deprecation
+      # (now uses actions/cache v4 internally). (Assessed 2026-04-07.)
       - name: Install Vulkan SDK
-        uses: humbletim/setup-vulkan-sdk@v1.2.0
+        uses: humbletim/setup-vulkan-sdk@v1.2.1
         with:
           vulkan-query-version: 1.3.290.0
           vulkan-components: Vulkan-Headers, Vulkan-Loader, Glslang
@@ -231,6 +257,7 @@ jobs:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: ${{ env.CACHE_EPOCH }}
           key: macos
 
       - name: Build GDExtension library (aarch64)
@@ -290,15 +317,13 @@ jobs:
           targets: aarch64-linux-android
       - uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: ${{ env.CACHE_EPOCH }}
           key: android
       - uses: android-actions/setup-android@v3
 
-      - name: Install llama.cpp build dependencies
-        run: |
-          sudo apt-get update && sudo apt-get install -y libclang-dev cmake libvulkan-dev glslang-tools
-          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
-          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list https://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
-          sudo apt-get update && sudo apt-get install -y shaderc
+      - uses: ./.github/actions/install-llama-deps
+        with:
+          cache-epoch: ${{ env.CACHE_EPOCH }}
 
       - name: Install Android NDK
         run: sdkmanager "ndk;27.0.12077973"
@@ -386,6 +411,7 @@ jobs:
           targets: aarch64-apple-ios
       - uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: ${{ env.CACHE_EPOCH }}
           key: ios
 
       - name: Build GDExtension library (iOS arm64)
@@ -464,6 +490,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: ${{ env.CACHE_EPOCH }}
           key: relay-linux
 
       - name: Build relay binary

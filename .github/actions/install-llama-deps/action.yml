@@ -1,0 +1,71 @@
+name: Install llama.cpp build dependencies
+description: Install libclang, cmake, Vulkan dev libs, and shaderc (LunarG SDK) on Ubuntu
+
+# Ubuntu-only. The Windows build uses KyleMayes/install-llvm-action and
+# humbletim/setup-vulkan-sdk instead; macOS/iOS builds don't need these deps.
+
+inputs:
+  cache-epoch:
+    description: >
+      Cache version prefix. Bump to invalidate apt caches. Must match the
+      CACHE_EPOCH env var in the calling workflow (ci.yml / build-and-package.yml).
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Cache apt packages
+      id: apt-cache
+      uses: actions/cache@v4
+      with:
+        # Cache to a runner-owned directory instead of /var/cache/apt/archives
+        # directly, because that directory contains root-owned lock/partial files
+        # that cause tar permission errors during cache save.
+        path: ~/.cache/apt-llama-deps
+        # Auto-busts when this action file changes (new packages). Manual bust
+        # via cache-epoch when you want fresh versions of the same packages.
+        key: ${{ inputs.cache-epoch }}-apt-llama-deps-${{ hashFiles('.github/actions/install-llama-deps/action.yml') }}
+
+    - name: Restore cached .deb files
+      if: steps.apt-cache.outputs.cache-hit == 'true'
+      shell: bash
+      run: sudo cp ~/.cache/apt-llama-deps/*.deb /var/cache/apt/archives/
+
+    - name: Snapshot apt archives before install
+      if: steps.apt-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Create sorted list of pre-existing debs (may be empty on a clean runner).
+        find /var/cache/apt/archives -maxdepth 1 -name '*.deb' | sort > /tmp/apt-debs-before.txt
+
+    - name: Install llama.cpp build dependencies
+      shell: bash
+      run: |
+        set -euo pipefail
+        # libclang-dev: required by bindgen (Rust FFI binding generator for llama.cpp C API)
+        # cmake: llama.cpp builds its C/C++ core via cmake
+        # libvulkan-dev: Vulkan headers/loader for llama.cpp's GPU compute backend
+        # glslang-tools: GLSL→SPIR-V compiler used during llama.cpp's Vulkan shader compilation
+        timeout 300 sudo apt-get update
+        timeout 300 sudo apt-get install -y libclang-dev cmake libvulkan-dev glslang-tools
+        # glslc (shaderc compiler) is also needed by llama.cpp's Vulkan backend for
+        # SPIR-V compilation. Not in standard Ubuntu packages — install from the
+        # LunarG Vulkan SDK apt repo. (Assessed 2026-04-07: still the simplest way
+        # to get shaderc on Ubuntu runners.)
+        wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
+        sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list https://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
+        timeout 300 sudo apt-get update
+        timeout 300 sudo apt-get install -y shaderc
+
+    - name: Save only newly downloaded .deb files for cache
+      if: steps.apt-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p ~/.cache/apt-llama-deps
+        # Only cache debs that were downloaded by this action, not pre-existing
+        # ones from the runner base image. Deb filenames include the full version
+        # and architecture, so filename-based diffing is sufficient.
+        find /var/cache/apt/archives -maxdepth 1 -name '*.deb' | sort > /tmp/apt-debs-after.txt
+        comm -13 /tmp/apt-debs-before.txt /tmp/apt-debs-after.txt | xargs cp -t ~/.cache/apt-llama-deps/

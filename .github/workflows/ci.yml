@@ -55,6 +55,17 @@ on:
 # the optimization compile-time cost in CI, where cold builds are common.
 env:
   CARGO_PROFILE_DEV_OPT_LEVEL: 0
+  # *** CACHE_EPOCH — MUST BE KEPT IN SYNC WITH build-and-package.yml ***
+  # Bump this to invalidate ALL caches (apt packages AND Rust dependency
+  # artifacts). You MUST bump it in BOTH workflow files at the same time.
+  # Reasons to bump: apt dependency changes that affect compiled output
+  # (e.g., new libclang version changing bindgen output), or stale cache
+  # causing mysterious build failures.
+  # Last bumped: 2026-04-07
+  CACHE_EPOCH: v2
+  # Forces all JS-based actions to run on Node 24 ahead of GitHub's mandatory
+  # switch on 2026-06-02. Becomes a no-op after that date and can be removed.
+  # (Assessed 2026-04-07.)
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
@@ -65,16 +76,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      # Swatinem/rust-cache: stay on @v2 — there is no v3. The v2 line already
+      # uses @actions/cache v6+ internally (fixed in v2.7.8), so it is NOT
+      # affected by the actions/cache v1/v2 deprecation. Only caches dependency
+      # artifacts (not workspace crates) by default. (Assessed 2026-04-07.)
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: ${{ env.CACHE_EPOCH }}
 
-      - name: Install llama.cpp build dependencies
-        run: |
-          sudo apt-get update && sudo apt-get install -y libclang-dev cmake libvulkan-dev glslang-tools
-          # glslc (shaderc compiler) is needed by llama.cpp's Vulkan backend.
-          # Not in standard Ubuntu packages — install from the LunarG Vulkan SDK.
-          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
-          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list https://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
-          sudo apt-get update && sudo apt-get install -y shaderc
+      - uses: ./.github/actions/install-llama-deps
+        with:
+          cache-epoch: ${{ env.CACHE_EPOCH }}
 
       - name: Check Rust formatting
         run: cargo fmt --all --check
@@ -88,15 +100,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: ${{ env.CACHE_EPOCH }}
 
-      - name: Install llama.cpp build dependencies
-        run: |
-          sudo apt-get update && sudo apt-get install -y libclang-dev cmake libvulkan-dev glslang-tools
-          # glslc (shaderc compiler) is needed by llama.cpp's Vulkan backend.
-          # Not in standard Ubuntu packages — install from the LunarG Vulkan SDK.
-          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
-          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list https://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
-          sudo apt-get update && sudo apt-get install -y shaderc
+      - uses: ./.github/actions/install-llama-deps
+        with:
+          cache-epoch: ${{ env.CACHE_EPOCH }}
 
       - name: Compile-check gdext
         run: cargo build -p elven_canopy_gdext
@@ -107,15 +116,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: ${{ env.CACHE_EPOCH }}
 
-      - name: Install llama.cpp build dependencies
-        run: |
-          sudo apt-get update && sudo apt-get install -y libclang-dev cmake libvulkan-dev glslang-tools
-          # glslc (shaderc compiler) is needed by llama.cpp's Vulkan backend.
-          # Not in standard Ubuntu packages — install from the LunarG Vulkan SDK.
-          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
-          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list https://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
-          sudo apt-get update && sudo apt-get install -y shaderc
+      - uses: ./.github/actions/install-llama-deps
+        with:
+          cache-epoch: ${{ env.CACHE_EPOCH }}
 
       # Tabulosity tests run separately to avoid Cargo feature unification:
       # elven_canopy_sim depends on tabulosity with features=["serde"], which
@@ -135,15 +141,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: ${{ env.CACHE_EPOCH }}
 
-      - name: Install llama.cpp build dependencies
-        run: |
-          sudo apt-get update && sudo apt-get install -y libclang-dev cmake libvulkan-dev glslang-tools
-          # glslc (shaderc compiler) is needed by llama.cpp's Vulkan backend.
-          # Not in standard Ubuntu packages — install from the LunarG Vulkan SDK.
-          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
-          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list https://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
-          sudo apt-get update && sudo apt-get install -y shaderc
+      - uses: ./.github/actions/install-llama-deps
+        with:
+          cache-epoch: ${{ env.CACHE_EPOCH }}
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
@@ -188,15 +191,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: ${{ env.CACHE_EPOCH }}
 
-      - name: Install llama.cpp build dependencies
-        run: |
-          sudo apt-get update && sudo apt-get install -y libclang-dev cmake libvulkan-dev glslang-tools
-          # glslc (shaderc compiler) is needed by llama.cpp's Vulkan backend.
-          # Not in standard Ubuntu packages — install from the LunarG Vulkan SDK.
-          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
-          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list https://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
-          sudo apt-get update && sudo apt-get install -y shaderc
+      - uses: ./.github/actions/install-llama-deps
+        with:
+          cache-epoch: ${{ env.CACHE_EPOCH }}
 
       - name: Build gdext
         run: cargo build -p elven_canopy_gdext
@@ -235,15 +235,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: ${{ env.CACHE_EPOCH }}
 
-      - name: Install llama.cpp build dependencies
-        run: |
-          sudo apt-get update && sudo apt-get install -y libclang-dev cmake libvulkan-dev glslang-tools
-          # glslc (shaderc compiler) is needed by llama.cpp's Vulkan backend.
-          # Not in standard Ubuntu packages — install from the LunarG Vulkan SDK.
-          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
-          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list https://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
-          sudo apt-get update && sudo apt-get install -y shaderc
+      - uses: ./.github/actions/install-llama-deps
+        with:
+          cache-epoch: ${{ env.CACHE_EPOCH }}
 
       - name: Build gdext
         run: cargo build -p elven_canopy_gdext
