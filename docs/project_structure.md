@@ -86,6 +86,7 @@ elven-canopy/
 │   │   ├── error.rs            # Error enum (5 variants), DeserializeError
 │   │   ├── ins_ord_hash_map.rs # InsOrdHashMap: insertion-ordered hash map with tombstone-skip iteration
 │   │   ├── one_or_many.rs      # OneOrMany<V,Many>: single-entry optimization for non-unique hash index groups
+│   │   ├── crc.rs              # Crc32State hasher, CrcFeed trait, blanket impls for per-row CRC32 (backed by crc32fast)
 │   │   ├── spatial.rs          # SpatialKey trait, SpatialPoint marker, MaybeSpatialKey dispatch, SpatialIndex R-tree wrapper
 │   │   └── table.rs            # Bounded, FkCheck, TableMeta, AutoIncrementable, IntoQuery, QueryOpts
 │   ├── tests/
@@ -107,13 +108,16 @@ elven-canopy/
 │   │   ├── parent_pk_serde.rs  # Parent-PK serde roundtrip (feature-gated)
 │   │   ├── query_opts.rs       # QueryOpts ordering/offset + modify_each_by_*
 │   │   ├── serde.rs            # Serde roundtrip (feature-gated)
+│   │   ├── checksummed.rs       # Per-row CRC with #[table(checksummed)], CrcFeed derive, XOR aggregation
+│   │   ├── checksummed_serde.rs # Serde roundtrip for checksummed tables (feature-gated)
 │   │   ├── spatial_index.rs    # Spatial indexes (#[indexed(spatial)]), R-tree queries, Option/filter/rebuild
 │   │   └── unique_index.rs     # Unique index enforcement on insert/update/upsert
 │   └── Cargo.toml
-├── tabulosity_derive/          # Proc macros: derive(Bounded), derive(Table), derive(Database)
+├── tabulosity_derive/          # Proc macros: derive(Bounded), derive(Table), derive(CrcFeed), derive(Database)
 │   └── src/
 │       ├── lib.rs              # Proc macro entry points
 │       ├── bounded.rs          # derive(Bounded) for newtypes
+│       ├── crc_feed.rs          # derive(CrcFeed) for structs and enums
 │       ├── database.rs         # derive(Database) — FK validation, cascade/nullify, modify_unchecked delegation
 │       ├── parse.rs            # Shared attribute parsing (#[primary_key], #[auto_increment], #[indexed], #[indexed(hash)], #[table(...)])
 │       └── table.rs            # derive(Table) — companion struct, indexes, serde, modify_unchecked, modify_each_by_*

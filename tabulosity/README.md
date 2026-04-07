@@ -561,6 +561,43 @@ struct MyDb { ... }
 Serialization includes `"schema_version": 1`. Deserialization rejects
 mismatched versions.
 
+## Checksumming
+
+Tables can opt in to per-row CRC32 checksumming for desync detection:
+
+```rust
+#[derive(Table, CrcFeed, Clone, Debug)]
+#[table(checksummed)]
+struct Creature {
+    #[primary_key]
+    pub id: CreatureId,
+    pub name: String,
+    pub hp: u32,
+}
+```
+
+Row types on checksummed tables must derive `CrcFeed` (auto-implements
+deterministic byte-feeding for CRC32 computation). `#[derive(CrcFeed)]`
+supports structs, enums, and newtypes. Blanket impls cover primitives,
+`String`, `Option<T>`, `Vec<T>`, `bool`, tuples, and arrays.
+
+The `checksum()` method returns a table-level CRC32 (XOR of all row CRCs):
+
+```rust
+let crc: Option<u32> = table.checksum();
+```
+
+The first call is O(n) (computes CRC for every row). Subsequent calls are
+O(dirty_rows) — only recomputes rows that changed since the last checksum.
+All mutation methods (insert, update, upsert, remove, `modify_unchecked`,
+`modify_unchecked_range`/`modify_unchecked_all`, `modify_each_by_*`)
+maintain CRC bookkeeping automatically.
+
+CRC state is transient — not serialized. On deserialization, the system
+starts inert until the first `checksum()` call.
+
+Non-checksummed tables have zero CRC overhead (no CRC field, no bookkeeping).
+
 ## Error Handling
 
 All fallible operations return `Result<T, tabulosity::Error>`:

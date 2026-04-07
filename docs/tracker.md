@@ -272,7 +272,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-tab-indexmap-fork    Forked IndexMap with tombstone compaction (alternative to F-tab-ordered-idx)
 [ ] F-tab-joins            Join iterators across tables
 [ ] F-tab-nested-idx       Tabulosity general nested multi-kind compound indexes
-[ ] F-tab-row-crc          Per-row CRC with CrcFeed trait, RowEntry wrapper, and XOR table aggregation
 [ ] F-tab-schema-evol      Schema evolution: custom migrations
 [ ] F-tab-spatial-3        Tabulosity spatial index — range, KNN, and None-set queries
 [ ] F-tame-aggro           Taming failure can aggro the target animal
@@ -565,6 +564,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-tab-ordered-idx      Deterministic-iteration hash index with tombstone skip
 [x] F-tab-parent-pk        Tabulosity: allow parent PK as child table PK for 1:1 relations
 [x] F-tab-query-opts       Query options struct for index queries
+[x] F-tab-row-crc          Per-row CRC with CrcFeed trait, RowEntry wrapper, and XOR table aggregation
 [x] F-tab-schema-ver       Schema versioning fundamentals
 [x] F-tab-spatial          Tabulosity spatial index — simple R-tree, point queries
 [x] F-tab-spatial-2        Tabulosity spatial index — compound spatial indexes
@@ -8827,7 +8827,7 @@ combinators (`.take(n)`).
 **Related:** F-sim-db-impl, F-tab-modify-unchk
 
 #### F-tab-row-crc — Per-row CRC with CrcFeed trait, RowEntry wrapper, and XOR table aggregation
-**Status:** Todo
+**Status:** Done
 
 Add per-row incremental CRC support to tabulosity tables, with table-level XOR
 aggregation for cheap whole-table checksumming. Scope is tabulosity only —
@@ -8875,9 +8875,10 @@ Blanket impls cover common stdlib types (primitives, String, Option, Vec, bool,
 tuples, arrays). Row types on checksummed tables must derive `CrcFeed`:
 `#[derive(Table, CrcFeed, Clone, Debug)]`.
 
-**CRC algorithm:** Dedicated CRC32 (IEEE polynomial), hand-rolled with a lookup
-table. No external crate dependency. Fast, well-understood, sufficient for
-desync detection.
+**CRC algorithm:** CRC32 IEEE polynomial via the `crc32fast` crate, which uses
+hardware-accelerated SIMD (`pclmulqdq` on x86_64, CRC32 instructions on ARM)
+when available, falling back to a software lookup table. All code paths produce
+identical results — deterministic across platforms.
 
 **Table-level bookkeeping:** Each checksummed table maintains:
 - `_crc_xor: Option<u32>` — running XOR of all row CRCs.
@@ -8942,7 +8943,7 @@ pinpoint the exact divergent row(s) without transmitting full state.
 Some/None discriminant and 31 bits for the CRC value, halving the
 `Option<u32>` storage cost. Pure in-memory optimization, no API change.
 
-**Blocks:** B-fast-checksum
+**Unblocked:** B-fast-checksum
 **Related:** F-mp-checksums
 
 #### F-tab-schema-evol — Schema evolution: custom migrations
@@ -9068,7 +9069,7 @@ The total state is too large to ever want to iterate over during ordinary gamepl
 
 **What this unblocks:** Re-enabling multiplayer desync detection. Currently disabled by B-local-relay.
 
-**Blocked by:** F-tab-row-crc
+**Unblocked by:** F-tab-row-crc
 
 #### B-llm-load-race — LLM capability signaled before async model load completes
 **Status:** Todo

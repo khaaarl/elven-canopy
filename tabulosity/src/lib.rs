@@ -37,17 +37,23 @@
 //! - `table.rs` — `Bounded` trait, `FkCheck` trait, `IntoQuery`/`QueryBound`/
 //!   `MatchAll` query types, `QueryOrder`/`QueryOpts` for ordering and offset,
 //!   `in_bounds` helper, and range bound helpers used by generated code.
+//! - `crc.rs` — `Crc32State` hasher and `CrcFeed` trait for per-row CRC32
+//!   checksumming. Used by `#[table(checksummed)]` tables for incremental
+//!   table-level XOR-aggregated checksums (desync detection).
 //!
 //! The companion proc macro crate `tabulosity_derive` provides
-//! `#[derive(Bounded)]`, `#[derive(Table)]`, and `#[derive(Database)]`.
+//! `#[derive(Bounded)]`, `#[derive(Table)]`, `#[derive(CrcFeed)]`, and
+//! `#[derive(Database)]`.
 //! This crate re-exports those derives so users only need `use tabulosity::*`.
 
+pub mod crc;
 mod error;
 mod ins_ord_hash_map;
 mod one_or_many;
 mod spatial;
 mod table;
 
+pub use crc::{Crc32State, CrcFeed, crc32_of};
 pub use error::{DeserializeError, Error};
 pub use ins_ord_hash_map::InsOrdHashMap;
 pub use one_or_many::{HasLen, OneOrMany, RemoveResult};
@@ -58,4 +64,4 @@ pub use table::{
 };
 
 // Re-export derives so users write `use tabulosity::Table` etc.
-pub use tabulosity_derive::{Bounded, Database, Table};
+pub use tabulosity_derive::{Bounded, CrcFeed, Database, Table};

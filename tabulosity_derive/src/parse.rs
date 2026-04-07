@@ -439,10 +439,19 @@ impl Parse for IndexDeclParsed {
     }
 }
 
-/// Parse an optional struct-level `#[table(primary_storage = "hash")]` attribute.
-/// Returns `BTree` (the default) if no such attribute exists.
-pub fn parse_table_attr(input: &DeriveInput) -> syn::Result<PrimaryStorageKind> {
-    let mut result = PrimaryStorageKind::BTree;
+/// Parsed result of the struct-level `#[table(...)]` attribute.
+pub struct TableAttrResult {
+    pub primary_storage: PrimaryStorageKind,
+    pub checksummed: bool,
+}
+
+/// Parse an optional struct-level `#[table(primary_storage = "hash", checksummed)]` attribute.
+/// Returns defaults (BTree, not checksummed) if no such attribute exists.
+pub fn parse_table_attr(input: &DeriveInput) -> syn::Result<TableAttrResult> {
+    let mut result = TableAttrResult {
+        primary_storage: PrimaryStorageKind::BTree,
+        checksummed: false,
+    };
     let mut found = false;
 
     for attr in &input.attrs {
@@ -455,21 +464,24 @@ pub fn parse_table_attr(input: &DeriveInput) -> syn::Result<PrimaryStorageKind> 
             }
             found = true;
             let parsed: TableAttrParsed = attr.parse_args()?;
-            result = parsed.primary_storage;
+            result.primary_storage = parsed.primary_storage;
+            result.checksummed = parsed.checksummed;
         }
     }
 
     Ok(result)
 }
 
-/// Internal parsed form for `#[table(primary_storage = "hash")]`.
+/// Internal parsed form for `#[table(primary_storage = "hash", checksummed)]`.
 struct TableAttrParsed {
     primary_storage: PrimaryStorageKind,
+    checksummed: bool,
 }
 
 impl Parse for TableAttrParsed {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let mut primary_storage = PrimaryStorageKind::BTree;
+        let mut checksummed = false;
 
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
@@ -490,10 +502,21 @@ impl Parse for TableAttrParsed {
                         }
                     }
                 }
+                "checksummed" => {
+                    if checksummed {
+                        return Err(syn::Error::new(
+                            ident.span(),
+                            "duplicate `checksummed` in #[table(...)]",
+                        ));
+                    }
+                    checksummed = true;
+                }
                 other => {
                     return Err(syn::Error::new(
                         ident.span(),
-                        format!("unknown #[table(...)] key: `{other}`; expected `primary_storage`"),
+                        format!(
+                            "unknown #[table(...)] key: `{other}`; expected `primary_storage` or `checksummed`"
+                        ),
                     ));
                 }
             }
@@ -502,6 +525,9 @@ impl Parse for TableAttrParsed {
             }
         }
 
-        Ok(TableAttrParsed { primary_storage })
+        Ok(TableAttrParsed {
+            primary_storage,
+            checksummed,
+        })
     }
 }

@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 tabulosity_derive = { path = "../tabulosity_derive" }
+crc32fast = "1"
 rstar = "0.12"
 serde = { version = "1", features = ["derive"], optional = true }
 

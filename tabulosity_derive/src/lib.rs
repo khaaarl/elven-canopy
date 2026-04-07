@@ -1,19 +1,21 @@
 //! Proc macro crate for tabulosity.
 //!
-//! Provides `#[derive(Bounded)]`, `#[derive(Table)]`, and `#[derive(Database)]`
-//! macros. Users should depend on the `tabulosity` crate, which re-exports these
-//! derives alongside the runtime types they reference.
+//! Provides `#[derive(Bounded)]`, `#[derive(Table)]`, `#[derive(CrcFeed)]`, and
+//! `#[derive(Database)]` macros. Users should depend on the `tabulosity` crate,
+//! which re-exports these derives alongside the runtime types they reference.
 //!
 //! Implementation is split across modules:
 //! - `bounded.rs` — `#[derive(Bounded)]` for newtype wrappers.
+//! - `crc_feed.rs` — `#[derive(CrcFeed)]` for per-row CRC32 checksumming.
 //! - `table.rs` — `#[derive(Table)]` companion struct generation.
 //! - `database.rs` — `#[derive(Database)]` FK validation and write methods.
-//! - `parse.rs` — shared attribute parsing (primary_key, indexed).
+//! - `parse.rs` — shared attribute parsing (primary_key, indexed, table).
 
 use proc_macro::TokenStream;
 use syn::DeriveInput;
 
 mod bounded;
+mod crc_feed;
 mod database;
 mod parse;
 mod table;
@@ -61,4 +63,15 @@ pub fn derive_table(input: TokenStream) -> TokenStream {
 pub fn derive_database(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as DeriveInput);
     database::derive(&input).into()
+}
+
+/// Derives the `CrcFeed` trait for structs and enums.
+///
+/// Feeds each field in declaration order into a `Crc32State`. Enum variants
+/// feed the discriminant index (as u32 LE) first, then variant fields.
+/// Single-field tuple structs (newtypes) recurse into the inner type.
+#[proc_macro_derive(CrcFeed)]
+pub fn derive_crc_feed(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as DeriveInput);
+    crc_feed::derive(&input).into()
 }
