@@ -67,7 +67,6 @@ This reduces merge conflicts when parallel work streams add items.
 ```
 [ ] B-doubletap-groups     Double-tap selection group recall inconsistently triggers camera center
 [ ] B-fast-checksum        Incremental state checksum for desync detection (replace full-state JSON serialization)
-[ ] B-flyable-shared       Replace footprint_flyable with shared footprint_fits helper
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fog-billboards       Fog post-process does not obscure billboard sprites
 [ ] B-llm-load-race        LLM capability signaled before async model load completes
@@ -331,6 +330,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-escape-menu          Rename pause_menu to escape_menu and block hotkeys/buttons while it's open
 [x] B-first-notification   First notification not displayed (ID 0 skipped by polling cursor)
 [x] B-floating-dirt        Floating dirt still treated as ground by structural validator
+[x] B-flyable-shared       Replace footprint_flyable with shared footprint_fits helper
 [x] B-flying-arrow-chase   Flying creatures excluded from arrow-chase
 [x] B-flying-tasks         Flying creatures skip task system entirely
 [x] B-ground-only          Remove ground_only field; use MovementCategory for all movement constraints
@@ -1529,7 +1529,7 @@ would also confirm the fix.
 After issuing move commands (select creatures, right-click a destination), creature movement becomes erratic and possibly faster than intended. Repro: select one or more creatures, right-click to move them, observe movement behavior.
 
 #### B-flyable-shared — Replace footprint_flyable with shared footprint_fits helper
-**Status:** Todo
+**Status:** Done
 
 `footprint_flyable` in `pathfinding.rs` uses `VoxelType::is_flyable()` to check body clearance for flying creatures, which allows flyers to pass through Leaf and Fruit voxels via special-case logic. This should instead use the same `!is_solid()` check used by all other movement code (via a shared `footprint_fits` helper in `walkability.rs`).
 

@@ -68,10 +68,9 @@ impl SimState {
         let sex_weights = species_data.sex_weights;
 
         // Flying creatures spawn at the raw position (entire footprint must be
-        // flyable); ground creatures snap to the nearest walkable position.
+        // non-solid); ground creatures snap to the nearest walkable position.
         let node_pos = if is_flyer {
-            let footprint = species_data.footprint;
-            if !crate::pathfinding::footprint_flyable(
+            if !crate::walkability::footprint_fits(
                 self.voxel_zone(zone_id).unwrap(),
                 position,
                 footprint,

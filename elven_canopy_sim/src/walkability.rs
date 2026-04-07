@@ -1,8 +1,9 @@
-// Walkability predicates for voxel-direct ground pathfinding.
+// Walkability predicates for voxel-direct ground and flight pathfinding.
 //
 // `footprint_fits` is the body-clearance check: can a creature physically fit
-// at a position (all footprint voxels non-solid, y >= 1).  Used by
-// `footprint_walkable` and by `find_creature_landing` (gravity deflection).
+// at a position (all footprint voxels in-bounds, non-solid, y >= 1).  Used by
+// `footprint_walkable` (ground creatures), flight pathfinding (flying
+// creatures), and `find_creature_landing` (gravity deflection).
 //
 // `footprint_walkable` is the single authority for "can a creature with this
 // footprint stand at this position." All walkability checks — pathfinding,
@@ -49,16 +50,27 @@ const CLIMBER_FACE_OFFSETS: [(i32, i32, i32); 4] = [(1, 0, 0), (-1, 0, 0), (0, 0
 
 /// Body-clearance check: can a creature with the given footprint physically
 /// fit at `anchor`?  Returns `true` if every voxel in the footprint is
-/// non-solid and at y >= 1.  This is the spatial-occupancy test shared by
-/// `footprint_walkable` (ground creatures) and `find_creature_landing`
-/// (gravity deflection).  It does NOT check ground support — that's
-/// `footprint_walkable`'s job.
+/// in-bounds, non-solid, and at y >= 1.  This is the spatial-occupancy test
+/// shared by `footprint_walkable` (ground creatures), flight pathfinding
+/// (flying creatures), and `find_creature_landing` (gravity deflection).
+/// It does NOT check ground support — that's `footprint_walkable`'s job.
 pub fn footprint_fits(world: &VoxelZone, anchor: VoxelCoord, footprint: [u8; 3]) -> bool {
+    if anchor.y < 1 {
+        return false;
+    }
+    let far = VoxelCoord::new(
+        anchor.x + footprint[0] as i32 - 1,
+        anchor.y + footprint[1] as i32 - 1,
+        anchor.z + footprint[2] as i32 - 1,
+    );
+    if !world.in_bounds(anchor) || !world.in_bounds(far) {
+        return false;
+    }
     for dx in 0..footprint[0] as i32 {
         for dy in 0..footprint[1] as i32 {
             for dz in 0..footprint[2] as i32 {
                 let v = VoxelCoord::new(anchor.x + dx, anchor.y + dy, anchor.z + dz);
-                if v.y < 1 || world.get(v).is_solid() {
+                if world.get(v).is_solid() {
                     return false;
                 }
             }
@@ -1164,6 +1176,75 @@ mod tests {
         assert!(!footprint_fits(&world, VoxelCoord::new(3, 0, 3), [2, 2, 2],));
         // 1x1x1 at y=0 also rejected.
         assert!(!footprint_fits(&world, VoxelCoord::new(3, 0, 3), [1, 1, 1],));
+    }
+
+    #[test]
+    fn footprint_fits_rejects_anchor_out_of_bounds() {
+        let world = VoxelZone::new(16, 16, 16);
+        // Negative x.
+        assert!(!footprint_fits(
+            &world,
+            VoxelCoord::new(-1, 5, 5),
+            [1, 1, 1]
+        ));
+        // x beyond world size.
+        assert!(!footprint_fits(
+            &world,
+            VoxelCoord::new(16, 5, 5),
+            [1, 1, 1]
+        ));
+        // Negative z.
+        assert!(!footprint_fits(
+            &world,
+            VoxelCoord::new(5, 5, -1),
+            [1, 1, 1]
+        ));
+    }
+
+    #[test]
+    fn footprint_fits_rejects_far_corner_out_of_bounds() {
+        let world = VoxelZone::new(16, 16, 16);
+        // Anchor in-bounds but 2x2x2 far corner extends past x=15.
+        assert!(!footprint_fits(
+            &world,
+            VoxelCoord::new(15, 5, 5),
+            [2, 2, 2]
+        ));
+        // Far corner extends past z=15.
+        assert!(!footprint_fits(
+            &world,
+            VoxelCoord::new(5, 5, 15),
+            [1, 1, 2]
+        ));
+        // Far corner extends past y (size_y=16, so max valid y=15).
+        assert!(!footprint_fits(
+            &world,
+            VoxelCoord::new(5, 15, 5),
+            [1, 2, 1]
+        ));
+    }
+
+    #[test]
+    fn footprint_fits_accepts_at_max_valid_corner() {
+        let world = VoxelZone::new(16, 16, 16);
+        // 1x1x1 at the very last valid coordinate.
+        assert!(footprint_fits(
+            &world,
+            VoxelCoord::new(15, 15, 15),
+            [1, 1, 1]
+        ));
+        // 2x2x2 just fitting inside the boundary.
+        assert!(footprint_fits(
+            &world,
+            VoxelCoord::new(14, 14, 14),
+            [2, 2, 2]
+        ));
+        // 2x2x2 with anchor at (14, 1, 14) — far corner at (15, 2, 15), valid.
+        assert!(footprint_fits(
+            &world,
+            VoxelCoord::new(14, 1, 14),
+            [2, 2, 2]
+        ));
     }
 
     #[test]

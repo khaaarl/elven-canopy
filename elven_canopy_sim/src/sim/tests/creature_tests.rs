@@ -1129,10 +1129,10 @@ fn hornet_spawns_at_air_position_not_nav_node() {
     let mut sim = flat_world_sim(legacy_test_seed());
     let air_pos = VoxelCoord::new(32, 20, 32);
     assert!(
-        sim.voxel_zone(sim.home_zone_id())
+        !sim.voxel_zone(sim.home_zone_id())
             .unwrap()
             .get(air_pos)
-            .is_flyable()
+            .is_solid()
     );
 
     // Spawn directly (not through step()) to avoid immediate activation/wander.
@@ -1247,35 +1247,15 @@ fn hornet_serde_roundtrip() {
 }
 
 #[test]
-fn voxel_type_is_flyable() {
-    use crate::types::VoxelType;
-    // Air is flyable.
-    assert!(VoxelType::Air.is_flyable());
-    // Leaf and Fruit are solid but flyable (sparse canopy doesn't block flight).
-    assert!(VoxelType::Leaf.is_flyable());
-    assert!(VoxelType::Fruit.is_flyable());
-    // BuildingInterior is flyable.
-    assert!(VoxelType::BuildingInterior.is_flyable());
-    // Ladders are flyable.
-    assert!(VoxelType::WoodLadder.is_flyable());
-    assert!(VoxelType::RopeLadder.is_flyable());
-    // Solid types are not flyable.
-    assert!(!VoxelType::Trunk.is_flyable());
-    assert!(!VoxelType::Branch.is_flyable());
-    assert!(!VoxelType::GrownWall.is_flyable());
-    assert!(!VoxelType::Dirt.is_flyable());
-}
-
-#[test]
 fn hornet_spawn_in_solid_returns_none() {
     let mut sim = test_sim(legacy_test_seed());
     // Find a trunk voxel (guaranteed to exist — the tree is there).
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     assert!(
-        !sim.voxel_zone(sim.home_zone_id())
+        sim.voxel_zone(sim.home_zone_id())
             .unwrap()
             .get(tree_pos)
-            .is_flyable()
+            .is_solid()
     );
     let mut events = Vec::new();
     assert!(
@@ -1285,17 +1265,19 @@ fn hornet_spawn_in_solid_returns_none() {
 }
 
 #[test]
-fn hornet_spawn_in_leaf_succeeds() {
+fn hornet_spawn_in_leaf_blocked() {
+    // Leaf is solid — flyers should NOT be able to spawn inside it.
     let mut sim = test_sim(legacy_test_seed());
     let leaf_pos = VoxelCoord::new(32, 45, 32);
     sim.voxel_zone_mut(sim.home_zone_id())
         .unwrap()
         .set(leaf_pos, crate::types::VoxelType::Leaf);
     let mut events = Vec::new();
-    let id = sim
-        .spawn_creature(Species::Hornet, leaf_pos, sim.home_zone_id(), &mut events)
-        .expect("hornet should spawn in leaf voxel");
-    assert_eq!(sim.db.creatures.get(&id).unwrap().position.min, leaf_pos);
+    assert!(
+        sim.spawn_creature(Species::Hornet, leaf_pos, sim.home_zone_id(), &mut events)
+            .is_none(),
+        "hornet should not spawn in solid Leaf voxel"
+    );
 }
 #[test]
 fn flight_pathfinding_corner_cost_matches_scaled_distance() {

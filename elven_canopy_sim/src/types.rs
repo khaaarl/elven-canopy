@@ -1706,15 +1706,6 @@ impl VoxelType {
         )
     }
 
-    /// Returns `true` for voxel types a flying creature can occupy. Includes
-    /// all non-solid types plus Leaf and Fruit (sparse canopy doesn't block
-    /// flight, same as it doesn't block line-of-sight). Flying creatures can
-    /// pass through air, building interiors, ladders, leaves, and fruit but
-    /// not through trunk, branch, walls, floors, etc.
-    pub fn is_flyable(self) -> bool {
-        !self.is_solid() || matches!(self, VoxelType::Leaf | VoxelType::Fruit)
-    }
-
     /// Returns `true` for voxel types that block line-of-sight for ranged
     /// attacks. Same as `is_solid()` except Leaf and Fruit are transparent
     /// (sparse canopy doesn't block arrows).

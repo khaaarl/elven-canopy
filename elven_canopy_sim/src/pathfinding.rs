@@ -57,11 +57,11 @@ pub enum PathError {
     /// No path exists (disconnected graph region, fully walled off, etc.).
     Unreachable,
     /// Creature's position doesn't map to a nav node (ground creatures) or
-    /// is in a non-flyable voxel (flyers).
+    /// is in a solid voxel (flyers).
     StartNotOnGraph,
     /// Start position fails footprint clearance check (flyers).
     StartBlockedByFootprint,
-    /// Goal position doesn't map to a nav node or is non-flyable.
+    /// Goal position doesn't map to a nav node or is solid/out-of-bounds.
     TargetNotOnGraph,
     /// Candidate list was empty after filtering (`find_nearest` only).
     NoTargets,
@@ -351,23 +351,7 @@ fn octile_heuristic_3d(a: VoxelCoord, b: VoxelCoord, flight_tpv: u64) -> i64 {
     (h * flight_tpv) as i64
 }
 
-/// Check whether all voxels in a footprint anchored at `anchor` are flyable.
-/// The anchor is the min-corner (smallest x, y, z) of the bounding box.
-pub fn footprint_flyable(world: &VoxelZone, anchor: VoxelCoord, footprint: [u8; 3]) -> bool {
-    for dx in 0..footprint[0] as i32 {
-        for dy in 0..footprint[1] as i32 {
-            for dz in 0..footprint[2] as i32 {
-                let v = VoxelCoord::new(anchor.x + dx, anchor.y + dy, anchor.z + dz);
-                if !world.in_bounds(v) || !world.get(v).is_flyable() {
-                    return false;
-                }
-            }
-        }
-    }
-    true
-}
-
-/// Find the shortest flight path from `start` to `goal` through flyable voxels.
+/// Find the shortest flight path from `start` to `goal` through non-solid voxels.
 ///
 /// **Prefer `SimState::find_path()`** unless you need direct control over
 /// flight parameters. `find_path` handles species dispatch, speed lookup,
@@ -375,7 +359,7 @@ pub fn footprint_flyable(world: &VoxelZone, anchor: VoxelCoord, footprint: [u8; 
 ///
 /// The `footprint` `[width_x, height_y, depth_z]` specifies the creature's
 /// bounding box. For 1×1×1 creatures this is `[1,1,1]`; for 2×2×2 it's
-/// `[2,2,2]`. All voxels in the footprint must be flyable at every position.
+/// `[2,2,2]`. All voxels in the footprint must be non-solid at every position.
 ///
 /// Search bounded by `opts` (path length and work budget).
 ///
@@ -388,10 +372,10 @@ pub fn astar_fly(
     opts: &PathOpts,
     footprint: [u8; 3],
 ) -> Result<PathResult, PathError> {
-    if !footprint_flyable(world, start, footprint) {
+    if !walkability::footprint_fits(world, start, footprint) {
         return Err(PathError::StartBlockedByFootprint);
     }
-    if !footprint_flyable(world, goal, footprint) {
+    if !walkability::footprint_fits(world, goal, footprint) {
         return Err(PathError::TargetNotOnGraph);
     }
     if start == goal {
@@ -472,7 +456,7 @@ pub fn astar_fly(
             let nz = pos.z + dz;
             let neighbor = VoxelCoord::new(nx, ny, nz);
 
-            if !footprint_flyable(world, neighbor, footprint) {
+            if !walkability::footprint_fits(world, neighbor, footprint) {
                 continue;
             }
 
@@ -527,12 +511,12 @@ pub fn nearest_astar_fly(
         return Ok(start);
     }
 
-    if !footprint_flyable(world, start, footprint) {
+    if !walkability::footprint_fits(world, start, footprint) {
         return Err(PathError::StartBlockedByFootprint);
     }
 
     let mut candidate_indices: Vec<usize> = (0..candidates.len())
-        .filter(|&i| footprint_flyable(world, candidates[i], footprint))
+        .filter(|&i| walkability::footprint_fits(world, candidates[i], footprint))
         .collect();
     if candidate_indices.is_empty() {
         return Err(PathError::NoTargets);
@@ -658,7 +642,9 @@ pub fn nearest_astar_fly(
         for &(dx, dy, dz, dist_scaled) in &NEIGHBOR_OFFSETS {
             let neighbor = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
 
-            if closed.contains(&neighbor) || !footprint_flyable(world, neighbor, footprint) {
+            if closed.contains(&neighbor)
+                || !walkability::footprint_fits(world, neighbor, footprint)
+            {
                 continue;
             }
 
@@ -1324,20 +1310,28 @@ mod tests {
     }
 
     #[test]
-    fn fly_through_leaves_and_fruit() {
+    fn fly_blocked_by_leaf_and_fruit() {
+        // Leaf and Fruit are solid — flyers cannot pass through them.
         let mut world = empty_world(8, 8, 8);
         world.set(VoxelCoord::new(4, 4, 4), VoxelType::Leaf);
         let start = VoxelCoord::new(3, 4, 4);
         let goal = VoxelCoord::new(5, 4, 4);
-        let result = astar_fly(&world, start, goal, 250, &PathOpts::default(), FP1).unwrap();
-        assert_eq!(result.positions.len(), 3);
-        assert_eq!(result.positions[1], VoxelCoord::new(4, 4, 4));
-        assert_eq!(result.total_cost, 2 * 1024 * 250);
+        // Leaf wall is only 1 voxel wide, so the flyer can go around.
+        // Block the whole plane to force failure.
+        for y in 0..8 {
+            for z in 0..8 {
+                world.set(VoxelCoord::new(4, y, z), VoxelType::Leaf);
+            }
+        }
+        assert!(astar_fly(&world, start, goal, 250, &PathOpts::default(), FP1).is_err());
 
-        world.set(VoxelCoord::new(4, 4, 4), VoxelType::Fruit);
-        let result = astar_fly(&world, start, goal, 250, &PathOpts::default(), FP1).unwrap();
-        assert_eq!(result.positions.len(), 3);
-        assert_eq!(result.positions[1], VoxelCoord::new(4, 4, 4));
+        // Same with Fruit.
+        for y in 0..8 {
+            for z in 0..8 {
+                world.set(VoxelCoord::new(4, y, z), VoxelType::Fruit);
+            }
+        }
+        assert!(astar_fly(&world, start, goal, 250, &PathOpts::default(), FP1).is_err());
     }
 
     #[test]

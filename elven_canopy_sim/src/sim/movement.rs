@@ -753,9 +753,9 @@ impl SimState {
         // Check if we have a cached flight path with remaining steps.
         let next_pos = if let Some(ref path) = creature.path {
             if let Some(&next) = path.remaining_positions.first() {
-                // Validate that the next position is still flyable (full footprint).
+                // Validate that the next position is still clear (full footprint).
                 let footprint = self.species_table[&species].footprint;
-                if !crate::pathfinding::footprint_flyable(
+                if !crate::walkability::footprint_fits(
                     self.voxel_zone(zone_id).unwrap(),
                     next,
                     footprint,
@@ -867,7 +867,7 @@ impl SimState {
         true
     }
 
-    /// Random flying wander: pick a random flyable neighbor voxel and move there.
+    /// Random flying wander: pick a random clear neighbor voxel and move there.
     pub(crate) fn fly_wander(&mut self, creature_id: CreatureId, events: &mut Vec<SimEvent>) {
         let creature = match self.db.creatures.get(&creature_id) {
             Some(c) => c,
@@ -885,7 +885,7 @@ impl SimState {
         );
         let pos = creature.position.min;
 
-        // Collect flyable neighbor positions (check full footprint clearance).
+        // Collect clear neighbor positions (check full footprint clearance).
         let footprint = self.species_table[&species].footprint;
         let offsets: [(i32, i32, i32); 6] = [
             (-1, 0, 0),
@@ -898,7 +898,7 @@ impl SimState {
         let mut candidates: Vec<VoxelCoord> = Vec::new();
         for &(dx, dy, dz) in &offsets {
             let neighbor = VoxelCoord::new(pos.x + dx, pos.y + dy, pos.z + dz);
-            if crate::pathfinding::footprint_flyable(
+            if crate::walkability::footprint_fits(
                 self.voxel_zone(zone_id).unwrap(),
                 neighbor,
                 footprint,
