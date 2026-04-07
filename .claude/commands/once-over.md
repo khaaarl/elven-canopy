@@ -1,11 +1,10 @@
 # Once-Over: Final Quality Review
 
 Perform a quality review of the current feature branch, typically before
-merging to main. This review should catch bugs, quality issues, missing
-test coverage, documentation staleness, and anything that would be
-embarrassing to merge. The user may ask for a once-over prior to merging,
-or while in the middle of development. The user might ask for multiple
-once-overs in succession, which helps check for issues more thoroughly.
+merging to main. This review catches bugs, quality issues, missing test
+coverage, documentation staleness, and anything that would be embarrassing
+to merge. The user may ask for a once-over at any point during development
+or before merge. Multiple successive once-overs help check more thoroughly.
 
 ## Procedure
 
@@ -42,7 +41,7 @@ once-overs in succession, which helps check for issues more thoroughly.
 
 3. **Triage findings from all four agents.** Organize the combined results
    into the categories below. Present this to the user so they can follow
-   along, but note that the complete final report comes in step 7.
+   along, but note that the complete final report comes in step 6.
    - **Bugs / must-fix** — actual defects or high-confidence issues.
    - **Spec violations / must-fix** — requirements missing or implemented
      incorrectly (from Agent D).
@@ -50,7 +49,7 @@ once-overs in succession, which helps check for issues more thoroughly.
      made an assumption (from Agent D).
    - **Missing tests — high priority** — untested error paths, untested
      interactions, missing serde roundtrips.
-   - **Missing tests — nice to have** — additional coverage, not critical.
+   - **Missing tests — nice-to-have** — additional coverage, not critical.
    - **Shortcuts / quality issues** — implementations that work but should be
      done properly (from Agent D).
    - **Test integrity issues** — tests that don't test what they claim
@@ -80,8 +79,9 @@ once-overs in succession, which helps check for issues more thoroughly.
    relevant" or "already handled" is not sufficient; cite the specific code
    or reasoning that makes the finding a non-issue.
 
-5. **Verify via CI.** After any fixes, commit and push to the feature branch,
-   then wait for CI:
+5. **Commit fixes and verify via CI.** If you made changes, commit them to the
+   feature branch with a message like "Once-over fixes: [brief summary]", push,
+   and wait for CI:
 
    ```
    git push
@@ -92,17 +92,15 @@ once-overs in succession, which helps check for issues more thoroughly.
    early on any job failure and doesn't block on the slow `coverage` job. If
    CI fails, diagnose and fix the issue, then re-push and re-run.
 
-6. **Commit fixes.** If you made changes, commit them to the feature branch
-   with a message like "Once-over fixes: [brief summary]" and push. (If step
-   5 already pushed the fix commits, this step is done.)
-
-7. **Present the complete final report to the user.** This is the most
+6. **Present the complete final report to the user.** This is the most
    important step — it is the deliverable the user is waiting for. After
    CI passes (or is correctly skipped) and any fixes are committed, output
    a single, self-contained report that the user can read without scrolling
    up. The report must include **every finding from every agent**, organized
    into the categories from step 3. Do not abbreviate, summarize, or
-   paraphrase agent findings — reproduce them in full.
+   paraphrase agent findings — reproduce them in full. This includes
+   findings you dismissed in step 3 — the user must see every finding
+   from every agent, along with your disposition.
 
    For each finding, include:
    - The agent that raised it (A/B/C/D)
@@ -111,21 +109,58 @@ once-overs in succession, which helps check for issues more thoroughly.
      specific rationale citing code or reasoning), or **Needs user
      decision** (with the question)
 
-   End the report with a **CI status** line and a clear **verdict** (e.g.,
-   "Ready to merge", "Blocked on user decisions above", etc.). If there
-   were any topics from step 3 or 4 that are worth raising to the user,
-   ABSOLUTELY do so here. If there were any borderline dismissals,
-   summarize them here.
-
    **Do not silently drop or collapse findings.** If all four agents say
    "no issues," say that explicitly. If agents raised 12 findings and
    you think 10 are non-issues, present all 12 — the user decides which
    are truly non-issues, not you. Err on the side of verbosity over
    compression.
 
-   **Do not merge steps 3 and 7.** Step 3 is the working triage where you
-   decide what to fix. Step 7 is the complete final report written after
-   all fixes and CI are done. You must output step 7 as a distinct final
+   **Do not merge steps 3 and 6.** Step 3 is the working triage where you
+   decide what to fix. Step 6 is the complete final report written after
+   all fixes and CI are done. You must output step 6 as a distinct final
    message even if it repeats content from step 3 — the user should never
    need to scroll back through fix attempts and CI output to find the
    results.
+
+   ### Verdict guidelines (CRITICAL)
+
+   End the report with a **Verdict** section. The verdict MUST be calibrated
+   to what the review actually found — not to what you wish it found.
+
+   **If the agents found zero issues:** Say so. The branch is likely ready
+   to merge, but frame it as "the review found nothing" rather than "I
+   certify this is correct" — you are not omniscient.
+
+   **If the agents found issues and you fixed them:** This is NOT an
+   all-clear. Findings that required fixes are evidence of problems that
+   escaped the original implementation. Where there is one bug there are
+   usually more. The verdict must:
+   - Acknowledge that real issues were found and fixed.
+   - Explicitly recommend the user consider whether another once-over or
+     targeted review is warranted, especially if the fixes were non-trivial
+     or touched logic rather than just docs/style.
+   - NOT say "ready to merge" as though the fixes made everything fine.
+     Instead, present the facts and let the user decide.
+
+   **If there are unresolved items (user decisions, ambiguities, larger
+   issues):** The verdict is "blocked on user input" — list exactly what
+   needs deciding.
+
+   ### Respecting agent findings (CRITICAL)
+
+   The review agents were spawned because no single reviewer — including
+   you — can catch everything alone. Treat their findings with respect:
+
+   - **Do not dismiss findings based on vibes.** "I looked at it and it
+     seems fine" is not a dismissal rationale. Cite specific code, specific
+     invariants, or specific guarantees that make the concern a non-issue.
+   - **Do not grade on a curve.** An agent finding a real bug in a branch
+     that is "mostly good" does not make the bug less real.
+   - **Do not editorialize agent competence.** Never say things like "the
+     agent was confused" or "this is a false positive" without concrete
+     evidence. If you think an agent misread the code, quote the code that
+     contradicts the agent's claim.
+   - **When in doubt, escalate to the user.** Your job is to present
+     findings faithfully and fix what you can — not to act as a filter
+     between the agents and the user. If you're unsure whether a finding
+     is real, say so and let the user decide, rather than dismissing it.
