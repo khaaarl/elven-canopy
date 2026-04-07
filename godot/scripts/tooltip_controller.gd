@@ -20,24 +20,12 @@
 
 extends Node
 
+const CreatureRenderer = preload("res://scripts/creature_renderer.gd")
+
 ## Maximum perpendicular distance (world units) from the mouse ray to an
 ## object center for it to count as a hover hit. Same as selection_controller.
 const SNAP_THRESHOLD := 1.5
 const SNAP_THRESHOLD_SQ := SNAP_THRESHOLD * SNAP_THRESHOLD
-
-## Y offsets per species — must match the renderers and selection_controller.
-const SPECIES_Y_OFFSETS = {
-	"Elf": 0.48,
-	"Capybara": 0.32,
-	"Boar": 0.38,
-	"Deer": 0.46,
-	"Elephant": 0.8,
-	"Goblin": 0.36,
-	"Monkey": 0.44,
-	"Orc": 0.48,
-	"Squirrel": 0.28,
-	"Troll": 0.8,
-}
 
 ## Human-readable activity labels for task kinds.
 const ACTIVITY_NAMES = {
@@ -172,20 +160,22 @@ func _find_hover_target() -> Dictionary:
 	var best_dist_sq := SNAP_THRESHOLD_SQ
 	var best_creature_id := ""
 
-	for species_name in SPECIES_Y_OFFSETS:
-		var data := _bridge.get_creature_positions_with_ids(species_name, _render_tick)
-		var ids: Array = data.get("ids", [])
-		var positions: PackedVector3Array = data.get("positions", PackedVector3Array())
-		var y_off: float = SPECIES_Y_OFFSETS[species_name]
-		for i in positions.size():
-			var pos := positions[i]
-			if GeometryUtils.is_shielded_by_roof(int(pos.y), hit_is_roof, roof_y):
-				continue
-			var world_pos := Vector3(pos.x + 0.5, pos.y + y_off, pos.z + 0.5)
-			var dist_sq := _point_to_ray_dist_sq(world_pos, ray_origin, ray_dir)
-			if dist_sq < best_dist_sq:
-				best_dist_sq = dist_sq
-				best_creature_id = ids[i]
+	var sel_data := _bridge.get_creature_selection_data(_render_tick)
+	var sel_ids: PackedStringArray = sel_data.get("ids", PackedStringArray())
+	var sel_species: PackedStringArray = sel_data.get("species", PackedStringArray())
+	var sel_positions: PackedVector3Array = sel_data.get("positions", PackedVector3Array())
+	for i in sel_positions.size():
+		var pos := sel_positions[i]
+		if GeometryUtils.is_shielded_by_roof(int(pos.y), hit_is_roof, roof_y):
+			continue
+		var y_off: float = CreatureRenderer.SPECIES_Y_OFFSETS.get(
+			sel_species[i], CreatureRenderer.DEFAULT_Y_OFFSET
+		)
+		var world_pos := Vector3(pos.x + 0.5, pos.y + y_off, pos.z + 0.5)
+		var dist_sq := _point_to_ray_dist_sq(world_pos, ray_origin, ray_dir)
+		if dist_sq < best_dist_sq:
+			best_dist_sq = dist_sq
+			best_creature_id = sel_ids[i]
 
 	if best_creature_id != "":
 		return {"type": "creature", "creature_id": best_creature_id}

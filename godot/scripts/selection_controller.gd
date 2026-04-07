@@ -54,11 +54,8 @@
 ## Box selection draws a translucent rectangle overlay via a CanvasLayer
 ## ColorRect during the drag.
 ##
-## Uses a data-driven SPECIES_Y_OFFSETS dict so adding new species doesn't
-## require code changes here — just add the entry.
-##
 ## See also: tooltip_controller.gd for hover tooltips (shares the same
-## ray-cast pattern, SPECIES_Y_OFFSETS, and SNAP_THRESHOLD),
+## ray-cast pattern and SNAP_THRESHOLD),
 ## creature_info_panel.gd for the creature UI panel,
 ## structure_info_panel.gd for the structure UI panel,
 ## ground_pile_info_panel.gd for the pile UI panel, orbital_camera.gd
@@ -81,6 +78,8 @@ signal pile_deselected
 ## center on the given world position (centroid of group members).
 signal group_center_requested(position: Vector3)
 
+const CreatureRenderer = preload("res://scripts/creature_renderer.gd")
+
 ## Maximum perpendicular distance (world units) from the mouse ray to a
 ## creature sprite center for it to count as a click hit. Tighter than
 ## placement_controller's 5.0 since sprites are small.
@@ -92,20 +91,6 @@ const DRAG_THRESHOLD := 5.0
 ## Maximum time (seconds) between two presses of the same number key to count
 ## as a double-tap (recall + center camera).
 const DOUBLE_TAP_THRESHOLD := 0.4
-
-## Y offsets per species — must match the renderers.
-const SPECIES_Y_OFFSETS = {
-	"Elf": 0.48,
-	"Capybara": 0.32,
-	"Boar": 0.38,
-	"Deer": 0.46,
-	"Elephant": 0.8,
-	"Goblin": 0.36,
-	"Monkey": 0.44,
-	"Orc": 0.48,
-	"Squirrel": 0.28,
-	"Troll": 0.8,
-}
 
 var _bridge: SimBridge
 var _camera: Camera3D
@@ -356,21 +341,23 @@ func _try_select(mouse_pos: Vector2, shift: bool, alt: bool) -> void:
 	var best_dist_sq := SNAP_THRESHOLD * SNAP_THRESHOLD
 	var best_id := ""
 
-	for species_name in SPECIES_Y_OFFSETS:
-		var data := _bridge.get_creature_positions_with_ids(species_name, _render_tick)
-		var ids: Array = data.get("ids", [])
-		var positions: PackedVector3Array = data.get("positions", PackedVector3Array())
-		var y_off: float = SPECIES_Y_OFFSETS[species_name]
-		for i in positions.size():
-			var pos := positions[i]
-			# Roof shield: skip creatures inside the building (below roof).
-			if GeometryUtils.is_shielded_by_roof(int(pos.y), hit_is_roof, roof_y):
-				continue
-			var world_pos := Vector3(pos.x + 0.5, pos.y + y_off, pos.z + 0.5)
-			var dist_sq := _point_to_ray_dist_sq(world_pos, ray_origin, ray_dir)
-			if dist_sq < best_dist_sq:
-				best_dist_sq = dist_sq
-				best_id = ids[i]
+	var sel_data := _bridge.get_creature_selection_data(_render_tick)
+	var sel_ids: PackedStringArray = sel_data.get("ids", PackedStringArray())
+	var sel_species: PackedStringArray = sel_data.get("species", PackedStringArray())
+	var sel_positions: PackedVector3Array = sel_data.get("positions", PackedVector3Array())
+	for i in sel_positions.size():
+		var pos := sel_positions[i]
+		# Roof shield: skip creatures inside the building (below roof).
+		if GeometryUtils.is_shielded_by_roof(int(pos.y), hit_is_roof, roof_y):
+			continue
+		var y_off: float = CreatureRenderer.SPECIES_Y_OFFSETS.get(
+			sel_species[i], CreatureRenderer.DEFAULT_Y_OFFSET
+		)
+		var world_pos := Vector3(pos.x + 0.5, pos.y + y_off, pos.z + 0.5)
+		var dist_sq := _point_to_ray_dist_sq(world_pos, ray_origin, ray_dir)
+		if dist_sq < best_dist_sq:
+			best_dist_sq = dist_sq
+			best_id = sel_ids[i]
 
 	if best_id != "":
 		_deselect_structure_only()
@@ -456,36 +443,38 @@ func _try_double_click_select(mouse_pos: Vector2, shift: bool) -> void:
 	var screen_group_ids: Array = []
 	var screen_is_player_civ: Array = []
 
-	for species_name in SPECIES_Y_OFFSETS:
-		var data := _bridge.get_creature_positions_with_ids(species_name, _render_tick)
-		var ids: Array = data.get("ids", [])
-		var positions: PackedVector3Array = data.get("positions", PackedVector3Array())
-		var civ_flags: Array = data.get("is_player_civ", [])
-		var group_ids: Array = data.get("military_group_ids", [])
-		var y_off: float = SPECIES_Y_OFFSETS[species_name]
-		for i in positions.size():
-			var pos := positions[i]
-			var world_pos := Vector3(pos.x + 0.5, pos.y + y_off, pos.z + 0.5)
+	var sel_data := _bridge.get_creature_selection_data(_render_tick)
+	var sel_ids: PackedStringArray = sel_data.get("ids", PackedStringArray())
+	var sel_species: PackedStringArray = sel_data.get("species", PackedStringArray())
+	var sel_positions: PackedVector3Array = sel_data.get("positions", PackedVector3Array())
+	var sel_civ_flags: PackedByteArray = sel_data.get("is_player_civ", PackedByteArray())
+	var sel_group_ids: PackedInt32Array = sel_data.get("military_group_ids", PackedInt32Array())
+	for i in sel_positions.size():
+		var pos := sel_positions[i]
+		var y_off: float = CreatureRenderer.SPECIES_Y_OFFSETS.get(
+			sel_species[i], CreatureRenderer.DEFAULT_Y_OFFSET
+		)
+		var world_pos := Vector3(pos.x + 0.5, pos.y + y_off, pos.z + 0.5)
 
-			# Roof shield: skip creatures inside the building (below roof).
-			if GeometryUtils.is_shielded_by_roof(int(pos.y), hit_is_roof, roof_y):
-				continue
+		# Roof shield: skip creatures inside the building (below roof).
+		if GeometryUtils.is_shielded_by_roof(int(pos.y), hit_is_roof, roof_y):
+			continue
 
-			# Check if this creature is the one being clicked.
-			var dist_sq := _point_to_ray_dist_sq(world_pos, ray_origin, ray_dir)
-			if dist_sq < best_dist_sq:
-				best_dist_sq = dist_sq
-				best_id = ids[i]
-				best_group_id = group_ids[i] if i < group_ids.size() else -1
-				best_is_player_civ = civ_flags[i] if i < civ_flags.size() else false
+		# Check if this creature is the one being clicked.
+		var dist_sq := _point_to_ray_dist_sq(world_pos, ray_origin, ray_dir)
+		if dist_sq < best_dist_sq:
+			best_dist_sq = dist_sq
+			best_id = sel_ids[i]
+			best_group_id = sel_group_ids[i]
+			best_is_player_civ = sel_civ_flags[i] == 1
 
-			# Collect on-screen creatures for the group filter pass.
-			if not _camera.is_position_behind(world_pos):
-				var screen_pos := _camera.unproject_position(world_pos)
-				if viewport_rect.has_point(screen_pos):
-					screen_ids.append(ids[i])
-					screen_group_ids.append(group_ids[i] if i < group_ids.size() else -1)
-					screen_is_player_civ.append(civ_flags[i] if i < civ_flags.size() else false)
+		# Collect on-screen creatures for the group filter pass.
+		if not _camera.is_position_behind(world_pos):
+			var screen_pos := _camera.unproject_position(world_pos)
+			if viewport_rect.has_point(screen_pos):
+				screen_ids.append(sel_ids[i])
+				screen_group_ids.append(sel_group_ids[i])
+				screen_is_player_civ.append(sel_civ_flags[i] == 1)
 
 	# No creature under cursor — fall through (deselect handled by caller).
 	if best_id == "":
@@ -543,21 +532,23 @@ func _finish_box_select(end_pos: Vector2, shift: bool, alt: bool) -> void:
 	var player_ids: Array = []
 	var all_ids: Array = []
 
-	for species_name in SPECIES_Y_OFFSETS:
-		var data := _bridge.get_creature_positions_with_ids(species_name, _render_tick)
-		var ids: Array = data.get("ids", [])
-		var positions: PackedVector3Array = data.get("positions", PackedVector3Array())
-		var civ_flags: Array = data.get("is_player_civ", [])
-		var y_off: float = SPECIES_Y_OFFSETS[species_name]
-		for i in positions.size():
-			var pos := positions[i]
-			var world_pos := Vector3(pos.x + 0.5, pos.y + y_off, pos.z + 0.5)
-			if not _camera.is_position_behind(world_pos):
-				var screen_pos := _camera.unproject_position(world_pos)
-				if rect.has_point(screen_pos):
-					all_ids.append(ids[i])
-					if i < civ_flags.size() and civ_flags[i]:
-						player_ids.append(ids[i])
+	var sel_data := _bridge.get_creature_selection_data(_render_tick)
+	var sel_ids: PackedStringArray = sel_data.get("ids", PackedStringArray())
+	var sel_species: PackedStringArray = sel_data.get("species", PackedStringArray())
+	var sel_positions: PackedVector3Array = sel_data.get("positions", PackedVector3Array())
+	var sel_civ_flags: PackedByteArray = sel_data.get("is_player_civ", PackedByteArray())
+	for i in sel_positions.size():
+		var pos := sel_positions[i]
+		var y_off: float = CreatureRenderer.SPECIES_Y_OFFSETS.get(
+			sel_species[i], CreatureRenderer.DEFAULT_Y_OFFSET
+		)
+		var world_pos := Vector3(pos.x + 0.5, pos.y + y_off, pos.z + 0.5)
+		if not _camera.is_position_behind(world_pos):
+			var screen_pos := _camera.unproject_position(world_pos)
+			if rect.has_point(screen_pos):
+				all_ids.append(sel_ids[i])
+				if sel_civ_flags[i] == 1:
+					player_ids.append(sel_ids[i])
 
 	# Prefer player-civ creatures; fall back to all if none are player-owned.
 	var new_ids: Array = player_ids if not player_ids.is_empty() else all_ids
@@ -626,19 +617,21 @@ func _try_right_click_command(mouse_pos: Vector2, queue: bool) -> void:
 	var target_id := ""
 	var target_pos := Vector3.ZERO
 
-	for species_name in SPECIES_Y_OFFSETS:
-		var data := _bridge.get_creature_positions_with_ids(species_name, _render_tick)
-		var ids: Array = data.get("ids", [])
-		var positions: PackedVector3Array = data.get("positions", PackedVector3Array())
-		var y_off: float = SPECIES_Y_OFFSETS[species_name]
-		for i in positions.size():
-			var pos := positions[i]
-			var world_pos := Vector3(pos.x + 0.5, pos.y + y_off, pos.z + 0.5)
-			var dist_sq := _point_to_ray_dist_sq(world_pos, ray_origin, ray_dir)
-			if dist_sq < best_dist_sq:
-				best_dist_sq = dist_sq
-				target_id = ids[i]
-				target_pos = pos
+	var sel_data := _bridge.get_creature_selection_data(_render_tick)
+	var sel_ids: PackedStringArray = sel_data.get("ids", PackedStringArray())
+	var sel_species: PackedStringArray = sel_data.get("species", PackedStringArray())
+	var sel_positions: PackedVector3Array = sel_data.get("positions", PackedVector3Array())
+	for i in sel_positions.size():
+		var pos := sel_positions[i]
+		var y_off: float = CreatureRenderer.SPECIES_Y_OFFSETS.get(
+			sel_species[i], CreatureRenderer.DEFAULT_Y_OFFSET
+		)
+		var world_pos := Vector3(pos.x + 0.5, pos.y + y_off, pos.z + 0.5)
+		var dist_sq := _point_to_ray_dist_sq(world_pos, ray_origin, ray_dir)
+		if dist_sq < best_dist_sq:
+			best_dist_sq = dist_sq
+			target_id = sel_ids[i]
+			target_pos = pos
 
 	# If we clicked on a creature, issue commands to each selected creature.
 	if target_id != "":
@@ -682,18 +675,20 @@ func _execute_attack_move(mouse_pos: Vector2, queue: bool = false) -> void:
 	var target_pos := Vector3.ZERO
 	var found_creature := false
 
-	for species_name in SPECIES_Y_OFFSETS:
-		var data := _bridge.get_creature_positions_with_ids(species_name, _render_tick)
-		var positions: PackedVector3Array = data.get("positions", PackedVector3Array())
-		var y_off: float = SPECIES_Y_OFFSETS[species_name]
-		for i in positions.size():
-			var pos := positions[i]
-			var world_pos := Vector3(pos.x + 0.5, pos.y + y_off, pos.z + 0.5)
-			var dist_sq := _point_to_ray_dist_sq(world_pos, ray_origin, ray_dir)
-			if dist_sq < best_dist_sq:
-				best_dist_sq = dist_sq
-				target_pos = pos
-				found_creature = true
+	var sel_data := _bridge.get_creature_selection_data(_render_tick)
+	var sel_species: PackedStringArray = sel_data.get("species", PackedStringArray())
+	var sel_positions: PackedVector3Array = sel_data.get("positions", PackedVector3Array())
+	for i in sel_positions.size():
+		var pos := sel_positions[i]
+		var y_off: float = CreatureRenderer.SPECIES_Y_OFFSETS.get(
+			sel_species[i], CreatureRenderer.DEFAULT_Y_OFFSET
+		)
+		var world_pos := Vector3(pos.x + 0.5, pos.y + y_off, pos.z + 0.5)
+		var dist_sq := _point_to_ray_dist_sq(world_pos, ray_origin, ray_dir)
+		if dist_sq < best_dist_sq:
+			best_dist_sq = dist_sq
+			target_pos = pos
+			found_creature = true
 
 	if found_creature:
 		_bridge.group_attack_move(

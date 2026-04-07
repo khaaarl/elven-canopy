@@ -15,8 +15,7 @@
 ## per bar type, avoiding per-frame allocation.
 ##
 ## See also: creature_renderer.gd which uses these helpers,
-## sim_bridge.rs get_creature_hp_ratios() and
-## get_creature_mp_ratios() for the data sources.
+## sim_bridge.rs get_creature_render_data() for the data source.
 
 extends RefCounted
 

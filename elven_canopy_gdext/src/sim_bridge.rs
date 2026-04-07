@@ -37,13 +37,14 @@
 //   `build_chunk_array_mesh(cx,cy,cz)` returns a Godot `ArrayMesh` for one chunk.
 //   `get_fruit_voxels()` — flat `PackedInt32Array` of (x,y,z,species_id)
 //   quads for fruit billboard sprite rendering (fruit is not part of chunk mesh).
-// - **Creature positions:** `get_creature_positions(species_name, render_tick)`
-//   — `PackedVector3Array` for billboard sprite placement (used by renderers).
-//   `get_creature_positions_with_ids(species_name, render_tick)` — four
-//   parallel arrays: `ids` (GString UUIDs), `positions` (PackedVector3Array),
-//   `is_player_civ` (bools), and `military_group_ids` (i64, -1 for civilians)
-//   for selection hit-testing, box-select, and double-click group select.
-//   Used by `selection_controller.gd` and `tooltip_controller.gd`.
+// - **Creature data:** `get_creature_render_data(render_tick)` returns
+//   per-species render batches for billboard sprite placement.
+//   `get_creature_selection_data(render_tick)` — five parallel arrays: `ids`
+//   (PackedStringArray UUIDs), `species` (PackedStringArray), `positions`
+//   (PackedVector3Array), `is_player_civ` (PackedByteArray), and
+//   `military_group_ids` (PackedInt32Array, -1 for civilians) for selection
+//   hit-testing, box-select, and double-click group select. Used by
+//   `selection_controller.gd` and `tooltip_controller.gd`.
 // - **Projectile data:** `get_projectile_positions(render_tick)` returns
 //   interpolated positions (PackedVector3Array), `get_projectile_velocities()`
 //   returns velocity vectors for orienting arrow meshes along flight direction.
@@ -1612,9 +1613,8 @@ impl SimBridge {
 
     /// Return info about the creature at the given species-filtered index.
     ///
-    /// The index corresponds to the creature's position in the iteration
-    /// order of `get_creature_positions()` — i.e., BTreeMap order filtered
-    /// by species. The `render_tick` parameter is
+    /// The index corresponds to the creature's position in BTreeMap order
+    /// filtered by species. The `render_tick` parameter is
     /// used for position interpolation (same as the position getters).
     ///
     /// Returns a VarDictionary with keys: "species", "x", "y", "z", "has_task",
@@ -1844,9 +1844,8 @@ impl SimBridge {
         result
     }
 
-    /// The creature `index` matches the species-filtered iteration order used
-    /// by `get_creature_positions()`, so GDScript can use it directly for
-    /// camera follow and selection.
+    /// The creature `index` matches the species-filtered iteration order,
+    /// so GDScript can use it directly for camera follow and selection.
     #[func]
     fn get_active_tasks(&self) -> VarArray {
         let Some(sim) = &self.session.sim else {
@@ -3061,112 +3060,6 @@ impl SimBridge {
         });
     }
 
-    /// Return positions for any species as a PackedVector3Array, interpolated
-    /// to the given render tick for smooth movement between nav nodes.
-    /// Returns positions for any species, used by creature_renderer.gd.
-    #[func]
-    fn get_creature_positions(
-        &self,
-        species_name: GString,
-        render_tick: f64,
-    ) -> PackedVector3Array {
-        let Some(species) = parse_species(&species_name.to_string()) else {
-            return PackedVector3Array::new();
-        };
-        let Some(sim) = &self.session.sim else {
-            return PackedVector3Array::new();
-        };
-        let mut arr = PackedVector3Array::new();
-        for creature in sim
-            .db
-            .creatures
-            .iter_all()
-            .filter(|c| c.species == species && c.vital_status != VitalStatus::Dead)
-        {
-            let ma = sim.db.move_actions.get(&creature.id);
-            let (x, y, z) = creature.interpolated_position(render_tick, ma.as_ref());
-            arr.push(Vector3::new(x, y, z));
-        }
-        arr
-    }
-
-    /// Return HP ratios (hp / hp_max, clamped 0.0–1.0) for all non-dead creatures
-    /// of the named species, in the same order as `get_creature_positions()`.
-    /// Used by GDScript renderers to display overhead HP bars.
-    #[func]
-    fn get_creature_hp_ratios(&self, species_name: GString) -> PackedFloat32Array {
-        let Some(species) = parse_species(&species_name.to_string()) else {
-            return PackedFloat32Array::new();
-        };
-        let Some(sim) = &self.session.sim else {
-            return PackedFloat32Array::new();
-        };
-        let mut arr = PackedFloat32Array::new();
-        for creature in sim
-            .db
-            .creatures
-            .iter_all()
-            .filter(|c| c.species == species && c.vital_status != VitalStatus::Dead)
-        {
-            let ratio = if creature.hp_max > 0 {
-                creature.hp as f32 / creature.hp_max as f32
-            } else {
-                1.0
-            };
-            arr.push(ratio.clamp(0.0, 1.0));
-        }
-        arr
-    }
-
-    /// Return an array of mana ratios (0.0–1.0) for all non-dead creatures
-    /// of the named species. Parallel to `get_creature_positions()`.
-    /// Creatures with mp_max = 0 return 1.0 (no mana bar shown).
-    #[func]
-    fn get_creature_mp_ratios(&self, species_name: GString) -> PackedFloat32Array {
-        let Some(species) = parse_species(&species_name.to_string()) else {
-            return PackedFloat32Array::new();
-        };
-        let Some(sim) = &self.session.sim else {
-            return PackedFloat32Array::new();
-        };
-        let mut arr = PackedFloat32Array::new();
-        for creature in sim
-            .db
-            .creatures
-            .iter_all()
-            .filter(|c| c.species == species && c.vital_status != VitalStatus::Dead)
-        {
-            let ratio = if creature.mp_max > 0 {
-                creature.mp as f32 / creature.mp_max as f32
-            } else {
-                1.0 // nonmagical — always "full" so no bar is shown
-            };
-            arr.push(ratio.clamp(0.0, 1.0));
-        }
-        arr
-    }
-
-    /// Return a `PackedByteArray` of 0/1 flags indicating which creatures of
-    /// the named species are incapacitated. Parallel to `get_creature_positions()`.
-    /// Used by GDScript renderers to rotate sprites and change HP bar style.
-    #[func]
-    fn get_creature_incapacitated(&self, species_name: GString) -> PackedByteArray {
-        let Some(species) = parse_species(&species_name.to_string()) else {
-            return PackedByteArray::new();
-        };
-        let Some(sim) = &self.session.sim else {
-            return PackedByteArray::new();
-        };
-        let flags: Vec<u8> = sim
-            .db
-            .creatures
-            .iter_all()
-            .filter(|c| c.species == species && c.vital_status != VitalStatus::Dead)
-            .map(|c| u8::from(c.vital_status == VitalStatus::Incapacitated))
-            .collect();
-        PackedByteArray::from(flags.as_slice())
-    }
-
     /// Return positions where mana-wasted work actions occurred this step.
     /// Each position is a `Vector3` (x, y, z). The buffer is cleared at the
     /// start of each sim step, so this returns only positions from the most
@@ -3409,62 +3302,66 @@ impl SimBridge {
         arr
     }
 
-    /// Return creature positions and metadata for a given species.
+    /// Return all alive creatures' positions and metadata in a single query.
     ///
-    /// Returns a `VarDictionary` with four parallel arrays:
-    /// - `"ids"`: `VarArray` of `GString` creature IDs (UUID strings)
+    /// Returns a `VarDictionary` with five parallel arrays:
+    /// - `"ids"`: `PackedStringArray` of creature IDs (UUID strings)
+    /// - `"species"`: `PackedStringArray` of species name strings
     /// - `"positions"`: `PackedVector3Array` of interpolated positions
-    /// - `"is_player_civ"`: `VarArray` of `bool` — true if creature belongs
-    ///   to the player's civilization
-    /// - `"military_group_ids"`: `VarArray` of `i64` — military group ID, or
+    /// - `"is_player_civ"`: `PackedByteArray` (1 = player civ, 0 = not)
+    /// - `"military_group_ids"`: `PackedInt32Array` — military group ID, or
     ///   -1 for civilians (no explicit group)
     ///
-    /// Used by `selection_controller.gd` for hit-testing, box-select, and
-    /// double-click group select.
+    /// Used by `selection_controller.gd` and `tooltip_controller.gd` for
+    /// hit-testing, box-select, double-click group select, and hover tooltips.
+    /// Replaces the old per-species `get_creature_positions_with_ids()`.
     #[func]
-    fn get_creature_positions_with_ids(
-        &self,
-        species_name: GString,
-        render_tick: f64,
-    ) -> VarDictionary {
-        let mut dict = VarDictionary::new();
-        let mut ids = VarArray::new();
+    fn get_creature_selection_data(&self, render_tick: f64) -> VarDictionary {
+        let mut ids = PackedStringArray::new();
+        let mut species_names = PackedStringArray::new();
         let mut positions = PackedVector3Array::new();
-        let mut is_player_civ = VarArray::new();
-        let mut military_group_ids = VarArray::new();
-        let Some(species) = parse_species(&species_name.to_string()) else {
-            dict.set("ids", ids);
-            dict.set("positions", positions);
-            dict.set("is_player_civ", is_player_civ);
-            dict.set("military_group_ids", military_group_ids);
-            return dict;
-        };
+        let mut is_player_civ: Vec<u8> = Vec::new();
+        let mut military_group_ids = PackedInt32Array::new();
+
         let Some(sim) = &self.session.sim else {
+            let mut dict = VarDictionary::new();
             dict.set("ids", ids);
+            dict.set("species", species_names);
             dict.set("positions", positions);
-            dict.set("is_player_civ", is_player_civ);
+            dict.set("is_player_civ", PackedByteArray::new());
             dict.set("military_group_ids", military_group_ids);
             return dict;
         };
+
         let player_civ = sim.player_civ_id;
         for creature in sim
             .db
             .creatures
             .iter_all()
-            .filter(|c| c.species == species && c.vital_status != VitalStatus::Dead)
+            .filter(|c| c.vital_status != VitalStatus::Dead)
         {
-            let ma = sim.db.move_actions.get(&creature.id);
+            let cid = creature.id;
+            ids.push(&GString::from(cid.0.to_string().as_str()));
+            species_names.push(&GString::from(species_name(creature.species)));
+
+            let ma = sim.db.move_actions.get(&cid);
             let (x, y, z) = creature.interpolated_position(render_tick, ma.as_ref());
-            ids.push(&GString::from(creature.id.0.to_string().as_str()).to_variant());
             positions.push(Vector3::new(x, y, z));
+
             let belongs = player_civ.is_some() && creature.civ_id == player_civ;
-            is_player_civ.push(&belongs.to_variant());
-            let group_id: i64 = creature.military_group.map_or(-1, |g| g.0 as i64);
-            military_group_ids.push(&group_id.to_variant());
+            is_player_civ.push(u8::from(belongs));
+            let group_id: i32 = creature.military_group.map_or(-1, |g| g.0 as i32);
+            military_group_ids.push(group_id);
         }
+
+        let mut dict = VarDictionary::new();
         dict.set("ids", ids);
+        dict.set("species", species_names);
         dict.set("positions", positions);
-        dict.set("is_player_civ", is_player_civ);
+        dict.set(
+            "is_player_civ",
+            PackedByteArray::from(is_player_civ.as_slice()),
+        );
         dict.set("military_group_ids", military_group_ids);
         dict
     }

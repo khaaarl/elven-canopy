@@ -1316,7 +1316,9 @@ func _get_creature_world_pos_by_id(
 	if info.is_empty():
 		return null
 	var species: String = info.get("species", "")
-	var y_off: float = CreatureRenderer.SPECIES_Y_OFFSETS.get(species, 0.4)
+	var y_off: float = CreatureRenderer.SPECIES_Y_OFFSETS.get(
+		species, CreatureRenderer.DEFAULT_Y_OFFSET
+	)
 	var x: float = info.get("x", 0.0)
 	var y: float = info.get("y", 0.0)
 	var z: float = info.get("z", 0.0)

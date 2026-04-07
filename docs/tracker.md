@@ -72,7 +72,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-fog-billboards       Fog post-process does not obscure billboard sprites
 [ ] B-ground-only          Remove ground_only field; use MovementCategory for all movement constraints
 [ ] B-llm-load-race        LLM capability signaled before async model load completes
-[ ] B-per-species-iter     Eliminate per-species iteration in selection and tooltip controllers
 [ ] B-relay-stability      Windows TCP connection drops during singleplayer gameplay
 [ ] B-stale-path           Creatures can traverse forbidden edges when cached path becomes stale
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
@@ -308,7 +307,10 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-world-boundary       World boundary visualization
 [ ] F-world-map            World map view
 [ ] F-zone-world           Zone-based world with fidelity partitioning
+[ ] R-activity-labels      Consolidate duplicated ACTIVITY_LABELS across 3 GDScript files
+[ ] R-direction-offsets    Consolidate duplicated DIRECTION_OFFSETS across 4 GDScript files
 [ ] R-panel-dedup          Extract shared helpers from duplicated info panel code
+[ ] R-species-metadata     Centralize scattered species metadata constants in GDScript
 ```
 
 ### Done
@@ -341,6 +343,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-mesh-global-cfg      Mesh pipeline global atomics cause test flakiness risk
 [x] B-modifier-hotkeys     Hotkeys should not fire when modifier keys (Ctrl/Shift/Alt) are held
 [x] B-music-floats         Excise f32/f64 from music composition for determinism
+[x] B-per-species-iter     Eliminate per-species iteration in selection and tooltip controllers
 [x] B-preview-blueprints   Preview treats blueprints as complete
 [x] B-quit-crash           Crash on quit from in-flight rayon mesh workers
 [x] B-raid-spawn           Raiders sometimes spawn inside map instead of at perimeter
@@ -6323,7 +6326,7 @@ Chunks in the distance sometimes remain visible ("ghost" chunks) after they shou
 Most gameplay hotkeys (B, T, U, M, I, Y, Space, F1–F3, F12, ?) fire even when Ctrl/Shift/Alt are held. They should generally be suppressed when modifiers are active, but some cases may need individual consideration (e.g., Ctrl+1–9 for selection groups already uses modifiers intentionally). Go through each hotkey handler in action_toolbar.gd, main.gd, construction_controller.gd, and selection_controller.gd on a case-by-case basis.
 
 #### B-per-species-iter — Eliminate per-species iteration in selection and tooltip controllers
-**Status:** Todo
+**Status:** Done
 
 `selection_controller.gd` and `tooltip_controller.gd` both have their own copies of `SPECIES_Y_OFFSETS` and iterate per-species to find creatures by ray-casting. They call per-species bridge functions (`get_creature_positions_with_ids(species, ...)`) in a loop over all species.
 
@@ -7707,6 +7710,37 @@ cutaway, or hide-upper-levels toggle. Open design question (§27).
 
 **Related:** F-bldg-transparency, F-ghost-above, F-minimap
 
+#### R-activity-labels — Consolidate duplicated ACTIVITY_LABELS across 3 GDScript files
+**Status:** Todo
+
+The ACTIVITY_LABELS / ACTIVITY_NAMES mapping (task kind string to human-readable display name, e.g. "GoTo" → "Walking", "Build" → "Building") is copy-pasted across three GDScript files:
+
+- `godot/scripts/units_panel.gd` — `ACTIVITY_LABELS` (used at line ~318)
+- `godot/scripts/group_info_panel.gd` — `ACTIVITY_LABELS` (used at line ~241)
+- `godot/scripts/tooltip_controller.gd` — `ACTIVITY_NAMES` (used at line ~259, missing the empty-string key that the other two have)
+
+This is the same class of duplication as B-per-species-iter (SPECIES_Y_OFFSETS duplicated across 3 files). When a new task kind is added, all three files must be updated in lockstep.
+
+**Fix:** Extract a canonical `ACTIVITY_LABELS` constant into a shared location — either a new `ActivityUtils` class or an existing utility file like `geometry_utils.gd`. All three consumers should reference the single canonical table. Also reconcile the minor difference (the empty-string key present in two files but missing from tooltip_controller.gd).
+
+**Related:** R-direction-offsets, R-panel-dedup, R-species-metadata
+
+#### R-direction-offsets — Consolidate duplicated DIRECTION_OFFSETS across 4 GDScript files
+**Status:** Todo
+
+The DIRECTION_OFFSETS array (6-element Vector3 array mapping direction indices to face offsets: RIGHT, LEFT, UP, DOWN, BACK, FORWARD) is copy-pasted identically across four GDScript files:
+
+- `godot/scripts/construction_controller.gd` (lines ~49-56)
+- `godot/scripts/blueprint_renderer.gd` (lines ~37-44)
+- `godot/scripts/building_renderer.gd` (lines ~31-38)
+- `godot/scripts/ladder_renderer.gd` (lines ~26-33)
+
+All four define the exact same array. Adding a new direction or changing the index mapping requires updating all four files.
+
+**Fix:** Extract the canonical `DIRECTION_OFFSETS` constant into `geometry_utils.gd` (which already exists as a shared utility class). All four consumers should reference `GeometryUtils.DIRECTION_OFFSETS`.
+
+**Related:** R-activity-labels
+
 #### R-inv-display — Extract shared inventory display component (subsumed by R-panel-dedup)
 **Status:** Done
 
@@ -7743,6 +7777,27 @@ Specific patterns to extract into shared helpers or components:
 **7. Panel lifecycle** (all 6 panel files) — All panels share the same show_*/hide_panel/_on_close_pressed/panel_closed pattern with the same visibility toggle + signal emit structure. Could be a base class or mixin.
 
 Approach: Extract shared utility functions (build_panel_header, build_margin, build_scrollable_vbox, build_progress_row) and shared components (InventoryDisplay widget, possibly a base InfoPanel class). The goal is that each pattern exists in exactly one place, so bugs like B-shared-inventory are fixed once.
+
+**Related:** R-activity-labels
+
+#### R-species-metadata — Centralize scattered species metadata constants in GDScript
+**Status:** Todo
+
+Several species-specific constants are scattered across GDScript files as hardcoded dicts/arrays that must be manually updated when a new species is added:
+
+- `godot/scripts/selection_highlight.gd` — `LARGE_SPECIES = ["Elephant", "Troll"]` (determines selection ring size)
+- `godot/scripts/units_panel.gd` — `SECTION_TITLES` (species name → plural, e.g. "Elf" → "Elves"), `_species_order` array (display ordering)
+- `godot/scripts/creature_renderer.gd` — `SPECIES_Y_OFFSETS` dict (canonical, already used by selection/tooltip controllers)
+
+These are all species metadata that could live in one place — either a `SpeciesUtils` utility class, or better yet, queried from the bridge/config (since the Rust side already has per-species config in the species table). Having a single source would mean adding a new species doesn't require hunting through GDScript files.
+
+**Fix options:**
+1. Extract a `SpeciesUtils` GDScript class with all species metadata constants.
+2. Add a bridge function `get_species_metadata()` returning display name, plural, y_offset, is_large, etc. from the Rust species table, so GDScript never hardcodes species lists.
+
+Option 2 is cleaner long-term but more work. Option 1 is a quick win.
+
+**Related:** R-activity-labels
 
 ### Sim Engine
 
