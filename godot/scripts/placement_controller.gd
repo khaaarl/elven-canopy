@@ -10,7 +10,7 @@
 ##
 ## Supports two placement types:
 ## - Species spawn (any species): places a creature at the clicked nav node.
-##   Ground-only species are restricted to ground nodes via bridge query.
+##   The bridge uses the species' footprint and movement category for snapping.
 ## - Actions (Summon): creates a GoTo task at the clicked nav node
 ##
 ## Uses _unhandled_input() and set_input_as_handled() so placement clicks don't
@@ -165,17 +165,11 @@ func _process(_delta: float) -> void:
 	var ray_origin := _camera.project_ray_origin(mouse_pos)
 	var ray_dir := _camera.project_ray_normal(mouse_pos)
 
-	# Determine placement constraints from the species.
-	var ground_only := false
-	var large := false
-	if _species_name != "":
-		var footprint := _bridge.get_species_footprint(_species_name)
-		large = footprint.x > 1 or footprint.z > 1
-		ground_only = large or _bridge.is_species_ground_only(_species_name)
-
 	# Single Rust call: raycast to find the solid surface under the cursor,
-	# then snap to the nearest nav node from the adjacent air voxel.
-	var result: Dictionary = _bridge.snap_placement_to_ray(ray_origin, ray_dir, ground_only, large)
+	# then snap to the nearest walkable position for this species (uses its
+	# footprint and can_climb from the species table).
+	var snap_species := _species_name if _species_name != "" else "Elf"
+	var result: Dictionary = _bridge.snap_placement_to_ray(ray_origin, ray_dir, snap_species)
 
 	if result.get("hit", false):
 		_snapped_position = result["position"]

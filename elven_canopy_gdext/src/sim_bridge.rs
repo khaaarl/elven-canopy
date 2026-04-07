@@ -69,9 +69,9 @@
 //   ID, kind, state, origin (PlayerDirected/Autonomous/Automated),
 //   progress/total_cost, location coordinates, and an assignees array with
 //   creature_id, species, and name. Used by `task_panel.gd`.
-// - **Placement:** `snap_placement_to_ray(origin, dir, ground_only,
-//   large)` — casts `raycast_solid` along the mouse ray to find solid
-//   geometry, then snaps to the nearest walkable position.
+// - **Placement:** `snap_placement_to_ray(origin, dir, species_name)` — casts
+//   `raycast_solid` along the mouse ray to find solid geometry, then snaps to
+//   the nearest walkable position using the species' footprint and can_climb.
 // - **Commands:** `spawn_creature(species_name, x,y,z)` — generic creature
 //   spawner. Also `create_goto_task(x,y,z)`, `designate_build(x,y,z)`,
 //   `designate_build_rect(x,y,z,width,depth)`, etc. Commands are sent to
@@ -139,9 +139,7 @@
 //   `get_ground_pile_info(x,y,z)` — returns a single pile's dict (same
 //   format) or empty dict if no pile at that position. Used by the pile
 //   info panel for display and per-frame refresh.
-// - **Species queries:** `is_species_ground_only(species_name)` — used by
-//   the placement controller to decide which nav nodes to show.
-//   `get_all_creature_positions_with_relations()` — all alive creatures with
+// - **Species queries:** `get_all_creature_positions_with_relations()` — all alive creatures with
 //     positions and player-relation classification (for minimap).
 //   `get_creature_player_relation()` — single-creature player relation query.
 // - **Placement raycasting:** `raycast_solid(origin, dir)` — DDA raycast
@@ -1375,24 +1373,31 @@ impl SimBridge {
     ///
     /// Casts `raycast_solid` along the ray to find where it hits geometry,
     /// computes the air voxel on the entry face, then snaps to the closest
-    /// walkable position. Returns `{hit: true, position: Vector3}` or
-    /// `{hit: false}`.
-    ///
-    /// `ground_only`: restrict to ground (Dirt) positions (for ground-only species).
-    /// `large`: use the 2x2x2 footprint walkability check.
+    /// walkable position using the species' footprint and `can_climb`.
+    /// Returns `{hit: true, position: Vector3}` or `{hit: false}`.
     #[func]
     fn snap_placement_to_ray(
         &self,
         origin: Vector3,
         dir: Vector3,
-        ground_only: bool,
-        large: bool,
+        species_name: GString,
     ) -> VarDictionary {
         let mut dict = VarDictionary::new();
         let Some(sim) = &self.session.sim else {
             dict.set("hit", false);
             return dict;
         };
+
+        let species_str: String = species_name.to_string();
+        let Some(species) = parse_species(&species_str) else {
+            godot_warn!("snap_placement_to_ray: unknown species '{species_str}'");
+            dict.set("hit", false);
+            return dict;
+        };
+        let species_data = &sim.species_table[&species];
+        let footprint = species_data.footprint;
+        let can_climb = species_data.movement_category.can_climb();
+
         let from = [origin.x, origin.y, origin.z];
         let d = [dir.x, dir.y, dir.z];
         let y_cutoff = self.mesh_cache.as_ref().and_then(|c| c.y_cutoff());
@@ -1420,26 +1425,15 @@ impl SimBridge {
             solid_coord.z + offset.2,
         );
 
-        let footprint: [u8; 3] = if large { [2, 2, 2] } else { [1, 1, 1] };
         let zone = sim.voxel_zone(self.active_zone_id).unwrap();
-        let nearest = if ground_only {
-            elven_canopy_sim::walkability::find_nearest_ground_walkable(
-                zone,
-                &zone.face_data,
-                air_pos,
-                5,
-                footprint,
-            )
-        } else {
-            elven_canopy_sim::walkability::find_nearest_walkable(
-                zone,
-                &zone.face_data,
-                air_pos,
-                5,
-                footprint,
-                true, // non-ground-only creatures can climb
-            )
-        };
+        let nearest = elven_canopy_sim::walkability::find_nearest_walkable(
+            zone,
+            &zone.face_data,
+            air_pos,
+            5,
+            footprint,
+            can_climb,
+        );
 
         match nearest {
             Some(p) => {
@@ -3399,21 +3393,6 @@ impl SimBridge {
             .sim
             .as_ref()
             .map_or(0, |s| s.creature_count(species) as i32)
-    }
-
-    /// Return whether the named species is ground-only (cannot climb).
-    /// Used by the placement controller to decide which nav nodes to show.
-    #[func]
-    fn is_species_ground_only(&self, species_name: GString) -> bool {
-        let Some(species) = parse_species(&species_name.to_string()) else {
-            return false;
-        };
-        let Some(sim) = &self.session.sim else {
-            return false;
-        };
-        sim.species_table
-            .get(&species)
-            .is_some_and(|s| s.ground_only)
     }
 
     /// Return all alive creatures' positions and their diplomatic relation to

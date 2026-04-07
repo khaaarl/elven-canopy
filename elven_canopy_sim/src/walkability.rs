@@ -555,27 +555,12 @@ pub fn find_nearest_walkable(
     )
 }
 
-/// Find the nearest walkable ground-level voxel (surface type `Dirt`) to `pos`.
-pub fn find_nearest_ground_walkable(
-    world: &VoxelZone,
-    face_data: &BTreeMap<VoxelCoord, FaceData>,
-    pos: VoxelCoord,
-    max_distance: u32,
-    footprint: [u8; 3],
-) -> Option<VoxelCoord> {
-    // Ground-level positions are always non-climbing (dirt surface = on the ground).
-    find_nearest_walkable_filtered(world, face_data, pos, max_distance, footprint, false, |p| {
-        derive_surface_type(world, face_data, p) == VoxelType::Dirt
-    })
-}
-
 /// Find the nearest position where a creature's full footprint is walkable,
 /// with an additional filter.
 ///
 /// Expanding-box search around `pos`, testing `footprint_walkable` at each
-/// candidate. This consolidates the old `find_nearest_walkable`,
-/// `find_nearest_footprint_walkable`, and `find_nearest_ground_walkable` — they
-/// all delegate here with different filters.
+/// candidate. Both `find_nearest_walkable` and `find_nearest_footprint_walkable`
+/// delegate here with different filters.
 fn find_nearest_walkable_filtered(
     world: &VoxelZone,
     face_data: &BTreeMap<VoxelCoord, FaceData>,
@@ -791,26 +776,6 @@ mod tests {
         let fd = no_faces();
         let pos = VoxelCoord::new(5, 5, 5);
         assert_eq!(find_nearest_walkable(&world, &fd, pos, 5, FP1, true), None);
-    }
-
-    #[test]
-    fn find_nearest_ground_walkable_filters_by_dirt() {
-        let mut world = ground_world(16, 16, 16, 5);
-        let fd = no_faces();
-        // Place trunk near pos — the nearest walkable has Trunk surface, not Dirt.
-        world.set(VoxelCoord::new(5, 5, 5), VoxelType::Trunk);
-        world.set(VoxelCoord::new(5, 6, 5), VoxelType::Trunk);
-        let pos = VoxelCoord::new(6, 6, 5);
-        // find_nearest_walkable returns pos itself (adjacent to trunk, walkable).
-        assert_eq!(
-            find_nearest_walkable(&world, &fd, pos, 5, FP1, true),
-            Some(pos)
-        );
-        // find_nearest_ground_walkable should find a Dirt-surface position.
-        let result = find_nearest_ground_walkable(&world, &fd, pos, 5, FP1);
-        assert!(result.is_some());
-        let found = result.unwrap();
-        assert_eq!(derive_surface_type(&world, &fd, found), VoxelType::Dirt);
     }
 
     #[test]

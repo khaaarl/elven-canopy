@@ -1463,31 +1463,24 @@ fn species_data_loaded_from_config() {
     assert!(sim.species_table.contains_key(&Species::Troll));
 
     let elf_data = &sim.species_table[&Species::Elf];
-    assert!(!elf_data.ground_only);
     assert_eq!(elf_data.movement_category, MovementCategory::Climber);
 
     let capy_data = &sim.species_table[&Species::Capybara];
-    assert!(capy_data.ground_only);
     assert_eq!(capy_data.movement_category, MovementCategory::WalkOnly);
 
     let boar_data = &sim.species_table[&Species::Boar];
-    assert!(boar_data.ground_only);
     assert_eq!(boar_data.movement_category, MovementCategory::WalkOnly);
 
     let deer_data = &sim.species_table[&Species::Deer];
-    assert!(deer_data.ground_only);
     assert_eq!(deer_data.movement_category, MovementCategory::WalkOnly);
 
     let elephant_data = &sim.species_table[&Species::Elephant];
-    assert!(elephant_data.ground_only);
     assert_eq!(elephant_data.movement_category, MovementCategory::WalkOnly);
 
     let monkey_data = &sim.species_table[&Species::Monkey];
-    assert!(!monkey_data.ground_only);
     assert_eq!(monkey_data.movement_category, MovementCategory::Climber);
 
     let squirrel_data = &sim.species_table[&Species::Squirrel];
-    assert!(!squirrel_data.ground_only);
     assert_eq!(squirrel_data.movement_category, MovementCategory::Climber);
 
     let goblin_data = &sim.species_table[&Species::Goblin];

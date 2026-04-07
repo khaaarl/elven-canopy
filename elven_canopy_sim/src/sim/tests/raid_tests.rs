@@ -725,6 +725,166 @@ fn species_config_backward_compat_raid_size() {
 }
 
 #[test]
+fn find_wood_adjacent_nodes_includes_non_dirt_surfaces() {
+    // A WalkOnly species should find wood-adjacent walkable positions on
+    // non-Dirt surfaces like GrownPlatform. No surface-type filtering.
+    let mut sim = flat_world_sim(fresh_test_seed());
+    let zone_id = sim.home_zone_id();
+    let floor_y = sim.config.floor_y;
+
+    // Place a Trunk voxel at floor level so there's wood to be adjacent to.
+    let trunk_pos = VoxelCoord::new(10, floor_y, 10);
+    // Place a GrownPlatform next to it (replaces Dirt), so the walkable
+    // position above has surface type GrownPlatform, not Dirt.
+    let platform_pos = VoxelCoord::new(11, floor_y, 10);
+
+    {
+        let zone = sim.voxel_zone_mut(zone_id).unwrap();
+        zone.set(trunk_pos, VoxelType::Trunk);
+        zone.set(platform_pos, VoxelType::GrownPlatform);
+    }
+    sim.rebuild_transient_state();
+
+    // The walkable position above the platform: (11, floor_y+1, 10).
+    // Its neighbor at (10, floor_y+1, 10) is Air above Trunk — wait, Trunk
+    // is at floor_y, so the neighbor (10, floor_y+1, 10) is Air, not Trunk.
+    // But the downward neighbor (11, floor_y, 10) is GrownPlatform, not wood.
+    // We need the Trunk to be adjacent to the walkable pos at floor_y+1.
+    // Place Trunk at (10, floor_y+1, 10) instead — solid block at walk level.
+    {
+        let zone = sim.voxel_zone_mut(zone_id).unwrap();
+        zone.set(VoxelCoord::new(10, floor_y + 1, 10), VoxelType::Trunk);
+    }
+    sim.rebuild_transient_state();
+
+    let walk_pos = VoxelCoord::new(11, floor_y + 1, 10);
+
+    // Sanity: verify the position is walkable and has a non-Dirt surface.
+    let zone = sim.voxel_zone(zone_id).unwrap();
+    assert!(
+        crate::walkability::footprint_walkable(zone, &zone.face_data, walk_pos, [1, 1, 1], false),
+        "position above GrownPlatform should be walkable"
+    );
+    let surface = crate::walkability::derive_surface_type(zone, &zone.face_data, walk_pos);
+    assert_ne!(
+        surface,
+        VoxelType::Dirt,
+        "surface should be GrownPlatform, not Dirt"
+    );
+
+    // find_wood_adjacent_nodes for Capybara (WalkOnly) should include
+    // this position — no surface-type filtering.
+    let targets = sim.find_wood_adjacent_nodes(Species::Capybara, zone_id);
+    assert!(
+        targets.contains(&walk_pos),
+        "WalkOnly species should find wood-adjacent positions on GrownPlatform surface, \
+         but find_wood_adjacent_nodes returned {} targets, none at {:?}",
+        targets.len(),
+        walk_pos,
+    );
+}
+
+#[test]
+fn find_wood_adjacent_nodes_walk_only_restricted_to_floor_y() {
+    // WalkOnly species should only find wood-adjacent positions at floor_y+1,
+    // not at elevated Y levels they can't reach.
+    let mut sim = flat_world_sim(fresh_test_seed());
+    let zone_id = sim.home_zone_id();
+    let floor_y = sim.config.floor_y;
+
+    // Place a Trunk+GrownPlatform pair at an elevated Y level (floor_y+5).
+    let elevated_platform = VoxelCoord::new(15, floor_y + 5, 15);
+    let elevated_trunk = VoxelCoord::new(15, floor_y + 6, 14);
+    // Also place wood at floor level for a valid ground-level target.
+    let ground_trunk = VoxelCoord::new(20, floor_y + 1, 20);
+    {
+        let zone = sim.voxel_zone_mut(zone_id).unwrap();
+        zone.set(elevated_platform, VoxelType::GrownPlatform);
+        zone.set(elevated_trunk, VoxelType::Trunk);
+        zone.set(ground_trunk, VoxelType::Trunk);
+    }
+    sim.rebuild_transient_state();
+
+    let elevated_walk = VoxelCoord::new(15, floor_y + 6, 15);
+    let targets = sim.find_wood_adjacent_nodes(Species::Capybara, zone_id);
+
+    // Elevated position should NOT be in the results for a WalkOnly species.
+    assert!(
+        !targets.contains(&elevated_walk),
+        "WalkOnly species should not find elevated wood-adjacent positions"
+    );
+    // But there should be ground-level targets.
+    assert!(
+        targets.iter().any(|t| t.y == floor_y + 1),
+        "WalkOnly species should find ground-level wood-adjacent positions"
+    );
+}
+
+#[test]
+fn find_wood_adjacent_nodes_climber_finds_elevated_positions() {
+    // Climber species should find wood-adjacent positions at all Y levels.
+    let mut sim = flat_world_sim(fresh_test_seed());
+    let zone_id = sim.home_zone_id();
+    let floor_y = sim.config.floor_y;
+
+    // Place Trunk at an elevated position with a climbable neighbor.
+    let trunk_pos = VoxelCoord::new(15, floor_y + 3, 15);
+    // Place solid block next to it so there's a walkable climbing position.
+    let wall_pos = VoxelCoord::new(14, floor_y + 3, 15);
+    {
+        let zone = sim.voxel_zone_mut(zone_id).unwrap();
+        zone.set(trunk_pos, VoxelType::Trunk);
+        zone.set(wall_pos, VoxelType::GrownWall);
+    }
+    sim.rebuild_transient_state();
+
+    // The climbable walkable position adjacent to trunk:
+    // (16, floor_y+3, 15) — Air, neighbor to Trunk at (15, floor_y+3, 15).
+    // But this needs to be walkable with can_climb=true (solid face neighbor).
+    // The Trunk itself IS the solid face neighbor, so (16, floor_y+3, 15)
+    // should be walkable for a Climber.
+    let elevated_walk = VoxelCoord::new(16, floor_y + 3, 15);
+    let zone = sim.voxel_zone(zone_id).unwrap();
+    let walkable = crate::walkability::footprint_walkable(
+        zone,
+        &zone.face_data,
+        elevated_walk,
+        [1, 1, 1],
+        true, // can_climb for Climber
+    );
+
+    if walkable {
+        // Only assert presence if the position is actually walkable (depends
+        // on world geometry details).
+        let targets = sim.find_wood_adjacent_nodes(Species::Goblin, zone_id);
+        assert!(
+            targets.contains(&elevated_walk),
+            "Climber species should find elevated wood-adjacent positions"
+        );
+    }
+}
+
+#[test]
+fn species_data_backward_compat_ground_only_in_json() {
+    // Old config/save JSON may contain "ground_only" — since the field was
+    // removed from SpeciesData, serde should silently ignore it.
+    let json = r#"{
+        "move_ticks_per_voxel": 500,
+        "movement_category": "WalkOnly",
+        "heartbeat_interval_ticks": 4000,
+        "ground_only": true,
+        "food_max": 1000000000000000,
+        "food_decay_per_tick": 3333333333
+    }"#;
+    let data: crate::species::SpeciesData = serde_json::from_str(json).unwrap();
+    assert_eq!(data.move_ticks_per_voxel, 500);
+    assert_eq!(
+        data.movement_category,
+        crate::nav::MovementCategory::WalkOnly
+    );
+}
+
+#[test]
 fn trigger_raid_finds_hostile_via_reverse_relationship() {
     // If a civ considers the player hostile (them→player) but the player
     // doesn't know about them, the raid should still find them as a target.

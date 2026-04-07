@@ -76,7 +76,6 @@
       "move_ticks_per_voxel": 500,
       "movement_category": "Climber",
       "heartbeat_interval_ticks": 3000,
-      "ground_only": false,
       "hp_max": 100,
       "melee_damage": 10,
       "melee_interval_ticks": 1000,
@@ -112,7 +111,6 @@
       "move_ticks_per_voxel": 800,
       "movement_category": "WalkOnly",
       "heartbeat_interval_ticks": 4000,
-      "ground_only": true,
       "hp_max": 60,
       "food_max": 1000000000000000,
       "food_decay_per_tick": 3333333333,
@@ -140,7 +138,6 @@
       "move_ticks_per_voxel": 600,
       "movement_category": "WalkOnly",
       "heartbeat_interval_ticks": 4000,
-      "ground_only": true,
       "hp_max": 80,
       "food_max": 1000000000000000,
       "food_decay_per_tick": 3333333333,
@@ -168,7 +165,6 @@
       "move_ticks_per_voxel": 400,
       "movement_category": "WalkOnly",
       "heartbeat_interval_ticks": 3500,
-      "ground_only": true,
       "hp_max": 50,
       "food_max": 1000000000000000,
       "food_decay_per_tick": 3333333333,
@@ -196,7 +192,6 @@
       "move_ticks_per_voxel": 700,
       "movement_category": "WalkOnly",
       "heartbeat_interval_ticks": 5000,
-      "ground_only": true,
       "hp_max": 300,
       "food_max": 1000000000000000,
       "food_decay_per_tick": 3333333333,
@@ -224,7 +219,6 @@
       "move_ticks_per_voxel": 450,
       "movement_category": "Climber",
       "heartbeat_interval_ticks": 3000,
-      "ground_only": false,
       "hp_max": 80,
       "melee_damage": 15,
       "melee_interval_ticks": 1000,
@@ -258,7 +252,6 @@
       "move_ticks_per_voxel": 550,
       "movement_category": "Climber",
       "heartbeat_interval_ticks": 3000,
-      "ground_only": false,
       "hp_max": 40,
       "melee_damage": 0,
       "melee_interval_ticks": 1000,
@@ -286,7 +279,6 @@
       "move_ticks_per_voxel": 600,
       "movement_category": "WalkOrLadder",
       "heartbeat_interval_ticks": 3000,
-      "ground_only": false,
       "hp_max": 150,
       "melee_damage": 25,
       "melee_interval_ticks": 1200,
@@ -320,7 +312,6 @@
       "move_ticks_per_voxel": 700,
       "movement_category": "Climber",
       "heartbeat_interval_ticks": 2500,
-      "ground_only": false,
       "hp_max": 20,
       "melee_damage": 0,
       "melee_interval_ticks": 1000,
@@ -348,7 +339,6 @@
       "move_ticks_per_voxel": 600,
       "movement_category": "Climber",
       "heartbeat_interval_ticks": 5000,
-      "ground_only": false,
       "hp_max": 400,
       "ticks_per_hp_regen": 500,
       "melee_damage": 50,
@@ -383,7 +373,6 @@
       "move_ticks_per_voxel": 250,
       "movement_category": "Flyer",
       "heartbeat_interval_ticks": 2000,
-      "ground_only": false,
       "hp_max": 60,
       "melee_damage": 20,
       "melee_interval_ticks": 800,
@@ -396,7 +385,11 @@
       "food_hunger_threshold_pct": 30,
       "food_restore_pct": 0,
       "bread_restore_pct": 0,
-      "footprint": [1, 1, 1],
+      "footprint": [
+        1,
+        1,
+        1
+      ],
       "rest_max": 1000000000000000,
       "rest_decay_per_tick": 0,
       "rest_tired_threshold_pct": 50,
@@ -413,7 +406,6 @@
       "move_ticks_per_voxel": 200,
       "movement_category": "Flyer",
       "heartbeat_interval_ticks": 4000,
-      "ground_only": false,
       "hp_max": 300,
       "melee_damage": 40,
       "melee_interval_ticks": 1200,
@@ -426,7 +418,11 @@
       "food_hunger_threshold_pct": 30,
       "food_restore_pct": 0,
       "bread_restore_pct": 0,
-      "footprint": [2, 2, 2],
+      "footprint": [
+        2,
+        2,
+        2
+      ],
       "rest_max": 1000000000000000,
       "rest_decay_per_tick": 0,
       "rest_tired_threshold_pct": 50,
@@ -482,7 +478,10 @@
   "elf_starting_bows": 0,
   "elf_starting_arrows": 0,
   "elf_default_wants": [
-    { "item_kind": "Bread", "target_quantity": 2 }
+    {
+      "item_kind": "Bread",
+      "target_quantity": 2
+    }
   ],
   "storehouse_default_priority": 2,
   "storehouse_default_fruit_want": 10,
@@ -580,74 +579,144 @@
     {
       "species": "Elf",
       "count": 5,
-      "spawn_position": { "x": 128, "y": 1, "z": 128 },
-      "food_pcts": [100, 90, 70, 60, 48],
-      "rest_pcts": [100, 95, 80, 60, 45],
-      "bread_counts": [2, 2, 2, 2, 2]
+      "spawn_position": {
+        "x": 128,
+        "y": 1,
+        "z": 128
+      },
+      "food_pcts": [
+        100,
+        90,
+        70,
+        60,
+        48
+      ],
+      "rest_pcts": [
+        100,
+        95,
+        80,
+        60,
+        45
+      ],
+      "bread_counts": [
+        2,
+        2,
+        2,
+        2,
+        2
+      ]
     },
     {
       "species": "Capybara",
       "count": 5,
-      "spawn_position": { "x": 128, "y": 1, "z": 128 }
+      "spawn_position": {
+        "x": 128,
+        "y": 1,
+        "z": 128
+      }
     },
     {
       "species": "Boar",
       "count": 3,
-      "spawn_position": { "x": 128, "y": 1, "z": 128 }
+      "spawn_position": {
+        "x": 128,
+        "y": 1,
+        "z": 128
+      }
     },
     {
       "species": "Deer",
       "count": 3,
-      "spawn_position": { "x": 128, "y": 1, "z": 128 }
+      "spawn_position": {
+        "x": 128,
+        "y": 1,
+        "z": 128
+      }
     },
     {
       "species": "Squirrel",
       "count": 3,
-      "spawn_position": { "x": 128, "y": 1, "z": 128 }
+      "spawn_position": {
+        "x": 128,
+        "y": 1,
+        "z": 128
+      }
     }
   ],
   "initial_ground_piles": [
     {
-      "position": { "x": 128, "y": 1, "z": 138 },
+      "position": {
+        "x": 128,
+        "y": 1,
+        "z": 138
+      },
       "item_kind": "Bread",
       "quantity": 5
     },
     {
-      "position": { "x": 128, "y": 1, "z": 138 },
+      "position": {
+        "x": 128,
+        "y": 1,
+        "z": 138
+      },
       "item_kind": "Bow",
       "quantity": 2
     },
     {
-      "position": { "x": 128, "y": 1, "z": 138 },
+      "position": {
+        "x": 128,
+        "y": 1,
+        "z": 138
+      },
       "item_kind": "Arrow",
       "quantity": 30
     },
     {
-      "position": { "x": 128, "y": 1, "z": 138 },
+      "position": {
+        "x": 128,
+        "y": 1,
+        "z": 138
+      },
       "item_kind": "Helmet",
       "quantity": 1,
       "material": "Oak"
     },
     {
-      "position": { "x": 128, "y": 1, "z": 138 },
+      "position": {
+        "x": 128,
+        "y": 1,
+        "z": 138
+      },
       "item_kind": "Breastplate",
       "quantity": 1,
       "material": "Oak"
     },
     {
-      "position": { "x": 128, "y": 1, "z": 138 },
+      "position": {
+        "x": 128,
+        "y": 1,
+        "z": 138
+      },
       "item_kind": "Greaves",
       "quantity": 1,
       "material": "Oak"
     },
     {
-      "position": { "x": 128, "y": 1, "z": 138 },
+      "position": {
+        "x": 128,
+        "y": 1,
+        "z": 138
+      },
       "item_kind": "Gauntlets",
       "quantity": 1,
       "material": "Oak"
     },
     {
-      "position": { "x": 128, "y": 1, "z": 138 },
+      "position": {
+        "x": 128,
+        "y": 1,
+        "z": 138
+      },
       "item_kind": "Boots",
       "quantity": 1,
       "material": "Oak"

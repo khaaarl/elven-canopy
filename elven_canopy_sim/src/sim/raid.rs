@@ -16,6 +16,7 @@
 
 use super::*;
 use crate::event::SimEvent;
+use crate::nav::MovementCategory;
 
 impl SimState {
     /// Trigger a raid from a random hostile civilization.
@@ -257,26 +258,28 @@ impl SimState {
     /// GrownPlatform, GrownWall, Strut). Used as attack-move destinations for
     /// raiders.
     ///
-    /// Scans ground-level walkable positions (for ground_only species) or all
-    /// walkable positions in the world. Since raiders primarily target the tree,
-    /// we scan the floor level for ground-only species, and a reasonable Y range
-    /// for climbers.
-    fn find_wood_adjacent_nodes(&self, species: Species, zone_id: ZoneId) -> Vec<VoxelCoord> {
+    /// WalkOnly species can only reach floor level, so we scan only `floor_y + 1`.
+    /// Climbers and flyers can reach any Y level.
+    pub(crate) fn find_wood_adjacent_nodes(
+        &self,
+        species: Species,
+        zone_id: ZoneId,
+    ) -> Vec<VoxelCoord> {
         let species_data = &self.species_table[&species];
-        let ground_only = species_data.ground_only;
         let footprint = species_data.footprint;
         let can_climb = species_data.movement_category.can_climb();
+        let is_walk_only = species_data.movement_category == MovementCategory::WalkOnly;
         let home_zone = self.db.zones.get(&zone_id).expect("home zone row");
         let (wx, wy, wz) = home_zone.zone_size;
         let zone_floor_y = home_zone.floor_y;
 
         let mut targets = Vec::new();
 
-        let y_range: Box<dyn Iterator<Item = i32>> = if ground_only {
-            // Ground-only: only scan floor level.
+        let y_range: Box<dyn Iterator<Item = i32>> = if is_walk_only {
+            // WalkOnly: can only reach floor level.
             Box::new(std::iter::once(zone_floor_y + 1))
         } else {
-            // Climbers: scan all Y levels.
+            // Climbers/flyers: scan all Y levels.
             Box::new(1..wy as i32)
         };
 
@@ -293,15 +296,6 @@ impl SimState {
                         can_climb,
                     ) {
                         continue;
-                    }
-
-                    // If species is ground_only, only consider Dirt surface.
-                    if ground_only {
-                        let surface =
-                            crate::walkability::derive_surface_type(zone, &zone.face_data, pos);
-                        if surface != VoxelType::Dirt {
-                            continue;
-                        }
                     }
 
                     // Check 6-connected neighbors for wood.

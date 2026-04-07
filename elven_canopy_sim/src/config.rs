@@ -3588,7 +3588,7 @@ impl Default for GameConfig {
                 move_ticks_per_voxel: 500,
                 movement_category: MovementCategory::Climber,
                 heartbeat_interval_ticks: 3000,
-                ground_only: false,
+
                 hp_max: 100,
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
@@ -3650,7 +3650,7 @@ impl Default for GameConfig {
                 move_ticks_per_voxel: 500,
                 movement_category: MovementCategory::WalkOnly,
                 heartbeat_interval_ticks: 4000,
-                ground_only: true,
+
                 hp_max: 100,
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
@@ -3704,7 +3704,7 @@ impl Default for GameConfig {
                 move_ticks_per_voxel: 500,
                 movement_category: MovementCategory::WalkOnly,
                 heartbeat_interval_ticks: 4000,
-                ground_only: true,
+
                 hp_max: 100,
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
@@ -3758,7 +3758,7 @@ impl Default for GameConfig {
                 move_ticks_per_voxel: 500,
                 movement_category: MovementCategory::WalkOnly,
                 heartbeat_interval_ticks: 3500,
-                ground_only: true,
+
                 hp_max: 100,
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
@@ -3812,7 +3812,7 @@ impl Default for GameConfig {
                 move_ticks_per_voxel: 500,
                 movement_category: MovementCategory::WalkOnly,
                 heartbeat_interval_ticks: 5000,
-                ground_only: true,
+
                 hp_max: 100,
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
@@ -3866,7 +3866,7 @@ impl Default for GameConfig {
                 move_ticks_per_voxel: 500,
                 movement_category: MovementCategory::Climber,
                 heartbeat_interval_ticks: 3000,
-                ground_only: false,
+
                 hp_max: 100,
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
@@ -3932,7 +3932,7 @@ impl Default for GameConfig {
                 move_ticks_per_voxel: 500,
                 movement_category: MovementCategory::Climber,
                 heartbeat_interval_ticks: 3000,
-                ground_only: false,
+
                 hp_max: 100,
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
@@ -3986,7 +3986,7 @@ impl Default for GameConfig {
                 move_ticks_per_voxel: 500,
                 movement_category: MovementCategory::WalkOrLadder,
                 heartbeat_interval_ticks: 3000,
-                ground_only: false,
+
                 hp_max: 100,
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
@@ -4052,7 +4052,7 @@ impl Default for GameConfig {
                 move_ticks_per_voxel: 500,
                 movement_category: MovementCategory::Climber,
                 heartbeat_interval_ticks: 2500,
-                ground_only: false,
+
                 hp_max: 100,
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
@@ -4106,7 +4106,7 @@ impl Default for GameConfig {
                 move_ticks_per_voxel: 500,
                 movement_category: MovementCategory::Climber,
                 heartbeat_interval_ticks: 5000,
-                ground_only: false,
+
                 hp_max: 100,
                 ticks_per_hp_regen: 500, // 2 HP/sec at 1000 ticks/sec
                 food_max: 1_000_000_000_000_000,
@@ -4165,7 +4165,7 @@ impl Default for GameConfig {
                 move_ticks_per_voxel: 250, // fast flyer: 4 voxels/sec
                 movement_category: MovementCategory::Flyer,
                 heartbeat_interval_ticks: 2000,
-                ground_only: false,
+
                 hp_max: 100,
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
@@ -4224,7 +4224,7 @@ impl Default for GameConfig {
                 move_ticks_per_voxel: 200, // faster than hornet
                 movement_category: MovementCategory::Flyer,
                 heartbeat_interval_ticks: 4000,
-                ground_only: false,
+
                 hp_max: 100,
                 ticks_per_hp_regen: 0,
                 food_max: 1_000_000_000_000_000,
@@ -4727,14 +4727,12 @@ mod tests {
                 "Elf": {
                     "move_ticks_per_voxel": 500,
                     "movement_category": "Climber",
-                    "heartbeat_interval_ticks": 3000,
-                    "ground_only": false
+                    "heartbeat_interval_ticks": 3000
                 },
                 "Capybara": {
                     "move_ticks_per_voxel": 800,
                     "movement_category": "WalkOnly",
-                    "heartbeat_interval_ticks": 4000,
-                    "ground_only": true
+                    "heartbeat_interval_ticks": 4000
                 }
             }
         }"#;
@@ -4745,7 +4743,6 @@ mod tests {
         assert_eq!(config.tree_profile.growth.initial_energy, 300.0);
         let capy = &config.species[&Species::Capybara];
         assert_eq!(capy.heartbeat_interval_ticks, 4000);
-        assert!(capy.ground_only);
     }
 
     #[test]
@@ -4755,7 +4752,6 @@ mod tests {
             "move_ticks_per_voxel": 500,
             "movement_category": "Climber",
             "heartbeat_interval_ticks": 3000,
-            "ground_only": false,
             "food_max": 1000000000000000,
             "food_decay_per_tick": 3333333333
         }"#;
@@ -4774,7 +4770,6 @@ mod tests {
             "move_ticks_per_voxel": 500,
             "movement_category": "Climber",
             "heartbeat_interval_ticks": 3000,
-            "ground_only": false,
             "food_max": 1000000000000000,
             "food_decay_per_tick": 3333333333
         }"#;

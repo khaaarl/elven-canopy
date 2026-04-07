@@ -2459,7 +2459,7 @@ fn climber_on_trunk_does_not_fall() {
         return;
     }
 
-    // Spawn an elf (climber, ground_only=false) and move it to the trunk node.
+    // Spawn an elf (Climber) and move it to the trunk node.
     let mut events = Vec::new();
     let elf_id = sim
         .spawn_creature(Species::Elf, trunk_adj, sim.home_zone_id(), &mut events)
@@ -2481,9 +2481,9 @@ fn climber_on_trunk_does_not_fall() {
 }
 
 #[test]
-fn ground_only_creature_without_solid_below_falls() {
+fn walk_only_creature_without_solid_below_falls() {
     let mut sim = test_sim(legacy_test_seed());
-    // Spawn a capybara (ground_only=true) at ground level.
+    // Spawn a capybara (WalkOnly) at ground level.
     let capy_id = spawn_creature(&mut sim, Species::Capybara);
     let pos = sim.db.creatures.get(&capy_id).unwrap().position.min;
     assert_eq!(pos.y, 1, "capybara should be on ground");
@@ -2758,13 +2758,13 @@ fn degenerate_landing_teleports_to_nearest_node() {
     // column — deep in the air with no ground. The column at x=10, z=10
     // has terrain at y=0, so normally find_surface_below would find it.
     // Instead, test the degenerate path by putting the creature at a position
-    // where the entire column below has no nav node AND is ground_only.
-    // For a ground_only creature, find_creature_landing needs a nav node
+    // where the entire column below has no nav node AND is WalkOnly.
+    // For a WalkOnly creature, find_creature_landing needs a nav node
     // with solid below. Place creature at y=5 in a column where y=1 has
     // no nav node (it might naturally not have one far from the tree).
     let mut events = Vec::new();
 
-    // Spawn capybara (ground_only) at ground level, then teleport mid-air.
+    // Spawn capybara (WalkOnly) at ground level, then teleport mid-air.
     let capy_id = sim
         .spawn_creature(
             Species::Capybara,
@@ -2817,9 +2817,9 @@ fn degenerate_landing_teleports_to_nearest_node() {
 }
 
 #[test]
-fn ground_only_with_nav_node_but_no_solid_below_falls() {
+fn walk_only_with_nav_node_but_no_solid_below_falls() {
     let mut sim = test_sim(legacy_test_seed());
-    // Test creature_is_supported: a ground_only creature at a nav node
+    // Test creature_is_supported: a WalkOnly creature at a nav node
     // position without solid below should be unsupported.
     // Build a platform, rebuild nav so there's a node, then force the
     // creature to that position and remove the platform WITHOUT rebuilding
@@ -2864,14 +2864,14 @@ fn ground_only_with_nav_node_but_no_solid_below_falls() {
     );
 
     // Remove the platform — position becomes unwalkable but creature is
-    // still there. Creature should be unsupported: ground_only needs solid below.
+    // still there. Creature should be unsupported: WalkOnly needs solid below.
     sim.voxel_zone_mut(sim.home_zone_id())
         .unwrap()
         .set(platform_pos, VoxelType::Air);
 
     assert!(
         !sim.creature_is_supported(capy_id),
-        "ground_only creature without solid below should be unsupported"
+        "WalkOnly creature without solid below should be unsupported"
     );
 
     // Apply gravity — should fall. Rebuild nav first so landing positions
@@ -3758,7 +3758,7 @@ fn monkey_can_climb() {
         .iter_all()
         .find(|c| c.species == Species::Monkey)
         .unwrap();
-    // Monkey is not ground_only, so it should be able to reach y > 1
+    // Monkey is a Climber, so it should be able to reach y > 1
     // (trunk/branch surfaces). This verifies the species config allows
     // climbing edges. The monkey may still be at y=1 if the PRNG led it
     // only to ground neighbors, so we just verify it has a valid nav node.
@@ -4924,7 +4924,7 @@ fn test_elephant_floats_under_tree_foliage_on_hill() {
     // 2. Place scattered leaf/branch voxels overhead at y=floor_y+10..floor_y+12.
     //    This mimics tree canopy above the hill. The top layer uses Dirt so
     //    that the surface type above it is Dirt → Ground edge type, which
-    //    elephants (ground_only, MovementCategory::WalkOnly) can traverse.
+    //    elephants (MovementCategory::WalkOnly) can traverse.
     //    Without Dirt on top, the Leaf surface would produce BranchWalk edges
     //    that elephants reject, masking the canopy teleportation bug.
     for x in 12..18 {

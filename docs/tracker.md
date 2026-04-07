@@ -70,7 +70,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-flyable-shared       Replace footprint_flyable with shared footprint_fits helper
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fog-billboards       Fog post-process does not obscure billboard sprites
-[ ] B-ground-only          Remove ground_only field; use MovementCategory for all movement constraints
 [ ] B-llm-load-race        LLM capability signaled before async model load completes
 [ ] B-relay-stability      Windows TCP connection drops during singleplayer gameplay
 [ ] B-stale-path           Creatures can traverse forbidden edges when cached path becomes stale
@@ -335,6 +334,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-floating-dirt        Floating dirt still treated as ground by structural validator
 [x] B-flying-arrow-chase   Flying creatures excluded from arrow-chase
 [x] B-flying-tasks         Flying creatures skip task system entirely
+[x] B-ground-only          Remove ground_only field; use MovementCategory for all movement constraints
 [x] B-hostile-detect-nav   detect_hostile_targets panics on flying targets (NavNodeId u32::MAX hack)
 [x] B-large-fall-deflect   Large creatures may land at invalid positions during gravity fall
 [x] B-large-stuck          Large creatures (elephants) get permanently stuck at terrain inclines
@@ -1543,7 +1543,7 @@ Relevant code:
 **Related:** B-large-fall-deflect
 
 #### B-ground-only — Remove ground_only field; use MovementCategory for all movement constraints
-**Status:** Todo
+**Status:** Done
 
 The `ground_only` field on `SpeciesData` artificially restricts spawning and wander destinations to ground-level positions with Dirt surface type. Now that `MovementCategory` fully determines which edges a creature can traverse, `ground_only` is redundant and overly restrictive.
 
@@ -1551,14 +1551,17 @@ A WalkOnly capybara should be allowed to:
 - Spawn on a platform (e.g., a GrownPlatform built on flat dirt that doesn't require climbing or ladders to reach)
 - Wander onto any walkable position it can pathfind to, regardless of surface type (wood, branch, platform, etc.)
 
-There should be no special logic around dirt vs non-dirt surfaces for movement or destination selection. Walkability and edge traversability (as determined by MovementCategory) are the only constraints. If a creature can pathfind to a position, it should be allowed to go there.
+There should be no special logic around dirt vs non-dirt surfaces anywhere — not for movement, spawning, placement, or raid entry points. Walkability and edge traversability (as determined by MovementCategory) are the only constraints. If a creature can stand at a position (footprint is walkable with its can_climb), it should be allowed there. This includes debug placement: clicking a spot on a high roof to place an elephant is fine even if the elephant could never pathfind there on its own.
 
 Locations that check `ground_only`:
-- `sim/creature.rs` — spawn position selection
-- `sim/movement.rs` — wander destination selection (restricts to Dirt surface)
-- `sim/raid.rs` — raid entry point selection
+- `sim/raid.rs` — raid entry point selection (Y-range restriction + Dirt surface filter)
+- `sim_bridge.rs` — `is_species_ground_only()` bridge method and `snap_placement_to_ray()` ground-only snapping
+- `placement_controller.gd` — uses `is_species_ground_only` to restrict placement snapping
+- `walkability.rs` — `find_nearest_ground_walkable()` (Dirt-only variant of nearest walkable search)
 
-The fix is to remove the `ground_only` field from `SpeciesData` entirely and delete all code that checks it. Spawning and wandering should use only walkability checks with the creature's MovementCategory (via `can_climb()` for the walkability `solid_below` requirement). Raid entry point selection should similarly rely on MovementCategory.
+Note: `sim/creature.rs` (spawn) and `sim/movement.rs` (wander) have already been refactored to use MovementCategory and no longer check `ground_only`.
+
+The fix is to remove the `ground_only` field from `SpeciesData` entirely, delete `find_nearest_ground_walkable`, and delete all code that checks it. Spawning, wandering, placement, and raid entry point selection should use only walkability checks with the creature's MovementCategory.
 
 This is a breaking change to SpeciesData (field removal) but NOT a breaking change to the Creature DB row (ground_only was never stored per-creature).
 

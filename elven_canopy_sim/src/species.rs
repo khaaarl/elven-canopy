@@ -17,8 +17,6 @@
 // - `heartbeat_interval_ticks` — interval for `CreatureHeartbeat` events.
 //   Note: heartbeats do NOT drive movement (that's the activation chain in
 //   `sim/activation.rs`); they handle periodic non-movement checks like mood and mana.
-// - `ground_only` — if true, spawning and wandering are restricted to
-//   ground-level nav nodes (`Dirt` surface type).
 // - `food_max` — maximum (and starting) food level. Large i64 to avoid
 //   floating-point determinism issues.
 // - `food_decay_per_tick` — food subtracted per sim tick, batch-applied at
@@ -168,9 +166,6 @@ pub struct SpeciesData {
 
     /// Ticks between heartbeat events (mood, mana, need updates — NOT movement).
     pub heartbeat_interval_ticks: u64,
-
-    /// If true, spawn at ground-level nodes and only pick ground destinations.
-    pub ground_only: bool,
 
     /// Maximum food level (also the starting value). Large i64 avoids
     /// floating-point determinism concerns; UI computes percentage on the fly.
