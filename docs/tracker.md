@@ -170,6 +170,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-labor-panel          DF/Rimworld-style labor assignment UI
 [ ] F-leaf-tuning          Leaf visual fine-tuning and interior decisions
 [ ] F-llm-activities       LLM-driven activity scheduling and task inclination nudging
+[ ] F-llm-convo-ui         Wire LLM dialogue into speech bubbles
 [ ] F-llm-cuda-launcher    CUDA+Vulkan launcher for optimal GPU inference
 [ ] F-llm-dance-invite     InviteToDance choice sets wants_to_organize_dance flag
 [ ] F-llm-debug-overlay    LLM debug overlay with inference metrics
@@ -469,7 +470,6 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-large-pathfind       2x2 footprint nav grid
 [x] F-leaf-sway            Foliage vertex sway shader (wind simulation)
 [x] F-lesser-trees         Lesser trees (non-sentient, resource/ecology)
-[x] F-llm-convo-ui         Creature conversation text bubbles and detail panel log
 [x] F-llm-creatures        LLM creature infrastructure: model download, llama.cpp, relay inference pipeline
 [x] F-llm-social-chat      LLM-generated creature dialogue in social interactions
 [x] F-logistics            Spatial resource flow (Kanban-style)
@@ -7207,20 +7207,20 @@ Fine-tune leaf visual quality and decide on leaf interior rendering.
 
 **Related:** F-tiling-tex, F-visual-smooth
 
-#### F-llm-convo-ui — Creature conversation text bubbles and detail panel log
-**Status:** Done
+#### F-llm-convo-ui — Wire LLM dialogue into speech bubbles
+**Status:** Todo
 
-Player-facing UI for LLM-generated creature conversations. Conversation log in the creature detail panel showing recent exchanges. This is a UI task somewhat independent of the LLM plumbing — messages need display regardless of how they were generated.
+Wire LLM-generated dialogue into speech bubbles, replacing the temporary thought-based shim from F-speech-bubbles. The conversation log in the creature detail panel Social tab is already done (landed with F-llm-social-chat); this task is specifically about the world-view speech bubbles.
 
-**World-view speech bubbles:** Handled by F-speech-bubbles (the permanent infrastructure). This task wires LLM-generated dialogue text into the existing bubble system, replacing the temporary thought-based shim.
+**What to do:** Replace the temporary thought-polling text source in `speech_bubble_manager.gd` with real LLM dialogue text from `creature_messages`. The speech bubble infrastructure (rendering, pooling, fade-out) already exists from F-speech-bubbles — this task only changes the text source.
 
 **Temporary shims to remove (from F-speech-bubbles):**
-- `sim_bridge.rs`: Remove `get_recent_thoughts()` method and the `ThoughtKind` import — replace with whatever the LLM dialogue pipeline uses to deliver text to GDScript.
-- `godot/scripts/speech_bubble_manager.gd`: Remove `_thought_to_speech_text()` function (the inline string-matching mapper). Replace the thought-polling loop in `_poll_new_thoughts()` with the real LLM dialogue event source.
+- `sim_bridge.rs`: Remove `get_recent_thoughts()` method and the `ThoughtKind` import — replace with a method that returns recent `creature_messages` text.
+- `godot/scripts/speech_bubble_manager.gd`: Remove `_thought_to_speech_text()` function (the inline string-matching mapper). Replace the thought-polling loop in `_poll_new_thoughts()` with a poll of recent creature messages.
 - `godot/test/test_speech_bubble_manager.gd`: Remove or rewrite the temporary thought-mapping tests (all tests in this file cover the temporary shim).
 - All temporary code is marked with TODO comments referencing F-llm-convo-ui — search for "F-llm-convo-ui" across the codebase to find them all.
 
-**Panel conversation log:** Scrollable log in the creature info panel showing recent dialogue exchanges. Separate from the ephemeral world-view bubbles.
+**Draft:** docs/drafts/llm-creatures.md
 
 **Draft:** docs/drafts/llm-creatures.md
 
