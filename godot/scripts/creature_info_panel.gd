@@ -966,25 +966,56 @@ func _update_social(info: Dictionary) -> void:
 		child.queue_free()
 
 	var opinions: Array = info.get("social_opinions", [])
-	if opinions.is_empty():
+
+	if not opinions.is_empty():
+		var opinions_header := Label.new()
+		opinions_header.text = "Relationships"
+		opinions_header.add_theme_font_size_override("font_size", 14)
+		_social_container.add_child(opinions_header)
+
+		for op in opinions:
+			var target_name: String = op.get("target_name", "???")
+			var kind: String = op.get("kind", "")
+			var intensity: int = op.get("intensity", 0)
+
+			var label_text := "%s: %s %d" % [target_name, kind, intensity]
+
+			# Add a relationship label for Friendliness (label computed by Rust).
+			var fl: String = op.get("label", "")
+			if not fl.is_empty():
+				label_text = "%s: %s (%s, %d)" % [target_name, kind, fl, intensity]
+
+			var lbl := Label.new()
+			lbl.text = label_text
+			_social_container.add_child(lbl)
+
+	# --- Conversation log (F-llm-convo-ui) ---
+	var messages: Array = info.get("creature_messages", [])
+	if not messages.is_empty():
+		# Spacer between opinions and messages.
+		if not opinions.is_empty():
+			var spacer := Control.new()
+			spacer.custom_minimum_size = Vector2(0, 8)
+			_social_container.add_child(spacer)
+
+		var convo_header := Label.new()
+		convo_header.text = "Recent Conversations"
+		convo_header.add_theme_font_size_override("font_size", 14)
+		_social_container.add_child(convo_header)
+
+		for msg in messages:
+			var sender_name: String = msg.get("sender_name", "???")
+			var text: String = msg.get("text", "")
+			if text.is_empty():
+				continue
+			var msg_lbl := Label.new()
+			msg_lbl.text = "%s: %s" % [sender_name, text]
+			msg_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			msg_lbl.add_theme_color_override("font_color", Color(0.8, 0.85, 0.9))
+			_social_container.add_child(msg_lbl)
+
+	if opinions.is_empty() and messages.is_empty():
 		var lbl := Label.new()
-		lbl.text = "No opinions yet."
+		lbl.text = "No social data yet."
 		lbl.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
-		_social_container.add_child(lbl)
-		return
-
-	for op in opinions:
-		var target_name: String = op.get("target_name", "???")
-		var kind: String = op.get("kind", "")
-		var intensity: int = op.get("intensity", 0)
-
-		var label_text := "%s: %s %d" % [target_name, kind, intensity]
-
-		# Add a relationship label for Friendliness (label computed by Rust).
-		var fl: String = op.get("label", "")
-		if not fl.is_empty():
-			label_text = "%s: %s (%s, %d)" % [target_name, kind, fl, intensity]
-
-		var lbl := Label.new()
-		lbl.text = label_text
 		_social_container.add_child(lbl)

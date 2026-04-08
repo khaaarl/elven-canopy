@@ -559,7 +559,11 @@ impl SimState {
             // left over from a previous activation cycle (e.g., creature
             // volunteered, then picked up an Eat task, now idle again).
             self.prune_stale_volunteer_rows(creature_id);
-            if self.try_organize_spontaneous_dance(creature_id, events) {
+            // F-llm-social-chat: check for unprocessed inbox messages and
+            // emit a reply LLM request if eligible.
+            if self.try_process_inbox(creature_id) {
+                self.schedule_reactivation(creature_id);
+            } else if self.try_organize_spontaneous_dance(creature_id, events) {
                 // Elf organized a new dance — schedule reactivation so they
                 // can volunteer for it on the next cycle.
                 self.schedule_reactivation(creature_id);
@@ -1038,6 +1042,18 @@ impl SimState {
             crate::db::TaskKindTag::Tame => {
                 self.execute_tame_at_location(creature_id, task_id, events);
                 return;
+            }
+            crate::db::TaskKindTag::Conversing => {
+                // Check if the conversation should end: partner dead, no
+                // longer conversing with us, or timeout reached.
+                if self.should_end_conversation(creature_id, task_id) {
+                    self.complete_task(task_id);
+                } else {
+                    // Still conversing — wait for LLM result / inbox processing.
+                    // Re-activate next tick to re-check.
+                    self.set_creature_activation_tick(creature_id, self.tick + 1);
+                    return;
+                }
             }
         }
 

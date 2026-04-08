@@ -379,6 +379,13 @@ impl GameSession {
                     for sim_event in result.events {
                         events.push(SessionEvent::Sim(sim_event));
                     }
+                    // Re-attach outbound requests so the hosting layer
+                    // (gdext) can drain them after processing this message.
+                    // step() takes them out of sim via std::mem::take, so
+                    // we must put them back for the gdext drain loop.
+                    if !result.outbound_requests.is_empty() {
+                        sim.outbound_requests.extend(result.outbound_requests);
+                    }
                 }
             }
 

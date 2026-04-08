@@ -989,6 +989,10 @@ fn requires_mana_correct_for_all_task_kinds() {
     assert!(!TaskKindTag::AcquireMilitaryEquipment.requires_mana());
     assert!(!TaskKindTag::AttackMove.requires_mana());
     assert!(!TaskKindTag::AttackTarget.requires_mana());
+    assert!(!TaskKindTag::DineAtHall.requires_mana());
+    assert!(!TaskKindTag::Tame.requires_mana());
+    assert!(!TaskKindTag::Graze.requires_mana());
+    assert!(!TaskKindTag::Conversing.requires_mana());
 }
 
 #[test]

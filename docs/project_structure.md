@@ -34,11 +34,14 @@ elven-canopy/
 │       │   ├── paths.rs       #   Elf path assignment, skill cap/roll queries, backfill
 │       │   ├── raid.rs         #   Raid triggering (hostile civ raiding parties)
 │       │   ├── skills.rs      #   Probabilistic skill advancement (try_advance_skill)
-│       │   ├── social.rs      #   Social opinion system (F-social-opinions): skill checks, upsert, decay, bootstrap
+│       │   ├── social.rs      #   Social opinion system (F-social-opinions, F-llm-social-chat): skill checks, upsert, decay, bootstrap, LLM conversation emission/inbox
 │       │   ├── taming.rs      #   Creature taming (F-taming): designation, roll, civ change
 │       │   ├── task_helpers.rs #   Task extension table accessors, insert_task
 │       │   └── tests/           #   Per-domain test modules (split from monolithic tests.rs)
-│       ├── db.rs               # SimDb — tabulosity relational store (45 tables, all entities)
+│       ├── llm.rs              # LLM outbox types: OutboundRequest, PendingLlmRequest, LlmRequestKind
+│       ├── social_chat.rs     # SocialChatChoice enum, response schema, JSON parsing (F-llm-social-chat)
+│       ├── prompt.rs          # LLM prompt construction: creature identity, relationship, mood context
+│       ├── db.rs               # SimDb — tabulosity relational store (51 tables, all entities)
 │       ├── nav.rs              # EdgeType enum and distance constants (formerly full nav graph)
 │       ├── pathfinding.rs      # Unified voxel-direct A* for ground and flying creatures
 │       ├── walkability.rs      # Walkability predicates, ground neighbor expansion, surface queries

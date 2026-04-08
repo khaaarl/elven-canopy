@@ -324,6 +324,403 @@ impl SimState {
         } else if delta_b < 0 {
             self.add_creature_thought(target_id, ThoughtKind::HadAwkwardChat(creature_name));
         }
+
+        // LLM delegation: if both creatures are idle/Autonomous and neither
+        // has a pending LLM request, emit a social chat request and assign
+        // both to Conversing tasks. The LLM adds dialogue text and bonus
+        // effects; the mechanical resolution above is independent.
+        self.try_emit_social_chat_request(creature_id, target_id);
+    }
+
+    /// Check whether both creatures are eligible for LLM-delegated conversation
+    /// and, if so, assign both to Conversing tasks and emit an OutboundRequest.
+    fn try_emit_social_chat_request(&mut self, creature_id: CreatureId, target_id: CreatureId) {
+        // Debug prints throughout this function are intentionally unconditional.
+        // The LLM pipeline has many failure modes (eligibility, relay routing,
+        // inference, JSON parsing, deadline expiry) and these prints are the
+        // primary diagnostic tool. Keep them until the feature is mature.
+        let creature_name = self
+            .db
+            .creatures
+            .get(&creature_id)
+            .map(|c| c.name.clone())
+            .unwrap_or_default();
+        let target_name = self
+            .db
+            .creatures
+            .get(&target_id)
+            .map(|c| c.name.clone())
+            .unwrap_or_default();
+
+        // Both must be alive (dead/incapacitated creatures stay in the DB).
+        let is_alive = |id: CreatureId| {
+            self.db
+                .creatures
+                .get(&id)
+                .is_some_and(|c| c.vital_status == VitalStatus::Alive)
+        };
+        if !is_alive(creature_id) || !is_alive(target_id) {
+            eprintln!("[SOCIAL CHAT] skip {creature_name} -> {target_name}: one is not alive");
+            return;
+        }
+
+        // Neither may have a pending LLM request.
+        if self
+            .pending_llm_requests
+            .values()
+            .any(|r| r.creature_id == creature_id || r.creature_id == target_id)
+        {
+            eprintln!("[SOCIAL CHAT] skip {creature_name} -> {target_name}: pending LLM request");
+            return;
+        }
+
+        // Both must be idle or in an Autonomous-level task (preemptable to
+        // Conversing without violating the preemption hierarchy).
+        if !self.is_idle_or_autonomous(creature_id) || !self.is_idle_or_autonomous(target_id) {
+            eprintln!("[SOCIAL CHAT] skip {creature_name} -> {target_name}: not idle/autonomous");
+            return;
+        }
+
+        let expires_tick = self.tick + self.config.llm.conversation_timeout_ticks;
+        let pos_a = self.db.creatures.get(&creature_id).unwrap().position.min;
+        let pos_b = self.db.creatures.get(&target_id).unwrap().position.min;
+
+        // Assign both to Conversing tasks.
+        self.assign_conversing(creature_id, target_id, pos_a, expires_tick);
+        self.assign_conversing(target_id, creature_id, pos_b, expires_tick);
+
+        // Build and emit the LLM request.
+        let (preambles, prompt, response_schema) =
+            crate::prompt::build_social_chat_prompt(self, creature_id, target_id);
+
+        let request_id = self.next_request_id;
+        self.next_request_id += 1;
+        let deadline_tick = self.tick + self.config.llm.deadline_ticks;
+
+        self.pending_llm_requests.insert(
+            request_id,
+            crate::llm::PendingLlmRequest {
+                request_id,
+                creature_id,
+                request_kind: crate::llm::LlmRequestKind::SocialChat {
+                    target_creature_id: target_id,
+                },
+                deadline_tick,
+            },
+        );
+
+        self.outbound_requests
+            .push(crate::llm::OutboundRequest::LlmInference {
+                request_id,
+                creature_id,
+                preambles,
+                prompt: prompt.clone(),
+                response_schema,
+                deadline_tick,
+                max_tokens: self.config.llm.max_tokens,
+            });
+
+        eprintln!(
+            "[SOCIAL CHAT] EMITTED request {request_id}: {creature_name} -> {target_name}, deadline tick {deadline_tick}, prompt len {}",
+            prompt.len()
+        );
+    }
+
+    /// Check if a creature is idle (no current task) or in an Autonomous-level
+    /// task. Used for conversation eligibility — Conversing is Autonomous, so
+    /// it can only preempt same-or-lower priority.
+    fn is_idle_or_autonomous(&self, creature_id: CreatureId) -> bool {
+        let creature = match self.db.creatures.get(&creature_id) {
+            Some(c) => c,
+            None => return false,
+        };
+        let task_id = match creature.current_task {
+            None => return true, // Idle.
+            Some(tid) => tid,
+        };
+        let task = match self.db.tasks.get(&task_id) {
+            Some(t) => t,
+            None => return true, // Task gone — effectively idle.
+        };
+        crate::preemption::preemption_level(task.kind_tag, task.origin)
+            == crate::preemption::PreemptionLevel::Autonomous
+    }
+
+    /// Create a Conversing task for a creature and assign it as their current
+    /// task. This is a cross-creature assignment (called from the initiator's
+    /// heartbeat for both participants), following the `try_assign_to_activity()`
+    /// pattern.
+    fn assign_conversing(
+        &mut self,
+        creature_id: CreatureId,
+        with: CreatureId,
+        position: VoxelCoord,
+        expires_tick: u64,
+    ) {
+        // If the creature already has a task, unassign it first.
+        if self
+            .db
+            .creatures
+            .get(&creature_id)
+            .and_then(|c| c.current_task)
+            .is_some()
+        {
+            self.unassign_creature_from_task(creature_id);
+        }
+
+        let task = crate::task::Task {
+            id: TaskId::new(&mut self.rng),
+            kind: crate::task::TaskKind::Conversing { with, expires_tick },
+            state: crate::task::TaskState::InProgress,
+            location: position,
+            progress: 0,
+            total_cost: 0,
+            required_species: None,
+            origin: crate::task::TaskOrigin::Autonomous,
+            target_creature: None,
+            restrict_to_creature_id: Some(creature_id),
+            prerequisite_task_id: None,
+            required_civ_id: None,
+        };
+        let task_id = task.id;
+        self.insert_task(self.home_zone_id(), task);
+        self.claim_task(creature_id, task_id);
+        self.set_creature_activation_tick(creature_id, self.tick + 1);
+    }
+
+    /// Check if a creature has unprocessed inbox messages and, if so, emit an
+    /// LLM reply request. Returns `true` if a request was emitted.
+    ///
+    /// Called from the idle activation cascade and from heartbeat-triggered
+    /// inbox processing. The creature must be idle or Autonomous-level and
+    /// have no pending LLM request.
+    pub(crate) fn try_process_inbox(&mut self, creature_id: CreatureId) -> bool {
+        // Must be idle or Autonomous.
+        if !self.is_idle_or_autonomous(creature_id) {
+            return false;
+        }
+
+        // Must not already have a pending LLM request.
+        if self
+            .pending_llm_requests
+            .values()
+            .any(|r| r.creature_id == creature_id)
+        {
+            return false;
+        }
+
+        // Find oldest unprocessed inbox message and reply to that sender.
+        // Only process messages from the first sender — messages from other
+        // senders stay unprocessed and will trigger replies on subsequent
+        // activations.
+        let messages: Vec<_> = self
+            .db
+            .creature_messages
+            .by_recipient_creature_id(&creature_id, crate::tabulosity::QueryOpts::ASC);
+        let unprocessed: Vec<_> = messages.iter().filter(|m| !m.processed).collect();
+        if unprocessed.is_empty() {
+            return false;
+        }
+
+        // Find the first sender who is still alive — skip dead senders to
+        // avoid wasted inference and orphaned messages.
+        let sender_id = match unprocessed.iter().find(|m| {
+            self.db
+                .creatures
+                .get(&m.sender_creature_id)
+                .is_some_and(|c| c.vital_status == VitalStatus::Alive)
+        }) {
+            Some(m) => m.sender_creature_id,
+            None => {
+                // All senders are dead — mark everything processed and bail.
+                for msg in &unprocessed {
+                    let mut updated = (*msg).clone();
+                    updated.processed = true;
+                    let _ = self.db.update_creature_message(updated);
+                }
+                return false;
+            }
+        };
+        let from_sender: Vec<_> = unprocessed
+            .iter()
+            .filter(|m| m.sender_creature_id == sender_id)
+            .collect();
+
+        // Mark only this sender's messages as processed.
+        for msg in &from_sender {
+            let mut updated = (**msg).clone();
+            updated.processed = true;
+            let _ = self.db.update_creature_message(updated);
+        }
+
+        // Enter Conversing with the sender.
+        let pos = match self.db.creatures.get(&creature_id) {
+            Some(c) => c.position.min,
+            None => return false,
+        };
+        let expires_tick = self.tick + self.config.llm.conversation_timeout_ticks;
+        self.assign_conversing(creature_id, sender_id, pos, expires_tick);
+
+        // Build prompt that includes the inbox contents from this sender.
+        let inbox_text: String = from_sender
+            .iter()
+            .map(|m| {
+                let name = self
+                    .db
+                    .creatures
+                    .get(&m.sender_creature_id)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_else(|| "someone".into());
+                format!("{name} said: \"{}\"", m.text)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let (preambles, mut prompt, response_schema) =
+            crate::prompt::build_social_chat_prompt(self, creature_id, sender_id);
+
+        // Append inbox contents to the ephemeral prompt.
+        prompt.push_str(&format!(
+            "\n\nYou received a message:\n{inbox_text}\n\nHow do you respond?"
+        ));
+
+        let request_id = self.next_request_id;
+        self.next_request_id += 1;
+        let deadline_tick = self.tick + self.config.llm.deadline_ticks;
+
+        self.pending_llm_requests.insert(
+            request_id,
+            crate::llm::PendingLlmRequest {
+                request_id,
+                creature_id,
+                request_kind: crate::llm::LlmRequestKind::SocialChat {
+                    target_creature_id: sender_id,
+                },
+                deadline_tick,
+            },
+        );
+
+        self.outbound_requests
+            .push(crate::llm::OutboundRequest::LlmInference {
+                request_id,
+                creature_id,
+                preambles,
+                prompt,
+                response_schema,
+                deadline_tick,
+                max_tokens: self.config.llm.max_tokens,
+            });
+
+        true
+    }
+
+    /// Garbage-collect creature messages for a creature (F-llm-social-chat).
+    /// Removes unprocessed messages older than `config.llm.message_ttl_ticks`
+    /// and caps total message count at `config.llm.max_messages_per_creature`.
+    pub(crate) fn gc_creature_messages(&mut self, creature_id: CreatureId) {
+        let ttl = self.config.llm.message_ttl_ticks;
+        let max_per_creature = self.config.llm.max_messages_per_creature as usize;
+
+        // Collect all messages where this creature is recipient or sender.
+        let received: Vec<_> = self
+            .db
+            .creature_messages
+            .by_recipient_creature_id(&creature_id, crate::tabulosity::QueryOpts::ASC);
+        let sent: Vec<_> = self
+            .db
+            .creature_messages
+            .by_sender_creature_id(&creature_id, crate::tabulosity::QueryOpts::ASC);
+
+        // Fast path: skip GC work if this creature has no messages at all.
+        if received.is_empty() && sent.is_empty() {
+            return;
+        }
+
+        // TTL: remove unprocessed messages older than TTL.
+        let cutoff = self.tick.saturating_sub(ttl);
+        for msg in received.iter().chain(sent.iter()) {
+            if !msg.processed && msg.tick_created < cutoff {
+                let _ = self.db.remove_creature_message(&msg.message_id);
+            }
+        }
+
+        // Cap: re-query after TTL pass so the count reflects actual remaining
+        // messages (not the stale pre-TTL snapshot).
+        let received2: Vec<_> = self
+            .db
+            .creature_messages
+            .by_recipient_creature_id(&creature_id, crate::tabulosity::QueryOpts::ASC);
+        let sent2: Vec<_> = self
+            .db
+            .creature_messages
+            .by_sender_creature_id(&creature_id, crate::tabulosity::QueryOpts::ASC);
+        // Cap: only evict processed (history) messages — unprocessed inbox
+        // messages must survive until the recipient reads them. Without this
+        // guard, a creature with many conversations could lose other creatures'
+        // unread messages via cap eviction.
+        let mut evictable: Vec<(u64, u64)> = received2
+            .iter()
+            .chain(sent2.iter())
+            .filter(|m| m.processed)
+            .map(|m| (m.tick_created, m.message_id))
+            .collect();
+        // Dedup in case a message appears in both sent and received (same creature).
+        evictable.sort();
+        evictable.dedup();
+        let total_count = {
+            let mut all: Vec<u64> = received2
+                .iter()
+                .chain(sent2.iter())
+                .map(|m| m.message_id)
+                .collect();
+            all.sort();
+            all.dedup();
+            all.len()
+        };
+        if total_count > max_per_creature {
+            let to_remove = (total_count - max_per_creature).min(evictable.len());
+            for (_, msg_id) in evictable.iter().take(to_remove) {
+                let _ = self.db.remove_creature_message(msg_id);
+            }
+        }
+    }
+
+    /// Check whether a Conversing task should end (F-llm-social-chat).
+    /// Returns `true` if the extension data is missing, the conversation has
+    /// timed out, the partner creature is dead, or the partner is no longer in
+    /// a Conversing task targeting us.
+    pub(crate) fn should_end_conversation(&self, creature_id: CreatureId, task_id: TaskId) -> bool {
+        let conv = match self.db.task_conversing_data.get(&task_id) {
+            Some(c) => c,
+            None => return true,
+        };
+
+        // Timed out?
+        if conv.expires_tick <= self.tick {
+            return true;
+        }
+
+        // Partner dead?
+        let partner = match self.db.creatures.get(&conv.with) {
+            Some(c) => c,
+            None => return true,
+        };
+        if partner.vital_status != VitalStatus::Alive {
+            return true;
+        }
+
+        // Partner still conversing with us? Collapse the nested checks per clippy.
+        if let Some(partner_task_id) = partner.current_task
+            && let Some(partner_task) = self.db.tasks.get(&partner_task_id)
+            && partner_task.kind_tag == crate::db::TaskKindTag::Conversing
+            && let Some(partner_conv) = self.db.task_conversing_data.get(&partner_task_id)
+            && partner_conv.with == creature_id
+        {
+            return false; // Partner is still conversing with us.
+        }
+
+        // Partner is not in a Conversing task with us — end.
+        true
     }
 
     /// Simulate pre-game social interactions between starting elves so they

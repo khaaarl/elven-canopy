@@ -170,15 +170,15 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-labor-panel          DF/Rimworld-style labor assignment UI
 [ ] F-leaf-tuning          Leaf visual fine-tuning and interior decisions
 [ ] F-llm-activities       LLM-driven activity scheduling and task inclination nudging
-[ ] F-llm-convo-ui         Creature conversation text bubbles and detail panel log
 [ ] F-llm-cuda-launcher    CUDA+Vulkan launcher for optimal GPU inference
+[ ] F-llm-dance-invite     InviteToDance choice sets wants_to_organize_dance flag
 [ ] F-llm-debug-overlay    LLM debug overlay with inference metrics
 [ ] F-llm-decision-log     Per-creature LLM decision history
 [ ] F-llm-diplomacy        LLM-driven foreign civilization diplomatic decisions
 [ ] F-llm-dl-prompt        First-launch prompt for AI creature personality download
 [ ] F-llm-failure-track    LLM inference failure and timeout tracking
 [ ] F-llm-monologue        LLM inner monologue with emergent personality drift
-[ ] F-llm-social-chat      LLM-generated creature dialogue in social interactions
+[ ] F-llm-prompt-quality   Improve LLM social chat prompt templates for better dialogue
 [ ] F-lod-sprites          LOD sprites (chibi / detailed)
 [ ] F-logging              Unified file-persisted logging system across all crates
 [ ] F-los-tuning           Line-of-sight tuning (terrain tolerance, tall creature bonus)
@@ -469,7 +469,9 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-large-pathfind       2x2 footprint nav grid
 [x] F-leaf-sway            Foliage vertex sway shader (wind simulation)
 [x] F-lesser-trees         Lesser trees (non-sentient, resource/ecology)
+[x] F-llm-convo-ui         Creature conversation text bubbles and detail panel log
 [x] F-llm-creatures        LLM creature infrastructure: model download, llama.cpp, relay inference pipeline
+[x] F-llm-social-chat      LLM-generated creature dialogue in social interactions
 [x] F-logistics            Spatial resource flow (Kanban-style)
 [x] F-logistics-filter     Logistics material filter
 [x] F-main-menu            Main menu UI
@@ -4215,6 +4217,17 @@ Foundation for all LLM-driven creature features. Concrete decisions made (see dr
 **Unblocked:** F-llm-activities, F-llm-diplomacy, F-llm-dl-prompt, F-llm-social-chat
 **Related:** F-llm-cuda-launcher
 
+#### F-llm-dance-invite — InviteToDance choice sets wants_to_organize_dance flag
+**Status:** Todo
+
+When the LLM picks `invite_to_dance` during a social chat, the initiator creature should set a `wants_to_organize_dance` flag. This flag is checked during the idle activation cascade — after the Conversing task ends, if the flag is set, the creature attempts `try_organize_spontaneous_dance()` and clears the flag. On failure (no venue, cooldown, etc.), the invitation is a social gesture that didn't pan out — no effect.
+
+**Stub location:** `elven_canopy_sim/src/sim/mod.rs`, `handle_social_chat_result()`, the `InviteToDance` match arm (search for `F-llm-dance-invite`). Currently a no-op comment.
+
+**Implementation:** Add a boolean field to the creature row (or a lightweight flag table), set it on `InviteToDance`, check it in the idle cascade (`activation.rs`, between `prune_stale_volunteer_rows` and `try_organize_spontaneous_dance`) before the existing spontaneous dance probability roll, and clear it after the attempt.
+
+**Context:** Split from F-llm-social-chat during once-over review. The social chat feature is complete except for this mechanical effect.
+
 #### F-llm-diplomacy — LLM-driven foreign civilization diplomatic decisions
 **Status:** Todo
 
@@ -4237,11 +4250,26 @@ Deferred — the social chat and activity systems work without this.
 
 **Draft:** docs/drafts/llm-creatures.md
 
-**Blocked by:** F-llm-social-chat
+**Unblocked by:** F-llm-social-chat
 **Related:** F-llm-activities, F-llm-social-chat
 
-#### F-llm-social-chat — LLM-generated creature dialogue in social interactions
+#### F-llm-prompt-quality — Improve LLM social chat prompt templates for better dialogue
 **Status:** Todo
+
+Improve the LLM prompt templates for social chat to produce higher-quality, more natural dialogue. The current prompts (`prompt.rs`) are functional but minimal — a basic system instruction plus creature identity and situational context.
+
+Areas for improvement:
+- **Personality injection:** Use creature stats (CHA, INT, WIL) and path (Warrior/Scout/Outcast) more expressively to shape dialogue tone and vocabulary. High-CHA elves should sound charming, low-CHA blunt. Warriors might be direct, Scouts observational.
+- **Relationship depth:** The current relationship description is one sentence ("They are your friend (opinion: 65)"). Richer context — shared history, recent interactions, opinion trajectory — would produce more grounded dialogue.
+- **Vaelith name handling:** Small models may struggle with fantasy names. Experiment with name+meaning annotations ("Thandril (wise-shadow)"), meanings-only, or simple labels. The prompt construction code should make this easy to swap.
+- **Few-shot examples:** Test whether 1-2 example JSON outputs in the prompt improve format compliance and dialogue quality, vs eating too much of the ~600 token budget.
+- **Mood-to-tone mapping:** Currently mood is a single word ("fine", "happy"). Richer mood descriptions — what's causing the mood, recent pleasant/unpleasant experiences — would let the model generate more contextual dialogue.
+- **Output quality evaluation:** Systematically test prompt variations against the actual model (Qwen 3 1.7B) to find what works at this model size. What works for large models may not work for 1.7B.
+
+**Context:** The current prompts were written to get the pipeline working end-to-end. Now that the pipeline is functional (F-llm-social-chat), prompt quality is the next lever for improving the player experience.
+
+#### F-llm-social-chat — LLM-generated creature dialogue in social interactions
+**Status:** Done
 
 When the existing casual social heartbeat PPM roll triggers an interaction between two elves, delegate to the LLM for dialogue generation instead of resolving purely mechanically. Both creatures must be idle or Autonomous-level to qualify; otherwise the interaction resolves mechanically as today.
 
@@ -4257,8 +4285,8 @@ When the existing casual social heartbeat PPM roll triggers an interaction betwe
 
 **Draft:** docs/drafts/llm-creatures.md
 
-**Blocks:** F-llm-convo-ui, F-llm-monologue
 **Unblocked by:** F-llm-creatures
+**Unblocked:** F-llm-convo-ui, F-llm-monologue
 **Related:** F-llm-activities, F-llm-monologue
 
 #### F-mana-mood — Mana generation tied to elf mood
@@ -7180,7 +7208,7 @@ Fine-tune leaf visual quality and decide on leaf interior rendering.
 **Related:** F-tiling-tex, F-visual-smooth
 
 #### F-llm-convo-ui — Creature conversation text bubbles and detail panel log
-**Status:** Todo
+**Status:** Done
 
 Player-facing UI for LLM-generated creature conversations. Conversation log in the creature detail panel showing recent exchanges. This is a UI task somewhat independent of the LLM plumbing — messages need display regardless of how they were generated.
 
@@ -7196,8 +7224,7 @@ Player-facing UI for LLM-generated creature conversations. Conversation log in t
 
 **Draft:** docs/drafts/llm-creatures.md
 
-**Blocked by:** F-llm-social-chat
-**Unblocked by:** F-speech-bubbles
+**Unblocked by:** F-llm-social-chat, F-speech-bubbles
 
 #### F-llm-debug-overlay — LLM debug overlay with inference metrics
 **Status:** Todo

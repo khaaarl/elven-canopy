@@ -145,6 +145,7 @@ pub enum TaskKindTag {
     AttackMove,
     AttackTarget,
     Build,
+    Conversing,
     Craft,
     DineAtHall,
     EatBread,
@@ -174,6 +175,7 @@ impl TaskKindTag {
             Self::AttackMove => "AttackMove",
             Self::AttackTarget => "Attack",
             Self::Build => "Build",
+            Self::Conversing => "Chatting",
             Self::Craft => "Craft",
             Self::DineAtHall => "Dine",
             Self::EatBread => "EatBread",
@@ -198,6 +200,7 @@ impl TaskKindTag {
             TaskKind::AttackMove => Self::AttackMove,
             TaskKind::AttackTarget { .. } => Self::AttackTarget,
             TaskKind::Build { .. } => Self::Build,
+            TaskKind::Conversing { .. } => Self::Conversing,
             TaskKind::Craft { .. } => Self::Craft,
             TaskKind::DineAtHall { .. } => Self::DineAtHall,
             TaskKind::EatBread => Self::EatBread,
@@ -576,6 +579,32 @@ pub struct CreatureOpinion {
     #[indexed]
     pub target_id: CreatureId,
     pub intensity: i64,
+}
+
+/// A message sent from one creature to another during an LLM-generated
+/// conversation (F-llm-social-chat). Messages with `processed = false` are
+/// inbox items waiting for the recipient's next LLM cycle. Processed messages
+/// are retained as conversation history for the player-facing conversation log.
+///
+/// See also: `social_chat.rs` (response schema), `config.rs::LlmConfig`
+/// (message TTL, max messages per creature), `sim/social.rs` (conversation
+/// trigger).
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct CreatureMessage {
+    #[primary_key]
+    pub message_id: u64,
+    #[indexed]
+    pub recipient_creature_id: CreatureId,
+    #[indexed]
+    pub sender_creature_id: CreatureId,
+    /// The dialogue text the creature said (from LLM `say` field).
+    pub text: String,
+    /// The social action chosen by the LLM (serialized SocialChatChoice).
+    pub choice: String,
+    /// Sim tick when the message was created.
+    pub tick_created: u64,
+    /// `false` = inbox (unprocessed), `true` = history (processed).
+    pub processed: bool,
 }
 
 /// Creatures the player has marked for taming via the UI toggle (F-taming).
@@ -1483,6 +1512,19 @@ pub struct ActiveRecipeTarget {
     pub target_quantity: u32,
 }
 
+/// Conversing task extension data — stores the conversation partner and expiry
+/// tick. The partner is a plain `CreatureId`, not an FK — the task polls the
+/// partner's status each activation (same pattern as AttackTarget/Tame).
+#[derive(Table, Clone, Debug, Serialize, Deserialize)]
+pub struct TaskConversingData {
+    #[primary_key]
+    pub task_id: TaskId,
+    /// The other creature in this conversation.
+    pub with: CreatureId,
+    /// Tick at which the conversation times out and the task completes.
+    pub expires_tick: u64,
+}
+
 /// AttackTarget task extension data — stores the target creature and pathfinding
 /// retry counter. The target is a plain `CreatureId`, not an FK — the task polls
 /// the target's vital_status each activation and completes if the target is dead
@@ -1835,6 +1877,11 @@ pub struct SimDb {
                 target_id = "creatures" on_delete cascade))]
     pub creature_opinions: CreatureOpinionTable,
 
+    #[table(singular = "creature_message",
+            fks(recipient_creature_id = "creatures" on_delete cascade,
+                sender_creature_id = "creatures" on_delete cascade))]
+    pub creature_messages: CreatureMessageTable,
+
     #[table(singular = "task",
             fks(zone_id = "zones",
                 target_creature? = "creatures"))]
@@ -1880,6 +1927,10 @@ pub struct SimDb {
             auto,
             fks(active_recipe_id = "active_recipes" on_delete cascade))]
     pub active_recipe_targets: ActiveRecipeTargetTable,
+
+    #[table(singular = "task_conversing_data",
+            fks(task_id = "tasks" pk on_delete cascade))]
+    pub task_conversing_data: TaskConversingDataTable,
 
     #[table(singular = "task_attack_target_data",
             fks(task_id = "tasks" pk on_delete cascade))]

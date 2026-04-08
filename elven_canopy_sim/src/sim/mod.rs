@@ -327,6 +327,11 @@ pub struct SimState {
     #[serde(default)]
     pub next_request_id: u64,
 
+    /// Counter for the next creature message ID (monotonically increasing).
+    /// Each `CreatureMessage` gets a unique ID from this counter.
+    #[serde(default)]
+    pub next_message_id: u64,
+
     /// Pending LLM requests awaiting responses. Keyed by `request_id` for
     /// O(1) lookup when results arrive. `BTreeMap` for deterministic iteration
     /// (deadline expiry scan, save/load). Serialized as part of sim state.
@@ -710,6 +715,7 @@ impl SimState {
             db: wg.db,
             next_structure_id: 0,
             next_request_id: 0,
+            next_message_id: 0,
             pending_llm_requests: BTreeMap::new(),
             outbound_requests: Vec::new(),
             player_tree_id,
@@ -1391,31 +1397,136 @@ impl SimState {
             // --- LLM inference results ---
             SimAction::LlmResult {
                 request_id,
-                result_json: _,
+                result_json,
                 metadata: _,
             } => {
-                self.handle_llm_result(*request_id);
+                self.handle_llm_result(*request_id, result_json);
             }
         }
     }
 
     /// Process an LLM inference result. Looks up the pending request by ID,
-    /// validates the deadline, and removes it from the pending map. Actual
-    /// JSON parsing and mechanical effect application are deferred to
-    /// feature-specific handlers (F-llm-social-chat, etc.).
-    fn handle_llm_result(&mut self, request_id: u64) {
+    /// validates the deadline, and dispatches to the appropriate feature handler
+    /// based on request kind. Debug prints throughout this function and
+    /// `handle_social_chat_result` are intentionally unconditional — the LLM
+    /// pipeline has many failure modes and these are the primary diagnostic
+    /// tool. Keep them until the feature is mature.
+    fn handle_llm_result(&mut self, request_id: u64, result_json: &str) {
+        eprintln!(
+            "[SOCIAL CHAT] handle_llm_result: request_id={request_id}, json len={}, json={:?}",
+            result_json.len(),
+            &result_json[..result_json.len().min(200)]
+        );
         let pending = match self.pending_llm_requests.remove(&request_id) {
             Some(p) => p,
-            None => return, // Unknown or already-expired request — discard.
+            None => {
+                eprintln!(
+                    "[SOCIAL CHAT] handle_llm_result: request {request_id} not found in pending (unknown or already expired)"
+                );
+                return;
+            }
         };
         if pending.deadline_tick <= self.tick {
-            // Deadline already passed — discard. (The expiry sweep may not
-            // have run yet for this exact tick, so check here too.)
-        } else {
-            // Request is valid and within deadline. Future feature handlers
-            // will deserialize result_json according to pending.request_kind
-            // and apply mechanical effects here.
-            let _ = pending;
+            eprintln!(
+                "[SOCIAL CHAT] handle_llm_result: request {request_id} past deadline (deadline={}, tick={})",
+                pending.deadline_tick, self.tick
+            );
+            return;
+        }
+
+        match pending.request_kind {
+            crate::llm::LlmRequestKind::SocialChat { target_creature_id } => {
+                self.handle_social_chat_result(
+                    pending.creature_id,
+                    target_creature_id,
+                    result_json,
+                );
+            }
+        }
+    }
+
+    /// Handle a social chat LLM result: parse the response, store a message,
+    /// and apply bonus effects based on the chosen action.
+    fn handle_social_chat_result(
+        &mut self,
+        sender_id: CreatureId,
+        recipient_id: CreatureId,
+        result_json: &str,
+    ) {
+        let sender_name = self
+            .db
+            .creatures
+            .get(&sender_id)
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| "???".into());
+        let recipient_name = self
+            .db
+            .creatures
+            .get(&recipient_id)
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| "???".into());
+
+        let response = match crate::social_chat::parse_social_chat_response(result_json) {
+            Some(r) => {
+                eprintln!(
+                    "[SOCIAL CHAT] parsed response: {sender_name} -> {recipient_name}: choice={:?}, say={:?}",
+                    r.choice, r.say
+                );
+                r
+            }
+            None => {
+                eprintln!(
+                    "[SOCIAL CHAT] FAILED to parse response for {sender_name} -> {recipient_name}: {:?}",
+                    &result_json[..result_json.len().min(200)]
+                );
+                return;
+            }
+        };
+
+        // Store the message. If the choice terminates the conversation
+        // (cold/ignore/insult), mark it as already processed so it doesn't
+        // trigger a reply from the recipient's inbox handler.
+        let terminates = response.choice.terminates_conversation();
+        let msg_id = self.next_message_id;
+        self.next_message_id += 1;
+        let say_text = response.say.clone();
+        let insert_result = self.db.insert_creature_message(crate::db::CreatureMessage {
+            message_id: msg_id,
+            recipient_creature_id: recipient_id,
+            sender_creature_id: sender_id,
+            text: response.say,
+            choice: response.choice.as_str().to_string(),
+            tick_created: self.tick,
+            processed: terminates,
+        });
+        eprintln!(
+            "[SOCIAL CHAT] stored message {msg_id}: {sender_name} -> {recipient_name}: {:?} (terminates={terminates}, insert={insert_result:?})",
+            say_text
+        );
+
+        // Apply bonus effects based on choice.
+        match response.choice {
+            crate::social_chat::SocialChatChoice::ShareGossip => {
+                let sender_name = self
+                    .db
+                    .creatures
+                    .get(&sender_id)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_default();
+                self.add_creature_thought(recipient_id, ThoughtKind::HeardGossip(sender_name));
+            }
+            crate::social_chat::SocialChatChoice::InviteToDance => {
+                // F-llm-dance-invite: sets wants_to_organize_dance flag on
+                // the sender, picked up on next idle activation. Not yet
+                // implemented — tracked separately.
+            }
+            // No bonus effects for other choices.
+            crate::social_chat::SocialChatChoice::GreetWarmly
+            | crate::social_chat::SocialChatChoice::GreetColdly
+            | crate::social_chat::SocialChatChoice::Ignore
+            | crate::social_chat::SocialChatChoice::Compliment
+            | crate::social_chat::SocialChatChoice::Insult
+            | crate::social_chat::SocialChatChoice::AskFavor => {}
         }
     }
 
@@ -1572,6 +1683,11 @@ impl SimState {
                             self.try_casual_social(creature_id);
                         }
                     }
+
+                    // Creature message GC (F-llm-social-chat): remove
+                    // unprocessed messages past TTL, and cap total messages
+                    // per creature.
+                    self.gc_creature_messages(creature_id);
 
                     // Reschedule the next heartbeat.
                     let next_tick = self.tick + interval;

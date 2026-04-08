@@ -56,7 +56,8 @@
 // - **Creature info:** `get_creature_info_by_id(creature_id, render_tick)` —
 //   returns a `VarDictionary` with species, species_index, interpolated
 //   position (x/y/z), task status, task_kind, food level, food_max, rest
-//   level, rest_max, name, name_meaning, inventory, thoughts, mood. Primary
+//   level, rest_max, name, name_meaning, inventory, thoughts, mood,
+//   creature_messages (conversation log for Social tab). Primary
 //   API for creature info — uses direct CreatureId lookup.
 //   `get_creature_info(species_name, index, render_tick)` — legacy API with
 //   same dict format but fragile species+index addressing.
@@ -520,6 +521,38 @@ fn build_creature_info_dict(
     }
     dict.set("social_opinions", opinion_arr.to_variant());
 
+    // Creature messages — recent conversations (sent + received), for the
+    // Social tab conversation log (F-llm-convo-ui).
+    let mut msg_arr = godot::prelude::VarArray::new();
+    // Collect messages where this creature is sender or recipient.
+    let received = sim
+        .db
+        .creature_messages
+        .by_recipient_creature_id(&c.id, elven_canopy_sim::tabulosity::QueryOpts::ASC);
+    let sent = sim
+        .db
+        .creature_messages
+        .by_sender_creature_id(&c.id, elven_canopy_sim::tabulosity::QueryOpts::ASC);
+    // Merge and sort by tick, most recent first, cap at 20.
+    let mut all_msgs: Vec<_> = received.iter().chain(sent.iter()).collect();
+    all_msgs.sort_by(|a, b| b.tick_created.cmp(&a.tick_created));
+    all_msgs.truncate(20);
+    for msg in &all_msgs {
+        let mut md = VarDictionary::new();
+        let sender_name = sim
+            .db
+            .creatures
+            .get(&msg.sender_creature_id)
+            .map(|tc| tc.name.clone())
+            .unwrap_or_else(|| "???".into());
+        md.set("sender_name", sender_name.to_godot());
+        md.set("text", msg.text.to_godot());
+        md.set("tick", msg.tick_created as i64);
+        md.set("is_incoming", msg.recipient_creature_id == c.id);
+        msg_arr.push(&md.to_variant());
+    }
+    dict.set("creature_messages", msg_arr.to_variant());
+
     dict
 }
 
@@ -873,6 +906,9 @@ impl SimBridge {
         };
         config.tree_profile.growth.initial_energy = 50.0;
         config.terrain_max_height = 0;
+        // Disable social chat in test sims — LLM requests go nowhere and the
+        // debug prints add overhead during long step_to_tick calls.
+        config.social.casual_social_chance_ppm = 0;
         // Adjust spawn positions for the small test world (center=32, floor_y=0).
         for spec in &mut config.initial_creatures {
             spec.spawn_position = VoxelCoord::new(32, 1, 32);
@@ -6540,15 +6576,34 @@ impl SimBridge {
                         }
                     }
                     // Route LLM results before advancing.
+                    // [SOCIAL CHAT] debug prints in this block and the
+                    // LlmDispatch/drain blocks below are intentionally
+                    // unconditional. Keep them until the feature is mature.
+                    if !llm_results.is_empty() {
+                        godot_print!(
+                            "[SOCIAL CHAT] Turn contains {} LLM result(s)",
+                            llm_results.len()
+                        );
+                    }
                     for lr in llm_results {
                         if let Ok(payload) =
                             serde_json::from_slice::<LlmResponsePayload>(&lr.payload)
                         {
+                            godot_print!(
+                                "[SOCIAL CHAT] routing LLM result request_id={} json_len={}",
+                                lr.request_id,
+                                payload.result_json.len()
+                            );
                             self.session.process(SessionMessage::LlmResult {
                                 request_id: lr.request_id,
                                 result_json: payload.result_json,
                                 metadata: payload.metadata,
                             });
+                        } else {
+                            godot_print!(
+                                "[SOCIAL CHAT] FAILED to deserialize LLM result payload for request {}",
+                                lr.request_id
+                            );
                         }
                     }
                     // Advance the sim.
@@ -6557,6 +6612,13 @@ impl SimBridge {
                     });
                     // Drain outbound requests and send to relay.
                     if let Some(sim) = &mut self.session.sim {
+                        if !sim.outbound_requests.is_empty() {
+                            godot_print!(
+                                "[SOCIAL CHAT] draining {} outbound request(s), net_client={}",
+                                sim.outbound_requests.len(),
+                                self.net_client.is_some()
+                            );
+                        }
                         for req in sim.outbound_requests.drain(..) {
                             if let Some(client) = &mut self.net_client {
                                 match req {
@@ -6711,33 +6773,61 @@ impl SimBridge {
                             // For now, preambles are concatenated as-is. KV cache
                             // optimization for well-known sections is a future step.
                             let mut full_prompt = String::new();
-                            for section in &req.preambles {
+                            let mut debug_sections = String::new();
+                            for (i, section) in req.preambles.iter().enumerate() {
                                 match section {
                                     elven_canopy_sim::llm::PreambleSection::WellKnown(key) => {
-                                        full_prompt.push_str(key);
+                                        // Resolve well-known keys to their
+                                        // full text. These are fixed for the
+                                        // session and can be KV-cached later.
+                                        let text = match key.as_str() {
+                                            "social_chat_rules" => {
+                                                elven_canopy_sim::prompt::social_chat_rules_preamble(
+                                                )
+                                            }
+                                            _ => {
+                                                godot_warn!(
+                                                    "SimBridge: unknown WellKnown preamble key: {key}"
+                                                );
+                                                key.clone()
+                                            }
+                                        };
+                                        debug_sections.push_str(&format!(
+                                            "===== PREAMBLE {i} [WellKnown(\"{key}\")] (cacheable) =====\n{text}\n"
+                                        ));
+                                        full_prompt.push_str(&text);
                                         full_prompt.push('\n');
                                     }
                                     elven_canopy_sim::llm::PreambleSection::Literal(text) => {
+                                        debug_sections.push_str(&format!(
+                                            "===== PREAMBLE {i} [Literal] (per-creature) =====\n{text}\n"
+                                        ));
                                         full_prompt.push_str(text);
                                         full_prompt.push('\n');
                                     }
                                 }
                             }
+                            debug_sections.push_str(&format!(
+                                "===== EPHEMERAL PROMPT =====\n{}\n",
+                                req.prompt
+                            ));
                             full_prompt.push_str(&req.prompt);
                             if !req.response_schema.is_empty() {
+                                debug_sections.push_str(&format!(
+                                    "===== RESPONSE SCHEMA =====\n{}\n",
+                                    req.response_schema
+                                ));
                                 full_prompt
                                     .push_str("\n\nRespond with JSON matching this schema:\n");
                                 full_prompt.push_str(&req.response_schema);
                                 full_prompt.push('\n');
                             }
 
-                            if self.llm_debug {
-                                godot_print!(
-                                    "[LLM DEBUG] dispatch request {request_id} creature={} max_tokens={}\n--- PROMPT ---\n{full_prompt}\n--- END PROMPT ---",
-                                    req.creature_id,
-                                    req.max_tokens,
-                                );
-                            }
+                            godot_print!(
+                                "[SOCIAL CHAT] dispatch request {request_id} creature={} max_tokens={}\n{debug_sections}===== END PROMPT =====",
+                                req.creature_id,
+                                req.max_tokens,
+                            );
                             if let Some(worker) = &self.llm_worker {
                                 worker.send(crate::llm_worker::LlmWorkerCmd::Infer {
                                     request_id,

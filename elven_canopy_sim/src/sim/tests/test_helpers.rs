@@ -229,6 +229,7 @@ pub(super) fn flat_world_sim(seed: u64) -> SimState {
         db,
         next_structure_id: 0,
         next_request_id: 0,
+        next_message_id: 0,
         pending_llm_requests: BTreeMap::new(),
         outbound_requests: Vec::new(),
         player_tree_id,

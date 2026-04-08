@@ -350,7 +350,8 @@ func test_social_tab_shows_opinions() -> void:
 		{"target_name": "Thalion", "kind": "Respect", "intensity": 3},
 	]
 	_panel._update_social(info)
-	assert_eq(_panel._social_container.get_child_count(), 2)
+	# 3 = "Relationships" header + 2 opinion labels.
+	assert_eq(_panel._social_container.get_child_count(), 3)
 
 
 func test_social_tab_skips_rebuild_when_not_active() -> void:
@@ -370,8 +371,9 @@ func test_social_tab_respect_label_format() -> void:
 		{"target_name": "Thalion", "kind": "Respect", "intensity": 5},
 	]
 	_panel._update_social(info)
-	assert_eq(_panel._social_container.get_child_count(), 1)
-	assert_eq(_panel._social_container.get_child(0).text, "Thalion: Respect 5")
+	# 2 = "Relationships" header + 1 opinion label.
+	assert_eq(_panel._social_container.get_child_count(), 2)
+	assert_eq(_panel._social_container.get_child(1).text, "Thalion: Respect 5")
 
 
 func test_social_tab_empty_state() -> void:
@@ -380,7 +382,59 @@ func test_social_tab_empty_state() -> void:
 	info["social_opinions"] = []
 	_panel._update_social(info)
 	assert_eq(_panel._social_container.get_child_count(), 1)
-	assert_eq(_panel._social_container.get_child(0).text, "No opinions yet.")
+	assert_eq(_panel._social_container.get_child(0).text, "No social data yet.")
+
+
+func test_social_tab_shows_conversations() -> void:
+	_panel._switch_tab(CreatureInfoPanel.TAB_SOCIAL)
+	var info := _minimal_info()
+	info["social_opinions"] = []
+	info["creature_messages"] = [
+		{"sender_name": "Aelindra", "text": "Hello!", "tick": 100, "is_incoming": true},
+		{"sender_name": "Thalion", "text": "How are you?", "tick": 99, "is_incoming": false},
+	]
+	_panel._update_social(info)
+	# 1 header + 2 message labels = 3 children (no opinions, no "Relationships" header).
+	assert_eq(_panel._social_container.get_child_count(), 3)
+	assert_eq(_panel._social_container.get_child(0).text, "Recent Conversations")
+	assert_eq(_panel._social_container.get_child(1).text, "Aelindra: Hello!")
+	assert_eq(_panel._social_container.get_child(2).text, "Thalion: How are you?")
+
+
+func test_social_tab_skips_empty_text_messages() -> void:
+	_panel._switch_tab(CreatureInfoPanel.TAB_SOCIAL)
+	var info := _minimal_info()
+	info["social_opinions"] = []
+	info["creature_messages"] = [
+		{"sender_name": "Aelindra", "text": "", "tick": 100, "is_incoming": true},
+		{"sender_name": "Thalion", "text": "Hi!", "tick": 99, "is_incoming": false},
+	]
+	_panel._update_social(info)
+	# Header + 1 non-empty message = 2 (empty text skipped).
+	assert_eq(_panel._social_container.get_child_count(), 2)
+	assert_eq(_panel._social_container.get_child(1).text, "Thalion: Hi!")
+
+
+func test_social_tab_opinions_and_messages_together() -> void:
+	_panel._switch_tab(CreatureInfoPanel.TAB_SOCIAL)
+	var info := _minimal_info()
+	info["social_opinions"] = [
+		{
+			"target_name": "Aelindra",
+			"kind": "Friendliness",
+			"intensity": 10,
+			"label": "Acquaintance"
+		},
+	]
+	info["creature_messages"] = [
+		{"sender_name": "Aelindra", "text": "Hello!", "tick": 100, "is_incoming": true},
+	]
+	_panel._update_social(info)
+	# "Relationships" header + 1 opinion + spacer + "Recent Conversations" header + 1 message = 5
+	assert_eq(_panel._social_container.get_child_count(), 5)
+	assert_eq(_panel._social_container.get_child(0).text, "Relationships")
+	assert_eq(_panel._social_container.get_child(3).text, "Recent Conversations")
+	assert_eq(_panel._social_container.get_child(4).text, "Aelindra: Hello!")
 
 
 # -- Inventory display (B-shared-inventory) ------------------------------------

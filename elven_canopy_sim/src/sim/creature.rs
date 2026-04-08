@@ -927,7 +927,8 @@ impl SimState {
             | crate::db::TaskKindTag::Sleep
             | crate::db::TaskKindTag::Mope
             | crate::db::TaskKindTag::AttackTarget
-            | crate::db::TaskKindTag::AttackMove => {
+            | crate::db::TaskKindTag::AttackMove
+            | crate::db::TaskKindTag::Conversing => {
                 if let Some(mut t) = self.db.tasks.get(&task_id) {
                     t.state = task::TaskState::Complete;
                     let _ = self.db.update_task(t);

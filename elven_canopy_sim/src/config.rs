@@ -447,6 +447,7 @@ impl ThoughtConfig {
                 self.dedup_dance_chat_ticks
             }
             ThoughtKind::DancedWithFriend => self.dedup_danced_with_friend_ticks,
+            ThoughtKind::HeardGossip(_) => self.dedup_casual_chat_ticks,
         }
     }
 
@@ -472,6 +473,7 @@ impl ThoughtConfig {
                 self.expiry_dance_chat_ticks
             }
             ThoughtKind::DancedWithFriend => self.expiry_danced_with_friend_ticks,
+            ThoughtKind::HeardGossip(_) => self.expiry_casual_chat_ticks,
         }
     }
 }
@@ -613,6 +615,10 @@ impl MoodConfig {
             ThoughtKind::EnjoyedDanceWith(_) => self.weight_enjoyed_dance_with,
             ThoughtKind::AwkwardDanceWith(_) => self.weight_awkward_dance_with,
             ThoughtKind::DancedWithFriend => self.weight_danced_with_friend,
+            // Neutral mood — gossip is informational, not inherently positive
+            // or negative. The underlying social chat's opinion change handles
+            // the relational impact.
+            ThoughtKind::HeardGossip(_) => 0,
         }
     }
 
@@ -2624,6 +2630,81 @@ fn default_tame_skill_advance_probability() -> u32 {
 }
 
 // ---------------------------------------------------------------------------
+// LLM configuration (F-llm-social-chat)
+// ---------------------------------------------------------------------------
+
+/// Configuration for LLM-driven creature decisions. Controls deadlines,
+/// conversation timeouts, and message lifecycle. These parameters apply to
+/// the sim's outbox and inbox infrastructure — they do not require an LLM
+/// model to be present (requests simply expire at deadline when unavailable).
+///
+/// See also: `llm.rs` (outbox types), `social_chat.rs` (chat response schema),
+/// `social.rs` (casual social trigger), `docs/drafts/llm-creatures.md`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LlmConfig {
+    /// Ticks from request emission until the request expires if no response
+    /// arrives. Must be large enough to survive high sim speeds (5x+) plus
+    /// LLM inference latency. Default 30000 = 30 sim-seconds.
+    #[serde(default = "default_llm_deadline_ticks")]
+    pub deadline_ticks: u64,
+
+    /// Maximum ticks a creature can stay in a Conversing task before it
+    /// auto-completes. Larger than `deadline_ticks` to cover multi-turn
+    /// exchanges. Default 60000 = 60 sim-seconds.
+    #[serde(default = "default_llm_conversation_timeout_ticks")]
+    pub conversation_timeout_ticks: u64,
+
+    /// Maximum age (in ticks) of an unprocessed inbox message before GC
+    /// removes it. Prevents stale messages from accumulating when the
+    /// recipient never gets an idle activation. At 60 TPS, 86400 ≈ 24
+    /// minutes of game time.
+    #[serde(default = "default_llm_message_ttl_ticks")]
+    pub message_ttl_ticks: u64,
+
+    /// Maximum number of tokens the LLM may generate per social chat request.
+    /// Constrains output budget to prevent deadline overruns from long outputs.
+    #[serde(default = "default_llm_max_tokens")]
+    pub max_tokens: u32,
+
+    /// Maximum number of conversation messages retained per creature (sent +
+    /// received combined). Older messages beyond this cap are GC'd.
+    #[serde(default = "default_llm_max_messages_per_creature")]
+    pub max_messages_per_creature: u32,
+}
+
+impl Default for LlmConfig {
+    fn default() -> Self {
+        Self {
+            deadline_ticks: default_llm_deadline_ticks(),
+            conversation_timeout_ticks: default_llm_conversation_timeout_ticks(),
+            message_ttl_ticks: default_llm_message_ttl_ticks(),
+            max_tokens: default_llm_max_tokens(),
+            max_messages_per_creature: default_llm_max_messages_per_creature(),
+        }
+    }
+}
+
+fn default_llm_deadline_ticks() -> u64 {
+    30_000 // 30 sim-seconds — must survive 5x speed + inference latency
+}
+
+fn default_llm_conversation_timeout_ticks() -> u64 {
+    60_000 // 60 sim-seconds — covers multi-turn at high speed
+}
+
+fn default_llm_message_ttl_ticks() -> u64 {
+    86400 // ~24 minutes of game time at 60 TPS
+}
+
+fn default_llm_max_tokens() -> u32 {
+    50
+}
+
+fn default_llm_max_messages_per_creature() -> u32 {
+    20
+}
+
+// ---------------------------------------------------------------------------
 // Top-level game config
 // ---------------------------------------------------------------------------
 
@@ -2828,6 +2909,11 @@ pub struct GameConfig {
     /// Controls decay rate and pre-game relationship bootstrapping.
     #[serde(default)]
     pub social: SocialConfig,
+
+    /// LLM-driven creature decisions (F-llm-social-chat). Controls request
+    /// deadlines, conversation timeouts, and message lifecycle.
+    #[serde(default)]
+    pub llm: LlmConfig,
 
     /// Ticks between logistics heartbeats that scan buildings for unmet wants
     /// and create haul tasks. Default 5000 = 5 sim-seconds.
@@ -4321,6 +4407,7 @@ impl Default for GameConfig {
             mood_consequences: MoodConsequencesConfig::default(),
             activity: ActivityConfig::default(),
             social: SocialConfig::default(),
+            llm: LlmConfig::default(),
             logistics_heartbeat_interval_ticks: 5000,
             max_haul_tasks_per_heartbeat: 5,
             elf_starting_bread: 2,

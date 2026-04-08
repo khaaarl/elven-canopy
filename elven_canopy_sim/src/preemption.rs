@@ -85,7 +85,8 @@ pub fn preemption_level(kind: TaskKindTag, origin: TaskOrigin) -> PreemptionLeve
         | TaskKindTag::Harvest
         | TaskKindTag::AcquireItem
         | TaskKindTag::AcquireMilitaryEquipment
-        | TaskKindTag::Tame => match origin {
+        | TaskKindTag::Tame
+        | TaskKindTag::Conversing => match origin {
             TaskOrigin::PlayerDirected | TaskOrigin::Autonomous | TaskOrigin::Automated => {
                 PreemptionLevel::Autonomous
             }

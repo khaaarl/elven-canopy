@@ -1271,6 +1271,9 @@ pub enum ThoughtKind {
     AwkwardDanceWith(String),
     /// Bonus mood boost on dance completion when a co-dancer is a friend (F-social-dance).
     DancedWithFriend,
+    /// Heard gossip from another creature (F-llm-social-chat). The string is
+    /// the sender creature's name.
+    HeardGossip(String),
 }
 
 impl ThoughtKind {
@@ -1305,6 +1308,9 @@ impl ThoughtKind {
                 format!("Awkward dance with {name}")
             }
             ThoughtKind::DancedWithFriend => "Danced with a friend".into(),
+            ThoughtKind::HeardGossip(name) => {
+                format!("Heard gossip from {name}")
+            }
         }
     }
 }

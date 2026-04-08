@@ -439,6 +439,15 @@ impl SimState {
                     role: crate::db::TaskVoxelRole::GrazeTarget,
                 });
             }
+            task::TaskKind::Conversing { with, expires_tick } => {
+                let _ = self
+                    .db
+                    .insert_task_conversing_data(crate::db::TaskConversingData {
+                        task_id,
+                        with: *with,
+                        expires_tick: *expires_tick,
+                    });
+            }
             // GoTo, EatBread, Mope — no extra data.
             task::TaskKind::GoTo | task::TaskKind::EatBread | task::TaskKind::Mope => {}
         }

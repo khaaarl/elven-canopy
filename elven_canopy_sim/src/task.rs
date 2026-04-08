@@ -266,6 +266,18 @@ pub enum TaskKind {
     /// chunk's grassless set. Created by the heartbeat hunger check for
     /// herbivore species when hungry.
     Graze { grass_pos: VoxelCoord },
+    /// Hold a creature in place during an LLM-generated conversation
+    /// (F-llm-social-chat). Both participants enter Conversing simultaneously
+    /// in the heartbeat handler. The task auto-completes when `expires_tick`
+    /// is reached or the partner is no longer conversing. Uses
+    /// `PreemptionLevel::Autonomous` — survival, mood, and combat tasks
+    /// preempt normally.
+    Conversing {
+        /// The other creature in this conversation.
+        with: CreatureId,
+        /// Tick at which the conversation times out and the task completes.
+        expires_tick: u64,
+    },
 }
 
 /// Where a task originated — used by the UI to group tasks into sections.
