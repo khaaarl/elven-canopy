@@ -195,17 +195,21 @@ jobs:
         with:
           version: "18"
 
-      # humbletim/setup-vulkan-sdk: builds only the listed components from
-      # Khronos source (~20 MB), unlike jakoch/install-vulkan-sdk-action which
-      # downloads the full LunarG SDK (600 MB–1.8 GB). Lightly maintained but
-      # sufficient for our needs. v1.2.1 fixed the actions/cache v2 deprecation
-      # (now uses actions/cache v4 internally). (Assessed 2026-04-07.)
+      # jakoch/install-vulkan-sdk-action: downloads the official pre-built
+      # LunarG SDK. Actively maintained (v1.4.0, Jan 2026). Replaced
+      # humbletim/setup-vulkan-sdk which built from Khronos source and became
+      # unreliable on Windows runners. Stripdown + cache reduces repeated
+      # download overhead. (Assessed 2026-04-09.)
       - name: Install Vulkan SDK
-        uses: humbletim/setup-vulkan-sdk@v1.2.1
+        uses: jakoch/install-vulkan-sdk-action@v1.4.0
         with:
-          vulkan-query-version: 1.3.290.0
-          vulkan-components: Vulkan-Headers, Vulkan-Loader, Glslang
-          vulkan-use-cache: true
+          # No strong dependency on a specific version — just needs to be
+          # stable and available. 1.4.328.1 chosen because it's what the
+          # action author uses in their own CI. Bump freely if needed.
+          vulkan_version: 1.4.328.1
+          install_runtime: true
+          cache: true
+          stripdown: true
 
       - name: Build GDExtension library
         run: cargo build --release -p elven_canopy_gdext
