@@ -306,8 +306,14 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Android (arm64-v8a) — debug/unsigned APK
+  #
+  # DISABLED: Cross-compiling llama.cpp's Vulkan backend for Android arm64
+  # fails (missing VULKAN_LIBRARY). Not worth fixing — Android is not a
+  # target platform. To re-enable, remove the `if: false` line below and
+  # set up Android Vulkan SDK in the build environment.
   # ---------------------------------------------------------------------------
   build-android:
+    if: false  # disabled — see comment above
     needs: [require-ci, prepare]
     runs-on: ubuntu-latest
     steps:
@@ -513,7 +519,7 @@ jobs:
   # ---------------------------------------------------------------------------
   release:
     if: ${{ inputs.create_release }}
-    needs: [prepare, build-linux, build-windows, build-macos, build-android, build-relay-linux]
+    needs: [prepare, build-linux, build-windows, build-macos, build-relay-linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
