@@ -135,7 +135,12 @@ For the full list of codebase patterns, conventions, and gotchas, see `docs/code
 **Subagents and branching:**
 - If you are a subagent, check what branch you are on before making changes. If you are on `main`, follow the branching rules above (create a feature branch). If you are already on a feature branch, stay on it — do not create a sub-branch unless your instructions specifically tell you to.
 - When launching a subagent that will edit or commit code, always include in the prompt: "You are on branch `<branch-name>`. Do not create new branches or switch branches."
-- When launching multiple agents in parallel that will each edit code, use worktree isolation. Specify a branch name for each agent to work on. Once an agent enters a worktree and checks out or creates its assigned branch, it must stay on that branch — no further branching.
+
+**Parallel agents:**
+- Every agent prompt MUST specify which files and directories the agent may modify, if any. Use ALL CAPS for this in the prompt (e.g., "YOU MAY ONLY EDIT files in `elven_canopy_sim/src/combat/`"). If the agent should not modify any files, say so explicitly.
+- All agents may create new files in `.tmp/`, but must not modify existing `.tmp/` files (another agent may own them).
+- Parallel agents must have non-overlapping edit scopes. If there is any possibility of overlap (e.g., two agents both touching the same module, or both running formatters), run them sequentially instead.
+- **(CRITICAL)** NEVER use `isolation: "worktree"`. This is full of bugs.
 
 The only exception is editing `CLAUDE.md` itself, which can be done on `main` if explicitly requested. However, do NOT commit or push CLAUDE.md changes until the user explicitly says to — they may want to review or iterate first.
 
