@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**Follow these instructions literally. Do not improvise, optimize, or "improve" beyond what is requested. Do not add things that were not asked for. Do not skip things that were asked for. If you think you have a better idea, say so and wait — do not act on it. When in doubt, ask. The user's explicit instructions override your judgment, always.**
+**Follow these instructions literally. Do not add things that were not asked for. Do not skip things that were asked for. Creative ideas are welcome — propose them freely and push back if you think the user's approach has problems. But never act on your own ideas without explicit permission. Creativity in ideas is great; creativity in execution without knowledge and permission is not. When in doubt, ask.**
 
 ## Project Overview
 
