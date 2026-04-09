@@ -124,6 +124,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-dappled-light        Dappled light effect via scrolling noise on ground shader
 [ ] F-day-night            Day/night cycle and pacing
 [ ] F-day-night-color      Color grading shift by time of day
+[ ] F-debug-spawn-ui       Unified data-driven debug spawn UI
 [ ] F-defense-struct       Defensive structures (ballista, wards)
 [ ] F-demolish             Structure demolition
 [ ] F-dining-furnishing    Dining hall tables and seating furnishings
@@ -245,6 +246,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-social-ui            Social tab on creature info panel
 [ ] F-soul-mech            Death, soul passage, resurrection
 [ ] F-sound-effects        Basic ambient and action sound effects
+[ ] F-species-display      Data-driven species display info (eliminate hardcoded species lists in GDScript)
 [ ] F-spell-berserk        Berserk frenzy buff (damage up, uncontrollable)
 [ ] F-spell-blink          Short-range teleport spell
 [ ] F-spell-cloak          Invisibility spell on self or nearby allies
@@ -6947,6 +6949,13 @@ The debug menu should be easy to hide entirely for non-dev builds later.
 
 **Related:** F-spawn-toolbar
 
+#### F-debug-spawn-ui — Unified data-driven debug spawn UI
+**Status:** Todo
+
+The debug spawn UI in `action_toolbar.gd` hardcodes individual buttons for each spawnable species (Elf, Capybara, Boar, Deer, Goblin, Troll, Hornet, Wyvern). Adding a new species requires manually adding another button + signal binding.
+
+Explore replacing this with a unified, data-driven debug spawn interface — e.g., a dropdown or dynamic button grid populated from the species config at runtime. Lower priority since this is debug-only UI, but it would eliminate one more place that needs manual updates per species.
+
 #### F-distance-fog — Depth-based atmospheric fog/haze
 **Status:** Done
 
@@ -7564,6 +7573,21 @@ Toolbar with creature spawn buttons and keyboard shortcuts. Placement
 controller handles click-to-place with nav node highlighting.
 
 **Related:** F-debug-menu
+
+#### F-species-display — Data-driven species display info (eliminate hardcoded species lists in GDScript)
+**Status:** Todo
+
+Several GDScript files hardcode species-specific data that must be manually updated whenever a new species is added. This is fragile and error-prone. These should be made data-driven, sourced from the Rust-side SpeciesData config and exposed to Godot via the SimBridge.
+
+**Affected locations:**
+
+1. `creature_renderer.gd` — `SPECIES_Y_OFFSETS` dict maps species names to vertical sprite offsets (centers the billboard sprite above the nav node based on sprite height). Should be computed from sprite dimensions or added to SpeciesData config and exposed via bridge.
+
+2. `units_panel.gd` — `SECTION_TITLES` dict (species name → plural form) and `_species_order` array (display ordering in the units panel, currently only friendly species). Both should come from config. Pluralization could be a field on SpeciesData or derived from a simple rule + override map. Ordering could use a display_order field or derive from allegiance + alphabetical.
+
+3. `selection_highlight.gd` — `LARGE_SPECIES` list determines which creatures get larger selection rings. This is directly derivable from the existing `footprint` field on SpeciesData (footprint > 1×1×1 → large). The bridge already exposes `get_species_footprint()`, so this one may just need GDScript to query footprint instead of checking a hardcoded list.
+
+**Approach:** Add a bridge method (e.g., `get_species_display_info()`) that returns all species with their display-relevant properties (name, plural name, sprite Y offset, footprint, allegiance, display order). GDScript consumers replace their hardcoded dicts/arrays with data from this method. The Y offset specifically may belong in SpeciesData as a `sprite_y_offset` field, or could be computed from sprite dimensions at init time.
 
 #### F-speech-bubbles — Creature speech bubbles in world view
 **Status:** Done
