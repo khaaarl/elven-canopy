@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+**Follow these instructions literally. Do not improvise, optimize, or "improve" beyond what is requested. Do not add things that were not asked for. Do not skip things that were asked for. If you think you have a better idea, say so and wait — do not act on it. When in doubt, ask. The user's explicit instructions override your judgment, always.**
+
 ## Project Overview
 
 Elven Canopy is a Dwarf Fortress-inspired simulation/management game set in a forest of enormous trees. The player is a **tree spirit** — the consciousness of an ancient tree — who forms a symbiotic relationship with a village of elves living on platforms, walkways, and structures grown from the tree's trunk and branches. Elves sing to the tree, and it grows in the desired shape, consuming mana. The tree provides food and shelter for the elves. Happy elves generate more mana, creating the game's central feedback loop.
