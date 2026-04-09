@@ -184,6 +184,12 @@ jobs:
       # so paths exceeding the 260-character MAX_PATH limit cause build failures.
       # Mirrors the workaround in scripts/build.py.
       CARGO_TARGET_DIR: C:\ct
+      # Force Ninja generator for CMake. The default Visual Studio generator
+      # runs ExternalProject steps in parallel via MSBuild, causing a race
+      # where vulkan-shaders-gen's install step runs before its configure step
+      # finishes (known llama.cpp issues #13753, #8562). Ninja is pre-installed
+      # on GitHub Actions Windows runners.
+      CMAKE_GENERATOR: Ninja
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
