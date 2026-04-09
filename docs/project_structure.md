@@ -188,7 +188,7 @@ elven-canopy/
 │   │   ├── test_selection_utils.gd # Selection utility tests
 │   │   ├── test_settings_panel.gd # Settings panel tests
 │   │   ├── test_speech_bubble.gd  # Speech bubble geometry and texture tests
-│   │   ├── test_speech_bubble_manager.gd # Speech bubble manager temporary mapping tests
+│   │   ├── test_speech_bubble_manager.gd # Speech bubble pool and bubble-management tests
 │   │   ├── test_status_bar.gd     # Status bar tests
 │   │   ├── test_view_toggle_icons.gd # View toggle icon tests
 │   │   └── test_wants_editor.gd   # Wants editor tests

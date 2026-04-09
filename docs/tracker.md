@@ -171,7 +171,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-labor-panel          DF/Rimworld-style labor assignment UI
 [ ] F-leaf-tuning          Leaf visual fine-tuning and interior decisions
 [ ] F-llm-activities       LLM-driven activity scheduling and task inclination nudging
-[ ] F-llm-convo-ui         Wire LLM dialogue into speech bubbles
 [ ] F-llm-cuda-launcher    CUDA+Vulkan launcher for optimal GPU inference
 [ ] F-llm-dance-invite     InviteToDance choice sets wants_to_organize_dance flag
 [ ] F-llm-debug-overlay    LLM debug overlay with inference metrics
@@ -472,6 +471,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-large-pathfind       2x2 footprint nav grid
 [x] F-leaf-sway            Foliage vertex sway shader (wind simulation)
 [x] F-lesser-trees         Lesser trees (non-sentient, resource/ecology)
+[x] F-llm-convo-ui         Wire LLM dialogue into speech bubbles
 [x] F-llm-creatures        LLM creature infrastructure: model download, llama.cpp, relay inference pipeline
 [x] F-llm-social-chat      LLM-generated creature dialogue in social interactions
 [x] F-logistics            Spatial resource flow (Kanban-style)
@@ -7217,7 +7217,7 @@ Fine-tune leaf visual quality and decide on leaf interior rendering.
 **Related:** F-tiling-tex, F-visual-smooth
 
 #### F-llm-convo-ui — Wire LLM dialogue into speech bubbles
-**Status:** Todo
+**Status:** Done
 
 Wire LLM-generated dialogue into speech bubbles, replacing the temporary thought-based shim from F-speech-bubbles. The conversation log in the creature detail panel Social tab is already done (landed with F-llm-social-chat); this task is specifically about the world-view speech bubbles.
 
@@ -7228,8 +7228,6 @@ Wire LLM-generated dialogue into speech bubbles, replacing the temporary thought
 - `godot/scripts/speech_bubble_manager.gd`: Remove `_thought_to_speech_text()` function (the inline string-matching mapper). Replace the thought-polling loop in `_poll_new_thoughts()` with a poll of recent creature messages.
 - `godot/test/test_speech_bubble_manager.gd`: Remove or rewrite the temporary thought-mapping tests (all tests in this file cover the temporary shim).
 - All temporary code is marked with TODO comments referencing F-llm-convo-ui — search for "F-llm-convo-ui" across the codebase to find them all.
-
-**Draft:** docs/drafts/llm-creatures.md
 
 **Draft:** docs/drafts/llm-creatures.md
 
@@ -7598,17 +7596,13 @@ Floating speech bubbles above creatures in the world view. When a creature "says
 
 **New files:**
 - `godot/scripts/speech_bubble.gd` — Individual bubble: Node3D containing a Label3D (text) and Sprite3D (background panel + tail pointer). Handles fade-out via Tween on modulate alpha.
-- `godot/scripts/speech_bubble_manager.gd` — Manager node (child of Main). Each frame, polls bridge for recent thoughts, spawns/positions/expires bubbles. Tracks active bubbles by creature_id — one per creature, new replaces old. Pooled: expired bubbles are hidden and reused.
+- `godot/scripts/speech_bubble_manager.gd` — Manager node (child of Main). Each frame, polls bridge for recent LLM dialogue via `get_recent_dialogue()`, spawns/positions/expires bubbles. Tracks active bubbles by creature_id — one per creature, new replaces old. Pooled: expired bubbles are hidden and reused.
 
 **Lifecycle:** Bubble displays for ~3 seconds, then fades out over ~0.5s, then returned to pool.
 
-**Bridge method (TEMPORARY):** `get_recent_thoughts(since_tick)` in `sim_bridge.rs` scans `db.thoughts.all()`, filters to social thought kinds with `tick >= since_tick`, returns array of `{creature_id, text, tick}`. This is a temporary shim — the real text source will be LLM dialogue via F-llm-convo-ui.
-
-**Temporary text generation (TEMPORARY):** In `speech_bubble_manager.gd`, a function maps thought description strings to short spoken-aloud placeholder text. Only social thoughts become speech (HadPleasantChat, HadAwkwardChat, EnjoyedDinnerWith, AwkwardDinnerWith, EnjoyedDanceWith, AwkwardDanceWith, DancedWithFriend, EnjoyedDinnerParty). Internal thoughts (slept, ate, low ceiling) are skipped. Every line of temporary mapping and filtering is marked with TODO comments pointing to F-llm-convo-ui.
+**Bridge method:** `get_recent_dialogue(since_tick)` in `sim_bridge.rs` scans `creature_messages`, returns entries with `tick_created >= since_tick` as `{creature_id, text, tick}` dicts. Wired to real LLM dialogue via F-llm-convo-ui.
 
 **Integration:** main.gd creates SpeechBubbleManager as child node, calls setup(bridge), passes render_tick each frame like other renderers.
-
-**Unblocked:** F-llm-convo-ui
 
 #### F-sprite-cache-evict — Evict dead creatures from sprite caches
 **Status:** Todo

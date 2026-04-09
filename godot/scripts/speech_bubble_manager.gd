@@ -1,22 +1,15 @@
 ## Manages speech bubbles above creatures in the world view.
 ##
-## Each frame, polls the SimBridge for recent "speakable" thoughts (via
-## get_recent_thoughts), generates placeholder speech text, and spawns or
-## updates Label3D-based speech bubbles at creature positions.
+## Each frame, polls the SimBridge for recent LLM-generated dialogue (via
+## get_recent_dialogue), and spawns or updates Label3D-based speech bubbles
+## at creature positions.
 ##
 ## Uses a pool of SpeechBubble instances — expired bubbles are hidden and
 ## reused. One bubble per creature at a time; new speech replaces existing.
 ##
-## TODO(F-llm-convo-ui): TEMPORARY — the entire thought-polling and
-## text-generation pipeline in this file is a placeholder shim. When LLM
-## dialogue is wired in via F-llm-convo-ui, replace the thought-polling
-## loop in _poll_new_thoughts() and the _thought_to_speech_text() function with
-## the real LLM dialogue event source. Search for "F-llm-convo-ui" to
-## find all temporary code.
-##
 ## See also: speech_bubble.gd (individual bubble scene),
 ## creature_renderer.gd (creature positions and Y offsets),
-## sim_bridge.rs get_recent_thoughts() (TEMPORARY bridge method).
+## sim_bridge.rs get_recent_dialogue() (bridge method).
 
 extends Node3D
 
@@ -42,7 +35,7 @@ const _DEBUG_PHRASES: PackedStringArray = [
 ]
 
 var _bridge: SimBridge
-## Last tick we polled for thoughts. Advances each frame.
+## Last tick we polled for dialogue. Advances each frame.
 var _last_polled_tick: int = 0
 ## Active bubbles keyed by creature_id string. Values are SpeechBubble nodes.
 var _active_bubbles: Dictionary = {}
@@ -54,7 +47,7 @@ var _render_tick: float = 0.0
 
 func setup(bridge: SimBridge) -> void:
 	_bridge = bridge
-	# Start polling from the current tick so we don't show old thoughts.
+	# Start polling from the current tick so we don't show old dialogue.
 	_last_polled_tick = bridge.current_tick()
 
 
@@ -66,60 +59,30 @@ func _process(_delta: float) -> void:
 	if _bridge == null or not _bridge.is_initialized():
 		return
 
-	_poll_new_thoughts()
+	_poll_new_dialogue()
 	_update_positions()
 	_reclaim_expired()
 
 
-## TODO(F-llm-convo-ui): TEMPORARY — replace this entire method with the
-## real LLM dialogue event source when available.
-func _poll_new_thoughts() -> void:
-	var thoughts: Array = _bridge.get_recent_thoughts(_last_polled_tick)
-	# Compute max tick across the batch first, so same-tick thoughts aren't
+## Poll the SimBridge for recent LLM dialogue and spawn speech bubbles.
+func _poll_new_dialogue() -> void:
+	var messages: Array = _bridge.get_recent_dialogue(_last_polled_tick)
+	# Compute max tick across the batch first, so same-tick messages aren't
 	# skipped by premature high-water-mark advancement.
 	var max_tick: int = _last_polled_tick
-	for thought in thoughts:
-		var tick: int = thought.get("tick", 0)
+	for msg in messages:
+		var tick: int = msg.get("tick", 0)
 		if tick >= max_tick:
 			max_tick = tick + 1
-	for thought in thoughts:
-		var creature_id: String = thought.get("creature_id", "")
-		var text: String = thought.get("text", "")
+	for msg in messages:
+		var creature_id: String = msg.get("creature_id", "")
+		var text: String = msg.get("text", "")
 
 		if creature_id == "" or text == "":
 			continue
 
-		# TODO(F-llm-convo-ui): TEMPORARY — replace with LLM dialogue text.
-		var speech := _thought_to_speech_text(text)
-		if speech == "":
-			continue
-
-		_show_bubble(creature_id, speech)
+		_show_bubble(creature_id, text)
 	_last_polled_tick = max_tick
-
-
-## TODO(F-llm-convo-ui): TEMPORARY — this entire function is a placeholder.
-## Maps thought description strings to short spoken-aloud placeholder text.
-## Remove when LLM dialogue provides real speech text.
-static func _thought_to_speech_text(thought_desc: String) -> String:
-	# Match on the start of the description to handle the name suffix.
-	if thought_desc.begins_with("Had a pleasant chat with"):
-		return "Good to see you!"
-	if thought_desc.begins_with("Had an awkward exchange with"):
-		return "Hmph."
-	if thought_desc.begins_with("Enjoyed dinner with"):
-		return "Great dinner!"
-	if thought_desc.begins_with("Awkward dinner with"):
-		return "..."
-	if thought_desc.begins_with("Enjoyed dancing with"):
-		return "What a dance!"
-	if thought_desc.begins_with("Awkward dance with"):
-		return "That was... something."
-	if thought_desc == "Danced with a friend":
-		return "That was fun!"
-	if thought_desc == "Enjoyed a dinner party":
-		return "Lovely evening!"
-	return ""
 
 
 func _show_bubble(creature_id: String, text: String) -> void:

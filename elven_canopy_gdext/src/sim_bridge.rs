@@ -140,9 +140,9 @@
 //   `get_ground_pile_info(x,y,z)` — returns a single pile's dict (same
 //   format) or empty dict if no pile at that position. Used by the pile
 //   info panel for display and per-frame refresh.
-// - **Speech bubbles (TEMPORARY):** `get_recent_thoughts(since_tick)` —
-//   scans all thoughts, filters to social kinds, returns creature_id + text +
-//   tick. Placeholder for F-llm-convo-ui; remove when LLM dialogue is wired in.
+// - **Speech bubbles:** `get_recent_dialogue(since_tick)` — scans
+//   `creature_messages`, returns entries with `tick_created >= since_tick`
+//   as `{creature_id, text, tick}` dicts for the speech bubble manager.
 // - **Species queries:** `is_species_ground_only(species_name)` — used by
 //   the placement controller to decide which nav nodes to show.
 //   `get_all_creature_positions_with_relations()` — all alive creatures with
@@ -185,8 +185,8 @@ use elven_canopy_sim::task::{TaskOrigin, TaskState};
 use elven_canopy_sim::types::{
     ActiveRecipeId, ActiveRecipeTargetId, BuildType, CreatureId, DiplomaticRelation, FaceDirection,
     FruitSpeciesId, FurnishingType, FurnitureKind, ItemStackId, LadderKind, OpinionKind,
-    OverlapClassification, Priority, SimUuid, Species, StructureId, ThoughtKind, TraitKind,
-    VitalStatus, VoxelCoord, VoxelType, ZoneId,
+    OverlapClassification, Priority, SimUuid, Species, StructureId, TraitKind, VitalStatus,
+    VoxelCoord, VoxelType, ZoneId,
 };
 use godot::classes::ImageTexture;
 use godot::prelude::*;
@@ -3250,53 +3250,34 @@ impl SimBridge {
         result
     }
 
-    // TODO(F-llm-convo-ui): TEMPORARY — remove this method when LLM dialogue
-    // replaces thought-based speech. See F-llm-convo-ui tracker item for the
-    // full list of temporary shims to remove.
-    /// Return recent "speakable" thoughts since a given tick.
+    /// Return recent LLM-generated dialogue since a given tick.
     ///
-    /// Scans ALL thoughts and filters to social interaction kinds that make
-    /// sense as spoken-aloud text. Returns a `VarArray` of `VarDictionary`
-    /// with keys: `creature_id` (String UUID), `text` (String description),
-    /// `tick` (i64).
+    /// Scans `creature_messages` and returns entries with
+    /// `tick_created >= since_tick`. Returns a `VarArray` of `VarDictionary`
+    /// with keys: `creature_id` (String UUID of the sender), `text` (String
+    /// dialogue), `tick` (i64).
     ///
-    /// **TEMPORARY** — this whole method is a placeholder shim. The real text
-    /// source will be LLM-generated dialogue via F-llm-convo-ui.
+    /// See also: `speech_bubble_manager.gd` (consumer), `db.rs` `CreatureMessage`.
     #[func]
-    fn get_recent_thoughts(&self, since_tick: i64) -> VarArray {
+    fn get_recent_dialogue(&self, since_tick: i64) -> VarArray {
         let mut result = VarArray::new();
         let Some(sim) = &self.session.sim else {
             return result;
         };
-        // TODO(F-llm-convo-ui): TEMPORARY — this scan-all-thoughts approach
-        // is a placeholder. Replace with LLM dialogue event source.
-        for thought in sim.db.thoughts.iter_all() {
-            if (thought.tick as i64) < since_tick {
+        for msg in sim.db.creature_messages.iter_all() {
+            if (msg.tick_created as i64) < since_tick {
                 continue;
             }
-            // TODO(F-llm-convo-ui): TEMPORARY — only social thought kinds are
-            // "speakable". Remove this filter when LLM dialogue provides text.
-            let is_social = matches!(
-                thought.kind,
-                ThoughtKind::HadPleasantChat(_)
-                    | ThoughtKind::HadAwkwardChat(_)
-                    | ThoughtKind::EnjoyedDinnerWith(_)
-                    | ThoughtKind::AwkwardDinnerWith(_)
-                    | ThoughtKind::EnjoyedDanceWith(_)
-                    | ThoughtKind::AwkwardDanceWith(_)
-                    | ThoughtKind::DancedWithFriend
-                    | ThoughtKind::EnjoyedDinnerParty
-            );
-            if !is_social {
+            if msg.text.trim().is_empty() {
                 continue;
             }
             let mut d = VarDictionary::new();
             d.set(
                 "creature_id",
-                GString::from(thought.creature_id.0.to_string().as_str()),
+                GString::from(msg.sender_creature_id.0.to_string().as_str()),
             );
-            d.set("text", GString::from(thought.kind.description().as_str()));
-            d.set("tick", thought.tick as i64);
+            d.set("text", GString::from(msg.text.as_str()));
+            d.set("tick", msg.tick_created as i64);
             result.push(&d.to_variant());
         }
         result
