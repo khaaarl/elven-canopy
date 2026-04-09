@@ -178,6 +178,12 @@ jobs:
   build-windows:
     needs: [require-ci, prepare]
     runs-on: windows-latest
+    env:
+      # llama-cpp-sys-2's CMake build generates deeply nested paths under the
+      # Cargo target directory. MSVC's cl.exe lacks the longPathAware manifest,
+      # so paths exceeding the 260-character MAX_PATH limit cause build failures.
+      # Mirrors the workaround in scripts/build.py.
+      CARGO_TARGET_DIR: C:\ct
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -218,8 +224,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p godot/target/release godot/target/debug
-          cp target/release/elven_canopy_gdext.dll godot/target/release/
-          cp target/release/elven_canopy_gdext.dll godot/target/debug/
+          cp "$CARGO_TARGET_DIR/release/elven_canopy_gdext.dll" godot/target/release/
+          cp "$CARGO_TARGET_DIR/release/elven_canopy_gdext.dll" godot/target/debug/
 
       - name: Setup Godot
         uses: chickensoft-games/setup-godot@v2
