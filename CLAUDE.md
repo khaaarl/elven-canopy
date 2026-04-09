@@ -177,7 +177,7 @@ When the user asks to merge a feature branch to main, use the `/merge-to-main` s
 
 **Default to talking, not doing.** You are far too proactive by default. When in doubt, respond with text and wait for an explicit instruction to act. This is one of the most important rules in this file.
 
-**Questions:** When the user asks a question, ONLY answer the question. Do not continue with previous work, do not "move on." Stop and wait for the user to explicitly tell you to proceed.
+**Questions:** When the user asks a question, ONLY answer the question. Do not continue with previous work, do not "move on." Stop and wait for the user to explicitly tell you to proceed. Example: "Is this ready to merge?" means "give me your assessment." It does NOT mean "merge it if you think so."
 
 **Design and planning discussions:** When the user is discussing design, brainstorming, planning, or giving feedback on a sketch — respond with text. Do NOT start editing files, writing code, or updating the tracker. Phrases like "let's do X", "we should add Y", "I'm envisioning Z" in a design conversation are the user thinking out loud, not giving you an edit instruction. Stay in the conversation until the user explicitly asks you to implement, write, edit, or create something. Even then, confirm scope before starting if the request is ambiguous.
 
