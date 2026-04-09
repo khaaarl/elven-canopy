@@ -1701,81 +1701,89 @@ impl SimBridge {
             return VarArray::new();
         };
 
-        // Build dicts directly per creature, then sort.
-        let species_list = [
-            Species::Elf,
-            Species::Boar,
-            Species::Capybara,
-            Species::Deer,
-            Species::Elephant,
-            Species::Monkey,
-            Species::Squirrel,
-        ];
+        // Build per-species index counters for display (e.g. "Boar #2").
+        let mut species_idx: std::collections::BTreeMap<Species, i32> =
+            std::collections::BTreeMap::new();
 
-        let mut entries: Vec<VarDictionary> = Vec::new();
+        // Collect display_order for sorting from the species table.
+        let display_orders: std::collections::BTreeMap<Species, u32> = sim
+            .species_table
+            .iter()
+            .map(|(&sp, data)| (sp, data.display_order))
+            .collect();
 
-        for &sp in &species_list {
-            for (idx, creature) in (0_i32..).zip(
-                sim.db
-                    .creatures
-                    .iter_all()
-                    .filter(|c| c.species == sp && c.vital_status == VitalStatus::Alive),
-            ) {
-                let task_kind = creature
-                    .current_task
-                    .as_ref()
-                    .and_then(|tid| sim.db.tasks.get(tid).map(|t| t.kind_tag.display_name()))
-                    .unwrap_or("");
+        let mut entries: Vec<(Species, i32, VarDictionary)> = Vec::new();
 
-                let path_short = sim
-                    .creature_path(creature.id)
-                    .map(|p| p.short_name())
-                    .unwrap_or("");
+        for creature in sim
+            .db
+            .creatures
+            .iter_all()
+            .filter(|c| c.vital_status == VitalStatus::Alive)
+        {
+            let sp = creature.species;
+            let idx = species_idx.entry(sp).or_insert(0);
+            let current_idx = *idx;
+            *idx += 1;
 
-                let mut dict = VarDictionary::new();
-                dict.set(
-                    "creature_id",
-                    GString::from(creature.id.0.to_string().as_str()),
-                );
-                dict.set("species", GString::from(species_name(sp)));
-                dict.set("index", idx);
-                dict.set("name", GString::from(creature.name.as_str()));
-                dict.set(
-                    "name_meaning",
-                    GString::from(creature.name_meaning.as_str()),
-                );
-                dict.set("has_task", creature.current_task.is_some());
-                dict.set("task_kind", GString::from(task_kind));
-                dict.set("path_short", GString::from(path_short));
-                entries.push(dict);
-            }
+            let task_kind = creature
+                .current_task
+                .as_ref()
+                .and_then(|tid| sim.db.tasks.get(tid).map(|t| t.kind_tag.display_name()))
+                .unwrap_or("");
+
+            let path_short = sim
+                .creature_path(creature.id)
+                .map(|p| p.short_name())
+                .unwrap_or("");
+
+            let relation = sim.player_relation(creature.id);
+            let relation_str = match relation {
+                DiplomaticRelation::Friendly => "friendly",
+                DiplomaticRelation::Hostile => "hostile",
+                DiplomaticRelation::Neutral => "neutral",
+            };
+
+            let mut dict = VarDictionary::new();
+            dict.set(
+                "creature_id",
+                GString::from(creature.id.0.to_string().as_str()),
+            );
+            dict.set("species", GString::from(species_name(sp)));
+            dict.set("index", current_idx);
+            dict.set("name", GString::from(creature.name.as_str()));
+            dict.set(
+                "name_meaning",
+                GString::from(creature.name_meaning.as_str()),
+            );
+            dict.set("has_task", creature.current_task.is_some());
+            dict.set("task_kind", GString::from(task_kind));
+            dict.set("path_short", GString::from(path_short));
+            dict.set("player_relation", GString::from(relation_str));
+            entries.push((sp, current_idx, dict));
         }
 
-        // Sort: elves first (alphabetically by name), then other species
-        // (alphabetically by species name, then by index).
-        entries.sort_by(|a, b| {
-            let a_sp: String = a.get("species").unwrap_or_default().to_string();
-            let b_sp: String = b.get("species").unwrap_or_default().to_string();
-            let a_is_elf = a_sp == "Elf";
-            let b_is_elf = b_sp == "Elf";
-            match (a_is_elf, b_is_elf) {
-                (true, false) => std::cmp::Ordering::Less,
-                (false, true) => std::cmp::Ordering::Greater,
-                (true, true) => {
-                    let a_name: String = a.get("name").unwrap_or_default().to_string();
-                    let b_name: String = b.get("name").unwrap_or_default().to_string();
-                    a_name.cmp(&b_name)
+        // Sort by display_order, then named before unnamed (avoids non-transitive
+        // comparisons when a species has a mix), then alphabetically by name or
+        // by index for unnamed creatures.
+        entries.sort_by(|(a_sp, a_idx, a_dict), (b_sp, b_idx, b_dict)| {
+            let a_order = display_orders.get(a_sp).copied().unwrap_or(u32::MAX);
+            let b_order = display_orders.get(b_sp).copied().unwrap_or(u32::MAX);
+            a_order.cmp(&b_order).then_with(|| {
+                let a_name: String = a_dict.get("name").unwrap_or_default().to_string();
+                let b_name: String = b_dict.get("name").unwrap_or_default().to_string();
+                let a_named = !a_name.is_empty();
+                let b_named = !b_name.is_empty();
+                match (a_named, b_named) {
+                    (true, true) => a_name.cmp(&b_name),
+                    (false, false) => a_idx.cmp(b_idx),
+                    (true, false) => std::cmp::Ordering::Less,
+                    (false, true) => std::cmp::Ordering::Greater,
                 }
-                (false, false) => {
-                    let a_idx: i32 = a.get("index").unwrap_or_default().to::<i32>();
-                    let b_idx: i32 = b.get("index").unwrap_or_default().to::<i32>();
-                    a_sp.cmp(&b_sp).then(a_idx.cmp(&b_idx))
-                }
-            }
+            })
         });
 
         let mut result = VarArray::new();
-        for dict in &entries {
+        for (_, _, dict) in &entries {
             result.push(&dict.to_variant());
         }
         result
@@ -3535,6 +3543,36 @@ impl SimBridge {
             DiplomaticRelation::Hostile => "hostile",
             DiplomaticRelation::Neutral => "neutral",
         })
+    }
+
+    /// Return display-relevant data for all species in the config.
+    ///
+    /// Each entry is a dictionary with: `name` (String), `plural_name` (String),
+    /// `sprite_y_offset` (float), `footprint` (Vector3i), `display_order` (int).
+    /// Used by GDScript UI code to avoid hardcoding species-specific lists.
+    #[func]
+    fn get_species_display_info(&self) -> VarArray {
+        let Some(sim) = &self.session.sim else {
+            return VarArray::new();
+        };
+        let mut result = VarArray::new();
+        for (&species, data) in &sim.species_table {
+            let mut dict = VarDictionary::new();
+            dict.set("name", GString::from(species_name(species)));
+            dict.set("plural_name", GString::from(data.plural_name.as_str()));
+            dict.set("sprite_y_offset", data.sprite_y_offset);
+            dict.set(
+                "footprint",
+                Vector3i::new(
+                    data.footprint[0] as i32,
+                    data.footprint[1] as i32,
+                    data.footprint[2] as i32,
+                ),
+            );
+            dict.set("display_order", data.display_order as i32);
+            result.push(&dict.to_variant());
+        }
+        result
     }
 
     /// Return the footprint `[width_x, height_y, depth_z]` for the named species.

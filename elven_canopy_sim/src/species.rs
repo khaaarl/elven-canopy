@@ -353,6 +353,21 @@ pub struct SpeciesData {
     /// Genome-structural config: bit widths and species-specific SNP layout.
     #[serde(default)]
     pub genome_config: SpeciesGenomeConfig,
+
+    /// Pluralized display name for UI (e.g. "Elves", "Deer"). English
+    /// pluralization is too irregular to derive from the species name.
+    #[serde(default)]
+    pub plural_name: String,
+
+    /// Vertical offset in world units for centering the billboard sprite
+    /// above the creature's navigation node. Species-specific because each
+    /// species has a different sprite height.
+    #[serde(default = "default_sprite_y_offset")]
+    pub sprite_y_offset: f64,
+
+    /// Canonical ordering for UI lists. Lower values appear first. Elf = 0.
+    #[serde(default)]
+    pub display_order: u32,
 }
 
 /// Species-specific distribution parameters for a single creature stat.
@@ -539,6 +554,10 @@ fn default_forage_food_restore_pct() -> i64 {
 
 fn default_sex_weights() -> [u32; 3] {
     [0, 1, 1]
+}
+
+fn default_sprite_y_offset() -> f64 {
+    0.48
 }
 
 /// Roll a `CreatureSex` from per-species probability weights using weighted

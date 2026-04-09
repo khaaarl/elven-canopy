@@ -10,6 +10,10 @@
 ## and hidden when the count drops. Each sprite has an overhead HP bar. MP bars
 ## are created on demand for creatures that have mana (mp_ratio < 1.0).
 ##
+## Species Y offsets (vertical sprite positioning) are loaded from
+## SpeciesData config via bridge.get_species_display_info() at setup time,
+## rather than hardcoded.
+##
 ## See also: creature_sprites.gd for the central sprite cache,
 ## elven_canopy_sprites (Rust crate) for species sprite generation,
 ## hp_bar.gd for overhead HP/MP bar rendering, sim_bridge.rs for
@@ -22,24 +26,6 @@ const HpBar = preload("res://scripts/hp_bar.gd")
 const HP_BAR_GAP := 0.06
 ## MP bar sits just below the HP bar (negative = lower).
 const MP_BAR_GAP := -0.01
-
-## Y offsets per species for world-space sprite positions. Each species has a
-## different sprite height; the offset centers the sprite above the nav node.
-const SPECIES_Y_OFFSETS = {
-	"Elf": 0.48,
-	"Capybara": 0.32,
-	"Boar": 0.38,
-	"Deer": 0.46,
-	"Elephant": 0.8,
-	"Goblin": 0.36,
-	"Monkey": 0.44,
-	"Orc": 0.48,
-	"Squirrel": 0.28,
-	"Troll": 0.8,
-	"Hornet": 0.32,
-	"Wyvern": 0.8,
-}
-const DEFAULT_Y_OFFSET := 0.48
 
 var _bridge: SimBridge
 var _sprites: Array[Sprite3D] = []
@@ -95,7 +81,7 @@ func _process(_delta: float) -> void:
 			var pos := positions[i]
 			var cid: String = ids[i]
 			var sp: String = species_arr[i] if i < species_arr.size() else ""
-			var y_off: float = SPECIES_Y_OFFSETS.get(sp, DEFAULT_Y_OFFSET)
+			var y_off: float = CreatureSprites.get_y_offset(sp)
 			var is_incap := i < incap_flags.size() and incap_flags[i] != 0
 			_sprites[i].global_position = Vector3(pos.x + 0.5, pos.y + y_off, pos.z + 0.5)
 			# Read textures from central cache.

@@ -132,9 +132,7 @@ func _update_positions() -> void:
 			continue
 		var pos: Vector3 = pos_lookup[creature_id]
 		var sp: String = species_lookup.get(creature_id, "")
-		var y_off: float = CreatureRenderer.SPECIES_Y_OFFSETS.get(
-			sp, CreatureRenderer.DEFAULT_Y_OFFSET
-		)
+		var y_off: float = CreatureSprites.get_y_offset(sp)
 		bubble.visible = true
 		bubble.global_position = Vector3(
 			pos.x + 0.5, pos.y + y_off * 2.0 + BUBBLE_Y_GAP, pos.z + 0.5

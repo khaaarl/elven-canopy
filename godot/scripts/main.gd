@@ -271,6 +271,7 @@ func _setup_common(bridge: SimBridge) -> void:
 	var creature_renderer := Node3D.new()
 	creature_renderer.set_script(CreatureRenderer)
 	add_child(creature_renderer)
+	CreatureSprites.load_species_display_info(bridge)
 	creature_renderer.setup(bridge)
 	_creature_renderer = creature_renderer
 
@@ -838,6 +839,8 @@ func _setup_common(bridge: SimBridge) -> void:
 			_selector.select_structure(structure_id)
 	)
 
+	_units_panel.setup(bridge)
+
 	# Wire units panel creature click -> select creature (panel stays open).
 	_units_panel.creature_clicked.connect(
 		func(creature_id: String): _selector.select_creature_by_id(creature_id)
@@ -1331,9 +1334,7 @@ func _get_creature_world_pos_by_id(
 	if info.is_empty():
 		return null
 	var species: String = info.get("species", "")
-	var y_off: float = CreatureRenderer.SPECIES_Y_OFFSETS.get(
-		species, CreatureRenderer.DEFAULT_Y_OFFSET
-	)
+	var y_off: float = CreatureSprites.get_y_offset(species)
 	var x: float = info.get("x", 0.0)
 	var y: float = info.get("y", 0.0)
 	var z: float = info.get("z", 0.0)

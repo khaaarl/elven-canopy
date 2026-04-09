@@ -245,7 +245,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-social-ui            Social tab on creature info panel
 [ ] F-soul-mech            Death, soul passage, resurrection
 [ ] F-sound-effects        Basic ambient and action sound effects
-[ ] F-species-display      Data-driven species display info (eliminate hardcoded species lists in GDScript)
 [ ] F-spell-berserk        Berserk frenzy buff (damage up, uncontrollable)
 [ ] F-spell-blink          Short-range teleport spell
 [ ] F-spell-cloak          Invisibility spell on self or nearby allies
@@ -551,6 +550,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-social-opinions      Interpersonal opinion table and social skill checks
 [x] F-spatial-index        Creature spatial index for voxel-level position queries
 [x] F-spawn-toolbar        Spawn toolbar and placement UI
+[x] F-species-display      Data-driven species display info with three-group units panel
 [x] F-speech-bubbles       Creature speech bubbles in world view
 [x] F-split-graphics       Extract graphics/mesh code from sim into elven_canopy_graphics crate
 [x] F-split-sim            Split monolithic sim.rs into domain sub-modules
@@ -7572,20 +7572,34 @@ controller handles click-to-place with nav node highlighting.
 
 **Related:** F-debug-menu
 
-#### F-species-display — Data-driven species display info (eliminate hardcoded species lists in GDScript)
-**Status:** Todo
+#### F-species-display — Data-driven species display info with three-group units panel
+**Status:** Done
 
 Several GDScript files hardcode species-specific data that must be manually updated whenever a new species is added. This is fragile and error-prone. These should be made data-driven, sourced from the Rust-side SpeciesData config and exposed to Godot via the SimBridge.
 
+**New SpeciesData config fields:**
+
+- `plural_name: String` — pluralized display name (e.g. "Elves", "Deer"). English pluralization is too irregular to derive.
+- `sprite_y_offset: f64` — vertical offset for centering the billboard sprite above the nav node.
+- `display_order: u32` — canonical ordering for any UI that lists species. Elves get 0, other species in a curated order.
+
+**New bridge method: `get_species_display_info()`**
+
+Returns an array of dicts, one per species, with: `name`, `plural_name`, `sprite_y_offset`, `footprint` (Vector3i), `display_order`. No allegiance — that is per-creature, not per-species.
+
 **Affected locations:**
 
-1. `creature_renderer.gd` — `SPECIES_Y_OFFSETS` dict maps species names to vertical sprite offsets (centers the billboard sprite above the nav node based on sprite height). Should be computed from sprite dimensions or added to SpeciesData config and exposed via bridge.
+1. `creature_renderer.gd` — `SPECIES_Y_OFFSETS` dict maps species names to vertical sprite offsets. Replace with a lookup populated from bridge `get_species_display_info()` data at init.
 
-2. `units_panel.gd` — `SECTION_TITLES` dict (species name → plural form) and `_species_order` array (display ordering in the units panel, currently only friendly species). Both should come from config. Pluralization could be a field on SpeciesData or derived from a simple rule + override map. Ordering could use a display_order field or derive from allegiance + alphabetical.
+2. `units_panel.gd` — `SECTION_TITLES` dict and `_species_order` array. Replace with bridge-driven data. Additionally, **redesign the panel into three major groups based on per-creature player relation** (from `get_all_creatures_summary()`):
+   - **Your Civ** — creatures where `player_relation == Friendly` (elves, tamed animals)
+   - **Neutral** — `player_relation == Neutral` (wild passive animals)
+   - **Hostile** — `player_relation == Hostile` (goblins, orcs, trolls, raiders, etc.)
+   Within each group, creatures are grouped by species sorted by `display_order`, then by name/index within a species. Sections appear dynamically — empty species/groups are omitted.
 
-3. `selection_highlight.gd` — `LARGE_SPECIES` list determines which creatures get larger selection rings. This is directly derivable from the existing `footprint` field on SpeciesData (footprint > 1×1×1 → large). The bridge already exposes `get_species_footprint()`, so this one may just need GDScript to query footprint instead of checking a hardcoded list.
+3. `selection_highlight.gd` — `LARGE_SPECIES` list determines which creatures get larger selection rings. Replace with a footprint check: query `get_species_display_info()` at init and mark species with footprint > 1×1×1 as large.
 
-**Approach:** Add a bridge method (e.g., `get_species_display_info()`) that returns all species with their display-relevant properties (name, plural name, sprite Y offset, footprint, allegiance, display order). GDScript consumers replace their hardcoded dicts/arrays with data from this method. The Y offset specifically may belong in SpeciesData as a `sprite_y_offset` field, or could be computed from sprite dimensions at init time.
+4. `sim_bridge.rs` — `get_all_creatures_summary()` currently hardcodes a species list (Elf, Boar, Capybara, Deer, Elephant, Monkey, Squirrel). Remove the hardcoded list, iterate all living creatures regardless of species, and include `player_relation` (friendly/hostile/neutral) in each returned dict. Let the units panel do the filtering and grouping.
 
 #### F-speech-bubbles — Creature speech bubbles in world view
 **Status:** Done
@@ -7603,6 +7617,8 @@ Floating speech bubbles above creatures in the world view. When a creature "says
 **Bridge method:** `get_recent_dialogue(since_tick)` in `sim_bridge.rs` scans `creature_messages`, returns entries with `tick_created >= since_tick` as `{creature_id, text, tick}` dicts. Wired to real LLM dialogue via F-llm-convo-ui.
 
 **Integration:** main.gd creates SpeechBubbleManager as child node, calls setup(bridge), passes render_tick each frame like other renderers.
+
+**Unblocked:** F-llm-convo-ui
 
 #### F-sprite-cache-evict — Evict dead creatures from sprite caches
 **Status:** Todo

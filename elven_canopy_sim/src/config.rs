@@ -3728,6 +3728,9 @@ impl Default for GameConfig {
                     (PersonalityAxis::Neuroticism, 30, 60),
                 ]),
                 genome_config: elf_genome_config(),
+                plural_name: "Elves".to_string(),
+                sprite_y_offset: 0.48,
+                display_order: 0,
             },
         );
         species.insert(
@@ -3782,6 +3785,9 @@ impl Default for GameConfig {
                     &["sandy", "golden", "russet", "chocolate"],
                     &[("accessory", 4)],
                 ),
+                plural_name: "Capybaras".to_string(),
+                sprite_y_offset: 0.32,
+                display_order: 2,
             },
         );
         species.insert(
@@ -3836,6 +3842,9 @@ impl Default for GameConfig {
                     &["muddy", "reddish", "dark", "grey"],
                     &[("tusk_size", 3)],
                 ),
+                plural_name: "Boars".to_string(),
+                sprite_y_offset: 0.38,
+                display_order: 1,
             },
         );
         species.insert(
@@ -3890,6 +3899,9 @@ impl Default for GameConfig {
                     &["fawn", "golden", "russet", "dark"],
                     &[("antler_style", 3), ("spot_pattern", 2)],
                 ),
+                plural_name: "Deer".to_string(),
+                sprite_y_offset: 0.46,
+                display_order: 3,
             },
         );
         species.insert(
@@ -3944,6 +3956,9 @@ impl Default for GameConfig {
                     &["light", "dark", "brownish", "blue"],
                     &[("tusk_type", 3)],
                 ),
+                plural_name: "Elephants".to_string(),
+                sprite_y_offset: 0.8,
+                display_order: 4,
             },
         );
         species.insert(
@@ -4010,6 +4025,9 @@ impl Default for GameConfig {
                     &["green", "yellow", "grey", "chartreuse"],
                     &[("ear_style", 3)],
                 ),
+                plural_name: "Goblins".to_string(),
+                sprite_y_offset: 0.36,
+                display_order: 7,
             },
         );
         species.insert(
@@ -4064,6 +4082,9 @@ impl Default for GameConfig {
                     &["golden", "reddish", "dark", "sandy"],
                     &[("face_marking", 3)],
                 ),
+                plural_name: "Monkeys".to_string(),
+                sprite_y_offset: 0.44,
+                display_order: 5,
             },
         );
         species.insert(
@@ -4130,6 +4151,9 @@ impl Default for GameConfig {
                     &["green", "olive", "bronze", "ashen"],
                     &[("war_paint", 3)],
                 ),
+                plural_name: "Orcs".to_string(),
+                sprite_y_offset: 0.48,
+                display_order: 8,
             },
         );
         species.insert(
@@ -4184,6 +4208,9 @@ impl Default for GameConfig {
                     &["red", "golden", "brown", "grey"],
                     &[("tail_type", 3)],
                 ),
+                plural_name: "Squirrels".to_string(),
+                sprite_y_offset: 0.28,
+                display_order: 6,
             },
         );
         species.insert(
@@ -4243,6 +4270,9 @@ impl Default for GameConfig {
                     &["stone", "moss", "brown", "blue"],
                     &[("horn_style", 3)],
                 ),
+                plural_name: "Trolls".to_string(),
+                sprite_y_offset: 0.8,
+                display_order: 9,
             },
         );
         species.insert(
@@ -4302,6 +4332,9 @@ impl Default for GameConfig {
                     &["yellow", "amber", "orange", "golden"],
                     &[("stripe_pattern", 3), ("wing_style", 3)],
                 ),
+                plural_name: "Hornets".to_string(),
+                sprite_y_offset: 0.32,
+                display_order: 10,
             },
         );
         species.insert(
@@ -4361,6 +4394,9 @@ impl Default for GameConfig {
                     &["emerald", "crimson", "indigo", "bronze"],
                     &[("scale_pattern", 3), ("horn_style", 3)],
                 ),
+                plural_name: "Wyverns".to_string(),
+                sprite_y_offset: 0.8,
+                display_order: 11,
             },
         );
 
@@ -4720,6 +4756,65 @@ mod tests {
             config.skills.advancement_decay_base,
             restored.skills.advancement_decay_base
         );
+    }
+
+    #[test]
+    fn species_display_fields_complete() {
+        let config = GameConfig::default();
+        let mut seen_orders = std::collections::BTreeSet::new();
+        for (&species, data) in &config.species {
+            assert!(
+                !data.plural_name.is_empty(),
+                "{species:?} has empty plural_name"
+            );
+            assert!(
+                data.sprite_y_offset > 0.0,
+                "{species:?} has non-positive sprite_y_offset"
+            );
+            assert!(
+                seen_orders.insert(data.display_order),
+                "{species:?} has duplicate display_order {}",
+                data.display_order
+            );
+        }
+    }
+
+    #[test]
+    fn species_display_order_contiguous_and_elf_first() {
+        let config = GameConfig::default();
+        // Elf must be display_order 0.
+        assert_eq!(config.species[&Species::Elf].display_order, 0);
+        // display_order values must form a contiguous 0..N range.
+        let mut orders: Vec<u32> = config.species.values().map(|d| d.display_order).collect();
+        orders.sort();
+        let expected: Vec<u32> = (0..config.species.len() as u32).collect();
+        assert_eq!(orders, expected);
+    }
+
+    #[test]
+    fn species_display_fields_backward_compatible() {
+        // Configs missing the new display fields should deserialize with defaults.
+        let json = r#"{"move_ticks_per_voxel": 500, "movement_category": "WalkOnly", "heartbeat_interval_ticks": 3000}"#;
+        let data: SpeciesData = serde_json::from_str(json).unwrap();
+        assert_eq!(data.plural_name, "");
+        assert!((data.sprite_y_offset - 0.48).abs() < f64::EPSILON);
+        assert_eq!(data.display_order, 0);
+    }
+
+    #[test]
+    fn species_display_fields_roundtrip() {
+        let config = GameConfig::default();
+        let json = serde_json::to_string(&config).unwrap();
+        let restored: GameConfig = serde_json::from_str(&json).unwrap();
+        for (&species, data) in &config.species {
+            let r = &restored.species[&species];
+            assert_eq!(data.plural_name, r.plural_name, "{species:?}");
+            assert!(
+                (data.sprite_y_offset - r.sprite_y_offset).abs() < f64::EPSILON,
+                "{species:?}"
+            );
+            assert_eq!(data.display_order, r.display_order, "{species:?}");
+        }
     }
 
     #[test]

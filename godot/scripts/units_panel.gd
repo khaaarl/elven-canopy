@@ -1,17 +1,18 @@
 ## Full-screen units panel listing all creatures with sprites, names, and activity.
 ##
-## Displays a scrollable roster grouped by species: elves first (alphabetically
-## by Vaelith name), then other species grouped alphabetically. Each row shows
-## the creature's sprite (32x32), name (or "Species #N" for unnamed creatures),
-## path (short name for elves, blank for others), and current activity
-## (Idle, Building, Eating, Sleeping, Walking, Furnishing).
+## Displays a scrollable roster in three major groups based on each creature's
+## diplomatic relation to the player: Your Civilization (friendly), Neutral,
+## and Hostile. Within each group, creatures are grouped by species sorted by
+## display_order (from SpeciesData config), then by name/index within a species.
+## Groups and species sections appear dynamically — empty ones are hidden.
 ##
 ## Clicking a creature row emits creature_clicked so the selection controller
 ## can select that creature and open the creature info panel on top of this one.
 ##
 ## Data flow: main.gd calls update_creatures(data) each frame while the panel
-## is visible, passing the result of bridge.get_all_creatures_summary(). The
-## panel uses a reconciliation pattern — it maintains a dictionary mapping
+## is visible, passing the result of bridge.get_all_creatures_summary(). Each
+## entry includes a "player_relation" field ("friendly"/"hostile"/"neutral").
+## The panel uses a reconciliation pattern — it maintains a dictionary mapping
 ## creature_id (UUID string) keys to row nodes, creating/updating/removing
 ## rows as creatures appear and disappear.
 ##
@@ -55,31 +56,38 @@ const ACTIVITY_LABELS = {
 	"Attack": "Attacking",
 }
 
-## Map species names to plural section titles.
-const SECTION_TITLES = {
-	"Elf": "Elves",
-	"Boar": "Boars",
-	"Capybara": "Capybaras",
-	"Deer": "Deer",
-	"Elephant": "Elephants",
-	"Monkey": "Monkeys",
-	"Squirrel": "Squirrels",
+## The three relation groups in display order.
+const RELATION_GROUPS: Array = ["friendly", "neutral", "hostile"]
+const RELATION_TITLES: Dictionary = {
+	"friendly": "Your Civilization",
+	"neutral": "Neutral",
+	"hostile": "Hostile",
+}
+const RELATION_COLORS: Dictionary = {
+	"friendly": Color(0.65, 0.85, 0.65),
+	"neutral": Color(0.85, 0.80, 0.65),
+	"hostile": Color(0.95, 0.50, 0.45),
 }
 
 ## Maps creature_id (UUID string) -> HBoxContainer row node.
 var _creature_rows: Dictionary = {}
 ## Reference to SimBridge for on-demand sprite generation via CreatureSprites.
 var _bridge: SimBridge
-## Section containers keyed by species name.
-var _sections: Dictionary = {}
-## Section headers keyed by species name, for visibility toggling.
-var _section_headers: Dictionary = {}
+## Species display info: species_name -> { plural_name, display_order }.
+var _species_info: Dictionary = {}
 ## The scrollable content container.
 var _content_vbox: VBoxContainer
 ## Empty-state label.
 var _empty_label: Label
-## The species ordering for sections (elves first, then alphabetical).
-var _species_order: Array = ["Elf", "Boar", "Capybara", "Deer", "Elephant", "Monkey", "Squirrel"]
+
+## Per-relation-group containers: relation -> VBoxContainer.
+var _group_containers: Dictionary = {}
+## Per-relation-group headers: relation -> Label.
+var _group_headers: Dictionary = {}
+## Per-species section containers: "relation:species" -> VBoxContainer.
+var _species_sections: Dictionary = {}
+## Per-species section headers: "relation:species" -> Label.
+var _species_headers: Dictionary = {}
 
 
 func _ready() -> void:
@@ -135,27 +143,37 @@ func _ready() -> void:
 	_content_vbox.add_theme_constant_override("separation", 4)
 	scroll.add_child(_content_vbox)
 
-	# Pre-create section headers and containers for each species.
-	for sp in _species_order:
-		var header := Label.new()
-		header.text = _section_title(sp)
-		header.add_theme_font_size_override("font_size", 20)
-		header.add_theme_color_override("font_color", Color(0.85, 0.80, 0.65))
-		_content_vbox.add_child(header)
-		_section_headers[sp] = header
+	# Create the three relation group headers and containers.
+	for relation in RELATION_GROUPS:
+		var group_header := Label.new()
+		group_header.text = RELATION_TITLES[relation]
+		group_header.add_theme_font_size_override("font_size", 24)
+		group_header.add_theme_color_override(
+			"font_color", RELATION_COLORS.get(relation, Color.WHITE)
+		)
+		_content_vbox.add_child(group_header)
+		_group_headers[relation] = group_header
 
-		var container := VBoxContainer.new()
-		container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		container.add_theme_constant_override("separation", 2)
-		_content_vbox.add_child(container)
-		_sections[sp] = container
+		var group_container := VBoxContainer.new()
+		group_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		group_container.add_theme_constant_override("separation", 2)
+		_content_vbox.add_child(group_container)
+		_group_containers[relation] = group_container
 
 	# Start hidden.
 	visible = false
 
 
-func _section_title(species: String) -> String:
-	return SECTION_TITLES.get(species, species)
+## Initialize species display info from bridge data.
+func setup(bridge: SimBridge) -> void:
+	_bridge = bridge
+	for entry in bridge.get_species_display_info():
+		var sp_name: String = entry.get("name", "")
+		if sp_name != "":
+			_species_info[sp_name] = {
+				"plural_name": entry.get("plural_name", sp_name),
+				"display_order": entry.get("display_order", 0),
+			}
 
 
 func show_panel() -> void:
@@ -184,6 +202,62 @@ func _unhandled_input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 
 
+## Return the display_order for a species, defaulting to a high value.
+func _species_display_order(species: String) -> int:
+	var info: Dictionary = _species_info.get(species, {})
+	return info.get("display_order", 9999)
+
+
+## Return the plural display name for a species.
+func _species_plural(species: String) -> String:
+	var info: Dictionary = _species_info.get(species, {})
+	return info.get("plural_name", species)
+
+
+## Get or create a species section (header + container) within a relation group.
+func _ensure_species_section(relation: String, species: String) -> VBoxContainer:
+	var key := relation + ":" + species
+	if _species_sections.has(key):
+		return _species_sections[key]
+
+	# Create new species section.
+	var group_container: VBoxContainer = _group_containers[relation]
+
+	var header := Label.new()
+	header.text = _species_plural(species)
+	header.add_theme_font_size_override("font_size", 20)
+	header.add_theme_color_override("font_color", Color(0.85, 0.80, 0.65))
+	header.set_meta("display_order", _species_display_order(species))
+
+	var section := VBoxContainer.new()
+	section.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	section.add_theme_constant_override("separation", 2)
+
+	# Insert in display_order position among existing sections.
+	var new_order := _species_display_order(species)
+	var insert_idx := 0
+	var child_count := group_container.get_child_count()
+	# Children alternate: header, section, header, section...
+	var i := 0
+	while i < child_count:
+		var existing_header: Control = group_container.get_child(i)
+		var existing_order: int = existing_header.get_meta("display_order", 9999)
+		if existing_order > new_order:
+			insert_idx = i
+			break
+		i += 2
+		insert_idx = i
+
+	group_container.add_child(header)
+	group_container.move_child(header, insert_idx)
+	group_container.add_child(section)
+	group_container.move_child(section, insert_idx + 1)
+
+	_species_headers[key] = header
+	_species_sections[key] = section
+	return section
+
+
 ## Called each frame by main.gd with the result of bridge.get_all_creatures_summary().
 ## Uses reconciliation: creates new rows, updates existing ones, removes stale.
 func update_creatures(data: Array, bridge: SimBridge = null) -> void:
@@ -194,17 +268,32 @@ func update_creatures(data: Array, bridge: SimBridge = null) -> void:
 	for i in data.size():
 		var entry: Dictionary = data[i]
 		var sp: String = entry.get("species", "")
+		var relation: String = entry.get("player_relation", "neutral")
 		var creature_key: String = entry.get("creature_id", "")
 		seen_keys[creature_key] = true
 
 		if _creature_rows.has(creature_key):
-			_update_row(_creature_rows[creature_key], entry)
+			var row_info: Dictionary = _creature_rows[creature_key]
+			var row: HBoxContainer = row_info["row"]
+			var old_relation: String = row_info["relation"]
+			var old_species: String = row_info["species"]
+			_update_row(row, entry)
+			# If relation or species changed, move the row.
+			if old_relation != relation or old_species != sp:
+				row.get_parent().remove_child(row)
+				var section := _ensure_species_section(relation, sp)
+				section.add_child(row)
+				row_info["relation"] = relation
+				row_info["species"] = sp
 		else:
 			var row := _create_row(entry)
-			var section: VBoxContainer = _sections.get(sp)
-			if section:
-				section.add_child(row)
-			_creature_rows[creature_key] = row
+			var section := _ensure_species_section(relation, sp)
+			section.add_child(row)
+			_creature_rows[creature_key] = {
+				"row": row,
+				"relation": relation,
+				"species": sp,
+			}
 
 	# Remove rows for creatures no longer present.
 	var to_remove: Array = []
@@ -212,18 +301,31 @@ func update_creatures(data: Array, bridge: SimBridge = null) -> void:
 		if not seen_keys.has(key):
 			to_remove.append(key)
 	for key in to_remove:
-		var row: HBoxContainer = _creature_rows[key]
+		var row_info: Dictionary = _creature_rows[key]
+		var row: HBoxContainer = row_info["row"]
 		row.get_parent().remove_child(row)
 		row.queue_free()
 		_creature_rows.erase(key)
 
-	# Show/hide per-species section headers based on whether they have rows.
-	for sp in _species_order:
-		var section: VBoxContainer = _sections[sp]
+	# Show/hide species sections based on whether they have rows.
+	for key in _species_sections:
+		var section: VBoxContainer = _species_sections[key]
 		var has_creatures: bool = section.get_child_count() > 0
 		section.visible = has_creatures
-		var header: Label = _section_headers[sp]
+		var header: Label = _species_headers[key]
 		header.visible = has_creatures
+
+	# Show/hide relation group headers based on whether any species in the group
+	# has creatures.
+	for relation in RELATION_GROUPS:
+		var group_container: VBoxContainer = _group_containers[relation]
+		var has_any := false
+		for child_idx in group_container.get_child_count():
+			if group_container.get_child(child_idx).visible:
+				has_any = true
+				break
+		_group_headers[relation].visible = has_any
+		group_container.visible = has_any
 
 	# Top-level empty state.
 	var all_empty := _creature_rows.is_empty()

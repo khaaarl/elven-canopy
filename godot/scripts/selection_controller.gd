@@ -350,9 +350,7 @@ func _try_select(mouse_pos: Vector2, shift: bool, alt: bool) -> void:
 		# Roof shield: skip creatures inside the building (below roof).
 		if GeometryUtils.is_shielded_by_roof(int(pos.y), hit_is_roof, roof_y):
 			continue
-		var y_off: float = CreatureRenderer.SPECIES_Y_OFFSETS.get(
-			sel_species[i], CreatureRenderer.DEFAULT_Y_OFFSET
-		)
+		var y_off: float = CreatureSprites.get_y_offset(sel_species[i])
 		var world_pos := Vector3(pos.x + 0.5, pos.y + y_off, pos.z + 0.5)
 		var dist_sq := _point_to_ray_dist_sq(world_pos, ray_origin, ray_dir)
 		if dist_sq < best_dist_sq:
@@ -451,9 +449,7 @@ func _try_double_click_select(mouse_pos: Vector2, shift: bool) -> void:
 	var sel_group_ids: PackedInt32Array = sel_data.get("military_group_ids", PackedInt32Array())
 	for i in sel_positions.size():
 		var pos := sel_positions[i]
-		var y_off: float = CreatureRenderer.SPECIES_Y_OFFSETS.get(
-			sel_species[i], CreatureRenderer.DEFAULT_Y_OFFSET
-		)
+		var y_off: float = CreatureSprites.get_y_offset(sel_species[i])
 		var world_pos := Vector3(pos.x + 0.5, pos.y + y_off, pos.z + 0.5)
 
 		# Roof shield: skip creatures inside the building (below roof).
@@ -539,9 +535,7 @@ func _finish_box_select(end_pos: Vector2, shift: bool, alt: bool) -> void:
 	var sel_civ_flags: PackedByteArray = sel_data.get("is_player_civ", PackedByteArray())
 	for i in sel_positions.size():
 		var pos := sel_positions[i]
-		var y_off: float = CreatureRenderer.SPECIES_Y_OFFSETS.get(
-			sel_species[i], CreatureRenderer.DEFAULT_Y_OFFSET
-		)
+		var y_off: float = CreatureSprites.get_y_offset(sel_species[i])
 		var world_pos := Vector3(pos.x + 0.5, pos.y + y_off, pos.z + 0.5)
 		if not _camera.is_position_behind(world_pos):
 			var screen_pos := _camera.unproject_position(world_pos)
@@ -623,9 +617,7 @@ func _try_right_click_command(mouse_pos: Vector2, queue: bool) -> void:
 	var sel_positions: PackedVector3Array = sel_data.get("positions", PackedVector3Array())
 	for i in sel_positions.size():
 		var pos := sel_positions[i]
-		var y_off: float = CreatureRenderer.SPECIES_Y_OFFSETS.get(
-			sel_species[i], CreatureRenderer.DEFAULT_Y_OFFSET
-		)
+		var y_off: float = CreatureSprites.get_y_offset(sel_species[i])
 		var world_pos := Vector3(pos.x + 0.5, pos.y + y_off, pos.z + 0.5)
 		var dist_sq := _point_to_ray_dist_sq(world_pos, ray_origin, ray_dir)
 		if dist_sq < best_dist_sq:
@@ -680,9 +672,7 @@ func _execute_attack_move(mouse_pos: Vector2, queue: bool = false) -> void:
 	var sel_positions: PackedVector3Array = sel_data.get("positions", PackedVector3Array())
 	for i in sel_positions.size():
 		var pos := sel_positions[i]
-		var y_off: float = CreatureRenderer.SPECIES_Y_OFFSETS.get(
-			sel_species[i], CreatureRenderer.DEFAULT_Y_OFFSET
-		)
+		var y_off: float = CreatureSprites.get_y_offset(sel_species[i])
 		var world_pos := Vector3(pos.x + 0.5, pos.y + y_off, pos.z + 0.5)
 		var dist_sq := _point_to_ray_dist_sq(world_pos, ray_origin, ray_dir)
 		if dist_sq < best_dist_sq:

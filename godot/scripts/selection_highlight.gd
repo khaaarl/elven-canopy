@@ -10,8 +10,9 @@
 ## the circles.
 ##
 ## Uses a pool pattern: MeshInstance3D nodes are created on demand and
-## reused. Two pools exist — one for 1x1 creatures and one for 2x2
-## creatures (elephant, troll) which need larger rings. Each frame,
+## reused. Two pools exist — one for 1x1 creatures and one for larger
+## creatures (determined by footprint > 1x1x1 from SpeciesData config,
+## loaded via bridge.get_species_display_info() at setup). Each frame,
 ## main.gd passes the selected creature IDs and render tick; this script
 ## fetches positions and species via the bridge to place and color rings.
 ##
@@ -26,9 +27,6 @@ const COLOR_PLAYER := Color(0.3, 0.5, 1.0, 0.7)
 const COLOR_NEUTRAL := Color(1.0, 0.85, 0.2, 0.7)
 const COLOR_HOSTILE := Color(1.0, 0.2, 0.2, 0.7)
 
-## Species with 2x2 footprints that need larger rings.
-const LARGE_SPECIES = ["Elephant", "Troll"]
-
 ## Ring texture size in pixels.
 const TEX_SIZE := 64
 
@@ -37,6 +35,8 @@ const RING_OUTER := 0.48
 const RING_INNER := 0.38
 
 var _bridge: SimBridge
+## Species with footprints larger than 1x1x1, populated from bridge at setup.
+var _large_species: Dictionary = {}
 var _render_tick: float = 0.0
 
 ## Pool of MeshInstance3D for 1x1 creatures.
@@ -56,6 +56,12 @@ func setup(bridge: SimBridge) -> void:
 	_bridge = bridge
 	_small_mesh = _create_plane_mesh(1.0)
 	_large_mesh = _create_plane_mesh(2.0)
+	# Populate large species set from config footprint data.
+	for entry in bridge.get_species_display_info():
+		var sp_name: String = entry.get("name", "")
+		var fp: Vector3i = entry.get("footprint", Vector3i(1, 1, 1))
+		if fp.x > 1 or fp.y > 1 or fp.z > 1:
+			_large_species[sp_name] = true
 
 
 func set_render_tick(tick: float) -> void:
@@ -82,7 +88,7 @@ func update_highlights(selected_ids: Array) -> void:
 		var y: float = info.get("y", 0.0)
 		var z: float = info.get("z", 0.0)
 		var color := _relation_color(cid)
-		var is_large := species in LARGE_SPECIES
+		var is_large := _large_species.has(species)
 
 		if is_large:
 			var inst := _get_large(large_idx)

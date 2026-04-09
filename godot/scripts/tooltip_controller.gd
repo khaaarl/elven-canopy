@@ -168,9 +168,7 @@ func _find_hover_target() -> Dictionary:
 		var pos := sel_positions[i]
 		if GeometryUtils.is_shielded_by_roof(int(pos.y), hit_is_roof, roof_y):
 			continue
-		var y_off: float = CreatureRenderer.SPECIES_Y_OFFSETS.get(
-			sel_species[i], CreatureRenderer.DEFAULT_Y_OFFSET
-		)
+		var y_off: float = CreatureSprites.get_y_offset(sel_species[i])
 		var world_pos := Vector3(pos.x + 0.5, pos.y + y_off, pos.z + 0.5)
 		var dist_sq := _point_to_ray_dist_sq(world_pos, ray_origin, ray_dir)
 		if dist_sq < best_dist_sq:
