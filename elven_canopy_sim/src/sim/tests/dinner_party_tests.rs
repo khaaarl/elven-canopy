@@ -353,6 +353,14 @@ fn dinner_party_full_lifecycle() {
 
     let food_max = sim.species_table[&Species::Elf].food_max;
 
+    // Disable food/rest decay so needs-based tasks don't preempt the activity
+    // during the step.
+    {
+        let elf = sim.species_table.get_mut(&Species::Elf).unwrap();
+        elf.food_decay_per_tick = 0;
+        elf.rest_decay_per_tick = 0;
+    }
+
     // Create dining hall with plenty of food.
     let hall_id = create_dining_hall(&mut sim, table_pos, 10);
 
@@ -363,10 +371,13 @@ fn dinner_party_full_lifecycle() {
     sim.config.activity.dinner_party_duration_secs = 5.0;
     sim.config.activity.dinner_party_impressions_per_elf = 2;
 
-    // Spawn two elves and make them hungry enough to organize/join.
+    // Spawn two elves, clear any tasks from spawn, and make them hungry
+    // enough to organize/join.
     let elf_a = spawn_creature(&mut sim, Species::Elf);
     let elf_b = spawn_creature(&mut sim, Species::Elf);
     for eid in [elf_a, elf_b] {
+        force_idle_and_cancel_activations(&mut sim, eid);
+        force_position(&mut sim, eid, table_pos);
         let mut c = sim.db.creatures.get(&eid).unwrap();
         c.food = food_max * 55 / 100;
         sim.db.update_creature(c).unwrap();
@@ -391,16 +402,19 @@ fn dinner_party_full_lifecycle() {
         "Activity should be Assembling after quorum"
     );
 
-    // Simulate arrival: set both participants to Arrived.
+    // Simulate arrival: set both participants to Arrived and positioned at
+    // the dining hall.
     for eid in [elf_a, elf_b] {
         if let Some(mut p) = sim.db.activity_participants.get(&(activity_id, eid)) {
             p.status = ParticipantStatus::Arrived;
             p.travel_task = None;
             sim.db.update_activity_participant(p).unwrap();
         }
-        // Clear current_task (GoTo would have been completed).
+        // Clear current_task (GoTo would have been completed) and ensure
+        // activation isn't suppressed.
         if let Some(mut c) = sim.db.creatures.get(&eid) {
             c.current_task = None;
+            c.next_available_tick = Some(sim.tick + 1);
             sim.db.update_creature(c).unwrap();
         }
     }
@@ -493,6 +507,13 @@ fn dinner_party_social_impressions_generated() {
 
     let food_max = sim.species_table[&Species::Elf].food_max;
 
+    // Disable food/rest decay so needs-based tasks don't preempt the activity.
+    {
+        let elf = sim.species_table.get_mut(&Species::Elf).unwrap();
+        elf.food_decay_per_tick = 0;
+        elf.rest_decay_per_tick = 0;
+    }
+
     create_dining_hall(&mut sim, table_pos, 10);
 
     sim.config.activity.dinner_party_organize_chance_ppm = 1_000_000;
@@ -505,6 +526,8 @@ fn dinner_party_social_impressions_generated() {
     let elf_a = spawn_creature(&mut sim, Species::Elf);
     let elf_b = spawn_creature(&mut sim, Species::Elf);
     for eid in [elf_a, elf_b] {
+        force_idle_and_cancel_activations(&mut sim, eid);
+        force_position(&mut sim, eid, table_pos);
         let mut c = sim.db.creatures.get(&eid).unwrap();
         c.food = food_max * 55 / 100;
         sim.db.update_creature(c).unwrap();
@@ -530,8 +553,10 @@ fn dinner_party_social_impressions_generated() {
             p.travel_task = None;
             sim.db.update_activity_participant(p).unwrap();
         }
+        // Clear current_task and ensure activation isn't suppressed.
         if let Some(mut c) = sim.db.creatures.get(&eid) {
             c.current_task = None;
+            c.next_available_tick = Some(sim.tick + 1);
             sim.db.update_creature(c).unwrap();
         }
     }
@@ -683,6 +708,11 @@ fn dinner_party_food_consumed_from_hall_inventory() {
     let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
     let food_max = sim.species_table[&Species::Elf].food_max;
+    {
+        let elf = sim.species_table.get_mut(&Species::Elf).unwrap();
+        elf.food_decay_per_tick = 0;
+        elf.rest_decay_per_tick = 0;
+    }
 
     let hall_id = create_dining_hall(&mut sim, table_pos, 10);
 
@@ -693,6 +723,8 @@ fn dinner_party_food_consumed_from_hall_inventory() {
     let elf_a = spawn_creature(&mut sim, Species::Elf);
     let elf_b = spawn_creature(&mut sim, Species::Elf);
     for eid in [elf_a, elf_b] {
+        force_idle_and_cancel_activations(&mut sim, eid);
+        force_position(&mut sim, eid, table_pos);
         let mut c = sim.db.creatures.get(&eid).unwrap();
         c.food = food_max * 55 / 100;
         sim.db.update_creature(c).unwrap();
@@ -719,6 +751,7 @@ fn dinner_party_food_consumed_from_hall_inventory() {
         }
         if let Some(mut c) = sim.db.creatures.get(&eid) {
             c.current_task = None;
+            c.next_available_tick = Some(sim.tick + 1);
             sim.db.update_creature(c).unwrap();
         }
     }
@@ -800,6 +833,11 @@ fn dinner_party_eat_graceful_when_no_food_available() {
     let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
     let food_max = sim.species_table[&Species::Elf].food_max;
+    {
+        let elf = sim.species_table.get_mut(&Species::Elf).unwrap();
+        elf.food_decay_per_tick = 0;
+        elf.rest_decay_per_tick = 0;
+    }
 
     // Create hall with 2 food (enough for min_count), then drain it.
     let structure_id = create_dining_hall(&mut sim, table_pos, 2);
@@ -811,6 +849,8 @@ fn dinner_party_eat_graceful_when_no_food_available() {
     let elf_a = spawn_creature(&mut sim, Species::Elf);
     let elf_b = spawn_creature(&mut sim, Species::Elf);
     for eid in [elf_a, elf_b] {
+        force_idle_and_cancel_activations(&mut sim, eid);
+        force_position(&mut sim, eid, table_pos);
         let mut c = sim.db.creatures.get(&eid).unwrap();
         c.food = food_max * 55 / 100;
         sim.db.update_creature(c).unwrap();
@@ -835,6 +875,7 @@ fn dinner_party_eat_graceful_when_no_food_available() {
         }
         if let Some(mut c) = sim.db.creatures.get(&eid) {
             c.current_task = None;
+            c.next_available_tick = Some(sim.tick + 1);
             sim.db.update_creature(c).unwrap();
         }
     }
@@ -875,6 +916,11 @@ fn dinner_party_zero_impressions_completes_cleanly() {
     let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
     let food_max = sim.species_table[&Species::Elf].food_max;
+    {
+        let elf = sim.species_table.get_mut(&Species::Elf).unwrap();
+        elf.food_decay_per_tick = 0;
+        elf.rest_decay_per_tick = 0;
+    }
 
     create_dining_hall(&mut sim, table_pos, 10);
 
@@ -886,6 +932,8 @@ fn dinner_party_zero_impressions_completes_cleanly() {
     let elf_a = spawn_creature(&mut sim, Species::Elf);
     let elf_b = spawn_creature(&mut sim, Species::Elf);
     for eid in [elf_a, elf_b] {
+        force_idle_and_cancel_activations(&mut sim, eid);
+        force_position(&mut sim, eid, table_pos);
         let mut c = sim.db.creatures.get(&eid).unwrap();
         c.food = food_max * 55 / 100;
         sim.db.update_creature(c).unwrap();
@@ -905,6 +953,7 @@ fn dinner_party_zero_impressions_completes_cleanly() {
         }
         if let Some(mut c) = sim.db.creatures.get(&eid) {
             c.current_task = None;
+            c.next_available_tick = Some(sim.tick + 1);
             sim.db.update_creature(c).unwrap();
         }
     }
