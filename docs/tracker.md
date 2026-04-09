@@ -9436,6 +9436,13 @@ Each migration surfaces new flakes needing individual hardening. The
 infrastructure is in place; the work is case-by-case. Expect ~1-3 flakes
 per batch of ~50 tests migrated.
 
+**Known flaky test to investigate:**
+- `dinner_party_full_lifecycle` (dinner_party_tests.rs:423) — asserts
+  "Activity should be deleted after completion" but the activity sometimes
+  still exists. Failed in CI on 2026-04-09 (workflow_dispatch run on main).
+  Likely the dinner party doesn't complete within the test's tick budget
+  for some seeds.
+
 **Blocks:** F-random-seeds
 
 #### B-mesh-global-cfg — Mesh pipeline global atomics cause test flakiness risk
