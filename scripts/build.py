@@ -58,6 +58,14 @@ if IS_WINDOWS and "CARGO_TARGET_DIR" not in os.environ:
         )
     os.environ["CARGO_TARGET_DIR"] = str(_WIN_TARGET)
 
+# On Windows, force the Ninja CMake generator. The default Visual Studio
+# generator runs ExternalProject steps in parallel via MSBuild, causing a race
+# condition in llama.cpp's vulkan-shaders-gen build (known issues #13753,
+# #8562). Ninja builds dependency chains sequentially, avoiding the race.
+# The user can override by setting CMAKE_GENERATOR before running build.py.
+if IS_WINDOWS and "CMAKE_GENERATOR" not in os.environ:
+    os.environ["CMAKE_GENERATOR"] = "Ninja"
+
 # Crate directories used by `quicktest` to detect changes and by `check` for
 # scoped clippy.  In quicktest, multiplayer_tests is always appended separately
 # (not detected by directory changes).  In check/clippy, all are included.
