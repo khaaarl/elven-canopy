@@ -399,11 +399,15 @@ jobs:
   # iOS (arm64) — unsigned Xcode project
   # Requires real Apple Developer credentials (team ID, icons, signing) to
   # fully succeed. Marked continue-on-error so it doesn't block releases.
+  #
+  # DISABLED: This job has never passed — it needs real Apple signing
+  # credentials we don't have yet. Kept here for when we set those up.
+  # To re-enable, remove the `if: false` line below.
   # ---------------------------------------------------------------------------
   build-ios:
+    if: false  # disabled — see comment above
     needs: [require-ci, prepare]
     runs-on: macos-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
