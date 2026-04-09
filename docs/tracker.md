@@ -47,7 +47,6 @@ This reduces merge conflicts when parallel work streams add items.
 ### In Progress
 
 ```
-[~] B-fragile-tests        Audit and harden tests against PRNG stream shifts and worldgen changes
 [~] B-ghost-chunks         Ghost chunks in distance remain visible after they should be hidden
 [~] B-qem-deformation      QEM decimation visual artifacts
 [~] F-creature-skills      Creature skill system (17 universal skills with path-gated advancement)
@@ -334,6 +333,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-flyable-shared       Replace footprint_flyable with shared footprint_fits helper
 [x] B-flying-arrow-chase   Flying creatures excluded from arrow-chase
 [x] B-flying-tasks         Flying creatures skip task system entirely
+[x] B-fragile-tests        Audit and harden tests against PRNG stream shifts and worldgen changes
 [x] B-ground-only          Remove ground_only field; use MovementCategory for all movement constraints
 [x] B-hostile-detect-nav   detect_hostile_targets panics on flying targets (NavNodeId u32::MAX hack)
 [x] B-large-fall-deflect   Large creatures may land at invalid positions during gravity fall
@@ -9404,22 +9404,22 @@ In SP there's one player. If that player is behind, the relay slows down. The cl
 ### Testing Infrastructure
 
 #### B-fragile-tests — Audit and harden tests against PRNG stream shifts and worldgen changes
-**Status:** In Progress
+**Status:** Done
 
 Harden sim tests so they don't break when worldgen or PRNG changes.
 
-**Progress (B-fragile-tests branch, 2026-03-30):**
+**Complete.** All sim tests now use `fresh_test_seed()` (random per
+process, printed on failure for reproducibility). The legacy seed-42
+infrastructure has been removed.
 
-Major infrastructure added:
+**Infrastructure added:**
 - `flat_world_sim()` — treeless test world with cached geometry, civs,
-  diplomacy. Most combat/flee/movement tests migrated here.
+  diplomacy. Most combat/flee/movement tests use this.
 - `ensure_tree_has_fruit()` — guarantees fruit on tree for dependent tests.
-- `legacy_test_seed()` / `fresh_test_seed()` — two-tier seed system.
-  Legacy returns 42 (stable); fresh returns random with seed-on-failure
-  printing. All existing tests use legacy; new tests should use fresh.
+- `fresh_test_seed()` — random seed per process, printed on failure.
 - `leaf_size` changed from 3 to 5 (matches game default).
 
-Robustness fixes applied across ~25 test files:
+**Robustness fixes applied across all test files:**
 - Activation race prevention (force_idle_and_cancel_activations,
   suppress_activation before commands)
 - force_guaranteed_hits + zero_creature_stats for deterministic combat
@@ -9431,29 +9431,19 @@ Robustness fixes applied across ~25 test files:
 - Horizontal raycast to avoid tree canopy interference
 - Statistical tests: wider bounds, more trials
 
-Pre-existing bugs found and fixed:
+**Pre-existing bugs found and fixed:**
 - config.species vs species_table mutation (23 occurrences, 5 files)
 - insert_trait silent failure on duplicate PK (7 occurrences)
 - discover_civ no-op when relationship exists (multiple tests)
 
-Perturbation audit results after fixes:
-- leaf_size 3→5: 0 failures (was 21)
-- seed 42→99: 0 real failures (was 10)
+**Migration (B-fragile-tests-batch2 branch):**
+All ~1,260 legacy_test_seed() call sites across 20 test files migrated
+to fresh_test_seed(). Three tests hardened during migration:
+- flee_tests::elf_flees_from_adjacent_goblin (explicit elf positioning)
+- activation_tests::attack_move_creature_wanders (larger tick budget)
+- movement_tests::troll_pursues_elf (explicit positioning for both)
 
-**What remains (future work):**
-Gradually migrate tests from `legacy_test_seed()` to `fresh_test_seed()`.
-Each migration surfaces new flakes needing individual hardening. The
-infrastructure is in place; the work is case-by-case. Expect ~1-3 flakes
-per batch of ~50 tests migrated.
-
-**Known flaky test to investigate:**
-- `dinner_party_full_lifecycle` (dinner_party_tests.rs:423) — asserts
-  "Activity should be deleted after completion" but the activity sometimes
-  still exists. Failed in CI on 2026-04-09 (workflow_dispatch run on main).
-  Likely the dinner party doesn't complete within the test's tick budget
-  for some seeds.
-
-**Blocks:** F-random-seeds
+**Unblocked:** F-random-seeds
 
 #### B-mesh-global-cfg — Mesh pipeline global atomics cause test flakiness risk
 **Status:** Done

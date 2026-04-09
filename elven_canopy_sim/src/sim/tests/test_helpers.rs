@@ -29,34 +29,17 @@ pub(super) fn home_voxel_zone(sim: &SimState) -> &VoxelZone {
     sim.voxel_zone(sim.home_zone_id()).unwrap()
 }
 
-/// Hardcoded seed for existing tests. These tests have been hardened
-/// against many fragility patterns (activation races, stat-dependent
-/// behavior, fruit existence, etc.) but haven't yet been validated
-/// with fully random seeds. To advance them to `fresh_test_seed()`,
-/// switch them one at a time and fix any flakes that surface.
-pub(super) fn legacy_test_seed() -> u64 {
-    42
-}
-
 /// Return the fresh seed for this test run. The seed is generated once
 /// per process (via `FRESH_SEED`) and reused by all tests, so
 /// `test_sim(fresh_test_seed())` and `flat_world_sim(fresh_test_seed())`
 /// hit their respective caches. Printed to stderr on every call so the
 /// seed appears in each failing test's captured output, making flake
 /// reproduction easy without scrolling back to the initial print.
-///
-/// Use this for NEW tests. Existing tests use `legacy_test_seed()`.
-#[allow(dead_code)] // Will be used as new tests are added.
 pub(super) fn fresh_test_seed() -> u64 {
     let seed = *FRESH_SEED;
     eprintln!("fresh_test_seed: {seed}");
     seed
 }
-
-/// Cached seed-42 SimState for test_sim(42) performance. Most legacy tests
-/// use seed 42 via legacy_test_seed(), so this cache covers them all.
-pub(super) static CACHED_SIM_42: LazyLock<SimState> =
-    LazyLock::new(|| SimState::with_config(42, test_config()));
 
 /// Cached fresh-seed SimState for test_sim(fresh_test_seed()) performance.
 /// Built once per test run with the fresh seed.
@@ -109,12 +92,9 @@ pub(super) fn test_config() -> GameConfig {
 }
 
 /// Create a test SimState with a small world for fast tests.
-/// Seed 42 and the fresh seed clone from cached instances; other seeds
-/// construct fresh.
+/// The fresh seed clones from a cached instance; other seeds construct fresh.
 pub(super) fn test_sim(seed: u64) -> SimState {
-    if seed == 42 {
-        CACHED_SIM_42.clone()
-    } else if seed == *FRESH_SEED {
+    if seed == *FRESH_SEED {
         CACHED_SIM_FRESH.clone()
     } else {
         SimState::with_config(seed, test_config())

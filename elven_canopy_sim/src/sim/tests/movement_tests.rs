@@ -185,7 +185,7 @@ fn interpolated_position_stationary() {
 fn interpolated_position_with_build_action_returns_static() {
     let mut config = test_config();
     config.build_work_ticks_per_voxel = 100_000;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
     let air_coord = find_air_adjacent_to_trunk(&sim);
     let elf_id = spawn_elf(&mut sim);
 
@@ -231,7 +231,7 @@ fn walk_toward_dead_task_node_does_not_panic() {
     // Reproduce B-dead-node-panic: a creature has a task whose location
     // nav node gets removed by an incremental update. The creature should
     // gracefully abandon the task instead of panicking in pathfinding.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn an elf.
@@ -316,7 +316,7 @@ fn walk_toward_dead_task_node_does_not_panic() {
 
 #[test]
 fn pursuit_task_repaths_when_target_moves() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let pursuer_id = spawn_elf(&mut sim);
     let target_id = spawn_second_elf(&mut sim);
 
@@ -369,7 +369,7 @@ fn pursuit_task_repaths_when_target_moves() {
 
 #[test]
 fn pursuit_task_completes_when_adjacent() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let pursuer_id = spawn_elf(&mut sim);
     let target_id = spawn_second_elf(&mut sim);
 
@@ -446,7 +446,7 @@ fn pursuit_task_completes_when_adjacent() {
 
 #[test]
 fn pursuit_task_abandons_when_target_gone() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let pursuer_id = spawn_elf(&mut sim);
     let target_id = spawn_second_elf(&mut sim);
 
@@ -495,7 +495,7 @@ fn pursuit_task_abandons_when_target_gone() {
 
 #[test]
 fn pursuit_task_abandons_when_target_unreachable() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let pursuer_id = spawn_elf(&mut sim);
     let target_id = spawn_second_elf(&mut sim);
 
@@ -527,7 +527,7 @@ fn pursuit_task_abandons_when_target_unreachable() {
 #[test]
 fn non_pursuit_tasks_unaffected() {
     // Verify existing GoTo tasks (without target_creature) still work.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let elf_node = creature_pos(&sim, elf_id);
 
@@ -551,7 +551,7 @@ fn non_pursuit_tasks_unaffected() {
 
 #[test]
 fn pursuit_task_serde_roundtrip() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let pursuer_id = spawn_elf(&mut sim);
     let target_id = spawn_second_elf(&mut sim);
     let target_node = creature_pos(&sim, target_id);
@@ -581,7 +581,7 @@ fn pursuit_task_serde_roundtrip() {
 
 #[test]
 fn find_available_task_prefers_nearest_by_nav_distance() {
-    let mut sim = flat_world_sim(legacy_test_seed());
+    let mut sim = flat_world_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn an elf near the tree.
@@ -696,7 +696,7 @@ fn find_available_task_prefers_nearest_by_nav_distance() {
 
 #[test]
 fn find_available_task_single_candidate_skips_dijkstra() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
@@ -754,7 +754,7 @@ fn find_available_task_single_candidate_skips_dijkstra() {
 
 #[test]
 fn find_available_task_respects_species_filter_with_proximity() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn a capybara (non-elf).
@@ -820,21 +820,24 @@ fn troll_pursues_elf_cross_species_pathfinding() {
     // Trolls (2x2x2) and elves (1x1x1) use different footprints for
     // pathfinding. A troll should still be able to pursue a nearby elf
     // using voxel-direct A* even when footprint sizes differ.
-    let mut sim = flat_world_sim(legacy_test_seed());
+    let mut sim = flat_world_sim(fresh_test_seed());
     let mut events = Vec::new();
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
-    // Spawn troll near the tree.
+    // Spawn troll and elf, then force them to explicit nearby positions
+    // so detection range is guaranteed regardless of spawn snapping.
     let troll_id = sim
         .spawn_creature(Species::Troll, tree_pos, sim.home_zone_id(), &mut events)
         .expect("spawn troll");
-    let troll_pos = sim.db.creatures.get(&troll_id).unwrap().position.min;
-
-    // Spawn elf within troll detection range (~12 voxels).
-    let elf_spawn_pos = VoxelCoord::new(troll_pos.x + 5, troll_pos.y, troll_pos.z);
     let elf_id = sim
-        .spawn_creature(Species::Elf, elf_spawn_pos, sim.home_zone_id(), &mut events)
+        .spawn_creature(Species::Elf, tree_pos, sim.home_zone_id(), &mut events)
         .expect("spawn elf");
+
+    // Place troll at (30,1,30) and elf 5 voxels away — well within detection range.
+    let troll_pos = VoxelCoord::new(30, 1, 30);
+    let elf_spawn_pos = VoxelCoord::new(troll_pos.x + 5, troll_pos.y, troll_pos.z);
+    force_position(&mut sim, troll_id, troll_pos);
+    force_position(&mut sim, elf_id, elf_spawn_pos);
 
     force_idle_and_cancel_activations(&mut sim, troll_id);
     force_idle_and_cancel_activations(&mut sim, elf_id);
@@ -855,7 +858,7 @@ fn troll_pursues_elf_cross_species_pathfinding() {
 #[test]
 fn voxel_exclusion_hostile_blocks_movement() {
     // A goblin at node B should prevent an elf from moving to node B.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -886,7 +889,7 @@ fn voxel_exclusion_hostile_blocks_movement() {
 #[test]
 fn voxel_exclusion_non_hostile_does_not_block() {
     // Two elves (same civ) should be able to share a voxel.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_a = spawn_elf(&mut sim);
     let elf_b = spawn_elf(&mut sim);
 
@@ -915,7 +918,7 @@ fn voxel_exclusion_non_hostile_does_not_block() {
 fn voxel_exclusion_self_does_not_block() {
     // A creature should not block itself (e.g., when source and dest
     // footprints overlap for large creatures).
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
 
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
@@ -930,7 +933,7 @@ fn voxel_exclusion_self_does_not_block() {
 #[test]
 fn voxel_exclusion_dead_hostile_does_not_block() {
     // A dead goblin should not block an elf's movement.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -956,7 +959,7 @@ fn voxel_exclusion_dead_hostile_does_not_block() {
 fn voxel_exclusion_bidirectional_blocking() {
     // Both elf and goblin should be blocked from entering each other's
     // voxels — exclusion is symmetric.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -983,7 +986,7 @@ fn voxel_exclusion_bidirectional_blocking() {
 fn voxel_exclusion_hostile_pursue_blocked() {
     // A goblin pursuing an elf should be blocked when the elf occupies
     // the destination voxel (but the goblin can still attack from range).
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
 
@@ -1034,7 +1037,7 @@ fn voxel_exclusion_hostile_pursue_blocked() {
 #[test]
 fn voxel_exclusion_wander_avoids_hostile_voxels() {
     // An elf wandering should not pick an edge leading to a hostile's voxel.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -1070,7 +1073,7 @@ fn voxel_exclusion_wander_avoids_hostile_voxels() {
 #[test]
 fn voxel_exclusion_flee_avoids_hostile_voxels() {
     // A fleeing elf should prefer edges not occupied by hostiles.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -1105,7 +1108,7 @@ fn voxel_exclusion_flee_cornered_still_moves() {
     // If ALL neighboring voxels have hostiles, the fleeing creature should
     // still be allowed to move (flee fallback — better to move through a
     // hostile than freeze).
-    let mut sim = flat_world_sim(legacy_test_seed());
+    let mut sim = flat_world_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
 
     // Use a flat-world position so all 26 neighbors are walkable.
@@ -1185,7 +1188,7 @@ fn voxel_exclusion_flee_cornered_still_moves() {
 #[test]
 fn voxel_exclusion_ground_move_one_step_returns_false_when_blocked() {
     // Directly test ground_move_one_step returns false when destination is hostile.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -1214,7 +1217,7 @@ fn voxel_exclusion_skip_exclusion_allows_blocked_move() {
     // ground_move_one_step_inner with skip_exclusion=true should succeed even
     // when the destination is hostile-occupied. This is the mechanism
     // used by ground_flee_step's cornered fallback.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -1251,7 +1254,7 @@ fn voxel_exclusion_skip_exclusion_allows_blocked_move() {
 #[test]
 fn voxel_exclusion_ground_move_one_step_returns_true_when_clear() {
     // ground_move_one_step should return true when destination is clear.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
 
     let (node_a, node_b) = find_connected_pair(&sim);
@@ -1271,7 +1274,7 @@ fn voxel_exclusion_ground_move_one_step_returns_true_when_clear() {
 #[test]
 fn voxel_exclusion_blocked_schedules_retry() {
     // When movement is blocked, a retry activation should be scheduled.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -1307,7 +1310,7 @@ fn voxel_exclusion_already_overlapping_allowed() {
     // If two hostile creatures are already in the same voxel (e.g., both
     // spawned there), they should be allowed to stay — the check only
     // prevents MOVING into a hostile's voxel.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -1338,7 +1341,7 @@ fn voxel_exclusion_already_overlapping_allowed() {
 #[test]
 fn voxel_exclusion_different_hostile_civs_block() {
     // Two creatures from different hostile civs should block each other.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     let orc = spawn_species(&mut sim, Species::Orc);
 
@@ -1363,7 +1366,7 @@ fn voxel_exclusion_different_hostile_civs_block() {
 #[test]
 fn voxel_exclusion_two_non_civ_same_species_share() {
     // Two non-civ goblins should NOT block each other (they're non-hostile).
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let g1 = spawn_species(&mut sim, Species::Goblin);
     let g2 = spawn_species(&mut sim, Species::Goblin);
 
@@ -1389,7 +1392,7 @@ fn voxel_exclusion_two_non_civ_same_species_share() {
 fn voxel_exclusion_large_creature_blocked_by_small_hostile_in_footprint() {
     // An elephant (2x2x2) should be blocked if a goblin occupies any
     // voxel within the elephant's destination footprint.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elephant = spawn_species(&mut sim, Species::Elephant);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -1432,7 +1435,7 @@ fn voxel_exclusion_large_creature_blocked_by_small_hostile_in_footprint() {
 fn voxel_exclusion_small_creature_blocked_by_large_hostile_footprint() {
     // A 1x1x1 elf should be blocked if a troll (2x2x2, aggressive) has
     // a footprint covering the elf's destination voxel.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
 
     let troll_fp = sim.species_table[&Species::Troll].footprint;
@@ -1478,7 +1481,7 @@ fn voxel_exclusion_config_retry_ticks_respected() {
     // retry delay (500 ticks), block a move, then step to 499 — the elf
     // should still be at the original position. Step to 501 — the retry
     // activation fires (elf attempts to move or re-evaluates).
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     sim.config.voxel_exclusion_retry_ticks = 500;
 
     let elf = spawn_elf(&mut sim);
@@ -1530,7 +1533,7 @@ fn voxel_exclusion_config_retry_ticks_respected() {
 #[test]
 fn voxel_exclusion_walk_toward_task_blocked() {
     // An elf walking toward a task should be blocked by a hostile in its path.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -1603,7 +1606,7 @@ fn voxel_exclusion_walk_toward_task_clears_cached_path() {
     // When walk_toward_task is blocked by a hostile, the creature's
     // cached path should be invalidated (set to None) so a fresh
     // path is computed on retry.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -1657,7 +1660,7 @@ fn voxel_exclusion_walk_toward_task_clears_cached_path() {
 fn voxel_exclusion_hostile_dies_creature_retries_and_moves() {
     // A creature blocked by a hostile should successfully move once
     // the hostile dies and the retry activation fires.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -1711,7 +1714,7 @@ fn voxel_exclusion_hostile_dies_creature_retries_and_moves() {
 fn voxel_exclusion_attack_target_task_blocked_by_hostile() {
     // An elf with a player-directed AttackTarget task walking toward
     // its target should be blocked by a different hostile in the path.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     let target_goblin = spawn_species(&mut sim, Species::Goblin);
     let blocking_goblin = spawn_species(&mut sim, Species::Goblin);
@@ -1763,7 +1766,7 @@ fn voxel_exclusion_attack_target_task_blocked_by_hostile() {
 fn voxel_exclusion_attack_move_task_blocked_by_hostile() {
     // An elf with an AttackMove task walking toward a destination
     // should be blocked by a hostile in the path.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -1829,7 +1832,7 @@ fn creature_path_serde_roundtrip() {
 /// but actually completes or re-evaluates its task).
 #[test]
 fn cached_path_reroutes_when_nav_node_destroyed() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
 
     // Find two connected nodes: start (A) and destination (B).
@@ -1906,7 +1909,7 @@ fn cached_path_reroutes_when_nav_node_destroyed() {
 
 #[test]
 fn hornet_pursues_and_damages_elf() {
-    let mut sim = flat_world_sim(legacy_test_seed());
+    let mut sim = flat_world_sim(fresh_test_seed());
     let elf_id = spawn_elf(&mut sim);
     zero_creature_stats(&mut sim, elf_id);
     force_idle_and_cancel_activations(&mut sim, elf_id);
@@ -1942,7 +1945,7 @@ fn hornet_pursues_and_damages_elf() {
 
 #[test]
 fn hornet_wanders_when_alone() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Spawn hornet far from any creatures.
     let pos = VoxelCoord::new(5, 50, 5);
     let hornet_id = spawn_hornet_at(&mut sim, pos);
@@ -2030,7 +2033,7 @@ fn aggressive_elf_vs_hornet_at_heights() {
     ];
 
     for case in &cases {
-        let mut sim = flat_world_sim(legacy_test_seed());
+        let mut sim = flat_world_sim(fresh_test_seed());
         let (elf_id, elf_pos) = setup_aggressive_elf(&mut sim);
         force_guaranteed_hits(&mut sim, elf_id);
 
@@ -2149,7 +2152,7 @@ fn ordered_elf_vs_hornet_at_heights() {
     ];
 
     for case in &cases {
-        let mut sim = flat_world_sim(legacy_test_seed());
+        let mut sim = flat_world_sim(fresh_test_seed());
         let elf_id = spawn_elf(&mut sim);
         zero_creature_stats(&mut sim, elf_id);
         force_guaranteed_hits(&mut sim, elf_id);
@@ -2214,7 +2217,7 @@ fn ordered_elf_vs_hornet_at_heights() {
 
 #[test]
 fn wyvern_pursues_and_damages_elf() {
-    let mut sim = flat_world_sim(legacy_test_seed());
+    let mut sim = flat_world_sim(fresh_test_seed());
     let elf_id = spawn_elf(&mut sim);
     // Place elf at a known position and freeze so the wyvern can chase.
     let elf_pos = VoxelCoord::new(32, 1, 32);
@@ -2252,7 +2255,7 @@ fn wyvern_pursues_and_damages_elf() {
 
 #[test]
 fn creature_on_solid_ground_does_not_fall() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Spawn an elf away from the tree at a known ground position.
     let mut events = Vec::new();
     let elf_id = sim
@@ -2276,7 +2279,7 @@ fn creature_on_solid_ground_does_not_fall() {
 
 #[test]
 fn creature_falls_when_platform_removed() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Use a low platform so the fall is survivable (2 voxels = 20 damage).
     let platform_pos = VoxelCoord::new(10, 2, 10);
     sim.voxel_zone_mut(sim.home_zone_id())
@@ -2341,7 +2344,7 @@ fn creature_falls_when_platform_removed() {
 
 #[test]
 fn fatal_fall_kills_creature() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Place a very high platform so the fall is lethal.
     let platform_y = 40;
     let platform_pos = VoxelCoord::new(10, platform_y, 10);
@@ -2400,7 +2403,7 @@ fn fatal_fall_kills_creature() {
 
 #[test]
 fn zero_fall_damage_config_means_no_damage() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     sim.config.fall_damage_per_voxel = 0;
 
     let platform_pos = VoxelCoord::new(10, 10, 10);
@@ -2435,7 +2438,7 @@ fn zero_fall_damage_config_means_no_damage() {
 
 #[test]
 fn climber_on_trunk_does_not_fall() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Place trunk voxels to create a trunk surface nav node.
     // The test world has floor_y=0, so trunk at y=1..5.
     for y in 1..6 {
@@ -2482,7 +2485,7 @@ fn climber_on_trunk_does_not_fall() {
 
 #[test]
 fn walk_only_creature_without_solid_below_falls() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Spawn a capybara (WalkOnly) at ground level.
     let capy_id = spawn_creature(&mut sim, Species::Capybara);
     let pos = sim.db.creatures.get(&capy_id).unwrap().position.min;
@@ -2512,7 +2515,7 @@ fn walk_only_creature_without_solid_below_falls() {
 
 #[test]
 fn flying_creature_does_not_fall() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Spawn a hornet (flying creature) and move it mid-air.
     let mut events = Vec::new();
     let hornet_id = sim
@@ -2545,7 +2548,7 @@ fn flying_creature_does_not_fall() {
 
 #[test]
 fn creature_gravity_at_activation_time() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Place a platform and spawn an elf on it.
     let platform_pos = VoxelCoord::new(10, 5, 10);
     sim.voxel_zone_mut(sim.home_zone_id())
@@ -2589,7 +2592,7 @@ fn creature_gravity_at_activation_time() {
 
 #[test]
 fn creature_gravity_clears_task_and_path() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let platform_pos = VoxelCoord::new(10, 5, 10);
     sim.voxel_zone_mut(sim.home_zone_id())
         .unwrap()
@@ -2651,7 +2654,7 @@ fn creature_gravity_clears_task_and_path() {
 
 #[test]
 fn logistics_heartbeat_triggers_creature_gravity() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let platform_pos = VoxelCoord::new(10, 5, 10);
     sim.voxel_zone_mut(sim.home_zone_id())
         .unwrap()
@@ -2697,7 +2700,7 @@ fn logistics_heartbeat_triggers_creature_gravity() {
 
 #[test]
 fn large_creature_falls_when_ground_removed() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Elephants use 2x2x2 footprint walkability. Place a 2x2 platform at y=5
     // and spawn an elephant on it.
     for dx in 0..2 {
@@ -2753,7 +2756,7 @@ fn large_creature_falls_when_ground_removed() {
 
 #[test]
 fn degenerate_landing_teleports_to_nearest_node() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Place a creature at a position with no solid surface below in its
     // column — deep in the air with no ground. The column at x=10, z=10
     // has terrain at y=0, so normally find_surface_below would find it.
@@ -2818,7 +2821,7 @@ fn degenerate_landing_teleports_to_nearest_node() {
 
 #[test]
 fn walk_only_with_nav_node_but_no_solid_below_falls() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Test creature_is_supported: a WalkOnly creature at a nav node
     // position without solid below should be unsupported.
     // Build a platform, rebuild nav so there's a node, then force the
@@ -2892,7 +2895,7 @@ fn walk_only_with_nav_node_but_no_solid_below_falls() {
 /// though the destination may have no nearby nav node.
 #[test]
 fn flying_creature_directed_goto_creates_task() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let air_pos = VoxelCoord::new(tree_pos.x + 5, tree_pos.y + 10, tree_pos.z);
     let hornet = spawn_hornet_at(&mut sim, air_pos);
@@ -2927,7 +2930,7 @@ fn flying_creature_directed_goto_creates_task() {
 /// complete the task.
 #[test]
 fn flying_creature_goto_reaches_destination() {
-    let mut sim = flat_world_sim(legacy_test_seed());
+    let mut sim = flat_world_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     // Spawn hornet above elf (known flyable area), then reposition.
@@ -2978,7 +2981,7 @@ fn flying_creature_goto_reaches_destination() {
 /// AttackMove should create a task for a flying creature.
 #[test]
 fn flying_creature_attack_move_creates_task() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let air_pos = VoxelCoord::new(tree_pos.x + 5, tree_pos.y + 10, tree_pos.z);
     let hornet = spawn_hornet_at(&mut sim, air_pos);
@@ -3014,7 +3017,7 @@ fn flying_creature_attack_move_creates_task() {
 fn flying_creature_attack_move_reaches_destination() {
     // Use flat_world_sim to avoid worldgen elves that the hornet would detect
     // and engage during attack-move, preventing it from reaching the destination.
-    let mut sim = flat_world_sim(legacy_test_seed());
+    let mut sim = flat_world_sim(fresh_test_seed());
 
     // We need an elf reference position for spawning (spawn_hornet_at needs a
     // nearby position).  Use the tree position instead.
@@ -3059,7 +3062,7 @@ fn flying_creature_attack_move_reaches_destination() {
 fn flying_creature_autonomous_combat_preempts_task() {
     // Use flat_world_sim to avoid worldgen elves near the tree that the
     // hornet might engage instead of the test elf.
-    let mut sim = flat_world_sim(legacy_test_seed());
+    let mut sim = flat_world_sim(fresh_test_seed());
     let air_pos = VoxelCoord::new(32, 10, 32);
     let hornet = spawn_hornet_at(&mut sim, air_pos);
     zero_creature_stats(&mut sim, hornet);
@@ -3109,7 +3112,7 @@ fn flying_creature_autonomous_combat_preempts_task() {
 /// Euclidean distance instead of ground A*.
 #[test]
 fn find_available_task_works_for_flying_creature() {
-    let mut sim = flat_world_sim(legacy_test_seed());
+    let mut sim = flat_world_sim(fresh_test_seed());
     let air_pos = VoxelCoord::new(32, 10, 32);
     let hornet = spawn_hornet_at(&mut sim, air_pos);
     force_idle_and_cancel_activations(&mut sim, hornet);
@@ -3145,7 +3148,7 @@ fn find_available_task_works_for_flying_creature() {
 /// 2+ voxels away is not.
 #[test]
 fn flying_creature_at_task_location_proximity() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let hornet = spawn_hornet_at(
@@ -3179,7 +3182,7 @@ fn flying_creature_at_task_location_proximity() {
 /// the creature is unassigned from its task and wanders.
 #[test]
 fn flying_creature_walk_toward_task_unreachable_unassigns() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let hornet = spawn_hornet_at(
@@ -3222,7 +3225,7 @@ fn flying_creature_walk_toward_task_unreachable_unassigns() {
 /// encounters en route to the destination.
 #[test]
 fn flying_creature_attack_move_engages_hostile_en_route() {
-    let mut sim = flat_world_sim(legacy_test_seed());
+    let mut sim = flat_world_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     zero_creature_stats(&mut sim, elf);
@@ -3271,7 +3274,7 @@ fn flying_creature_attack_move_engages_hostile_en_route() {
 /// pick the nearest by squared Euclidean distance.
 #[test]
 fn flying_creature_find_available_task_nearest_by_euclidean() {
-    let mut sim = flat_world_sim(legacy_test_seed());
+    let mut sim = flat_world_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let hornet = spawn_hornet_at(
@@ -3328,7 +3331,7 @@ fn flying_creature_find_available_task_nearest_by_euclidean() {
 /// fly_wander (dispatched through wander_dispatch).
 #[test]
 fn flying_creature_idle_wanders() {
-    let mut sim = flat_world_sim(legacy_test_seed());
+    let mut sim = flat_world_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     // Spawn hornet far from elf to avoid combat.
@@ -3362,7 +3365,7 @@ fn flying_creature_idle_wanders() {
 /// the GoTo after the current move completes.
 #[test]
 fn flying_creature_directed_goto_mid_move_defers() {
-    let mut sim = flat_world_sim(legacy_test_seed());
+    let mut sim = flat_world_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
     let hornet = spawn_hornet_at(
@@ -3423,7 +3426,7 @@ fn flying_creature_directed_goto_mid_move_defers() {
 /// distance and flies toward it.
 #[test]
 fn flying_creature_pursue_closest_target() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_near = spawn_elf(&mut sim);
     let elf_far = spawn_elf(&mut sim);
     let elf_near_pos = sim.db.creatures.get(&elf_near).unwrap().position.min;
@@ -3459,7 +3462,7 @@ fn flying_creature_pursue_closest_target() {
 
 #[test]
 fn capybara_wanders_on_ground() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
@@ -3497,7 +3500,7 @@ fn capybara_wanders_on_ground() {
 
 #[test]
 fn capybara_stays_on_ground() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
@@ -3530,7 +3533,7 @@ fn capybara_stays_on_ground() {
 
 #[test]
 fn determinism_with_capybara() {
-    let seed = legacy_test_seed();
+    let seed = fresh_test_seed();
     let mut sim_a = test_sim(seed);
     let mut sim_b = test_sim(seed);
 
@@ -3559,7 +3562,7 @@ fn determinism_with_capybara() {
 
 #[test]
 fn wandering_creature_stays_on_walkable_position() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
@@ -3598,7 +3601,7 @@ fn wandering_creature_stays_on_walkable_position() {
 
 #[test]
 fn wander_sets_movement_metadata() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn an elf at tick 1, step only to tick 1 so the first activation
@@ -3670,7 +3673,7 @@ fn wander_sets_movement_metadata() {
 
 #[test]
 fn boar_stays_on_ground() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
@@ -3703,7 +3706,7 @@ fn boar_stays_on_ground() {
 
 #[test]
 fn deer_stays_on_ground() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
@@ -3735,7 +3738,7 @@ fn deer_stays_on_ground() {
 
 #[test]
 fn monkey_can_climb() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
@@ -3776,7 +3779,7 @@ fn monkey_can_climb() {
 
 #[test]
 fn squirrel_can_climb() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
@@ -3816,7 +3819,7 @@ fn squirrel_can_climb() {
 
 #[test]
 fn directed_goto_creates_task_for_specific_creature() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     force_idle(&mut sim, elf);
 
@@ -3850,7 +3853,7 @@ fn directed_goto_creates_task_for_specific_creature() {
 
 #[test]
 fn directed_goto_replaces_player_directed_task() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
 
     // Give elf a PlayerDirected GoTo task (PlayerDirected level 2).
@@ -3903,7 +3906,7 @@ fn directed_goto_replaces_player_directed_task() {
 
 #[test]
 fn directed_goto_preempts_autonomous_task() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
 
     // Give elf an autonomous Harvest task (Autonomous level 1).
@@ -3960,7 +3963,7 @@ fn directed_goto_does_not_abort_mid_walk_action() {
     // B-erratic-movement: issuing a DirectedGoTo while a creature is
     // mid-walk should NOT abort the in-progress Move action. The action
     // should complete naturally, then the creature picks up the new task.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     force_idle_and_cancel_activations(&mut sim, elf);
 
@@ -4056,7 +4059,7 @@ fn directed_goto_mid_action_command_does_not_schedule_extra_activation() {
     // B-erratic-movement: issuing a DirectedGoTo while a creature is
     // mid-action should NOT schedule an extra CreatureActivation. The
     // existing activation (from the in-progress action) is sufficient.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     force_idle_and_cancel_activations(&mut sim, elf);
 
@@ -4135,7 +4138,7 @@ fn directed_goto_mid_action_command_does_not_schedule_extra_activation() {
 fn group_goto_spreads_creatures_to_different_nodes() {
     // Three elves given a GroupGoTo to the same destination should each
     // end up with a GoTo task at a different nav node.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_a = spawn_elf(&mut sim);
     let elf_b = spawn_elf(&mut sim);
     let elf_c = spawn_elf(&mut sim);
@@ -4182,7 +4185,7 @@ fn group_goto_spreads_creatures_to_different_nodes() {
 #[test]
 fn group_goto_single_creature_delegates_to_normal() {
     // A single-element GroupGoTo should work identically to DirectedGoTo.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     force_idle_and_cancel_activations(&mut sim, elf);
 
@@ -4211,7 +4214,7 @@ fn group_goto_single_creature_delegates_to_normal() {
 
 #[test]
 fn group_goto_empty_list_is_noop() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tick = sim.tick;
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let dest = VoxelCoord::new(tree_pos.x + 5, 1, tree_pos.z);
@@ -4235,7 +4238,7 @@ fn group_goto_empty_list_is_noop() {
 #[test]
 fn group_goto_skips_dead_creatures() {
     // Dead creatures in the list should be silently skipped.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_alive = spawn_elf(&mut sim);
     let elf_dead = spawn_elf(&mut sim);
     force_idle_and_cancel_activations(&mut sim, elf_alive);
@@ -4308,7 +4311,7 @@ fn group_goto_serialization_roundtrip() {
 /// — no panic, creature stays alive and valid.
 #[test]
 fn path_resolution_nav_node_destroyed_no_panic() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
 
     // Find a connected pair so the elf has a valid starting node.
@@ -4778,7 +4781,7 @@ fn test_large_creatures_stay_grounded_on_flat_terrain() {
 /// or on the ground — never floating in empty air.
 #[test]
 fn test_troll_stays_on_trunk_while_climbing() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let floor_y = sim.config.floor_y;
     let walking_y = floor_y + 1;
 

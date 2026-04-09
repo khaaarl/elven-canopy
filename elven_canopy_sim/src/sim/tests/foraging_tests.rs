@@ -12,7 +12,7 @@ use super::*;
 
 #[test]
 fn monkey_is_forager_not_grazer() {
-    let sim = test_sim(legacy_test_seed());
+    let sim = test_sim(fresh_test_seed());
     let data = &sim.species_table[&Species::Monkey];
     assert!(data.is_forager, "Monkey should be a forager");
     assert!(!data.is_grazer, "Monkey should not be a grazer");
@@ -24,7 +24,7 @@ fn monkey_is_forager_not_grazer() {
 
 #[test]
 fn squirrel_is_forager_not_grazer() {
-    let sim = test_sim(legacy_test_seed());
+    let sim = test_sim(fresh_test_seed());
     let data = &sim.species_table[&Species::Squirrel];
     assert!(data.is_forager, "Squirrel should be a forager");
     assert!(!data.is_grazer, "Squirrel should not be a grazer");
@@ -36,7 +36,7 @@ fn squirrel_is_forager_not_grazer() {
 
 #[test]
 fn capybara_is_grazer_not_forager() {
-    let sim = test_sim(legacy_test_seed());
+    let sim = test_sim(fresh_test_seed());
     let data = &sim.species_table[&Species::Capybara];
     assert!(data.is_grazer, "Capybara should be a grazer");
     assert!(!data.is_forager, "Capybara should not be a forager");
@@ -358,7 +358,7 @@ fn eat_fruit_restores_food_using_forage_pct_for_squirrel() {
 
 #[test]
 fn no_species_is_both_forager_and_grazer() {
-    let sim = test_sim(legacy_test_seed());
+    let sim = test_sim(fresh_test_seed());
     for (species, data) in &sim.species_table {
         assert!(
             !(data.is_forager && data.is_grazer),

@@ -51,7 +51,7 @@ fn create_dance_hall(sim: &mut SimState) -> StructureId {
 
 #[test]
 fn activity_creation_sets_phase_and_defaults() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let location = VoxelCoord::new(32, 1, 32);
     let activity_id = create_debug_dance(&mut sim, location);
 
@@ -71,7 +71,7 @@ fn activity_creation_sets_phase_and_defaults() {
 
 #[test]
 fn open_volunteering_creates_participant_without_committing() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
     let activity_id = create_debug_dance(&mut sim, location);
@@ -100,7 +100,7 @@ fn open_volunteering_creates_participant_without_committing() {
 
 #[test]
 fn quorum_promotes_volunteers_to_assembling() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let location = VoxelCoord::new(32, 1, 32);
     let activity_id = create_debug_dance(&mut sim, location);
     let elves = spawn_test_elves(&mut sim, 5);
@@ -146,7 +146,7 @@ fn quorum_promotes_volunteers_to_assembling() {
 
 #[test]
 fn quorum_prunes_busy_volunteers() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let location = VoxelCoord::new(32, 1, 32);
     let activity_id = create_debug_dance(&mut sim, location);
     let elves = spawn_test_elves(&mut sim, 5);
@@ -205,7 +205,7 @@ fn quorum_prunes_busy_volunteers() {
 
 #[test]
 fn arrival_transitions_to_executing() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let location = VoxelCoord::new(32, 1, 32);
     let activity_id = create_debug_dance(&mut sim, location);
     let elves = spawn_test_elves(&mut sim, 5);
@@ -248,7 +248,7 @@ fn arrival_transitions_to_executing() {
 
 #[test]
 fn dance_execution_generates_plan_and_adds_thoughts() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let location = VoxelCoord::new(32, 1, 32);
     let activity_id = create_debug_dance(&mut sim, location);
     let elves = spawn_test_elves(&mut sim, 5);
@@ -298,7 +298,7 @@ fn dance_execution_generates_plan_and_adds_thoughts() {
 
 #[test]
 fn dance_waypoints_move_creatures() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let location = VoxelCoord::new(32, 1, 32);
     let activity_id = create_debug_dance(&mut sim, location);
     let elves = spawn_test_elves(&mut sim, 5);
@@ -365,7 +365,7 @@ fn dance_waypoints_move_creatures() {
 
 #[test]
 fn dance_completes_with_mood_bonus_and_cleanup() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let location = VoxelCoord::new(32, 1, 32);
     let activity_id = create_debug_dance(&mut sim, location);
     let elves = spawn_test_elves(&mut sim, 5);
@@ -444,7 +444,7 @@ fn dance_completes_with_mood_bonus_and_cleanup() {
 
 #[test]
 fn cancel_activity_releases_participants() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let location = VoxelCoord::new(32, 1, 32);
     let activity_id = create_debug_dance(&mut sim, location);
     let elves = spawn_test_elves(&mut sim, 5);
@@ -481,7 +481,7 @@ fn cancel_activity_releases_participants() {
 
 #[test]
 fn departure_continue_policy_keeps_activity_running() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let location = VoxelCoord::new(32, 1, 32);
     let activity_id = create_debug_dance(&mut sim, location);
     let elves = spawn_test_elves(&mut sim, 5);
@@ -524,7 +524,7 @@ fn departure_continue_policy_keeps_activity_running() {
 
 #[test]
 fn departure_cancel_on_departure_cancels_activity() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let location = VoxelCoord::new(32, 1, 32);
 
     // Create a Ceremony activity (uses CancelOnDeparture).
@@ -579,7 +579,7 @@ fn departure_cancel_on_departure_cancels_activity() {
 
 #[test]
 fn departure_pause_and_wait_pauses_activity() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let location = VoxelCoord::new(32, 1, 32);
 
     // Create a ConstructionChoir activity (uses PauseAndWait).
@@ -623,7 +623,7 @@ fn departure_pause_and_wait_pauses_activity() {
 
 #[test]
 fn pause_timeout_cancels_activity() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let location = VoxelCoord::new(32, 1, 32);
 
     let mut events = Vec::new();
@@ -670,7 +670,7 @@ fn pause_timeout_cancels_activity() {
 
 #[test]
 fn directed_recruitment_assigns_and_creates_goto() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let location = VoxelCoord::new(32, 1, 32);
 
     let mut events = Vec::new();
@@ -710,7 +710,7 @@ fn directed_recruitment_assigns_and_creates_goto() {
 
 #[test]
 fn all_participants_leaving_cancels_activity() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let location = VoxelCoord::new(32, 1, 32);
     let activity_id = create_debug_dance(&mut sim, location);
     let elves = spawn_test_elves(&mut sim, 5);
@@ -739,7 +739,7 @@ fn all_participants_leaving_cancels_activity() {
 
 #[test]
 fn double_volunteer_is_no_op() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let location = VoxelCoord::new(32, 1, 32);
     let activity_id = create_debug_dance(&mut sim, location);
     let elves = spawn_test_elves(&mut sim, 5);
@@ -762,7 +762,7 @@ fn double_volunteer_is_no_op() {
 
 #[test]
 fn find_open_activity_discovers_nearby_activity() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let elf_pos = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
@@ -780,7 +780,7 @@ fn find_open_activity_discovers_nearby_activity() {
 
 #[test]
 fn find_open_activity_ignores_far_activity() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
 
     // Create a dance very far away.
@@ -801,7 +801,7 @@ fn find_open_activity_ignores_far_activity() {
 fn end_to_end_dance_via_command_and_activation() {
     // End-to-end: create activity via command, volunteer elves, simulate
     // GoTo arrival, run execution via activation loop, verify completion.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
@@ -887,7 +887,7 @@ fn end_to_end_dance_via_command_and_activation() {
 
 #[test]
 fn assign_to_activity_rejects_dead_creature() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 3);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
@@ -918,7 +918,7 @@ fn assign_to_activity_rejects_dead_creature() {
 
 #[test]
 fn assign_to_activity_rejects_creature_already_in_activity() {
-    let mut sim = flat_world_sim(legacy_test_seed());
+    let mut sim = flat_world_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     // Freeze all elves so none autonomously join an activity before
     // the test can explicitly assign them.
@@ -995,7 +995,7 @@ fn assign_to_activity_rejects_creature_already_in_activity() {
 
 #[test]
 fn volunteer_rejects_directed_recruitment_activity() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 3);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
@@ -1024,7 +1024,7 @@ fn volunteer_rejects_directed_recruitment_activity() {
 
 #[test]
 fn creature_death_during_executing_activity() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
     let activity_id = create_debug_dance(&mut sim, location);
@@ -1059,7 +1059,7 @@ fn creature_death_during_executing_activity() {
 
 #[test]
 fn creature_death_with_cancel_on_departure_cancels_activity() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
@@ -1096,7 +1096,7 @@ fn creature_death_with_cancel_on_departure_cancels_activity() {
 
 #[test]
 fn resume_activity_from_paused() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
@@ -1147,7 +1147,7 @@ fn resume_activity_from_paused() {
 fn no_double_reactivation_after_activity_execution() {
     // Verify that executing activity behavior does not produce duplicate
     // activation events in the event queue.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
     let activity_id = create_debug_dance(&mut sim, location);
@@ -1180,7 +1180,7 @@ fn no_double_reactivation_after_activity_execution() {
 fn no_double_reactivation_on_activity_completion() {
     // When a dance completes during execute_activity_behavior, complete_activity
     // schedules reactivation. The activation loop should NOT schedule another.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
@@ -1241,7 +1241,7 @@ fn preempted_goto_during_assembly_reissues_goto() {
     // Assembling. Elf C's GoTo is preempted (e.g., by moping). After the
     // preempting task completes, elf C should get a new GoTo to continue
     // walking to the assembly point.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
     let activity_id = create_debug_dance(&mut sim, location);
@@ -1300,7 +1300,7 @@ fn preempted_goto_during_assembly_reissues_goto() {
 fn elves_a_and_b_idle_while_c_is_preempted() {
     // When 2 of 3 required elves have arrived but the 3rd is preempted,
     // the arrived elves should idle (not double-activate, not wander off).
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
     let activity_id = create_debug_dance(&mut sim, location);
@@ -1339,7 +1339,7 @@ fn elves_a_and_b_idle_while_c_is_preempted() {
 fn busy_creatures_dont_volunteer() {
     // Creatures with current_task (eating, sleeping, moping) should not
     // discover or volunteer for open activities.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
     let _ = create_debug_dance(&mut sim, location);
@@ -1381,7 +1381,7 @@ fn recruiting_activity_reference_cleared_on_activation() {
     // clears it. (The original "stale/deleted activity" scenario is now
     // prevented by FK constraints — current_activity cannot reference a
     // nonexistent activity.)
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
     let activity_id = create_debug_dance(&mut sim, location);
@@ -1442,7 +1442,7 @@ fn recruiting_activity_reference_cleared_on_activation() {
 #[test]
 fn cancel_activity_no_double_reactivation() {
     // Cancelling an activity should not produce duplicate activations.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
     let activity_id = create_debug_dance(&mut sim, location);
@@ -1473,7 +1473,7 @@ fn cancel_activity_no_double_reactivation() {
 fn activity_with_all_elves_busy_stays_recruiting() {
     // If all elves in the sim are busy (have tasks), the dance activity
     // should stay in Recruiting with no volunteers.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 3);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
     let _ = create_debug_dance(&mut sim, location);
@@ -1523,7 +1523,7 @@ fn activity_with_all_elves_busy_stays_recruiting() {
 fn partial_arrival_then_full_arrival_transitions_to_executing() {
     // 2 of 3 elves arrive, activity stays in Assembling. When the 3rd
     // arrives later, activity transitions to Executing.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
     let activity_id = create_debug_dance(&mut sim, location);
@@ -1555,7 +1555,7 @@ fn participant_death_during_assembly_reverts_to_recruiting_and_replacement_joins
     // mid-assembly (others still en route). Activity should revert to
     // Recruiting. A 4th idle elf discovers it, volunteers, quorum re-triggers,
     // and the activity resumes assembly with the replacement.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
     let activity_id = create_debug_dance(&mut sim, location);
@@ -1626,7 +1626,7 @@ fn participant_death_during_assembly_with_some_arrived() {
     // Variant: 2 of 3 elves have already arrived, 3rd dies en route.
     // Activity should revert to Recruiting. A replacement elf volunteers,
     // quorum re-triggers, and assembly resumes.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
     let activity_id = create_debug_dance(&mut sim, location);
@@ -1693,7 +1693,7 @@ fn participant_death_during_assembly_with_some_arrived() {
 fn cannot_assign_to_activity_while_volunteered_for_another() {
     // A creature with a Volunteered row in Dance A should be rejected
     // when directed-assigned to Activity B.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
@@ -1743,7 +1743,7 @@ fn cannot_assign_to_activity_while_volunteered_for_another() {
 fn volunteering_for_second_activity_replaces_first() {
     // A creature volunteered for Dance A. When they volunteer for Dance B,
     // the old volunteer row is pruned (they switch allegiance).
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
@@ -1799,7 +1799,7 @@ fn volunteering_for_second_activity_replaces_first() {
 fn committed_creature_cannot_volunteer_for_another() {
     // A creature committed (Traveling/Arrived) to an activity should NOT
     // be able to volunteer for a second one.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
@@ -1847,7 +1847,7 @@ fn committed_creature_cannot_volunteer_for_another() {
 #[test]
 fn activity_with_min_count_none_starts_on_first_volunteer() {
     // min_count = None → activity starts with any number of participants.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 3);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
@@ -1884,7 +1884,7 @@ fn activity_with_min_count_none_starts_on_first_volunteer() {
 fn creature_discovers_second_activity_after_first_cancelled() {
     // A creature volunteered for Dance A, which gets cancelled.
     // On next activation, the creature should be free to discover Dance B.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 3);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
@@ -1909,7 +1909,7 @@ fn stale_volunteer_row_cleared_so_creature_can_revolunteer() {
     // Scenario: Elf A volunteers for a dance. Before quorum, elf A picks up
     // an Eat task (heartbeat). The stale Volunteered row should be cleared
     // when elf A becomes idle again, allowing them to re-volunteer.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
     let activity_id = create_debug_dance(&mut sim, location);
@@ -1971,7 +1971,7 @@ fn recruiting_stall_resolved_by_revolunteering() {
     // Full stall scenario: 2 elves volunteer, both get tasks before a 3rd
     // joins. When they become idle again, they should be able to re-volunteer
     // and eventually reach quorum.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
     let activity_id = create_debug_dance(&mut sim, location);
@@ -2053,7 +2053,7 @@ fn recruiting_stall_resolved_by_revolunteering() {
 
 #[test]
 fn incapacitated_creature_removed_from_executing_activity() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
     let activity_id = create_debug_dance(&mut sim, location);
@@ -2090,7 +2090,7 @@ fn incapacitated_creature_removed_from_executing_activity() {
 
 #[test]
 fn last_participant_removed_from_paused_activity_cancels_it() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
@@ -2140,7 +2140,7 @@ fn last_participant_removed_from_paused_activity_cancels_it() {
 
 #[test]
 fn volunteer_for_nonexistent_activity_is_noop() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 3);
     let bogus_id = ActivityId::new(&mut sim.rng);
     let mut events = Vec::new();
@@ -2156,7 +2156,7 @@ fn volunteer_for_nonexistent_activity_is_noop() {
 
 #[test]
 fn cancel_nonexistent_activity_is_noop() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let bogus_id = ActivityId::new(&mut sim.rng);
     let mut events = Vec::new();
     // Should not panic.
@@ -2165,7 +2165,7 @@ fn cancel_nonexistent_activity_is_noop() {
 
 #[test]
 fn remove_nonexistent_participant_is_noop() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 3);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
     let activity_id = create_debug_dance(&mut sim, location);
@@ -2180,7 +2180,7 @@ fn remove_nonexistent_participant_is_noop() {
 
 #[test]
 fn two_creatures_arrive_same_tick() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
@@ -2224,7 +2224,7 @@ fn two_creatures_arrive_same_tick() {
 
 #[test]
 fn pause_timeout_not_expired_keeps_activity() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
@@ -2283,7 +2283,7 @@ fn dead_volunteer_pruned_by_quorum_check() {
     // A Volunteered creature dies (current_activity is None, so death handler
     // doesn't call remove_participant). The stale row should be pruned when
     // the next quorum check fires.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
     let activity_id = create_debug_dance(&mut sim, location);
@@ -2324,7 +2324,7 @@ fn dead_volunteer_pruned_by_quorum_check() {
 
 #[test]
 fn assign_to_executing_phase_rejected() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
     let activity_id = create_debug_dance(&mut sim, location);
@@ -2353,7 +2353,7 @@ fn assign_to_executing_phase_rejected() {
 
 #[test]
 fn activity_serde_roundtrip_preserves_executing_state() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let location = VoxelCoord::new(32, 1, 32);
     let activity_id = create_debug_dance(&mut sim, location);
     let elves = spawn_test_elves(&mut sim, 5);
@@ -2426,7 +2426,7 @@ fn activity_config_serde_backward_compat() {
 
 #[test]
 fn volunteer_rejects_non_recruiting_phase() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let location = VoxelCoord::new(32, 1, 32);
     let activity_id = create_debug_dance(&mut sim, location);
     let elves = spawn_test_elves(&mut sim, 5);
@@ -2461,7 +2461,7 @@ fn volunteer_rejects_non_recruiting_phase() {
 
 #[test]
 fn desired_count_caps_volunteer_discovery() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
     let activity_id = create_debug_dance(&mut sim, location);
@@ -2524,7 +2524,7 @@ fn desired_count_caps_volunteer_discovery() {
 
 #[test]
 fn cancel_recruiting_activity_with_only_volunteers() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let location = VoxelCoord::new(32, 1, 32);
     let activity_id = create_debug_dance(&mut sim, location);
     let elves = spawn_test_elves(&mut sim, 5);
@@ -2583,7 +2583,7 @@ fn cancel_recruiting_activity_with_only_volunteers() {
 
 #[test]
 fn directed_recruitment_three_assigned_transitions_to_assembling() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let location = VoxelCoord::new(32, 1, 32);
 
     let mut events = Vec::new();
@@ -2641,7 +2641,7 @@ fn directed_recruitment_three_assigned_transitions_to_assembling() {
 
 #[test]
 fn wild_capybara_cannot_volunteer_for_dance() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let activity_id = create_debug_dance(&mut sim, tree_pos);
 
@@ -2667,7 +2667,7 @@ fn wild_capybara_cannot_volunteer_for_dance() {
 
 #[test]
 fn other_civ_elf_cannot_volunteer_for_dance() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let activity_id = create_debug_dance(&mut sim, tree_pos);
 
@@ -2700,7 +2700,7 @@ fn other_civ_elf_cannot_volunteer_for_dance() {
 
 #[test]
 fn same_civ_capybara_cannot_volunteer_for_dance() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let activity_id = create_debug_dance(&mut sim, tree_pos);
 
@@ -2733,7 +2733,7 @@ fn same_civ_capybara_cannot_volunteer_for_dance() {
 
 #[test]
 fn find_open_activity_ignores_wrong_species() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let _activity_id = create_debug_dance(&mut sim, tree_pos);
 
@@ -2753,7 +2753,7 @@ fn find_open_activity_ignores_wrong_species() {
 
 #[test]
 fn find_open_activity_ignores_wrong_civ() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let _activity_id = create_debug_dance(&mut sim, tree_pos);
 
@@ -2780,7 +2780,7 @@ fn find_open_activity_ignores_wrong_civ() {
 
 #[test]
 fn activity_civ_and_species_survive_serde_roundtrip() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let activity_id = create_debug_dance(&mut sim, tree_pos);
 
@@ -2800,7 +2800,7 @@ fn activity_civ_and_species_survive_serde_roundtrip() {
 
 #[test]
 fn directed_assign_rejects_wrong_species() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let activity_id = create_debug_dance(&mut sim, tree_pos);
 
@@ -2833,7 +2833,7 @@ fn directed_assign_rejects_wrong_species() {
 
 #[test]
 fn directed_assign_rejects_wrong_civ() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let activity_id = create_debug_dance(&mut sim, tree_pos);
 
@@ -2865,7 +2865,7 @@ fn directed_assign_rejects_wrong_civ() {
 
 #[test]
 fn dead_creature_cannot_volunteer() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let activity_id = create_debug_dance(&mut sim, tree_pos);
     let elves = spawn_test_elves(&mut sim, 3);
@@ -2889,7 +2889,7 @@ fn dead_creature_cannot_volunteer() {
 
 #[test]
 fn activity_goto_inherits_player_directed_origin() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let location = VoxelCoord::new(32, 1, 32);
     let activity_id = create_debug_dance(&mut sim, location);
     let elves = spawn_test_elves(&mut sim, 5);
@@ -2930,7 +2930,7 @@ fn activity_goto_inherits_player_directed_origin() {
 
 #[test]
 fn start_debug_dance_no_hall_does_nothing() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
 
     // No dance hall exists — StartDebugDance should be a no-op.
     let cmd = SimCommand {
@@ -2955,7 +2955,7 @@ fn start_debug_dance_no_hall_does_nothing() {
 
 #[test]
 fn start_debug_dance_creates_activity_linked_to_hall() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let anchor = find_building_site(&sim);
     let structure_id = insert_completed_building(&mut sim, anchor);
 
@@ -3001,7 +3001,7 @@ fn start_debug_dance_creates_activity_linked_to_hall() {
 
 #[test]
 fn dance_completion_cleans_up_dance_data() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let location = VoxelCoord::new(32, 1, 32);
     let activity_id = create_debug_dance(&mut sim, location);
     let elves = spawn_test_elves(&mut sim, 5);
@@ -3096,7 +3096,7 @@ fn activity_structure_role_serde_roundtrip() {
 
 #[test]
 fn cancel_executing_dance_cleans_up_plan_and_composition() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let location = VoxelCoord::new(32, 1, 32);
     let activity_id = create_debug_dance(&mut sim, location);
     let elves = spawn_test_elves(&mut sim, 5);
@@ -3160,7 +3160,7 @@ fn dance_config_backward_compat_dance_duration_secs() {
 
 #[test]
 fn serde_roundtrip_preserves_dance_slot_and_cursor() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let location = VoxelCoord::new(32, 1, 32);
     let activity_id = create_debug_dance(&mut sim, location);
     let elves = spawn_test_elves(&mut sim, 5);
@@ -3209,7 +3209,7 @@ fn serde_roundtrip_preserves_dance_slot_and_cursor() {
 
 #[test]
 fn debug_dance_blocked_when_hall_has_active_dance() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let anchor = find_building_site(&sim);
     let structure_id = insert_completed_building(&mut sim, anchor);
 
@@ -3267,7 +3267,7 @@ fn debug_dance_blocked_when_hall_has_active_dance() {
 
 #[test]
 fn idle_elf_near_dance_hall_organizes_spontaneous_dance() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let structure_id = create_dance_hall(&mut sim);
 
     // Set organize chance to 100% so it always triggers.
@@ -3317,7 +3317,7 @@ fn idle_elf_near_dance_hall_organizes_spontaneous_dance() {
 
 #[test]
 fn hall_cooldown_prevents_spontaneous_dance() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let structure_id = create_dance_hall(&mut sim);
 
     sim.config.activity.dance_organize_chance_ppm = 1_000_000;
@@ -3349,7 +3349,7 @@ fn hall_cooldown_prevents_spontaneous_dance() {
 
 #[test]
 fn elf_cooldown_prevents_spontaneous_dance() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let _structure_id = create_dance_hall(&mut sim);
 
     sim.config.activity.dance_organize_chance_ppm = 1_000_000;
@@ -3374,7 +3374,7 @@ fn elf_cooldown_prevents_spontaneous_dance() {
 
 #[test]
 fn first_dance_nudge_skips_hall_cooldown() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let structure_id = create_dance_hall(&mut sim);
 
     sim.config.activity.dance_organize_chance_ppm = 1_000_000;
@@ -3408,7 +3408,7 @@ fn first_dance_nudge_skips_hall_cooldown() {
 
 #[test]
 fn venue_exclusivity_blocks_spontaneous_dance() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let structure_id = create_dance_hall(&mut sim);
 
     sim.config.activity.dance_organize_chance_ppm = 1_000_000;
@@ -3448,7 +3448,7 @@ fn venue_exclusivity_blocks_spontaneous_dance() {
 
 #[test]
 fn dance_completion_sets_tracking_ticks() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let structure_id = create_dance_hall(&mut sim);
     let elves = spawn_test_elves(&mut sim, 5);
 
@@ -3526,7 +3526,7 @@ fn dance_completion_sets_tracking_ticks() {
 
 #[test]
 fn zero_chance_prevents_spontaneous_dance() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let _structure_id = create_dance_hall(&mut sim);
 
     sim.config.activity.dance_organize_chance_ppm = 0;
@@ -3560,7 +3560,7 @@ fn zero_chance_prevents_spontaneous_dance() {
 
 #[test]
 fn non_elf_cannot_organize_spontaneous_dance() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let _structure_id = create_dance_hall(&mut sim);
 
     sim.config.activity.dance_organize_chance_ppm = 1_000_000;
@@ -3590,7 +3590,7 @@ fn non_elf_cannot_organize_spontaneous_dance() {
 
 #[test]
 fn busy_elf_cannot_organize_spontaneous_dance() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let _structure_id = create_dance_hall(&mut sim);
 
     sim.config.activity.dance_organize_chance_ppm = 1_000_000;
@@ -3621,7 +3621,7 @@ fn busy_elf_cannot_organize_spontaneous_dance() {
 
 #[test]
 fn serde_roundtrip_preserves_last_dance_tick() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 1);
     let elf_id = elves[0];
 
@@ -3639,7 +3639,7 @@ fn serde_roundtrip_preserves_last_dance_tick() {
 
 #[test]
 fn serde_roundtrip_preserves_last_dance_completed_tick() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let structure_id = create_dance_hall(&mut sim);
 
     let mut s = sim.db.structures.get(&structure_id).unwrap();
@@ -3669,7 +3669,7 @@ fn spontaneous_dance_config_backward_compat() {
 
 #[test]
 fn organizer_retains_role_after_reactivation() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let structure_id = create_dance_hall(&mut sim);
 
     sim.config.activity.dance_organize_chance_ppm = 1_000_000;
@@ -3716,7 +3716,7 @@ fn organizer_retains_role_after_reactivation() {
 
 #[test]
 fn dead_elf_cannot_organize_spontaneous_dance() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let _structure_id = create_dance_hall(&mut sim);
 
     sim.config.activity.dance_organize_chance_ppm = 1_000_000;
@@ -3743,7 +3743,7 @@ fn dead_elf_cannot_organize_spontaneous_dance() {
 
 #[test]
 fn elf_with_current_activity_cannot_organize() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let structure_id = create_dance_hall(&mut sim);
 
     sim.config.activity.dance_organize_chance_ppm = 1_000_000;
@@ -3795,7 +3795,7 @@ fn elf_with_current_activity_cannot_organize() {
 
 #[test]
 fn elf_already_volunteer_cannot_organize() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let structure_id = create_dance_hall(&mut sim);
 
     sim.config.activity.dance_organize_chance_ppm = 1_000_000;
@@ -3847,7 +3847,7 @@ fn elf_already_volunteer_cannot_organize() {
 
 #[test]
 fn dance_hall_out_of_range_prevents_organizing() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let _structure_id = create_dance_hall(&mut sim);
 
     sim.config.activity.dance_organize_chance_ppm = 1_000_000;
@@ -3879,7 +3879,7 @@ fn dance_hall_out_of_range_prevents_organizing() {
 
 #[test]
 fn elf_cooldown_prevents_volunteering_for_dance() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let _structure_id = create_dance_hall(&mut sim);
 
     sim.config.activity.dance_elf_cooldown_ticks = 100_000;
@@ -3929,7 +3929,7 @@ fn elf_cooldown_prevents_volunteering_for_dance() {
 
 #[test]
 fn organizer_survives_quorum_prune_when_busy() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let structure_id = create_dance_hall(&mut sim);
 
     sim.config.activity.dance_organize_chance_ppm = 1_000_000;
@@ -3992,7 +3992,7 @@ fn organizer_survives_quorum_prune_when_busy() {
 
 #[test]
 fn hall_cooldown_expires_allows_new_dance() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let structure_id = create_dance_hall(&mut sim);
 
     sim.config.activity.dance_organize_chance_ppm = 1_000_000;
@@ -4032,7 +4032,7 @@ fn hall_cooldown_expires_allows_new_dance() {
 
 #[test]
 fn elf_cooldown_expires_allows_organizing() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let _structure_id = create_dance_hall(&mut sim);
 
     sim.config.activity.dance_organize_chance_ppm = 1_000_000;
@@ -4074,7 +4074,7 @@ fn elf_cooldown_expires_allows_organizing() {
 fn assembly_started_tick_set_on_phase_transition() {
     // When an activity transitions to Assembling, assembly_started_tick
     // should be set to the current sim tick.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
     let activity_id = create_debug_dance(&mut sim, location);
@@ -4105,7 +4105,7 @@ fn assembly_started_tick_set_on_phase_transition() {
 #[test]
 fn assembly_timeout_cancels_below_min_count() {
     // If assembly times out with fewer than min_count arrivals, cancel.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
     let activity_id = create_debug_dance(&mut sim, location);
@@ -4154,7 +4154,7 @@ fn assembly_timeout_starts_at_min_count_kicks_stragglers() {
     // state so check_assembly_complete did NOT fire (simulating a stuck
     // participant scenario where arrivals == min but the check was missed
     // due to ordering).
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
@@ -4232,7 +4232,7 @@ fn assembly_timeout_starts_at_min_count_kicks_stragglers() {
 fn assembly_timeout_keeps_travelers_when_late_join_allowed() {
     // If assembly times out with arrived >= min_count and allows_late_join=true,
     // start the activity but keep Traveling participants so they can join later.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
@@ -4301,7 +4301,7 @@ fn assembly_timeout_keeps_travelers_when_late_join_allowed() {
 #[test]
 fn assembly_timeout_not_triggered_before_expiry() {
     // Assembly timeout should not fire before the timeout period has elapsed.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
     let activity_id = create_debug_dance(&mut sim, location);
@@ -4337,7 +4337,7 @@ fn assembly_timeout_not_triggered_before_expiry() {
 
 #[test]
 fn serde_roundtrip_preserves_assembly_started_tick() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
     let activity_id = create_debug_dance(&mut sim, location);
@@ -4358,7 +4358,7 @@ fn serde_roundtrip_preserves_assembly_started_tick() {
 #[test]
 fn assembly_timeout_fires_at_exact_boundary() {
     // Timeout should fire when elapsed == assembly_timeout_ticks (not off-by-one).
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 3);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
     let activity_id = create_debug_dance(&mut sim, location);
@@ -4395,7 +4395,7 @@ fn assembly_timeout_fires_at_exact_boundary() {
 #[test]
 fn assembly_timeout_sets_execution_start_tick() {
     // When timeout starts execution, execution_start_tick must be set.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
@@ -4442,7 +4442,7 @@ fn assembly_timeout_sets_execution_start_tick() {
 fn assembly_timeout_skipped_when_assembly_started_tick_none() {
     // Old saves may have activities in Assembling with assembly_started_tick=None.
     // The timeout check should be a no-op (graceful backward compat).
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 3);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
     let activity_id = create_debug_dance(&mut sim, location);
@@ -4485,7 +4485,7 @@ fn assembly_timeout_skipped_when_assembly_started_tick_none() {
 #[test]
 fn assembly_timeout_generates_dance_plan() {
     // When a Dance activity starts via timeout, a dance plan should be generated.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
@@ -4534,7 +4534,7 @@ fn assembly_timeout_cancel_no_double_reactivation() {
     // B-erratic-movement: when assembly timeout cancels the activity via the
     // activation loop, cancel_activity schedules reactivation for all
     // participants. The activation loop must NOT add a second one.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 3);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
     let activity_id = create_debug_dance(&mut sim, location);
@@ -4593,7 +4593,7 @@ fn assembly_timeout_cancel_no_double_reactivation() {
 fn assembly_timeout_start_no_double_reactivation() {
     // B-erratic-movement: when assembly timeout starts execution via the
     // activation loop, the creature should get exactly 1 reactivation.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elves = spawn_test_elves(&mut sim, 5);
     let location = sim.db.creatures.get(&elves[0]).unwrap().position.min;
 
@@ -4660,7 +4660,7 @@ fn pause_timeout_cancel_no_double_reactivation() {
     // B-erratic-movement: when pause timeout cancels the activity via the
     // activation loop, cancel_activity schedules reactivation. The Paused
     // branch must NOT add a second one.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let location = VoxelCoord::new(32, 1, 32);
 
     let mut events = Vec::new();

@@ -11,7 +11,7 @@ use super::*;
 
 #[test]
 fn elf_spawns_with_mana() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     let elf = sim.db.creatures.get(&elf_id).unwrap();
     // mp_max is WIL-scaled from species base, so read from the creature.
@@ -22,7 +22,7 @@ fn elf_spawns_with_mana() {
 
 #[test]
 fn capybara_spawns_without_mana() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let capy_id = spawn_creature(&mut sim, Species::Capybara);
     let capy = sim.db.creatures.get(&capy_id).unwrap();
     assert_eq!(capy.mp, 0);
@@ -31,7 +31,7 @@ fn capybara_spawns_without_mana() {
 
 #[test]
 fn goblin_spawns_without_mana() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let gob_id = spawn_creature(&mut sim, Species::Goblin);
     let gob = sim.db.creatures.get(&gob_id).unwrap();
     assert_eq!(gob.mp, 0);
@@ -40,7 +40,7 @@ fn goblin_spawns_without_mana() {
 
 #[test]
 fn mana_fields_serde_roundtrip() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
     // Drain some mana so mp != mp_max.
@@ -63,7 +63,7 @@ fn mana_fields_serde_roundtrip() {
 fn mana_fields_default_on_old_save() {
     // Simulate deserializing an old save that lacks mp/mp_max/wasted_action_count
     // by serializing a creature, stripping the mana fields, and deserializing.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     let elf = sim.db.creatures.get(&elf_id).unwrap();
     let json = serde_json::to_string(&elf).unwrap();
@@ -196,7 +196,7 @@ fn mp_regen_remainder_defaults_on_old_save() {
 
 #[test]
 fn elf_mana_regenerates_on_heartbeat() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     let elf_mp_max = sim.species_table[&Species::Elf].mp_max;
 
@@ -221,7 +221,7 @@ fn elf_mana_regenerates_on_heartbeat() {
 
 #[test]
 fn elf_mana_does_not_exceed_max() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     let elf_mp_max = sim.db.creatures.get(&elf_id).unwrap().mp_max;
 
@@ -273,7 +273,7 @@ fn elf_mana_overflow_goes_to_tree() {
 
 #[test]
 fn tree_mana_capped_at_capacity() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let _elf_id = spawn_creature(&mut sim, Species::Elf);
     let tree_id = sim.player_tree_id;
 
@@ -295,7 +295,7 @@ fn tree_mana_capped_at_capacity() {
 
 #[test]
 fn wild_creature_mana_overflow_is_lost() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_id = sim.player_tree_id;
 
     // Spawn an elf, then remove its civ to make it "wild."
@@ -321,7 +321,7 @@ fn wild_creature_mana_overflow_is_lost() {
 
 #[test]
 fn elf_mana_regen_scaled_by_wil_int_average() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     let tpr = sim.species_table[&Species::Elf].ticks_per_mp_regen;
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
@@ -356,7 +356,7 @@ fn elf_mana_regen_scaled_by_wil_int_average() {
 
 #[test]
 fn mana_cost_per_action_uses_build_type() {
-    let sim = test_sim(legacy_test_seed());
+    let sim = test_sim(fresh_test_seed());
     let platform_cost = sim.mana_cost_per_action(Some(BuildType::Platform));
     let default_cost = sim.mana_cost_per_action(None);
 
@@ -374,7 +374,7 @@ fn build_action_drains_elf_mana() {
         .get_mut(&Species::Elf)
         .unwrap()
         .ticks_per_mp_regen = 0;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
 
     let air_coord = find_air_adjacent_to_trunk(&sim);
     let elf_id = spawn_elf(&mut sim);
@@ -418,7 +418,7 @@ fn build_wasted_action_no_progress() {
         .get_mut(&Species::Elf)
         .unwrap()
         .ticks_per_mp_regen = 0;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
     let air_coord = find_air_adjacent_to_trunk(&sim);
     let elf_id = spawn_elf(&mut sim);
 
@@ -464,7 +464,7 @@ fn build_abandon_after_wasted_actions() {
     let mut config = test_config();
     config.build_work_ticks_per_voxel = 1;
     config.mana_abandon_threshold = 2;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
 
     let air_coord = find_air_adjacent_to_trunk(&sim);
     let elf_id = spawn_elf(&mut sim);
@@ -535,7 +535,7 @@ fn build_abandon_after_wasted_actions() {
 fn nonmagical_creature_cannot_claim_build_task() {
     let mut config = test_config();
     config.build_work_ticks_per_voxel = 1;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
 
     // Spawn a goblin (nonmagical but can climb — unlike capybara which is
     // ground-only and would be filtered by pathfinding, not the mana check).
@@ -584,7 +584,7 @@ fn elf_with_no_mana_skips_build_task() {
         .get_mut(&Species::Elf)
         .unwrap()
         .ticks_per_mp_regen = 0;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
 
     let elf_id = spawn_elf(&mut sim);
 
@@ -693,7 +693,7 @@ fn successful_build_resets_wasted_counter() {
 
 #[test]
 fn mana_cost_per_action_carve_uses_default() {
-    let sim = test_sim(legacy_test_seed());
+    let sim = test_sim(fresh_test_seed());
     let carve_cost = sim.mana_cost_per_action(Some(BuildType::Carve));
     let default_cost = sim.mana_cost_per_action(None);
     assert_eq!(carve_cost, default_cost, "carve should use default cost");
@@ -703,7 +703,7 @@ fn mana_cost_per_action_carve_uses_default() {
 fn mana_cost_per_action_zero_cost_returns_zero() {
     let mut config = test_config();
     config.platform_mana_cost = 0;
-    let sim = SimState::with_config(legacy_test_seed(), config);
+    let sim = SimState::with_config(fresh_test_seed(), config);
     let cost = sim.mana_cost_per_action(Some(BuildType::Platform));
     assert_eq!(cost, 0, "zero cost config should yield zero cost");
 }
@@ -711,7 +711,7 @@ fn mana_cost_per_action_zero_cost_returns_zero() {
 #[test]
 fn try_drain_mana_exact_boundary() {
     // When mp == cost exactly, drain should succeed (>=, not >).
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     let cost = sim.mana_cost_per_action(Some(BuildType::Platform));
     assert!(cost > 0);
@@ -752,7 +752,7 @@ fn try_drain_mana_exact_boundary() {
 
 #[test]
 fn nonmagical_creature_cannot_claim_furnish_task() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let gob_id = spawn_creature(&mut sim, Species::Goblin);
     assert_eq!(sim.db.creatures.get(&gob_id).unwrap().mp_max, 0);
 
@@ -928,7 +928,7 @@ fn starting_mana_less_than_capacity() {
 fn cleanup_early_exit_resets_wasted_action_count() {
     // When cleanup_and_unassign_task takes the early-exit path (task already
     // deleted), wasted_action_count must still be reset.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_elf(&mut sim);
 
     // Create a task, assign elf, set nonzero wasted count.
@@ -1003,7 +1003,7 @@ fn drained_elf_can_still_claim_non_mana_tasks() {
         .get_mut(&Species::Elf)
         .unwrap()
         .ticks_per_mp_regen = 0;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
     let elf_id = spawn_elf(&mut sim);
 
     // Drain all mana.
@@ -1030,7 +1030,7 @@ fn drained_elf_can_still_claim_non_mana_tasks() {
 
 #[test]
 fn mana_wasted_position_recorded_on_failed_drain() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
 
@@ -1084,7 +1084,7 @@ fn mana_wasted_position_recorded_on_failed_drain() {
 
 #[test]
 fn mana_wasted_positions_cleared_each_step() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Manually push a position to simulate a previous step.
     sim.voxel_zone_mut(sim.home_zone_id())
         .unwrap()
@@ -1111,7 +1111,7 @@ fn mana_wasted_positions_cleared_each_step() {
 
 #[test]
 fn successful_drain_does_not_record_position() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
     // Give the elf a task.
@@ -1167,7 +1167,7 @@ fn grow_mana_cost_config_defaults() {
 
 #[test]
 fn mana_cost_for_grow_action_positive() {
-    let sim = test_sim(legacy_test_seed());
+    let sim = test_sim(fresh_test_seed());
     let cost = sim.mana_cost_for_grow_action();
     assert!(cost > 0, "grow action mana cost should be positive: {cost}");
 }
@@ -1175,7 +1175,7 @@ fn mana_cost_for_grow_action_positive() {
 fn grow_craft_task_has_action_count_total_cost() {
     // Grow recipes should have total_cost = ceil(work_ticks / per_action)
     // instead of total_cost = work_ticks.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
     place_all_furniture(&mut sim, structure_id);
     add_recipe_with_targets(
@@ -1220,7 +1220,7 @@ fn grow_arrow_drains_elf_mana() {
         .get_mut(&Species::Elf)
         .unwrap()
         .ticks_per_mp_regen = 0;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
 
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
     add_recipe_with_targets(
@@ -1274,7 +1274,7 @@ fn grow_with_zero_mana_wastes_actions_and_abandons() {
         .unwrap()
         .ticks_per_mp_regen = 0;
     config.mana_abandon_threshold = 2;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
 
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
     add_recipe_with_targets(
@@ -1319,7 +1319,7 @@ fn grow_with_zero_mana_wastes_actions_and_abandons() {
 
 #[test]
 fn nonmagical_creature_cannot_claim_grow_craft_task() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
     place_all_furniture(&mut sim, structure_id);
     add_recipe_with_targets(
@@ -1374,7 +1374,7 @@ fn non_grow_craft_completes_with_zero_mana() {
         .get_mut(&Species::Elf)
         .unwrap()
         .ticks_per_mp_regen = 0;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
 
     let species_id = insert_full_chain_fruit_species(&mut sim);
     let mat = Material::FruitSpecies(species_id);
@@ -1439,7 +1439,7 @@ fn drained_elf_can_still_claim_non_grow_craft_task() {
         .get_mut(&Species::Elf)
         .unwrap()
         .ticks_per_mp_regen = 0;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
 
     let species_id = insert_full_chain_fruit_species(&mut sim);
     let mat = Material::FruitSpecies(species_id);
@@ -1528,7 +1528,7 @@ fn drained_elf_cannot_claim_grow_craft_task() {
         .get_mut(&Species::Elf)
         .unwrap()
         .ticks_per_mp_regen = 0;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
 
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
     place_all_furniture(&mut sim, structure_id);
@@ -1572,7 +1572,7 @@ fn grow_craft_task_total_cost_rounds_up() {
     // grow_arrow_work_ticks = 3000, so ceil(3000 / 4000) = 1
     // grow_bow_work_ticks = 8000, so ceil(8000 / 4000) = 2
     // grow_helmet_work_ticks = 7000, so ceil(7000 / 4000) = 2
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
 
     let structure_id = setup_crafting_building(&mut sim, FurnishingType::Workshop);
     place_all_furniture(&mut sim, structure_id);
@@ -1605,7 +1605,7 @@ fn grow_craft_task_total_cost_rounds_up() {
 
 #[test]
 fn capybara_generates_no_mana() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let capy_id = spawn_creature(&mut sim, Species::Capybara);
 
     let heartbeat = sim.species_table[&Species::Capybara].heartbeat_interval_ticks;
@@ -1622,7 +1622,7 @@ fn capybara_generates_no_mana() {
 
 #[test]
 fn elf_mp_max_scaled_by_willpower() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     let species_mp_max = sim.species_table[&Species::Elf].mp_max;
     let wil = sim.trait_int(elf_id, TraitKind::Willpower, 0);
@@ -1640,7 +1640,7 @@ fn elf_mp_max_scaled_by_willpower() {
 
 #[test]
 fn elf_mp_max_unaffected_when_wil_is_zero() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Override elf WIL distribution to mean=0, stdev=0.
     sim.species_table
         .get_mut(&Species::Elf)
@@ -1667,7 +1667,7 @@ fn elf_mp_max_unaffected_when_wil_is_zero() {
 
 #[test]
 fn elf_mp_max_reduced_by_negative_willpower() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Force negative WIL: mean=-50, stdev=0.
     sim.species_table
         .get_mut(&Species::Elf)
@@ -1701,7 +1701,7 @@ fn elf_mp_max_reduced_by_negative_willpower() {
 
 #[test]
 fn nonmagical_creature_mp_max_unaffected_by_stats() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let capy_id = spawn_creature(&mut sim, Species::Capybara);
 
     let capy = sim.db.creatures.get(&capy_id).unwrap();

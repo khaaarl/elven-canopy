@@ -61,7 +61,7 @@ mod worldgen_tests;
 
 #[test]
 fn new_sim_has_home_tree() {
-    let sim = test_sim(legacy_test_seed());
+    let sim = test_sim(fresh_test_seed());
     assert!(sim.db.trees.contains(&sim.player_tree_id));
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     assert_eq!(tree.owner, sim.player_civ_id);
@@ -71,7 +71,7 @@ fn new_sim_has_home_tree() {
 
 #[test]
 fn determinism_two_sims_same_seed() {
-    let seed = legacy_test_seed();
+    let seed = fresh_test_seed();
     let sim_a = test_sim(seed);
     let sim_b = test_sim(seed);
     assert_eq!(sim_a.player_civ_id, sim_b.player_civ_id);
@@ -81,14 +81,14 @@ fn determinism_two_sims_same_seed() {
 
 #[test]
 fn step_advances_tick() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     sim.step(&[], 100);
     assert_eq!(sim.tick, 100);
 }
 
 #[test]
 fn step_updates_world_sim_tick() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     assert_eq!(sim.voxel_zone(sim.home_zone_id()).unwrap().sim_tick, 0);
     sim.step(&[], 10);
     assert_eq!(sim.voxel_zone(sim.home_zone_id()).unwrap().sim_tick, 10);
@@ -98,7 +98,7 @@ fn step_updates_world_sim_tick() {
 
 #[test]
 fn tree_heartbeat_reschedules() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let heartbeat_interval = sim.config.tree_heartbeat_interval_ticks;
 
     // Step past the first heartbeat.
@@ -123,7 +123,7 @@ fn tree_heartbeat_reschedules() {
 
 #[test]
 fn serialization_roundtrip() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     sim.step(&[], 50);
     let json = serde_json::to_string(&sim).unwrap();
     let restored: SimState = serde_json::from_str(&json).unwrap();
@@ -134,7 +134,7 @@ fn serialization_roundtrip() {
 
 #[test]
 fn serialization_roundtrip_preserves_tree_and_great_tree_info() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Fast-forward a bit so fruit may have spawned.
     sim.step(&[], 500);
 
@@ -181,7 +181,7 @@ fn serialization_roundtrip_preserves_tree_and_great_tree_info() {
 
 #[test]
 fn tree_owner_index_finds_player_tree() {
-    let sim = test_sim(legacy_test_seed());
+    let sim = test_sim(fresh_test_seed());
     let civ_id = sim.player_civ_id.unwrap();
     let trees_for_civ = sim
         .db
@@ -193,7 +193,7 @@ fn tree_owner_index_finds_player_tree() {
 
 #[test]
 fn tree_owner_index_lesser_trees_have_no_owner() {
-    let sim = test_sim(legacy_test_seed());
+    let sim = test_sim(fresh_test_seed());
     let unowned = sim.db.trees.by_owner(&None, tabulosity::QueryOpts::ASC);
     // All trees except the player's tree should have no owner.
     assert_eq!(unowned.len(), sim.db.trees.len() - 1);
@@ -201,7 +201,7 @@ fn tree_owner_index_lesser_trees_have_no_owner() {
 
 #[test]
 fn remove_tree_fruit_at_no_op_when_not_found() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let bogus_pos = VoxelCoord::new(0, 0, 0);
     let before = sim.db.tree_fruits.len();
     // Should not panic on a position with no fruit.
@@ -215,7 +215,7 @@ fn remove_tree_fruit_at_no_op_when_not_found() {
 
 #[test]
 fn remove_tree_fruit_at_removes_correct_fruit() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_id = sim.player_tree_id;
     let species_id = {
         let id = insert_test_fruit_species(&mut sim);
@@ -265,7 +265,7 @@ fn remove_tree_fruit_at_removes_correct_fruit() {
 
 #[test]
 fn determinism_after_stepping() {
-    let seed = legacy_test_seed();
+    let seed = fresh_test_seed();
     let mut sim_a = test_sim(seed);
     let mut sim_b = test_sim(seed);
 
@@ -289,7 +289,7 @@ fn determinism_after_stepping() {
 
 #[test]
 fn new_sim_has_tree_voxels() {
-    let sim = test_sim(legacy_test_seed());
+    let sim = test_sim(fresh_test_seed());
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     assert!(
         !tree.trunk_voxels.is_empty(),
@@ -309,7 +309,7 @@ fn new_sim_has_tree_voxels() {
 
 #[test]
 fn flat_world_has_home_tree_row() {
-    let sim = flat_world_sim(legacy_test_seed());
+    let sim = flat_world_sim(fresh_test_seed());
     assert!(sim.db.trees.contains(&sim.player_tree_id));
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     assert_eq!(tree.owner, sim.player_civ_id);
@@ -321,7 +321,7 @@ fn flat_world_has_home_tree_row() {
 
 #[test]
 fn flat_world_can_spawn_creatures() {
-    let mut sim = flat_world_sim(legacy_test_seed());
+    let mut sim = flat_world_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     let creature = sim.db.creatures.get(&elf).unwrap();
     assert_eq!(creature.species, Species::Elf);
@@ -331,7 +331,7 @@ fn flat_world_can_spawn_creatures() {
 
 #[test]
 fn flat_world_has_clear_air_above_ground() {
-    let sim = flat_world_sim(legacy_test_seed());
+    let sim = flat_world_sim(fresh_test_seed());
     let center_x = sim.config.world_size.0 as i32 / 2;
     let center_z = sim.config.world_size.2 as i32 / 2;
     // Ground at floor_y should be solid.
@@ -353,14 +353,14 @@ fn flat_world_has_clear_air_above_ground() {
 
 #[test]
 fn flat_world_has_civilizations() {
-    let sim = flat_world_sim(legacy_test_seed());
+    let sim = flat_world_sim(fresh_test_seed());
     assert!(sim.player_civ_id.is_some());
     assert!(sim.db.civilizations.len() > 1, "Should have multiple civs");
 }
 
 #[test]
 fn flat_world_serde_roundtrip() {
-    let sim = flat_world_sim(legacy_test_seed());
+    let sim = flat_world_sim(fresh_test_seed());
     let json = sim.to_json().unwrap();
     let restored = SimState::from_json(&json).unwrap();
     assert_eq!(sim.tick, restored.tick);
@@ -374,7 +374,7 @@ fn flat_world_serde_roundtrip() {
 
 #[test]
 fn flat_world_different_seeds_same_geometry() {
-    let seed = legacy_test_seed();
+    let seed = fresh_test_seed();
     let sim_a = flat_world_sim(seed);
     let sim_b = flat_world_sim(seed + 957);
     // Terrain geometry is identical regardless of seed (terrain_max_height=0
@@ -393,7 +393,7 @@ fn flat_world_different_seeds_same_geometry() {
 
 #[test]
 fn flat_world_has_no_fruit_species() {
-    let sim = flat_world_sim(legacy_test_seed());
+    let sim = flat_world_sim(fresh_test_seed());
     assert_eq!(
         sim.db.fruit_species.len(),
         0,
@@ -407,7 +407,7 @@ fn flat_world_has_no_fruit_species() {
 
 #[test]
 fn json_roundtrip_preserves_state() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn creatures and advance ticks.
@@ -450,7 +450,7 @@ fn json_roundtrip_preserves_state() {
 
 #[test]
 fn json_roundtrip_continues_deterministically() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn creatures and advance.
@@ -487,7 +487,7 @@ fn json_roundtrip_continues_deterministically() {
 
 #[test]
 fn elf_spawned_after_roundtrip_gets_name() {
-    let sim = test_sim(legacy_test_seed());
+    let sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Save and restore (no creatures yet).
@@ -535,7 +535,7 @@ fn from_json_rejects_wrong_schema() {
 
 #[test]
 fn state_checksum_deterministic() {
-    let seed = legacy_test_seed();
+    let seed = fresh_test_seed();
     let sim_a = test_sim(seed);
     let sim_b = test_sim(seed);
     let hash_a = sim_a.state_checksum();
@@ -549,7 +549,7 @@ fn state_checksum_deterministic() {
 
 #[test]
 fn state_checksum_different_seeds() {
-    let seed = legacy_test_seed();
+    let seed = fresh_test_seed();
     let sim_a = test_sim(seed);
     let sim_b = test_sim(seed + 1);
     assert_ne!(
@@ -561,7 +561,7 @@ fn state_checksum_different_seeds() {
 
 #[test]
 fn state_checksum_changes_after_mutation() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let before = sim.state_checksum();
 
     // Spawn an elf to mutate state.
@@ -591,7 +591,7 @@ fn state_checksum_changes_after_mutation() {
 
 #[test]
 fn spatial_index_empty_before_spawn() {
-    let sim = test_sim(legacy_test_seed());
+    let sim = test_sim(fresh_test_seed());
     assert!(
         sim.creatures_at_voxel(sim.home_zone_id(), VoxelCoord::new(0, 0, 0))
             .is_empty(),
@@ -601,7 +601,7 @@ fn spatial_index_empty_before_spawn() {
 
 #[test]
 fn spatial_index_populated_after_spawn() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let elf = sim.db.creatures.get(&elf_id).unwrap();
     let pos = elf.position.min;
@@ -617,7 +617,7 @@ fn spatial_index_populated_after_spawn() {
 
 #[test]
 fn spatial_index_tracks_movement() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let initial_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
 
@@ -646,7 +646,7 @@ fn spatial_index_tracks_movement() {
 
 #[test]
 fn spatial_index_multiple_creatures_same_voxel() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf1 = spawn_elf(&mut sim);
     let elf2 = spawn_elf(&mut sim);
 
@@ -667,14 +667,14 @@ fn spatial_index_multiple_creatures_same_voxel() {
 
 #[test]
 fn spatial_index_query_empty_voxel() {
-    let sim = test_sim(legacy_test_seed());
+    let sim = test_sim(fresh_test_seed());
     let empty = sim.creatures_at_voxel(sim.home_zone_id(), VoxelCoord::new(999, 999, 999));
     assert!(empty.is_empty());
 }
 
 #[test]
 fn spatial_index_survives_save_load_roundtrip() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_elf(&mut sim);
     let pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
     assert!(
@@ -697,7 +697,7 @@ fn spatial_index_survives_save_load_roundtrip() {
 
 #[test]
 fn spatial_index_consistent_after_many_ticks() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf1 = spawn_elf(&mut sim);
     let elf2 = spawn_elf(&mut sim);
     let elf3 = spawn_elf(&mut sim);
@@ -892,7 +892,7 @@ fn config_backward_compat_missing_material_filter() {
 
 #[test]
 fn save_load_preserves_world_voxels() {
-    let sim = test_sim(legacy_test_seed());
+    let sim = test_sim(fresh_test_seed());
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
 
     // Roundtrip through JSON (world is now serialized, not rebuilt).
@@ -961,7 +961,7 @@ fn save_load_preserves_world_voxels() {
 
 #[test]
 fn find_surface_position_finds_air() {
-    let sim = test_sim(legacy_test_seed());
+    let sim = test_sim(fresh_test_seed());
     let center = sim.voxel_zone(sim.home_zone_id()).unwrap().size_x as i32 / 2;
     let pos = sim.find_surface_position(center, center, sim.home_zone_id());
 

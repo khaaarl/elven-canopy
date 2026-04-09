@@ -29,7 +29,7 @@ fn opinion_kind_serde_roundtrip() {
 
 #[test]
 fn creature_opinion_insert_and_query() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_a = spawn_creature(&mut sim, Species::Elf);
     let elf_b = spawn_creature(&mut sim, Species::Elf);
 
@@ -51,7 +51,7 @@ fn creature_opinion_insert_and_query() {
 
 #[test]
 fn creature_opinion_asymmetric() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_a = spawn_creature(&mut sim, Species::Elf);
     let elf_b = spawn_creature(&mut sim, Species::Elf);
 
@@ -86,7 +86,7 @@ fn creature_opinion_asymmetric() {
 
 #[test]
 fn creature_opinion_multiple_kinds() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_a = spawn_creature(&mut sim, Species::Elf);
     let elf_b = spawn_creature(&mut sim, Species::Elf);
 
@@ -112,7 +112,7 @@ fn creature_opinion_multiple_kinds() {
 
 #[test]
 fn creature_opinion_remove() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_a = spawn_creature(&mut sim, Species::Elf);
     let elf_b = spawn_creature(&mut sim, Species::Elf);
 
@@ -196,7 +196,7 @@ fn social_impression_delta_maps_roll_to_buckets() {
 #[test]
 fn social_impression_high_cha_via_skill_check() {
     // With CHA=100 and skill=0, skill_check centers at 100 — almost always > 50.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_creature(&mut sim, Species::Elf);
     set_trait(&mut sim, elf, TraitKind::Charisma, 100);
     set_trait(&mut sim, elf, TraitKind::Influence, 0);
@@ -215,7 +215,7 @@ fn social_impression_high_cha_via_skill_check() {
 #[test]
 fn social_impression_low_cha_via_skill_check() {
     // With CHA=-100 and skill=0, skill_check centers at -100 — almost always ≤ -50.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_creature(&mut sim, Species::Elf);
     set_trait(&mut sim, elf, TraitKind::Charisma, -100);
     set_trait(&mut sim, elf, TraitKind::Influence, 0);
@@ -234,7 +234,7 @@ fn social_impression_low_cha_via_skill_check() {
 #[test]
 fn social_skill_trait_equal_values_picks_influence() {
     // When Influence == Culture, BestSocial picks Influence (>= tie-break).
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_creature(&mut sim, Species::Elf);
     set_trait(&mut sim, elf, TraitKind::Influence, 50);
     set_trait(&mut sim, elf, TraitKind::Culture, 50);
@@ -247,7 +247,7 @@ fn social_skill_trait_equal_values_picks_influence() {
 
 #[test]
 fn social_skill_trait_best_social_picks_higher() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_creature(&mut sim, Species::Elf);
 
     // Set Influence=20, Culture=10 — BestSocial should pick Influence.
@@ -278,7 +278,7 @@ fn social_skill_trait_best_social_picks_higher() {
 
 #[test]
 fn upsert_opinion_creates_new_row() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_a = spawn_creature(&mut sim, Species::Elf);
     let elf_b = spawn_creature(&mut sim, Species::Elf);
 
@@ -294,7 +294,7 @@ fn upsert_opinion_creates_new_row() {
 
 #[test]
 fn upsert_opinion_accumulates() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_a = spawn_creature(&mut sim, Species::Elf);
     let elf_b = spawn_creature(&mut sim, Species::Elf);
 
@@ -311,7 +311,7 @@ fn upsert_opinion_accumulates() {
 
 #[test]
 fn upsert_opinion_prunes_zero() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_a = spawn_creature(&mut sim, Species::Elf);
     let elf_b = spawn_creature(&mut sim, Species::Elf);
 
@@ -329,7 +329,7 @@ fn upsert_opinion_prunes_zero() {
 
 #[test]
 fn upsert_opinion_zero_delta_is_noop() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_a = spawn_creature(&mut sim, Species::Elf);
     let elf_b = spawn_creature(&mut sim, Species::Elf);
 
@@ -350,7 +350,7 @@ fn upsert_opinion_zero_delta_is_noop() {
 
 #[test]
 fn decay_positive_toward_zero() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_a = spawn_creature(&mut sim, Species::Elf);
     let elf_b = spawn_creature(&mut sim, Species::Elf);
 
@@ -367,7 +367,7 @@ fn decay_positive_toward_zero() {
 
 #[test]
 fn decay_negative_toward_zero() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_a = spawn_creature(&mut sim, Species::Elf);
     let elf_b = spawn_creature(&mut sim, Species::Elf);
 
@@ -384,7 +384,7 @@ fn decay_negative_toward_zero() {
 
 #[test]
 fn decay_prunes_at_zero() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_a = spawn_creature(&mut sim, Species::Elf);
     let elf_b = spawn_creature(&mut sim, Species::Elf);
 
@@ -402,7 +402,7 @@ fn decay_prunes_at_zero() {
 
 #[test]
 fn decay_multiple_kinds() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_a = spawn_creature(&mut sim, Species::Elf);
     let elf_b = spawn_creature(&mut sim, Species::Elf);
 
@@ -438,7 +438,7 @@ fn decay_fires_via_heartbeat_over_time() {
     elf_species.food_decay_per_tick = 0;
     elf_species.rest_decay_per_tick = 0;
     let heartbeat_interval = elf_species.heartbeat_interval_ticks;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
 
     let elf_a = spawn_creature(&mut sim, Species::Elf);
     let elf_b = spawn_creature(&mut sim, Species::Elf);
@@ -487,7 +487,7 @@ fn bootstrap_creates_opinions_between_starting_elves() {
     // produce extreme CHA values that make individual rolls unlikely).
     config.social.bootstrap_interactions_min = 200;
     config.social.bootstrap_interactions_max = 200;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
     let mut events = vec![];
     sim.spawn_initial_creatures(&mut events);
 
@@ -539,7 +539,7 @@ fn bootstrap_opinions_are_asymmetric() {
     // with low CHA the net sum can land on exactly 0, removing the row).
     config.social.bootstrap_interactions_min = 200;
     config.social.bootstrap_interactions_max = 200;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
     let mut events = vec![];
     sim.spawn_initial_creatures(&mut events);
 
@@ -587,7 +587,7 @@ fn bootstrap_advances_social_skills() {
     // Increase bootstrap count to make skill advancement likely.
     config.social.bootstrap_interactions_min = 20;
     config.social.bootstrap_interactions_max = 30;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
     let mut events = vec![];
     sim.spawn_initial_creatures(&mut events);
 
@@ -617,7 +617,7 @@ fn bootstrap_advances_social_skills() {
 
 #[test]
 fn opinion_serde_roundtrip_via_simstate() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_a = spawn_creature(&mut sim, Species::Elf);
     let elf_b = spawn_creature(&mut sim, Species::Elf);
 
@@ -648,7 +648,7 @@ fn opinion_serde_roundtrip_via_simstate() {
 
 #[test]
 fn decay_no_opinions_is_noop() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_creature(&mut sim, Species::Elf);
     // Should not panic or error when there are no opinion rows.
     sim.decay_opinions(elf);
@@ -659,7 +659,7 @@ fn decay_no_opinions_is_noop() {
 // ---------------------------------------------------------------------------
 #[test]
 fn friendship_category_default_thresholds() {
-    let sim = test_sim(legacy_test_seed());
+    let sim = test_sim(fresh_test_seed());
     assert_eq!(sim.friendship_category(0), FriendshipCategory::Neutral);
     assert_eq!(sim.friendship_category(4), FriendshipCategory::Neutral);
     assert_eq!(sim.friendship_category(-4), FriendshipCategory::Neutral);
@@ -678,7 +678,7 @@ fn friendship_category_default_thresholds() {
 
 #[test]
 fn friendship_category_custom_thresholds() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     sim.config.social.friendship_acquaintance_threshold = 10;
     sim.config.social.friendship_friend_threshold = 30;
     sim.config.social.friendship_disliked_threshold = -10;
@@ -730,7 +730,7 @@ fn friendship_category_serde_roundtrip() {
 
 #[test]
 fn bootstrap_single_elf_creates_no_opinions() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_creature(&mut sim, Species::Elf);
     sim.bootstrap_social_opinions(&[elf]);
     let opinions: Vec<_> = sim
@@ -746,7 +746,7 @@ fn bootstrap_single_elf_creates_no_opinions() {
 
 #[test]
 fn upsert_opinion_notifies_on_threshold_cross() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Disable bootstrap to avoid pre-existing opinions.
     sim.config.social.bootstrap_interactions_min = 0;
     sim.config.social.bootstrap_interactions_max = 0;
@@ -768,7 +768,7 @@ fn upsert_opinion_notifies_on_threshold_cross() {
 
 #[test]
 fn upsert_opinion_no_notify_within_same_category() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     sim.config.social.bootstrap_interactions_min = 0;
     sim.config.social.bootstrap_interactions_max = 0;
     let elf_a = spawn_creature(&mut sim, Species::Elf);
@@ -789,7 +789,7 @@ fn upsert_opinion_no_notify_within_same_category() {
 
 #[test]
 fn upsert_opinion_notifies_friend_threshold() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     sim.config.social.bootstrap_interactions_min = 0;
     sim.config.social.bootstrap_interactions_max = 0;
     let elf_a = spawn_creature(&mut sim, Species::Elf);
@@ -808,7 +808,7 @@ fn upsert_opinion_notifies_friend_threshold() {
 
 #[test]
 fn upsert_opinion_notifies_negative_threshold() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     sim.config.social.bootstrap_interactions_min = 0;
     sim.config.social.bootstrap_interactions_max = 0;
     let elf_a = spawn_creature(&mut sim, Species::Elf);
@@ -827,7 +827,7 @@ fn upsert_opinion_notifies_negative_threshold() {
 
 #[test]
 fn upsert_opinion_no_notify_for_neutral_return() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     sim.config.social.bootstrap_interactions_min = 0;
     sim.config.social.bootstrap_interactions_max = 0;
     let elf_a = spawn_creature(&mut sim, Species::Elf);

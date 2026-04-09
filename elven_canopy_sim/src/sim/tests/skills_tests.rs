@@ -10,7 +10,7 @@ use super::*;
 
 #[test]
 fn creature_skills_default_to_zero() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
     // All 17 skills should default to 0 (no trait rows inserted at spawn).
@@ -27,7 +27,7 @@ fn creature_skills_default_to_zero() {
 fn try_advance_skill_guaranteed_at_zero() {
     // With 1000 permille (100%) base probability and skill 0, advancement
     // is guaranteed (before INT modifier, INT 0 = 1x = no change).
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
     // Force INT to 0 so it doesn't modify the probability.
@@ -50,7 +50,7 @@ fn try_advance_skill_guaranteed_at_zero() {
 
 #[test]
 fn try_advance_skill_blocked_at_cap() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     let cap = sim.config.skills.default_skill_cap;
 
@@ -78,7 +78,7 @@ fn try_advance_skill_decay_reduces_probability() {
     // At skill 100 with decay_base 100, adjusted prob = base * 100/200 = base/2.
     // With base 1000 permille, adjusted = 500 permille (50%). Over many trials
     // the success rate should be near 50%, not 100%.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
     // Force INT to 0.
@@ -131,7 +131,7 @@ fn try_advance_skill_intelligence_boosts_probability() {
     // INT +100 doubles the advancement probability (2x multiplier).
     // With base 500 permille, skill 0, INT 0: adjusted = 500, ~50% success.
     // With INT +100: adjusted = 1000, 100% success.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
     // Set INT to +100.
@@ -165,7 +165,7 @@ fn try_advance_skill_intelligence_boosts_probability() {
 fn try_advance_skill_intelligence_capped_at_1000() {
     // Even with very high INT, probability should cap at 1000 permille.
     // This test just verifies no panic or overflow with extreme INT values.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
     if let Some(mut row) = sim
@@ -210,7 +210,7 @@ fn try_advance_skill_deterministic() {
         let rng_state = sim.rng.next_u64();
         (skill, rng_state)
     };
-    let seed = legacy_test_seed();
+    let seed = fresh_test_seed();
     assert_eq!(
         run(seed),
         run(seed),
@@ -233,7 +233,7 @@ fn try_advance_skill_prng_consumed_at_cap() {
     // whether the creature is at cap or not (1 + extra_rolls per call).
     // This keeps the PRNG stream position-stable regardless of game state.
     // Note: this test uses Outcast path (0 extra rolls) → 1 PRNG call each.
-    let seed = legacy_test_seed();
+    let seed = fresh_test_seed();
     let mut sim_capped = test_sim(seed);
     let mut sim_uncapped = test_sim(seed);
     let elf_capped = spawn_creature(&mut sim_capped, Species::Elf);
@@ -266,7 +266,7 @@ fn try_advance_skill_prng_consumed_at_cap() {
 fn try_advance_skill_boundary_99_to_100() {
     // Verify advancement from 99 to 100 (just below default cap), then
     // verify no further advancement at 100.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
     // Force INT to 0.
@@ -304,7 +304,7 @@ fn try_advance_skill_boundary_99_to_100() {
 fn try_advance_skill_zero_decay_base_no_panic() {
     // Verify that advancement_decay_base = 0 does not cause division by zero.
     // The implementation clamps decay to at least 1.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     sim.config.skills.advancement_decay_base = 0;
 
@@ -315,7 +315,7 @@ fn try_advance_skill_zero_decay_base_no_panic() {
 #[test]
 fn skill_modified_duration_no_skill_is_identity() {
     // With stat 0 and skill 0, duration should be unchanged (1x multiplier).
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     set_trait(&mut sim, elf_id, TraitKind::Dexterity, 0);
 
@@ -327,7 +327,7 @@ fn skill_modified_duration_no_skill_is_identity() {
 #[test]
 fn skill_modified_duration_skill_100_halves() {
     // Skill 100 with stat 0: apply_stat_divisor(1000, 100) = 500 (2x speed).
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     set_trait(&mut sim, elf_id, TraitKind::Dexterity, 0);
     set_trait(&mut sim, elf_id, TraitKind::Cuisine, 100);
@@ -340,7 +340,7 @@ fn skill_modified_duration_skill_100_halves() {
 #[test]
 fn skill_modified_duration_stat_plus_skill_additive() {
     // DEX +100, Cuisine +100 → combined 200 → 4x speed → 250 ticks.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     set_trait(&mut sim, elf_id, TraitKind::Dexterity, 100);
     set_trait(&mut sim, elf_id, TraitKind::Cuisine, 100);
@@ -356,7 +356,7 @@ fn skill_modified_duration_stat_plus_skill_additive() {
 #[test]
 fn skill_modified_duration_minimum_is_one() {
     // Extremely high stat+skill should not produce zero duration.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     set_trait(&mut sim, elf_id, TraitKind::Dexterity, 600);
     set_trait(&mut sim, elf_id, TraitKind::Cuisine, 600);
@@ -369,7 +369,7 @@ fn skill_modified_duration_minimum_is_one() {
 fn skill_modified_duration_ignores_cap() {
     // The skill cap only limits learning (advancement), not the speed benefit.
     // A creature with skill 200 and cap 100 should get the full 200 benefit.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     set_trait(&mut sim, elf_id, TraitKind::Dexterity, 0);
     set_trait(&mut sim, elf_id, TraitKind::Cuisine, 200);
@@ -393,7 +393,7 @@ fn skill_modified_duration_ignores_cap() {
 fn skill_check_sums_stats_and_skill() {
     // With quasi_normal stdev=50, giving creature very high stats ensures the
     // roll is positive. We test structural properties, not exact values.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
     // Set known stat and skill values (high enough to overwhelm noise).
@@ -413,7 +413,7 @@ fn skill_check_sums_stats_and_skill() {
 #[test]
 fn skill_check_multiple_stats() {
     // Crafting-style check: DEX + INT + PER + skill.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
     set_trait(&mut sim, elf_id, TraitKind::Dexterity, 200);
@@ -441,7 +441,7 @@ fn skill_check_multiple_stats() {
 fn skill_check_zero_stats_centers_near_zero() {
     // With all stats and skill at 0, the roll is just quasi_normal(50),
     // centered at 0. Over many samples, mean should be near 0.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
 
     set_trait(&mut sim, elf_id, TraitKind::Dexterity, 0);
@@ -462,7 +462,7 @@ fn skill_check_zero_stats_centers_near_zero() {
 #[test]
 fn skill_check_empty_stats_slice() {
     // An empty stats slice should sum to 0, so result is skill + noise.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     set_trait(&mut sim, elf_id, TraitKind::Striking, 500);
 

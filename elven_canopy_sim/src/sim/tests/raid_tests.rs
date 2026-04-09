@@ -11,7 +11,7 @@ use super::*;
 
 #[test]
 fn test_attack_move_creates_task() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     force_idle(&mut sim, elf);
 
@@ -46,7 +46,7 @@ fn test_attack_move_creates_task() {
 
 #[test]
 fn test_attack_move_walks_to_destination() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     force_idle(&mut sim, elf);
 
@@ -88,7 +88,7 @@ fn test_attack_move_walks_to_destination() {
 
 #[test]
 fn test_attack_move_engages_hostile() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -131,7 +131,7 @@ fn test_attack_move_engages_hostile() {
 
 #[test]
 fn test_attack_move_resumes_after_kill() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -180,7 +180,7 @@ fn test_attack_move_resumes_after_kill() {
 
 #[test]
 fn test_attack_move_nearest_target() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
     let goblin_near = spawn_species(&mut sim, Species::Goblin);
     let goblin_far = spawn_species(&mut sim, Species::Goblin);
@@ -229,7 +229,7 @@ fn test_attack_move_nearest_target() {
 
 #[test]
 fn test_attack_move_preempts_lower_priority() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
 
     // Give elf a GoTo task (PlayerDirected level 2).
@@ -271,7 +271,7 @@ fn test_attack_move_preempts_lower_priority() {
 
 #[test]
 fn test_attack_move_flee_exempt() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let mut events = Vec::new();
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -341,7 +341,7 @@ fn test_attack_move_serde_roundtrip() {
 
 #[test]
 fn trigger_raid_spawns_creatures() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let hostile_civ = ensure_hostile_civ(&mut sim);
 
     let hostile_species = sim
@@ -381,7 +381,7 @@ fn trigger_raid_spawns_creatures() {
 
 #[test]
 fn trigger_raid_assigns_attack_move() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let hostile_civ = ensure_hostile_civ(&mut sim);
 
     let mut events = Vec::new();
@@ -414,7 +414,7 @@ fn trigger_raid_assigns_attack_move() {
 
 #[test]
 fn trigger_raid_spawns_at_perimeter() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let hostile_civ = ensure_hostile_civ(&mut sim);
 
     // Compute the actual terrain bounding box from walkable ground positions.
@@ -476,7 +476,7 @@ fn trigger_raid_spawns_at_perimeter() {
 fn trigger_raid_raiders_cluster_together() {
     // Raiders should spawn clustered near one point on the map edge,
     // not scattered across the entire perimeter.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let hostile_civ = ensure_hostile_civ(&mut sim);
 
     let mut events = Vec::new();
@@ -513,7 +513,7 @@ fn trigger_raid_raiders_cluster_together() {
 
 #[test]
 fn trigger_raid_no_hostile_civs() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     remove_all_hostile_rels(&mut sim);
 
     let creature_count_before = sim.db.creatures.iter_all().count();
@@ -530,7 +530,7 @@ fn trigger_raid_no_hostile_civs() {
 
 #[test]
 fn trigger_raid_notification() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     ensure_hostile_civ(&mut sim);
 
     let notif_count_before = sim.db.notifications.iter_all().count();
@@ -562,7 +562,7 @@ fn trigger_raid_single_activation_per_raider() {
     // Raid-spawned creatures should have exactly 1 pending activation
     // (next_available_tick is Some). Verifies that spawn + attack-move
     // doesn't leave the creature in an inconsistent activation state.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let hostile_civ = ensure_hostile_civ(&mut sim);
 
     let mut events = Vec::new();
@@ -593,7 +593,7 @@ fn trigger_raid_single_activation_per_raider() {
 fn trigger_raid_zero_raid_size_does_not_panic() {
     // If a species somehow has raid_size=0 and is selected for a raid,
     // the sim must not panic (division by zero in find_perimeter_positions).
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let hostile_civ = ensure_hostile_civ(&mut sim);
 
     // Set the raiding species' raid_size to 0.
@@ -622,7 +622,7 @@ fn trigger_raid_zero_raid_size_does_not_panic() {
 #[test]
 fn trigger_raid_no_player_civ() {
     // If player_civ_id is None, trigger_raid should be a silent no-op.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     sim.player_civ_id = None;
 
     let creature_count_before = sim.db.creatures.iter_all().count();
@@ -638,7 +638,7 @@ fn trigger_raid_no_player_civ() {
 #[test]
 fn trigger_raid_deterministic_same_seed() {
     // Two identically-seeded sims should produce identical raids.
-    let seed = legacy_test_seed();
+    let seed = fresh_test_seed();
     let mut sim_a = test_sim(seed);
     let mut sim_b = test_sim(seed);
 
@@ -671,7 +671,7 @@ fn trigger_raid_deterministic_same_seed() {
 
 #[test]
 fn trigger_raid_notification_includes_species_and_direction() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     ensure_hostile_civ(&mut sim);
 
     let notif_count_before = sim.db.notifications.iter_all().count();
@@ -888,7 +888,7 @@ fn species_data_backward_compat_ground_only_in_json() {
 fn trigger_raid_finds_hostile_via_reverse_relationship() {
     // If a civ considers the player hostile (them→player) but the player
     // doesn't know about them, the raid should still find them as a target.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let player_civ = sim.player_civ_id.unwrap();
 
     // Remove ALL hostile relationships in both directions.
@@ -941,7 +941,7 @@ fn trigger_raid_finds_hostile_via_reverse_relationship() {
 fn trigger_raid_ignores_forward_only_hostility() {
     // If the player hates a civ but they don't hate us, no raid should come
     // from them — raids require them→player hostility.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let player_civ = sim.player_civ_id.unwrap();
 
     remove_all_hostile_rels(&mut sim);
@@ -978,7 +978,7 @@ fn trigger_raid_ignores_forward_only_hostility() {
 fn trigger_raid_human_civ_aborts_with_notification() {
     // If the only hostile civ has CivSpecies::Human (no sim creature type),
     // trigger_raid should abort with a "no creature type" notification.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let player_civ = sim.player_civ_id.unwrap();
     remove_all_hostile_rels(&mut sim);
 
@@ -1027,7 +1027,7 @@ fn trigger_raid_human_civ_aborts_with_notification() {
 fn trigger_raid_creates_player_awareness_of_raiding_civ() {
     // When a raid happens, the player civ should discover and hate the raiding
     // civ. Without this, elves don't see raiders as hostile (yellow on minimap).
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let player_civ = sim.player_civ_id.unwrap();
     remove_all_hostile_rels(&mut sim);
 
@@ -1097,7 +1097,7 @@ fn trigger_raid_creates_player_awareness_of_raiding_civ() {
 #[test]
 fn trigger_raid_elves_see_raiders_as_hostile() {
     // Raiders must be considered hostile by elves so combat triggers.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let hostile_civ = ensure_hostile_civ(&mut sim);
     let player_civ = sim.player_civ_id.unwrap();
 
@@ -1133,7 +1133,7 @@ fn trigger_raid_elves_see_raiders_as_hostile() {
 #[test]
 fn group_attack_move_spreads_creatures() {
     // GroupAttackMove should create AttackMove tasks at spread destinations.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_a = spawn_elf(&mut sim);
     let elf_b = spawn_elf(&mut sim);
     force_idle_and_cancel_activations(&mut sim, elf_a);

@@ -69,7 +69,7 @@ fn create_dining_hall(sim: &mut SimState, pos: VoxelCoord, food_count: u32) -> S
 
 #[test]
 fn busy_tired_elf_does_not_create_sleep_task() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
@@ -152,7 +152,7 @@ fn busy_tired_elf_does_not_create_sleep_task() {
 
 #[test]
 fn hungry_takes_priority_over_tired() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     sim.config.elf_starting_bread = 0;
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -212,7 +212,7 @@ fn hungry_takes_priority_over_tired() {
 #[test]
 fn ground_sleep_fallback_when_no_beds() {
     // No dormitories exist — tired elf should get a ground Sleep task.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
@@ -270,7 +270,7 @@ fn ground_sleep_fallback_when_no_beds() {
 
 #[test]
 fn find_nearest_bed_excludes_occupied() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
@@ -397,7 +397,7 @@ fn tired_elf_sleeps_and_rest_increases() {
     // set rest manually and only see the effect of sleeping.
     elf_species.food_decay_per_tick = 0;
     elf_species.rest_decay_per_tick = 0;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
 
@@ -492,7 +492,7 @@ fn tired_elf_sleeps_and_rest_increases() {
 
 #[test]
 fn find_nearest_fruit_returns_reachable() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     ensure_tree_has_fruit(&mut sim);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
@@ -535,7 +535,7 @@ fn find_nearest_fruit_returns_reachable() {
 
 #[test]
 fn eat_fruit_task_restores_food_on_arrival() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let food_max = sim.species_table[&Species::Elf].food_max;
     let restore_pct = sim.species_table[&Species::Elf].food_restore_pct;
@@ -610,7 +610,7 @@ fn eat_fruit_task_restores_food_on_arrival() {
 
 #[test]
 fn hungry_idle_elf_creates_eat_fruit_task() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     sim.config.elf_starting_bread = 0;
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -666,7 +666,7 @@ fn hungry_idle_elf_creates_eat_fruit_task() {
 
 #[test]
 fn well_fed_elf_does_not_create_eat_fruit_task() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
@@ -700,7 +700,7 @@ fn well_fed_elf_does_not_create_eat_fruit_task() {
 
 #[test]
 fn busy_hungry_elf_does_not_create_eat_fruit_task() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let food_max = sim.species_table[&Species::Elf].food_max;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
@@ -787,7 +787,7 @@ fn hungry_elf_eats_fruit_and_food_increases() {
     // food, run ticks, verify the elf ate fruit and food increased.
     // We place fruit explicitly rather than relying on random fruit spawning
     // so the test is deterministic regardless of tree shape.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     sim.config.elf_starting_bread = 0; // Force fruit foraging, not bread eating.
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -869,7 +869,7 @@ fn hungry_elf_eats_fruit_and_food_increases() {
 
 #[test]
 fn hungry_elf_with_bread_creates_eat_bread_task() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let food_max = sim.species_table[&Species::Elf].food_max;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
@@ -930,7 +930,7 @@ fn hungry_elf_with_bread_creates_eat_bread_task() {
 
 #[test]
 fn eat_bread_restores_food_and_removes_bread() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     sim.config.elf_starting_bread = 0;
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -1020,7 +1020,7 @@ fn eat_bread_restores_food_and_removes_bread() {
 #[test]
 fn hungry_elf_without_bread_still_seeks_fruit() {
     // Elf is hungry but has no bread — should create EatFruit, not EatBread.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     sim.config.elf_starting_bread = 0;
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -1073,7 +1073,7 @@ fn hungry_elf_without_bread_still_seeks_fruit() {
 #[test]
 fn hungry_elf_with_unowned_bread_seeks_fruit() {
     // Elf has bread but doesn't own it — should seek fruit instead.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     sim.config.elf_starting_bread = 0;
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -1139,7 +1139,7 @@ fn hungry_elf_with_unowned_bread_seeks_fruit() {
 
 #[test]
 fn assign_home_sets_bidirectional_refs() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
     let home_id = insert_completed_home(&mut sim, anchor);
@@ -1191,7 +1191,7 @@ fn assign_home_sets_bidirectional_refs() {
 
 #[test]
 fn assign_home_unassign() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
     let home_id = insert_completed_home(&mut sim, anchor);
@@ -1254,7 +1254,7 @@ fn assign_home_unassign() {
 
 #[test]
 fn assign_home_replaces_old_assignment() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor_a = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
     let anchor_b = VoxelCoord::new(tree_pos.x + 10, 0, tree_pos.z + 5);
@@ -1331,7 +1331,7 @@ fn assign_home_replaces_old_assignment() {
 
 #[test]
 fn assign_home_evicts_previous_occupant() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
     let home_id = insert_completed_home(&mut sim, anchor);
@@ -1421,7 +1421,7 @@ fn assign_home_evicts_previous_occupant() {
 
 #[test]
 fn assign_home_rejects_non_home() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
     let structure_id = insert_completed_building(&mut sim, anchor);
@@ -1475,7 +1475,7 @@ fn assign_home_rejects_non_home() {
 
 #[test]
 fn assign_home_rejects_non_elf() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let anchor = VoxelCoord::new(tree_pos.x + 5, 0, tree_pos.z + 5);
     let home_id = insert_completed_home(&mut sim, anchor);
@@ -1523,7 +1523,7 @@ fn assign_home_rejects_non_elf() {
 
 #[test]
 fn tired_elf_sleeps_in_assigned_home() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
@@ -1605,7 +1605,7 @@ fn tired_elf_sleeps_in_assigned_home() {
 fn tired_elf_without_home_uses_dormitory() {
     // This is largely the same as existing tests, but verifies the new
     // code path doesn't break dormitory fallback.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
@@ -1674,7 +1674,7 @@ fn tired_elf_without_home_uses_dormitory() {
 
 #[test]
 fn assigned_home_unfurnished_falls_back() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
@@ -1749,7 +1749,7 @@ fn assigned_home_unfurnished_falls_back() {
 
 #[test]
 fn death_clears_assigned_home() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_elf(&mut sim);
 
     // Build a home and assign the elf.
@@ -1805,7 +1805,7 @@ fn death_clears_assigned_home() {
 
 #[test]
 fn find_nearest_dining_hall_returns_hall_with_food() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
@@ -1821,7 +1821,7 @@ fn find_nearest_dining_hall_returns_hall_with_food() {
 
 #[test]
 fn find_nearest_dining_hall_returns_none_when_no_food() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
@@ -1834,7 +1834,7 @@ fn find_nearest_dining_hall_returns_none_when_no_food() {
 
 #[test]
 fn find_nearest_dining_hall_returns_none_when_seats_full() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
@@ -1883,7 +1883,7 @@ fn find_nearest_dining_hall_returns_none_when_seats_full() {
 
 #[test]
 fn elf_seeks_dining_hall_at_dining_threshold() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
@@ -1920,7 +1920,7 @@ fn elf_seeks_dining_hall_at_dining_threshold() {
 
 #[test]
 fn elf_eats_emergency_food_below_hunger_threshold() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let food_max = sim.species_table[&Species::Elf].food_max;
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
@@ -1958,7 +1958,7 @@ fn elf_eats_emergency_food_below_hunger_threshold() {
 
 #[test]
 fn elf_stays_idle_at_dining_threshold_without_hall() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let food_max = sim.species_table[&Species::Elf].food_max;
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
@@ -1992,7 +1992,7 @@ fn elf_stays_idle_at_dining_threshold_without_hall() {
 
 #[test]
 fn dine_at_hall_reserves_seat_and_food() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
@@ -2053,7 +2053,7 @@ fn dine_at_hall_reserves_seat_and_food() {
 
 #[test]
 fn dine_at_hall_completion_restores_food_and_generates_thought() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
@@ -2112,7 +2112,7 @@ fn dine_at_hall_completion_restores_food_and_generates_thought() {
 
 #[test]
 fn dine_at_hall_cleanup_releases_reservations() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
@@ -2232,7 +2232,7 @@ fn old_save_thought_config_missing_ate_alone_fields() {
 
 #[test]
 fn dining_hall_with_fruit_only() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
@@ -2286,7 +2286,7 @@ fn dining_hall_with_fruit_only() {
 #[test]
 fn dine_at_hall_instant_on_arrival() {
     // Verify dining resolves instantly on arrival (no animation delay).
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
@@ -2342,7 +2342,7 @@ fn edible_kinds_list_is_consistent() {
 
 #[test]
 fn furnish_dining_hall_enables_logistics() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Build a shell structure.
@@ -2403,7 +2403,7 @@ fn furnish_dining_hall_enables_logistics() {
 fn dining_preempts_autonomous_task() {
     // An elf busy hauling should be preempted for dining when in the
     // dining hunger band.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
@@ -2474,7 +2474,7 @@ fn find_dining_hall_with_realistic_building() {
     // Use the real building pipeline (voxels + walkability rebuild + furnish
     // command) to verify find_nearest_dining_hall works with a properly
     // constructed building, not just manually inserted DB rows.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let anchor = find_building_site(&sim);
     let structure_id = insert_completed_building(&mut sim, anchor);
 
@@ -2529,7 +2529,7 @@ fn find_dining_hall_with_realistic_building() {
 fn end_to_end_dining_hall() {
     // Full pipeline: fresh world → build → furnish → stock food via
     // logistics → elf gets hungry → self-assigns dining → eats → AteDining.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
     let food_max = sim.species_table[&Species::Elf].food_max;
 
@@ -2681,7 +2681,7 @@ fn end_to_end_dining_hall() {
 fn elf_resumes_activation_after_dining() {
     // After eating at a dining hall, the elf should resume normal activation
     // (wandering, picking up tasks, etc.) — not freeze in place.
-    let mut sim = flat_world_sim(legacy_test_seed());
+    let mut sim = flat_world_sim(fresh_test_seed());
     let table_pos = VoxelCoord::new(32, 1, 32);
 
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -2727,7 +2727,7 @@ fn dine_at_hall_no_task_when_food_unavailable() {
     // When all food in a dining hall is reserved, the heartbeat must not
     // create a DineAtHall task at all — no speculative insert, no orphaned
     // rows.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
@@ -2806,7 +2806,7 @@ fn two_elves_one_food_only_one_gets_dine_task() {
     // Two hungry elves, one dining hall with exactly 1 food item. After a
     // heartbeat tick, exactly one elf should get a DineAtHall task. The
     // other stays idle. No orphaned tasks should remain.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
@@ -2871,7 +2871,7 @@ fn two_elves_one_food_only_one_gets_dine_task() {
 
 #[test]
 fn food_decreases_over_heartbeats() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let food_max = sim.species_table[&Species::Elf].food_max;
@@ -2922,7 +2922,7 @@ fn food_does_not_go_below_zero() {
         .get_mut(&Species::Elf)
         .unwrap()
         .food_decay_per_tick = 1_000_000_000_000_000; // Depletes in 1 tick
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn an elf.
@@ -2960,7 +2960,7 @@ fn creature_dies_when_food_reaches_zero() {
         .get_mut(&Species::Elf)
         .unwrap()
         .food_decay_per_tick = 1_000_000_000_000_000;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     // Spawn an elf.
@@ -3012,7 +3012,7 @@ fn starvation_death_notification_mentions_starvation() {
         .get_mut(&Species::Elf)
         .unwrap()
         .food_decay_per_tick = 1_000_000_000_000_000;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
@@ -3052,7 +3052,7 @@ fn no_heartbeat_after_starvation_death() {
         .get_mut(&Species::Elf)
         .unwrap()
         .food_decay_per_tick = 1_000_000_000_000_000;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
@@ -3088,7 +3088,7 @@ fn no_heartbeat_after_starvation_death() {
 fn creature_with_food_remaining_does_not_starve() {
     // Default config — food_max is large, decay is slow. Creature should
     // survive a few heartbeats without issue.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
@@ -3126,7 +3126,7 @@ fn creature_with_food_remaining_does_not_starve() {
 
 #[test]
 fn rest_decreases_over_heartbeats() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let rest_max = sim.species_table[&Species::Elf].rest_max;
@@ -3174,7 +3174,7 @@ fn rest_does_not_go_below_zero() {
     let elf = config.species.get_mut(&Species::Elf).unwrap();
     elf.rest_decay_per_tick = 1_000_000_000_000_000; // Depletes in 1 tick
     elf.rest_per_sleep_tick = 0; // Prevent sleep from restoring rest.
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
@@ -3203,7 +3203,7 @@ fn rest_does_not_go_below_zero() {
 
 #[test]
 fn tired_idle_elf_creates_sleep_task() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
@@ -3257,7 +3257,7 @@ fn tired_idle_elf_creates_sleep_task() {
 
 #[test]
 fn rested_elf_does_not_create_sleep_task() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
@@ -3296,7 +3296,7 @@ fn rested_elf_does_not_create_sleep_task() {
 
 #[test]
 fn set_creature_food() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_elf(&mut sim);
 
     let cmd = SimCommand {
@@ -3314,7 +3314,7 @@ fn set_creature_food() {
 
 #[test]
 fn set_creature_rest() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_elf(&mut sim);
 
     let cmd = SimCommand {
@@ -3340,7 +3340,7 @@ fn find_nearest_dining_hall_picks_closer_of_two() {
     // verify the closer one is returned. This validates that the
     // nearest-selection logic is correct regardless of pathfinding strategy
     // (Dijkstra vs per-candidate A*).
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
 
     // Find two distinct walkable positions at different distances from
     // the elf spawn (near tree_pos).
@@ -3393,7 +3393,7 @@ fn find_nearest_dining_hall_picks_closer_of_two() {
 fn find_nearest_dining_hall_skips_closer_hall_without_food() {
     // The closer hall has no food, the farther hall does.
     // Should return the farther hall.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
@@ -3441,7 +3441,7 @@ fn find_nearest_dining_hall_skips_closer_hall_without_food() {
 fn find_nearest_dining_hall_skips_closer_full_table() {
     // Two halls with food, but the closer one has all seats occupied.
     // Should pick the farther hall.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let elf_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
@@ -3518,7 +3518,7 @@ fn find_nearest_dining_hall_skips_closer_full_table() {
 fn find_nearest_dining_hall_returns_none_when_no_halls_exist() {
     // No dining halls at all — the fast path should return None without
     // scanning task_voxel_refs.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     let result = sim.find_nearest_dining_hall(elf_id);
     assert!(
@@ -3530,7 +3530,7 @@ fn find_nearest_dining_hall_returns_none_when_no_halls_exist() {
 #[test]
 fn find_nearest_dining_hall_unplaced_table_ignored() {
     // A dining hall with food but its only table is unplaced.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 
@@ -3586,7 +3586,7 @@ fn find_nearest_dining_hall_unplaced_table_ignored() {
 fn wild_creature_does_not_seek_dining_hall() {
     // Wild creatures (no civ_id) should never attempt to dine, even when
     // hungry and a stocked dining hall exists.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let table_pos = find_walkable(&sim, tree_pos, 10).unwrap();
 

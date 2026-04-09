@@ -26,7 +26,7 @@ fn path_config_has_all_paths() {
 
 #[test]
 fn assign_path_command_sets_path() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_test_elf(&mut sim);
 
     let mut events = Vec::new();
@@ -44,7 +44,7 @@ fn assign_path_command_sets_path() {
 
 #[test]
 fn assign_path_replaces_existing() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_test_elf(&mut sim);
 
     let mut events = Vec::new();
@@ -57,7 +57,7 @@ fn assign_path_replaces_existing() {
 
 #[test]
 fn assign_path_ignores_nonexistent_creature() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let mut rng = crate::prng::GameRng::new(999);
     let fake_id = CreatureId::new(&mut rng);
     let mut events = Vec::new();
@@ -69,7 +69,7 @@ fn assign_path_ignores_nonexistent_creature() {
 
 #[test]
 fn skill_cap_elevated_for_path_skills() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_test_elf(&mut sim);
 
     // With Outcast path (default), skill cap is default (100).
@@ -95,7 +95,7 @@ fn skill_cap_elevated_for_path_skills() {
 
 #[test]
 fn skill_cap_scout_path() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_test_elf(&mut sim);
 
     let mut events = Vec::new();
@@ -113,7 +113,7 @@ fn skill_cap_scout_path() {
 
 #[test]
 fn extra_advancement_rolls_for_path_skills() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_test_elf(&mut sim);
 
     // Outcast path -> 0 extra rolls.
@@ -136,7 +136,7 @@ fn extra_advancement_rolls_for_path_skills() {
 
 #[test]
 fn outcast_path_gives_no_bonuses() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_test_elf(&mut sim);
 
     let mut events = Vec::new();
@@ -162,7 +162,7 @@ fn outcast_path_gives_no_bonuses() {
 
 #[test]
 fn elf_spawn_auto_assigns_outcast() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_test_elf(&mut sim);
 
     // Elf should have Outcast path immediately after spawn.
@@ -175,7 +175,7 @@ fn elf_spawn_auto_assigns_outcast() {
 
 #[test]
 fn assign_path_via_sim_command() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_test_elf(&mut sim);
 
     let cmd = crate::command::SimCommand {
@@ -215,7 +215,7 @@ fn assign_path_command_serde_roundtrip() {
 
 #[test]
 fn path_skill_cap_blocks_default_but_allows_path_cap() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_test_elf(&mut sim);
 
     // Set Striking skill to default cap (100).
@@ -253,7 +253,7 @@ fn path_double_roll_increases_advancement() {
     // advance faster than without a combat path. We compare advancement
     // of an associated skill vs a non-associated skill using the same
     // number of attempts.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_test_elf(&mut sim);
 
     let mut events = Vec::new();
@@ -283,7 +283,7 @@ fn path_double_roll_increases_advancement() {
 
 #[test]
 fn path_non_associated_skill_uses_default_cap() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_test_elf(&mut sim);
 
     // Assign Warrior path.
@@ -306,7 +306,7 @@ fn path_non_associated_skill_uses_default_cap() {
 
 #[test]
 fn path_assignment_survives_save_load() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_test_elf(&mut sim);
 
     let mut events = Vec::new();
@@ -326,7 +326,7 @@ fn path_assignment_survives_save_load() {
 
 #[test]
 fn non_elf_spawn_has_no_path() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
@@ -357,7 +357,7 @@ fn non_elf_spawn_has_no_path() {
 
 #[test]
 fn assign_path_rejects_non_elf() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
 
     let cmd = SimCommand {
@@ -394,7 +394,7 @@ fn path_prng_consumption_with_extra_rolls() {
     // Verify PRNG contract: Warrior (1 extra roll) consumes exactly 2 PRNG
     // calls per try_advance_skill, regardless of whether at cap.
     // Uses rng clone to verify consumption count without twin-sim pattern.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_test_elf(&mut sim);
 
     let mut events = Vec::new();
@@ -449,7 +449,7 @@ fn path_config_serde_roundtrip() {
 
 #[test]
 fn extra_rolls_can_increment_skill_twice_per_call() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_test_elf(&mut sim);
 
     let mut events = Vec::new();
@@ -471,7 +471,7 @@ fn extra_rolls_can_increment_skill_twice_per_call() {
 
 #[test]
 fn extra_rolls_never_exceed_cap() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let elf_id = spawn_test_elf(&mut sim);
 
     let mut events = Vec::new();

@@ -232,7 +232,7 @@ fn find_strut_endpoints(sim: &SimState) -> (VoxelCoord, VoxelCoord) {
 
 #[test]
 fn designate_build_creates_build_task() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     let cmd = SimCommand {
@@ -266,7 +266,7 @@ fn designate_build_creates_build_task() {
 
 #[test]
 fn designate_build_rejects_out_of_bounds() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let oob = VoxelCoord::new(-1, 0, 0);
 
     let cmd = SimCommand {
@@ -286,7 +286,7 @@ fn designate_build_rejects_out_of_bounds() {
 
 #[test]
 fn designate_build_rejects_non_air() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     let trunk_coord = tree.trunk_voxels[0];
 
@@ -307,7 +307,7 @@ fn designate_build_rejects_non_air() {
 
 #[test]
 fn designate_build_rejects_no_adjacency() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Pick a coord far from any solid geometry.
     let isolated = VoxelCoord::new(0, 50, 0);
     assert_eq!(
@@ -337,7 +337,7 @@ fn designate_build_rejects_no_adjacency() {
 
 #[test]
 fn designate_build_rejects_empty_voxels() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
 
     let cmd = SimCommand {
         player_name: String::new(),
@@ -360,7 +360,7 @@ fn designate_build_rejects_empty_voxels() {
 
 #[test]
 fn cancel_build_removes_blueprint() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     // First designate.
@@ -397,7 +397,7 @@ fn cancel_build_removes_blueprint() {
 
 #[test]
 fn cancel_build_nonexistent_is_noop() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let fake_id = ProjectId::new(&mut GameRng::new(999));
 
     let cmd = SimCommand {
@@ -420,7 +420,7 @@ fn cancel_build_nonexistent_is_noop() {
 
 #[test]
 fn cancel_build_removes_associated_task() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     // Designate a build.
@@ -454,7 +454,7 @@ fn cancel_build_removes_associated_task() {
 
 #[test]
 fn cancel_build_unassigns_elf() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     // Spawn elf.
@@ -524,7 +524,7 @@ fn cancel_build_unassigns_elf() {
 
 #[test]
 fn cancel_build_reverts_partial_voxels() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     // Designate a build.
@@ -578,7 +578,7 @@ fn cancel_build_reverts_partial_voxels() {
 
 #[test]
 fn sim_serialization_with_blueprints() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     let cmd = SimCommand {
@@ -605,7 +605,7 @@ fn sim_serialization_with_blueprints() {
 
 #[test]
 fn blueprint_determinism() {
-    let seed = legacy_test_seed();
+    let seed = fresh_test_seed();
     let mut sim_a = test_sim(seed);
     let mut sim_b = test_sim(seed);
 
@@ -716,7 +716,7 @@ fn build_task_materializes_voxels_incrementally() {
     // Slow build: 50000 ticks per voxel (elf walk_tpv is 500, so the elf
     // needs to arrive first, then do 50000 ticks of work per voxel).
     config.build_work_ticks_per_voxel = 50000;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
 
     let strip = find_air_strip_adjacent_to_trunk(&sim, 3);
 
@@ -889,7 +889,7 @@ fn build_displaces_creature_on_occupied_voxel() {
 fn save_load_preserves_partially_built_platform() {
     let mut config = test_config();
     config.build_work_ticks_per_voxel = 50000;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
 
     let strip = find_air_strip_adjacent_to_trunk(&sim, 3);
 
@@ -953,7 +953,7 @@ fn save_load_preserves_partially_built_platform() {
 
 #[test]
 fn designate_building_creates_blueprint() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let anchor = find_building_site(&sim);
 
     let cmd = SimCommand {
@@ -980,7 +980,7 @@ fn designate_building_creates_blueprint() {
 
 #[test]
 fn designate_building_creates_task() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let anchor = find_building_site(&sim);
 
     let cmd = SimCommand {
@@ -1007,7 +1007,7 @@ fn designate_building_creates_task() {
 
 #[test]
 fn designate_building_rejects_small_width() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let anchor = find_building_site(&sim);
 
     let cmd = SimCommand {
@@ -1028,7 +1028,7 @@ fn designate_building_rejects_small_width() {
 
 #[test]
 fn designate_building_rejects_non_solid_foundation() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Place anchor at a position where foundation is Air.
     // y=10 should have Air below.
     let cmd = SimCommand {
@@ -1049,7 +1049,7 @@ fn designate_building_rejects_non_solid_foundation() {
 
 #[test]
 fn building_materialization_sets_building_interior() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let anchor = find_building_site(&sim);
 
     let cmd = SimCommand {
@@ -1092,7 +1092,7 @@ fn building_materialization_sets_building_interior() {
 
 #[test]
 fn building_materialization_creates_nav_node() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let anchor = find_building_site(&sim);
 
     let cmd = SimCommand {
@@ -1127,7 +1127,7 @@ fn building_materialization_creates_nav_node() {
 
 #[test]
 fn cancel_building_removes_face_data() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let anchor = find_building_site(&sim);
 
     let cmd = SimCommand {
@@ -1202,7 +1202,7 @@ fn cancel_building_removes_face_data() {
 
 #[test]
 fn save_load_preserves_building() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let anchor = find_building_site(&sim);
 
     let cmd = SimCommand {
@@ -1290,7 +1290,7 @@ fn save_load_preserves_building() {
 
 #[test]
 fn designate_building_rejects_non_air_interior() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let anchor = find_building_site(&sim);
 
     // Place a solid voxel in the interior area.
@@ -1321,7 +1321,7 @@ fn designate_building_rejects_non_air_interior() {
 
 #[test]
 fn completed_structure_registered_on_build_complete() {
-    let sim = designate_and_complete_build(test_sim(legacy_test_seed()));
+    let sim = designate_and_complete_build(test_sim(fresh_test_seed()));
 
     assert_eq!(sim.db.structures.len(), 1);
     let structure = sim.db.structures.iter_all().next().unwrap();
@@ -1335,7 +1335,7 @@ fn completed_structure_registered_on_build_complete() {
 
 #[test]
 fn completed_structure_sequential_ids() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     // Spawn an elf.
@@ -1450,7 +1450,7 @@ fn completed_structure_sequential_ids() {
 
 #[test]
 fn cancel_completed_structure_removes_entry() {
-    let mut sim = designate_and_complete_build(test_sim(legacy_test_seed()));
+    let mut sim = designate_and_complete_build(test_sim(fresh_test_seed()));
     assert_eq!(sim.db.structures.len(), 1);
 
     // Get the project_id of the completed structure.
@@ -1477,7 +1477,7 @@ fn cancel_completed_structure_removes_entry() {
 
 #[test]
 fn structure_voxels_populated_on_complete_build() {
-    let sim = designate_and_complete_build(test_sim(legacy_test_seed()));
+    let sim = designate_and_complete_build(test_sim(fresh_test_seed()));
 
     // The completed build should populate structure_voxels.
     assert!(
@@ -1508,7 +1508,7 @@ fn structure_voxels_populated_on_complete_build() {
 
 #[test]
 fn structure_voxels_cleared_on_cancel_build() {
-    let mut sim = designate_and_complete_build(test_sim(legacy_test_seed()));
+    let mut sim = designate_and_complete_build(test_sim(fresh_test_seed()));
     assert!(
         !sim.voxel_zone(sim.home_zone_id())
             .unwrap()
@@ -1537,7 +1537,7 @@ fn structure_voxels_cleared_on_cancel_build() {
 
 #[test]
 fn structure_voxels_rebuilt_on_rebuild_transient_state() {
-    let sim = designate_and_complete_build(test_sim(legacy_test_seed()));
+    let sim = designate_and_complete_build(test_sim(fresh_test_seed()));
     let voxels_before = sim
         .voxel_zone(sim.home_zone_id())
         .unwrap()
@@ -1561,7 +1561,7 @@ fn structure_voxels_rebuilt_on_rebuild_transient_state() {
 
 #[test]
 fn raycast_structure_finds_structure_voxel() {
-    let sim = designate_and_complete_build(test_sim(legacy_test_seed()));
+    let sim = designate_and_complete_build(test_sim(fresh_test_seed()));
     let structure = sim.db.structures.iter_all().next().unwrap();
     let bp = sim
         .db
@@ -1588,7 +1588,7 @@ fn raycast_structure_finds_structure_voxel() {
 
 #[test]
 fn raycast_structure_stops_at_trunk() {
-    let sim = designate_and_complete_build(test_sim(legacy_test_seed()));
+    let sim = designate_and_complete_build(test_sim(fresh_test_seed()));
     let bp = sim
         .db
         .blueprints
@@ -1620,7 +1620,7 @@ fn raycast_structure_stops_at_trunk() {
 
 #[test]
 fn raycast_structure_returns_none_for_empty_ray() {
-    let sim = test_sim(legacy_test_seed());
+    let sim = test_sim(fresh_test_seed());
     // Cast a ray into empty space.
     let from = [32.5, 50.0, 32.5];
     let dir = [0.0, 1.0, 0.0];
@@ -1634,7 +1634,7 @@ fn raycast_structure_returns_none_for_empty_ray() {
 
 #[test]
 fn is_roof_voxel_true_for_top_layer() {
-    let sim = designate_and_complete_building(test_sim(legacy_test_seed()));
+    let sim = designate_and_complete_building(test_sim(fresh_test_seed()));
     let structure = sim.db.structures.iter_all().next().unwrap();
 
     // For a 3x3x1 building, all interior voxels are at the same Y level,
@@ -1649,7 +1649,7 @@ fn is_roof_voxel_true_for_top_layer() {
 
 #[test]
 fn is_roof_voxel_false_for_non_building() {
-    let sim = designate_and_complete_build(test_sim(legacy_test_seed()));
+    let sim = designate_and_complete_build(test_sim(fresh_test_seed()));
     let structure = sim.db.structures.iter_all().next().unwrap();
     assert_eq!(structure.build_type, BuildType::Platform);
 
@@ -1663,7 +1663,7 @@ fn is_roof_voxel_false_for_non_building() {
 
 #[test]
 fn is_roof_voxel_false_outside_bounds() {
-    let sim = designate_and_complete_building(test_sim(legacy_test_seed()));
+    let sim = designate_and_complete_building(test_sim(fresh_test_seed()));
     let structure = sim.db.structures.iter_all().next().unwrap();
 
     let roof_y = structure.anchor.y + structure.height - 1;
@@ -1681,7 +1681,7 @@ fn is_roof_voxel_false_outside_bounds() {
 
 #[test]
 fn raycast_structure_with_hit_returns_coord() {
-    let sim = designate_and_complete_building(test_sim(legacy_test_seed()));
+    let sim = designate_and_complete_building(test_sim(fresh_test_seed()));
     let structure = sim.db.structures.iter_all().next().unwrap();
     let bp = sim
         .db
@@ -1708,7 +1708,7 @@ fn raycast_structure_with_hit_returns_coord() {
 
 #[test]
 fn raycast_roof_voxel_is_identified_as_roof() {
-    let sim = designate_and_complete_building(test_sim(legacy_test_seed()));
+    let sim = designate_and_complete_building(test_sim(fresh_test_seed()));
     let structure = sim.db.structures.iter_all().next().unwrap();
 
     // For a 3x3x1 building, every interior voxel is the top layer (roof).
@@ -1733,7 +1733,7 @@ fn raycast_roof_voxel_is_identified_as_roof() {
 
 #[test]
 fn raycast_skip_roofs_passes_through_roof_voxels() {
-    let sim = designate_and_complete_building(test_sim(legacy_test_seed()));
+    let sim = designate_and_complete_building(test_sim(fresh_test_seed()));
     let structure = sim.db.structures.iter_all().next().unwrap();
 
     let center_x = structure.anchor.x as f32 + structure.width as f32 / 2.0;
@@ -1762,7 +1762,7 @@ fn raycast_skip_roofs_passes_through_roof_voxels() {
 
 #[test]
 fn raycast_structure_with_hit_skips_above_y_cutoff() {
-    let sim = designate_and_complete_building(test_sim(legacy_test_seed()));
+    let sim = designate_and_complete_building(test_sim(fresh_test_seed()));
     let structure = sim.db.structures.iter_all().next().unwrap();
     let bp = sim
         .db
@@ -1800,7 +1800,7 @@ fn raycast_structure_with_hit_skips_above_y_cutoff() {
 
 #[test]
 fn rename_structure_sets_custom_name() {
-    let mut sim = designate_and_complete_build(test_sim(legacy_test_seed()));
+    let mut sim = designate_and_complete_build(test_sim(fresh_test_seed()));
     assert_eq!(sim.db.structures.len(), 1);
     let sid = *sim.db.structures.iter_keys().next().unwrap();
     assert_eq!(
@@ -1825,7 +1825,7 @@ fn rename_structure_sets_custom_name() {
 
 #[test]
 fn rename_structure_to_none_resets_to_default() {
-    let mut sim = designate_and_complete_build(test_sim(legacy_test_seed()));
+    let mut sim = designate_and_complete_build(test_sim(fresh_test_seed()));
     let sid = *sim.db.structures.iter_keys().next().unwrap();
 
     // Set a custom name.
@@ -1861,7 +1861,7 @@ fn rename_structure_to_none_resets_to_default() {
 
 #[test]
 fn rename_nonexistent_structure_is_noop() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tick_before = sim.tick;
 
     let cmd = SimCommand {
@@ -1884,7 +1884,7 @@ fn rename_nonexistent_structure_is_noop() {
 
 #[test]
 fn overlap_platform_at_leaf_creates_blueprint() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let leaf_coord = find_leaf_adjacent_to_wood(&sim);
     assert_eq!(
         sim.voxel_zone(sim.home_zone_id()).unwrap().get(leaf_coord),
@@ -1912,7 +1912,7 @@ fn overlap_platform_at_leaf_creates_blueprint() {
 
 #[test]
 fn overlap_all_trunk_rejects_nothing_to_build() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     let trunk_coord = tree.trunk_voxels[0];
 
@@ -1937,7 +1937,7 @@ fn overlap_all_trunk_rejects_nothing_to_build() {
 
 #[test]
 fn overlap_mixed_air_trunk_only_builds_air() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Find a trunk voxel with an air neighbor.
     let air_coord = find_air_adjacent_to_trunk(&sim);
     // Find which trunk voxel is adjacent.
@@ -1987,7 +1987,7 @@ fn overlap_mixed_air_trunk_only_builds_air() {
 
 #[test]
 fn overlap_blocked_voxel_rejects() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     // First build a platform at the air coord.
@@ -2057,7 +2057,7 @@ fn overlap_leaf_materializes_to_grown_platform() {
 
 #[test]
 fn overlap_cancel_reverts_to_original_type() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let leaf_coord = find_leaf_adjacent_to_wood(&sim);
     assert_eq!(
         sim.voxel_zone(sim.home_zone_id()).unwrap().get(leaf_coord),
@@ -2106,7 +2106,7 @@ fn overlap_cancel_reverts_to_original_type() {
 
 #[test]
 fn overlap_save_load_preserves_original_voxels() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let leaf_coord = find_leaf_adjacent_to_wood(&sim);
 
     let cmd = SimCommand {
@@ -2133,7 +2133,7 @@ fn overlap_save_load_preserves_original_voxels() {
 
 #[test]
 fn overlap_determinism() {
-    let seed = legacy_test_seed();
+    let seed = fresh_test_seed();
     let mut sim_a = test_sim(seed);
     let mut sim_b = test_sim(seed);
 
@@ -2177,7 +2177,7 @@ fn overlap_determinism() {
 
 #[test]
 fn overlap_wall_at_leaf_rejects() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let leaf_coord = find_leaf_adjacent_to_wood(&sim);
 
     let cmd = SimCommand {
@@ -2204,7 +2204,7 @@ fn overlap_wall_at_leaf_rejects() {
 
 #[test]
 fn test_designate_carve_filters_air() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let solid = find_carvable_voxel(&sim);
     // Pick an air voxel (high up, guaranteed empty).
     let air = VoxelCoord::new(5, 50, 5);
@@ -2241,7 +2241,7 @@ fn test_carve_execution_removes_voxels() {
     let elf_species = config.species.get_mut(&Species::Elf).unwrap();
     elf_species.food_decay_per_tick = 0;
     elf_species.rest_decay_per_tick = 0;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
 
     // Pick the lowest trunk voxel (reachable from floor) instead of the
     // highest one, which may be unreachable with some tree shapes.
@@ -2311,7 +2311,7 @@ fn test_carve_task_location_uses_nav_node() {
     // giving no carvable dirt.
     let mut config = test_config();
     config.terrain_max_height = 3;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     let tree_pos = tree.position;
 
@@ -2367,7 +2367,7 @@ fn test_designate_carve_accepts_dirt_voxels() {
     // in gdext, which mirrors this filter).
     let mut config = test_config();
     config.terrain_max_height = 3;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     let tree_pos = tree.position;
 
@@ -2409,7 +2409,7 @@ fn test_designate_carve_accepts_dirt_voxels() {
 
 #[test]
 fn test_carve_skips_bedrock_layer() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let (ws_x, _, ws_z) = sim.config.world_size;
     let center_x = ws_x as i32 / 2;
     let center_z = ws_z as i32 / 2;
@@ -2444,7 +2444,7 @@ fn test_carve_skips_bedrock_layer() {
 fn test_cancel_carve_restores_originals() {
     let mut config = test_config();
     config.carve_work_ticks_per_voxel = 1;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
 
     // Find two adjacent trunk voxels for carving.
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
@@ -2510,7 +2510,7 @@ fn test_cancel_carve_restores_originals() {
 fn test_carve_updates_walkability() {
     let mut config = test_config();
     config.carve_work_ticks_per_voxel = 1;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
     sim.species_table
         .get_mut(&Species::Elf)
         .unwrap()
@@ -2588,7 +2588,7 @@ fn test_carve_save_load_roundtrip() {
     let elf_species = config.species.get_mut(&Species::Elf).unwrap();
     elf_species.food_decay_per_tick = 0;
     elf_species.rest_decay_per_tick = 0;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
 
     // Pick a low trunk voxel (reachable from floor) instead of the highest
     // one, which may be unreachable with some tree shapes.
@@ -2664,7 +2664,7 @@ fn carve_uses_separate_duration_from_build() {
     let elf_species = config.species.get_mut(&Species::Elf).unwrap();
     elf_species.food_decay_per_tick = 0;
     elf_species.rest_decay_per_tick = 0;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
 
     // Find a non-forest-floor solid voxel to carve (e.g., a trunk voxel
     // that isn't on the ground).
@@ -2717,7 +2717,7 @@ fn carve_uses_separate_duration_from_build() {
 
 #[test]
 fn designate_wood_ladder_creates_blueprint() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let (anchor, orientation) = find_ladder_column(&sim, 3);
 
     let cmd = SimCommand {
@@ -2749,7 +2749,7 @@ fn designate_wood_ladder_creates_blueprint() {
 
 #[test]
 fn designate_rope_ladder_creates_blueprint() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Rope ladders need top voxel adjacent to solid. Find a trunk voxel
     // with air below and on the side.
     let (anchor, orientation) = find_ladder_column(&sim, 1);
@@ -2775,7 +2775,7 @@ fn designate_rope_ladder_creates_blueprint() {
 
 #[test]
 fn designate_ladder_rejects_vertical_orientation() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let (anchor, _) = find_ladder_column(&sim, 1);
 
     let cmd = SimCommand {
@@ -2801,7 +2801,7 @@ fn designate_ladder_rejects_vertical_orientation() {
 
 #[test]
 fn designate_ladder_rejects_zero_height() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let (anchor, orientation) = find_ladder_column(&sim, 1);
 
     let cmd = SimCommand {
@@ -2827,7 +2827,7 @@ fn designate_ladder_rejects_zero_height() {
 
 #[test]
 fn designate_wood_ladder_rejects_no_anchor() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Place ladder in open air with no adjacent solid.
     let anchor = VoxelCoord::new(1, 10, 1);
     // Confirm it's air with no solid neighbor.
@@ -2855,7 +2855,7 @@ fn designate_wood_ladder_rejects_no_anchor() {
 
 #[test]
 fn designate_ladder_creates_build_task() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let (anchor, orientation) = find_ladder_column(&sim, 2);
 
     let cmd = SimCommand {
@@ -2915,7 +2915,7 @@ fn ladder_build_type_allows_tree_overlap() {
 
 #[test]
 fn cancel_ladder_removes_blueprint_and_data() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let (anchor, orientation) = find_ladder_column(&sim, 2);
 
     // Designate a wood ladder.
@@ -2954,7 +2954,7 @@ fn cancel_ladder_removes_blueprint_and_data() {
 
 #[test]
 fn ladder_save_load_roundtrip() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let (anchor, orientation) = find_ladder_column(&sim, 2);
 
     let cmd = SimCommand {
@@ -2980,7 +2980,7 @@ fn ladder_save_load_roundtrip() {
 
 #[test]
 fn designate_rope_ladder_rejects_no_anchor() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Find a column of 3 air voxels next to trunk, then try placing a
     // rope ladder of height 3. The top voxel's ladder face must be
     // adjacent to solid — pick an anchor where that's not the case.
@@ -3021,7 +3021,7 @@ fn designate_rope_ladder_rejects_no_anchor() {
 
 #[test]
 fn designate_rope_ladder_multiheight() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Find a column of 3 air voxels next to trunk. Rope ladder needs
     // top voxel adjacent to solid — but the anchor is at the bottom.
     // With height=3, the top (anchor.y+2) must have its ladder face
@@ -3099,7 +3099,7 @@ fn ladder_build_type_to_voxel_type() {
 
 #[test]
 fn designate_ladder_determinism() {
-    let seed = legacy_test_seed();
+    let seed = fresh_test_seed();
     let (anchor_a, orientation_a) = {
         let sim = test_sim(seed);
         find_ladder_column(&sim, 3)
@@ -3111,8 +3111,8 @@ fn designate_ladder_determinism() {
     assert_eq!(anchor_a, anchor_b);
     assert_eq!(orientation_a, orientation_b);
 
-    let mut sim_a = test_sim(legacy_test_seed());
-    let mut sim_b = test_sim(legacy_test_seed());
+    let mut sim_a = test_sim(fresh_test_seed());
+    let mut sim_b = test_sim(fresh_test_seed());
 
     let cmd_a = SimCommand {
         player_name: String::new(),
@@ -3150,7 +3150,7 @@ fn designate_ladder_determinism() {
 
 #[test]
 fn build_rejects_overlap_with_existing_build_blueprint() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     // First designation succeeds.
@@ -3196,7 +3196,7 @@ fn build_rejects_overlap_with_existing_build_blueprint() {
 
 #[test]
 fn build_rejects_overlap_with_carve_blueprint() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let solid = find_carvable_voxel(&sim);
 
     // Designate a carve on the solid voxel.
@@ -3240,7 +3240,7 @@ fn build_rejects_overlap_with_carve_blueprint() {
 
 #[test]
 fn carve_filters_out_build_blueprint_voxels() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     // Designate a platform build.
@@ -3278,7 +3278,7 @@ fn carve_filters_out_build_blueprint_voxels() {
 
 #[test]
 fn carve_filters_out_carve_blueprint_voxels() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let solid = find_carvable_voxel(&sim);
 
     // First carve designation.
@@ -3314,7 +3314,7 @@ fn carve_filters_out_carve_blueprint_voxels() {
 
 #[test]
 fn building_rejects_overlap_with_existing_blueprint() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let site = find_building_site(&sim);
 
     // Designate a platform on one of the building's wall voxels (y+1).
@@ -3371,7 +3371,7 @@ fn building_rejects_overlap_with_existing_blueprint() {
 
 #[test]
 fn ladder_rejects_overlap_with_existing_blueprint() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let (anchor, orientation) = find_ladder_column(&sim, 2);
 
     // Designate a platform at the ladder's anchor voxel.
@@ -3421,7 +3421,7 @@ fn carve_partial_overlap_filters_claimed_voxels() {
     // When carving a region where some voxels are claimed by an existing
     // blueprint and some are not, only unclaimed voxels appear in the
     // new carve blueprint.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
 
     // Find two carvable (solid, above bedrock) voxels.
@@ -3479,7 +3479,7 @@ fn carve_partial_overlap_filters_claimed_voxels() {
 fn build_partial_overlap_rejected() {
     // If a multi-voxel designation has even one voxel overlapping an
     // existing blueprint, the entire designation is rejected.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
 
     // Find two adjacent air voxels next to trunk.
@@ -3535,7 +3535,7 @@ fn build_partial_overlap_rejected() {
 
 #[test]
 fn non_overlapping_builds_both_succeed() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
 
     // Find two separate air voxels next to trunk.
@@ -3597,7 +3597,7 @@ fn completed_blueprint_does_not_block_carve() {
     // Designated blueprints are in the overlay.
     let mut config = test_config();
     config.build_work_ticks_per_voxel = 1;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
 
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
@@ -3796,7 +3796,7 @@ fn display_name_custom_overrides_dormitory() {
 
 #[test]
 fn furnish_structure_creates_task() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let anchor = find_building_site(&sim);
     let structure_id = insert_completed_building(&mut sim, anchor);
 
@@ -3850,7 +3850,7 @@ fn furnish_structure_creates_task() {
 
 #[test]
 fn furnish_structure_display_name_changes() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let anchor = find_building_site(&sim);
     let structure_id = insert_completed_building(&mut sim, anchor);
 
@@ -3880,7 +3880,7 @@ fn furnish_structure_display_name_changes() {
 
 #[test]
 fn furnish_preserves_custom_name() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let anchor = find_building_site(&sim);
     let structure_id = insert_completed_building(&mut sim, anchor);
 
@@ -3923,7 +3923,7 @@ fn furnish_preserves_custom_name() {
 
 #[test]
 fn furnish_rejects_non_building() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
 
     // Insert a platform structure (not a Building).
     let id = StructureId(sim.next_structure_id);
@@ -3977,7 +3977,7 @@ fn furnish_rejects_non_building() {
 
 #[test]
 fn furnish_rejects_already_furnished() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let anchor = find_building_site(&sim);
     let structure_id = insert_completed_building(&mut sim, anchor);
 
@@ -4026,7 +4026,7 @@ fn furnish_rejects_already_furnished() {
 
 #[test]
 fn do_furnish_work_places_items_incrementally() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let anchor = find_building_site(&sim);
     let structure_id = insert_completed_building(&mut sim, anchor);
 
@@ -4088,7 +4088,7 @@ fn do_furnish_work_places_items_incrementally() {
 
 #[test]
 fn furnish_completes_all_items() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let anchor = find_building_site(&sim);
     let structure_id = insert_completed_building(&mut sim, anchor);
 
@@ -4168,7 +4168,7 @@ fn furnish_completes_all_items() {
 
 #[test]
 fn furnish_serialization_roundtrip() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let anchor = find_building_site(&sim);
     let structure_id = insert_completed_building(&mut sim, anchor);
 
@@ -4327,7 +4327,7 @@ fn display_name_all_furnishing_types() {
 
 #[test]
 fn furnish_structure_workshop() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let anchor = find_building_site(&sim);
     let structure_id = insert_completed_building(&mut sim, anchor);
 
@@ -4364,7 +4364,7 @@ fn furnish_structure_workshop() {
 
 #[test]
 fn furnish_dance_hall_no_furniture_no_task() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let anchor = find_building_site(&sim);
     let structure_id = insert_completed_building(&mut sim, anchor);
 
@@ -4425,7 +4425,7 @@ fn dance_hall_display_str() {
 
 #[test]
 fn raycast_solid_finds_solid_voxel() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Place a known solid voxel and cast a ray at it.
     let target = VoxelCoord::new(5, 5, 5);
     sim.voxel_zone_mut(sim.home_zone_id())
@@ -4442,7 +4442,7 @@ fn raycast_solid_finds_solid_voxel() {
 
 #[test]
 fn raycast_solid_returns_correct_face() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Place a solid voxel in a clear area far from the tree.
     let target = VoxelCoord::new(5, 10, 5);
     sim.voxel_zone_mut(sim.home_zone_id())
@@ -4479,7 +4479,7 @@ fn raycast_solid_returns_correct_face() {
 
 #[test]
 fn raycast_solid_returns_none_for_empty_ray() {
-    let sim = test_sim(legacy_test_seed());
+    let sim = test_sim(fresh_test_seed());
     // Cast a ray straight up from the top of the world — should hit nothing.
     let from = [5.5, 50.0, 5.5];
     let dir = [0.0, 1.0, 0.0];
@@ -4489,7 +4489,7 @@ fn raycast_solid_returns_none_for_empty_ray() {
 
 #[test]
 fn raycast_solid_negative_face_directions() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let target = VoxelCoord::new(5, 10, 5);
     sim.voxel_zone_mut(sim.home_zone_id())
         .unwrap()
@@ -4516,7 +4516,7 @@ fn raycast_solid_negative_face_directions() {
 
 #[test]
 fn raycast_solid_skips_starting_voxel() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Place two solid voxels adjacent vertically.
     sim.voxel_zone_mut(sim.home_zone_id())
         .unwrap()
@@ -4540,7 +4540,7 @@ fn raycast_solid_skips_starting_voxel() {
 
 #[test]
 fn raycast_solid_hits_blueprint_with_overlay() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Find an air voxel adjacent to trunk (valid for platform placement).
     let target = find_air_adjacent_to_trunk(&sim);
 
@@ -4586,7 +4586,7 @@ fn raycast_solid_hits_blueprint_with_overlay() {
 
 #[test]
 fn raycast_solid_skips_above_y_cutoff() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let target = VoxelCoord::new(5, 10, 5);
     sim.voxel_zone_mut(sim.home_zone_id())
         .unwrap()
@@ -4610,7 +4610,7 @@ fn raycast_solid_skips_above_y_cutoff() {
 
 #[test]
 fn raycast_solid_hits_below_y_cutoff() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Place two solid voxels stacked vertically.
     let upper = VoxelCoord::new(5, 11, 5);
     let lower = VoxelCoord::new(5, 10, 5);
@@ -4641,7 +4641,7 @@ fn raycast_solid_hits_below_y_cutoff() {
 
 #[test]
 fn auto_ladder_orientation_faces_trunk() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Place a trunk column at (5, 10..14, 5) and test ladder at (6, 10, 5).
     // Use an elevated position far from the real tree to avoid interference.
     for y in 10..14 {
@@ -4674,7 +4674,7 @@ fn auto_ladder_orientation_faces_trunk() {
 
 #[test]
 fn auto_ladder_orientation_tie_breaks_to_first() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Place solid voxels on both +X and -X sides of the ladder column,
     // creating a tie. The code iterates [PosX, PosZ, NegX, NegZ], so
     // PosX (face 0) should win.
@@ -4702,7 +4702,7 @@ fn auto_ladder_orientation_tie_breaks_to_first() {
 
 #[test]
 fn auto_ladder_orientation_no_neighbors_defaults_east() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Clear all neighbors around the ladder column — no solid voxels.
     for y in 10..14 {
         sim.voxel_zone_mut(sim.home_zone_id())
@@ -4768,7 +4768,7 @@ fn completed_structure_serde_backward_compat_crafting() {
 
 #[test]
 fn furnish_workshop_sets_defaults() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let anchor = find_building_site(&sim);
     let structure_id = insert_completed_building(&mut sim, anchor);
 
@@ -4813,7 +4813,7 @@ fn furnish_workshop_sets_defaults() {
 
 #[test]
 fn blueprint_overlay_includes_designated_blueprints() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     // Designate a platform build.
@@ -4840,7 +4840,7 @@ fn blueprint_overlay_includes_designated_blueprints() {
 
 #[test]
 fn blueprint_overlay_excludes_complete_blueprints() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     // Designate and then manually mark as complete.
@@ -4870,7 +4870,7 @@ fn blueprint_overlay_excludes_complete_blueprints() {
 
 #[test]
 fn blueprint_overlay_maps_carve_to_air() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
 
     // Find a solid carvable voxel from the tree's trunk.
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
@@ -4907,7 +4907,7 @@ fn second_platform_blocked_by_existing_blueprint() {
     // Designating a platform on the same voxel as an existing blueprint
     // should fail because the overlay makes the voxel appear as
     // GrownPlatform (Blocked for overlap).
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     // First designation succeeds.
@@ -4954,7 +4954,7 @@ fn adjacent_platform_sees_blueprint_support() {
     // first N-1 as a single blueprint, then designate the last one
     // separately — it's only adjacent to the blueprint, not to any solid
     // in the real world, so it exercises the overlay adjacency check.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
 
     // Search across trunk voxels and all 4 horizontal directions for a
     // strip of air that eventually leaves all solid face neighbors behind.
@@ -5036,7 +5036,7 @@ fn adjacent_platform_sees_blueprint_support() {
 fn overlapping_carve_designations_rejected() {
     // A second carve on the same voxels should be rejected because
     // the overlay maps them to Air (nothing to carve).
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
 
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     let carve_coord = *tree
@@ -5087,7 +5087,7 @@ fn overlapping_carve_designations_rejected() {
 fn building_foundation_on_designated_platform() {
     // A building placed on a designated platform (not yet built) should
     // see the platform voxels as solid via the overlay.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
 
     // Find a 3x3 air area adjacent to the trunk at some Y level.
     // Use the building site finder logic but at y=1 where terrain
@@ -5164,7 +5164,7 @@ fn building_foundation_on_designated_platform() {
 fn ladder_anchored_to_designated_platform() {
     // A wood ladder placed next to a designated platform should see the
     // platform as solid for anchoring via the overlay.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     // Designate a platform.
@@ -5259,7 +5259,7 @@ fn ladder_anchored_to_designated_platform() {
 
 #[test]
 fn strut_designate_creates_blueprint_and_strut_row() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let (a, b) = find_strut_endpoints(&sim);
     let line = a.line_to(b);
 
@@ -5299,7 +5299,7 @@ fn strut_designate_creates_blueprint_and_strut_row() {
 
 #[test]
 fn strut_rejects_single_voxel() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let air = find_air_adjacent_to_trunk(&sim);
 
     let cmd = SimCommand {
@@ -5324,7 +5324,7 @@ fn strut_rejects_single_voxel() {
 
 #[test]
 fn strut_rejects_invalid_bresenham_list() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let (a, b) = find_strut_endpoints(&sim);
 
     // Submit a voxel list that doesn't match the line.
@@ -5351,7 +5351,7 @@ fn strut_rejects_invalid_bresenham_list() {
 
 #[test]
 fn strut_rejects_player_built_structure() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let air = find_air_adjacent_to_trunk(&sim);
 
     // Place a GrownPlatform at `air`.
@@ -5388,7 +5388,7 @@ fn strut_rejects_player_built_structure() {
 
 #[test]
 fn strut_replaces_trunk_records_originals() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
     // Find a trunk voxel with air on both sides (+X).
     let mut found = None;
@@ -5435,7 +5435,7 @@ fn strut_replaces_trunk_records_originals() {
 
 #[test]
 fn strut_rejects_no_adjacency() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     // Place strut entirely in open air, far from any structure.
     let a = VoxelCoord::new(60, 60, 60);
     let b = VoxelCoord::new(61, 60, 60);
@@ -5468,7 +5468,7 @@ fn strut_rejects_no_adjacency() {
 
 #[test]
 fn strut_blueprint_overlap_rejected() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let (a, b) = find_strut_endpoints(&sim);
     let line = a.line_to(b);
 
@@ -5513,7 +5513,7 @@ fn strut_blueprint_overlap_rejected() {
 
 #[test]
 fn strut_cancel_deletes_strut_row() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let (a, b) = find_strut_endpoints(&sim);
     let line = a.line_to(b);
 
@@ -5546,7 +5546,7 @@ fn strut_cancel_deletes_strut_row() {
 
 #[test]
 fn strut_serde_roundtrip() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let (a, b) = find_strut_endpoints(&sim);
     let line = a.line_to(b);
 
@@ -5578,7 +5578,7 @@ fn strut_serde_roundtrip() {
 
 #[test]
 fn strut_replaces_replaceable_types() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
 
     // Find a trunk voxel at y > 1 to place air->trunk->air line.
@@ -5679,7 +5679,7 @@ fn strut_cancel_restores_original_voxels() {
     // Designating a strut through trunk records the trunk in
     // original_voxels. Manually materializing the strut voxel and
     // cancelling should restore the original trunk type.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let tree = sim.db.trees.get(&sim.player_tree_id).unwrap();
 
     // Find a trunk voxel with air on both sides.
@@ -5768,7 +5768,7 @@ fn strut_cancel_restores_original_voxels() {
 #[test]
 fn strut_materialization_creates_voxels() {
     // Complete a strut build and verify all line voxels become Strut.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let (a, b) = find_strut_endpoints(&sim);
     let line = a.line_to(b);
 
@@ -5847,7 +5847,7 @@ fn strut_materialization_creates_voxels() {
 fn strut_save_load_roundtrip_with_completed_strut() {
     // Complete a strut, save, load, and verify the strut row + voxels
     // survive the roundtrip.
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let (a, b) = find_strut_endpoints(&sim);
     let line = a.line_to(b);
 
@@ -5925,7 +5925,7 @@ fn strut_save_load_roundtrip_with_completed_strut() {
 
 #[test]
 fn cancel_build_with_no_task_cleans_up() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     // Insert a blueprint directly with task_id: None.
@@ -5973,7 +5973,7 @@ fn cancel_build_with_no_task_cleans_up() {
 
 #[test]
 fn designate_build_creates_blueprint() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     let cmd = SimCommand {
@@ -6002,7 +6002,7 @@ fn designate_build_creates_blueprint() {
 
 #[test]
 fn designate_build_creates_composition() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     let cmd = SimCommand {
@@ -6039,7 +6039,7 @@ fn designate_build_creates_composition() {
 
 #[test]
 fn composition_persists_across_serde_roundtrip() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     let cmd = SimCommand {
@@ -6079,7 +6079,7 @@ fn composition_persists_across_serde_roundtrip() {
 
 #[test]
 fn designate_carve_has_no_composition() {
-    let mut sim = test_sim(legacy_test_seed());
+    let mut sim = test_sim(fresh_test_seed());
 
     // Find a solid trunk voxel to carve.
     let mut carve_coord = None;
@@ -6132,7 +6132,7 @@ fn designate_carve_has_no_composition() {
 fn build_work_sets_composition_build_started() {
     let mut config = test_config();
     config.build_work_ticks_per_voxel = 50000;
-    let mut sim = SimState::with_config(legacy_test_seed(), config);
+    let mut sim = SimState::with_config(fresh_test_seed(), config);
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
     spawn_elf(&mut sim);
