@@ -1696,8 +1696,12 @@ fn armor_projectile_degrades_equipment() {
     // Verify armor/clothing degrades from projectile hits.
     let mut sim = flat_world_sim(fresh_test_seed());
     let elf = spawn_elf(&mut sim);
-    // Zero stats so Evasion/Agility don't cause projectile misses.
+    // Zero stats, then set Evasion very negative so the shooter-less
+    // projectile's quasi_normal(50) attacker roll always beats
+    // defender_total (evasion + agi). With evasion=-500 and agi=0,
+    // defender_total=-500, so even the lowest roll (~-150) hits.
     zero_creature_stats(&mut sim, elf);
+    set_trait(&mut sim, elf, TraitKind::Evasion, -500);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
 
     // Unequip all, equip only a breastplate.
@@ -1728,7 +1732,7 @@ fn armor_projectile_degrades_equipment() {
     sim.config.arrow_base_speed = crate::projectile::SUB_VOXEL_ONE / 20;
     let mut total_hp_lost = 0i32;
 
-    for _ in 0..10 {
+    for shot_i in 0..10 {
         // Heal elf to survive.
         let mut elf_creature = sim.db.creatures.get(&elf).unwrap();
         elf_creature.hp = elf_creature.hp_max;
@@ -1770,11 +1774,18 @@ fn armor_projectile_degrades_equipment() {
             }
         }
 
-        if let Some(bp) = sim.inv_equipped_in_slot(inv_id, inventory::EquipSlot::Torso) {
-            total_hp_lost += bp_hp_before - bp.current_hp;
-        } else {
-            total_hp_lost += bp_hp_before;
-        }
+        let hp_after = sim
+            .inv_equipped_in_slot(inv_id, inventory::EquipSlot::Torso)
+            .map(|bp| bp.current_hp);
+        let lost = match hp_after {
+            Some(hp) => bp_hp_before - hp,
+            None => bp_hp_before, // broke
+        };
+        total_hp_lost += lost;
+        eprintln!(
+            "  armor_proj shot {shot_i}: bp_before={bp_hp_before} bp_after={hp_after:?} \
+             lost={lost} total={total_hp_lost}"
+        );
     }
 
     assert!(
