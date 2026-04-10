@@ -81,6 +81,10 @@ pub(super) fn test_config() -> GameConfig {
     // default count changes. Tests that specifically exercise lesser trees
     // enable them explicitly.
     config.lesser_trees.count = 0;
+    // Disable casual social chat in tests so heartbeat-triggered Conversing
+    // tasks don't preempt the behavior under test. Social tests explicitly
+    // re-enable this.
+    config.social.casual_social_chance_ppm = 0;
     // Adjust spawn positions for the small test world (center=32, floor_y=0).
     for spec in &mut config.initial_creatures {
         spec.spawn_position = VoxelCoord::new(32, 1, 32);
@@ -120,6 +124,8 @@ pub(super) fn flat_world_config() -> GameConfig {
     for pile in &mut config.initial_ground_piles {
         pile.position = VoxelCoord::new(32, 1, 42);
     }
+    // Disable casual social chat — same rationale as test_config().
+    config.social.casual_social_chance_ppm = 0;
     config
 }
 

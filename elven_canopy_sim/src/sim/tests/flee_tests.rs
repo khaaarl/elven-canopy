@@ -45,13 +45,15 @@ fn elf_flees_from_adjacent_goblin() {
             + (elf_new_pos.z as i64 - goblin_pos.z as i64).pow(2);
         eprintln!(
             "flee_adjacent step {i}: tick={} elf_pos=({},{},{}) dist_sq={new_dist_sq} \
-             action={:?} task={:?}",
+             action={:?} task={:?} nat={:?} activity={:?}",
             sim.tick,
             elf_new_pos.x,
             elf_new_pos.y,
             elf_new_pos.z,
             elf_data.action_kind,
             elf_data.current_task,
+            elf_data.next_available_tick,
+            elf_data.current_activity,
         );
         if elf_new_pos != elf_pos && new_dist_sq > 1 {
             fled = true;
@@ -1881,29 +1883,59 @@ fn defensive_elf_does_not_freeze_after_shooting_once() {
         sim.complete_task(tid);
     }
 
-    // Run for 30000 ticks — enough for ~10 shots.
-    let tick = sim.tick;
+    // Suppress all initial creatures so they don't interfere.
+    let initial_ids: Vec<CreatureId> = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.id != elf_id && c.id != troll_id)
+        .map(|c| c.id)
+        .collect();
+    for &id in &initial_ids {
+        suppress_activation_until(&mut sim, id, u64::MAX);
+    }
+
     // Enable elf activation (force_idle_and_cancel_activations sets
-    // next_available_tick=None).
+    // next_available_tick=u64::MAX).
     {
         let mut ec = sim.db.creatures.get(&elf_id).unwrap();
-        ec.next_available_tick = Some(tick + 1);
+        ec.next_available_tick = Some(sim.tick + 1);
         sim.db.update_creature(ec).unwrap();
     }
-    sim.step(&[], tick + 30000);
 
+    // Loop until the elf has fired at least 2 shots.
     let inv_id = sim.db.creatures.get(&elf_id).unwrap().inventory_id;
+    let mut enough_shots = false;
+    for i in 0..60 {
+        sim.step(&[], sim.tick + 500);
+        let arrows_remaining = sim.inv_item_count(
+            inv_id,
+            inventory::ItemKind::Arrow,
+            inventory::MaterialFilter::Any,
+        );
+        let elf_data = sim.db.creatures.get(&elf_id).unwrap();
+        eprintln!(
+            "  defensive_freeze step {i}: tick={} arrows={arrows_remaining}/20 \
+             action={:?} task={:?} nat={:?} pos={:?}",
+            sim.tick,
+            elf_data.action_kind,
+            elf_data.current_task,
+            elf_data.next_available_tick,
+            elf_data.position.min,
+        );
+        if arrows_remaining <= 18 {
+            enough_shots = true;
+            break;
+        }
+    }
+
     let arrows_remaining = sim.inv_item_count(
         inv_id,
         inventory::ItemKind::Arrow,
         inventory::MaterialFilter::Any,
     );
-
-    // At least 2 shots proves the elf continues to engage after the first shot
-    // (the regression was freezing after exactly 1). With random seeds, movement
-    // and repositioning can consume ticks, so we don't require a high count.
     assert!(
-        arrows_remaining <= 18,
+        enough_shots,
         "Defensive elf should shoot repeatedly at close troll (not freeze \
          after first shot). Expected at least 2 shots, but only fired {}. \
          Arrows: {arrows_remaining}/20",

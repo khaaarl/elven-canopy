@@ -2819,10 +2819,12 @@ fn try_combat_redirects_to_alternate_target() {
     let goblin_clear = spawn_species(&mut sim, Species::Goblin);
 
     // Suppress all creatures so autonomous behavior doesn't interfere.
+    // Zero shooter stats so Perception doesn't shrink detection range.
     force_idle_and_cancel_activations(&mut sim, shooter);
     force_idle_and_cancel_activations(&mut sim, blocker);
     force_idle_and_cancel_activations(&mut sim, goblin_blocked);
     force_idle_and_cancel_activations(&mut sim, goblin_clear);
+    zero_creature_stats(&mut sim, shooter);
 
     // Place everyone on the forest floor away from the tree to avoid
     // LOS issues with the trunk. Y=1 is walking height on flat floor.
@@ -2842,12 +2844,27 @@ fn try_combat_redirects_to_alternate_target() {
     force_idle(&mut sim, shooter);
     arm_with_bow_and_arrows(&mut sim, shooter, 5);
 
+    let det_range_sq = sim.effective_detection_range_sq(shooter, Species::Elf);
+    let clear_dist_sq = {
+        let sp = sim.db.creatures.get(&shooter).unwrap().position.min;
+        let cp = sim.db.creatures.get(&goblin_clear).unwrap().position.min;
+        (sp.x as i64 - cp.x as i64).pow(2)
+            + (sp.y as i64 - cp.y as i64).pow(2)
+            + (sp.z as i64 - cp.z as i64).pow(2)
+    };
+    eprintln!(
+        "  combat_redirect: det_range_sq={det_range_sq} clear_dist_sq={clear_dist_sq} \
+         shooter_action={:?}",
+        sim.db.creatures.get(&shooter).unwrap().action_kind,
+    );
+
     let mut events = Vec::new();
     let result = sim.try_combat_against_target(shooter, goblin_blocked, &mut events);
 
     assert!(
         result,
-        "Should have redirected and fired at alternate target"
+        "Should have redirected and fired at alternate target \
+         (det_range_sq={det_range_sq}, clear_dist_sq={clear_dist_sq})"
     );
     assert_eq!(
         sim.db.projectiles.iter_all().count(),

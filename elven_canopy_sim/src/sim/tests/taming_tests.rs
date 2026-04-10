@@ -552,6 +552,19 @@ fn taming_task_resumable_after_preemption() {
 #[test]
 fn taming_target_already_tamed_completes_task() {
     let mut sim = test_sim(fresh_test_seed());
+
+    // Disable food/rest decay so the scout focuses on taming.
+    for spec in sim.species_table.values_mut() {
+        spec.food_decay_per_tick = 0;
+        spec.rest_decay_per_tick = 0;
+    }
+
+    // Suppress all initial creatures.
+    let initial_ids: Vec<CreatureId> = sim.db.creatures.iter_all().map(|c| c.id).collect();
+    for &id in &initial_ids {
+        suppress_activation_until(&mut sim, id, u64::MAX);
+    }
+
     let capy_id = spawn_creature(&mut sim, Species::Capybara);
     let scout_id = spawn_elf(&mut sim);
     assign_path(&mut sim, scout_id, PathId::Scout);
@@ -576,23 +589,26 @@ fn taming_target_already_tamed_completes_task() {
     let mut scout = sim.db.creatures.get(&scout_id).unwrap();
     scout.position = capy_pos;
     let _ = sim.db.upsert_creature(scout);
+    suppress_activation_until(&mut sim, capy_id, u64::MAX);
 
     designate_tame(&mut sim, capy_id);
 
     // Run until scout claims the tame task.
     let mut scout_claimed = false;
-    for _ in 0..600 {
-        sim.step(&[], sim.tick + 500);
-        if let Some(tid) = sim.db.creatures.get(&scout_id).and_then(|c| c.current_task) {
-            if sim
-                .db
-                .tasks
-                .get(&tid)
-                .is_some_and(|t| t.kind_tag == TaskKindTag::Tame)
-            {
-                scout_claimed = true;
-                break;
-            }
+    for i in 0..100 {
+        sim.step(&[], sim.tick + 50);
+        let sc = sim.db.creatures.get(&scout_id).unwrap();
+        let has_tame = sc
+            .current_task
+            .and_then(|tid| sim.db.tasks.get(&tid))
+            .is_some_and(|t| t.kind_tag == TaskKindTag::Tame);
+        eprintln!(
+            "  tame_already step {i}: tick={} task={:?} action={:?} nat={:?} has_tame={has_tame}",
+            sim.tick, sc.current_task, sc.action_kind, sc.next_available_tick,
+        );
+        if has_tame {
+            scout_claimed = true;
+            break;
         }
     }
     assert!(scout_claimed, "Scout should claim tame task");
@@ -604,19 +620,30 @@ fn taming_target_already_tamed_completes_task() {
     }
 
     // Run more ticks — scout should detect target is tamed and complete.
-    for _ in 0..200 {
-        sim.step(&[], sim.tick + 500);
+    let mut completed = false;
+    for i in 0..100 {
+        sim.step(&[], sim.tick + 50);
+        let active_tame: Vec<_> = sim
+            .db
+            .tasks
+            .iter_all()
+            .filter(|t| t.kind_tag == TaskKindTag::Tame && t.state != TaskState::Complete)
+            .collect();
+        let sc = sim.db.creatures.get(&scout_id).unwrap();
+        eprintln!(
+            "  tame_already_post step {i}: tick={} active_tames={} task={:?} action={:?}",
+            sim.tick,
+            active_tame.len(),
+            sc.current_task,
+            sc.action_kind,
+        );
+        if active_tame.is_empty() {
+            completed = true;
+            break;
+        }
     }
-
-    // Task should be complete, designation removed.
-    let active_tame_tasks: Vec<_> = sim
-        .db
-        .tasks
-        .iter_all()
-        .filter(|t| t.kind_tag == TaskKindTag::Tame && t.state != TaskState::Complete)
-        .collect();
     assert!(
-        active_tame_tasks.is_empty(),
+        completed,
         "Tame task should complete when target is already tamed"
     );
     let pciv = sim.player_civ_id.unwrap();
