@@ -372,10 +372,11 @@ fn dinner_party_full_lifecycle() {
     sim.config.activity.dinner_party_impressions_per_elf = 2;
 
     // Spawn two elves, clear any tasks from spawn, and make them hungry
-    // enough to organize/join.
+    // enough to organize/join. Zero stats to avoid seed-dependent outcomes.
     let elf_a = spawn_creature(&mut sim, Species::Elf);
     let elf_b = spawn_creature(&mut sim, Species::Elf);
     for eid in [elf_a, elf_b] {
+        zero_creature_stats(&mut sim, eid);
         force_idle_and_cancel_activations(&mut sim, eid);
         force_position(&mut sim, eid, table_pos);
         let mut c = sim.db.creatures.get(&eid).unwrap();
@@ -429,14 +430,32 @@ fn dinner_party_full_lifecycle() {
     );
     assert!(activity.total_cost > 0, "Total cost should be set");
 
-    // Advance the sim past the dinner party duration.
+    // Loop short steps until the activity completes (is removed from DB).
     let duration_ticks = activity.total_cost.max(0) as u64;
-    sim.step(&[], sim.tick + duration_ticks + 100);
+    let limit = sim.tick + duration_ticks + 5000;
+    let mut completed = false;
+    let mut step_i = 0;
+    while sim.tick < limit {
+        sim.step(&[], sim.tick + 50);
+        let still_exists = sim.db.activities.get(&activity_id).is_some();
+        let a_task = sim.db.creatures.get(&elf_a).map(|c| c.current_task);
+        let b_task = sim.db.creatures.get(&elf_b).map(|c| c.current_task);
+        eprintln!(
+            "dinner_party step {step_i}: tick={} activity_exists={still_exists} \
+             elf_a_task={a_task:?} elf_b_task={b_task:?}",
+            sim.tick,
+        );
+        step_i += 1;
+        if !still_exists {
+            completed = true;
+            break;
+        }
+    }
 
-    // Activity should be completed (removed from DB).
     assert!(
-        sim.db.activities.get(&activity_id).is_none(),
-        "Activity should be deleted after completion"
+        completed,
+        "Activity should be deleted after completion (tick={})",
+        sim.tick,
     );
 
     // Check eating: both participants' food should have increased.

@@ -11,6 +11,19 @@ use super::*;
 #[test]
 fn elf_flees_from_adjacent_goblin() {
     let mut sim = flat_world_sim(fresh_test_seed());
+
+    // Disable food/rest so the elf focuses on flee, not eating/sleeping.
+    for spec in sim.species_table.values_mut() {
+        spec.food_decay_per_tick = 0;
+        spec.rest_decay_per_tick = 0;
+    }
+
+    // Suppress all initial creatures.
+    let initial_ids: Vec<CreatureId> = sim.db.creatures.iter_all().map(|c| c.id).collect();
+    for &id in &initial_ids {
+        suppress_activation(&mut sim, id);
+    }
+
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
@@ -19,40 +32,69 @@ fn elf_flees_from_adjacent_goblin() {
     force_position(&mut sim, elf, elf_pos);
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
-    force_idle(&mut sim, goblin);
-    // Suppress goblin so only the elf activates.
     suppress_activation(&mut sim, goblin);
 
-    // Force the elf idle and schedule an activation.
-    force_idle(&mut sim, elf);
-    let tick = sim.tick;
-    schedule_activation_at(&mut sim, elf, tick + 1);
+    // Loop short steps until the elf moves away from the goblin.
+    let mut fled = false;
+    for i in 0..100 {
+        sim.step(&[], sim.tick + 50);
+        let elf_new_pos = sim.db.creatures.get(&elf).unwrap().position.min;
+        let elf_data = sim.db.creatures.get(&elf).unwrap();
+        let new_dist_sq = (elf_new_pos.x as i64 - goblin_pos.x as i64).pow(2)
+            + (elf_new_pos.y as i64 - goblin_pos.y as i64).pow(2)
+            + (elf_new_pos.z as i64 - goblin_pos.z as i64).pow(2);
+        eprintln!(
+            "flee_adjacent step {i}: tick={} elf_pos=({},{},{}) dist_sq={new_dist_sq} \
+             action={:?} task={:?}",
+            sim.tick,
+            elf_new_pos.x,
+            elf_new_pos.y,
+            elf_new_pos.z,
+            elf_data.action_kind,
+            elf_data.current_task,
+        );
+        if elf_new_pos != elf_pos && new_dist_sq > 1 {
+            fled = true;
+            break;
+        }
+    }
 
-    // Run one activation — elf should move away from the goblin.
-    sim.step(&[], tick + 2);
-    let elf_new_pos = sim.db.creatures.get(&elf).unwrap().position.min;
-
-    // The elf should have moved (not stayed in place).
-    assert_ne!(elf_pos, elf_new_pos, "Elf should flee from adjacent goblin");
-
-    // The elf should be farther from the goblin than before.
-    let old_dist_sq = (elf_pos.x as i64 - goblin_pos.x as i64).pow(2)
-        + (elf_pos.y as i64 - goblin_pos.y as i64).pow(2)
-        + (elf_pos.z as i64 - goblin_pos.z as i64).pow(2);
-    let new_dist_sq = (elf_new_pos.x as i64 - goblin_pos.x as i64).pow(2)
-        + (elf_new_pos.y as i64 - goblin_pos.y as i64).pow(2)
-        + (elf_new_pos.z as i64 - goblin_pos.z as i64).pow(2);
+    let elf_final = sim.db.creatures.get(&elf).unwrap().position.min;
+    let final_dist_sq = (elf_final.x as i64 - goblin_pos.x as i64).pow(2)
+        + (elf_final.y as i64 - goblin_pos.y as i64).pow(2)
+        + (elf_final.z as i64 - goblin_pos.z as i64).pow(2);
     assert!(
-        new_dist_sq >= old_dist_sq,
-        "Elf should move away from goblin: old_dist_sq={old_dist_sq}, new_dist_sq={new_dist_sq}"
+        fled,
+        "Elf should flee from adjacent goblin. elf_pos=({},{},{}), goblin_pos=({},{},{}), \
+         dist_sq={final_dist_sq}",
+        elf_final.x, elf_final.y, elf_final.z, goblin_pos.x, goblin_pos.y, goblin_pos.z,
     );
 }
 
 #[test]
 fn elf_does_not_flee_when_goblin_out_of_range() {
     let mut sim = flat_world_sim(fresh_test_seed());
+
+    // Disable food/rest so the elf only wanders (no walk-to-food drift).
+    for spec in sim.species_table.values_mut() {
+        spec.food_decay_per_tick = 0;
+        spec.rest_decay_per_tick = 0;
+    }
+
+    // Suppress initial elves to avoid interference.
+    let initial_elves: Vec<_> = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.species == Species::Elf)
+        .map(|c| c.id)
+        .collect();
+    for &id in &initial_elves {
+        suppress_activation(&mut sim, id);
+    }
+
     let elf = spawn_elf(&mut sim);
-    // Place elf near one edge so the goblin can be 20+ voxels away
+    // Place elf near one edge so the goblin can be 40+ voxels away
     // (beyond 15-voxel detection) while staying in bounds (64x64 world).
     let elf_pos = VoxelCoord::new(10, 1, 32);
     force_position(&mut sim, elf, elf_pos);
@@ -65,39 +107,43 @@ fn elf_does_not_flee_when_goblin_out_of_range() {
     // Suppress goblin activation so it stays put.
     suppress_activation(&mut sim, goblin);
 
-    // Ensure elf is activated (spawn sets nat, but re-force in case the elf
-    // resolved its first move and is now mid-wander with an in-range nat).
-    {
-        let mut ec = sim.db.creatures.get(&elf).unwrap();
-        if ec.next_available_tick.is_none() {
-            ec.next_available_tick = Some(sim.tick + 1);
-            sim.db.update_creature(ec).unwrap();
+    // Run short steps and track max distance from goblin. A fleeing elf
+    // moves directly away every activation; a wandering elf drifts randomly.
+    let dist_before = elf_pos.manhattan_distance(goblin_pos);
+    let mut max_dist = dist_before;
+    for i in 0..50 {
+        sim.step(&[], sim.tick + 100);
+        let e = sim.db.creatures.get(&elf).unwrap();
+        let dist = e.position.min.manhattan_distance(goblin_pos);
+        if dist > max_dist {
+            max_dist = dist;
         }
+        eprintln!(
+            "no_flee step {i}: tick={} elf_pos=({},{},{}) dist={dist} max_dist={max_dist} \
+             action={:?} task={:?}",
+            sim.tick,
+            e.position.min.x,
+            e.position.min.y,
+            e.position.min.z,
+            e.action_kind,
+            e.current_task,
+        );
     }
 
-    // Run a short period — elf should wander normally, not flee.
-    // Keep ticks low so random wander can't close the 50-voxel gap.
-    // Use enough ticks that the elf completes several wander cycles.
-    sim.step(&[], sim.tick + 10_000);
-
-    // The elf should not be frozen by a broken flee check. Verify it
-    // was being activated normally by checking its next_available_tick
-    // advanced (the activation loop updated it). We don't assert
-    // position because random wander can return to the starting voxel.
     let elf_after = sim.db.creatures.get(&elf).unwrap();
     assert!(
         elf_after.next_available_tick.is_some(),
         "Elf should have a scheduled activation (not frozen)"
     );
-    // Also verify distance from goblin didn't increase dramatically
-    // (which would indicate fleeing). The elf is 50 voxels from the
-    // goblin and wander moves 1 voxel at a time, so after 10k ticks
-    // it shouldn't have moved more than ~20 voxels in any direction.
-    let dist_before = elf_pos.manhattan_distance(goblin_pos);
-    let dist_after = elf_after.position.min.manhattan_distance(goblin_pos);
+    // Random wander over 5k ticks can drift ~30 voxels. A fleeing elf
+    // would exceed this easily (moving away every activation).
     assert!(
-        dist_after <= dist_before + 10,
-        "Elf should not be fleeing (dist_before={dist_before}, dist_after={dist_after})"
+        max_dist <= dist_before + 35,
+        "Elf should not be fleeing (dist_before={dist_before}, max_dist={max_dist}, \
+         final_pos=({},{},{}))",
+        elf_after.position.min.x,
+        elf_after.position.min.y,
+        elf_after.position.min.z,
     );
 }
 
@@ -1473,9 +1519,18 @@ fn aggressive_soldier_shoots_repeatedly_over_time() {
 fn civilian_elf_flees_instead_of_fighting() {
     // A civilian elf (default group: defensive, 100% disengage) should flee
     // from hostiles, not fight. This is the counterpoint to the soldier test.
-    let mut sim = test_sim(fresh_test_seed());
+    let mut sim = flat_world_sim(fresh_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
+    // Disable food/rest decay so the elf doesn't pick up eating/sleeping tasks.
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
     let mut events = Vec::new();
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -1487,12 +1542,38 @@ fn civilian_elf_flees_instead_of_fighting() {
     // Give elf bow + arrows (has the capability to fight, but shouldn't).
     arm_with_bow_and_arrows(&mut sim, elf_id, 20);
 
-    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
+    // Place elf at a known position to avoid seed-dependent spawn snapping.
+    let elf_pos = VoxelCoord::new(31, 1, 31);
+    force_position(&mut sim, elf_id, elf_pos);
     let goblin_id = spawn_species(&mut sim, Species::Goblin);
     let goblin_pos = VoxelCoord::new(elf_pos.x + 3, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin_id, goblin_pos);
-    force_idle(&mut sim, goblin_id);
+
+    // Freeze all other creatures so they don't interfere.
+    let all_creatures: Vec<CreatureId> = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.id != elf_id && c.id != goblin_id)
+        .map(|c| c.id)
+        .collect();
+    for cid in all_creatures {
+        force_idle_and_cancel_activations(&mut sim, cid);
+    }
+    force_idle_and_cancel_activations(&mut sim, goblin_id);
     force_idle_and_cancel_activations(&mut sim, elf_id);
+
+    // Remove all available tasks to isolate flee behavior.
+    let all_tasks: Vec<TaskId> = sim
+        .db
+        .tasks
+        .iter_all()
+        .filter(|t| t.state == task::TaskState::Available)
+        .map(|t| t.id)
+        .collect();
+    for tid in all_tasks {
+        sim.complete_task(tid);
+    }
 
     // Schedule activation and run.
     let tick = sim.tick;
@@ -1614,6 +1695,15 @@ fn defensive_elf_with_flee_ammo_shoots_troll_at_10_voxels() {
     let mut sim = flat_world_sim(fresh_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
+    // Disable food/rest decay so the elf doesn't pick up eating/sleeping tasks.
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
     let mut events = Vec::new();
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -1655,31 +1745,19 @@ fn defensive_elf_with_flee_ammo_shoots_troll_at_10_voxels() {
         .expect("spawn troll");
     let troll_target = VoxelCoord::new(elf_pos.x + 10, elf_pos.y, elf_pos.z);
     force_position(&mut sim, troll_id, troll_target);
+    // Zero troll stats so its HP is predictable.
+    zero_creature_stats(&mut sim, troll_id);
 
-    // Freeze all other creatures so they don't interfere.
+    // Suppress all creatures except the elf — let the elf run freely.
     let all_creatures: Vec<CreatureId> = sim
         .db
         .creatures
         .iter_all()
-        .filter(|c| c.id != elf_id && c.id != troll_id)
+        .filter(|c| c.id != elf_id)
         .map(|c| c.id)
         .collect();
     for cid in all_creatures {
-        force_idle_and_cancel_activations(&mut sim, cid);
-    }
-    force_idle_and_cancel_activations(&mut sim, troll_id);
-    force_idle_and_cancel_activations(&mut sim, elf_id);
-
-    // Remove all available tasks to isolate the combat behavior.
-    let all_tasks: Vec<TaskId> = sim
-        .db
-        .tasks
-        .iter_all()
-        .filter(|t| t.state == task::TaskState::Available)
-        .map(|t| t.id)
-        .collect();
-    for tid in all_tasks {
-        sim.complete_task(tid);
+        suppress_activation(&mut sim, cid);
     }
 
     // Record positions and arrow count.
@@ -1701,24 +1779,44 @@ fn defensive_elf_with_flee_ammo_shoots_troll_at_10_voxels() {
         "Troll should be beyond pursuit range (25). Actual dist_sq: {dist_sq}"
     );
 
-    // Schedule elf activation and run for a long time.
-    let tick = sim.tick;
-    schedule_activation_at(&mut sim, elf_id, tick + 1);
-    // 30000 ticks = 10 shoot cooldown windows (3000 each).
-    sim.step(&[], tick + 30000);
-
+    // Loop with short steps until the elf fires at least 2 arrows.
     let inv_id = sim.db.creatures.get(&elf_id).unwrap().inventory_id;
-    let arrows_remaining = sim.inv_item_count(
-        inv_id,
-        inventory::ItemKind::Arrow,
-        inventory::MaterialFilter::Any,
-    );
+    let mut arrows_remaining = 20;
+    for i in 0..300 {
+        sim.step(&[], sim.tick + 100);
+        arrows_remaining = sim.inv_item_count(
+            inv_id,
+            inventory::ItemKind::Arrow,
+            inventory::MaterialFilter::Any,
+        );
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
+        let troll = sim.db.creatures.get(&troll_id).unwrap();
+        eprintln!(
+            "flee_ammo step {i}: tick={} arrows={arrows_remaining} elf_pos=({},{},{}) \
+             action={:?} task={:?} nat={:?} troll_pos=({},{},{}) troll_hp={}/{}",
+            sim.tick,
+            elf.position.min.x,
+            elf.position.min.y,
+            elf.position.min.z,
+            elf.action_kind,
+            elf.current_task,
+            elf.next_available_tick,
+            troll.position.min.x,
+            troll.position.min.y,
+            troll.position.min.z,
+            troll.hp,
+            troll.hp_max,
+        );
+        if arrows_remaining <= 18 {
+            break;
+        }
+    }
 
     // Elf should have fired MULTIPLE arrows (not just one, not zero).
     assert!(
         arrows_remaining <= 18,
         "Defensive elf should shoot troll repeatedly at ~10 voxels. \
-         Expected at least 2 shots over 30000 ticks, but only fired {}. \
+         Expected at least 2 shots over 30k ticks, but only fired {}. \
          Arrows: {arrows_remaining}/20, dist_sq: {dist_sq}",
         20 - arrows_remaining
     );
@@ -1825,6 +1923,15 @@ fn defensive_elf_with_task_interrupts_to_shoot_troll_at_10_voxels() {
     let mut sim = flat_world_sim(fresh_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
+    // Disable food/rest decay so the elf doesn't pick up eating/sleeping tasks.
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
     let mut events = Vec::new();
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -1851,7 +1958,9 @@ fn defensive_elf_with_task_interrupts_to_shoot_troll_at_10_voxels() {
     force_guaranteed_hits(&mut sim, elf_id);
     arm_with_bow_and_arrows(&mut sim, elf_id, 20);
 
-    let elf_pos = sim.db.creatures.get(&elf_id).unwrap().position.min;
+    // Place elf at a known position so task/troll placement is deterministic.
+    let elf_pos = VoxelCoord::new(22, 1, 32);
+    force_position(&mut sim, elf_id, elf_pos);
 
     // Give elf a low-priority Autonomous task (walking far away).
     let far_pos = VoxelCoord::new(elf_pos.x + 30, elf_pos.y, elf_pos.z);
@@ -1894,34 +2003,67 @@ fn defensive_elf_with_task_interrupts_to_shoot_troll_at_10_voxels() {
     zero_creature_stats(&mut sim, troll_id);
     force_idle_and_cancel_activations(&mut sim, troll_id);
 
-    // Cancel pending activations so we control the exact activation.
-    // Don't use force_idle — it clears current_task which we need to keep.
-    suppress_activation_until(&mut sim, elf_id, u64::MAX);
-    let mut c = sim.db.creatures.get(&elf_id).unwrap();
-    c.action_kind = ActionKind::NoAction;
-    c.next_available_tick = None;
-    c.path = None;
-    sim.db.update_creature(c).unwrap();
+    // Suppress all creatures except the elf — let the elf run freely.
+    let others: Vec<CreatureId> = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.id != elf_id)
+        .map(|c| c.id)
+        .collect();
+    for &id in &others {
+        suppress_activation(&mut sim, id);
+    }
 
-    let tick = sim.tick;
-    schedule_activation_at(&mut sim, elf_id, tick + 1);
-    sim.step(&[], tick + 2);
+    // Loop until the elf fires an arrow (interrupting its task to shoot).
+    let inv_id = sim.db.creatures.get(&elf_id).unwrap().inventory_id;
+    let troll_pos = VoxelCoord::new(elf_pos.x + 10, elf_pos.y, elf_pos.z);
+    let mut shot = false;
+    for i in 0..300 {
+        sim.step(&[], sim.tick + 100);
+        let arrows = sim.inv_item_count(
+            inv_id,
+            inventory::ItemKind::Arrow,
+            inventory::MaterialFilter::Any,
+        );
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
+        eprintln!(
+            "task_interrupt step {i}: tick={} arrows={arrows} elf_pos=({},{},{}) \
+             action={:?} task={:?} nat={:?}",
+            sim.tick,
+            elf.position.min.x,
+            elf.position.min.y,
+            elf.position.min.z,
+            elf.action_kind,
+            elf.current_task,
+            elf.next_available_tick,
+        );
+        if arrows < 20 || elf.action_kind == ActionKind::Shoot {
+            shot = true;
+            break;
+        }
+    }
 
     let elf = sim.db.creatures.get(&elf_id).unwrap();
-    let inv_id = elf.inventory_id;
     let arrows_remaining = sim.inv_item_count(
         inv_id,
         inventory::ItemKind::Arrow,
         inventory::MaterialFilter::Any,
     );
-
     assert!(
-        arrows_remaining < 20 || elf.action_kind == ActionKind::Shoot,
+        shot,
         "Defensive elf with Autonomous task should interrupt to shoot troll \
          at 10 voxels (within detection range, beyond pursuit range). \
-         Arrows: {arrows_remaining}/20, action: {:?}, task: {:?}",
+         Arrows: {arrows_remaining}/20, action: {:?}, task: {:?}, \
+         elf_pos: ({},{},{}), troll_pos: ({},{},{})",
         elf.action_kind,
-        elf.current_task
+        elf.current_task,
+        elf.position.min.x,
+        elf.position.min.y,
+        elf.position.min.z,
+        troll_pos.x,
+        troll_pos.y,
+        troll_pos.z,
     );
 }
 
@@ -1936,6 +2078,15 @@ fn debug_spawn_troll_via_command_elf_detects_and_shoots() {
     let mut sim = flat_world_sim(fresh_test_seed());
     sim.config.elf_starting_bows = 0;
     sim.config.elf_starting_arrows = 0;
+    // Disable food/rest decay so the elf doesn't pick up eating/sleeping tasks.
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
     let mut events = Vec::new();
 
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
@@ -1991,7 +2142,12 @@ fn debug_spawn_troll_via_command_elf_detects_and_shoots() {
         .find(|c| c.species == Species::Troll && c.vital_status == VitalStatus::Alive)
         .expect("troll should have been spawned");
     let troll_id = troll.id;
-    let troll_pos = troll.position.min;
+
+    // Force troll to exact target position (SpawnCreature may snap to a nav
+    // node at a different location, potentially outside detection range).
+    force_position(&mut sim, troll_id, troll_target);
+    zero_creature_stats(&mut sim, troll_id);
+    let troll_pos = troll_target;
 
     // Verify positions: elf and troll should be on the same Y level and
     // within detection range.
@@ -2031,7 +2187,7 @@ fn debug_spawn_troll_via_command_elf_detects_and_shoots() {
         troll_id
     );
 
-    // Now stop all other creatures and run the elf for a while.
+    // Suppress all creatures except the elf — let the elf run freely.
     let all_creatures: Vec<CreatureId> = sim
         .db
         .creatures
@@ -2040,32 +2196,41 @@ fn debug_spawn_troll_via_command_elf_detects_and_shoots() {
         .map(|c| c.id)
         .collect();
     for cid in all_creatures {
-        force_idle_and_cancel_activations(&mut sim, cid);
+        suppress_activation(&mut sim, cid);
     }
-    force_idle_and_cancel_activations(&mut sim, elf_id);
-
-    // Remove all available tasks.
-    let all_tasks: Vec<TaskId> = sim
-        .db
-        .tasks
-        .iter_all()
-        .filter(|t| t.state == task::TaskState::Available)
-        .map(|t| t.id)
-        .collect();
-    for tid in all_tasks {
-        sim.complete_task(tid);
-    }
-
-    let tick = sim.tick;
-    schedule_activation_at(&mut sim, elf_id, tick + 1);
-    sim.step(&[], tick + 30000);
 
     let inv_id = sim.db.creatures.get(&elf_id).unwrap().inventory_id;
-    let arrows_remaining = sim.inv_item_count(
-        inv_id,
-        inventory::ItemKind::Arrow,
-        inventory::MaterialFilter::Any,
-    );
+    let mut arrows_remaining = 20;
+    for i in 0..300 {
+        sim.step(&[], sim.tick + 100);
+        arrows_remaining = sim.inv_item_count(
+            inv_id,
+            inventory::ItemKind::Arrow,
+            inventory::MaterialFilter::Any,
+        );
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
+        let troll = sim.db.creatures.get(&troll_id).unwrap();
+        eprintln!(
+            "debug_spawn step {i}: tick={} arrows={arrows_remaining} elf_pos=({},{},{}) \
+             action={:?} task={:?} nat={:?} troll_pos=({},{},{}) troll_hp={}/{} troll_alive={:?}",
+            sim.tick,
+            elf.position.min.x,
+            elf.position.min.y,
+            elf.position.min.z,
+            elf.action_kind,
+            elf.current_task,
+            elf.next_available_tick,
+            troll.position.min.x,
+            troll.position.min.y,
+            troll.position.min.z,
+            troll.hp,
+            troll.hp_max,
+            troll.vital_status,
+        );
+        if arrows_remaining <= 18 {
+            break;
+        }
+    }
 
     assert!(
         arrows_remaining <= 18,

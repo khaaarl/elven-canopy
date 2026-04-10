@@ -1103,9 +1103,9 @@ fn hornet_species_in_config() {
 
 #[test]
 fn hornet_spawn_has_traits() {
-    let mut sim = test_sim(fresh_test_seed());
-    // Spawn hornet in the air above the tree.
-    let pos = VoxelCoord::new(32, 40, 32);
+    let mut sim = flat_world_sim(fresh_test_seed());
+    // Spawn hornet in guaranteed-air position (flat world has no tree geometry).
+    let pos = VoxelCoord::new(32, 20, 32);
     let id = spawn_hornet_at(&mut sim, pos);
 
     // Hornet should have BodyColor, StripePattern, WingStyle traits.
@@ -1206,7 +1206,7 @@ fn hornet_is_flyer() {
 
 #[test]
 fn spawn_hornet_via_spawn_creature_command() {
-    let mut sim = test_sim(fresh_test_seed());
+    let mut sim = flat_world_sim(fresh_test_seed());
     let hornet_count_before = sim
         .db
         .creatures
@@ -1214,8 +1214,8 @@ fn spawn_hornet_via_spawn_creature_command() {
         .filter(|c| c.species == Species::Hornet)
         .count();
 
-    // Spawn hornet in the air via the standard SpawnCreature command.
-    let air_pos = VoxelCoord::new(32, 40, 32);
+    // Spawn hornet in guaranteed-air position (flat world has no tree geometry).
+    let air_pos = VoxelCoord::new(32, 20, 32);
     let tick = sim.tick + 1;
     let cmd = SimCommand {
         player_name: String::new(),

@@ -1786,14 +1786,30 @@ fn attack_target_creature_wanders_after_target_dies() {
     let creature = sim.db.creatures.get(&elf).unwrap();
     assert!(creature.current_task.is_none(), "Task should be complete");
 
-    // Record position, then advance.
+    // Loop until the elf wanders from its post-kill position.
     let pos_after_kill = sim.db.creatures.get(&elf).unwrap().position;
-    sim.step(&[], tick + 10_000);
+    let mut wandered = false;
+    for i in 0..500 {
+        sim.step(&[], sim.tick + 100);
+        let e = sim.db.creatures.get(&elf).unwrap();
+        eprintln!(
+            "wanders_after_target_dies step {i}: tick={} pos=({},{},{}) action={:?} task={:?}",
+            sim.tick,
+            e.position.min.x,
+            e.position.min.y,
+            e.position.min.z,
+            e.action_kind,
+            e.current_task,
+        );
+        if e.position != pos_after_kill {
+            wandered = true;
+            break;
+        }
+    }
 
-    let pos_later = sim.db.creatures.get(&elf).unwrap().position;
-    assert_ne!(
-        pos_after_kill, pos_later,
-        "Elf should have wandered after target died, but it stayed at {:?}",
+    assert!(
+        wandered,
+        "Elf should have wandered after target died, but stayed at {:?}",
         pos_after_kill
     );
 }
@@ -2797,25 +2813,59 @@ fn goto_task_completes_on_arrival() {
 
 #[test]
 fn completed_task_creature_resumes_wandering() {
-    let mut sim = test_sim(fresh_test_seed());
+    let mut sim = flat_world_sim(fresh_test_seed());
+    // Disable food/rest decay so needs-based tasks don't preempt wandering.
+    for spec in sim.species_table.values_mut() {
+        spec.food_decay_per_tick = 0;
+        spec.rest_decay_per_tick = 0;
+    }
     let elf_id = spawn_elf(&mut sim);
 
     // Put the task at the elf's current location for instant completion.
     let elf_node = creature_pos(&sim, elf_id);
     let _task_id = insert_goto_task(&mut sim, elf_node);
 
-    // Complete the task.
-    sim.step(&[], sim.tick + 10000);
+    // Step until the task completes.
+    for i in 0..100 {
+        sim.step(&[], sim.tick + 100);
+        let e = sim.db.creatures.get(&elf_id).unwrap();
+        eprintln!(
+            "resumes_wandering task_wait {i}: tick={} task={:?} action={:?} pos=({},{},{})",
+            sim.tick,
+            e.current_task,
+            e.action_kind,
+            e.position.min.x,
+            e.position.min.y,
+            e.position.min.z,
+        );
+        if e.current_task.is_none() {
+            break;
+        }
+    }
     let pos_after_task = sim.db.creatures.get(&elf_id).unwrap().position;
 
-    // Continue ticking — elf should resume wandering (position changes).
-    sim.step(&[], sim.tick + 50000);
+    // Loop short steps until the elf wanders (position changes).
+    let mut wandered = false;
+    for i in 0..500 {
+        sim.step(&[], sim.tick + 100);
+        let e = sim.db.creatures.get(&elf_id).unwrap();
+        let pos_now = e.position;
+        eprintln!(
+            "resumes_wandering wander_wait {i}: tick={} pos=({},{},{}) action={:?} task={:?}",
+            sim.tick,
+            e.position.min.x,
+            e.position.min.y,
+            e.position.min.z,
+            e.action_kind,
+            e.current_task,
+        );
+        if pos_now != pos_after_task {
+            wandered = true;
+            break;
+        }
+    }
 
-    let pos_after_wander = sim.db.creatures.get(&elf_id).unwrap().position;
-    assert_ne!(
-        pos_after_task, pos_after_wander,
-        "Elf should have wandered after task completion"
-    );
+    assert!(wandered, "Elf should have wandered after task completion");
     assert!(
         sim.db
             .creatures

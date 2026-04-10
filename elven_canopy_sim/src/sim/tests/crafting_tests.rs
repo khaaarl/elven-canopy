@@ -912,6 +912,12 @@ fn extraction_monitor_creates_task_when_fruit_available() {
 #[test]
 fn extraction_produces_correct_component_items() {
     let mut sim = test_sim(fresh_test_seed());
+    // Disable food/rest decay so the elf doesn't get preempted by hunger/sleep
+    // during the long extraction process.
+    for spec in sim.species_table.values_mut() {
+        spec.food_decay_per_tick = 0;
+        spec.rest_decay_per_tick = 0;
+    }
     let (structure_id, species_id) = setup_extraction_kitchen(&mut sim);
 
     // Add fruit to kitchen.
@@ -951,9 +957,12 @@ fn extraction_produces_correct_component_items() {
     // Make elf not hungry/sleepy so they'll pick up the task.
     let food_max = sim.species_table[&Species::Elf].food_max;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
+    force_idle_and_cancel_activations(&mut sim, elf_id);
+    force_position(&mut sim, elf_id, anchor);
     let mut c = sim.db.creatures.get(&elf_id).unwrap();
     c.food = food_max;
     c.rest = rest_max;
+    c.next_available_tick = Some(sim.tick + 1);
     sim.db.update_creature(c).unwrap();
 
     // Run the sim forward: need heartbeat interval (5000) + walk time +

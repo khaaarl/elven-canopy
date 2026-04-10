@@ -71,6 +71,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-llm-load-race        LLM capability signaled before async model load completes
 [ ] B-relay-stability      Windows TCP connection drops during singleplayer gameplay
 [ ] B-stale-path           Creatures can traverse forbidden edges when cached path becomes stale
+[ ] B-zero-warnings        Eliminate all compiler warnings from test builds
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-aggro-fauna          Neutral fauna with aggro triggers
@@ -9410,7 +9411,9 @@ Harden sim tests so they don't break when worldgen or PRNG changes.
 
 **Complete.** All sim tests now use `fresh_test_seed()` (random per
 process, printed on failure for reproducibility). The legacy seed-42
-infrastructure has been removed.
+infrastructure has been removed. Extensive flake-hunting (5 rounds of
+10-run CI sweeps, ~50 CI runs total) identified and fixed ~30 distinct
+flaky tests.
 
 **Infrastructure added:**
 - `flat_world_sim()` — treeless test world with cached geometry, civs,
@@ -9419,17 +9422,19 @@ infrastructure has been removed.
 - `fresh_test_seed()` — random seed per process, printed on failure.
 - `leaf_size` changed from 3 to 5 (matches game default).
 
-**Robustness fixes applied across all test files:**
-- Activation race prevention (force_idle_and_cancel_activations,
-  suppress_activation before commands)
-- force_guaranteed_hits + zero_creature_stats for deterministic combat
-- Explicit force_position instead of relying on spawn snap
-- food/rest decay disabled on species_table (not config.species)
-- discover_civ idempotency: remove pre-existing relationships first
-- insert_trait → set_trait (upsert) to fix silent duplicate-key failures
-- Bystander creature freezing to prevent task competition
-- Horizontal raycast to avoid tree canopy interference
-- Statistical tests: wider bounds, more trials
+**Robustness patterns applied across all test files:**
+- Loop-until-observed: short sim.step increments (50-100 ticks) with
+  per-iteration condition checks, replacing large tick-blast-then-check
+  patterns that missed transient states.
+- Copious diagnostic eprintln! in loop bodies and assertions -- position,
+  action, task, NAT, HP, arrows, etc. Permanent (never removed).
+- Suppress bystanders: initial creatures suppressed + moved to far corner.
+- Disable food/rest decay on species_table to prevent task preemption.
+- force_position after spawn for deterministic positioning.
+- force_guaranteed_hits + zero_creature_stats for deterministic combat.
+- flat_world_sim for all tests not exercising tree geometry.
+- Let sim run freely with distractions disabled, rather than controlling
+  activation timing (which can mask real activation bugs).
 
 **Pre-existing bugs found and fixed:**
 - config.species vs species_table mutation (23 occurrences, 5 files)
@@ -9438,10 +9443,7 @@ infrastructure has been removed.
 
 **Migration (B-fragile-tests-batch2 branch):**
 All ~1,260 legacy_test_seed() call sites across 20 test files migrated
-to fresh_test_seed(). Three tests hardened during migration:
-- flee_tests::elf_flees_from_adjacent_goblin (explicit elf positioning)
-- activation_tests::attack_move_creature_wanders (larger tick budget)
-- movement_tests::troll_pursues_elf (explicit positioning for both)
+to fresh_test_seed().
 
 **Unblocked:** F-random-seeds
 
@@ -9471,3 +9473,27 @@ pub struct MeshPipelineConfig {
     pub decimation_max_error: f32,
 }
 ```
+
+#### B-zero-warnings — Eliminate all compiler warnings from test builds
+**Status:** Todo
+
+Eliminate all compiler warnings from `cargo test` builds across all crates.
+
+Currently `cargo test -p elven_canopy_sim` produces ~20 warnings (unused
+variables, unused imports, unused mut). These are suppressed by default
+but visible in CI coverage logs and full test builds. Goal: zero warnings.
+
+**Scope:**
+- Unused variables in test files (e.g., `goblin_pos_before`, `fell`,
+  `original_pos`, `hornet_pos`, `turn`, `tree_pos`, `food_restore`,
+  `heartbeat`, `raider`, `elf_a`, `elf_b`, `old_pos` across multiple
+  test files)
+- Unused imports in test/production code (e.g., `EdgeType` in
+  pathfinding.rs, `BTreeSet` in recipe.rs, `ZoneId` in test_helpers.rs,
+  `TaskConversingData` in social_chat_tests.rs)
+- Unused mut (activation_tests.rs:3431)
+- Any warnings in other crates (graphics, music, lang, etc.)
+
+**Approach:** Fix each warning at the source — remove truly unused
+variables/imports, prefix with `_` if intentionally unused. Do not use
+`#[allow(unused)]` blanket suppressions.

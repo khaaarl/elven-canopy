@@ -485,11 +485,27 @@ fn bootstrap_creates_opinions_between_starting_elves() {
     // Use a very high, fixed interaction count so opinion sums are reliably
     // nonzero regardless of PRNG-rolled CHA/skills (genome-derived stats can
     // produce extreme CHA values that make individual rolls unlikely).
-    config.social.bootstrap_interactions_min = 200;
-    config.social.bootstrap_interactions_max = 200;
+    config.social.bootstrap_interactions_min = 5000;
+    config.social.bootstrap_interactions_max = 5000;
     let mut sim = SimState::with_config(fresh_test_seed(), config);
     let mut events = vec![];
     sim.spawn_initial_creatures(&mut events);
+
+    // Pin all stats to 0 so CHA doesn't create extreme impression rolls
+    // that net to zero (which prunes the opinion row).
+    let elf_ids_for_zero: Vec<CreatureId> = sim
+        .db
+        .creatures
+        .iter_all()
+        .filter(|c| c.species == Species::Elf)
+        .map(|c| c.id)
+        .collect();
+    for &eid in &elf_ids_for_zero {
+        zero_creature_stats(&mut sim, eid);
+    }
+
+    // Re-bootstrap with zeroed stats so opinions are deterministic.
+    sim.bootstrap_social_opinions(&elf_ids_for_zero);
 
     // Collect all elf IDs.
     let elves: Vec<CreatureId> = sim
@@ -500,6 +516,24 @@ fn bootstrap_creates_opinions_between_starting_elves() {
         .map(|c| c.id)
         .collect();
     assert_eq!(elves.len(), 3, "should have 3 starting elves");
+
+    // Log all opinions for diagnostics.
+    for &a in &elves {
+        for &b in &elves {
+            if a == b {
+                continue;
+            }
+            let opinion = sim
+                .db
+                .creature_opinions
+                .get(&(a, OpinionKind::Friendliness, b));
+            let cha_a = sim.trait_int(a, TraitKind::Charisma, 0);
+            eprintln!(
+                "bootstrap_opinions: {a:?} -> {b:?}: opinion={:?}, cha_a={cha_a}",
+                opinion.map(|o| o.intensity),
+            );
+        }
+    }
 
     // Each ordered pair should have a Friendliness opinion.
     for &a in &elves {
@@ -513,7 +547,10 @@ fn bootstrap_creates_opinions_between_starting_elves() {
                 .get(&(a, OpinionKind::Friendliness, b));
             assert!(
                 opinion.is_some(),
-                "elf {a:?} should have a Friendliness opinion of {b:?}"
+                "elf {a:?} should have a Friendliness opinion of {b:?} \
+                 (cha_a={}, total_opinions={})",
+                sim.trait_int(a, TraitKind::Charisma, 0),
+                sim.db.creature_opinions.len(),
             );
         }
     }

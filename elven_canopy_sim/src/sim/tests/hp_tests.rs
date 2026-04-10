@@ -236,15 +236,21 @@ fn heal_does_not_revive_dead() {
 
 #[test]
 fn hp_regen_restores_hp_over_heartbeats() {
-    let mut sim = test_sim(fresh_test_seed());
+    let mut sim = flat_world_sim(fresh_test_seed());
     // ticks_per_hp_regen=100 means 1 HP per 100 ticks. With heartbeat=5000,
     // each heartbeat regens 5000/100 = 50 HP. Two heartbeats = 100 HP.
+    // Bump Troll hp_max so the troll survives the 200 damage.
     let troll_data = sim.species_table.get_mut(&Species::Troll).unwrap();
     troll_data.ticks_per_hp_regen = 100;
+    troll_data.food_decay_per_tick = 0;
+    troll_data.rest_decay_per_tick = 0;
+    troll_data.hp_max = 400;
     let ticks_per_regen = troll_data.ticks_per_hp_regen;
     let heartbeat = troll_data.heartbeat_interval_ticks;
 
     let troll_id = spawn_creature(&mut sim, Species::Troll);
+    // Pin CON to 0 so hp_max equals species base (no random multiplier).
+    zero_creature_stats(&mut sim, troll_id);
     let hp_max = sim.db.creatures.get(&troll_id).unwrap().hp_max;
 
     // Damage more than 2 heartbeats can heal (100 HP).

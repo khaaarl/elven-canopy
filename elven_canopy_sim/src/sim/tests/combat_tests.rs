@@ -1465,6 +1465,13 @@ fn armor_degradation_destroys_item() {
     );
     force_idle(&mut sim, goblin);
 
+    // Zero stats and guarantee hits so the attack always lands.
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+    force_guaranteed_hits(&mut sim, goblin);
+    // Make degradation guaranteed (not probabilistic).
+    sim.config.armor_non_penetrating_degrade_chance_recip = 1;
+
     // Unequip all, then equip a breastplate with only 1 HP remaining.
     let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
     for slot in [
@@ -1712,8 +1719,9 @@ fn armor_projectile_degrades_equipment() {
         60,
         60,
     );
-    // Force all degradation to torso.
+    // Force all degradation to torso, and make degradation guaranteed.
     sim.config.armor_degrade_location_weights = [1, 0, 0, 0, 0];
+    sim.config.armor_non_penetrating_degrade_chance_recip = 1;
 
     // Fire multiple projectiles and check for degradation.
     sim.config.arrow_gravity = 0;
@@ -2471,6 +2479,8 @@ fn test_shoot_arrow_cooldown_expiry_allows_second_shot() {
     force_position(&mut sim, goblin, goblin_pos);
     force_idle(&mut sim, elf);
     suppress_activation(&mut sim, elf);
+    // Suppress goblin so it doesn't move or attack during the cooldown window.
+    force_idle_and_cancel_activations(&mut sim, goblin);
     arm_with_bow_and_arrows(&mut sim, elf, 10);
 
     // First shot.
@@ -2505,6 +2515,11 @@ fn test_shoot_arrow_cooldown_expiry_allows_second_shot() {
     force_idle(&mut sim, elf);
     suppress_activation(&mut sim, elf);
     force_position(&mut sim, elf, elf_pos);
+    // Ensure goblin is still alive and in place for the second shot target.
+    let mut goblin_creature = sim.db.creatures.get(&goblin).unwrap();
+    goblin_creature.hp = goblin_creature.hp_max;
+    sim.db.update_creature(goblin_creature).unwrap();
+    force_position(&mut sim, goblin, goblin_pos);
 
     // Second shot should succeed now that cooldown has expired.
     let tick2 = sim.tick;
@@ -2751,7 +2766,9 @@ fn shoot_arrow_hostile_in_path_does_not_block() {
     let goblin_near = spawn_species(&mut sim, Species::Goblin);
     let goblin_far = spawn_species(&mut sim, Species::Goblin);
 
-    let shooter_pos = sim.db.creatures.get(&shooter).unwrap().position.min;
+    // Use explicit position so goblins are always in valid coords.
+    let shooter_pos = VoxelCoord::new(20, 1, 30);
+    force_position(&mut sim, shooter, shooter_pos);
     let near_pos = VoxelCoord::new(shooter_pos.x + 5, shooter_pos.y, shooter_pos.z);
     let far_pos = VoxelCoord::new(shooter_pos.x + 10, shooter_pos.y, shooter_pos.z);
     force_position(&mut sim, goblin_near, near_pos);
@@ -2794,9 +2811,15 @@ fn try_combat_redirects_to_alternate_target() {
     let goblin_blocked = spawn_species(&mut sim, Species::Goblin);
     let goblin_clear = spawn_species(&mut sim, Species::Goblin);
 
+    // Suppress all creatures so autonomous behavior doesn't interfere.
+    force_idle_and_cancel_activations(&mut sim, shooter);
+    force_idle_and_cancel_activations(&mut sim, blocker);
+    force_idle_and_cancel_activations(&mut sim, goblin_blocked);
+    force_idle_and_cancel_activations(&mut sim, goblin_clear);
+
     // Place everyone on the forest floor away from the tree to avoid
     // LOS issues with the trunk. Y=1 is walking height on flat floor.
-    let base = VoxelCoord::new(5, 1, 32);
+    let base = VoxelCoord::new(20, 1, 32);
     force_position(&mut sim, shooter, base);
 
     // Place blocker between shooter and goblin_blocked (on X axis).
@@ -2805,7 +2828,7 @@ fn try_combat_redirects_to_alternate_target() {
     force_position(&mut sim, blocker, blocker_pos);
     force_position(&mut sim, goblin_blocked, blocked_pos);
 
-    // Place goblin_clear on the opposite X side with no blocker.
+    // Place goblin_clear on the opposite X side with no blocker (within world bounds).
     let clear_pos = VoxelCoord::new(base.x - 8, base.y, base.z);
     force_position(&mut sim, goblin_clear, clear_pos);
 
@@ -5510,16 +5533,39 @@ fn hostile_creature_wanders_without_elves() {
     let walkable = find_walkable(&sim, VoxelCoord::new(32, 1, 32), 30)
         .expect("should have a walkable position");
     force_position(&mut sim, goblin_id, walkable);
-    force_idle(&mut sim, goblin_id);
+    // Schedule activation at tick+1 so the goblin activates promptly.
+    let next_tick = sim.tick + 1;
+    schedule_activation_at(&mut sim, goblin_id, next_tick);
 
     let goblin_start = sim.db.creatures.get(&goblin_id).unwrap().position.min;
 
-    sim.step(&[], sim.tick + 10_000);
+    let mut wandered = false;
+    for i in 0..500 {
+        sim.step(&[], sim.tick + 100);
+        let g = sim.db.creatures.get(&goblin_id).unwrap();
+        eprintln!(
+            "wanders_without_elves step {i}: tick={} pos=({},{},{}) action={:?} task={:?}",
+            sim.tick,
+            g.position.min.x,
+            g.position.min.y,
+            g.position.min.z,
+            g.action_kind,
+            g.current_task,
+        );
+        if g.position.min != goblin_start {
+            wandered = true;
+            break;
+        }
+    }
 
-    let goblin_pos = sim.db.creatures.get(&goblin_id).unwrap().position.min;
-    assert_ne!(
-        goblin_start, goblin_pos,
-        "Goblin should wander even without elves to pursue"
+    assert!(
+        wandered,
+        "Goblin should wander even without elves to pursue. \
+         pos=({},{},{}), action={:?}",
+        goblin_start.x,
+        goblin_start.y,
+        goblin_start.z,
+        sim.db.creatures.get(&goblin_id).unwrap().action_kind,
     );
 }
 
@@ -5821,6 +5867,11 @@ fn projectile_does_not_hit_shooter() {
 #[test]
 fn hostile_creature_wanders_after_killing_elf() {
     let mut sim = flat_world_sim(fresh_test_seed());
+    // Disable food/rest so the goblin wanders instead of seeking food.
+    for spec in sim.species_table.values_mut() {
+        spec.food_decay_per_tick = 0;
+        spec.rest_decay_per_tick = 0;
+    }
     let goblin = spawn_species(&mut sim, Species::Goblin);
     let elf = spawn_elf(&mut sim);
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
@@ -5845,11 +5896,32 @@ fn hostile_creature_wanders_after_killing_elf() {
     );
 
     // With no living elves, the goblin should fall back to random wander.
-    sim.step(&[], sim.tick + 10_000);
-    let goblin_final = sim.db.creatures.get(&goblin).unwrap().position.min;
-    assert_ne!(
-        goblin_final, goblin_pos,
-        "Goblin should wander after elf is dead"
+    let mut wandered = false;
+    for i in 0..500 {
+        sim.step(&[], sim.tick + 100);
+        let g = sim.db.creatures.get(&goblin).unwrap();
+        eprintln!(
+            "wanders_after_kill step {i}: tick={} pos=({},{},{}) action={:?} task={:?}",
+            sim.tick,
+            g.position.min.x,
+            g.position.min.y,
+            g.position.min.z,
+            g.action_kind,
+            g.current_task,
+        );
+        if g.position.min != goblin_pos {
+            wandered = true;
+            break;
+        }
+    }
+
+    assert!(
+        wandered,
+        "Goblin should wander after elf is dead. pos=({},{},{}), action={:?}",
+        goblin_pos.x,
+        goblin_pos.y,
+        goblin_pos.z,
+        sim.db.creatures.get(&goblin).unwrap().action_kind,
     );
 }
 

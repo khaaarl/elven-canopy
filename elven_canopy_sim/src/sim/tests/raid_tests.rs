@@ -88,22 +88,33 @@ fn test_attack_move_walks_to_destination() {
 
 #[test]
 fn test_attack_move_engages_hostile() {
-    let mut sim = test_sim(fresh_test_seed());
+    let mut sim = flat_world_sim(fresh_test_seed());
+    // Disable food/rest so the elf focuses on combat.
+    for spec in sim.species_table.values_mut() {
+        spec.food_decay_per_tick = 0;
+        spec.rest_decay_per_tick = 0;
+    }
+
+    // Suppress all initial creatures.
+    let initial_ids: Vec<CreatureId> = sim.db.creatures.iter_all().map(|c| c.id).collect();
+    for &id in &initial_ids {
+        suppress_activation(&mut sim, id);
+    }
+
     let elf = spawn_elf(&mut sim);
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
-    // Use connected nav nodes to ensure valid positions.
-    let (node_a, node_b) = find_connected_pair(&sim);
-    force_position(&mut sim, elf, node_a);
-    force_position(&mut sim, goblin, node_b);
-    force_idle(&mut sim, elf);
+    // Place elf and goblin at known positions, goblin nearby on the path.
+    let elf_pos = VoxelCoord::new(20, 1, 30);
+    let goblin_pos = VoxelCoord::new(25, 1, 30);
+    force_position(&mut sim, elf, elf_pos);
+    force_position(&mut sim, goblin, goblin_pos);
+    force_idle_and_cancel_activations(&mut sim, elf);
     force_guaranteed_hits(&mut sim, elf);
-    suppress_activation(&mut sim, elf);
     suppress_activation(&mut sim, goblin);
 
-    let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
-    // Use a far walkable position as the destination.
-    let dest = find_far_walkable(&sim, elf_pos, 10);
+    // Destination is past the goblin.
+    let dest = VoxelCoord::new(40, 1, 30);
 
     let tick = sim.tick;
     let cmd = SimCommand {
@@ -116,16 +127,41 @@ fn test_attack_move_engages_hostile() {
             queue: false,
         },
     };
-    // Run long enough for detection and engagement.
-    sim.step(&[cmd], tick + 10_000);
+    sim.step(&[cmd], sim.tick + 1);
 
-    // Goblin should have taken damage (elf detected and engaged).
-    let goblin = sim.db.creatures.get(&goblin).unwrap();
+    // Loop short steps until goblin takes damage.
+    let goblin_hp_before = sim.db.creatures.get(&goblin).unwrap().hp;
+    let mut engaged = false;
+    for i in 0..200 {
+        sim.step(&[], sim.tick + 50);
+        let e = sim.db.creatures.get(&elf).unwrap();
+        let g = sim.db.creatures.get(&goblin).unwrap();
+        eprintln!(
+            "attack_move step {i}: tick={} elf_pos=({},{},{}) action={:?} task={:?} \
+             goblin_hp={}/{} goblin_pos=({},{},{})",
+            sim.tick,
+            e.position.min.x,
+            e.position.min.y,
+            e.position.min.z,
+            e.action_kind,
+            e.current_task,
+            g.hp,
+            g.hp_max,
+            g.position.min.x,
+            g.position.min.y,
+            g.position.min.z,
+        );
+        if g.hp < goblin_hp_before || g.vital_status == VitalStatus::Dead {
+            engaged = true;
+            break;
+        }
+    }
+
     assert!(
-        goblin.hp < goblin.hp_max || goblin.vital_status == VitalStatus::Dead,
+        engaged,
         "Goblin should take damage from attack-move engagement: hp {}/{}",
-        goblin.hp,
-        goblin.hp_max
+        sim.db.creatures.get(&goblin).unwrap().hp,
+        sim.db.creatures.get(&goblin).unwrap().hp_max
     );
 }
 

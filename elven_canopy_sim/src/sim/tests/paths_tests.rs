@@ -460,7 +460,13 @@ fn extra_rolls_can_increment_skill_twice_per_call() {
     set_trait(&mut sim, elf_id, TraitKind::Striking, 0);
     set_trait(&mut sim, elf_id, TraitKind::Intelligence, 0);
 
-    sim.try_advance_skill(elf_id, TraitKind::Striking, 1000);
+    // Set decay_base high and use base_probability 1001 (not 1000) so the
+    // adjusted probability after integer division is exactly 1000 at skill=1.
+    // Formula: 1001 * 1_000_000 / (1_000_000 + 1) = 1000 (integer truncation).
+    // .min(1000) → 1000. Roll: rng % 1000 < 1000 → always true.
+    sim.config.skills.advancement_decay_base = 1_000_000;
+
+    sim.try_advance_skill(elf_id, TraitKind::Striking, 1001);
 
     let val = sim.trait_int(elf_id, TraitKind::Striking, 0);
     assert_eq!(

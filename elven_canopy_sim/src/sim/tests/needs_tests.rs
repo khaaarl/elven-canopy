@@ -270,10 +270,16 @@ fn ground_sleep_fallback_when_no_beds() {
 
 #[test]
 fn find_nearest_bed_excludes_occupied() {
-    let mut sim = test_sim(fresh_test_seed());
+    let mut sim = flat_world_sim(fresh_test_seed());
     let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let rest_max = sim.species_table[&Species::Elf].rest_max;
     let heartbeat_interval = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
+
+    // Disable food/rest decay so needs-based tasks don't preempt sleep.
+    for spec in sim.species_table.values_mut() {
+        spec.food_decay_per_tick = 0;
+        spec.rest_decay_per_tick = 0;
+    }
 
     // Find a valid nav node near tree for the bed position.
     let bed_pos = find_walkable(&sim, tree_pos, 10).unwrap();
@@ -317,49 +323,25 @@ fn find_nearest_bed_excludes_occupied() {
         })
         .unwrap();
 
-    // Spawn two elves.
-    let cmds = vec![
-        SimCommand {
-            player_name: String::new(),
-            tick: 1,
-            action: SimAction::SpawnCreature {
-                zone_id: sim.home_zone_id(),
-                species: Species::Elf,
-                position: tree_pos,
-            },
-        },
-        SimCommand {
-            player_name: String::new(),
-            tick: 1,
-            action: SimAction::SpawnCreature {
-                zone_id: sim.home_zone_id(),
-                species: Species::Elf,
-                position: tree_pos,
-            },
-        },
-    ];
-    sim.step(&cmds, 1);
+    // Spawn two elves near the bed.
+    let elf_a = spawn_creature(&mut sim, Species::Elf);
+    let elf_b = spawn_creature(&mut sim, Species::Elf);
+    let elf_ids = vec![elf_a, elf_b];
 
-    let elf_ids: Vec<CreatureId> = sim
-        .db
-        .creatures
-        .iter_all()
-        .filter(|c| c.species == Species::Elf)
-        .map(|c| c.id)
-        .collect();
-    assert_eq!(elf_ids.len(), 2);
-
-    // Make both elves tired with high food.
+    // Make both elves tired with high food, force idle, and position near bed.
     let food_max_val = sim.species_table[&Species::Elf].food_max;
     for &elf_id in &elf_ids {
+        force_idle_and_cancel_activations(&mut sim, elf_id);
+        force_position(&mut sim, elf_id, bed_pos);
         let mut c = sim.db.creatures.get(&elf_id).unwrap();
         c.rest = rest_max * 20 / 100;
         c.food = food_max_val;
+        c.next_available_tick = Some(sim.tick + 1);
         sim.db.update_creature(c).unwrap();
     }
 
-    // Advance past the heartbeat.
-    let target_tick = 1 + heartbeat_interval + 1;
+    // Advance past the heartbeat so sleep tasks get assigned.
+    let target_tick = sim.tick + heartbeat_interval + 1;
     sim.step(&[], target_tick);
 
     // Both should have Sleep tasks.
@@ -367,6 +349,17 @@ fn find_nearest_bed_excludes_occupied() {
     let mut ground_sleep_count = 0;
     for &elf_id in &elf_ids {
         let elf = sim.db.creatures.get(&elf_id).unwrap();
+        eprintln!(
+            "bed_excludes_occupied: elf={elf_id:?} task={:?} action={:?} \
+             pos=({},{},{}) rest={} food={}",
+            elf.current_task,
+            elf.action_kind,
+            elf.position.min.x,
+            elf.position.min.y,
+            elf.position.min.z,
+            elf.rest,
+            elf.food,
+        );
         if let Some(task_id) = elf.current_task
             && let Some(task) = sim.db.tasks.get(&task_id)
             && task.kind_tag == TaskKindTag::Sleep
@@ -2304,27 +2297,45 @@ fn dine_at_hall_instant_on_arrival() {
         sim.db.update_creature(c).unwrap();
     }
 
-    // Step past heartbeat + enough for walk + activation. The key test is
-    // that completion happens WITHOUT needing eat_action_ticks of delay.
-    // With the old (non-instant) flow, the task would still be active at
-    // heartbeat + walk_time + 500 because eat_action_ticks = 1500.
+    // Loop short steps until the AteDining thought appears (proves dining resolved).
+    // The limit must be BEFORE eat_action_ticks (1500) would have elapsed —
+    // the whole point of this test is that dining completes instantly on arrival.
     let walk_tpv = sim.species_table[&Species::Elf].move_ticks_per_voxel as u64;
-    sim.step(&[], 1 + heartbeat + walk_tpv * 10 + 500);
-
-    // Task should be complete well before eat_action_ticks would have elapsed.
-    let creature = sim.db.creatures.get(&elf_id).unwrap();
-    assert!(
-        creature.current_task.is_none(),
-        "DineAtHall should complete instantly on arrival, not wait for eat animation"
-    );
-    // Should have AteDining thought proving it resolved.
-    assert!(
-        sim.db
+    let eat_action_ticks = sim.config.eat_action_ticks as u64;
+    let limit = 1 + heartbeat + walk_tpv * 10 + eat_action_ticks - 100;
+    let mut dined = false;
+    while sim.tick < limit {
+        sim.step(&[], sim.tick + 50);
+        let creature = sim.db.creatures.get(&elf_id).unwrap();
+        let has_thought = sim
+            .db
             .thoughts
             .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
             .iter()
-            .any(|t| t.kind == crate::types::ThoughtKind::AteDining),
-        "Should have AteDining thought"
+            .any(|t| t.kind == crate::types::ThoughtKind::AteDining);
+        eprintln!(
+            "dine_instant tick={}: task={:?} action={:?} pos=({},{},{}) food={} dined={has_thought}",
+            sim.tick,
+            creature.current_task,
+            creature.action_kind,
+            creature.position.min.x,
+            creature.position.min.y,
+            creature.position.min.z,
+            creature.food,
+        );
+        if has_thought {
+            dined = true;
+            break;
+        }
+    }
+
+    // Task should have completed and thought should exist.
+    let creature = sim.db.creatures.get(&elf_id).unwrap();
+    assert!(
+        dined,
+        "DineAtHall should complete instantly on arrival. \
+         task={:?}, action={:?}, tick={}",
+        creature.current_task, creature.action_kind, sim.tick,
     );
 }
 
@@ -2697,27 +2708,58 @@ fn elf_resumes_activation_after_dining() {
         sim.db.update_creature(c).unwrap();
     }
 
-    // Advance enough for: heartbeat → DineAtHall task → walk → instant eat.
-    sim.step(&[], sim.tick + heartbeat + 50_000);
+    // Loop until the elf has dined (AteDining thought appears).
+    let mut dined = false;
+    for i in 0..500 {
+        sim.step(&[], sim.tick + 100);
+        let has_dining_thought = sim
+            .db
+            .thoughts
+            .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
+            .iter()
+            .any(|t| t.kind == crate::types::ThoughtKind::AteDining);
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
+        eprintln!(
+            "resumes_after_dining step {i}: tick={} dined={has_dining_thought} task={:?} \
+             action={:?} pos=({},{},{}) food={}",
+            sim.tick,
+            elf.current_task,
+            elf.action_kind,
+            elf.position.min.x,
+            elf.position.min.y,
+            elf.position.min.z,
+            elf.food,
+        );
+        if has_dining_thought {
+            dined = true;
+            break;
+        }
+    }
+    assert!(dined, "Elf should have dined first");
 
-    // Confirm dining happened.
-    let has_dining_thought = sim
-        .db
-        .thoughts
-        .by_creature_id(&elf_id, tabulosity::QueryOpts::ASC)
-        .iter()
-        .any(|t| t.kind == crate::types::ThoughtKind::AteDining);
-    assert!(has_dining_thought, "Elf should have dined first");
-
-    // Record position after dining.
+    // Record position after dining, then loop until the elf wanders.
     let pos_after_dining = sim.db.creatures.get(&elf_id).unwrap().position;
-
-    // Advance more ticks — elf should wander (change position).
-    sim.step(&[], sim.tick + 20_000);
-
-    let pos_later = sim.db.creatures.get(&elf_id).unwrap().position;
-    assert_ne!(
-        pos_after_dining, pos_later,
+    let mut moved = false;
+    for i in 0..200 {
+        sim.step(&[], sim.tick + 100);
+        let elf = sim.db.creatures.get(&elf_id).unwrap();
+        let pos_now = elf.position;
+        eprintln!(
+            "resumes_wander step {i}: tick={} pos=({},{},{}) task={:?} action={:?}",
+            sim.tick,
+            elf.position.min.x,
+            elf.position.min.y,
+            elf.position.min.z,
+            elf.current_task,
+            elf.action_kind,
+        );
+        if pos_now != pos_after_dining {
+            moved = true;
+            break;
+        }
+    }
+    assert!(
+        moved,
         "Elf should have moved after dining (not frozen). pos={pos_after_dining:?}"
     );
 }

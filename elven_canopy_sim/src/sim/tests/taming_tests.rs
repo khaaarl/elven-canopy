@@ -236,44 +236,80 @@ fn taming_roll_fails_with_zero_stats() {
 
 #[test]
 fn taming_advances_beastcraft_skill() {
-    let mut sim = test_sim(fresh_test_seed());
-    sim.species_table
-        .get_mut(&Species::Elf)
-        .unwrap()
-        .food_decay_per_tick = 0;
-    sim.species_table
-        .get_mut(&Species::Elf)
-        .unwrap()
-        .rest_decay_per_tick = 0;
+    let mut sim = flat_world_sim(fresh_test_seed());
+    // Disable food/rest decay so needs-based tasks don't preempt taming.
+    for spec in sim.species_table.values_mut() {
+        spec.food_decay_per_tick = 0;
+        spec.rest_decay_per_tick = 0;
+    }
+
+    // Suppress all initial creatures so they don't interfere.
+    let initial_ids: Vec<CreatureId> = sim.db.creatures.iter_all().map(|c| c.id).collect();
+    for &id in &initial_ids {
+        suppress_activation(&mut sim, id);
+    }
+
     // Use an elephant (difficulty 250) to ensure many attempts before success.
     let elephant_id = spawn_creature(&mut sim, Species::Elephant);
     let scout_id = spawn_elf(&mut sim);
     assign_path(&mut sim, scout_id, PathId::Scout);
 
+    // Zero stats so outcomes don't depend on random stat rolls.
+    zero_creature_stats(&mut sim, scout_id);
     // Set stats high enough to eventually succeed after many attempts.
     // WIL(100) + CHA(100) + Beastcraft(0) = 200 vs difficulty 250 → ~16% chance.
     set_trait(&mut sim, scout_id, TraitKind::Willpower, 100);
     set_trait(&mut sim, scout_id, TraitKind::Charisma, 100);
     set_trait(&mut sim, scout_id, TraitKind::Beastcraft, 0);
 
-    // Bump skill advance probability so it triggers reliably in tests.
-    sim.config.tame_skill_advance_probability = 500; // 50%
+    // Place scout near the elephant so pathing succeeds quickly.
+    let elephant_pos = creature_pos(&sim, elephant_id);
+    force_position(&mut sim, scout_id, elephant_pos);
+
+    // Guaranteed skill advance on every attempt.
+    sim.config.tame_skill_advance_probability = 1000;
 
     let initial_beastcraft = sim.trait_int(scout_id, TraitKind::Beastcraft, 0);
 
     designate_tame(&mut sim, elephant_id);
 
-    // Run long enough for many attempts.
-    for _ in 0..400 {
+    // Loop until beastcraft advances or we hit the limit.
+    let mut advanced = false;
+    for i in 0..400 {
         sim.step(&[], sim.tick + 500);
+        let bc = sim.trait_int(scout_id, TraitKind::Beastcraft, 0);
+        let scout = sim.db.creatures.get(&scout_id).unwrap();
+        if i % 50 == 0 || bc > initial_beastcraft {
+            eprintln!(
+                "taming_skill step {i}: tick={} beastcraft={bc} task={:?} action={:?} \
+                 pos=({},{},{})",
+                sim.tick,
+                scout.current_task,
+                scout.action_kind,
+                scout.position.min.x,
+                scout.position.min.y,
+                scout.position.min.z,
+            );
+        }
+        if bc > initial_beastcraft {
+            advanced = true;
+            break;
+        }
     }
 
     let final_beastcraft = sim.trait_int(scout_id, TraitKind::Beastcraft, 0);
+    let scout = sim.db.creatures.get(&scout_id).unwrap();
     assert!(
-        final_beastcraft > initial_beastcraft,
-        "Beastcraft should have advanced from taming attempts ({} -> {})",
+        advanced,
+        "Beastcraft should have advanced from taming attempts ({} -> {}). \
+         task={:?}, action={:?}, pos=({},{},{})",
         initial_beastcraft,
-        final_beastcraft
+        final_beastcraft,
+        scout.current_task,
+        scout.action_kind,
+        scout.position.min.x,
+        scout.position.min.y,
+        scout.position.min.z,
     );
 }
 
