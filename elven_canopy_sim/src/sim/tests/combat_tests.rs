@@ -1928,8 +1928,14 @@ fn armor_non_penetrating_degrade_disabled_when_recip_zero() {
     );
     force_idle(&mut sim, goblin);
 
+    // Zero stats so STR doesn't scale damage above armor, and
+    // force guaranteed hits so we actually exercise non-penetrating path.
+    zero_creature_stats(&mut sim, goblin);
+    zero_creature_stats(&mut sim, elf);
+    force_guaranteed_hits(&mut sim, goblin);
+
     // Unequip all, equip full armor (total=9), reduce goblin base damage
-    // below armor even after STR scaling (goblin STR mean +58).
+    // below armor so all hits are non-penetrating.
     let inv_id = sim.db.creatures.get(&elf).unwrap().inventory_id;
     for slot in [
         inventory::EquipSlot::Head,
@@ -1955,7 +1961,7 @@ fn armor_non_penetrating_degrade_disabled_when_recip_zero() {
         .unwrap()
         .current_hp;
 
-    for _ in 0..50 {
+    for i in 0..50 {
         force_idle(&mut sim, goblin);
         let mut elf_creature = sim.db.creatures.get(&elf).unwrap();
         elf_creature.hp = elf_creature.hp_max;
@@ -1973,16 +1979,17 @@ fn armor_non_penetrating_degrade_disabled_when_recip_zero() {
             }],
             tick + 1,
         );
-    }
 
-    let bp_hp_after = sim
-        .inv_equipped_in_slot(inv_id, inventory::EquipSlot::Torso)
-        .unwrap()
-        .current_hp;
-    assert_eq!(
-        bp_hp_after, bp_hp_before,
-        "With recip=0, non-penetrating hits should never degrade armor"
-    );
+        let bp_hp_now = sim
+            .inv_equipped_in_slot(inv_id, inventory::EquipSlot::Torso)
+            .unwrap()
+            .current_hp;
+        eprintln!("  non_pen_degrade iter {i}: torso_hp={bp_hp_now} (before={bp_hp_before})");
+        assert_eq!(
+            bp_hp_now, bp_hp_before,
+            "iter {i}: torso armor degraded despite recip=0"
+        );
+    }
 }
 
 #[test]

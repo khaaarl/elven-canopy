@@ -455,10 +455,28 @@ fn cancel_build_removes_associated_task() {
 #[test]
 fn cancel_build_unassigns_elf() {
     let mut sim = test_sim(fresh_test_seed());
+
+    // Disable food/rest so the elf doesn't get preempted by needs.
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .food_decay_per_tick = 0;
+    sim.species_table
+        .get_mut(&Species::Elf)
+        .unwrap()
+        .rest_decay_per_tick = 0;
+
+    // Suppress all initial creatures so only our elf acts.
+    let initial_ids: Vec<CreatureId> = sim.db.creatures.iter_all().map(|c| c.id).collect();
+    for &id in &initial_ids {
+        suppress_activation_until(&mut sim, id, u64::MAX);
+    }
+
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
-    // Spawn elf.
+    // Spawn elf and position near the build site.
     let elf_id = spawn_elf(&mut sim);
+    force_position(&mut sim, elf_id, air_coord);
 
     // Designate a build.
     let cmd = SimCommand {
@@ -474,36 +492,26 @@ fn cancel_build_unassigns_elf() {
     sim.step(&[cmd], sim.tick + 2);
 
     let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
-
-    // Tick enough for the elf to claim the task, but not complete it.
-    // The elf claims on its next idle activation after the build is
-    // designated. Elf walk speed is 500 tpv, so one wander step takes
-    // ~500 ticks. We need enough ticks for at least one idle activation
-    // to occur after the build designation, but not enough for the elf to
-    // finish the build (1000 work ticks). 800 ticks is enough for one
-    // full activation cycle.
-    sim.step(&[], sim.tick + 800);
-
     let task_id = sim.db.blueprints.get(&project_id).unwrap().task_id.unwrap();
-    // Wait for the elf to claim the build task. The elf claims on its next
-    // idle activation, which depends on when its wander step finishes.
-    // Tick in small increments to avoid overshooting past task completion.
+
+    // Wait for the elf to claim the build task. Loop in small increments
+    // with diagnostic logging.
     let mut claimed = false;
-    for _ in 0..20 {
-        sim.step(&[], sim.tick + 100);
-        if sim
-            .db
-            .creatures
-            .get(&elf_id)
-            .is_some_and(|c| c.current_task == Some(task_id))
-        {
+    for i in 0..50 {
+        sim.step(&[], sim.tick + 50);
+        let c = sim.db.creatures.get(&elf_id).unwrap();
+        eprintln!(
+            "  cancel_build iter {i}: task={:?} action={:?} pos={:?} nat={:?}",
+            c.current_task, c.action_kind, c.position.min, c.next_available_tick
+        );
+        if c.current_task == Some(task_id) {
             claimed = true;
             break;
         }
     }
     assert!(
         claimed,
-        "Elf should have claimed the build task within 2000 ticks"
+        "Elf should have claimed the build task within 2500 ticks"
     );
 
     // Cancel the build.
