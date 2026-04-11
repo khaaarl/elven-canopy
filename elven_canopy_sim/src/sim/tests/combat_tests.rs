@@ -6196,39 +6196,62 @@ fn hostile_does_not_attack_same_species() {
 fn all_hostile_species_pursue_elves() {
     for &hostile_species in &[Species::Goblin, Species::Orc, Species::Troll] {
         let mut sim = flat_world_sim(fresh_test_seed());
+
+        // Disable food/rest decay.
+        for spec in sim.species_table.values_mut() {
+            spec.food_decay_per_tick = 0;
+            spec.rest_decay_per_tick = 0;
+        }
+
+        // Suppress all initial creatures.
+        let initial_ids: Vec<CreatureId> = sim.db.creatures.iter_all().map(|c| c.id).collect();
+        for &id in &initial_ids {
+            suppress_activation_until(&mut sim, id, u64::MAX);
+        }
+
         let elf_id = spawn_species(&mut sim, Species::Elf);
         let hostile_id = spawn_species(&mut sim, hostile_species);
 
-        // Find two walkable positions that are a few voxels apart so the hostile
-        // has room to pursue without the elf immediately fleeing to safety.
-        let floor_y = sim.config.floor_y + 1;
-        let pos_a = find_walkable(&sim, VoxelCoord::new(20, floor_y, 20), 10)
-            .expect("should have a walkable position");
-        let pos_b = find_walkable(&sim, VoxelCoord::new(24, floor_y, 20), 10)
-            .expect("should have a second walkable position");
-        assert!(
-            (3..=6).contains(&pos_a.manhattan_distance(pos_b)),
-            "positions should be 3-6 apart"
-        );
+        // Place them at known positions. Use force_idle after force_position
+        // to clear stale Move, then set NAT so both get polled.
+        let pos_a = VoxelCoord::new(20, 1, 20);
+        let pos_b = VoxelCoord::new(24, 1, 20);
         force_position(&mut sim, elf_id, pos_a);
         force_idle(&mut sim, elf_id);
         force_position(&mut sim, hostile_id, pos_b);
         force_idle(&mut sim, hostile_id);
+        {
+            let tick = sim.tick + 1;
+            let mut c = sim.db.creatures.get(&hostile_id).unwrap();
+            c.next_available_tick = Some(tick);
+            sim.db.update_creature(c).unwrap();
+        }
+        // Suppress the elf so it doesn't flee and only the hostile acts.
+        suppress_activation_until(&mut sim, elf_id, u64::MAX);
 
         let hostile_start = sim.db.creatures.get(&hostile_id).unwrap().position.min;
         let elf_hp_before = sim.db.creatures.get(&elf_id).unwrap().hp;
 
-        sim.step(&[], sim.tick + 10_000);
-
-        let hostile_pos = sim.db.creatures.get(&hostile_id).unwrap().position.min;
-        let elf_hp_after = sim.db.creatures.get(&elf_id).unwrap().hp;
-
-        let moved = hostile_pos != hostile_start;
-        let dealt_damage = elf_hp_after < elf_hp_before;
+        // Loop until hostile moves or deals damage.
+        let mut succeeded = false;
+        for i in 0..100 {
+            sim.step(&[], sim.tick + 100);
+            let hostile_pos = sim.db.creatures.get(&hostile_id).unwrap().position.min;
+            let elf_hp = sim.db.creatures.get(&elf_id).unwrap().hp;
+            let h = sim.db.creatures.get(&hostile_id).unwrap();
+            eprintln!(
+                "  pursue_{hostile_species:?} step {i}: tick={} pos={:?} action={:?} \
+                 nat={:?} elf_hp={elf_hp}",
+                sim.tick, hostile_pos, h.action_kind, h.next_available_tick,
+            );
+            if hostile_pos != hostile_start || elf_hp < elf_hp_before {
+                succeeded = true;
+                break;
+            }
+        }
         assert!(
-            moved || dealt_damage,
-            "{hostile_species:?} should pursue elf: didn't move from {hostile_start:?} \
-                 and didn't deal damage (elf hp {elf_hp_before} -> {elf_hp_after})"
+            succeeded,
+            "{hostile_species:?} should pursue elf within 10000 ticks"
         );
     }
 }

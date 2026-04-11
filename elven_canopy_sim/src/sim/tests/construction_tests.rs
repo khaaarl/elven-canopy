@@ -474,9 +474,9 @@ fn cancel_build_unassigns_elf() {
 
     let air_coord = find_air_adjacent_to_trunk(&sim);
 
-    // Spawn elf and position near the build site.
+    // Spawn elf — don't force-position to air_coord (it's not walkable,
+    // it's the build target). Let the elf walk from its spawn position.
     let elf_id = spawn_elf(&mut sim);
-    force_position(&mut sim, elf_id, air_coord);
 
     // Designate a build.
     let cmd = SimCommand {
@@ -494,11 +494,11 @@ fn cancel_build_unassigns_elf() {
     let project_id = *sim.db.blueprints.iter_keys().next().unwrap();
     let task_id = sim.db.blueprints.get(&project_id).unwrap().task_id.unwrap();
 
-    // Wait for the elf to claim the build task. Loop in small increments
-    // with diagnostic logging.
+    // Wait for the elf to claim the build task. The elf needs to walk
+    // from its spawn position to the build site, so allow generous time.
     let mut claimed = false;
-    for i in 0..50 {
-        sim.step(&[], sim.tick + 50);
+    for i in 0..100 {
+        sim.step(&[], sim.tick + 100);
         let c = sim.db.creatures.get(&elf_id).unwrap();
         eprintln!(
             "  cancel_build iter {i}: task={:?} action={:?} pos={:?} nat={:?}",
@@ -511,7 +511,7 @@ fn cancel_build_unassigns_elf() {
     }
     assert!(
         claimed,
-        "Elf should have claimed the build task within 2500 ticks"
+        "Elf should have claimed the build task within 10000 ticks"
     );
 
     // Cancel the build.

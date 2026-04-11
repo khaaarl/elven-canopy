@@ -28,8 +28,16 @@ fn elf_flees_from_adjacent_goblin() {
     let goblin = spawn_species(&mut sim, Species::Goblin);
 
     // Place elf at a known central position and goblin adjacent.
+    // force_idle after force_position to clear any stale Move from spawn
+    // and ensure NAT is set so the elf gets polled.
     let elf_pos = VoxelCoord::new(31, 1, 31);
     force_position(&mut sim, elf, elf_pos);
+    force_idle(&mut sim, elf);
+    {
+        let mut c = sim.db.creatures.get(&elf).unwrap();
+        c.next_available_tick = Some(sim.tick + 1);
+        sim.db.update_creature(c).unwrap();
+    }
     let goblin_pos = VoxelCoord::new(elf_pos.x + 1, elf_pos.y, elf_pos.z);
     force_position(&mut sim, goblin, goblin_pos);
     suppress_activation(&mut sim, goblin);

@@ -1653,7 +1653,16 @@ fn attack_move_creature_wanders_after_arriving_at_destination() {
         .get_mut(&Species::Elf)
         .unwrap()
         .rest_decay_per_tick = 0;
+
+    // Suppress all initial creatures.
+    let initial_ids: Vec<CreatureId> = sim.db.creatures.iter_all().map(|c| c.id).collect();
+    for &id in &initial_ids {
+        suppress_activation_until(&mut sim, id, u64::MAX);
+    }
+
     let elf = spawn_elf(&mut sim);
+    // Position elf centrally so wander has room in all directions.
+    force_position(&mut sim, elf, VoxelCoord::new(32, 1, 32));
     force_idle_and_cancel_activations(&mut sim, elf);
 
     let elf_pos = sim.db.creatures.get(&elf).unwrap().position.min;
@@ -1670,21 +1679,42 @@ fn attack_move_creature_wanders_after_arriving_at_destination() {
             queue: false,
         },
     };
-    // Run long enough for the elf to arrive and complete.
-    sim.step(&[cmd], tick + 20_000);
 
-    let creature = sim.db.creatures.get(&elf).unwrap();
-    assert!(creature.current_task.is_none(), "Task should be complete");
+    // Wait for the elf to arrive and complete the attack-move task.
+    sim.step(&[cmd], tick + 2);
+    let mut arrived = false;
+    for i in 0..100 {
+        sim.step(&[], sim.tick + 100);
+        let c = sim.db.creatures.get(&elf).unwrap();
+        eprintln!(
+            "  attack_move_wander arrival {i}: tick={} task={:?} action={:?} pos={:?}",
+            sim.tick, c.current_task, c.action_kind, c.position.min,
+        );
+        if c.current_task.is_none() {
+            arrived = true;
+            break;
+        }
+    }
+    assert!(arrived, "Task should complete");
 
-    // Record position, then advance more ticks — give enough time for
-    // the elf to reactivate and wander regardless of activation timing.
+    // Record position, then loop until elf wanders to a new position.
     let pos_after_arrival = sim.db.creatures.get(&elf).unwrap().position;
-    sim.step(&[], tick + 40_000);
-
-    let pos_later = sim.db.creatures.get(&elf).unwrap().position;
-    assert_ne!(
-        pos_after_arrival, pos_later,
-        "Elf should have wandered after attack-move completion, but it stayed at {:?}",
+    let mut wandered = false;
+    for i in 0..100 {
+        sim.step(&[], sim.tick + 100);
+        let c = sim.db.creatures.get(&elf).unwrap();
+        eprintln!(
+            "  attack_move_wander post {i}: tick={} action={:?} pos={:?} nat={:?}",
+            sim.tick, c.action_kind, c.position.min, c.next_available_tick,
+        );
+        if c.position != pos_after_arrival {
+            wandered = true;
+            break;
+        }
+    }
+    assert!(
+        wandered,
+        "Elf should have wandered after attack-move completion, but stayed at {:?}",
         pos_after_arrival
     );
 }
