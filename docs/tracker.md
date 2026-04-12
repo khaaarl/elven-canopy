@@ -308,7 +308,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] R-activity-labels      Consolidate duplicated ACTIVITY_LABELS across 3 GDScript files
 [ ] R-direction-offsets    Consolidate duplicated DIRECTION_OFFSETS across 4 GDScript files
 [ ] R-panel-dedup          Extract shared helpers from duplicated info panel code
-[ ] R-species-metadata     Centralize scattered species metadata constants in GDScript
 ```
 
 ### Done
@@ -605,6 +604,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-zlevel-vis           Z-level visibility (cutaway/toggle)
 [x] F-zone-schema          Zone ID on all spatial tables
 [x] R-inv-display          Extract shared inventory display component (subsumed by R-panel-dedup)
+[x] R-species-metadata     Centralize scattered species metadata constants in GDScript
 ```
 
 ---
@@ -7861,7 +7861,7 @@ Approach: Extract shared utility functions (build_panel_header, build_margin, bu
 **Related:** R-activity-labels
 
 #### R-species-metadata — Centralize scattered species metadata constants in GDScript
-**Status:** Todo
+**Status:** Done
 
 Several species-specific constants are scattered across GDScript files as hardcoded dicts/arrays that must be manually updated when a new species is added:
 
@@ -9473,27 +9473,3 @@ pub struct MeshPipelineConfig {
     pub decimation_max_error: f32,
 }
 ```
-
-#### B-zero-warnings — Eliminate all compiler warnings from test builds
-**Status:** Todo
-
-Eliminate all compiler warnings from `cargo test` builds across all crates.
-
-Currently `cargo test -p elven_canopy_sim` produces ~20 warnings (unused
-variables, unused imports, unused mut). These are suppressed by default
-but visible in CI coverage logs and full test builds. Goal: zero warnings.
-
-**Scope:**
-- Unused variables in test files (e.g., `goblin_pos_before`, `fell`,
-  `original_pos`, `hornet_pos`, `turn`, `tree_pos`, `food_restore`,
-  `heartbeat`, `raider`, `elf_a`, `elf_b`, `old_pos` across multiple
-  test files)
-- Unused imports in test/production code (e.g., `EdgeType` in
-  pathfinding.rs, `BTreeSet` in recipe.rs, `ZoneId` in test_helpers.rs,
-  `TaskConversingData` in social_chat_tests.rs)
-- Unused mut (activation_tests.rs:3431)
-- Any warnings in other crates (graphics, music, lang, etc.)
-
-**Approach:** Fix each warning at the source — remove truly unused
-variables/imports, prefix with `_` if intentionally unused. Do not use
-`#[allow(unused)]` blanket suppressions.
