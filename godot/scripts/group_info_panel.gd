@@ -20,25 +20,6 @@ extends PanelContainer
 signal creature_clicked(creature_id: String)
 signal panel_closed
 
-## Map task_kind strings to human-readable activity labels.
-const ACTIVITY_LABELS = {
-	"": "Idle",
-	"GoTo": "Walking",
-	"Build": "Building",
-	"EatBread": "Eating",
-	"EatFruit": "Eating",
-	"Sleep": "Sleeping",
-	"Furnish": "Furnishing",
-	"Haul": "Hauling",
-	"Cook": "Cooking",
-	"Harvest": "Harvesting",
-	"AcquireItem": "Fetching",
-	"Moping": "Moping",
-	"Craft": "Crafting",
-	"AttackMove": "Attack Moving",
-	"Attack": "Attacking",
-}
-
 var _bridge: SimBridge
 var _title_label: Label
 var _rows_container: VBoxContainer
@@ -238,7 +219,7 @@ func _update_row(row: HBoxContainer, info: Dictionary) -> void:
 
 	var activity_label: Label = row.find_child("ActivityLabel", true, false)
 	if activity_label:
-		activity_label.text = ACTIVITY_LABELS.get(task_kind, "Idle")
+		activity_label.text = ActivityUtils.get_label(task_kind)
 
 
 func _match_viewport_height() -> void:

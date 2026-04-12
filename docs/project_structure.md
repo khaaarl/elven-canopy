@@ -173,6 +173,7 @@ elven-canopy/
 │   ├── test/
 │   │   ├── gut_runner.gd          # GUT test runner configuration
 │   │   ├── test_escape_menu.gd    # Escape menu tests
+│   │   ├── test_activity_utils.gd # Activity label utility tests
 │   │   ├── test_focus_guard.gd    # Focus guard tests
 │   │   ├── test_game_config.gd    # GameConfig autoload tests
 │   │   ├── test_geometry_utils.gd # Geometry utility tests
@@ -232,6 +233,7 @@ elven-canopy/
 │       ├── projectile_renderer.gd   # In-flight projectile rendering (oriented CylinderMesh pool)
 │       ├── minimap.gd              # Zoomable top-down minimap (terrain, creatures, camera frustum)
 │       ├── construction_music.gd    # Construction music playback (PCM via AudioStreamGenerator)
+│       ├── activity_utils.gd        # Canonical task_kind → display label mapping (ActivityUtils)
 │       ├── item_utils.gd           # Item display utilities (condition_label for durability)
 │       ├── view_toolbar.gd         # Right-edge vertical toolbar for view mode toggles
 │       ├── view_toggle_button.gd   # Custom-drawn square toggle button for the view toolbar

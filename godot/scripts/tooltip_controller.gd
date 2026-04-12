@@ -27,24 +27,6 @@ const CreatureRenderer = preload("res://scripts/creature_renderer.gd")
 const SNAP_THRESHOLD := 1.5
 const SNAP_THRESHOLD_SQ := SNAP_THRESHOLD * SNAP_THRESHOLD
 
-## Human-readable activity labels for task kinds.
-const ACTIVITY_NAMES = {
-	"GoTo": "Walking",
-	"Build": "Building",
-	"EatBread": "Eating",
-	"EatFruit": "Eating",
-	"Sleep": "Sleeping",
-	"Furnish": "Furnishing",
-	"Haul": "Hauling",
-	"Cook": "Cooking",
-	"Harvest": "Harvesting",
-	"AcquireItem": "Fetching",
-	"Moping": "Moping",
-	"Craft": "Crafting",
-	"AttackMove": "Attack Moving",
-	"Attack": "Attacking",
-}
-
 var _bridge: SimBridge
 var _camera: Camera3D
 var _placement_controller: Node3D
@@ -254,7 +236,7 @@ func _creature_tooltip(creature_id: String) -> String:
 
 	var activity := "Idle"
 	if has_task and not task_kind.is_empty():
-		activity = ACTIVITY_NAMES.get(task_kind, task_kind)
+		activity = ActivityUtils.get_label(task_kind, task_kind)
 
 	if not name_str.is_empty():
 		return "%s: %s — %s" % [species, name_str, activity]

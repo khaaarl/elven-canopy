@@ -37,25 +37,6 @@ extends ColorRect
 signal creature_clicked(creature_id: String)
 signal panel_closed
 
-## Map task_kind strings to human-readable activity labels.
-const ACTIVITY_LABELS = {
-	"": "Idle",
-	"GoTo": "Walking",
-	"Build": "Building",
-	"EatBread": "Eating",
-	"EatFruit": "Eating",
-	"Sleep": "Sleeping",
-	"Furnish": "Furnishing",
-	"Haul": "Hauling",
-	"Cook": "Cooking",
-	"Harvest": "Harvesting",
-	"AcquireItem": "Fetching",
-	"Moping": "Moping",
-	"Craft": "Crafting",
-	"AttackMove": "Attack Moving",
-	"Attack": "Attacking",
-}
-
 ## The three relation groups in display order.
 const RELATION_GROUPS: Array = ["friendly", "neutral", "hostile"]
 const RELATION_TITLES: Dictionary = {
@@ -417,4 +398,4 @@ func _update_row(row: HBoxContainer, entry: Dictionary) -> void:
 
 	var activity_label: Label = row.find_child("ActivityLabel", false, false)
 	if activity_label:
-		activity_label.text = ACTIVITY_LABELS.get(task_kind, "Idle")
+		activity_label.text = ActivityUtils.get_label(task_kind)

@@ -305,7 +305,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-world-boundary       World boundary visualization
 [ ] F-world-map            World map view
 [ ] F-zone-world           Zone-based world with fidelity partitioning
-[ ] R-activity-labels      Consolidate duplicated ACTIVITY_LABELS across 3 GDScript files
+[ ] R-direction-offsets    Consolidate duplicated DIRECTION_OFFSETS across 4 GDScript files
 [ ] R-panel-dedup          Extract shared helpers from duplicated info panel code
 [ ] R-species-metadata     Centralize scattered species metadata constants in GDScript
 ```
@@ -604,6 +604,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-wyvern               Wyvern hostile flying creature (2×2×2)
 [x] F-zlevel-vis           Z-level visibility (cutaway/toggle)
 [x] F-zone-schema          Zone ID on all spatial tables
+[x] R-activity-labels      Consolidate duplicated ACTIVITY_LABELS across 3 GDScript files
 [x] R-direction-offsets    Consolidate duplicated DIRECTION_OFFSETS across 4 GDScript files
 [x] R-inv-display          Extract shared inventory display component (subsumed by R-panel-dedup)
 ```
@@ -7792,7 +7793,7 @@ cutaway, or hide-upper-levels toggle. Open design question (§27).
 **Related:** F-bldg-transparency, F-ghost-above, F-minimap
 
 #### R-activity-labels — Consolidate duplicated ACTIVITY_LABELS across 3 GDScript files
-**Status:** Todo
+**Status:** Done
 
 The ACTIVITY_LABELS / ACTIVITY_NAMES mapping (task kind string to human-readable display name, e.g. "GoTo" → "Walking", "Build" → "Building") is copy-pasted across three GDScript files:
 
