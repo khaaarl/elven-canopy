@@ -39,7 +39,7 @@ fn creature_opinion_insert_and_query() {
         target_id: elf_b,
         intensity: 10,
     };
-    sim.db.upsert_creature_opinion(opinion.clone());
+    sim.db.upsert_creature_opinion(opinion.clone()).unwrap();
 
     let row = sim
         .db
@@ -55,18 +55,22 @@ fn creature_opinion_asymmetric() {
     let elf_a = spawn_creature(&mut sim, Species::Elf);
     let elf_b = spawn_creature(&mut sim, Species::Elf);
 
-    sim.db.upsert_creature_opinion(CreatureOpinion {
-        creature_id: elf_a,
-        kind: OpinionKind::Friendliness,
-        target_id: elf_b,
-        intensity: 15,
-    });
-    sim.db.upsert_creature_opinion(CreatureOpinion {
-        creature_id: elf_b,
-        kind: OpinionKind::Friendliness,
-        target_id: elf_a,
-        intensity: 3,
-    });
+    sim.db
+        .upsert_creature_opinion(CreatureOpinion {
+            creature_id: elf_a,
+            kind: OpinionKind::Friendliness,
+            target_id: elf_b,
+            intensity: 15,
+        })
+        .unwrap();
+    sim.db
+        .upsert_creature_opinion(CreatureOpinion {
+            creature_id: elf_b,
+            kind: OpinionKind::Friendliness,
+            target_id: elf_a,
+            intensity: 3,
+        })
+        .unwrap();
 
     let a_of_b = sim
         .db
@@ -90,18 +94,22 @@ fn creature_opinion_multiple_kinds() {
     let elf_a = spawn_creature(&mut sim, Species::Elf);
     let elf_b = spawn_creature(&mut sim, Species::Elf);
 
-    sim.db.upsert_creature_opinion(CreatureOpinion {
-        creature_id: elf_a,
-        kind: OpinionKind::Friendliness,
-        target_id: elf_b,
-        intensity: 10,
-    });
-    sim.db.upsert_creature_opinion(CreatureOpinion {
-        creature_id: elf_a,
-        kind: OpinionKind::Respect,
-        target_id: elf_b,
-        intensity: 5,
-    });
+    sim.db
+        .upsert_creature_opinion(CreatureOpinion {
+            creature_id: elf_a,
+            kind: OpinionKind::Friendliness,
+            target_id: elf_b,
+            intensity: 10,
+        })
+        .unwrap();
+    sim.db
+        .upsert_creature_opinion(CreatureOpinion {
+            creature_id: elf_a,
+            kind: OpinionKind::Respect,
+            target_id: elf_b,
+            intensity: 5,
+        })
+        .unwrap();
 
     let opinions: Vec<_> = sim
         .db
@@ -116,12 +124,14 @@ fn creature_opinion_remove() {
     let elf_a = spawn_creature(&mut sim, Species::Elf);
     let elf_b = spawn_creature(&mut sim, Species::Elf);
 
-    sim.db.upsert_creature_opinion(CreatureOpinion {
-        creature_id: elf_a,
-        kind: OpinionKind::Friendliness,
-        target_id: elf_b,
-        intensity: 10,
-    });
+    sim.db
+        .upsert_creature_opinion(CreatureOpinion {
+            creature_id: elf_a,
+            kind: OpinionKind::Friendliness,
+            target_id: elf_b,
+            intensity: 10,
+        })
+        .unwrap();
 
     let key = (elf_a, OpinionKind::Friendliness, elf_b);
     assert!(sim.db.creature_opinions.get(&key).is_some());
@@ -1131,7 +1141,7 @@ fn casual_social_out_of_range_no_interaction() {
 
     // Move elf_b far away.
     let far_pos = VoxelCoord::new(100, 51, 100);
-    let old_pos = sim.db.creatures.get(&elf_b).unwrap().position.min;
+    let _old_pos = sim.db.creatures.get(&elf_b).unwrap().position.min;
     if let Some(mut c) = sim.db.creatures.get(&elf_b) {
         c.position = VoxelBox::point(far_pos);
         let _ = sim.db.update_creature(c);

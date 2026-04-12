@@ -71,7 +71,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-llm-load-race        LLM capability signaled before async model load completes
 [ ] B-relay-stability      Windows TCP connection drops during singleplayer gameplay
 [ ] B-stale-path           Creatures can traverse forbidden edges when cached path becomes stale
-[ ] B-zero-warnings        Eliminate all compiler warnings from test builds
 [ ] F-ability-hotkeys      RTS-style bindable ability hotkeys on creatures
 [ ] F-adventure-mode       Control individual elf (RPG-like)
 [ ] F-aggro-fauna          Neutral fauna with aggro triggers
@@ -363,6 +362,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] B-unsafe-db-calls      Replace _no_fk and modify_unchecked calls with safe database-level methods
 [x] B-wg-fresh-seed        Worldgen tests use hardcoded seed 42 instead of fresh_test_seed
 [x] B-win-freeze           Periodic ~3s freezes on Windows (debug build)
+[x] B-zero-warnings        Eliminate all compiler warnings from test builds
 [x] F-activation-revamp    Replace manual event scheduling with automatic reactivation
 [x] F-ai-test-harness      Remote game control for AI-driven testing (Puppet)
 [x] F-alt-deselect         Alt+click to remove from selection
@@ -9473,27 +9473,3 @@ pub struct MeshPipelineConfig {
     pub decimation_max_error: f32,
 }
 ```
-
-#### B-zero-warnings — Eliminate all compiler warnings from test builds
-**Status:** Todo
-
-Eliminate all compiler warnings from `cargo test` builds across all crates.
-
-Currently `cargo test -p elven_canopy_sim` produces ~20 warnings (unused
-variables, unused imports, unused mut). These are suppressed by default
-but visible in CI coverage logs and full test builds. Goal: zero warnings.
-
-**Scope:**
-- Unused variables in test files (e.g., `goblin_pos_before`, `fell`,
-  `original_pos`, `hornet_pos`, `turn`, `tree_pos`, `food_restore`,
-  `heartbeat`, `raider`, `elf_a`, `elf_b`, `old_pos` across multiple
-  test files)
-- Unused imports in test/production code (e.g., `EdgeType` in
-  pathfinding.rs, `BTreeSet` in recipe.rs, `ZoneId` in test_helpers.rs,
-  `TaskConversingData` in social_chat_tests.rs)
-- Unused mut (activation_tests.rs:3431)
-- Any warnings in other crates (graphics, music, lang, etc.)
-
-**Approach:** Fix each warning at the source — remove truly unused
-variables/imports, prefix with `_` if intentionally unused. Do not use
-`#[allow(unused)]` blanket suppressions.

@@ -8,7 +8,7 @@
 //! `social.rs` (casual social trigger + conversation checks).
 
 use super::*;
-use crate::db::{CreatureMessage, TaskConversingData};
+use crate::db::CreatureMessage;
 use crate::llm::{InferenceMetadata, LlmRequestKind, PendingLlmRequest, PreambleSection};
 use crate::preemption::PreemptionLevel;
 use crate::prompt;
@@ -705,7 +705,7 @@ fn casual_social_resolves_mechanically_when_busy() {
 
 #[test]
 fn casual_social_no_duplicate_request() {
-    let (mut sim, elf_a, elf_b) = setup_social_chat_sim(fresh_test_seed());
+    let (mut sim, elf_a, _elf_b) = setup_social_chat_sim(fresh_test_seed());
 
     // First social interaction — should emit request.
     sim.try_casual_social(elf_a);
@@ -724,7 +724,7 @@ fn casual_social_no_duplicate_request() {
 
 #[test]
 fn casual_social_conversing_has_correct_expiry() {
-    let (mut sim, elf_a, elf_b) = setup_social_chat_sim(fresh_test_seed());
+    let (mut sim, elf_a, _elf_b) = setup_social_chat_sim(fresh_test_seed());
     let expected_expires = sim.tick + sim.config.llm.conversation_timeout_ticks;
 
     sim.try_casual_social(elf_a);
@@ -906,7 +906,7 @@ fn inbox_multiple_senders_only_processes_first() {
 
 #[test]
 fn next_message_id_serde_roundtrip() {
-    let (mut sim, elf_a, elf_b) = setup_social_chat_sim(fresh_test_seed());
+    let (mut sim, _elf_a, _elf_b) = setup_social_chat_sim(fresh_test_seed());
     sim.next_message_id = 42;
 
     let json = serde_json::to_string(&sim).expect("serialize");

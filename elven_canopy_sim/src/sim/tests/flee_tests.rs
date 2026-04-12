@@ -1078,7 +1078,7 @@ fn defensive_creature_flees_far_threat_but_does_not_pursue() {
     );
 
     // Now via wander: the goblin should just ground_random_wander (not pursue).
-    let goblin_pos_before = sim.db.creatures.get(&goblin).unwrap().position.min;
+    let _goblin_pos_before = sim.db.creatures.get(&goblin).unwrap().position.min;
     sim.ground_wander(goblin, goblin_node, &mut events);
 
     // Goblin moved (random wander), but did NOT pursue toward the elf.

@@ -2158,7 +2158,7 @@ mod tests {
         let mesh_solid = build_chamfered_voxel_mesh(&solid_voxels);
 
         // Build solid+leaf mesh (leaves on top).
-        let mut all_voxels = solid_voxels.clone();
+        let _all_voxels = solid_voxels.clone();
         // Add leaf voxels adjacent to solid.
         let leaf_positions = vec![
             (4, 2, 4),
@@ -2310,7 +2310,7 @@ mod tests {
         // 8-voxel rod along Z at x=0, y=0.
         for z in 0..8 {
             for face_idx in 0..6 {
-                let (dx, dy, dz) = [
+                let (_dx, _dy, dz) = [
                     (1, 0, 0),
                     (-1, 0, 0),
                     (0, 1, 0),

@@ -3503,7 +3503,7 @@ fn activation_ready_index_returns_sorted_by_creature_id() {
 
     let ready = sim.poll_ready_creatures(50);
     // Must contain all three and be sorted by CreatureId.
-    let mut our_ids: Vec<_> = ready
+    let our_ids: Vec<_> = ready
         .iter()
         .copied()
         .filter(|id| *id == elf_a || *id == elf_b || *id == elf_c)

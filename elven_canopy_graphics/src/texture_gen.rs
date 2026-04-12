@@ -841,7 +841,7 @@ mod tests {
             .enumerate()
         {
             // Increment the U-axis modular coord. For Xz: U=X (mx), Zy: U=Z (mz), Xy: U=X (mx).
-            let (mut m0, mut m1) = ([0i32; 3], [0i32; 3]);
+            let (m0, mut m1) = ([0i32; 3], [0i32; 3]);
             match ap {
                 AxisPair::Xz => {
                     m1[0] = 1; // mx: 0 → 1
@@ -877,7 +877,7 @@ mod tests {
         // Verify V-direction edge matching (incrementing second varying axis).
         let cache = TilingCache::new();
         let periods = cache.periods(0);
-        let [_px, py, pz] = periods;
+        let [_px, _py, _pz] = periods;
         let tpap = cache.tiles_per_axis_pair(0);
         let data = cache.texture_data(MaterialKind::Bark, 0);
 

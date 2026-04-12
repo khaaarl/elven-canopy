@@ -19,16 +19,6 @@ static FRESH_SEED: LazyLock<u64> = LazyLock::new(|| {
     seed
 });
 
-/// Get the home zone ID from a sim (convenience helper for tests).
-pub(super) fn home_zone_id(sim: &SimState) -> ZoneId {
-    sim.home_zone_id()
-}
-
-/// Get the home voxel zone from a sim (convenience helper for tests).
-pub(super) fn home_voxel_zone(sim: &SimState) -> &VoxelZone {
-    sim.voxel_zone(sim.home_zone_id()).unwrap()
-}
-
 /// Return the fresh seed for this test run. The seed is generated once
 /// per process (via `FRESH_SEED`) and reused by all tests, so
 /// `test_sim(fresh_test_seed())` and `flat_world_sim(fresh_test_seed())`
@@ -139,7 +129,7 @@ pub(super) fn flat_world_config() -> GameConfig {
 /// nav nodes.
 pub(super) fn flat_world_sim(seed: u64) -> SimState {
     use crate::db::{GreatTreeInfo, SimDb, Tree, Zone};
-    use crate::types::{TreeId, ZoneId, ZoneType};
+    use crate::types::{TreeId, ZoneType};
     use crate::worldgen;
     use elven_canopy_prng::GameRng;
 

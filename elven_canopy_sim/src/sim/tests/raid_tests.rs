@@ -1140,7 +1140,7 @@ fn trigger_raid_elves_see_raiders_as_hostile() {
     let mut events = Vec::new();
     sim.trigger_raid(&mut events);
 
-    let raider = sim
+    let _raider = sim
         .db
         .creatures
         .iter_all()

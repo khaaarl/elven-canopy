@@ -1082,7 +1082,6 @@ mod recipe_enum_tests {
         PartProperty, PartType, Rarity,
     };
     use crate::types::FruitSpeciesId;
-    use std::collections::BTreeSet;
 
     fn test_species(id: u16, name: &str, parts: Vec<FruitPart>) -> FruitSpecies {
         FruitSpecies {

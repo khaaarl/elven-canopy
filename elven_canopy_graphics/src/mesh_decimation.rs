@@ -3720,7 +3720,7 @@ mod tests {
     /// post-operation triangle's normal against the nearest pre-operation
     /// triangle normal (matched by centroid position). A large angular
     /// deviation indicates a visual distortion even if volume is preserved.
-    fn assert_normals_consistent(
+    fn _assert_normals_consistent(
         before_verts: &[[f32; 3]],
         before_tris: &[[u32; 3]],
         after_mesh: &SmoothMesh,
@@ -3822,8 +3822,9 @@ mod tests {
             return; // Non-manifold input — skip (separate bug B-chamfer-nonmfld).
         }
         let vol_orig = smooth_mesh_volume(&base_mesh);
-        let positions_orig: Vec<[f32; 3]> = base_mesh.vertices.iter().map(|v| v.position).collect();
-        let tris_orig: Vec<[u32; 3]> = base_mesh.triangles.clone();
+        let _positions_orig: Vec<[f32; 3]> =
+            base_mesh.vertices.iter().map(|v| v.position).collect();
+        let _tris_orig: Vec<[u32; 3]> = base_mesh.triangles.clone();
 
         // Sliver threshold: longest_edge² / area. With flat shading, slivers
         // only matter when they're extreme enough to cause f32 normal
@@ -3992,21 +3993,15 @@ mod tests {
         }
 
         // Sanity check: verify classifications against the original mesh.
-        let mut inside_ok = 0;
         let mut inside_bad = 0;
         for pt in &inside_pts {
-            if point_is_inside(*pt, &verts_before, &tris_before) {
-                inside_ok += 1;
-            } else {
+            if !point_is_inside(*pt, &verts_before, &tris_before) {
                 inside_bad += 1;
             }
         }
-        let mut outside_ok = 0;
         let mut outside_bad = 0;
         for pt in &outside_pts {
-            if !point_is_inside(*pt, &verts_before, &tris_before) {
-                outside_ok += 1;
-            } else {
+            if point_is_inside(*pt, &verts_before, &tris_before) {
                 outside_bad += 1;
             }
         }

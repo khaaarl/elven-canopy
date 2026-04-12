@@ -2564,7 +2564,7 @@ fn flying_creature_does_not_fall() {
     assert!(sim.creature_is_supported(hornet_id));
 
     events.clear();
-    let fell = sim.apply_creature_gravity(&mut events);
+    let _fell = sim.apply_creature_gravity(&mut events);
     // Hornet should not have fallen.
     let fell_hornets = events.iter().any(|e| {
         matches!(
@@ -2805,7 +2805,7 @@ fn degenerate_landing_teleports_to_nearest_node() {
             &mut events,
         )
         .expect("should spawn capybara");
-    let original_pos = sim.db.creatures.get(&capy_id).unwrap().position.min;
+    let _original_pos = sim.db.creatures.get(&capy_id).unwrap().position.min;
 
     // Teleport to a column that's entirely air (outside where nav nodes are
     // generated). Use a corner of the world where there's terrain but
@@ -3369,7 +3369,6 @@ fn flying_creature_idle_wanders() {
         VoxelCoord::new(elf_pos.x, elf_pos.y + 20, elf_pos.z),
     );
     force_idle_and_cancel_activations(&mut sim, hornet);
-    let hornet_pos = sim.db.creatures.get(&hornet).unwrap().position.min;
 
     // Trigger one activation. With no task and no hostiles in range,
     // the hornet should wander (move to a neighboring voxel).
@@ -5201,7 +5200,7 @@ fn test_elephant_no_fall_damage_near_overhang() {
     // Run 200 turns of 500 ticks each (100k total ticks).
     let ticks_per_turn = 500;
     let num_turns = 200;
-    for turn in 0..num_turns {
+    for _turn in 0..num_turns {
         let start_tick = sim.tick + 1;
         let end_tick = start_tick + ticks_per_turn;
         sim.step(&[], end_tick);

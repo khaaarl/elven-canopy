@@ -1914,7 +1914,6 @@ fn elf_seeks_dining_hall_at_dining_threshold() {
 #[test]
 fn elf_eats_emergency_food_below_hunger_threshold() {
     let mut sim = test_sim(fresh_test_seed());
-    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let food_max = sim.species_table[&Species::Elf].food_max;
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
@@ -2052,7 +2051,6 @@ fn dine_at_hall_completion_restores_food_and_generates_thought() {
 
     let food_max = sim.species_table[&Species::Elf].food_max;
     let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
-    let food_restore = food_max * sim.species_table[&Species::Elf].food_restore_pct / 100;
 
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     create_dining_hall(&mut sim, table_pos, 3);
@@ -2541,7 +2539,6 @@ fn end_to_end_dining_hall() {
     // Full pipeline: fresh world → build → furnish → stock food via
     // logistics → elf gets hungry → self-assigns dining → eats → AteDining.
     let mut sim = test_sim(fresh_test_seed());
-    let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
     let food_max = sim.species_table[&Species::Elf].food_max;
 
     // Build and furnish a dining hall.
@@ -2696,7 +2693,6 @@ fn elf_resumes_activation_after_dining() {
     let table_pos = VoxelCoord::new(32, 1, 32);
 
     let food_max = sim.species_table[&Species::Elf].food_max;
-    let heartbeat = sim.species_table[&Species::Elf].heartbeat_interval_ticks;
 
     let elf_id = spawn_creature(&mut sim, Species::Elf);
     create_dining_hall(&mut sim, table_pos, 5);

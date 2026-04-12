@@ -29,5 +29,8 @@ lto = true
 codegen-units = 1
 strip = true
 
+[workspace.lints.rust]
+warnings = "deny"
+
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

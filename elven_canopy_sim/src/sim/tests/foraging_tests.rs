@@ -134,7 +134,6 @@ fn hungry_monkey_does_not_graze() {
 #[test]
 fn eat_fruit_restores_food_using_forage_pct_for_monkey() {
     let mut sim = test_sim(fresh_test_seed());
-    let tree_pos = sim.db.trees.get(&sim.player_tree_id).unwrap().position;
     let food_max = sim.species_table[&Species::Monkey].food_max;
     let forage_pct = sim.species_table[&Species::Monkey].forage_food_restore_pct;
 

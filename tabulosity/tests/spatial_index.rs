@@ -578,9 +578,11 @@ fn spatial_modify_unchecked_non_spatial_field() {
         })
         .unwrap();
 
-    table.modify_unchecked(&EntityId(1), |row| {
-        row.visible = false;
-    });
+    table
+        .modify_unchecked(&EntityId(1), |row| {
+            row.visible = false;
+        })
+        .unwrap();
 
     let row = table.get(&EntityId(1)).unwrap();
     assert!(!row.visible);
@@ -600,9 +602,11 @@ fn spatial_modify_unchecked_spatial_field_panics_debug() {
         })
         .unwrap();
 
-    table.modify_unchecked(&EntityId(1), |row| {
-        row.bounds = Box3d::new([10, 10, 10], [15, 15, 15]);
-    });
+    table
+        .modify_unchecked(&EntityId(1), |row| {
+            row.bounds = Box3d::new([10, 10, 10], [15, 15, 15]);
+        })
+        .unwrap();
 }
 
 // =============================================================================
@@ -1567,21 +1571,25 @@ fn compound_spatial_upsert() {
     let mut table = ZonedEntityTable::new();
 
     // Upsert insert path.
-    table.upsert_no_fk(ZonedEntity {
-        id: 0,
-        zone_id: ZoneId(1),
-        pos: Box3d::new([0, 0, 0], [5, 5, 5]),
-    });
+    table
+        .upsert_no_fk(ZonedEntity {
+            id: 0,
+            zone_id: ZoneId(1),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
 
     let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [100, 100, 100]));
     assert_eq!(hits.len(), 1);
 
     // Upsert update path — change zone.
-    table.upsert_no_fk(ZonedEntity {
-        id: 0,
-        zone_id: ZoneId(2),
-        pos: Box3d::new([0, 0, 0], [5, 5, 5]),
-    });
+    table
+        .upsert_no_fk(ZonedEntity {
+            id: 0,
+            zone_id: ZoneId(2),
+            pos: Box3d::new([0, 0, 0], [5, 5, 5]),
+        })
+        .unwrap();
 
     let hits = table.intersecting_by_zone_pos(&ZoneId(1), &Box3d::new([0, 0, 0], [100, 100, 100]));
     assert!(hits.is_empty());

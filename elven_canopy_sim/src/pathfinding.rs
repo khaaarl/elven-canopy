@@ -1088,7 +1088,7 @@ pub fn nearest_ground(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nav::{EdgeType, MovementCategory};
+    use crate::nav::MovementCategory;
     use crate::types::{VoxelCoord, VoxelType};
     use crate::world::VoxelZone;
 
