@@ -68,6 +68,7 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] B-fast-checksum        Incremental state checksum for desync detection (replace full-state JSON serialization)
 [ ] B-flying-flee          Flying creatures flee by random wander instead of directionally
 [ ] B-fog-billboards       Fog post-process does not obscure billboard sprites
+[ ] B-gut-scene-timeout    GUT integration tests timeout on game scene initialization
 [ ] B-llm-load-race        LLM capability signaled before async model load completes
 [ ] B-relay-stability      Windows TCP connection drops during singleplayer gameplay
 [ ] B-stale-path           Creatures can traverse forbidden edges when cached path becomes stale
@@ -305,7 +306,6 @@ This reduces merge conflicts when parallel work streams add items.
 [ ] F-world-map            World map view
 [ ] F-zone-world           Zone-based world with fidelity partitioning
 [ ] R-activity-labels      Consolidate duplicated ACTIVITY_LABELS across 3 GDScript files
-[ ] R-direction-offsets    Consolidate duplicated DIRECTION_OFFSETS across 4 GDScript files
 [ ] R-panel-dedup          Extract shared helpers from duplicated info panel code
 [ ] R-species-metadata     Centralize scattered species metadata constants in GDScript
 ```
@@ -604,6 +604,7 @@ This reduces merge conflicts when parallel work streams add items.
 [x] F-wyvern               Wyvern hostile flying creature (2×2×2)
 [x] F-zlevel-vis           Z-level visibility (cutaway/toggle)
 [x] F-zone-schema          Zone ID on all spatial tables
+[x] R-direction-offsets    Consolidate duplicated DIRECTION_OFFSETS across 4 GDScript files
 [x] R-inv-display          Extract shared inventory display component (subsumed by R-panel-dedup)
 ```
 
@@ -7806,7 +7807,7 @@ This is the same class of duplication as B-per-species-iter (SPECIES_Y_OFFSETS d
 **Related:** R-direction-offsets, R-panel-dedup, R-species-metadata
 
 #### R-direction-offsets — Consolidate duplicated DIRECTION_OFFSETS across 4 GDScript files
-**Status:** Todo
+**Status:** Done
 
 The DIRECTION_OFFSETS array (6-element Vector3 array mapping direction indices to face offsets: RIGHT, LEFT, UP, DOWN, BACK, FORWARD) is copy-pasted identically across four GDScript files:
 
@@ -9446,6 +9447,23 @@ All ~1,260 legacy_test_seed() call sites across 20 test files migrated
 to fresh_test_seed().
 
 **Unblocked:** F-random-seeds
+
+#### B-gut-scene-timeout — GUT integration tests timeout on game scene initialization
+**Status:** Todo
+
+GUT integration tests that require a full game scene (test_game_integration.gd) fail with "Game scene failed to initialize within timeout" when run locally via `scripts/build.py gdtest`. The SimBridge starts up and the elfcyclopedia server binds, but initialization never completes within the test timeout window.
+
+All 5 failing tests share the same root cause — the game scene doesn't finish initializing in time. The 329 pure unit tests pass fine.
+
+**Possible cause:** The LLM model loading (llama-cpp-2) may be blocking or slow-loading during SimBridge initialization, especially on machines without a suitable GPU. If the LLM init is synchronous or takes longer than the test timeout, it would explain the hang. The fix in B-llm-load-race (async model load signaled before completion) may be related.
+
+**Investigation steps:**
+- Check whether the timeout correlates with the LLM subsystem trying to load a model file.
+- Determine if LLM loading can be skipped or stubbed when running in headless/test mode.
+- Check if there's already a mechanism to disable LLM loading (env var, config flag, headless detection).
+- Verify whether this passes in CI (which presumably has no LLM model file available).
+
+**Observed on:** 2026-04-12, on the local dev machine running `scripts/build.py gdtest` in headless mode.
 
 #### B-mesh-global-cfg — Mesh pipeline global atomics cause test flakiness risk
 **Status:** Done

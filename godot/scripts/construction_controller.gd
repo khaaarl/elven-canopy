@@ -46,14 +46,7 @@ enum State { INACTIVE, ACTIVE, HOVER, DRAGGING, PREVIEW }
 const FACE_INSET := 0.005
 
 ## Offset vectors indexed by face direction (0=PosX..5=NegZ).
-const DIRECTION_OFFSETS: Array[Vector3] = [
-	Vector3.RIGHT,  # 0 PosX
-	Vector3.LEFT,  # 1 NegX
-	Vector3.UP,  # 2 PosY
-	Vector3.DOWN,  # 3 NegY
-	Vector3.BACK,  # 4 PosZ
-	Vector3.FORWARD,  # 5 NegZ
-]
+const DIRECTION_OFFSETS := GeometryUtils.DIRECTION_OFFSETS
 
 ## Valid horizontal face directions for ladder orientation, cycled by rotate button.
 ## Order: Auto → East(+X) → South(+Z) → West(-X) → North(-Z).

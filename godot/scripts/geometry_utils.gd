@@ -11,11 +11,29 @@
 ## shielded from selection. And `matches_double_click_group()` for
 ## double-click group selection (F-dblclick-select).
 ##
+## Also provides the canonical `DIRECTION_OFFSETS` array (6 cardinal
+## face directions indexed by sim direction enum) shared by
+## construction_controller.gd, blueprint_renderer.gd,
+## building_renderer.gd, and ladder_renderer.gd.
+##
 ## See also: selection_controller.gd (click-to-select, box-select,
 ## double-click-select), tooltip_controller.gd (hover detection),
 ## placement_controller.gd (click-to-place snap — inlines the same
 ## ray-distance math for performance).
 class_name GeometryUtils
+
+## Unit offsets for the six cardinal face directions, indexed by the
+## direction enum values used by the sim (PosX=0, NegX=1, PosY=2,
+## NegY=3, PosZ=4, NegZ=5).  Shared across construction_controller.gd,
+## blueprint_renderer.gd, building_renderer.gd, and ladder_renderer.gd.
+const DIRECTION_OFFSETS: Array[Vector3] = [
+	Vector3.RIGHT,  # 0 PosX
+	Vector3.LEFT,  # 1 NegX
+	Vector3.UP,  # 2 PosY
+	Vector3.DOWN,  # 3 NegY
+	Vector3.BACK,  # 4 PosZ
+	Vector3.FORWARD,  # 5 NegZ
+]
 
 
 ## Perpendicular distance squared from a point to a ray (origin + t * dir).

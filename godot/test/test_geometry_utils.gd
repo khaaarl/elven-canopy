@@ -3,6 +3,9 @@
 ## Covers the pure math helpers shared by selection_controller.gd,
 ## tooltip_controller.gd, and placement_controller.gd: point-to-ray
 ## distance and screen rectangle construction from drag corners.
+## Also covers the canonical DIRECTION_OFFSETS array shared by
+## construction_controller.gd, blueprint_renderer.gd,
+## building_renderer.gd, and ladder_renderer.gd.
 ##
 ## See also: geometry_utils.gd for the implementation.
 extends GutTest
@@ -86,3 +89,23 @@ func test_make_screen_rect_mixed_corners() -> void:
 	var rect := GeometryUtils.make_screen_rect(Vector2(10, 200), Vector2(100, 20))
 	assert_eq(rect.position, Vector2(10, 20))
 	assert_eq(rect.size, Vector2(90, 180))
+
+
+# -- DIRECTION_OFFSETS -------------------------------------------------------
+
+
+func test_direction_offsets_has_six_entries() -> void:
+	assert_eq(GeometryUtils.DIRECTION_OFFSETS.size(), 6, "Should have exactly 6 face directions")
+
+
+func test_direction_offsets_index_contract() -> void:
+	# The sim's FaceDirection enum assigns PosX=0, NegX=1, PosY=2, NegY=3,
+	# PosZ=4, NegZ=5.  All four consumer files index into this array with
+	# those ordinals, so the mapping must be exact.
+	var o := GeometryUtils.DIRECTION_OFFSETS
+	assert_eq(o[0], Vector3.RIGHT, "Index 0 = PosX = RIGHT")
+	assert_eq(o[1], Vector3.LEFT, "Index 1 = NegX = LEFT")
+	assert_eq(o[2], Vector3.UP, "Index 2 = PosY = UP")
+	assert_eq(o[3], Vector3.DOWN, "Index 3 = NegY = DOWN")
+	assert_eq(o[4], Vector3.BACK, "Index 4 = PosZ = BACK")
+	assert_eq(o[5], Vector3.FORWARD, "Index 5 = NegZ = FORWARD")
